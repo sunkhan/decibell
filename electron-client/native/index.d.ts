@@ -352,8 +352,6 @@ export interface SearchMembersArgs {
   limit?: number
   /** Echoed on member_search_received. */
   seq?: number
-  /** Only these exact usernames (≤ 200) — "which of these are members?". */
-  usernames?: Array<string>
 }
 /**
  * Server-settings member search across the whole membership (online or

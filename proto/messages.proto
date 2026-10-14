@@ -1287,6 +1287,10 @@ message InviteCreateResponse {
   string message = 2;
   InviteInfo invite = 3;
   uint32 request_id = 4;
+  // A personal invite was refused because for_user is already a member.
+  // The Invite friends picker filters against the roster it has loaded,
+  // which may lack offline members; this tells it which rows to mark.
+  bool already_member = 5;
 }
 
 message InviteListRequest {}
@@ -1378,9 +1382,6 @@ message MemberSearchRequest {
   int32 limit = 4;
   // Echoed back so the client can drop answers to superseded searches.
   uint32 seq = 5;
-  // Non-empty: only these exact usernames (≤ 200; the rest ignored) —
-  // "which of these people are members?" (the Invite friends picker).
-  repeated string usernames = 6;
 }
 
 message MemberSearchResponse {

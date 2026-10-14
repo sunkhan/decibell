@@ -73,8 +73,6 @@ pub struct SearchMembersArgs {
     pub limit: Option<i32>,
     /// Echoed on member_search_received.
     pub seq: Option<u32>,
-    /// Only these exact usernames (≤ 200) — "which of these are members?".
-    pub usernames: Option<Vec<String>>,
 }
 
 /// Server-settings member search across the whole membership (online or
@@ -91,7 +89,6 @@ pub async fn search_members(args: SearchMembersArgs) -> napi::Result<()> {
             after: args.after.unwrap_or_default(),
             limit: args.limit.unwrap_or(0),
             seq: args.seq.unwrap_or(0),
-            usernames: args.usernames.unwrap_or_default(),
         }),
     )
     .await

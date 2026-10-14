@@ -8,7 +8,13 @@ interface InviteCreateRespondedPayload {
   message: string;
   invite: ServerInvite | null;
   requestId: number;
+  alreadyMember?: boolean;
 }
+
+/// The server refused the invitee because they're already a member: the
+/// picker filters on the roster it has loaded, which can miss offline
+/// members of a big server.
+export class AlreadyMemberError extends Error {}
 
 /// The community answers INVITE_CREATE_REQ asynchronously; a request id
 /// (echoed on the response) ties each answer to its caller, so several
@@ -42,7 +48,11 @@ export function createPersonalInvite(serverId: string, username: string): Promis
       settle(() =>
         p.success && p.invite
           ? resolve(p.invite)
-          : reject(new Error(p.message || "Couldn't create the invite.")),
+          : reject(
+              p.alreadyMember
+                ? new AlreadyMemberError(p.message)
+                : new Error(p.message || "Couldn't create the invite."),
+            ),
       );
     })
       .then((fn) => {

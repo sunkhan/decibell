@@ -642,6 +642,7 @@ impl CommunityClient {
                         message: resp.message,
                         invite,
                         request_id: resp.request_id,
+                        already_member: resp.already_member,
                     });
                 }
                 Some(packet::Payload::InviteListRes(resp)) => {

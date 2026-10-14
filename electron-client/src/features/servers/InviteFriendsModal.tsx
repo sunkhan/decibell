@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -9,74 +8,12 @@ import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
 import { EMPTY_LIST } from "../../lib/empty";
-import { nextMemberSearchSeq } from "./tabs/useMemberSearch";
-import { inviteFriend } from "./personalInvite";
-import type { MemberSearchReceivedPayload, ServerMember } from "../../types";
+import { AlreadyMemberError, inviteFriend } from "./personalInvite";
+import type { ServerMember } from "../../types";
 
-/// MEMBER_SEARCH_REQ takes at most 200 usernames per lookup.
-const LOOKUP_CHUNK = 200;
-const NO_ANSWER_MS = 8000;
-
-type RowState = "sending" | "sent";
-
-/// Which of `usernames` are members of the server, asked of the server:
-/// the roster store holds only the online members and the first offline
-/// page. null until every lookup has answered; a server that doesn't
-/// answer falls back to the roster after NO_ANSWER_MS.
-function useMembersAmong(
-  serverId: string | null,
-  usernames: string[],
-  active: boolean,
-): Set<string> | null {
-  const [members, setMembers] = useState<Set<string> | null>(null);
-  const key = usernames.join("\n");
-  useEffect(() => {
-    if (!active || !serverId) return;
-    setMembers(null);
-    const names = key ? key.split("\n") : [];
-    if (names.length === 0) {
-      setMembers(new Set());
-      return;
-    }
-    let cancelled = false;
-    const pending = new Set<number>();
-    const found = new Set<string>();
-    const settle = () => {
-      if (!cancelled && pending.size === 0) setMembers(new Set(found));
-    };
-    const un = listen<MemberSearchReceivedPayload>("member_search_received", (e) => {
-      const p = e.payload;
-      if (p.serverId !== serverId || !pending.delete(p.seq)) return;
-      if (p.success) for (const m of p.members) found.add(m.username);
-      settle();
-    });
-    un.then(() => {
-      if (cancelled) return;
-      for (let i = 0; i < names.length; i += LOOKUP_CHUNK) {
-        const seq = nextMemberSearchSeq();
-        pending.add(seq);
-        invoke("search_members", {
-          serverId,
-          usernames: names.slice(i, i + LOOKUP_CHUNK),
-          limit: LOOKUP_CHUNK,
-          seq,
-        }).catch(() => {
-          pending.delete(seq);
-          settle();
-        });
-      }
-    });
-    const timer = setTimeout(() => {
-      if (!cancelled) setMembers(new Set(found));
-    }, NO_ANSWER_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      un.then((fn) => fn());
-    };
-  }, [active, serverId, key]);
-  return members;
-}
+/// "member": the server refused the invite because they're already in —
+/// an offline member the loaded roster didn't include.
+type RowState = "sending" | "sent" | "member";
 
 function FriendRow({
   username,
@@ -101,7 +38,9 @@ function FriendRow({
       <span className="min-w-0 flex-1 truncate font-channel text-[14px] text-text-primary">
         {username}
       </span>
-      {state === "sent" ? (
+      {state === "member" ? (
+        <span className="shrink-0 px-3 py-1.5 text-[12px] font-medium text-text-muted">Already here</span>
+      ) : state === "sent" ? (
         <span className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-text-muted">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="20 6 9 17 4 12" />
@@ -124,6 +63,13 @@ function FriendRow({
 /// The welcome banner's "Invite friends": your friends who aren't members
 /// yet, each a click away from a personal invite (single-use, never
 /// expires, only they can redeem it) sent to them as a DM.
+///
+/// "Not a member" is judged on the roster the client already has (owner
+/// decision: the friend list never goes to the community, and the server
+/// isn't asked to filter it). That roster holds every online member but
+/// only the first page of offline ones, so on a big server an offline
+/// member can still be listed; inviting them comes back already_member
+/// and the row says so.
 export default function InviteFriendsModal() {
   const open = useUiStore((s) => s.activeModal === "invite-friends");
   const closeModal = useUiStore((s) => s.closeModal);
@@ -161,13 +107,12 @@ export default function InviteFriendsModal() {
         .sort((a, b) => a.localeCompare(b)),
     [friends],
   );
-  const members = useMembersAmong(serverId, candidates, open);
   const notMembers = useMemo(() => {
-    if (!members) return [];
     const inRoster = new Set(roster.map((m) => m.username));
-    // Someone already invited stays listed (as "Sent") even once they join.
-    return candidates.filter((u) => rows[u] === "sent" || (!members.has(u) && !inRoster.has(u)));
-  }, [candidates, members, roster, rows]);
+    // A row with an outcome stays put (a friend who joins after their
+    // invite keeps showing "Sent").
+    return candidates.filter((u) => rows[u] !== undefined || !inRoster.has(u));
+  }, [candidates, roster, rows]);
   const query = search.trim().toLowerCase();
   const shown = query ? notMembers.filter((u) => u.toLowerCase().includes(query)) : notMembers;
 
@@ -179,6 +124,10 @@ export default function InviteFriendsModal() {
         await inviteFriend(serverId, username);
         setRows((r) => ({ ...r, [username]: "sent" }));
       } catch (err) {
+        if (err instanceof AlreadyMemberError) {
+          setRows((r) => ({ ...r, [username]: "member" }));
+          return;
+        }
         setRows((r) => {
           const next = { ...r };
           delete next[username];
@@ -193,8 +142,7 @@ export default function InviteFriendsModal() {
   if (!mounted || !serverId) return null;
 
   let empty: string | null = null;
-  if (!members) empty = null;
-  else if (candidates.length === 0) empty = "Add some friends first — they'll show up here.";
+  if (candidates.length === 0) empty = "Add some friends first — they'll show up here.";
   else if (notMembers.length === 0) empty = "All your friends are already here.";
   else if (shown.length === 0) empty = "No friends match that search.";
 
@@ -248,11 +196,7 @@ export default function InviteFriendsModal() {
             jump when the lookup answers or a search empties it; it can
             still shrink on a short window. */}
         <div className="h-72 min-h-0 overflow-y-auto px-4 py-3 scrollbar-thin">
-          {!members ? (
-            <div className="flex h-full items-center justify-center py-8 text-[13px] text-text-muted">
-              Checking who's already here…
-            </div>
-          ) : empty ? (
+          {empty ? (
             <div className="flex h-full items-center justify-center py-8 text-center text-[13px] text-text-muted">
               {empty}
             </div>

@@ -1361,10 +1361,11 @@ def test_personal_invites():
     owner.flush(0.5); pia.flush(0.5)
 
     r = create(owner, 43, for_user="pia")
-    check("no personal invite for an existing member",
-          r is not None and not r.invite_create_res.success and "already a member" in r.invite_create_res.message)
+    check("no personal invite for an existing member, flagged as such",
+          r is not None and not r.invite_create_res.success and r.invite_create_res.already_member)
     r = create(owner, 44, for_user="alice")
-    check("no personal invite for yourself", r is not None and not r.invite_create_res.success)
+    check("no personal invite for yourself", r is not None and not r.invite_create_res.success and
+          not r.invite_create_res.already_member)
     r = create(owner, 45, max_uses=3)
     check("ordinary invites are unchanged", r is not None and r.invite_create_res.success and
           r.invite_create_res.invite.max_uses == 3 and r.invite_create_res.invite.for_user == "")
@@ -1374,13 +1375,6 @@ def test_personal_invites():
     r = create(pia, 46, for_user="zed")
     check("a refusal still echoes the request id", r is not None and not r.invite_create_res.success)
     set_everyone_perms(owner, ALL_MEMBER_BITS)
-
-    owner.send(pb.Packet.MEMBER_SEARCH_REQ, member_search_req=pb.MemberSearchRequest(
-        seq=901, usernames=["pia", "nobody", "alice"]))
-    r = owner.wait(pb.Packet.MEMBER_SEARCH_RES, pred=lambda p: p.member_search_res.seq == 901)
-    check("member lookup by exact usernames returns only the members",
-          r is not None and sorted(m.username for m in r.member_search_res.members) == ["alice", "pia"],
-          str([m.username for m in r.member_search_res.members]) if r else None)
     pia.close(); owner.close()
 
 

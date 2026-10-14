@@ -23,10 +23,14 @@ It reuses the existing invites, with three additions:
   flight a reply could go to the wrong friend. Requests with an id report errors to their caller. The
   global toast is only for requests without one.
 
-**Who is already a member** comes from the server. `MemberSearchRequest.usernames` (≤ 200 per request)
-returns only the listed usernames that are members. The roster store holds only online members plus the
-first offline page, so filtering against it would list members as invitable. The modal also drops
-anyone in the live roster. A server that never answers falls back to the roster after 8 s.
+**Who is already a member** is judged on the roster the client already has. The owner decided this
+for privacy: the friend list never goes to a community, whose host could log it, and the server isn't
+asked to filter it. (A first cut sent the usernames through `MemberSearchRequest`, and it was
+withdrawn before release.) The roster holds every online member but only the first offline page, so on
+a big server an offline member can still be listed. Inviting them is refused with
+`InviteCreateResponse.already_member`, and the row then reads "Already here" instead of showing an
+error. The server only learns a friend's name when the user invites that friend, which is inherent to an
+invite bound to them.
 
 The DM is the bare `decibell://invite/<CODE>` link, so the friend sees the usual invite card. It goes
 through `send_private_message`, so E2EE applies when both sides have it.
@@ -57,6 +61,5 @@ leaves out any action the user can't take.
 ## Rollout
 
 Every wire change is additive. The community server must be rebuilt along with the client, which is
-the usual pre-1.0 rule. An older server ignores `for_user` / `request_id` / `usernames` / `topic`. The
-modal would then time out ("The server didn't answer.") and the lookup would fall back to the roster.
-Central is unchanged.
+the usual pre-1.0 rule. An older server ignores `for_user` / `request_id` / `topic`. Inviting then
+times out ("The server didn't answer.") and topic edits don't stick. Central is unchanged.

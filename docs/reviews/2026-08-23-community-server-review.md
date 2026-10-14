@@ -2121,8 +2121,12 @@ empty-channel banner's three buttons did nothing. Design:
   without using it up. Asking again returns the creator's live personal invite instead of minting
   another. The server refuses one for an existing member or for yourself. `request_id` is echoed on the
   response so each reply reaches its caller, since rate-limited requests are dropped without an answer.
-  Membership comes from the server through `MemberSearchRequest.usernames` (≤ 200), because the roster
-  only holds online members plus the first offline page. Gate: CREATE_INVITE or MANAGE_INVITES.
+  Membership is judged on the loaded roster. Owner decision: the friend list never goes to a
+  community, whose host could log it, and the server isn't asked to filter it. A first cut sent it via
+  `MemberSearchRequest.usernames` and was withdrawn before release. On a big server an offline member
+  the roster didn't load can still be listed. Inviting them is refused with
+  `InviteCreateResponse.already_member`, and the row reads "Already here". Gate: CREATE_INVITE or
+  MANAGE_INVITES.
 - **Channel topics:** `ChannelInfo.topic` / `ChannelUpdateRequest.topic` (optional), text channels,
   MANAGE_CHANNELS, schema v13 (`channels.topic`, `invites.for_user`). One line of ≤ 1024 UTF-8 bytes,
   trimmed and clamped on a character boundary. It shows in the header after the name (truncated, with a
@@ -2131,10 +2135,10 @@ empty-channel banner's three buttons did nothing. Design:
 - **Manage channel** (was "Set rules") opens channel settings. It shows for MANAGE_CHANNELS or
   MANAGE_ROLES, like the sidebar gear. The banner leaves out actions the user can't take.
 
-Verified: community e2e 448/0, with 25 new checks (topic set / trim / clamp / broadcast / denied / voice ignored /
-channel list / clear / audit; personal invite bound / reused / refused for members and self / wrong
-user can't redeem or spend it / request ids echoed on success and refusal / username lookup; v12 → v13
-migration); native napi build + `cargo test --lib` 223; tsc web 0.
+Verified: community e2e 447/0, with 24 new checks (topic set / trim / clamp / broadcast / denied / voice ignored /
+channel list / clear / audit; personal invite bound / reused / refused for members (flagged
+already_member) and self / wrong user can't redeem or spend it / request ids echoed on success and
+refusal; v12 → v13 migration); native napi build + `cargo test --lib` 223; tsc web 0.
 
 Pending: rebuild the community server with (or before) the client; a live two-account test of the
 invite DM → card → join, and of the header topic in every theme.

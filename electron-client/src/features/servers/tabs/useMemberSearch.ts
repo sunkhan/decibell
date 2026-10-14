@@ -21,13 +21,9 @@ export const NO_ANSWER =
   "The server didn't answer. It may be running an older version that can't search members yet.";
 
 /// Seqs are unique across every open search (several can be live at once:
-/// the Members tab, a role's holders, the add-members picker, the Invite
-/// friends lookup), and each one only takes answers to its own latest
-/// request.
+/// the Members tab, a role's holders, the add-members picker), and each
+/// one only takes answers to its own latest request.
 let nextSeq = 1;
-export function nextMemberSearchSeq(): number {
-  return nextSeq++;
-}
 
 interface SearchState {
   members: ServerMember[];
@@ -141,7 +137,7 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
 
   const send = useCallback(
     (after: string) => {
-      const seq = after ? seqRef.current : (seqRef.current = nextMemberSearchSeq());
+      const seq = after ? seqRef.current : (seqRef.current = nextSeq++);
       answeredRef.current = 0;
       invoke("search_members", { serverId, query: applied, roleId, after, limit: PAGE, seq }).catch((err) => {
         if (seq === seqRef.current) setState((s) => ({ ...s, loading: false, loaded: true, error: String(err) }));

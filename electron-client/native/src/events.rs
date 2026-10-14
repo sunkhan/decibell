@@ -1324,6 +1324,8 @@ pub struct InviteCreateRespondedPayload {
     pub invite: Option<InviteInfoPayload>,
     /// Echo of the request's id (0 when it had none).
     pub request_id: u32,
+    /// A personal invite was refused because the invitee is a member.
+    pub already_member: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

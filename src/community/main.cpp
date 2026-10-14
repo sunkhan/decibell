@@ -18,7 +18,6 @@
 #include <set>
 #include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -2338,6 +2337,7 @@ private:
                     return;
                 }
                 if (db->is_member(for_user)) {
+                    res->set_already_member(true);
                     refuse(for_user + " is already a member.");
                     return;
                 }
@@ -4372,15 +4372,11 @@ void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req
               [](const chatproj::DbMember& a, const chatproj::DbMember& b) {
                   return a.username < b.username;
               });
-    // Exact-username filter ("which of these are members?"), capped.
-    std::unordered_set<std::string> only;
-    for (int i = 0; i < req.usernames_size() && i < 200; ++i) only.insert(req.usernames(i));
     int64_t total = 0;
     int32_t sent = 0;
     bool has_more = false;
     std::string next_after;
     for (const auto& m : members) {
-        if (!only.empty() && !only.count(m.username)) continue;
         auto rit = roles_by_user.find(m.username);
         const bool any_role = rit != roles_by_user.end() && !rit->second.empty();
         if (role_id == -1 && any_role) continue;
