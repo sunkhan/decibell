@@ -1,213 +1,106 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke, listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { toast } from "../../stores/toastStore";
-import { useEscapeToClose } from "../../hooks/useEscapeToClose";
+import ConfirmModal from "../../components/ConfirmModal";
 import { PERM, useChannelPermission } from "./permissions";
-import { ChannelPermissionsSection, type ChannelPermissionsHandle } from "./ChannelPermissionsSection";
 import type { ChannelInfo } from "../../types";
-import Select from "../../components/Select";
-import { TOPIC_MAX_BYTES, normalizeTopicInput, topicBytes } from "./channelTopic";
+import { Icon, type IconName } from "./tabs/settingsUi";
+import { channelIcon } from "./channelSettings/ui";
+import { changesOf, draftOf, type ChannelDraft } from "./channelSettings/draft";
+import OverviewTab from "./channelSettings/OverviewTab";
+import RetentionTab from "./channelSettings/RetentionTab";
+import PermissionsTab, { usePermissionDraft } from "./channelSettings/PermissionsTab";
 
-type RetentionField =
-  | "retentionDaysText"
-  | "retentionDaysImage"
-  | "retentionDaysVideo"
-  | "retentionDaysDocument"
-  | "retentionDaysAudio";
+type Tab = "overview" | "retention" | "permissions";
 
-interface Preset {
-  label: string;
-  days: number; // 0 = forever
-}
+const TABS: Record<Tab, { label: string; icon: IconName }> = {
+  overview: { label: "Overview", icon: "sliders" },
+  retention: { label: "Retention", icon: "clock" },
+  permissions: { label: "Permissions", icon: "shield" },
+};
 
-const PRESETS: Preset[] = [
-  { label: "Forever", days: 0 },
-  { label: "1 day", days: 1 },
-  { label: "7 days", days: 7 },
-  { label: "30 days", days: 30 },
-  { label: "90 days", days: 90 },
-  { label: "1 year", days: 365 },
-];
+const TYPE_LABEL: Record<ChannelInfo["type"], string> = {
+  text: "Text channel",
+  voice: "Voice channel",
+  category: "Category",
+  unknown: "Channel",
+};
 
-/// Reference ticks on the voice-bitrate slider (kbps). Purely visual —
-/// the slider itself is continuous (step 1).
-const BITRATE_MARKS = [32, 64, 128, 192, 256];
-
-function presetValue(days: number): number {
-  // Collapse any positive value to the closest defined preset; 0 stays 0.
-  if (days <= 0) return 0;
-  const exact = PRESETS.find((p) => p.days === days);
-  if (exact) return exact.days;
-  return days;
-}
-
-function RetentionRow({
-  label,
-  hint,
-  value,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  hint?: string;
-  value: number;
-  disabled?: boolean;
-  onChange: (v: number) => void;
-}) {
-  const presetMatch = PRESETS.some((p) => p.days === value);
-  return (
-    <div
-      className={`flex items-center gap-3 rounded-md border px-3 py-2.5 transition-colors ${
-        disabled ? "border-border-divider bg-bg-light/30 opacity-60" : "border-border-divider bg-bg-light"
-      }`}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-text-primary">{label}</div>
-        {hint && (
-          <div className="mt-0.5 truncate text-[11px] text-text-muted">{hint}</div>
-        )}
-      </div>
-      {/* A value set outside the presets (server config) shows as its own
-          entry; choosing it again is a no-op. */}
-      <Select
-        size="sm"
-        className="w-32 shrink-0"
-        aria-label={`${label} retention`}
-        disabled={disabled}
-        value={value}
-        onChange={onChange}
-        options={[
-          ...PRESETS.map((p) => ({ value: p.days, label: p.label })),
-          ...(presetMatch ? [] : [{ value, label: `${value} days`, hint: "Custom" }]),
-        ]}
-      />
-    </div>
-  );
-}
-
+/// Channel and category settings: the server-settings window's chrome
+/// (sidebar of tabs, 300ms fade + scale, portal to body). Overview,
+/// Retention and Permissions edits are one draft; the save bar commits
+/// all of it, and leaving with unsaved changes shakes the bar instead of
+/// dropping them. Delete sits at the sidebar's foot, like Leave Server.
 export default function ChannelSettingsModal() {
-  const activeModal = useUiStore((s) => s.activeModal);
+  const isOpen = useUiStore((s) => s.activeModal === "channel-settings");
   const closeModal = useUiStore((s) => s.closeModal);
-  const isOpen = activeModal === "channel-settings";
-  useEscapeToClose(closeModal, isOpen);
-  // Enter/exit animation (matches SettingsModal / ServerSettingsModal): stay
-  // mounted through the close so the fade + scale-out can play, then unmount.
-  const [mounted, setMounted] = useState(false);
-  const [visible, setVisible] = useState(false);
   const activeServerId = useChatStore((s) => s.activeServerId);
-  // Explicit target set by the per-row gear icon — the channel no
-  // longer needs to be the active one.
+  // Explicit target set by the per-row gear icon: the channel needn't be
+  // the active one.
   const targetChannelId = useUiStore((s) => s.channelSettingsChannelId);
   const channelsByServer = useChatStore((s) => s.channelsByServer);
-
   const channel: ChannelInfo | undefined = useMemo(() => {
     if (!activeServerId || !targetChannelId) return undefined;
     return channelsByServer[activeServerId]?.find((c) => c.id === targetChannelId);
   }, [activeServerId, targetChannelId, channelsByServer]);
-
-  // Mirrors the server-side gates: retention/rename/delete/wipe are all
-  // MANAGE_CHANNELS *in this channel* (permissions v2: an overwrite can
-  // grant it per channel; owner implicitly included).
-  const canManage = useChannelPermission(
-    activeServerId,
-    targetChannelId,
-    PERM.MANAGE_CHANNELS,
+  const serverName = useChatStore((s) =>
+    activeServerId ? s.serverMeta[activeServerId]?.name ?? s.servers.find((x) => x.id === activeServerId)?.name : undefined,
   );
-  // Categories are grouping headers: no messages → no retention, no
-  // wipe. Just rename + delete.
-  const isCategory = channel?.type === "category";
-  // Voice channels get the bitrate control instead of retention/wipe —
-  // their content is live audio, not stored messages.
-  const isVoice = channel?.type === "voice";
-  // The landing channel after auth must always exist — the server
-  // refuses to delete the last text channel, so hide the button too.
-  const isLastTextChannel =
-    !!channel &&
-    channel.type === "text" &&
-    (activeServerId
-      ? (channelsByServer[activeServerId] ?? []).filter((c) => c.type === "text")
-          .length <= 1
-      : false);
 
-  const [draft, setDraft] = useState<Record<RetentionField, number>>({
-    retentionDaysText: 0,
-    retentionDaysImage: 0,
-    retentionDaysVideo: 0,
-    retentionDaysDocument: 0,
-    retentionDaysAudio: 0,
-  });
+  // Server-side gates: rename / retention / slowmode / bitrate / topic /
+  // wipe / delete are MANAGE_CHANNELS in this channel; overwrites are
+  // MANAGE_ROLES in this channel.
+  const canManage = useChannelPermission(activeServerId, targetChannelId, PERM.MANAGE_CHANNELS);
+  const canRoles = useChannelPermission(activeServerId, targetChannelId, PERM.MANAGE_ROLES);
+  const isText = channel?.type === "text";
+  // The landing channel after auth must always exist: the server refuses
+  // to delete the last text channel, so don't offer it.
+  const isLastTextChannel =
+    !!channel && isText && (channelsByServer[activeServerId ?? ""] ?? []).filter((c) => c.type === "text").length <= 1;
+
+  const [mounted, setMounted] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [tab, setTab] = useState<Tab>("overview");
+  const [draft, setDraft] = useState<ChannelDraft | null>(null);
+  const perms = usePermissionDraft(activeServerId ?? "", channel);
+  const [nudge, setNudge] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [nameDraft, setNameDraft] = useState("");
-  const [topicDraft, setTopicDraft] = useState("");
-  const [bitrateDraft, setBitrateDraft] = useState(0);
-  const [slowmodeDraft, setSlowmodeDraft] = useState(0);
-  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
-  const [wipeConfirmText, setWipeConfirmText] = useState("");
-  const [wiping, setWiping] = useState(false);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteConfirmText, setDeleteConfirmText] = useState("");
-  const [deleting, setDeleting] = useState(false);
-  // Staged permission edits live in ChannelPermissionsSection (MANAGE_ROLES
-  // there, not MANAGE_CHANNELS); Save sends them through its handle.
-  const permsRef = useRef<ChannelPermissionsHandle>(null);
-  const [permsDirty, setPermsDirty] = useState(false);
+  const [confirm, setConfirm] = useState<"wipe" | "delete" | null>(null);
+  const [working, setWorking] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
       setMounted(true);
-      // Double rAF so the opacity-0/scale-95 first frame paints before we flip
-      // to visible — otherwise the open pops instead of transitioning.
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => setVisible(true)),
-      );
+      // Double rAF: the opacity-0/scale-95 frame must paint first, or the
+      // open pops instead of transitioning.
+      requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
     } else {
       setVisible(false);
     }
   }, [isOpen]);
 
-  const handleTransitionEnd = useCallback(() => {
-    if (!visible) setMounted(false);
-  }, [visible]);
-
-  // Reset draft whenever the modal opens or the underlying channel
-  // changes. This component stays mounted across open/close (it
-  // returns null when closed), so EVERY piece of transient state must
-  // be re-initialized here — the in-flight flags included: a
-  // successful delete closes the modal with `deleting` still true,
-  // which left the next channel's delete button stuck on "Deleting…"
-  // until an app restart.
+  // Fresh state whenever the window opens or points at another channel.
+  // It stays mounted across opens, so every transient flag resets here.
   useEffect(() => {
-    if (activeModal !== "channel-settings" || !channel) return;
-    setDraft({
-      retentionDaysText: presetValue(channel.retentionDaysText),
-      retentionDaysImage: presetValue(channel.retentionDaysImage),
-      retentionDaysVideo: presetValue(channel.retentionDaysVideo),
-      retentionDaysDocument: presetValue(channel.retentionDaysDocument),
-      retentionDaysAudio: presetValue(channel.retentionDaysAudio),
-    });
-    setNameDraft(channel.name);
-    setTopicDraft(channel.topic ?? "");
-    setBitrateDraft(channel.voiceBitrateKbps);
-    setSlowmodeDraft(channel.slowmodeSeconds ?? 0);
-    setError(null);
+    if (!isOpen || !channel) return;
+    setDraft(null);
+    perms.reset();
+    setTab(canManage || !canRoles ? "overview" : "permissions");
+    setNudge(0);
     setSaving(false);
-    setWipeConfirmOpen(false);
-    setWipeConfirmText("");
-    setWiping(false);
-    setDeleteConfirmOpen(false);
-    setDeleteConfirmText("");
-    setDeleting(false);
-    setPermsDirty(false);
-  }, [activeModal, channel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setError(null);
+    setConfirm(null);
+    setWorking(false);
+  }, [isOpen, channel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Surface the server's CHANNEL_WIPE_RES as a toast. The CHANNEL_WIPED
-  // broadcast that follows clears the local message store via
-  // useChatEvents, so we don't have to do anything else here.
+  // CHANNEL_WIPE_RES → toast. The CHANNEL_WIPED broadcast that follows
+  // clears the local message store via useChatEvents.
   useEffect(() => {
-    if (activeModal !== "channel-settings") return;
+    if (!isOpen) return;
     const unlisten = listen<{
       serverId: string;
       channelId: string;
@@ -216,16 +109,14 @@ export default function ChannelSettingsModal() {
       deletedMessageCount: number;
       deletedAttachmentCount: number;
     }>("channel_wipe_responded", (event) => {
-      if (event.payload.serverId !== activeServerId) return;
-      if (event.payload.channelId !== channel?.id) return;
-      setWiping(false);
+      if (event.payload.serverId !== activeServerId || event.payload.channelId !== channel?.id) return;
+      setWorking(false);
       if (event.payload.success) {
         toast.success(
           "Channel history wiped",
           `Removed ${event.payload.deletedMessageCount.toLocaleString()} message(s) and ${event.payload.deletedAttachmentCount.toLocaleString()} attachment(s).`,
         );
-        setWipeConfirmOpen(false);
-        setWipeConfirmText("");
+        setConfirm(null);
       } else {
         toast.error("Wipe failed", event.payload.message || "Unknown error.");
       }
@@ -233,541 +124,279 @@ export default function ChannelSettingsModal() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [activeModal, activeServerId, channel?.id]);
+  }, [isOpen, activeServerId, channel?.id]);
 
-  if (!mounted || !channel || !activeServerId) return null;
+  const fields = draft ?? (channel ? draftOf(channel) : null);
+  const changes = channel && fields ? changesOf(channel, fields) : null;
+  const settingsDirty = !!changes?.any && canManage;
+  const dirty = settingsDirty || perms.dirty;
 
-  const setField = (field: RetentionField, value: number) => {
-    setDraft((d) => ({ ...d, [field]: value }));
+  // After Save the drafts stay until the server's update matches them, so
+  // the fields never flick back to the old values in between. A refusal
+  // (toasted by channel_action_responded) or a value the server changed
+  // leaves them in place once the wait runs out.
+  const echoed = !changes?.any && !perms.dirty;
+  useEffect(() => {
+    if (!saving) return;
+    if (echoed) {
+      setDraft(null);
+      setSaving(false);
+      return;
+    }
+    const t = setTimeout(() => setSaving(false), 5000);
+    return () => clearTimeout(t);
+  }, [saving, echoed]);
+
+  /// Close, unless there are unsaved changes: then shake the save bar.
+  const requestClose = useCallback(() => {
+    if (dirty) setNudge((n) => n + 1);
+    else closeModal();
+  }, [dirty, closeModal]);
+
+  useEffect(() => {
+    if (!mounted || confirm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") requestClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mounted, confirm, requestClose]);
+
+  if (!mounted || !channel || !activeServerId || !fields) return null;
+
+  const tabs: Tab[] = [
+    "overview",
+    ...(isText ? (["retention"] as Tab[]) : []),
+    ...(canManage || canRoles ? (["permissions"] as Tab[]) : []),
+  ];
+  const active = tabs.includes(tab) ? tab : "overview";
+  const tabDirty: Record<Tab, boolean> = {
+    overview: canManage && !!changes && (changes.name || changes.topic || changes.slowmode || changes.bitrate),
+    retention: canManage && !!changes?.retention,
+    permissions: perms.dirty,
+  };
+  const change = (patch: Partial<ChannelDraft>) => setDraft({ ...fields, ...patch });
+
+  const reset = () => {
+    setDraft(null);
+    perms.reset();
+    setError(null);
   };
 
-  const retentionDirty =
-    !!channel &&
-    !isCategory &&
-    (draft.retentionDaysText !== channel.retentionDaysText ||
-      draft.retentionDaysImage !== channel.retentionDaysImage ||
-      draft.retentionDaysVideo !== channel.retentionDaysVideo ||
-      draft.retentionDaysDocument !== channel.retentionDaysDocument ||
-      draft.retentionDaysAudio !== channel.retentionDaysAudio);
-  const nameDirty =
-    !!channel && nameDraft.trim().length > 0 && nameDraft.trim() !== channel.name;
-  const isText = channel?.type === "text";
-  const topicDirty = !!channel && isText && topicDraft.trim() !== (channel.topic ?? "");
-  const bitrateDirty = !!channel && isVoice && bitrateDraft !== channel.voiceBitrateKbps;
-  const slowmodeDirty =
-    !!channel && !isVoice && !isCategory && slowmodeDraft !== (channel.slowmodeSeconds ?? 0);
-  const dirty =
-    retentionDirty || nameDirty || topicDirty || bitrateDirty || slowmodeDirty;
-  const settingsToSave = dirty && canManage;
-  const canSave = settingsToSave || permsDirty;
-
-  const handleSave = async () => {
-    if (!canSave) return;
+  const save = async () => {
+    if (!dirty || !changes || saving) return;
     setSaving(true);
     setError(null);
     try {
-      if (settingsToSave && nameDirty) {
-        await invoke("rename_channel", {
-          serverId: activeServerId,
-          channelId: channel.id,
-          name: nameDraft.trim(),
-        });
+      if (settingsDirty && changes.name) {
+        await invoke("rename_channel", { serverId: activeServerId, channelId: channel.id, name: fields.name.trim() });
       }
-      if (
-        settingsToSave &&
-        (retentionDirty || topicDirty || bitrateDirty || slowmodeDirty)
-      ) {
+      if (settingsDirty && (changes.retention || changes.topic || changes.bitrate || changes.slowmode)) {
         await invoke("update_channel_retention", {
           serverId: activeServerId,
           channelId: channel.id,
-          retentionDaysText: draft.retentionDaysText,
-          retentionDaysImage: draft.retentionDaysImage,
-          retentionDaysVideo: draft.retentionDaysVideo,
-          retentionDaysDocument: draft.retentionDaysDocument,
-          retentionDaysAudio: draft.retentionDaysAudio,
+          ...fields.retention,
           // Explicit presence on the wire: undefined = leave unchanged.
-          voiceBitrateKbps: isVoice ? bitrateDraft : undefined,
-          slowmodeSeconds: slowmodeDirty ? slowmodeDraft : undefined,
-          topic: topicDirty ? topicDraft.trim() : undefined,
+          voiceBitrateKbps: channel.type === "voice" ? fields.bitrate : undefined,
+          slowmodeSeconds: changes.slowmode ? fields.slowmode : undefined,
+          topic: changes.topic ? fields.topic.trim() : undefined,
         });
       }
-      if (permsDirty) await permsRef.current?.commit();
-      closeModal();
+      if (perms.dirty) await perms.commit();
     } catch (err) {
       setError(String(err));
-    } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!canManage || deleting) return;
-    if (deleteConfirmText !== channel.name) return;
-    setDeleting(true);
+  const runConfirm = async () => {
+    if (working || !confirm) return;
+    setWorking(true);
     try {
-      await invoke("delete_channel", {
-        serverId: activeServerId,
-        channelId: channel.id,
-      });
-      // Success confirmation is the CHANNEL_LIST_UPDATE broadcast (the
-      // sidebar re-renders and the active channel switches); denials
-      // surface via the global channel_action_responded toast. Reset
-      // the flag before closing — this component survives the close.
-      setDeleting(false);
-      closeModal();
+      if (confirm === "wipe") {
+        await invoke("wipe_channel_history", { serverId: activeServerId, channelId: channel.id });
+        // channel_wipe_responded resets `working` and closes the dialog.
+      } else {
+        await invoke("delete_channel", { serverId: activeServerId, channelId: channel.id });
+        // Success is the CHANNEL_LIST_UPDATE broadcast; denials come back
+        // as the global channel_action_responded toast.
+        setWorking(false);
+        setConfirm(null);
+        closeModal();
+      }
     } catch (err) {
-      setDeleting(false);
-      toast.error("Delete failed", String(err));
+      setWorking(false);
+      toast.error(confirm === "wipe" ? "Wipe failed" : "Delete failed", String(err));
     }
   };
 
-  const handleWipe = async () => {
-    if (!canManage || wiping) return;
-    if (wipeConfirmText !== channel.name) return;
-    setWiping(true);
-    try {
-      await invoke("wipe_channel_history", {
-        serverId: activeServerId,
-        channelId: channel.id,
-      });
-      // No-op until the channel_wipe_responded event lands — see the
-      // listener above, which handles success/error toasts and resets
-      // the wiping flag.
-    } catch (err) {
-      setWiping(false);
-      toast.error("Wipe failed", String(err));
-    }
-  };
+  const prefix = isText ? "#" : "";
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300"
+      className="fixed inset-0 z-50 flex items-center justify-center px-[max(calc(var(--spacing)*14),5vw)] py-[max(calc(var(--spacing)*12),6vh)] transition-colors duration-300"
       style={{ backgroundColor: visible ? "rgba(0,0,0,0.65)" : "rgba(0,0,0,0)" }}
-      onClick={closeModal}
-      onTransitionEnd={handleTransitionEnd}
+      onClick={(e) => {
+        // Only a real backdrop click, not one bubbling from a nested
+        // overlay (the confirm dialog, a popover).
+        if (e.target === e.currentTarget) requestClose();
+      }}
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && !visible) setMounted(false);
+      }}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
-        style={{
-          opacity: visible ? 1 : 0,
-          transform: visible ? "scale(1)" : "scale(0.95)",
-        }}
+        className="flex h-full max-h-280 w-full max-w-400 overflow-hidden rounded-xl border border-border bg-bg-dark shadow-modal transition-[opacity,transform] duration-300"
+        style={{ opacity: visible ? 1 : 0, transform: visible ? "scale(1)" : "scale(0.95)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex shrink-0 items-center justify-between border-b border-border-divider px-6 py-5">
-          <div className="min-w-0">
-            <h2 className="font-display text-[18px] font-semibold text-text-primary">
-              {isCategory ? "Category settings" : "Channel settings"}
-            </h2>
-            <p className="truncate text-[12px] text-text-muted">
-              {isCategory ? channel.name : `#${channel.name}`}
-            </p>
+        {/* Sidebar */}
+        <div className="flex w-60 shrink-0 flex-col gap-0.5 border-r border-border-divider bg-bg-darkest px-3 py-6">
+          <div className="mb-3 flex items-center gap-2.5 px-3" title={channel.name}>
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-light text-text-secondary shadow-raised">
+              <Icon name={channelIcon(channel.type)} size={15} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-[14px] font-semibold text-text-primary">{channel.name}</span>
+                {channel.encrypted && <Icon name="lock" size={12} className="text-success" />}
+              </div>
+              <div className="truncate text-[12px] text-text-muted">
+                {TYPE_LABEL[channel.type]}
+                {serverName ? ` · ${serverName}` : ""}
+              </div>
+            </div>
           </div>
-          <button
-            onClick={closeModal}
-            className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          {tabs.map((id) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={`flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] transition-colors ${
+                active === id
+                  ? "bg-accent-soft font-medium text-text-primary"
+                  : "font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              }`}
+            >
+              <span className={active === id ? "text-accent-bright" : "text-text-muted"}>
+                <Icon name={TABS[id].icon} size={16} />
+              </span>
+              {TABS[id].label}
+              {tabDirty[id] && (
+                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-accent" title="Unsaved changes" />
+              )}
+            </button>
+          ))}
+
+          {canManage && !isLastTextChannel && (
+            <>
+              <div className="flex-1" />
+              <div className="mx-1.5 mb-1 h-px bg-border-divider" />
+              <button
+                onClick={() => setConfirm("delete")}
+                className="flex items-center gap-2.5 rounded-md px-3 py-[9px] text-[14px] font-normal text-text-muted transition-colors hover:bg-error/10 hover:text-error"
+              >
+                <Icon name="trash" size={16} />
+                {channel.type === "category" ? "Delete Category" : "Delete Channel"}
+              </button>
+            </>
+          )}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5 scrollbar-thin">
-          {canManage && (
-            <div className="mb-5">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Channel name
+        {/* Content */}
+        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
+          <div className="flex items-center justify-between px-8 pt-7 pb-5">
+            <h2 className="font-display text-[18px] font-semibold text-text-primary">{TABS[active].label}</h2>
+            <button
+              onClick={requestClose}
+              aria-label="Close"
+              className="flex h-7 w-7 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+            >
+              <Icon name="x" size={14} strokeWidth={2.5} />
+            </button>
+          </div>
+          <div className="flex-1 px-8 pb-7">
+            {error && (
+              <div className="mb-6 flex max-w-2xl items-center gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2.5 text-[13px] text-error">
+                <Icon name="alert" size={15} />
+                {error}
               </div>
-              <input
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                maxLength={64}
-                className="w-full rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] text-text-primary outline-none transition-colors focus:border-accent"
+            )}
+            {active === "overview" && (
+              <OverviewTab channel={channel} draft={fields} change={change} editable={canManage} />
+            )}
+            {active === "retention" && (
+              <RetentionTab
+                channel={channel}
+                draft={fields}
+                change={change}
+                editable={canManage}
+                onWipe={() => setConfirm("wipe")}
               />
-            </div>
-          )}
+            )}
+            {active === "permissions" && (
+              <PermissionsTab serverId={activeServerId} channel={channel} draft={perms} />
+            )}
 
-          {canManage && isText && (
-            <div className="mb-5">
-              <div className="mb-2 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Channel topic
-                {TOPIC_MAX_BYTES - topicBytes(topicDraft) < 100 && (
-                  <span className="font-normal normal-case tracking-normal">
-                    {TOPIC_MAX_BYTES - topicBytes(topicDraft)}
+            {dirty && (
+              <div className="pointer-events-none sticky bottom-4 z-20 mt-8 flex justify-center">
+                <div
+                  key={nudge}
+                  className={`pointer-events-auto flex w-full items-center gap-2 rounded-lg border border-border bg-bg-darkest py-2.5 pl-4 pr-2.5 shadow-float ${
+                    nudge ? "animate-[barNudge_0.36s_ease]" : "animate-[fadeUp_0.2s_ease]"
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
+                    {nudge ? "Save or reset your changes before closing." : "You have unsaved changes."}
                   </span>
-                )}
-              </div>
-              <textarea
-                value={topicDraft}
-                onChange={(e) => setTopicDraft(normalizeTopicInput(e.target.value))}
-                onKeyDown={(e) => {
-                  // One line: Enter would only become a space.
-                  if (e.key === "Enter") e.preventDefault();
-                }}
-                rows={2}
-                placeholder="Let everyone know what this channel is for"
-                className="w-full resize-none rounded-md border border-border bg-bg-light px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
-              />
-              {/* Like the name, the topic stays in the clear (owner decision). */}
-              {channel.encrypted && (
-                <div className="mt-1.5 text-[11px] leading-4 text-text-muted">
-                  Topics aren't encrypted. The server host can read them.
-                </div>
-              )}
-            </div>
-          )}
-
-          {isVoice && (
-            <div className="mb-5">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-                Voice bitrate
-              </div>
-              <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3">
-                <div className="mb-2.5 flex items-center justify-between">
-                  <div>
-                    <div className="text-[13px] font-medium text-text-primary">
-                      Opus bitrate
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-text-muted">
-                      Higher sounds better, uses more bandwidth per speaker
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-sm bg-bg-lighter px-2 py-1 font-meta text-[12px] font-medium text-text-primary">
-                      {bitrateDraft === 0
-                        ? "Default (64 kbps)"
-                        : `${bitrateDraft} kbps`}
-                    </span>
-                    {bitrateDraft !== 0 && (
-                      <button
-                        onClick={() => setBitrateDraft(0)}
-                        className="text-[11px] font-medium text-text-muted transition-colors hover:text-accent-bright"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="relative">
-                  <input
-                    type="range"
-                    min={16}
-                    max={320}
-                    step={1}
-                    // 0 = "client default" — park the thumb at the default's
-                    // effective value (64); the first drag sets an explicit
-                    // bitrate, Reset returns to 0.
-                    value={bitrateDraft === 0 ? 64 : bitrateDraft}
-                    onChange={(e) => setBitrateDraft(Number(e.target.value))}
-                    className="h-[4px] w-full cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--color-accent-mid)]"
-                  />
-                  {/* Tick marks at the common rates, positioned on the
-                      track's linear scale (16..320). Same pattern as the
-                      volume slider's 0 dB tick. */}
-                  {BITRATE_MARKS.map((k) => (
-                    <div
-                      key={k}
-                      className="pointer-events-none absolute top-1/2 h-[8px] w-px -translate-x-1/2 -translate-y-1/2 bg-text-muted/40"
-                      // Thumb-center space: the 14px thumb's center only
-                      // travels [7px, 100% - 7px], so a tick placed on
-                      // the raw track scale sits ~5 kbps off near the
-                      // edges (the thumb read 27 at the "32" mark).
-                      style={{
-                        left: `calc(${(k - 16) / 304} * (100% - 14px) + 7px)`,
-                      }}
-                    />
-                  ))}
-                </div>
-                <div className="relative mt-1.5 h-[13px] text-[10px] leading-none text-text-muted">
-                  <span className="absolute left-0">16</span>
-                  {BITRATE_MARKS.map((k) => (
-                    <span
-                      key={k}
-                      className="absolute -translate-x-1/2"
-                      style={{
-                        left: `calc(${(k - 16) / 304} * (100% - 14px) + 7px)`,
-                      }}
-                    >
-                      {k}
-                    </span>
-                  ))}
-                  <span className="absolute right-0">320 kbps</span>
+                  <button
+                    type="button"
+                    onClick={reset}
+                    className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    onClick={save}
+                    disabled={saving}
+                    className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
+                  >
+                    {saving ? "Saving…" : "Save changes"}
+                  </button>
                 </div>
               </div>
-              <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
-                Applies immediately. Connected members' encoders retune in place.
-              </p>
-            </div>
-          )}
-
-          {!isCategory && !isVoice && (<>
-          <div className="mb-5">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-              End-to-end encryption
-            </div>
-            {/* Read-only: chosen when the channel is created and fixed for
-                its life, so its history is never half sealed. */}
-            <div className="rounded-md border border-border-divider bg-bg-light px-4 py-3">
-              <div className="text-[13px] font-medium text-text-primary">
-                {channel.encrypted ? "On" : "Off"}
-              </div>
-              <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
-                {channel.encrypted
-                  ? "Messages and attachments are sealed on members' devices with keys the server never holds."
-                  : "Messages here are stored on the server as plain text."}{" "}
-                Encryption is chosen when a channel is created and can't be changed.
-              </div>
-            </div>
+            )}
           </div>
-          <div className="mb-5">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-              Slowmode
-            </div>
-            <Select
-              aria-label="Slowmode"
-              value={slowmodeDraft}
-              disabled={!canManage}
-              onChange={setSlowmodeDraft}
-              searchable={false}
-              options={[
-                { value: 0, label: "Off" },
-                { value: 5, label: "5 seconds" },
-                { value: 10, label: "10 seconds" },
-                { value: 30, label: "30 seconds" },
-                { value: 60, label: "1 minute" },
-                { value: 300, label: "5 minutes" },
-                { value: 900, label: "15 minutes" },
-                { value: 3600, label: "1 hour" },
-                { value: 21600, label: "6 hours" },
-              ]}
-            />
-            <p className="mt-2 text-[12px] leading-[1.5] text-text-muted">
-              Members wait this long between messages. Members who can Manage
-              Messages here are exempt.
-            </p>
-          </div>
-          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-            Retention
-          </div>
-          <p className="mb-4 text-[12px] leading-[1.55] text-text-muted">
-            Text retention governs the message row itself. Attachment retention
-            removes the file but leaves a tombstone so readers can see what used
-            to be there. Forever keeps content indefinitely.
-          </p>
-
-          <div className="flex flex-col gap-2">
-            <RetentionRow
-              label="Text messages"
-              hint="Removes the message and any attachments still on it"
-              value={draft.retentionDaysText}
-              onChange={(v) => setField("retentionDaysText", v)}
-            />
-            <RetentionRow
-              label="Image attachments"
-              hint="Photos and other still images"
-              value={draft.retentionDaysImage}
-              onChange={(v) => setField("retentionDaysImage", v)}
-            />
-            <RetentionRow
-              label="Video attachments"
-              hint="Recorded clips and screen captures"
-              value={draft.retentionDaysVideo}
-              onChange={(v) => setField("retentionDaysVideo", v)}
-            />
-            <RetentionRow
-              label="Document attachments"
-              hint="PDFs, archives, and other files"
-              value={draft.retentionDaysDocument}
-              onChange={(v) => setField("retentionDaysDocument", v)}
-            />
-            <RetentionRow
-              label="Audio attachments"
-              hint="Voice notes and other audio files"
-              value={draft.retentionDaysAudio}
-              onChange={(v) => setField("retentionDaysAudio", v)}
-            />
-          </div>
-          </>)}
-
-          {error && (
-            <p className="mt-3 text-[12px] text-error">{error}</p>
-          )}
-          {!canManage && (
-            <p className="mt-3 text-[12px] text-text-muted">
-              You need the Manage Channels permission to edit these.
-            </p>
-          )}
-
-          {activeServerId && (
-            <ChannelPermissionsSection
-              key={channel.id}
-              ref={permsRef}
-              serverId={activeServerId}
-              channel={channel}
-              onDirtyChange={setPermsDirty}
-            />
-          )}
-
-          {canManage && (
-            <div className="mt-6">
-              <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-error">
-                Danger zone
-              </div>
-              {!isCategory && !isVoice && (
-              <div className="rounded-md border border-error/25 bg-error/5 p-3">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-text-primary">
-                      Wipe channel history
-                    </div>
-                    <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
-                      Permanently deletes every message and attachment in
-                      #{channel.name}. The channel itself, members, and
-                      retention settings stay. Cannot be undone.
-                    </p>
-                  </div>
-                  {!wipeConfirmOpen && (
-                    <button
-                      onClick={() => setWipeConfirmOpen(true)}
-                      className="shrink-0 rounded-sm border border-error/40 bg-error/10 px-3 py-1.5 text-[12px] font-semibold text-error transition-colors hover:border-error/70 hover:bg-error/20"
-                    >
-                      Wipe…
-                    </button>
-                  )}
-                </div>
-
-                {wipeConfirmOpen && (
-                  <div className="mt-3 border-t border-error/20 pt-3">
-                    <label className="mb-1.5 block text-[11px] text-text-muted">
-                      Type <span className="font-mono text-text-primary">{channel.name}</span> to confirm:
-                    </label>
-                    <input
-                      autoFocus
-                      type="text"
-                      value={wipeConfirmText}
-                      onChange={(e) => setWipeConfirmText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && wipeConfirmText === channel.name && !wiping) {
-                          handleWipe();
-                        }
-                      }}
-                      placeholder={channel.name}
-                      className="w-full rounded-sm border border-border bg-bg-lighter px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-error"
-                    />
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        onClick={() => {
-                          setWipeConfirmOpen(false);
-                          setWipeConfirmText("");
-                        }}
-                        disabled={wiping}
-                        className="flex-1 rounded-sm bg-bg-light py-1.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:opacity-50"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleWipe}
-                        disabled={wiping || wipeConfirmText !== channel.name}
-                        className="flex-1 rounded-sm bg-error py-1.5 text-[12px] font-semibold text-white transition-all hover:bg-error/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {wiping ? "Wiping…" : "Wipe history"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-              )}
-
-              {!isLastTextChannel && (
-                <div className="mt-3 rounded-md border border-error/25 bg-error/5 p-3">
-                  <div className="flex items-start gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-text-primary">
-                        {isCategory ? "Delete category" : "Delete channel"}
-                      </div>
-                      <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
-                        {isCategory
-                          ? `Removes the ${channel.name} category. Its channels stay and move up to the group above${
-                              channel.categorySync ? ", keeping the permissions they follow" : ""
-                            }.`
-                          : `Removes #${channel.name} along with every message and attachment in it. Cannot be undone.`}
-                        {channel.type === "voice" &&
-                          " The channel must be empty first."}
-                      </p>
-                    </div>
-                    {!deleteConfirmOpen && (
-                      <button
-                        onClick={() => setDeleteConfirmOpen(true)}
-                        className="shrink-0 rounded-sm border border-error/40 bg-error/10 px-3 py-1.5 text-[12px] font-semibold text-error transition-colors hover:border-error/70 hover:bg-error/20"
-                      >
-                        Delete…
-                      </button>
-                    )}
-                  </div>
-
-                  {deleteConfirmOpen && (
-                    <div className="mt-3 border-t border-error/20 pt-3">
-                      <label className="mb-1.5 block text-[11px] text-text-muted">
-                        Type <span className="font-mono text-text-primary">{channel.name}</span> to confirm:
-                      </label>
-                      <input
-                        autoFocus
-                        type="text"
-                        value={deleteConfirmText}
-                        onChange={(e) => setDeleteConfirmText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && deleteConfirmText === channel.name && !deleting) {
-                            handleDelete();
-                          }
-                        }}
-                        placeholder={channel.name}
-                        className="w-full rounded-sm border border-border bg-bg-lighter px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors focus:border-error"
-                      />
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          onClick={() => {
-                            setDeleteConfirmOpen(false);
-                            setDeleteConfirmText("");
-                          }}
-                          disabled={deleting}
-                          className="flex-1 rounded-sm bg-bg-light py-1.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-lighter disabled:opacity-50"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={handleDelete}
-                          disabled={deleting || deleteConfirmText !== channel.name}
-                          className="flex-1 rounded-sm bg-error py-1.5 text-[12px] font-semibold text-white transition-all hover:bg-error/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {deleting ? "Deleting…" : "Delete channel"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="flex shrink-0 gap-2 border-t border-border-divider px-6 py-4">
-          <button
-            onClick={closeModal}
-            className="flex-1 rounded-md bg-bg-light py-2.5 text-[13px] font-medium text-text-primary transition-colors hover:bg-bg-lighter"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || !canSave}
-            className="flex-1 rounded-md bg-accent py-2.5 text-[13px] font-semibold text-on-accent transition-all hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50"
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
         </div>
       </div>
-    </div>
+
+      <ConfirmModal
+        open={!!confirm}
+        title={
+          confirm === "wipe"
+            ? `Wipe #${channel.name}?`
+            : `Delete ${prefix}${channel.name}?`
+        }
+        confirmLabel={
+          working
+            ? confirm === "wipe" ? "Wiping…" : "Deleting…"
+            : confirm === "wipe" ? "Wipe history" : channel.type === "category" ? "Delete category" : "Delete channel"
+        }
+        confirmDisabled={working}
+        onConfirm={runConfirm}
+        onCancel={() => !working && setConfirm(null)}
+      >
+        <p className="mt-2 text-[13px] leading-[1.55] text-text-secondary">
+          {confirm === "wipe"
+            ? "Every message and attachment in this channel is deleted for everyone. The channel, its settings and permissions stay. This can't be undone."
+            : channel.type === "category"
+              ? `Its channels stay and move up to the group above${channel.categorySync ? ", keeping the permissions they follow" : ""}.`
+              : channel.type === "voice"
+                ? "The channel must be empty first. This can't be undone."
+                : "Every message and attachment in it goes too. This can't be undone."}
+        </p>
+      </ConfirmModal>
+    </div>,
+    document.body,
   );
 }

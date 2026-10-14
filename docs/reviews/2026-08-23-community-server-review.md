@@ -2174,3 +2174,30 @@ Edit topic button and keep the topic in channel settings. The banner now offers 
 Manage channel. Manage channel opens settings, which has had the Channel topic field (with the
 encrypted-channel warning) since topics shipped. `EditTopicModal` and `uiStore.openEditTopic` are
 gone. Verified: tsc web 0.
+
+**Client: channel settings redesign (2026-10-14) ✅** — Owner asked for text and voice channel settings
+that look polished and match the other menus. They approved the proposal page
+(https://claude.ai/artifact/DvAitWEoGZRXH5h4Tq2kXT) and answered its three questions.
+- **Window:** `ChannelSettingsModal` now uses the Server Settings chrome: a sidebar with the channel's
+  identity, tabs Overview / Retention (text only) / Permissions, and Delete at the foot like Leave
+  Server. It's one 2,259px scroll no longer. The tabs live in `features/servers/channelSettings/`.
+- **One draft, one save bar:** rename, topic, slowmode, retention, bitrate and permission edits are
+  held together and saved by the RolesTab bar, with a dot on each tab that has changes. After Save
+  the drafts stay until the server's update matches them (5 s fallback), so fields don't flick back,
+  and a refused edit stays visible. **Owner: Esc, ✕ or a click outside with unsaved changes shakes
+  the bar** instead of dropping them.
+- **Permissions** take the Roles layout: every role / member with overrides listed with allow / deny
+  counts (@everyone apart, roles at or above yours locked), a deny / inherit / allow segmented
+  control per bit, and a + picker that searches members on the server (`useMemberSearch`) instead of
+  the loaded roster. **Owner: bits that don't apply are hidden** — text channels no longer list
+  Connect / Speak / Stream / Mute / Deafen / Move, voice channels no longer list the text bits;
+  categories keep all 14 and stored values are untouched. The category switch is `Switch.tsx`.
+- **Wipe** moved to the end of Retention. **Owner: delete and wipe confirm in `ConfirmModal`, with no
+  typed name** for any channel type.
+- Fixes on the way: retention menus were live for Manage-Roles-only users and never saved; the
+  confirm buttons hard-coded `text-white` on the error fill.
+
+`ChannelPermissionsSection.tsx` is replaced by `channelSettings/PermissionsTab.tsx`. Same IPC calls as
+before; no proto or server change. Verified: tsc web 0 / node 0; offscreen harness captures in all
+seven themes; save → echo and save → timeout driven through the real components with the outgoing
+calls checked. Pending: a live run against a community.

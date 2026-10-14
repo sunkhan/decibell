@@ -179,6 +179,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   audit log, `RoleInfo.member_count` for role counts. Never filter only the loaded pages, and keep
   search results out of the roster store (`tabs/useMemberSearch.ts` owns them, patched by roster
   deltas). Unsaved role edits shake the save bar on a role switch; they're never silently dropped.
+- **Channel settings** (`ChannelSettingsModal` + `features/servers/channelSettings/`) is the settings
+  window with tabs, one draft and the RolesTab save bar. Owner decisions (2026-10-14): leaving with
+  unsaved changes shakes the bar, never drops them; a channel's Permissions list only the overwrite
+  bits for its type (categories keep all); delete and wipe use a plain `ConfirmModal`, no typed name.
 - **Attachments in encrypted channels are sealed client-side** (random key per file, 64 KiB
   AES-256-GCM chunks, sealed thumbnails; `features/chat/attachmentCrypto.ts` encrypts,
   `electron/main/attachmentCrypto.ts` + `attachmentFetch.ts` decrypt in the protocol / media
