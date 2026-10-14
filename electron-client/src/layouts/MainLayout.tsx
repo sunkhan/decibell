@@ -1,4 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { useChatStore } from "../stores/chatStore";
+import SearchResultsPanel from "../features/search/SearchResultsPanel";
+import { useSearchStore } from "../features/search/searchStore";
 import { invoke } from "../lib/ipc";
 import ServerBar from "../features/servers/ServerBar";
 import ServerBrowseView from "../features/servers/ServerBrowseView";
@@ -66,6 +69,10 @@ export default function MainLayout() {
   const connectionStatus = useUiStore((s) => s.connectionStatus);
   const activeView = useUiStore((s) => s.activeView);
   const membersPanelVisible = useUiStore((s) => s.membersPanelVisible);
+  // Search results take the member list's place on the server they're for.
+  const activeServerId = useChatStore((s) => s.activeServerId);
+  const searchServerId = useSearchStore((s) => (s.open ? s.serverId : null));
+  const searchOpen = searchServerId !== null && searchServerId === activeServerId;
   const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
 
   // Window-level drag/drop + paste-to-attach hooks. They listen on
@@ -148,8 +155,16 @@ export default function MainLayout() {
                 <FriendsPage />
               ) : (
                 <>
-                  <ChatPanel />
-                  {membersPanelVisible && <MembersList />}
+                  {/* relative: below 1024 px the search panel floats over
+                      the chat from this box. */}
+                  <div className="relative flex min-w-0 flex-1">
+                    <ChatPanel />
+                    {searchOpen ? (
+                      <SearchResultsPanel />
+                    ) : (
+                      membersPanelVisible && <MembersList />
+                    )}
+                  </div>
                 </>
               )}
             </>

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useSearchEvents } from "./features/search/useSearchEvents";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./layouts/AppLayout";
 import LoginPage from "./features/auth/LoginPage";
@@ -38,6 +39,7 @@ function AppRoutes() {
   useAuthEvents();
   useServerEvents();
   useChatEvents();
+  useSearchEvents();
   useFriendsEvents();
   usePresenceEvents();
   useVoiceEvents();

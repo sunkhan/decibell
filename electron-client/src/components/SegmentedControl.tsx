@@ -5,7 +5,7 @@ export default function SegmentedControl<T extends string | number>({
   onChange,
   disabled,
 }: {
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; disabled?: boolean; title?: string }[];
   value: T;
   onChange: (v: T) => void;
   disabled?: boolean;
@@ -16,12 +16,13 @@ export default function SegmentedControl<T extends string | number>({
         <button
           key={String(opt.value)}
           type="button"
-          disabled={disabled}
+          disabled={disabled || opt.disabled}
+          title={opt.title}
           onClick={() => onChange(opt.value)}
           className={`flex-1 rounded-sm px-3 py-[7px] text-[11px] font-semibold transition-all ${
             value === opt.value
               ? "bg-accent-mid text-accent-bright shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_10%,transparent)]"
-              : "text-text-muted hover:text-text-secondary"
+              : "text-text-muted enabled:hover:text-text-secondary disabled:opacity-40"
           }`}
         >
           {opt.label}

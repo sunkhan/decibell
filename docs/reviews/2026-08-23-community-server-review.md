@@ -2379,3 +2379,28 @@ build, cargo test --lib 223 passed, tsc web 0.
 
 Pending: the renderer UI (the proposal goes first), a community rebuild, and a live test. The encrypted
 attachment fix needs a live check in an encrypted channel.
+
+**Message search UI (2026-10-14) ✅** — The renderer side of message search, ported from the
+approved proposal (https://claude.ai/artifact/UZfpnk8sLX8eXfWodykBej, "design looks great"). Owner
+answers: float the panel over the chat below 1024 px; search every readable channel by default; keep
+no recent searches.
+- **Search box** in the text channel header (`features/search/SearchBox.tsx`, Ctrl+F): typed filters
+  become chips (`from:` with server-side member lookup, `in:`, `has:`, `before:` / `during:` /
+  `after:` with a calendar). The menu keeps focus in the input; Enter searches, Tab completes,
+  Backspace removes a chip.
+- **Results panel** in the member list's place (`SearchResultsPanel.tsx`): count, sort, notices for
+  skipped encrypted channels and partial results, grouped results with the matched words marked
+  (`MessageText` gained a `highlight` option), compact attachments, infinite scroll, Jump
+  (`features/chat/goToMessage.ts`, moved from the Transfers code). Below 1024 px it floats over the
+  chat and Jump closes it; closing keeps the results, so the same search reopens without a request.
+- **State** (`searchStore.ts`): seq-matched answers, an 8 s no-answer message for older servers,
+  automatic retries on `retry_after_ms`. Nothing is stored on the device.
+- History and search share `mapStoredMessage`; `SegmentedControl` options can be disabled with a
+  tooltip; three icons were added to the settings set.
+
+Verified: tsc web 0. The harness ran the real tree: chips by keyboard, Backspace, Enter, paging to
+the end, Esc closing, reopening without a request, and an empty `localStorage` after searches. The
+proposal captured every state in all 7 themes.
+
+Pending: a community rebuild, then a live test, including results from an encrypted channel.
+

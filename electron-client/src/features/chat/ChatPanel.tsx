@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import SearchBox from "../search/SearchBox";
 import RealMessageList, {
   type JumpTarget,
   type RealMessageListHandle,
@@ -1053,6 +1054,7 @@ export default function ChatPanel() {
             </span>
           </>
         ) : null}
+        {activeServerId ? <SearchBox serverId={activeServerId} channelId={activeChannelId} /> : null}
         <MembersPanelToggle />
       </div>
 
@@ -1335,7 +1337,7 @@ function MembersPanelToggle() {
   return (
     <button
       onClick={toggle}
-      className={`ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
+      className={`ml-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors ${
         visible
           ? "text-text-secondary bg-surface-hover"
           : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"

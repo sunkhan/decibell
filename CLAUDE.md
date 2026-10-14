@@ -186,8 +186,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   thread with its own read-only connection, never on the io thread. Every query walks an index in id
   order under a 3 s budget; counts stop at 10,000 or 250 ms ("N+"); one search per session, a new
   one supersedes. Owner decisions: encrypted channels get filters only (text never searched, skipped
-  channels reported); senders match by uid; Discord-style UI (header box + chips + results panel),
-  proposal page before it is ported.
+  channels reported); senders match by uid; Discord-style UI (`features/search/`: header box + chips
+  + results panel in the member list's place); a search covers every readable channel by default;
+  below 1024 px the panel floats over the chat and Jump closes it; **no recent searches** — nothing
+  about a search is stored on the device.
 - **Server-settings search runs on the community server** (owner decision): `MEMBER_SEARCH_REQ` for
   the Members tab / a role's holders / the add-members picker, `AuditLogRequest.query/actions` for the
   audit log, `RoleInfo.member_count` for role counts. Never filter only the loaded pages, and keep

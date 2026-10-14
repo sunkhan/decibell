@@ -11,8 +11,11 @@ Owner decisions (2026-10-14):
   default so server-side search works for everyone who never opens settings.
 - **Discord-style flow.** A search box in the channel header (Ctrl+F) with filter suggestions that
   become chips, results in a right-hand panel with sorting, infinite scroll and Jump.
-- **Proposal page before the UI is ported.** Server and native ship first; the renderer is designed in
-  a scratch copy and captured in every theme for approval.
+- **Proposal page before the UI is ported.** Server and native shipped first; the renderer was
+  designed in a scratch copy and captured in every theme
+  (https://claude.ai/artifact/UZfpnk8sLX8eXfWodykBej). The owner approved it the same day ("design
+  looks great") and answered its three questions: the panel **floats over the chat below 1024 px**;
+  a search covers **every channel the user can read** by default; **no recent searches** are kept.
 - **Backend identity is the uid** (owner rule, restated while this was designed): the server keys
   senders by account id, so a rename never drops someone's older messages from a sender filter.
 
@@ -144,6 +147,31 @@ as history messages.
 Found while surveying: `AttachmentPayload` never carried `encrypted`, so the renderer never merged the
 real metadata of encrypted-channel attachments or registered their keys. Fixed alongside, since
 search results take the same path.
+
+## Client UI
+
+- **Search box** (`features/search/SearchBox.tsx`) in every text channel's header, before the
+  members button: 220 px idle (160 below 1024 px), 340 px (260) while focused. Ctrl+F / ⌘F
+  focuses it from the server view. Filters are chips before the text. Typing `from:`, `in:`, `has:`,
+  `before:`, `during:` or `after:` opens a picker: members (loaded roster plus `MEMBER_SEARCH_REQ`
+  for offline ones), readable text channels (current first, lock for encrypted), the six kinds, or
+  a calendar (`DatePicker.tsx`, locale week start, no future days). A finished filter followed by a
+  space becomes a chip; Backspace at the start removes the last one. The menu never takes focus
+  from the input. With words typed, "Search for …" is preselected; in an empty box nothing is,
+  so Enter can't insert a filter by accident. The box's contents are kept per server for the
+  session, never stored.
+- **Results panel** (`SearchResultsPanel.tsx`) in the member list's place on the server it belongs
+  to: count ("N+" when capped), Newest / Oldest / Relevant (off without words), notices for
+  skipped encrypted channels and partial results, results grouped by consecutive channel, matched
+  words marked as the index matched them (`highlight.tsx` → `MessageText`'s `highlight` option;
+  file names too), compact attachments, reply context, infinite scroll. A click or Enter on a
+  result jumps (`features/chat/goToMessage.ts`) and rings it. Esc outside an input closes the panel;
+  closing keeps the results, and running the same search again just reopens them.
+- **Below 1024 px** the panel floats over the chat under its header (owner decision) and Jump closes
+  it so the message is in view.
+- **State** (`searchStore.ts`): one search at a time, answers matched by `seq`, an 8 s no-answer
+  timer (the server predates search), automatic retries on `retry_after_ms` (up to 3), "load more"
+  reusing the seq. Nothing persists: no recent searches (owner decision).
 
 ## Not in this version
 

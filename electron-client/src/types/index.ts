@@ -707,6 +707,32 @@ export interface E2eePeerInfo {
   pinned: boolean;
 }
 
+/// A stored message on the wire (history pages, search results).
+export type StoredMessagePayload = ChannelHistoryReceivedPayload["messages"][number];
+
+/// One page of message-search results (MESSAGE_SEARCH_RES, spec
+/// 2026-10-14). Sealed rows arrive decrypted, as in history.
+export interface MessageSearchReceivedPayload {
+  serverId: string;
+  seq: number;
+  success: boolean;
+  message: string;
+  /// In sort order; each carries its own channelId.
+  messages: StoredMessagePayload[];
+  hasMore: boolean;
+  nextCursor: number;
+  nextOffset: number;
+  /// First page only; -1 = not counted.
+  total: number;
+  totalCapped: boolean;
+  /// Encrypted channels whose text wasn't searched.
+  textSkippedChannelIds: string[];
+  partial: boolean;
+  /// Rate limited / busy: retry after this long.
+  retryAfterMs: number;
+  firstPage: boolean;
+}
+
 export interface ChannelHistoryReceivedPayload {
   serverId: string;
   channelId: string;

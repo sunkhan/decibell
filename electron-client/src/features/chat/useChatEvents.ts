@@ -15,7 +15,9 @@ import type {
   ChannelPrunedPayload,
   ChannelWipedPayload,
   EncryptedAttachmentMetaPayload,
+  Message,
   MessageReceivedPayload,
+  StoredMessagePayload,
 } from "../../types";
 
 function normalizeKind(kind: string): AttachmentKind {
@@ -106,6 +108,27 @@ function mapAttachments(
   return mapped;
 }
 
+/// A stored message (history page, search result) as the renderer keeps it.
+export function mapStoredMessage(serverId: string, m: StoredMessagePayload): Message {
+  return {
+    id: Number(m.id),
+    sender: m.sender,
+    content: m.content,
+    timestamp: String(m.timestamp),
+    channelId: m.channelId,
+    attachments: mapAttachments(serverId, m.attachments, m.encryptedAttachments),
+    nonce: m.nonce || undefined,
+    editedAt: m.editedAt || undefined,
+    replyTo: m.replyTo || undefined,
+    replyToSender: m.replyToSender || undefined,
+    replyToContent: m.replyToContent || undefined,
+    replyToAttachmentKinds: mapReplyKinds(m.replyToAttachmentKinds),
+    encrypted: m.encrypted || undefined,
+    decryptError: m.decryptError || undefined,
+    suppressEmbeds: m.suppressEmbeds || undefined,
+  };
+}
+
 // Wires up channel-message and channel-lifecycle events. DM messages
 // (context === 'dm') are ignored — DM rendering is a later PR's concern.
 export function useChatEvents() {
@@ -144,23 +167,7 @@ export function useChatEvents() {
       (event) => {
         const { serverId, channelId, messages, hasMore, hasMoreAfter, aroundId, afterId } =
           event.payload;
-        const mapped = messages.map((m) => ({
-          id: m.id,
-          sender: m.sender,
-          content: m.content,
-          timestamp: String(m.timestamp),
-          channelId: m.channelId,
-          attachments: mapAttachments(serverId, m.attachments, m.encryptedAttachments),
-          nonce: m.nonce || undefined,
-          editedAt: m.editedAt || undefined,
-          replyTo: m.replyTo || undefined,
-          replyToSender: m.replyToSender || undefined,
-          replyToContent: m.replyToContent || undefined,
-          replyToAttachmentKinds: mapReplyKinds(m.replyToAttachmentKinds),
-          encrypted: m.encrypted || undefined,
-          decryptError: m.decryptError || undefined,
-          suppressEmbeds: m.suppressEmbeds || undefined,
-        }));
+        const mapped = messages.map((m) => mapStoredMessage(serverId, m));
         const store = useChatStore.getState();
         // Route by the request mode the server echoed back:
         //  aroundId>0 → a jump context window → replace the loaded slice.

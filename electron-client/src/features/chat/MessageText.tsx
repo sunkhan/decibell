@@ -15,6 +15,7 @@ import CodeBlock from "./CodeBlock";
 import MathTex from "./MathTex";
 import { onLinkClick, onLinkAuxClick } from "../../lib/openExternal";
 import { isInviteLink, openInviteLink } from "../servers/inviteLink";
+import type { Highlighter } from "../search/highlight";
 
 // Lazily build a shortcode → native-unicode map from the emoji-mart dataset.
 // Same dataset the Picker uses, so `:smile:` here always resolves to the
@@ -70,6 +71,9 @@ interface MessageTextProps {
   /// Used by the DM sidebar's last-message preview rows where the
   /// outer button owns the click semantics.
   preview?: boolean;
+  /// Message search: wraps the matched words of every plain-text run (link
+  /// and inline-code text too, never code blocks or math) in <mark>s.
+  highlight?: Highlighter;
 }
 
 const INLINE_EMOJI_SIZE = 24;
@@ -81,7 +85,7 @@ function jumboSizeFor(count: number): number {
   return 32;
 }
 
-export default function MessageText({ content, emojiSize, preview }: MessageTextProps) {
+export default function MessageText({ content, emojiSize, preview, highlight }: MessageTextProps) {
   const [popover, setPopover] = useState<{
     emoji: string;
     anchor: HTMLElement;
@@ -119,9 +123,13 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
           remainder.slice(0, m.index) + remainder.slice(m.index + m.text.length);
       }
       const out: (string | JSX.Element)[] = [];
+      const pushText = (s: string, at: number) => {
+        if (highlight) out.push(...highlight(s, `${keyBase}-${at}`));
+        else out.push(s);
+      };
       let last = 0;
       for (const m of matches) {
-        if (m.index > last) out.push(expanded.slice(last, m.index));
+        if (m.index > last) pushText(expanded.slice(last, m.index), last);
         out.push(
           <Twemoji
             key={`${keyBase}-${m.index}-${m.text}`}
@@ -132,10 +140,10 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
         );
         last = m.index + m.text.length;
       }
-      if (last < expanded.length) out.push(expanded.slice(last));
+      if (last < expanded.length) pushText(expanded.slice(last), last);
       return { tokens: out, matchCount: matches.length, remainder };
     },
-    [handleEmojiClick, preview],
+    [handleEmojiClick, preview, highlight],
   );
 
   const tokens = useMemo<(string | JSX.Element)[]>(() => {
@@ -212,7 +220,7 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
                 }
                 onAuxClick={invite ? (e) => e.preventDefault() : onLinkAuxClick}
               >
-                {node.text}
+                {highlight ? highlight(node.text, key) : node.text}
               </a>,
             );
             break;
@@ -235,7 +243,7 @@ export default function MessageText({ content, emojiSize, preview }: MessageText
                 key={key}
                 className="box-decoration-clone rounded-sm bg-bg-darkest px-1.5 py-0.5 font-mono text-[0.85em]"
               >
-                {node.text}
+                {highlight ? highlight(node.text, key) : node.text}
               </code>,
             );
             break;
