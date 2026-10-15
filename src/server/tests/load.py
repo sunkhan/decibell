@@ -678,6 +678,8 @@ def main():
             pool.stop()
         e2e.stop_server(proc)
 
+    with open(os.path.join(run, "central-load.log"), errors="replace") as f:
+        report["threads"] = next((l.split("] ", 1)[1].strip() for l in f if "database threads" in l), "")
     write_report(report, run)
 
 
@@ -686,9 +688,8 @@ def write_report(r, run):
         json.dump(r, f, indent=1)
     cfg = r["config"]
     lines = [f"# Central load test", "",
-             f"Central + PostgreSQL on CPUs {cfg['server_cpus']} ({len(cpu_list(cfg['server_cpus']))} threads: "
-             f"{len(cpu_list(cfg['server_cpus']))} io, {max(1, len(cpu_list(cfg['server_cpus'])) // 2)} CPU); "
-             f"{cfg['workers']} client workers on CPUs {cfg['worker_cpus']}.", ""]
+             f"Central + PostgreSQL on CPUs {cfg['server_cpus']} (central: {r.get('threads', '?')}; PostgreSQL "
+             f"data on {r.get('pg_fs', '?')}); {cfg['workers']} client workers on CPUs {cfg['worker_cpus']}.", ""]
     p = r.get("password")
     if p:
         lines += [f"**Password sign-ins:** {p['ok']}/{p['n']} in {p['secs']:.1f} s = {p['per_sec']:.1f}/s.", ""]

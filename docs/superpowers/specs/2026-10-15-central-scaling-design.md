@@ -25,7 +25,15 @@ heavy traffic. This change does the parts that are cheap today and would be expe
 - `io_context` runs on `DECIBELL_IO_THREADS` threads (default: hardware concurrency, at least 2).
 - Each session lives on its own strand: the acceptor hands every socket a fresh strand, so its reads,
   writes and packet handling are serialized without locks, and different sessions run in parallel.
-- A handler may still block on Postgres; it holds one of N threads, not all of them.
+- **Handlers that query Postgres run on a database pool** (`DECIBELL_DB_THREADS`, default 64), added after
+  the load test measured the real limit: every DM commits and waits for the disk to flush, and Postgres lets
+  concurrent commits share one flush. Run on the six io threads, at most six DMs shared a flush (about
+  1,500 DMs/s on an NVMe that flushes 620 times a second); on the pool, 32 threads kept up with ~4,000 and
+  64 with ~7,600. The session pauses reading while its handler runs there, so its packets stay in order
+  and its handlers never overlap; a handler touches only the session's handler state (deliver() posts to
+  the strand). Handlers that hand work to the CPU pool (sign-up, password sign-in, rename) stay on the
+  strand. Every thread may hold a Postgres connection: at startup central reads `max_connections` and uses
+  fewer database threads if io + CPU + database threads (+ room for psql and backups) wouldn't fit.
 - **Password hashing runs on a separate pool** (`DECIBELL_CPU_THREADS`, default half the cores, at
   least 1): login, registration and rename. The session stops reading while one runs and resumes from
   the continuation, so packets stay in order, a login storm queues there, and the io threads keep

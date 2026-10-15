@@ -132,17 +132,19 @@ static std::chrono::steady_clock::duration seconds_to_duration(double seconds) {
 class Session : public std::enable_shared_from_this<Session> {
 public:
     /// `socket` comes from the acceptor on a fresh strand (docs/superpowers/
-    /// specs/2026-10-15-central-scaling-design.md): every read, write and
-    /// handler of this session runs there, one at a time, while other
-    /// sessions run on the other io threads. Password hashing goes to
-    /// `cpu_pool` (run_blocking).
+    /// specs/2026-10-15-central-scaling-design.md): every read and write
+    /// of this session runs there, while other sessions run on the other io
+    /// threads. Packet handlers run one at a time: database work on
+    /// `db_pool` (on_packet), password hashing on `cpu_pool` (run_blocking).
     ///
     /// The acceptor admitted the connection against `limits` (one slot for
     /// `ip`); the session gives the slot back when it is destroyed.
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager,
-            boost::asio::thread_pool& cpu_pool, AbuseLimits& limits, std::string ip)
+            boost::asio::thread_pool& cpu_pool, boost::asio::thread_pool& db_pool, AbuseLimits& limits,
+            std::string ip)
         : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager),
-          cpu_pool_(cpu_pool), limits_(limits), ip_(std::move(ip)), pace_timer_(socket_.get_executor()) {
+          cpu_pool_(cpu_pool), db_pool_(db_pool), limits_(limits), ip_(std::move(ip)),
+          pace_timer_(socket_.get_executor()) {
         touch();
         // Tighten TCP keepalive: 15s idle, 5s interval, 3 retries (~30s detection)
         boost::system::error_code ec;
@@ -322,10 +324,34 @@ private:
         }
     }
 
-    /// Handle `packet` now, or once its rate bucket has a token. Reading
-    /// stays paused while it waits, so this connection's packets keep their
-    /// order; a handler that went to the CPU pool resumes reading from its
-    /// continuation.
+    /// Handlers that stay on the strand: the ones that hand work to the CPU
+    /// pool (run_blocking, which resumes reading from its continuation) and
+    /// the keepalive. Every other handler does database work and runs on the
+    /// database pool. A handler added here must not be slow; one that calls
+    /// run_blocking must be added here.
+    static bool runs_on_strand(const chatproj::Packet& packet) {
+        using P = chatproj::Packet;
+        switch (packet.type()) {
+            case P::CLIENT_PING:
+            case P::REGISTER_REQ:
+            case P::RENAME_REQ:
+                return true;
+            case P::LOGIN_REQ:
+                return packet.login_req().resume_token().empty();  // a password sign-in
+            default:
+                return false;
+        }
+    }
+
+    /// Handle `packet` once its rate bucket has a token (reading stays
+    /// paused while it waits). Database work runs on the database pool
+    /// (docs/superpowers/specs/2026-10-15-central-scaling-design.md): up to
+    /// DECIBELL_DB_THREADS requests, from all sessions, wait on Postgres at
+    /// once, so their commits share disk flushes, while the io threads keep
+    /// serving sockets. Reading stays paused until the handler is done, so
+    /// this connection's packets keep their order and its handlers never
+    /// overlap; a handler only touches the session's handler state (never
+    /// its socket or write queue: deliver() posts back to the strand).
     void on_packet(chatproj::Packet&& packet) {
         if (RateBucket* bucket = pace_bucket(packet.type()); bucket && !bucket->take()) {
             read_paused_ = true;
@@ -339,8 +365,25 @@ private:
             });
             return;
         }
-        process_packet(packet);
-        if (!read_paused_) do_read_header();
+        if (runs_on_strand(packet)) {
+            process_packet(packet);
+            if (!read_paused_) do_read_header();
+            return;
+        }
+        read_paused_ = true;
+        auto held = std::make_shared<chatproj::Packet>(std::move(packet));
+        auto self = shared_from_this();
+        boost::asio::post(db_pool_, [this, self, held]() {
+            try {
+                process_packet(*held);
+            } catch (const std::exception& e) {
+                std::cerr << "[Session] Handler threw: " << e.what() << "\n";
+            }
+            boost::asio::post(socket_.get_executor(), [this, self]() {
+                read_paused_ = false;
+                do_read_header();
+            });
+        });
     }
 
     /// Run `work` on the CPU pool (password hashing), then `then(result)`
@@ -1738,6 +1781,7 @@ private:
     SessionManager& manager_;
     AuthManager& auth_manager_;
     boost::asio::thread_pool& cpu_pool_;
+    boost::asio::thread_pool& db_pool_;
     AbuseLimits& limits_;
     const std::string ip_;
     /// Holds a request over its rate until the bucket refills (on_packet).
@@ -1751,7 +1795,8 @@ private:
     int64_t uid_ = 0;
     /// The name as stored, for labels and the names messages are sent under.
     std::string username_;
-    /// A handler is waiting on the CPU pool; its continuation resumes reading.
+    /// A handler is running on the database pool, waiting on the CPU pool or
+    /// waiting for its rate bucket; whatever finishes it resumes reading.
     bool read_paused_ = false;
     /// close() ran: no more writes or reads.
     bool closed_ = false;
@@ -2238,13 +2283,14 @@ bool SessionManager::check_dm_allowed(int64_t sender, int64_t recipient, AuthMan
 class Server {
 public:
     Server(boost::asio::io_context& io_context, short port, SessionManager& manager, AuthManager& auth_manager,
-           boost::asio::thread_pool& cpu_pool, AbuseLimits& limits)
+           boost::asio::thread_pool& cpu_pool, boost::asio::thread_pool& db_pool, AbuseLimits& limits)
         : io_context_(io_context),
           acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
           ssl_context_(ssl::context::tlsv12),
           manager_(manager),
           auth_manager_(auth_manager),
           cpu_pool_(cpu_pool),
+          db_pool_(db_pool),
           limits_(limits),
           retry_timer_(io_context) {
 
@@ -2328,7 +2374,7 @@ private:
                 std::shared_ptr<Session> session;
                 try {
                     session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_,
-                                                        auth_manager_, cpu_pool_, limits_, ip);
+                                                        auth_manager_, cpu_pool_, db_pool_, limits_, ip);
                 } catch (const std::exception& e) {
                     // Never constructed, so its destructor won't return the slot.
                     limits_.release_connection(ip);
@@ -2347,6 +2393,7 @@ private:
     SessionManager& manager_;
     AuthManager& auth_manager_;
     boost::asio::thread_pool& cpu_pool_;
+    boost::asio::thread_pool& db_pool_;
     AbuseLimits& limits_;
     boost::asio::steady_timer retry_timer_;
     std::chrono::steady_clock::time_point last_resource_log_{};
@@ -2452,20 +2499,38 @@ int main() {
         AuthManager auth_manager(community_secret, db_conn, jwt_private_pem, jwt_public_pem);
 
         // Threads (central-scaling-design.md): io threads serve the
-        // connections (each on its own strand); the CPU pool hashes
-        // passwords, so a login burst queues there instead of stalling
-        // everyone. Each thread may hold a Postgres connection.
+        // connections (each on its own strand); the database pool runs the
+        // handlers that query Postgres, many at once, so commits share disk
+        // flushes (the DM rate is bound by flushes, not CPU); the CPU pool
+        // hashes passwords, so a login burst queues there instead of stalling
+        // everyone. Each thread may hold a Postgres connection: max_connections
+        // must exceed their sum.
         const unsigned cores = std::max(2u, std::thread::hardware_concurrency());
         const unsigned io_threads = env_threads("DECIBELL_IO_THREADS", cores);
         const unsigned cpu_threads = env_threads("DECIBELL_CPU_THREADS", std::max(1u, cores / 2));
-        auth_manager.set_pool_idle(io_threads + cpu_threads + 2);
-        std::cout << "[Server] " << io_threads << " io threads, " << cpu_threads << " CPU threads\n";
+        // 64 by measurement (load.py, NVMe): 32 kept up with ~4,000 DMs/s,
+        // 64 with ~7,600.
+        unsigned db_threads = env_threads("DECIBELL_DB_THREADS", 64);
+        // Every thread may hold a connection at once (plus the sweep's): fit
+        // under PostgreSQL's limit, leaving room for psql and backups, rather
+        // than failing queries at peak.
+        if (const int available = auth_manager.availableConnections(); available > 0) {
+            const long room = static_cast<long>(available) - 8 - io_threads - cpu_threads - 2;
+            if (room < static_cast<long>(db_threads)) {
+                db_threads = static_cast<unsigned>(std::max(4L, room));
+                std::cerr << "[Server] PostgreSQL allows " << available << " connections: using " << db_threads
+                          << " database threads (raise max_connections for more)\n";
+            }
+        }
+        auth_manager.set_pool_idle(io_threads + cpu_threads + db_threads + 2);
+        std::cout << "[Server] " << io_threads << " io threads, " << db_threads << " database threads, "
+                  << cpu_threads << " CPU threads\n";
 
         // Connections stop short of the open-file limit, leaving room for
         // the database pool (a connection per thread), the log and the
         // listener: a server out of descriptors fails its queries too.
         const std::size_t fd_limit = raise_open_file_limit();
-        const std::size_t reserve = io_threads + cpu_threads + 2 + 64;
+        const std::size_t reserve = io_threads + cpu_threads + db_threads + 2 + 64;
         std::size_t max_connections = fd_limit > reserve + 16 ? fd_limit - reserve : 16;
         if (const char* v = std::getenv("DECIBELL_MAX_CONNECTIONS")) {
             try {
@@ -2486,9 +2551,10 @@ int main() {
 
         boost::asio::io_context io_context(static_cast<int>(io_threads));
         boost::asio::thread_pool cpu_pool(cpu_threads);
+        boost::asio::thread_pool db_pool(db_threads);
 
         SessionManager manager;
-        Server s(io_context, 8080, manager, auth_manager, cpu_pool, limits);
+        Server s(io_context, 8080, manager, auth_manager, cpu_pool, db_pool, limits);
 
         // Periodic sweep of stale sessions (no activity for 60s).
         // Catches dead connections where TCP FIN was never sent (e.g. client crash).
@@ -2539,8 +2605,10 @@ int main() {
         for (unsigned i = 1; i < io_threads; ++i) threads.emplace_back(run_io);
         run_io();
         for (auto& t : threads) t.join();
-        // Password checks still running finish (their continuations land in
-        // the stopped io_context and are dropped with it).
+        // Handlers and password checks still running finish (their
+        // continuations land in the stopped io_context and are dropped
+        // with it).
+        db_pool.join();
         cpu_pool.join();
         std::cout << "[Server] Stopped.\n";
     } catch (std::exception& e) {

@@ -183,6 +183,10 @@ public:
     // privacy model as letter avatars).
     std::pair<std::string, std::string> getAvatar(int64_t uid);
 
+    /// PostgreSQL's max_connections minus its superuser reserve; 0 if it
+    /// can't be read. Central's threads each may hold a connection.
+    int availableConnections();
+
     /// The avatar versions of those of `uids` that have a picture, in one
     /// read (no bytes): what a subscription answer tells about accounts
     /// that aren't signed in. Empty on a database error.

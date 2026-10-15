@@ -129,9 +129,12 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   keys on that string. A connection's UDP key stays the tail of the token it authenticated with
   (`CommunityClient::auth_jwt`).
 - **Central is multi-threaded** (`docs/superpowers/specs/2026-10-15-central-scaling-design.md`):
-  `DECIBELL_IO_THREADS` io threads with a strand per connection, bcrypt on a CPU pool
-  (`DECIBELL_CPU_THREADS`; the session stops reading meanwhile so packets stay in order), Postgres
-  through `PgPool` (a lease per operation, never a connection per query). A session touches only its
+  `DECIBELL_IO_THREADS` io threads with a strand per connection, handlers that query Postgres on a
+  database pool (`DECIBELL_DB_THREADS`, default 64, capped to fit Postgres's `max_connections`: commits
+  share disk flushes, which is what bounds the DM rate), bcrypt on a CPU pool (`DECIBELL_CPU_THREADS`);
+  the session stops reading while a handler is away, so its packets stay in order. Postgres through
+  `PgPool` (a lease per operation, never a connection per query). A handler that calls `run_blocking`
+  must be listed in `Session::runs_on_strand`. A session touches only its
   own fields, on its strand; everything shared (connections, signed-in accounts with their presence,
   the watch index) lives in `SessionManager` behind its mutex, and `deliver_to_user` is the one way to
   reach an account — the seam a message bus replaces when central splits across machines. Deliveries

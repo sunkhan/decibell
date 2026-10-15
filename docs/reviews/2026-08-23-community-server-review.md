@@ -3023,3 +3023,30 @@ presence and restart figures are unaffected (they don't commit per packet). What
 disk's flush latency (datacenter SSDs with power-loss protection flush in tens of microseconds, a 7,200 rpm
 HDD in ~8 ms) and how many commits can share one flush (Postgres groups concurrent commits; six io threads
 allow at most six). `load.py` now refuses a tmpfs database (`--pg-dir`).
+
+### Central: database work on its own pool (2026-10-15)
+
+Follows the correction above: the DM rate was bound by disk flushes, and with handlers on the six io threads
+at most six commits could share one. Handlers that query Postgres now run on a database pool
+(`DECIBELL_DB_THREADS`, default 64); the session pauses reading while its handler is there, so its packets
+keep their order and its handlers never overlap. Sign-up, password sign-in and rename stay on the strand
+(they hand bcrypt to the CPU pool). At startup central reads PostgreSQL's `max_connections` and uses fewer
+database threads if they wouldn't fit next to the io and CPU threads and some room for psql and backups.
+
+Load test, PostgreSQL on the NVMe (≈ 620 flushes/s), 10,000 clients, 6 pinned cores:
+
+| DMs/s | handlers on 6 io threads | 32 database threads | 64 database threads |
+|---:|---|---|---|
+| 1,000 | p50 23 ms, p99 46 ms | p50 6 ms, p99 57 ms | |
+| 2,000 | falls behind (1,543/s, p99 4.1 s) | p50 16 ms, p99 94 ms | |
+| 4,000 | | p50 16 ms, p99 37 ms | p50 10 ms, p99 39 ms |
+| 6,000 | | | p50 8 ms, p99 46 ms |
+| 8,000 | | falls behind (6,126/s) | p50 12 ms, p99 84 ms (central 1.1 + PostgreSQL 2.9 cores) |
+
+With the defaults at 40,000 connected (same disk): 7,478 DMs/s delivered at p50 12 ms / p99 70 ms; an
+idle DM 4.7 ms (a real flush; tmpfs had shown 0.7 ms); 3.0 GB; a restart brings all 40,000 back in 24.8 s.
+Ceiling on a disk like this: about 7,500 DMs/s, up from ~1,500. A datacenter SSD with power-loss
+protection flushes far faster; run `pg_test_fsync` on the production box to know.
+
+Verified: central e2e 221 (with the migration check), the same under ThreadSanitizer and ASan + UBSan +
+LeakSanitizer.

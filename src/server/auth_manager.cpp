@@ -1219,6 +1219,20 @@ std::pair<std::string, std::string> AuthManager::getAvatar(int64_t uid) {
     }
 }
 
+int AuthManager::availableConnections() {
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::nontransaction txn(conn);
+        const pqxx::result rs = txn.exec(
+            "SELECT current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int");
+        return rs[0][0].as<int>(0);
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] availableConnections: " << e.what() << "\n";
+        return 0;
+    }
+}
+
 std::unordered_map<int64_t, std::string> AuthManager::getAvatarVersions(const std::vector<int64_t>& uids) {
     std::unordered_map<int64_t, std::string> versions;
     if (uids.empty()) return versions;
