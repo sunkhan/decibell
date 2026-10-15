@@ -1033,23 +1033,50 @@ def test_dm_pacing():
 
 def test_abuse_limits():
     print("abuse limits")
-    import threading
-    # Failed sign-ins per account (from many addresses): 10, then held even
-    # with the right password; its resume token still signs in.
+    # Failed sign-ins per account and address: 10 from one address hold
+    # that address only (owner decision: a griefer locks out only
+    # themselves), even with the right password.
     register("lockme")
     ok = User("lockme")
     rt = ok.login.resume_token
     ok.close()
+    griefer = "127.0.250.4"
     for _ in range(10):
-        User("lockme", password="wrong-password").close()
+        User("lockme", password="wrong-password", src=griefer).close()
     t0 = time.time()
-    blocked = User("lockme")
+    blocked = User("lockme", src=griefer)
     took = time.time() - t0
-    check("an account with 10 failed sign-ins is held", not blocked.ok and blocked.login
+    check("10 failed sign-ins hold that address for the account", not blocked.ok and blocked.login
           and "failed sign-ins" in blocked.login.message, blocked.login and blocked.login.message)
     check("... without a password check", took < 0.2, f"{took:.2f}s")
     blocked.close()
-    r = User("", resume=rt)
+    owner = User("lockme")
+    check("... while the owner signs in from elsewhere", owner.ok)
+    owner.close()
+    again = User("lockme", src=griefer)
+    check("... which doesn't release the griefer's address", not again.ok)
+    again.close()
+    # The account-wide cap: 100 failed sign-ins from many addresses hold
+    # the account everywhere; its resume token still signs in.
+    import threading
+    register("capme")
+    ok = User("capme")
+    cap_rt = ok.login.resume_token
+    ok.close()
+
+    def guess(i):
+        User("capme", password=f"guess{i}").close()
+
+    threads = [threading.Thread(target=guess, args=(i,)) for i in range(110)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    held = User("capme")
+    check("100 failed sign-ins from many addresses hold the account", not held.ok and held.login
+          and "failed sign-ins" in held.login.message, held.login and held.login.message)
+    held.close()
+    r = User("", resume=cap_rt)
     check("... but its resume token still signs in", r.ok)
     r.close()
     # Password sign-ins per address: 30, then refused without hashing. All

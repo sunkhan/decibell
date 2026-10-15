@@ -55,8 +55,15 @@ entries):
 | New connections per address | 60 at once, then 10 a second |
 | Password sign-ins per address | 30 at once, then one every 2 s (resumes don't count) |
 | Sign-ups per address | 10 at once, then one every 2 minutes |
-| Failed sign-ins per account | 10, then one a minute; refused before any hashing, a success forgets them; a resume still works |
+| Failed sign-ins per account **and address** | 10, then one a minute; refused before any hashing; a success from that address forgets them; a resume still works |
+| Failed sign-ins per account, from all addresses | 100, then one a minute (a success doesn't reset it) |
 | Connections in total | open-file limit minus a reserve (threads' DB connections + 64), or `DECIBELL_MAX_CONNECTIONS` |
+
+Wrong passwords count per account and address (owner decision 2026-10-15), so someone typing wrong
+passwords for another person's name holds only their own address; counting per account alone let one
+machine keep about 30 chosen people out of password sign-in indefinitely. The account-wide cap, ten times
+higher, stops guessing spread over many addresses; reaching it takes dozens of addresses, and even then
+the account's signed-in apps keep working (they resume).
 
 Per connection, **paced** (an over-rate request waits and reading pauses until the bucket refills: a
 burst is delayed, never dropped, and the connection's packets keep their order):

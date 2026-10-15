@@ -466,7 +466,7 @@ private:
                               "Too many sign-in attempts from your network. Try again in a minute.");
                 return;
             }
-            if (limits_.account_blocked(account)) {
+            if (limits_.account_blocked(account, ip_)) {
                 send_response(chatproj::Packet::LOGIN_RES, false,
                               "Too many failed sign-ins for this account. Try again in a few minutes.");
                 return;
@@ -484,9 +484,9 @@ private:
                 },
                 [this, account](std::optional<LoginOutcome> outcome) {
                     if (outcome) {
-                        limits_.record_login(account);
+                        limits_.record_login(account, ip_);
                     } else {
-                        limits_.record_failed_login(account);
+                        limits_.record_failed_login(account, ip_);
                     }
                     finish_login(std::move(outcome), "Invalid username or password.");
                 });

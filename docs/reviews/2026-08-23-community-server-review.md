@@ -2990,3 +2990,16 @@ close the account's live connections.
 
 Verified: central e2e with the migration check (schema 4, no account starts with a cutoff; a token from
 before the cutoff is refused, one from a later password sign-in works) and under ThreadSanitizer.
+
+### Failed sign-ins per account and address (2026-10-15)
+
+A review note: counting wrong passwords per account across all addresses let anyone who knows a username
+keep that person out of password sign-in (one machine could hold about 30 accounts indefinitely: its 30
+attempts a minute are enough to keep 30 accounts at one failure a minute). Owner decision: count them per
+account and address (10, then one a minute), so a griefer holds only their own address, plus an
+account-wide cap of 100 (then one a minute) against guessing spread over many addresses. A success forgets
+its address's failures, not the account-wide count. Signed-in apps were never affected (they resume).
+
+Verified: central e2e 221 with the migration check (10 failures hold the griefer's address, the owner signs
+in from another, which doesn't release the griefer; 100 failures from many addresses hold the account,
+whose resume token still works) and under ThreadSanitizer.

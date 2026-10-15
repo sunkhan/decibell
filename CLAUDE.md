@@ -146,7 +146,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   with an audience per packet, and communities refuse any token with an audience. They last 30 days from
   the password sign-in and a resume never extends them; `users.sessions_valid_after` cancels an account's
   older ones (the hook for "log out other devices" / password changes). Limits live in `abuse_limits.hpp`: per address
-  (connections, new connections, password sign-ins, sign-ups), per account (failed sign-ins), the
+  (connections, new connections, password sign-ins, sign-ups), failed sign-ins per account **and address**
+  (owner decision: a griefer typing wrong passwords for someone's name holds only their own address) with
+  an account-wide cap of 100, the
   server-wide connection cap from the open-file limit; per connection, DMs / reads / writes / sign-in
   attempts are **paced** (an over-rate request waits, never dropped). Tests bind a fresh loopback source
   address per connection. `src/server/tests/load.py` is the load test (results in the review log).

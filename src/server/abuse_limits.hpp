@@ -44,8 +44,9 @@ private:
 
 /// Limits that hold across connections (docs/superpowers/specs/
 /// 2026-10-15-central-hardening-design.md): per IP address (open
-/// connections, new connections, password sign-ins, sign-ups) and per
-/// account (failed sign-ins), plus the server-wide connection cap. Each
+/// connections, new connections, password sign-ins, sign-ups), failed
+/// sign-ins per account and address with an account-wide cap, and the
+/// server-wide connection cap. Each
 /// password check costs ~0.25 s of CPU and a connection per attempt gets
 /// round any per-connection limit, so these are what keep one machine from
 /// tying up central. Thread-safe. Entries back at full that hold no
@@ -106,28 +107,33 @@ public:
         return it != ips_.end() && it->second.signups.take();
     }
 
-    /// Too many recent failed sign-ins for `account` (a lowercased name):
-    /// refuse before checking the password.
-    bool account_blocked(const std::string& account) {
+    /// Too many recent failed sign-ins for `account` (a lowercased name)
+    /// from `ip`, or from everywhere: refuse before checking the password.
+    /// Counted per account and address (owner decision 2026-10-15), so
+    /// someone typing wrong passwords for another person's name holds only
+    /// their own address; the account-wide cap, far above it, stops guessing
+    /// spread over many addresses (and only an attacker with dozens of them
+    /// can reach it).
+    bool account_blocked(const std::string& account, const std::string& ip) {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = accounts_.find(account);
-        return it != accounts_.end() && it->second.wait() > 0.0;
+        auto pair = failures_.find(pair_key(account, ip));
+        if (pair != failures_.end() && pair->second.wait() > 0.0) return true;
+        auto all = account_failures_.find(account);
+        return all != account_failures_.end() && all->second.wait() > 0.0;
     }
 
-    void record_failed_login(const std::string& account) {
+    void record_failed_login(const std::string& account, const std::string& ip) {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = accounts_.find(account);
-        if (it == accounts_.end()) {
-            if (accounts_.size() >= MAX_TRACKED) return;
-            it = accounts_.emplace(account, RateBucket(FAILED_LOGIN_BURST, FAILED_LOGIN_PER_SECOND)).first;
-        }
-        it->second.take();
+        take_from(failures_, pair_key(account, ip), FAILED_LOGIN_BURST);
+        take_from(account_failures_, account, ACCOUNT_FAILED_LOGIN_BURST);
     }
 
-    /// A successful sign-in forgets the account's failures.
-    void record_login(const std::string& account) {
+    /// A successful sign-in forgets that address's failures for the
+    /// account. Not the account-wide count: it measures guessing from
+    /// everywhere, and the owner signing in shouldn't hand out a fresh one.
+    void record_login(const std::string& account, const std::string& ip) {
         std::lock_guard<std::mutex> lock(mutex_);
-        accounts_.erase(account);
+        failures_.erase(pair_key(account, ip));
     }
 
     /// Drop entries with nothing left to remember (the sweep timer).
@@ -141,15 +147,35 @@ public:
                 ++it;
             }
         }
-        for (auto it = accounts_.begin(); it != accounts_.end();) {
-            it = it->second.full() ? accounts_.erase(it) : std::next(it);
+        for (auto* table : {&failures_, &account_failures_}) {
+            for (auto it = table->begin(); it != table->end();) {
+                it = it->second.full() ? table->erase(it) : std::next(it);
+            }
         }
     }
 
 private:
-    /// 10 failed sign-ins in a row, then one more a minute.
+    /// Failed sign-ins for one account from one address: 10 in a row, then
+    /// one more a minute.
     static constexpr double FAILED_LOGIN_BURST = 10.0;
+    /// For one account from everywhere: 100, then one more a minute.
+    static constexpr double ACCOUNT_FAILED_LOGIN_BURST = 100.0;
     static constexpr double FAILED_LOGIN_PER_SECOND = 1.0 / 60.0;
+
+    static std::string pair_key(const std::string& account, const std::string& ip) {
+        return account + '\n' + ip;  // names hold no newline
+    }
+
+    /// Take one from `key`'s bucket, creating it (full) if new; past
+    /// MAX_TRACKED new keys go untracked.
+    void take_from(std::unordered_map<std::string, RateBucket>& table, const std::string& key, double burst) {
+        auto it = table.find(key);
+        if (it == table.end()) {
+            if (table.size() >= MAX_TRACKED) return;
+            it = table.emplace(key, RateBucket(burst, FAILED_LOGIN_PER_SECOND)).first;
+        }
+        it->second.take();
+    }
 
     struct Address {
         std::size_t open = 0;
@@ -166,6 +192,8 @@ private:
     std::size_t max_connections_;
     std::size_t open_ = 0;
     std::unordered_map<std::string, Address> ips_;
-    std::unordered_map<std::string, RateBucket> accounts_;
+    /// account + address → failed sign-ins; account → from everywhere.
+    std::unordered_map<std::string, RateBucket> failures_;
+    std::unordered_map<std::string, RateBucket> account_failures_;
     std::mutex mutex_;
 };
