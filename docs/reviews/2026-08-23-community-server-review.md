@@ -2740,3 +2740,24 @@ Verified:
   to the console.
 
 Central is unchanged. This ships with the community rebuild and the client release, all at once.
+
+**Renames stop announcing and keeping old names (2026-10-15) ✅** — A side review found that renames gave old
+names away. Checking it showed the leak reached further than reported.
+- **Old name in the notice.** `USER_RENAMED` told everyone "old name → new name". Clients hold people by
+  uid now, so the old name served nobody. It's gone (`reserved 2` in the proto, dropped from the native
+  event too).
+- **Audience.** `SessionManager::broadcast()` delivered to every connected socket, including connections
+  that never signed in. Anyone could watch renames, avatar changes and E2EE key changes without an
+  account. It now delivers to signed-in sessions only. Pre-login and community-sync connections never
+  needed these.
+- **Retention.** `name_changes` kept every rename forever, although nothing reads past the 14-day
+  reservation (the daily limit looks back one day). Rows past the reservation are now deleted hourly
+  (from the first sweep after start) and with every rename.
+
+Not changed: signed-in users who aren't friends, DM partners or co-members still get the notice. Presence
+(uid + current name) already reaches every signed-in user by owner decision, so narrowing only the
+rename notice would hide nothing. That's an owner question, raised separately.
+
+Verified: central e2e 166 passed (no old name on the wire, a connection that never signed in hears
+nothing, expired renames forgotten); community e2e 588; `cargo test --lib` 233; `napi build`; `tsc` 0
+(web + node). Ships with the Hetzner central rebuild.

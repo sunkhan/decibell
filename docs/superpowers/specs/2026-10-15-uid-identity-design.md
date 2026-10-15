@@ -274,9 +274,16 @@ community e2e check for the token guard, and a scratch test of the client's re-k
     other accounts' renames. The account that left it may rename back.
   - **Sign-in with the old name** still works during the reservation (a device that saved it). The
     response and token carry the current name, and the client updates its saved credentials.
-  - Rows are kept as an audit trail; the last day's rows rate-limit renames.
-- **`USER_RENAMED {uid, old_username, username}`** goes to every session, but only when the renamer is
+  - The last day's rows rate-limit renames.
+  - Rows older than the reservation are deleted (hourly, and with every rename). Nothing reads them,
+    and a lasting record of past names would follow someone who renamed to leave one behind. (Until
+    2026-10-15 they were kept forever as an audit trail.)
+- **`USER_RENAMED {uid, username}`** goes to every signed-in session, but only when the renamer is
   visible. An invisible user's rename would reveal activity, so others see it at their next fetch.
+  Until 2026-10-15 it also carried `old_username` (now `reserved 2`), and it went to every socket,
+  including connections that never signed in. Clients hold people by uid, so the old name was only a
+  free "old → new" link for everyone. Avatar and E2EE key-change pushes had the same any-socket reach
+  and are now signed-in only too.
 - **`LoginResponse.renames`** advertises the feature.
 
 ### Community

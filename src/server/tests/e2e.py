@@ -693,14 +693,20 @@ def test_rename():
     r = rename(g, "gina")
     check("the same name refused", r and not r.success)
     h.clear()
+    lurker = Conn()   # connected, never signed in
     r = rename(g, "gina2")
     check("renamed", r and r.success and r.username == "gina2" and r.jwt_token, r)
     g.token = r.jwt_token if r else g.token
     claims = g.claims()
     check("fresh token names the new username, same uid", claims.get("sub") == "gina2" and claims.get("uid") == ug)
     rn = h.wait(pb.Packet.USER_RENAMED)
-    check("others are told", rn and rn.user_renamed.uid == ug and rn.user_renamed.old_username == "gina"
+    check("others are told the new name by uid", rn and rn.user_renamed.uid == ug
           and rn.user_renamed.username == "gina2")
+    # Unknown fields survive a parse, so an old name on the wire would show up here.
+    check("... and nothing else (no old name)", rn and rn.user_renamed.SerializeToString()
+          == pb.UserRenamed(uid=ug, username="gina2").SerializeToString())
+    check("a connection that never signed in hears nothing", lurker.wait(pb.Packet.USER_RENAMED, timeout=0.5) is None)
+    lurker.close()
     check("audit row", sql("SELECT old_username, new_username FROM name_changes WHERE uid = %s", ug) == [("gina", "gina2")])
     m = g.dm("hank", "under my new name", nonce="rn1")
     check("the session acts under the new name", m and m.sender == "gina2" and m.sender_uid == ug)
@@ -732,6 +738,14 @@ def test_rename():
         15 * 24 * 3600, ug, uid_of("ivan2"))
     check("old name no longer signs in", not User("ivan").ok)
     check("old name free to register after 14 days", register("gina2", email="new-gina2@example.com").success)
+    # Renames past the reservation are forgotten (hourly, and with every rename).
+    register("jill")
+    j = User("jill")
+    r = rename(j, "jill2")
+    check("expired renames forgotten",
+          r and r.success and sql("SELECT count(*) FROM name_changes WHERE uid IN (%s, %s)", ug, uid_of("ivan2")) == [(0,)]
+          and sql("SELECT old_username FROM name_changes WHERE uid = %s", j.login.uid) == [("jill",)])
+    j.close()
     g.close(); h.close()
 
 

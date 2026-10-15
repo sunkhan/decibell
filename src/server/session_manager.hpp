@@ -36,6 +36,8 @@ public:
         broadcast(packet);
     }
 
+    /// To every signed-in session; pre-login and community-sync
+    /// connections get nothing.
     void broadcast(const chatproj::Packet& packet);
 
     // Sessions are matched on the account uid (users by uid,
@@ -96,13 +98,14 @@ public:
         broadcast(packet);
     }
 
-    /// Push USER_RENAMED to every session (uid design, stage 5).
-    void broadcast_user_renamed(int64_t uid, const std::string& old_username, const std::string& username) {
+    /// Push USER_RENAMED {uid, new name} to every signed-in session (uid
+    /// design, stage 5). Clients hold people by uid, so the old name isn't
+    /// sent: it would hand every signed-in user the link from it.
+    void broadcast_user_renamed(int64_t uid, const std::string& username) {
         chatproj::Packet packet;
         packet.set_type(chatproj::Packet::USER_RENAMED);
         auto* payload = packet.mutable_user_renamed();
         payload->set_uid(uid);
-        payload->set_old_username(old_username);
         payload->set_username(username);
         broadcast(packet);
     }

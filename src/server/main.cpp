@@ -933,7 +933,7 @@ private:
             reply(true, r.token.empty() ? "Renamed; sign in again." : "", r.token);
             // An invisible user's rename would give them away: others see
             // the new name on their next fetch instead.
-            if (presence_visible()) manager_.broadcast_user_renamed(uid_, r.old_username, username_);
+            if (presence_visible()) manager_.broadcast_user_renamed(uid_, username_);
         }
 
         // --- TOKEN REFRESH ---
@@ -1643,7 +1643,7 @@ void SessionManager::broadcast(const chatproj::Packet& packet) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& session : sessions_) {
-        session->deliver(framed);
+        if (session->authenticated()) session->deliver(framed);
     }
 }
 
@@ -1996,12 +1996,18 @@ int main() {
 
         // Periodic sweep of stale sessions (no activity for 60s).
         // Catches dead connections where TCP FIN was never sent (e.g. client crash).
+        // Hourly (from the first tick): forget renames past the reservation.
         boost::asio::steady_timer sweep_timer(io_context);
         std::function<void(const boost::system::error_code&)> sweep_fn;
+        int sweeps_until_prune = 0;
         sweep_fn = [&](const boost::system::error_code& ec) {
             if (ec) return;
             manager.sweep_stale(std::chrono::seconds(60));
             manager.expire_status_messages();
+            if (sweeps_until_prune-- == 0) {
+                auth_manager.pruneNameChanges();
+                sweeps_until_prune = 120;
+            }
             sweep_timer.expires_after(std::chrono::seconds(30));
             sweep_timer.async_wait(sweep_fn);
         };

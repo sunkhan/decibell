@@ -38,6 +38,11 @@ public:
     RenameResult renameUser(int64_t uid, const std::string& new_username, const std::string& password);
     static constexpr int64_t NAME_RESERVATION_SECONDS = 14 * 24 * 3600;
     static constexpr int RENAMES_PER_DAY = 2;
+    /// Forget renames past the reservation: nothing reads them (the
+    /// reservation looks back 14 days, the daily limit one), and a
+    /// lasting record of past names would follow people who renamed to
+    /// leave one behind. Runs hourly and with every rename.
+    void pruneNameChanges();
 
     /// A signed 24 h token naming the account (login, renames, renewal).
     std::optional<std::string> mintToken(int64_t uid, const std::string& username);

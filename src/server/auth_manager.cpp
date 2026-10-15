@@ -562,6 +562,22 @@ bool AuthManager::nameReservedForOther(pqxx::work& txn, const std::string& usern
     return !rs.empty();
 }
 
+static void prune_name_changes(pqxx::work& txn) {
+    const int64_t cutoff = static_cast<int64_t>(std::time(nullptr)) - AuthManager::NAME_RESERVATION_SECONDS;
+    txn.exec_params("DELETE FROM name_changes WHERE changed_at <= $1", cutoff);
+}
+
+void AuthManager::pruneNameChanges() {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        prune_name_changes(txn);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] pruneNameChanges: " << e.what() << "\n";
+    }
+}
+
 std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReservedName(const std::string& username) {
     try {
         pqxx::connection conn(db_conn_str_);
@@ -631,6 +647,7 @@ AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string
         txn.exec_params(
             "INSERT INTO name_changes (uid, old_username, new_username, changed_at) VALUES ($1, $2, $3, $4)",
             uid, out.old_username, new_username, now);
+        prune_name_changes(txn);
         txn.commit();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] renameUser: " << e.what() << "\n";

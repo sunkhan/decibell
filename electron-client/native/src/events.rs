@@ -497,7 +497,6 @@ pub struct LoginSucceededPayload {
 #[serde(rename_all = "camelCase")]
 pub struct UserRenamedPayload {
     pub uid: i64,
-    pub old_username: String,
     pub username: String,
     #[serde(rename = "self")]
     pub is_self: bool,

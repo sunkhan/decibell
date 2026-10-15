@@ -618,7 +618,6 @@ impl CentralClient {
                     if b.uid > 0 && b.uid != me {
                         events::emit_user_renamed(events::UserRenamedPayload {
                             uid: b.uid,
-                            old_username: b.old_username,
                             username: b.username,
                             is_self: false,
                         });

@@ -126,13 +126,13 @@ pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccou
         return Err(napi::Error::from_reason(res.message));
     }
 
-    let (old_username, uid) = {
+    let uid = {
         let mut s = state_arc.lock().await;
-        let old = s.username.replace(res.username.clone()).unwrap_or_default();
+        s.username = Some(res.username.clone());
         if let Some((_, pass)) = s.credentials.clone() {
             s.credentials = Some((res.username.clone(), pass));
         }
-        (old, s.uid)
+        s.uid
     };
     // Auto-login uses the saved credentials: they follow the new name.
     if let Ok(cfg) = config::load() {
@@ -143,7 +143,6 @@ pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccou
     }
     events::emit_user_renamed(events::UserRenamedPayload {
         uid,
-        old_username,
         username: res.username.clone(),
         is_self: true,
     });

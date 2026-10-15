@@ -113,7 +113,7 @@ export function useUserDirectory() {
         remember(payload.wipedBy, payload.wipedByUid),
       ),
       listen<{ from: string; fromUid?: number }>("call_signal", ({ payload }) => remember(payload.from, payload.fromUid)),
-      listen<{ uid: number | bigint; oldUsername: string; username: string; self: boolean }>(
+      listen<{ uid: number | bigint; username: string; self: boolean }>(
         "user_renamed",
         ({ payload }) => {
           remember(payload.username, payload.uid);

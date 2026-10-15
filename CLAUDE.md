@@ -104,7 +104,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   credentials `"<uid>"`, the keystore `e2ee/u<uid>.json` with uid-keyed pins. New envelopes
   are always v2; v1 (`0x01` / `0x02`) opens with the `sealed_*` names. Renames (Settings → Account):
   password-confirmed, two a day; the old name is reserved for the account for 14 days and still signs
-  it in meanwhile. `USER_RENAMED` goes out only for visible users. **The renderer keys every user store on the uid**
+  it in meanwhile. `USER_RENAMED {uid, username}` (no old name) goes to signed-in sessions, only for visible users, and
+  `name_changes` rows are deleted once the 14-day reservation ends. **The renderer keys every user store on the uid**
   (owner, 2026-10-15): names come from `stores/usersStore.ts` (`useUserName(uid, fallback)` /
   `nameOf`), fed by `features/users/userDirectory.ts`, so a rename re-labels without moving state.
   People never see uids: the fallback is the payload's name, else "Unknown user". A community
