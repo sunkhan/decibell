@@ -2313,9 +2313,10 @@ private:
                         return;
                     }
                 }
-                // A sealed message binds the name it was sent under; an edit
-                // sealed under a newer name would be unreadable from history.
-                if (encrypted) {
+                // A v1 envelope (header byte 0x02) binds the name it was sent
+                // under; a v1 edit sealed under a newer name would be
+                // unreadable from history. v2 (0x04) binds the uid instead.
+                if (encrypted && static_cast<uint8_t>(envelope[0]) == 0x02) {
                     auto snd = db->get_message_sender(req.channel_id(), req.message_id());
                     if (snd && snd->uid == uid_ && snd->username != username_) {
                         fail("This encrypted message was sent under your previous username, so it can't be edited.");

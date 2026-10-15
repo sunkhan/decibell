@@ -2574,3 +2574,45 @@ Verified:
 - `cargo test --lib` 223 passed.
 
 A live client test against the new servers is still pending.
+
+**Users by uid, stage 4: encryption bound to the uid (2026-10-15) ✅** — A rename no longer touches
+encryption (design: `docs/superpowers/specs/2026-10-15-uid-identity-design.md` §Stage 4). The identity
+keys stay; what they sign and what the key schedules bind moves from the name to the uid.
+- **Formats (v2).**
+  - Bundles sign the uid (`E2eeKeyBundle.binding` 2).
+  - Fingerprints and safety numbers hash the uid.
+  - DM envelopes use header byte `0x03` and channel envelopes `0x04`; both bind uids in the HKDF info
+    and the AAD. Key blobs ride v2 DM envelopes.
+  - Call auth v2 signs `call_id ‖ from_uid ‖ to_uid ‖ key`. MLS credentials are `"<uid>:<name>"`.
+  - New envelopes are always v2. v1 rows open with the names the server keeps for them (`sealed_*`).
+- **Rebind instead of re-key.** After login, a device holding the current key re-signs it over the uid.
+  Central swaps the signature in place: same keys, same key id, so history and other devices are
+  untouched. The rebind is gated on `LoginResponse.e2ee_uid_binding`, because an old central would have
+  taken it for a fresh publish and forked the key ids.
+  - A current v1 bundle whose signed name is no longer the account's name is treated as no keys.
+- **Device.**
+  - The keystore moved to `e2ee/u<uid>.json` with a uid AAD.
+  - The name-keyed file migrates on first load. Its pins wait in `legacy_peers` and are adopted by uid
+    when that peer next resolves under the same name.
+  - Caches and pins key on the uid. Key lookups route by uid or name.
+- **MLS** verifies leaves by uid and elects / removes ghosts by uid (`active_uids`). A leaf whose
+  credential can't be read now counts as unverified. Before, it was silently skipped.
+- **Servers.**
+  - Central: migration 2 (`e2ee_keys.binding`), the rebind path, and the login flag.
+  - Community: the "sent under your previous username" edit refusal applies to v1 envelopes only.
+- **What users see.** Fingerprints and safety numbers change once, with no "keys changed" warning
+  (pins hold the signing key, which didn't change). Old messages stay readable.
+- **Compatibility.** A client from before this release can't read v2 messages, verify v2 calls or
+  join v2 voice groups, so release to everyone at once after the central deploy.
+
+Verified:
+- `cargo test --lib` 232 passed (v2 formats, v1 history, bundle bindings, keystore migration and
+  legacy pins, MLS credentials, session-level opening);
+- central e2e 140 passed (rebind accepted in place / refused for other keys, old generations or a
+  backup; binding stored and served; migration 2 on the pre-uid database);
+- community e2e 573 passed (a renamed sender's v1 edit refused, v2 edit accepted);
+- `tsc` 0 errors; `napi build`.
+
+Live two-account tests are still pending: DMs both ways, history from before the switch, a call, a
+voice channel and an encrypted channel. Needs the Hetzner central rebuild (`pg_dump` first); the
+community rebuild is optional for this stage.

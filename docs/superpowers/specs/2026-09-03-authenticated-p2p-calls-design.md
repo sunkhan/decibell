@@ -4,6 +4,8 @@
 **Author:** sunkhan (with Claude)
 **Status:** Implemented on `main`; needs the Hetzner central rebuild (same one as E2EE DMs) and a two-account live test
 
+**Update 2026-10-15 (users by uid, stage 4):** Call key signatures (`decibell-call-auth-v2`) now bind the account uid instead of the name, so a rename changes nothing. See `2026-10-15-uid-identity-design.md` §Stage 4 for the v2 formats. v1 signatures are no longer accepted (calls aren't stored).
+
 ## Problem
 
 P2P DM calls (`2026-08-28-p2p-dm-calls-design.md`) already seal every voice and

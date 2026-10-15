@@ -49,9 +49,19 @@ pub struct ChannelKeyring {
     pub encrypted: bool,
     pub current_epoch: u32,
     pub keys: HashMap<u32, [u8; KEY_LEN]>,
-    pub members: Vec<String>,
-    /// Viewers the server said lack blobs (username → epochs).
-    pub needs: Vec<(String, Vec<u32>)>,
+    /// Everyone who can view the channel: (name, uid).
+    pub members: Vec<(String, i64)>,
+    /// Viewers the server said lack blobs: (name, uid, epochs).
+    pub needs: Vec<(String, i64, Vec<u32>)>,
+}
+
+/// The server's viewer list with its parallel uids.
+fn members_of(res: &ChannelKeysRes) -> Vec<(String, i64)> {
+    res.members
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.clone(), res.member_uids.get(i).copied().unwrap_or(0)))
+        .collect()
 }
 
 pub type KeyId = (String, String);
@@ -158,29 +168,34 @@ async fn publish(
 
 // ── Blob seal / unseal (identity envelopes) ─────────────────────────
 
-/// Open one escrowed blob addressed to us.
-async fn unseal_blob(
-    state: &Arc<Mutex<AppState>>,
-    channel_id: &str,
-    sender: &str,
-    blob: &[u8],
-) -> Option<(u32, [u8; KEY_LEN])> {
-    let me = state.lock().await.username.clone()?;
-    let content = e2ee::open_inbound_raw(state, sender, &me, blob).await.ok()?;
+/// Open one escrowed blob addressed to us. A v1 blob binds the names it
+/// was sealed under, which the server returns with it.
+async fn unseal_blob(state: &Arc<Mutex<AppState>>, channel_id: &str, b: &ChannelKeyBlob) -> Option<(u32, [u8; KEY_LEN])> {
+    let (my_uid, my_name) = {
+        let s = state.lock().await;
+        (s.uid, s.username.clone()?)
+    };
+    let parties = envelope::Parties {
+        sender_uid: b.sender_uid,
+        recipient_uid: my_uid,
+        sender_name: &b.sender,
+        recipient_name: if b.recipient.is_empty() { &my_name } else { &b.recipient },
+    };
+    let content = e2ee::open_inbound_raw(state, &parties, &b.blob).await.ok()?;
     channel_envelope::parse_key_blob_content(&content, channel_id)
 }
 
-/// Seal `keys` (epoch → key) to `recipient`; None when they have no identity.
+/// Seal `keys` (epoch → key) to a viewer; None when they have no identity.
 async fn seal_blobs_for(
     state: &Arc<Mutex<AppState>>,
     channel_id: &str,
-    recipient: &str,
+    (recipient, recipient_uid): (&str, i64),
     keys: &[(u32, [u8; KEY_LEN])],
 ) -> Result<Option<Vec<ChannelKeyBlob>>, String> {
     let mut out = Vec::with_capacity(keys.len());
     for (epoch, key) in keys {
         let content = channel_envelope::key_blob_content(channel_id, *epoch, key);
-        let Some(wire) = e2ee::seal_outbound_raw(state, recipient, &content).await? else {
+        let Some(wire) = e2ee::seal_outbound_raw(state, recipient_uid, recipient, &content).await? else {
             return Ok(None);
         };
         out.push(ChannelKeyBlob {
@@ -189,7 +204,7 @@ async fn seal_blobs_for(
             recipient: recipient.to_string(),
             blob: wire,
             sender_uid: 0,
-            recipient_uid: 0,
+            recipient_uid,
         });
     }
     Ok(Some(out))
@@ -223,13 +238,13 @@ pub async fn refresh(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: 
     };
     ring.encrypted = res.encrypted;
     ring.current_epoch = res.current_epoch;
-    ring.members = res.members.clone();
-    ring.needs = res.needs.iter().map(|n| (n.username.clone(), n.epochs.clone())).collect();
+    ring.members = members_of(&res);
+    ring.needs = res.needs.iter().map(|n| (n.username.clone(), n.uid, n.epochs.clone())).collect();
     for b in &res.blobs {
         if ring.keys.contains_key(&b.epoch) {
             continue;
         }
-        match unseal_blob(state, channel_id, &b.sender, &b.blob).await {
+        match unseal_blob(state, channel_id, b).await {
             Some((epoch, key)) if epoch == b.epoch => {
                 ring.keys.insert(epoch, key);
             }
@@ -262,15 +277,15 @@ async fn create_epoch(
     server_id: &str,
     channel_id: &str,
     epoch: u32,
-    members: &[String],
+    members: &[(String, i64)],
 ) -> Result<ChannelKeyring, String> {
     let key: [u8; KEY_LEN] = random_bytes()?;
     let mut blobs = Vec::new();
     let mut skipped = Vec::new();
-    for (i, m) in members.iter().enumerate() {
-        match seal_blobs_for(state, channel_id, m, &[(epoch, key)]).await? {
+    for (i, (name, uid)) in members.iter().enumerate() {
+        match seal_blobs_for(state, channel_id, (name, *uid), &[(epoch, key)]).await? {
             Some(b) => blobs.extend(b),
-            None => skipped.push(m.clone()),
+            None => skipped.push(name.clone()),
         }
         if i + 1 < members.len() {
             tokio::time::sleep(FILL_PACE).await;
@@ -309,12 +324,12 @@ async fn refresh_no_create(state: &Arc<Mutex<AppState>>, server_id: &str, channe
     };
     ring.encrypted = res.encrypted;
     ring.current_epoch = res.current_epoch;
-    ring.members = res.members.clone();
+    ring.members = members_of(&res);
     for b in &res.blobs {
         if ring.keys.contains_key(&b.epoch) {
             continue;
         }
-        if let Some((epoch, key)) = unseal_blob(state, channel_id, &b.sender, &b.blob).await {
+        if let Some((epoch, key)) = unseal_blob(state, channel_id, b).await {
             if epoch == b.epoch {
                 ring.keys.insert(epoch, key);
             }
@@ -332,13 +347,13 @@ pub async fn fill_gaps(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id
     };
     let mut by_epoch: HashMap<u32, Vec<ChannelKeyBlob>> = HashMap::new();
     let mut fetched = 0usize;
-    for (user, epochs) in &ring.needs {
+    for (user, uid, epochs) in &ring.needs {
         let have: Vec<(u32, [u8; KEY_LEN])> =
             epochs.iter().filter_map(|e| ring.keys.get(e).map(|k| (*e, *k))).collect();
         if have.is_empty() {
             continue;
         }
-        match seal_blobs_for(state, channel_id, user, &have).await? {
+        match seal_blobs_for(state, channel_id, (user, *uid), &have).await? {
             Some(blobs) => {
                 for b in blobs {
                     by_epoch.entry(b.epoch).or_default().push(b);
@@ -436,9 +451,9 @@ pub async fn seal_message(
         .keys
         .get(&ring.current_epoch)
         .ok_or("You don't have this channel's current key yet — another member has to share it. Try again in a moment.")?;
-    let me = state.lock().await.username.clone().ok_or("Not signed in")?;
+    let me = state.lock().await.uid;
     if attachments.is_empty() {
-        return channel_envelope::seal(ring.current_epoch, key, channel_id, &me, text);
+        return channel_envelope::seal(ring.current_epoch, key, channel_id, me, text);
     }
     let mut body = EncryptedMessageBody { text: text.to_string(), attachments: Vec::new() };
     for a in attachments {
@@ -466,7 +481,7 @@ pub async fn seal_message(
         ring.current_epoch,
         key,
         channel_id,
-        &me,
+        me,
         channel_envelope::CONTENT_BODY,
         &body.encode_to_vec(),
     )
@@ -477,7 +492,7 @@ pub async fn open_message(
     state: &Arc<Mutex<AppState>>,
     server_id: &str,
     channel_id: &str,
-    sender: &str,
+    sender: &channel_envelope::Sender<'_>,
     wire: &[u8],
 ) -> Result<(String, Vec<AttachmentMeta>), DecryptError> {
     let epoch = channel_envelope::parse_epoch(wire).map_err(|_| DecryptError::Bad)?;
@@ -558,9 +573,10 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, server_id: &str, b: C
                 r.current_epoch = b.current_epoch;
             }
         }
-        s.username.clone().unwrap_or_default()
+        (s.uid, s.username.clone().unwrap_or_default())
     };
-    if b.filler != me {
+    let is_me = if b.filler_uid > 0 { b.filler_uid == me.0 } else { b.filler == me.1 };
+    if !is_me {
         return;
     }
     let st = state.clone();
@@ -616,11 +632,17 @@ async fn run_worker(mut rx: mpsc::Receiver<ChannelJob>, state: Arc<Mutex<AppStat
     }
 }
 
+/// Who sealed a body: the uid (v2) and the name it was sent under (v1;
+/// the server's `sealed_*` field, else the name on a live packet).
+fn sender<'a>(uid: i64, sealed: &'a str, name: &'a str) -> channel_envelope::Sender<'a> {
+    channel_envelope::Sender { uid, sealed_name: if sealed.is_empty() { name } else { sealed } }
+}
+
 async fn render(
     state: &Arc<Mutex<AppState>>,
     server_id: &str,
     channel_id: &str,
-    sender: &str,
+    sender: &channel_envelope::Sender<'_>,
     content: String,
     wire: &[u8],
 ) -> (String, bool, String, Vec<events::EncryptedAttachmentMetaPayload>) {
@@ -634,12 +656,14 @@ async fn render(
 }
 
 async fn handle_msg(state: &Arc<Mutex<AppState>>, server_id: &str, msg: ChannelMessage) {
+    let by = sender(msg.sender_uid, &msg.sealed_sender, &msg.sender);
     let (content, encrypted, err, metas) =
-        render(state, server_id, &msg.channel_id, &msg.sender, msg.content, &msg.envelope).await;
+        render(state, server_id, &msg.channel_id, &by, msg.content, &msg.envelope).await;
     let reply_to_content = if msg.reply_to_envelope.is_empty() {
         msg.reply_to_content
     } else {
-        render(state, server_id, &msg.channel_id, &msg.reply_to_sender, String::new(), &msg.reply_to_envelope).await.0
+        let parent_by = sender(msg.reply_to_sender_uid, &msg.reply_to_sealed_sender, &msg.reply_to_sender);
+        render(state, server_id, &msg.channel_id, &parent_by, String::new(), &msg.reply_to_envelope).await.0
     };
     events::emit_message_received(events::MessageReceivedPayload {
         context: msg.channel_id,
@@ -706,11 +730,13 @@ async fn open_stored(
     mut m: ChannelMessage,
 ) -> events::ChannelMessagePayload {
     let content = std::mem::take(&mut m.content);
-    let (content, encrypted, err, metas) = render(state, server_id, channel_id, &m.sender, content, &m.envelope).await;
+    let by = sender(m.sender_uid, &m.sealed_sender, &m.sender);
+    let (content, encrypted, err, metas) = render(state, server_id, channel_id, &by, content, &m.envelope).await;
     let reply_to_content = if m.reply_to_envelope.is_empty() {
         std::mem::take(&mut m.reply_to_content)
     } else {
-        render(state, server_id, channel_id, &m.reply_to_sender, String::new(), &m.reply_to_envelope).await.0
+        let parent_by = sender(m.reply_to_sender_uid, &m.reply_to_sealed_sender, &m.reply_to_sender);
+        render(state, server_id, channel_id, &parent_by, String::new(), &m.reply_to_envelope).await.0
     };
     message_payload(m, content, encrypted, err, metas, reply_to_content)
 }
@@ -779,7 +805,9 @@ pub fn emit_search_plain(server_id: &str, mut resp: MessageSearchResponse) {
 }
 
 async fn handle_edited(state: &Arc<Mutex<AppState>>, server_id: &str, b: ChannelMessageEdited) {
-    let (content, encrypted, err, metas) = render(state, server_id, &b.channel_id, &b.editor, b.content, &b.envelope).await;
+    // A live edit: the editor's current name is what a v1 body binds.
+    let by = sender(b.editor_uid, "", &b.editor);
+    let (content, encrypted, err, metas) = render(state, server_id, &b.channel_id, &by, b.content, &b.envelope).await;
     events::emit_channel_message_edited(events::ChannelMessageEditedPayload {
         server_id: server_id.to_string(),
         channel_id: b.channel_id,

@@ -90,6 +90,8 @@ export declare function callPrepare(args: CallPrepareArgs): Promise<CallPrepareR
 export interface CallConnectArgs {
   callId: string
   peer: string
+  /** The peer's uid (users by uid): their call key signature binds it. */
+  peerUid?: number
   /** base64 of the peer's 32-byte X25519 public key. */
   remotePubKey: string
   remoteCandidates: Array<CallCandidateArg>
@@ -694,6 +696,8 @@ export declare function e2eeChangePassphrase(args: PassphraseArgs): Promise<void
 export declare function e2eeReset(args: PassphraseArgs): Promise<void>
 export interface PeerInfoArgs {
   username: string
+  /** The peer's uid (users by uid); looked up from the name when absent. */
+  uid?: number
 }
 export interface E2EePeerInfo {
   /** The peer has published keys (so messages to them are sealed). */

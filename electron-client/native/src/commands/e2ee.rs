@@ -7,8 +7,9 @@
 //!   - `e2ee_unlock({passphrase})`: restore from the central backup.
 //!   - `e2ee_change_passphrase({passphrase})`: re-wrap the backup.
 //!   - `e2ee_reset({passphrase})`: new identity (forgot passphrase / rotate).
-//!   - `e2ee_peer_info({username})`: does the peer have keys, their
-//!     fingerprint and the conversation's safety number.
+//!   - `e2ee_peer_info({username, uid})`: does the peer have keys, their
+//!     fingerprint and the conversation's safety number (both bound to
+//!     the account uids, so a rename doesn't change them).
 //!
 //! Sends and receives need nothing from the renderer: `send_private_message`
 //! / `edit_dm_message` seal, the central router's DM worker opens.
@@ -34,8 +35,7 @@ pub struct E2eeStatus {
 pub async fn e2ee_get_status() -> napi::Result<E2eeStatus> {
     let state_arc = state::shared();
     let s = state_arc.lock().await;
-    let username = s.username.clone().unwrap_or_default();
-    let p = s.e2ee.status_payload(&username);
+    let p = s.e2ee.status_payload(s.uid);
     Ok(E2eeStatus {
         supported: p.supported,
         status: p.status,
@@ -84,6 +84,8 @@ pub async fn e2ee_reset(args: PassphraseArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct PeerInfoArgs {
     pub username: String,
+    /// The peer's uid (users by uid); looked up from the name when absent.
+    pub uid: Option<i64>,
 }
 
 #[napi(object)]
@@ -105,20 +107,23 @@ pub struct E2eePeerInfo {
 pub async fn e2ee_peer_info(args: PeerInfoArgs) -> napi::Result<E2eePeerInfo> {
     let state_arc = state::shared();
     let ready = state_arc.lock().await.e2ee.status == Status::Ready;
+    let uid = session::resolve_uid(&state_arc, args.uid.unwrap_or(0), &args.username)
+        .await
+        .map_err(napi::Error::from_reason)?;
     let bundle = if ready {
-        session::resolve_peer_current(&state_arc, &args.username)
+        session::resolve_peer_current(&state_arc, uid, &args.username)
             .await
             .map_err(napi::Error::from_reason)?
     } else {
         // Not ready → the pin (if any) is what we know; central lookups
         // still work but there's no local identity to pair them with.
-        session::fetch_bundle(&state_arc, &args.username, 0)
+        session::fetch_bundle(&state_arc, uid, 0)
             .await
             .map_err(napi::Error::from_reason)?
     };
     let s = state_arc.lock().await;
-    let me = s.username.clone().unwrap_or_default();
-    let rec = s.e2ee.store.as_ref().and_then(|st| st.peers.get(&args.username));
+    let me = s.uid;
+    let rec = s.e2ee.store.as_ref().and_then(|st| st.pin(uid, &args.username));
     let (pinned, changed_at) = rec
         .map(|r| (!r.sign_pub.is_empty(), r.changed_at))
         .unwrap_or((false, 0));
@@ -138,12 +143,12 @@ pub async fn e2ee_peer_info(args: PeerInfoArgs) -> napi::Result<E2eePeerInfo> {
         None
     };
     let safety = mine
-        .map(|my_sign| safety_number(&me, &my_sign, &args.username, &b.sign_pub))
+        .map(|my_sign| safety_number(me, &my_sign, uid, &b.sign_pub))
         .unwrap_or_default();
     Ok(E2eePeerInfo {
         has_keys: true,
         key_id: b.key_id,
-        fingerprint: fingerprint(&args.username, &b.sign_pub),
+        fingerprint: fingerprint(uid, &b.sign_pub),
         safety_number: safety,
         changed_at,
         pinned,

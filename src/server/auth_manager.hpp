@@ -275,6 +275,7 @@ public:
         std::string sign_pub;
         std::string signature;
         int64_t created_at;
+        int binding = 1;           // 1 = the signature binds signed_name, 2 = the uid
     };
 
     /// Store a new identity bundle for `uid`, assigning
@@ -285,7 +286,18 @@ public:
                              const std::string& dh_pub,
                              const std::string& sign_pub,
                              const std::string& signature,
+                             int binding,
                              int64_t created_at);
+
+    /// Re-sign the current bundle in place (uid design, stage 4): replaces
+    /// its signature, binding and signed_name when `key_id` is the user's
+    /// current one and the keys match it. False otherwise or on DB failure.
+    bool rebindE2eeKeys(int64_t uid, uint32_t key_id,
+                        const std::string& dh_pub,
+                        const std::string& sign_pub,
+                        const std::string& signature,
+                        int binding,
+                        const std::string& signed_name);
 
     /// A user's bundle: key_id 0 = the current (highest) one. nullopt when
     /// the user has never published or the id is unknown.

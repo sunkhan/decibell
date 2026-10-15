@@ -145,7 +145,7 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
     let (pub_key_sig, key_id) = if !pub_key.is_empty()
         && matches!(kind, call_signal::Kind::Invite | call_signal::Kind::Accept)
     {
-        e2ee::sign_own_call_key(&state_arc, &args.call_id, &args.to, &pub_key)
+        e2ee::sign_own_call_key(&state_arc, &args.call_id, args.to_uid.unwrap_or(0), &args.to, &pub_key)
             .await
             .unwrap_or_default()
     } else {
@@ -386,6 +386,8 @@ pub async fn call_prepare(args: CallPrepareArgs) -> napi::Result<CallPrepareResu
 pub struct CallConnectArgs {
     pub call_id: String,
     pub peer: String,
+    /// The peer's uid (users by uid): their call key signature binds it.
+    pub peer_uid: Option<i64>,
     /// base64 of the peer's 32-byte X25519 public key.
     pub remote_pub_key: String,
     pub remote_candidates: Vec<CallCandidateArg>,
@@ -422,6 +424,7 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
     // identity. A peer without keys yields an unverified-but-allowed call.
     let verified = match e2ee::verify_peer_call_key(
         &state_arc,
+        args.peer_uid.unwrap_or(0),
         &args.peer,
         &args.call_id,
         &peer_pub,

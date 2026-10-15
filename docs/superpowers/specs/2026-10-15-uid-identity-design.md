@@ -33,7 +33,7 @@ Each stage leaves every tier working with every other, so they can deploy one at
 3. **Client:** carries uids from payloads into its stores and sends them in requests. Anything stored on
    the device is keyed by uid. In-memory stores stay keyed by name, and a rename re-keys them (stage 5).
 4. **Encryption v2:** bundles, fingerprints, safety numbers, DM and channel envelopes, call auth and MLS
-   credentials bind the uid. v1 stays readable for history. Everyone sees one "keys changed" notice.
+   credentials bind the uid. v1 stays readable for history. Fingerprints and safety numbers change once.
 5. **Rename:** a password-confirmed username change on central. The old name is reserved for 14 days.
    `USER_RENAMED {uid, name}` goes to online sessions, communities learn the new name, and the client
    re-keys its stores.
@@ -176,6 +176,80 @@ Still name-based on purpose until the client stage, because old clients parse th
   - Avatar fetches match the reply by name. Stage 5 refreshes them on a rename.
   - Nothing else user-keyed is stored on the device.
 
-## Stages 4–5
+## Stage 4: encryption bound to the uid ✅
 
-Specified when each starts, in this file.
+Done on the branch (see the review log). Verified by native unit tests for every v2 format, opening v1
+history, legacy-pin adoption and the keystore migration; by central e2e checks for the rebind; and by a
+community e2e check for v1 / v2 edits after a rename.
+
+The goal: a rename changes nothing in encryption. The identity keys stay the same. What changes is what
+they sign and what the key schedules bind.
+
+### Formats (v2)
+
+uid = int64, little-endian (8 bytes). Salts, key ids, tags and inner content are unchanged.
+
+| Item | v1 (name) | v2 (uid) |
+|---|---|---|
+| Bundle signature | `"decibell-e2ee-bundle-v1" ‖ 0 ‖ name ‖ 0 ‖ dh_pub ‖ sign_pub` | `"decibell-e2ee-bundle-v2" ‖ 0 ‖ uid ‖ dh_pub ‖ sign_pub` |
+| Fingerprint | SHA-256(fp-v1 ‖ name ‖ sign_pub) | SHA-256(`"decibell-e2ee-fp-v2" ‖ 0 ‖ uid ‖ sign_pub`) |
+| Safety number | both fingerprints in name order | both fingerprints in uid order |
+| DM envelope | header byte `0x01`. The HKDF info binds both names; AAD = header ‖ sender name | header byte `0x03`. Info = `"decibell-dm-v2" ‖ 0 ‖ lo_uid ‖ hi_uid ‖ lo_kid ‖ hi_kid` (uid order); AAD = header ‖ sender uid |
+| Channel envelope | header byte `0x02`. Info and AAD bind channel ‖ sender name | header byte `0x04`. The same, with the sender uid |
+| Key blob | a v1 DM envelope | a v2 DM envelope (filler uid → recipient uid) |
+| Call auth | `"decibell-call-auth-v1" ‖ call ‖ from ‖ to ‖ key` | `"decibell-call-auth-v2" ‖ 0 ‖ call_id ‖ 0 ‖ from_uid ‖ to_uid ‖ pub_key` |
+| MLS credential | `name` | `"<uid>:<name>"` |
+
+- **The header byte tells a reader which binding to use,** so v1 and v2 rows mix freely in one history.
+  Sealing is always v2. Opening accepts both: v1 with the sealed-under names (rule 4), v2 with the uids
+  the server stamps (`sender_uid`, `recipient_uid`).
+- **Calls are v2 only.** Nothing about a call is stored, so there is nothing old to read.
+- **MLS** credentials carry the uid for verification against the uid-bound bundle. They also carry the
+  name for the media plane, which still names senders; per-sender media keys derive from that name.
+  Election and ghost removal compare uids from `VoicePresenceUpdate.active_uids`.
+
+### Bundles: re-signed, not re-keyed
+
+- `E2eeKeyBundle.binding` is 1 = name or 2 = uid. Central stores it as `e2ee_keys.binding` (migration 2;
+  existing rows get 1). New identities (setup, reset) publish binding 2.
+- **An existing identity is rebound.** After login, a device that holds the current key and finds binding
+  1 on central re-signs the same keys over the uid. It sends `E2eePublishKeysReq{bundle, rebind: true}`.
+  - Central replaces the signature and binding of the current row in place, and only when `key_id`,
+    `dh_pub` and `sign_pub` match that row.
+  - No new key id, so history and the user's other devices are untouched.
+  - Central broadcasts `E2EE_KEYS_CHANGED` with the same key id, so peers drop cached bundles.
+- **The feature is gated** on `LoginResponse.e2ee_uid_binding`. Against a central without it, clients
+  publish v1 bundles and never rebind. An old central would take a rebind for a fresh publish and fork
+  the key ids.
+- **Verification:**
+  - A binding-2 bundle must name the uid that was asked for.
+  - A binding-1 bundle verifies over `signed_name`. A *current* v1 bundle seals only while `signed_name`
+    is still the account's name: after a rename, a v1 signature says nothing about who holds the key.
+  - Historical v1 bundles open history whatever name they carry.
+
+### What users see
+
+- **Fingerprints and safety numbers change once, for everyone,** because they now hash the uid. TOFU pins
+  hold the signing key, which doesn't change, so no "keys changed" warning fires. Nothing records a past
+  verification, so nothing else is invalidated. People who compared safety numbers should compare again.
+- **Old messages stay readable.**
+- **Older clients break.** A client from before this release can't open v2 messages, verify v2 calls or
+  join v2 voice groups. Release to everyone at once (pre-1.0 rule), after central is deployed.
+
+### Device storage
+
+- **The keystore** is `e2ee/u<uid>.json`, with its AAD bound to the uid (outer file version 2). On first
+  load the client migrates the name-keyed file, then deletes it.
+- **Pins key on the uid.** Pins from the old store move to `legacy_peers`, still keyed by name. A legacy
+  pin is adopted by uid the first time that peer's current bundle resolves under the same name. Names
+  can't change before stage 5, so the name still means the same account.
+
+### Server changes
+
+- **Central:** migration 2 (`binding`), the rebind, and `LoginResponse.e2ee_uid_binding`.
+- **Community:** the refusal to edit an encrypted message sent under a previous name now applies to v1
+  envelopes (`0x02`) only. A v2 edit binds the uid and stays readable.
+
+## Stage 5
+
+Specified when it starts, in this file.

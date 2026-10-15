@@ -12,13 +12,16 @@
 //!   COMMIT_RES ok ─► merge pending ─► verify leaves ─► keys
 //!   COMMIT_BROADCAST ─► process ─► merge ─► verify leaves ─► keys
 //!   any failure that leaves us behind ─► resync: rejoin by external commit
-//!   roster − members ─► the elected member (lowest verified name) removes them
+//!   roster − members ─► the elected member (lowest verified uid) removes them
 //!
-//! Identity binding: after every merge each leaf's (identity, signature key)
-//! is checked against central's key directory via the E2EE session. An
-//! unverified leaf quarantines the epoch (nothing is sealed) and the elected
-//! member commits its removal — a server can put anyone on the roster, but
-//! not a fake identity in the group.
+//! Identity binding: a leaf's credential is `"<uid>:<name>"`. After every
+//! merge each leaf's (uid, signature key) is checked against central's key
+//! directory via the E2EE session. An unverified (or unreadable) leaf
+//! quarantines the epoch (nothing is sealed) and the elected member commits
+//! its removal — a server can put anyone on the roster, but not a fake
+//! identity in the group. The name only labels the media plane, which names
+//! senders: per-sender media keys derive from it (any member can derive any
+//! sender's key from the exporter, so it isn't an authentication boundary).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -48,8 +51,8 @@ const MAX_JOIN_ATTEMPTS: u32 = 6;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(6);
 
 pub enum GroupCmd {
-    /// The channel roster from VOICE_PRESENCE_UPDATE.
-    Presence(Vec<String>),
+    /// The channel roster (uids) from VOICE_PRESENCE_UPDATE.
+    Presence(Vec<i64>),
     GroupInfoRes { exists: bool, epoch: u64, group_info: Vec<u8> },
     CommitRes { success: bool, message: String, epoch: u64 },
     CommitBroadcast { epoch: u64, sender: String, commit: Vec<u8> },
@@ -95,7 +98,7 @@ struct Driver {
     state: Arc<Mutex<AppState>>,
     server_id: String,
     channel_id: String,
-    username: String,
+    uid: i64,
     jwt: String,
     write_tx: mpsc::Sender<Vec<u8>>,
     ring: SharedKeyRing,
@@ -110,12 +113,12 @@ struct Driver {
     pending_epoch: u64,
     sent_at: Instant,
     join_attempts: u32,
-    roster: HashSet<String>,
-    /// username → signature key verified against central this session.
-    verified: HashMap<String, Vec<u8>>,
-    /// Names we could not verify in the current epoch.
+    roster: HashSet<i64>,
+    /// uid → signature key verified against central this session.
+    verified: HashMap<i64, Vec<u8>>,
+    /// Leaves we could not verify in the current epoch (their labels).
     unverified: Vec<String>,
-    ghost_since: HashMap<String, Instant>,
+    ghost_since: HashMap<i64, Instant>,
     last_state: String,
 }
 
@@ -123,6 +126,7 @@ pub fn start(
     state: Arc<Mutex<AppState>>,
     server_id: String,
     channel_id: String,
+    uid: i64,
     username: String,
     identity: &IdentityKeys,
     jwt: String,
@@ -135,14 +139,17 @@ pub fn start(
     signer
         .store(provider.storage())
         .map_err(|e| format!("store signer: {e:?}"))?;
-    let credential: Credential = BasicCredential::new(username.as_bytes().to_vec()).into();
+    if uid <= 0 {
+        return Err("no account uid for the voice credential".into());
+    }
+    let credential: Credential = BasicCredential::new(credential_identity(uid, &username)).into();
     let credential = CredentialWithKey { credential, signature_key: signer.to_public_vec().into() };
     let (tx, rx) = mpsc::unbounded_channel();
     let driver = Driver {
         state,
         server_id: server_id.clone(),
         channel_id: channel_id.clone(),
-        username,
+        uid,
         jwt,
         write_tx,
         ring: ring.clone(),
@@ -181,9 +188,37 @@ fn join_config() -> MlsGroupJoinConfig {
         .build()
 }
 
-fn identity_of(credential: &Credential) -> Option<String> {
+/// A leaf's credential identity: `"<uid>:<name>"`.
+fn credential_identity(uid: i64, name: &str) -> Vec<u8> {
+    format!("{uid}:{name}").into_bytes()
+}
+
+/// (uid, name) from a leaf's credential; None when it isn't ours to read.
+fn identity_of(credential: &Credential) -> Option<(i64, String)> {
     let basic = BasicCredential::try_from(credential.clone()).ok()?;
-    String::from_utf8(basic.identity().to_vec()).ok()
+    let id = String::from_utf8(basic.identity().to_vec()).ok()?;
+    let (uid, name) = id.split_once(':')?;
+    let uid: i64 = uid.parse().ok()?;
+    (uid > 0 && !name.is_empty()).then(|| (uid, name.to_string()))
+}
+
+/// One group member as its leaf names it. An unreadable credential gets
+/// uid 0, which never verifies.
+struct Leaf {
+    uid: i64,
+    name: String,
+    key: Vec<u8>,
+    index: LeafNodeIndex,
+}
+
+fn leaves(group: &MlsGroup) -> Vec<Leaf> {
+    group
+        .members()
+        .map(|m| {
+            let (uid, name) = identity_of(&m.credential).unwrap_or((0, "<unreadable credential>".to_string()));
+            Leaf { uid, name, key: m.signature_key.clone(), index: m.index }
+        })
+        .collect()
 }
 
 impl Driver {
@@ -494,52 +529,47 @@ impl Driver {
 
     async fn after_merge(&mut self) {
         let Some(group) = self.group.as_ref() else { return };
-        let members: Vec<(String, Vec<u8>, LeafNodeIndex)> = group
-            .members()
-            .filter_map(|m| identity_of(&m.credential).map(|id| (id, m.signature_key.clone(), m.index)))
-            .collect();
+        let members = leaves(group);
         // Verify identities against central (cached per session).
-        let mut unverified: Vec<String> = Vec::new();
-        for (name, key, _) in &members {
-            if *name == self.username {
-                if *key != self.own_sign_pub {
-                    unverified.push(name.clone());
-                }
-                continue;
-            }
-            if self.verified.get(name) == Some(key) {
-                continue;
-            }
-            let ok = match e2ee::resolve_peer_current(&self.state, name).await {
-                Ok(Some(b)) => b.sign_pub == *key,
-                Ok(None) => false,
-                Err(e) => {
-                    log::warn!("[mls] key lookup for {name} failed: {e}");
-                    false
-                }
-            };
-            if ok {
-                self.verified.insert(name.clone(), key.clone());
+        let mut unverified: Vec<LeafNodeIndex> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+        for leaf in &members {
+            let ok = if leaf.uid == self.uid {
+                leaf.key == self.own_sign_pub
+            } else if leaf.uid <= 0 {
+                false
+            } else if self.verified.get(&leaf.uid) == Some(&leaf.key) {
+                true
             } else {
-                unverified.push(name.clone());
+                let ok = match e2ee::resolve_peer_current(&self.state, leaf.uid, &leaf.name).await {
+                    Ok(Some(b)) => b.sign_pub == leaf.key,
+                    Ok(None) => false,
+                    Err(e) => {
+                        log::warn!("[mls] key lookup for {} (uid {}) failed: {e}", leaf.name, leaf.uid);
+                        false
+                    }
+                };
+                if ok {
+                    self.verified.insert(leaf.uid, leaf.key.clone());
+                }
+                ok
+            };
+            if !ok {
+                unverified.push(leaf.index);
+                labels.push(leaf.name.clone());
             }
         }
         // Some names may have been dropped by a resync of the peer; also
         // count duplicates of the same identity as suspicious.
         let Some(group) = self.group.as_ref() else { return };
-        self.unverified = unverified.clone();
+        self.unverified = labels.clone();
         if !unverified.is_empty() {
-            log::warn!("[mls] {} unverified leaves: {:?} — quarantining epoch {}", self.channel_id, unverified, group.epoch().as_u64());
+            log::warn!("[mls] {} unverified leaves: {:?} — quarantining epoch {}", self.channel_id, labels, group.epoch().as_u64());
             let q = self.ring.load().quarantine();
             self.ring.store(Arc::new(q));
             self.emit("quarantine");
             if self.is_elected(&members) {
-                let idx: Vec<LeafNodeIndex> = members
-                    .iter()
-                    .filter(|(n, _, _)| unverified.contains(n))
-                    .map(|(_, _, i)| *i)
-                    .collect();
-                self.commit_remove(idx).await;
+                self.commit_remove(unverified).await;
             }
             return;
         }
@@ -550,7 +580,8 @@ impl Driver {
                 return;
             }
         };
-        let names: Vec<String> = members.iter().map(|(n, _, _)| n.clone()).collect();
+        // Media senders are named, so per-sender keys derive from names.
+        let names: Vec<String> = members.iter().map(|l| l.name.clone()).collect();
         let keys = EpochKeys::derive(group.epoch().as_u64(), &exporter, &names);
         let next = self.ring.load().rotated(keys);
         self.ring.store(Arc::new(next));
@@ -559,17 +590,17 @@ impl Driver {
         self.reconcile_roster().await;
     }
 
-    /// The member who commits removals: the lowest verified name that is
+    /// The member who commits removals: the lowest verified uid that is
     /// both in the group and on the roster.
-    fn is_elected(&self, members: &[(String, Vec<u8>, LeafNodeIndex)]) -> bool {
-        let mut candidates: Vec<&String> = members
+    fn is_elected(&self, members: &[Leaf]) -> bool {
+        members
             .iter()
-            .map(|(n, _, _)| n)
-            .filter(|n| **n == self.username || self.verified.contains_key(*n))
-            .filter(|n| self.roster.is_empty() || self.roster.contains(*n))
-            .collect();
-        candidates.sort();
-        candidates.first().map(|n| **n == self.username).unwrap_or(false)
+            .map(|l| l.uid)
+            .filter(|u| *u == self.uid || (*u > 0 && self.verified.contains_key(u)))
+            .filter(|u| self.roster.is_empty() || self.roster.contains(u))
+            .min()
+            .map(|u| u == self.uid)
+            .unwrap_or(false)
     }
 
     async fn commit_remove(&mut self, leaves: Vec<LeafNodeIndex>) {
@@ -608,7 +639,7 @@ impl Driver {
 
     // ── Roster ──────────────────────────────────────────────────
 
-    async fn on_presence(&mut self, roster: Vec<String>) {
+    async fn on_presence(&mut self, roster: Vec<i64>) {
         self.roster = roster.into_iter().collect();
         if self.phase == Phase::Operational {
             self.reconcile_roster().await;
@@ -623,27 +654,24 @@ impl Driver {
             return;
         }
         let Some(group) = self.group.as_ref() else { return };
-        let members: Vec<(String, Vec<u8>, LeafNodeIndex)> = group
-            .members()
-            .filter_map(|m| identity_of(&m.credential).map(|id| (id, m.signature_key.clone(), m.index)))
-            .collect();
-        if !members.iter().any(|(n, _, _)| *n == self.username) {
+        let members = leaves(group);
+        if !members.iter().any(|l| l.uid == self.uid) {
             self.resync().await;
             return;
         }
         let now = Instant::now();
         let mut due: Vec<LeafNodeIndex> = Vec::new();
-        for (name, _, idx) in &members {
-            if self.roster.contains(name) {
-                self.ghost_since.remove(name);
+        for leaf in &members {
+            if self.roster.contains(&leaf.uid) {
+                self.ghost_since.remove(&leaf.uid);
                 continue;
             }
-            let since = *self.ghost_since.entry(name.clone()).or_insert(now);
+            let since = *self.ghost_since.entry(leaf.uid).or_insert(now);
             if now.duration_since(since) >= GHOST_GRACE {
-                due.push(*idx);
+                due.push(leaf.index);
             }
         }
-        self.ghost_since.retain(|n, _| members.iter().any(|(m, _, _)| m == n));
+        self.ghost_since.retain(|u, _| members.iter().any(|l| l.uid == *u));
         if !due.is_empty() && self.is_elected(&members) {
             self.commit_remove(due).await;
         }
@@ -702,7 +730,12 @@ mod tests {
         let pubk = id.sign_public().unwrap().to_vec();
         let signer = SignatureKeyPair::from_raw(SignatureScheme::ED25519, id.sign_priv.clone(), pubk);
         signer.store(provider.storage()).unwrap();
-        let credential: Credential = BasicCredential::new(name.as_bytes().to_vec()).into();
+        let uid = match name {
+            "alice" => 10,
+            "bob" => 20,
+            _ => 30,
+        };
+        let credential: Credential = BasicCredential::new(credential_identity(uid, name)).into();
         let cred = CredentialWithKey { credential, signature_key: signer.to_public_vec().into() };
         Peer { provider, signer, cred, group: None }
     }
@@ -772,18 +805,18 @@ mod tests {
         apply(&mut bob, &c2);
         assert_eq!(export(&alice), export(&carol));
         assert_eq!(export(&bob), export(&carol));
-        let names: Vec<String> = alice
+        let ids: Vec<(i64, String)> = alice
             .group
             .as_ref()
             .unwrap()
             .members()
             .filter_map(|m| identity_of(&m.credential))
             .collect();
-        assert_eq!(names.len(), 3);
-        assert!(names.contains(&"carol".to_string()));
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&(30, "carol".to_string())));
         // leaf signature keys are the identity keys
         for m in alice.group.as_ref().unwrap().members() {
-            let who = identity_of(&m.credential).unwrap();
+            let (_, who) = identity_of(&m.credential).unwrap();
             let expect = match who.as_str() {
                 "alice" => alice.signer.to_public_vec(),
                 "bob" => bob.signer.to_public_vec(),
@@ -798,7 +831,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .members()
-            .find(|m| identity_of(&m.credential).as_deref() == Some("bob"))
+            .find(|m| identity_of(&m.credential).map(|(uid, _)| uid) == Some(20))
             .unwrap()
             .index;
         let (commit, _, gi) = alice
@@ -825,6 +858,19 @@ mod tests {
         apply(&mut carol, &c4);
         assert_eq!(export(&alice), export(&bob2));
         assert_eq!(alice.group.as_ref().unwrap().epoch().as_u64(), 4);
+    }
+
+    #[test]
+    fn credentials_carry_uid_and_name() {
+        let parse = |id: &[u8]| identity_of(&BasicCredential::new(id.to_vec()).into());
+        assert_eq!(parse(&credential_identity(42, "alice")), Some((42, "alice".to_string())));
+        assert_eq!(parse(b"7:na:me"), Some((7, "na:me".to_string())));
+        // A pre-uid credential (bare name) or a bad uid is unreadable, so
+        // its leaf can't verify.
+        assert_eq!(parse(b"alice"), None);
+        assert_eq!(parse(b"0:alice"), None);
+        assert_eq!(parse(b"-3:alice"), None);
+        assert_eq!(parse(b"42:"), None);
     }
 
     #[test]

@@ -2107,6 +2107,19 @@ def test_encrypted_channels():
     ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == enc and p.channel_keys_changed.rotate)
     check("removal → CHANGED with rotate", ch is not None and ch.channel_keys_changed.filler in ("alice", "edith"))
     check("removed member's blobs deleted", sql("select count(*) from channel_key_blobs where recipient='fay'") == [(0,)])
+    # A sender renamed since sending: a v1 edit (0x02 binds the name it was
+    # sealed under) is refused; a v2 edit (0x04 binds the uid) is accepted.
+    ed2 = Client("edith2", uid=uid_for("edith")); check("renamed sender admitted", auth_ok(ed2)[0])
+    ed2.flush(0.3)
+    ed2.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=enc, message_id=mid, content="PLACEHOLDER", envelope=b"\x02ENV1c"))
+    r = ed2.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("renamed: a v1 edit is refused", r is not None and not r.message_edit_res.success
+          and "previous username" in r.message_edit_res.message, r.message_edit_res.message if r else None)
+    ed2.send(pb.Packet.MESSAGE_EDIT_REQ, message_edit_req=pb.MessageEditReq(channel_id=enc, message_id=mid, content="PLACEHOLDER", envelope=b"\x04ENV1d"))
+    r = ed2.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
+    check("renamed: a v2 edit is accepted", r is not None and r.message_edit_res.success, r.message_edit_res.message if r else None)
+    ed2.close()
+    back = Client("edith"); auth_ok(back); back.close()   # the name back, for the checks below
     # Legacy: a channel switched off back when the switch existed. Its sealed
     # rows can't be edited to plaintext (that would publish the text and drop
     # the attachment keys in the envelope); new plaintext still flows.
@@ -2116,7 +2129,7 @@ def test_encrypted_channels():
     r = ed.wait(pb.Packet.MESSAGE_EDIT_RES, timeout=2)
     check("legacy: plaintext edit of a sealed message refused", r is not None and not r.message_edit_res.success
           and "encrypted" in r.message_edit_res.message, r.message_edit_res.message if r else None)
-    check("legacy: the sealed row is untouched", sql("select envelope, content from messages where id=?", mid) == [(b"\x02ENV1b", "PLACEHOLDER")])
+    check("legacy: the sealed row is untouched", sql("select envelope, content from messages where id=?", mid) == [(b"\x04ENV1d", "PLACEHOLDER")])
     ed.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=enc, content="plain now", nonce="n7"))
     bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "n7")
     pmid = bc.channel_msg.id if bc else 0

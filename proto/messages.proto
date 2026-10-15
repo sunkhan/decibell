@@ -550,6 +550,10 @@ message LoginResponse {
   // payload now carries, and the username as stored.
   int64 uid = 13;
   string username = 14;
+  // This central stores E2eeKeyBundle.binding and accepts rebinds
+  // (E2eePublishKeysReq.rebind). Without it, clients publish name-bound
+  // bundles and never rebind.
+  bool e2ee_uid_binding = 15;
 }
 
 message DirectMessage {
@@ -2326,8 +2330,8 @@ message CallSignal {
 // dumb store for these: it assigns key_id, checks sizes, and never
 // interprets dh_pub / sign_pub / signature / backup beyond that.
 
-// A user's published identity. `signature` is Ed25519(sign_priv,
-// "decibell-e2ee-bundle-v1" ‖ username ‖ dh_pub ‖ sign_pub) — the client
+// A user's published identity. `signature` is Ed25519(sign_priv, m), where
+// m binds the account (see `binding`) to dh_pub ‖ sign_pub — the client
 // verifies it on fetch so central can't serve a mix-and-match bundle.
 message E2eeKeyBundle {
   string username = 1;
@@ -2340,6 +2344,13 @@ message E2eeKeyBundle {
   // The name a v1 bundle's signature covers: the publisher's name when it
   // was published (central-stamped; can predate a rename).
   string signed_name = 8;
+  // What the signature binds (uid design, stage 4):
+  //   1 (or 0 from older centrals) = the name:
+  //     "decibell-e2ee-bundle-v1" ‖ 0 ‖ signed_name ‖ 0 ‖ dh_pub ‖ sign_pub
+  //   2 = the uid (int64 LE):
+  //     "decibell-e2ee-bundle-v2" ‖ 0 ‖ uid ‖ dh_pub ‖ sign_pub
+  // Set by the publisher; stored and returned by central.
+  uint32 binding = 9;
 }
 
 // Publish a new bundle and/or replace the passphrase-wrapped private-key
@@ -2348,6 +2359,11 @@ message E2eeKeyBundle {
 message E2eePublishKeysReq {
   E2eeKeyBundle bundle = 1;
   bytes backup = 2;        // opaque, ≤ 8 KiB
+  // Re-sign the current bundle instead of publishing a new one: `bundle`
+  // names the current key_id with the same dh_pub / sign_pub and carries
+  // the new signature and binding. Central replaces them in place (no new
+  // key_id) and refuses when the keys or key_id don't match. No backup.
+  bool rebind = 3;
 }
 message E2eePublishKeysRes {
   bool   success = 1;

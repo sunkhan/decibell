@@ -154,6 +154,7 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             .username
             .clone()
             .ok_or_else(|| napi::Error::from_reason("Not signed in"))?;
+        let uid = s.uid;
         let identity = s
             .e2ee
             .store
@@ -197,6 +198,7 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             state_arc.clone(),
             server_id.clone(),
             channel_id.clone(),
+            uid,
             username,
             &identity,
             jwt.clone(),
@@ -372,6 +374,7 @@ pub(crate) fn rebind_voice_group(
         state_arc,
         server_id.to_string(),
         channel_id.to_string(),
+        s.uid,
         username,
         &identity,
         jwt,

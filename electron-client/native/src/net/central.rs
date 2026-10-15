@@ -299,6 +299,7 @@ impl CentralClient {
                         // backup lookup) runs off the router so the
                         // E2EE_FETCH_BACKUP_RES it waits for can be routed.
                         s.e2ee.supported = resp.e2ee_keys;
+                        s.e2ee.uid_binding = resp.e2ee_uid_binding;
                         // User statuses: Invisible must be known before the
                         // auto-rejoin below connects to any community (each
                         // auth carries it). Auto-away is session-only on
@@ -578,7 +579,7 @@ impl CentralClient {
                     crate::e2ee::session::on_fetch_backup_res(&state, res).await;
                 }
                 Some(packet::Payload::E2eeKeysChanged(b)) => {
-                    crate::e2ee::session::on_keys_changed(&state, &b.username, b.key_id).await;
+                    crate::e2ee::session::on_keys_changed(&state, b.uid, b.key_id).await;
                 }
                 Some(packet::Payload::FetchServerPictureRes(resp)) => {
                     events::emit_server_picture_received(

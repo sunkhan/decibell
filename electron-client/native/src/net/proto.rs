@@ -60,6 +60,7 @@ mod tests {
             status_clear_in: 3600,
             uid: 7,
             username: "ivy".into(),
+            e2ee_uid_binding: true,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();
@@ -71,6 +72,7 @@ mod tests {
         assert_eq!(decoded.status_emoji, "🍕");
         assert_eq!(decoded.status_clear_in, 3600);
         assert_eq!((decoded.uid, decoded.username.as_str()), (7, "ivy"));
+        assert!(decoded.e2ee_uid_binding);
     }
 
     #[test]

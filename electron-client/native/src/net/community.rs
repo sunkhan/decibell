@@ -444,7 +444,7 @@ impl CommunityClient {
         // Last roster per voice channel: a move's destination presence
         // arrives before VOICE_FORCE_NOTIFY, while the group driver still
         // points at the old channel, so the rebound driver is seeded here.
-        let mut voice_rosters: std::collections::HashMap<String, Vec<String>> =
+        let mut voice_rosters: std::collections::HashMap<String, Vec<i64>> =
             std::collections::HashMap::new();
         while let Some(packet) = read_rx.recv().await {
             match packet.payload {
@@ -1033,14 +1033,16 @@ impl CommunityClient {
                         .collect();
 
 
-                    voice_rosters.insert(update.channel_id.clone(), participants.clone());
+                    // The MLS roster goes by uid (its credentials carry them).
+                    let roster_uids = update.active_uids.clone();
+                    voice_rosters.insert(update.channel_id.clone(), roster_uids.clone());
                     // The MLS group driver reconciles the roster (ghost
                     // removal, elected remover) from this same update.
                     {
                         let s = state.lock().await;
                         if let Some(h) = s.voice_mls.as_ref() {
                             if h.server_id == server_id && h.channel_id == update.channel_id {
-                                let _ = h.tx.send(crate::e2ee::group::GroupCmd::Presence(participants.clone()));
+                                let _ = h.tx.send(crate::e2ee::group::GroupCmd::Presence(roster_uids.clone()));
                             }
                         }
                     }

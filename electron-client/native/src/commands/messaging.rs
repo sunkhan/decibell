@@ -32,7 +32,8 @@ pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<
 
     // Seal before taking the lock: resolving the peer's key can be a
     // round-trip through central.
-    let (content, envelope) = match e2ee::seal_outbound(&state_arc, &args.recipient, &args.message)
+    let (content, envelope) =
+        match e2ee::seal_outbound(&state_arc, args.recipient_uid.unwrap_or(0), &args.recipient, &args.message)
         .await
         .map_err(napi::Error::from_reason)?
     {

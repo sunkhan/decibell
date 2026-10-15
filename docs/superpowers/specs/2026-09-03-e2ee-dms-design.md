@@ -4,6 +4,8 @@
 **Author:** sunkhan (with Claude)
 **Status:** Implemented on `main` (client + central); central rebuild on the Hetzner box pending
 
+**Update 2026-10-15 (users by uid, stage 4):** Bundles, fingerprints, safety numbers and the DM envelope (header byte `0x03`) now bind the account uid instead of the name, so a rename changes nothing. See `2026-10-15-uid-identity-design.md` §Stage 4 for the v2 formats. v1 envelopes (`0x01`) stay readable with the names they were sealed under (`sealed_sender` / `sealed_recipient`). The keystore is `e2ee/u<uid>.json` and pins key on the uid.
+
 ## Problem
 
 Every DM is stored in central's Postgres in plaintext (`dm_messages.content`) and

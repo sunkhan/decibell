@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useE2eeStore } from "../../stores/e2eeStore";
 import type { E2eePeerInfo } from "../../types";
+import { uidOf } from "../users/userDirectory";
 
 // A peer's encryption state as native sees it (keys published? their
 // fingerprint, the conversation's safety number). Re-fetched when our own
@@ -17,7 +18,7 @@ export function usePeerE2ee(peer: string | null | undefined): E2eePeerInfo | nul
     setInfo(null);
     if (!peer || status === "unavailable") return;
     let cancelled = false;
-    invoke<E2eePeerInfo>("e2ee_peer_info", { username: peer })
+    invoke<E2eePeerInfo>("e2ee_peer_info", { username: peer, uid: uidOf(peer) })
       .then((i) => {
         if (!cancelled) setInfo(i);
       })

@@ -208,6 +208,13 @@ void AuthManager::initializeDatabase() {
             migrateToUidKeys(txn);
             txn.exec("UPDATE central_schema SET version = 1 WHERE id = 1");
         }
+        if (version < 2) {
+            // Migration 2: what each bundle's signature binds (uid design,
+            // stage 4). Every bundle published so far signs the name.
+            txn.exec("ALTER TABLE e2ee_keys ADD COLUMN binding SMALLINT NOT NULL DEFAULT 1");
+            txn.exec("UPDATE central_schema SET version = 2 WHERE id = 1");
+            std::cout << "[DB] Migration 2: e2ee_keys.binding\n";
+        }
 
         txn.exec(
             "CREATE TABLE IF NOT EXISTS community_invites ("
@@ -1448,6 +1455,7 @@ uint32_t AuthManager::publishE2eeKeys(int64_t uid, const std::string& signed_nam
                                       const std::string& dh_pub,
                                       const std::string& sign_pub,
                                       const std::string& signature,
+                                      int binding,
                                       int64_t created_at) {
     try {
         pqxx::connection conn(db_conn_str_);
@@ -1460,13 +1468,13 @@ uint32_t AuthManager::publishE2eeKeys(int64_t uid, const std::string& signed_nam
         // "inconsistent types deduced for parameter" (production,
         // 2026-09-03, with the username in this same statement).
         pqxx::result rs = txn.exec_params(
-            "INSERT INTO e2ee_keys (uid, key_id, signed_name, dh_pub, sign_pub, signature, created_at) "
+            "INSERT INTO e2ee_keys (uid, key_id, signed_name, dh_pub, sign_pub, signature, created_at, binding) "
             "VALUES ($1, "
             "  (SELECT COALESCE(MAX(key_id), 0) + 1 FROM e2ee_keys WHERE uid = $7), "
-            "  $2, $3, $4, $5, $6) "
+            "  $2, $3, $4, $5, $6, $8) "
             "RETURNING key_id",
             uid, signed_name, toBytea(dh_pub), toBytea(sign_pub), toBytea(signature), created_at,
-            uid);
+            uid, binding);
         txn.commit();
         if (rs.empty()) return 0;
         return static_cast<uint32_t>(rs[0][0].as<int64_t>());
@@ -1476,18 +1484,43 @@ uint32_t AuthManager::publishE2eeKeys(int64_t uid, const std::string& signed_nam
     }
 }
 
+bool AuthManager::rebindE2eeKeys(int64_t uid, uint32_t key_id,
+                                 const std::string& dh_pub,
+                                 const std::string& sign_pub,
+                                 const std::string& signature,
+                                 int binding,
+                                 const std::string& signed_name) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        // Only the current row, and only with the same keys: a rebind
+        // changes what the signature binds, never which keys are published.
+        pqxx::result rs = txn.exec_params(
+            "UPDATE e2ee_keys SET signature = $1, binding = $2, signed_name = $3 "
+            "WHERE uid = $4 AND key_id = $5 AND dh_pub = $6 AND sign_pub = $7 "
+            "  AND key_id = (SELECT MAX(key_id) FROM e2ee_keys WHERE uid = $8)",
+            toBytea(signature), binding, signed_name, uid, static_cast<int64_t>(key_id),
+            toBytea(dh_pub), toBytea(sign_pub), uid);
+        txn.commit();
+        return rs.affected_rows() == 1;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] rebindE2eeKeys: " << e.what() << "\n";
+        return false;
+    }
+}
+
 std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(int64_t uid, uint32_t key_id) {
     try {
         pqxx::connection conn(db_conn_str_);
         pqxx::work txn(conn);
         pqxx::result rs = key_id == 0
             ? txn.exec_params(
-                  "SELECT key_id, signed_name, dh_pub, sign_pub, signature, created_at "
+                  "SELECT key_id, signed_name, dh_pub, sign_pub, signature, created_at, binding "
                   "FROM e2ee_keys WHERE uid = $1 "
                   "ORDER BY key_id DESC LIMIT 1",
                   uid)
             : txn.exec_params(
-                  "SELECT key_id, signed_name, dh_pub, sign_pub, signature, created_at "
+                  "SELECT key_id, signed_name, dh_pub, sign_pub, signature, created_at, binding "
                   "FROM e2ee_keys WHERE uid = $1 AND key_id = $2",
                   uid, static_cast<int64_t>(key_id));
         txn.commit();
@@ -1499,6 +1532,7 @@ std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(int64_t uid, uin
         row.sign_pub = byteaOrEmpty(rs[0][3]);
         row.signature = byteaOrEmpty(rs[0][4]);
         row.created_at = rs[0][5].as<int64_t>();
+        row.binding = rs[0][6].as<int>();
         return row;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getE2eeKeys: " << e.what() << "\n";

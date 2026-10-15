@@ -192,7 +192,8 @@ pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
     let state_arc = state::shared();
     // E2EE: the new body is sealed exactly like a fresh send (same
     // policy — encrypted when both sides have keys).
-    let (content, envelope) = match e2ee::seal_outbound(&state_arc, &args.peer, &args.content)
+    let (content, envelope) =
+        match e2ee::seal_outbound(&state_arc, args.peer_uid.unwrap_or(0), &args.peer, &args.content)
         .await
         .map_err(napi::Error::from_reason)?
     {

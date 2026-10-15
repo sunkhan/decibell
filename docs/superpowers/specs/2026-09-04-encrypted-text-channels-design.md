@@ -4,6 +4,8 @@
 **Author:** sunkhan (with Claude)
 **Status:** Implemented on `main` (messages 2026-09-04, attachments 2026-09-04)
 
+**Update 2026-10-15 (users by uid, stage 4):** Message bodies (header byte `0x04`) and key blobs (v2 DM envelopes) now bind the account uid instead of the name, so a rename changes nothing. See `2026-10-15-uid-identity-design.md` §Stage 4 for the v2 formats. v1 bodies (`0x02`) stay readable with `sealed_sender`.
+
 ## Problem
 
 Community text channels are stored in the community server's SQLite in

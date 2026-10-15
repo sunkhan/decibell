@@ -838,18 +838,43 @@ private:
             const std::string& backup = req.backup();
             if (!has_bundle && backup.empty()) { reply(false, "Nothing to publish.", 0); return; }
             if (backup.size() > MAX_E2EE_BACKUP) { reply(false, "Backup too large.", 0); return; }
+            if (has_bundle) {
+                const auto& b = req.bundle();
+                if (b.dh_pub().size() != E2EE_PUB_LEN || b.sign_pub().size() != E2EE_PUB_LEN ||
+                    b.signature().size() != E2EE_SIG_LEN || b.binding() > 2) {
+                    reply(false, "Malformed key bundle.", 0);
+                    return;
+                }
+            }
+            // What the signature binds: 1 = the name (0 from older
+            // clients), 2 = the uid (uid design, stage 4).
+            const int binding = has_bundle && req.bundle().binding() == 2 ? 2 : 1;
+
+            // Rebind: the current bundle re-signed over the uid. Same keys,
+            // same key_id; only the signature and binding change.
+            if (req.rebind()) {
+                const auto& b = req.bundle();
+                if (!has_bundle || !backup.empty() || b.key_id() == 0) {
+                    reply(false, "Malformed rebind.", 0);
+                    return;
+                }
+                if (!auth_manager_.rebindE2eeKeys(uid_, b.key_id(), b.dh_pub(), b.sign_pub(),
+                                                  b.signature(), binding, username_)) {
+                    auto cur = auth_manager_.getE2eeKeys(uid_, 0);
+                    reply(false, "Those aren't your current keys.", cur ? cur->key_id : 0);
+                    return;
+                }
+                reply(true, "", b.key_id());
+                manager_.broadcast_e2ee_keys_changed(uid_, username_, b.key_id());
+                return;
+            }
 
             const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
             uint32_t key_id = 0;
             if (has_bundle) {
                 const auto& b = req.bundle();
-                if (b.dh_pub().size() != E2EE_PUB_LEN || b.sign_pub().size() != E2EE_PUB_LEN ||
-                    b.signature().size() != E2EE_SIG_LEN) {
-                    reply(false, "Malformed key bundle.", 0);
-                    return;
-                }
                 key_id = auth_manager_.publishE2eeKeys(
-                    uid_, username_, b.dh_pub(), b.sign_pub(), b.signature(), now_ts);
+                    uid_, username_, b.dh_pub(), b.sign_pub(), b.signature(), binding, now_ts);
                 if (key_id == 0) { reply(false, "Storage error.", 0); return; }
             } else {
                 // Backup-only update (passphrase change): it belongs to
@@ -894,6 +919,7 @@ private:
                 b->set_username(user.username);
                 b->set_uid(user.uid);
                 b->set_signed_name(row->signed_name);
+                b->set_binding(static_cast<uint32_t>(row->binding));
                 b->set_key_id(row->key_id);
                 b->set_dh_pub(row->dh_pub);
                 b->set_sign_pub(row->sign_pub);
@@ -1465,6 +1491,7 @@ private:
                 resp->set_call_signaling(true);
                 // E2EE DMs: this build serves the key endpoints.
                 resp->set_e2ee_keys(true);
+                resp->set_e2ee_uid_binding(true);
                 // User statuses: this build understands SET_STATUS_REQ /
                 // SET_IDLE_REQ; echo the saved choice.
                 resp->set_presence_statuses(true);

@@ -425,6 +425,69 @@ def test_e2ee_keys():
     a.close(); b.close()
 
 
+def test_e2ee_binding():
+    print("e2ee uid binding (stage 4)")
+    register("erin")
+    register("frank")
+    e, f = User("erin"), User("frank")
+    check("login advertises the uid binding", e.login.e2ee_uid_binding)
+
+    def publish(req):
+        e.send(pb.Packet.E2EE_PUBLISH_KEYS_REQ, e2ee_publish_keys_req=req)
+        r = e.wait(pb.Packet.E2EE_PUBLISH_KEYS_RES)
+        return r.e2ee_publish_keys_res if r else None
+
+    def fetch(key_id=0):
+        f.send(pb.Packet.E2EE_FETCH_KEYS_REQ, e2ee_fetch_keys_req=pb.E2eeFetchKeysReq(uid=e.login.uid, key_id=key_id))
+        r = f.wait(pb.Packet.E2EE_FETCH_KEYS_RES)
+        return r.e2ee_fetch_keys_res if r else None
+
+    r = publish(pb.E2eePublishKeysReq(bundle=bundle(11), backup=b"erin-wrapped"))
+    check("v1 publish", r and r.success and r.key_id == 1)
+    x = fetch()
+    check("unset binding is stored as the name", x and x.found and x.bundle.binding == 1 and x.bundle.signed_name == "erin")
+    f.clear()
+
+    def rebind(seed, key_id, sig=b"\x55" * 64, **kw):
+        b = bundle(seed)
+        b.key_id = key_id
+        b.signature = sig
+        b.binding = 2
+        return publish(pb.E2eePublishKeysReq(bundle=b, rebind=True, **kw))
+
+    r = rebind(11, 1)
+    check("rebind accepted, same key id", r and r.success and r.key_id == 1, r)
+    ch = f.wait(pb.Packet.E2EE_KEYS_CHANGED)
+    check("rebind broadcasts keys-changed with the same id", ch and ch.e2ee_keys_changed.uid == e.login.uid
+          and ch.e2ee_keys_changed.key_id == 1)
+    x = fetch()
+    check("rebound in place", x and x.bundle.key_id == 1 and x.bundle.binding == 2
+          and x.bundle.signature == b"\x55" * 64 and x.bundle.dh_pub == bytes([11]) * 32)
+    check("still one row", sql("SELECT count(*) FROM e2ee_keys WHERE uid = %s", e.login.uid)[0][0] == 1)
+    r = rebind(12, 1)
+    check("rebind with other keys refused", r and not r.success and r.key_id == 1)
+    r = rebind(11, 0)
+    check("rebind without a key id refused", r and not r.success)
+    r = rebind(11, 1, backup=b"x")
+    check("rebind with a backup refused", r and not r.success)
+    r = publish(pb.E2eePublishKeysReq(bundle=pb.E2eeKeyBundle(
+        dh_pub=bytes([13]) * 32, sign_pub=bytes([14]) * 32, signature=bytes([15]) * 64, binding=3)))
+    check("unknown binding refused", r and not r.success)
+    r = publish(pb.E2eePublishKeysReq(bundle=pb.E2eeKeyBundle(
+        dh_pub=bytes([13]) * 32, sign_pub=bytes([14]) * 32, signature=bytes([15]) * 64, binding=2)))
+    check("v2 publish", r and r.success and r.key_id == 2)
+    x = fetch()
+    check("v2 bundle served with its binding", x and x.bundle.key_id == 2 and x.bundle.binding == 2)
+    r = rebind(11, 1)
+    check("rebinding an old generation refused", r and not r.success and r.key_id == 2)
+    x = fetch(1)
+    check("old generation untouched", x and x.bundle.binding == 2 and x.bundle.dh_pub == bytes([11]) * 32)
+    e.send(pb.Packet.E2EE_FETCH_BACKUP_REQ, e2ee_fetch_backup_req=pb.E2eeFetchBackupReq())
+    b = e.wait(pb.Packet.E2EE_FETCH_BACKUP_RES)
+    check("backup untouched by rebinds", b and b.e2ee_fetch_backup_res.backup == b"erin-wrapped")
+    e.close(); f.close()
+
+
 def test_memberships():
     print("community memberships")
     sid = heartbeat()
@@ -658,7 +721,8 @@ def test_migration():
         check("migration ran and logged its counts", "friendships 3/3" in line and "dm_messages 3/4" in line
               and "(1 for unknown names removed)" in line and "e2ee keys 3/3" in line
               and "e2ee backups 2/2" in line and "memberships 2/2" in line and "read cursors 1/1" in line, line)
-        check("schema version 1", sql("SELECT version FROM central_schema")[0][0] == 1)
+        check("schema version 2", sql("SELECT version FROM central_schema")[0][0] == 2)
+        check("migrated bundles bind the name", sql("SELECT DISTINCT binding FROM e2ee_keys") == [(1,)])
         check("users keyed by uid", sql(
             "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid "
             "AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'users'::regclass AND i.indisprimary") == [("uid",)])
@@ -729,6 +793,7 @@ def main():
         test_presence_and_avatars()
         test_calls()
         test_e2ee_keys()
+        test_e2ee_binding()
         test_memberships()
         test_uid_wire()
         test_memberships_by_uid()

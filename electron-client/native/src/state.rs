@@ -153,8 +153,9 @@ pub struct AppState {
     /// E2EE DMs: status, own keys, peer pins, session caches. Reset on
     /// logout; bootstrapped after every LoginRes.
     pub e2ee: crate::e2ee::session::E2ee,
-    /// In-flight E2EE_FETCH_KEYS_REQ waiters keyed by (username, key_id as
-    /// requested — 0 = current). Several callers may want the same bundle.
+    /// In-flight E2EE_FETCH_KEYS_REQ waiters keyed by ("u:<uid>" or
+    /// "n:<name>", key_id as requested — 0 = current). Several callers may
+    /// want the same bundle.
     pub pending_key_fetches:
         HashMap<(String, u32), Vec<oneshot::Sender<E2eeFetchKeysRes>>>,
     /// In-flight E2EE_PUBLISH_KEYS_REQ (setup / reset / passphrase change

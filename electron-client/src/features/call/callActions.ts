@@ -181,6 +181,7 @@ export async function acceptCall(): Promise<void> {
     await invoke("call_connect", {
       callId: inc.callId,
       peer: inc.from,
+      peerUid: uidOf(inc.from),
       remotePubKey: inc.pubKey,
       remoteCandidates: inc.candidates,
       remotePubKeySig: inc.pubKeySig ?? undefined,
@@ -218,6 +219,7 @@ export async function connectAfterAccept(
     await invoke("call_connect", {
       callId,
       peer,
+      peerUid: uidOf(peer),
       remotePubKey: pubKey,
       remoteCandidates: candidates,
       remotePubKeySig: pubKeySig ?? undefined,
