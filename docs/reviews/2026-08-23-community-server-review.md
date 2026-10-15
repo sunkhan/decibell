@@ -2867,3 +2867,18 @@ Verified:
 
 Ships with the Hetzner central rebuild and a client release together: an older client gets no presence from
 this central, and this client gets no presence from an older one.
+
+### Fix: your own avatar after presence by subscription (2026-10-15)
+
+Reported by the owner right after the central rebuild: their own picture showed as a letter. The client
+learned its own avatar version from the login snapshot, which subscriptions removed, and it doesn't watch
+itself, so nothing told it. Changing the picture had the same hole: Settings waited for the
+`AVATAR_CHANGED` broadcast, which now reaches only an account's watchers. (Before, an invisible user never
+saw their own picture either: the snapshot listed visible users only.)
+
+- At login the renderer seeds its own entry (`avatarStore.seed`), and the avatar fetch fills in the version.
+- `upload_avatar` announces the account's own new version (`avatar_changed`) when central accepts it.
+
+Client-only; no server change. Verified: `tsc` 0 (web + node), `napi build`, `cargo test --lib` 234, and an
+offscreen run of the real login listener: one `fetch_avatar` for the own uid and the picture in all three
+places it shows.

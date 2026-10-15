@@ -13,7 +13,10 @@
 // Cache invalidation drivers (all in Task 19's listener wiring):
 //   - friend_list_received: setVersion for each FriendInfo
 //   - user_list_updated (presence): setVersion for each UserPresence
-//   - avatar_changed: setVersion for the broadcasting user
+//   - avatar_changed: setVersion for the broadcasting user (our own comes
+//     from upload_avatar, central tells only an account's watchers)
+//   - login: seed for our own uid (we don't watch ourselves, so nothing
+//     tells us its version)
 //
 // See docs/superpowers/specs/2026-05-12-custom-profile-pictures-design.md §7.
 
@@ -39,6 +42,10 @@ interface AvatarStoreState {
   /// Batched setVersion — one Map copy and one notify for a whole
   /// friend / presence list instead of one per user.
   setVersions: (list: { uid: Uid; version: string }[]) => void;
+  /// Fetch `uid`'s picture without knowing its version (our own, at
+  /// login): an idle entry whose version the fetch fills in. No-op when
+  /// there is an entry already.
+  seed: (uid: Uid) => void;
   /// Trigger a fetch if the entry is `idle` (just-invalidated or
   /// never-seen). No-op when already loading/loaded/missing/error.
   fetchIfNeeded: (uid: Uid) => void;
@@ -83,6 +90,15 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
       next.set(uid, { version, data: null, blobUrl: null, status: "idle" });
     }
     if (next) set({ entries: next });
+  },
+
+  seed: (uid) => {
+    if (!(uid > 0) || get().entries.has(uid)) return;
+    set((s) => {
+      const next = new Map(s.entries);
+      next.set(uid, { version: "", data: null, blobUrl: null, status: "idle" });
+      return { entries: next };
+    });
   },
 
   fetchIfNeeded: (uid) => {

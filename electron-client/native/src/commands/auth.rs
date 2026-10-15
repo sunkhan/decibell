@@ -358,11 +358,25 @@ pub async fn upload_avatar(args: UploadAvatarArgs) -> napi::Result<UploadAvatarR
     }
 
     match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(resp)) => Ok(UploadAvatarResult {
-            success: resp.success,
-            message: resp.message,
-            version: resp.version,
-        }),
+        Ok(Ok(resp)) => {
+            if resp.success {
+                // Central tells an account's watchers about its new picture,
+                // and we don't watch ourselves: announce our own here.
+                let (uid, username) = {
+                    let s = state_arc.lock().await;
+                    (s.uid, s.username.clone().unwrap_or_default())
+                };
+                events::send(
+                    "avatar_changed",
+                    serde_json::json!({ "uid": uid, "username": username, "version": resp.version }),
+                );
+            }
+            Ok(UploadAvatarResult {
+                success: resp.success,
+                message: resp.message,
+                version: resp.version,
+            })
+        }
         Ok(Err(_)) => Err(napi::Error::from_reason(
             "Central connection closed before response",
         )),

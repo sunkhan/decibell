@@ -41,7 +41,7 @@ export default function AccountTab() {
     try {
       // Server treats a zero-byte upload as "remove" — see main.cpp
       // UPDATE_AVATAR_REQ handler. The renderer's avatar will be
-      // updated via the AvatarChanged broadcast → setVersion('') →
+      // updated via the avatar_changed event (native, on success) → setVersion('') →
       // fetch returns missing → LetterAvatar.
       const result = (await invoke("upload_avatar", {
         jpeg: new Uint8Array(0),
@@ -58,7 +58,7 @@ export default function AccountTab() {
 
   const handleCropperSave = () => {
     setPickedFile(null);
-    // The server's AvatarChanged broadcast drives the store update;
+    // The avatar_changed event (native, on success) drives the store update;
     // nothing to do here besides closing the modal.
   };
 

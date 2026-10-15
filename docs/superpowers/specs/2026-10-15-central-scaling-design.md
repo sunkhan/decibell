@@ -72,6 +72,9 @@ cleared there, saved, and announced from the sweep thread.
   set; native keeps the last set and re-sends it after every central login. The presence store tracks
   which uids central has answered for: one of those without a status is offline; one it hasn't is drawn
   from the community roster's own flag until the answer arrives.
+- The client never watches itself; its own state comes from the login reply and its own requests: status
+  and message from `LoginResponse`, the avatar fetched at login and announced by `upload_avatar`, a rename
+  by `rename_account`.
 - A key change missed while not watching someone is caught when watching starts: native forgets that
   account's cached bundle on a subscription answer, so the next send fetches it fresh.
 

@@ -19,9 +19,10 @@ export function useAuthEvents() {
     const unlistenSuccess = listen<{ username: string; renames?: boolean; uid?: number | bigint }>(
       "login_succeeded",
       (event) => {
-        useAuthStore
-          .getState()
-          .login(event.payload.username, !!event.payload.renames, Number(event.payload.uid ?? 0) || 0);
+        const uid = Number(event.payload.uid ?? 0) || 0;
+        useAuthStore.getState().login(event.payload.username, !!event.payload.renames, uid);
+        // Others' pictures come with their presence; nothing sends our own.
+        useAvatarStore.getState().seed(uid);
         // Replace, never push: a history entry is something back/forward
         // could walk to, and the app has no page worth walking back to.
         navigate("/", { replace: true });
