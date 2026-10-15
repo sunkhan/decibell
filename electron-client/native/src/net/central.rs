@@ -423,7 +423,12 @@ impl CentralClient {
                             status_emoji: u.status_emoji,
                         })
                         .collect();
-                    events::emit_user_list_updated(users, covered);
+                    let avatars = update
+                        .avatars
+                        .into_iter()
+                        .map(|a| events::AvatarVersionPayload { uid: a.uid, version: a.version })
+                        .collect();
+                    events::emit_user_list_updated(users, covered, avatars);
                 }
                 Some(packet::Payload::PresenceDelta(delta)) => {
                     let user = delta.user.unwrap_or_default();

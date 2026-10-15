@@ -682,9 +682,18 @@ message UserPresence {
 // `covered_uids` lists them, `users` holds those visible right now (a
 // covered uid without an entry is offline). Each entry carries the
 // avatar_version, so clients see a changed avatar without polling.
+// `avatars` gives the picture of every covered account not in `users`
+// (offline, or invisible: the two look the same) that has one; a covered
+// uid in neither list has no picture.
 message PresenceUpdate {
   repeated UserPresence users = 1;
   repeated int64 covered_uids = 2;
+  repeated AvatarVersion avatars = 3;
+}
+
+message AvatarVersion {
+  int64 uid = 1;
+  string version = 2;  // sha256-hex of the picture
 }
 
 // The full set of accounts the client is showing (friends, DM peers,

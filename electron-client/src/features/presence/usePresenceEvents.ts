@@ -32,14 +32,24 @@ function reconcileFriends(isOnline: (uid: Uid) => boolean | undefined) {
 export function usePresenceEvents() {
   useEffect(() => {
     // A subscription answer: the newly watched users' presence (those not
-    // in `users` are offline).
-    const unlistenSnapshot = listen<{ users: UserPresence[]; covered?: (number | bigint)[] }>(
+    // in `users` are offline) and every one's picture: from the presence
+    // entry, else from `avatars`, else none.
+    const unlistenSnapshot = listen<{
+      users: UserPresence[];
+      covered?: (number | bigint)[];
+      avatars?: { uid: number | bigint; version: string }[];
+    }>(
       "user_list_updated",
       (event) => {
         const users = event.payload.users.map((u) => ({ ...u, uid: toUid(u.uid) }));
         const covered = (event.payload.covered ?? []).map(toUid);
         usePresenceStore.getState().applyCovered(covered, users);
-        useAvatarStore.getState().setVersions(users.map((u) => ({ uid: u.uid, version: u.avatarVersion })));
+        const versions = new Map<Uid, string>();
+        for (const a of event.payload.avatars ?? []) versions.set(toUid(a.uid), a.version);
+        for (const u of users) versions.set(u.uid, u.avatarVersion);
+        useAvatarStore
+          .getState()
+          .setVersions(covered.map((uid) => ({ uid, version: versions.get(uid) ?? "" })));
         const online = new Set(users.map((u) => u.uid));
         const answered = new Set(covered);
         reconcileFriends((u) => (answered.has(u) ? online.has(u) : undefined));

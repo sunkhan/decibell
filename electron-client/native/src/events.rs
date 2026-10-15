@@ -918,6 +918,16 @@ pub struct UserListUpdatedPayload {
     /// The accounts this answer covers (newly watched): one without an
     /// entry in `users` is offline.
     pub covered: Vec<i64>,
+    /// The pictures of covered accounts not in `users` that have one; a
+    /// covered account in neither has no picture.
+    pub avatars: Vec<AvatarVersionPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarVersionPayload {
+    pub uid: i64,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -988,8 +998,12 @@ pub struct FriendActionRespondedPayload {
     pub message: String,
 }
 
-pub fn emit_user_list_updated(users: Vec<UserPresencePayload>, covered: Vec<i64>) {
-    send(USER_LIST_UPDATED, UserListUpdatedPayload { users, covered });
+pub fn emit_user_list_updated(
+    users: Vec<UserPresencePayload>,
+    covered: Vec<i64>,
+    avatars: Vec<AvatarVersionPayload>,
+) {
+    send(USER_LIST_UPDATED, UserListUpdatedPayload { users, covered, avatars });
 }
 
 pub fn emit_presence_delta(payload: PresenceDeltaPayload) {

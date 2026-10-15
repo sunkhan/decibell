@@ -1328,7 +1328,8 @@ private:
             }
             const auto& uids = packet.presence_subscribe().uids();
             const auto n = std::min<size_t>(static_cast<size_t>(uids.size()), SessionManager::MAX_WATCH);
-            manager_.watch(shared_from_this(), uid_, std::vector<int64_t>(uids.begin(), uids.begin() + n));
+            manager_.watch(shared_from_this(), uid_, std::vector<int64_t>(uids.begin(), uids.begin() + n),
+                           auth_manager_);
         }
 
         // --- COMMUNITY SERVER HEARTBEAT ---
@@ -1894,10 +1895,9 @@ bool SessionManager::update_presence(int64_t uid, const std::function<void(Prese
     return true;
 }
 
-void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid, const std::vector<int64_t>& uids) {
-    chatproj::Packet answer;
-    answer.set_type(chatproj::Packet::PRESENCE_UPDATE);
-    auto* update = answer.mutable_presence_update();
+void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid, const std::vector<int64_t>& uids,
+                           AuthManager& auth_manager) {
+    std::vector<int64_t> added;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto acc = accounts_.find(uid);
@@ -1919,13 +1919,48 @@ void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid,
         for (int64_t target : next) {
             if (account.watching.count(target)) continue;
             watchers_[target].insert(uid);
-            update->add_covered_uids(target);
-            auto other = accounts_.find(target);
-            if (other != accounts_.end() && other->second.presence.visible()) {
-                fill_presence(update->add_users(), target, other->second.presence);
-            }
+            added.push_back(target);
         }
         account.watching = std::move(next);
+    }
+    if (added.empty()) return;
+
+    // Pictures of accounts that aren't signed in come from the database,
+    // read without the lock (one query for the whole set). A signed-in
+    // account's version is the directory's, kept current by
+    // push_avatar_changed; the two agree, so an invisible account answers
+    // exactly like an offline one.
+    const auto stored = auth_manager.getAvatarVersions(added);
+
+    // Built and posted under the lock: any push about these accounts that
+    // takes the lock after this is delivered after the answer, and one
+    // delivered before it is already reflected in it.
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto acc = accounts_.find(uid);
+    if (acc == accounts_.end() || acc->second.session != session) return;
+    const Account& account = acc->second;
+    chatproj::Packet answer;
+    answer.set_type(chatproj::Packet::PRESENCE_UPDATE);
+    auto* update = answer.mutable_presence_update();
+    for (int64_t target : added) {
+        if (!account.watching.count(target)) continue;
+        update->add_covered_uids(target);
+        const std::string* version = nullptr;
+        auto other = accounts_.find(target);
+        if (other != accounts_.end()) {
+            if (other->second.presence.visible()) {
+                fill_presence(update->add_users(), target, other->second.presence);
+                continue;
+            }
+            version = &other->second.presence.avatar_version;
+        } else if (auto it = stored.find(target); it != stored.end()) {
+            version = &it->second;
+        }
+        if (version && !version->empty()) {
+            auto* avatar = update->add_avatars();
+            avatar->set_uid(target);
+            avatar->set_version(*version);
+        }
     }
     if (update->covered_uids_size() > 0) session->deliver(make_frame(answer));
 }

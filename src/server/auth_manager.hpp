@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
 #include <pqxx/pqxx>
@@ -151,9 +152,10 @@ public:
     // privacy model as letter avatars).
     std::pair<std::string, std::string> getAvatar(int64_t uid);
 
-    // Lookup just the version (no bytes). Used by broadcast_presence
-    // to populate UserPresence.avatar_version cheaply without
-    // reading the BYTEA payload.
+    /// The avatar versions of those of `uids` that have a picture, in one
+    /// read (no bytes): what a subscription answer tells about accounts
+    /// that aren't signed in. Empty on a database error.
+    std::unordered_map<int64_t, std::string> getAvatarVersions(const std::vector<int64_t>& uids);
 
     // --- User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md) ---
     /// What a login needs for presence, in one users-row read.

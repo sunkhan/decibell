@@ -2882,3 +2882,32 @@ saw their own picture either: the snapshot listed visible users only.)
 Client-only; no server change. Verified: `tsc` 0 (web + node), `napi build`, `cargo test --lib` 234, and an
 offscreen run of the real login listener: one `fetch_avatar` for the own uid and the picture in all three
 places it shows.
+
+### Offline people's pictures (2026-10-15)
+
+Owner request, after the own-avatar fix: people who are offline (and not friends) showed a letter. Central
+only ever told clients the picture versions of online users (presence) and friends (friend list), and the
+client fetches a picture only once it knows the version. Pre-existing, not a subscription regression.
+
+- **Central:** a subscription answer gains `PresenceUpdate.avatars` (`AvatarVersion {uid, version}`): the
+  picture of each covered account that isn't visible and has one. Accounts not signed in are read in one
+  query (`getAvatarVersions`, `uid = ANY($1)`) outside the directory lock; signed-in ones come from the
+  directory. An invisible account answers byte for byte like an offline one (checked by the e2e). The
+  answer is now built and posted under the lock, so a push about those accounts that comes after it can't
+  overtake it (it used to be posted after unlocking, a small window for a stale answer).
+- **Client:** every covered user gets a version (presence entry, `avatars`, else none). "None" marks the
+  entry missing without a fetch (it used to fetch to learn that). The avatar cache was reworked for the
+  extra load: at most 6 fetches in flight (newest first; a list of 100 used to fire 100 at once against a
+  5 s timeout), users scrolled away before their turn are skipped, at most 400 loaded pictures of users off
+  screen are kept (bytes dropped, version kept), a failed fetch is retried the next time central names
+  the version, and a logout drops results still in flight.
+
+Verified: central e2e 166 (new: offline picture, invisible = offline byte for byte, visible picture only in
+the presence entry, no picture → covered only) and the same under ThreadSanitizer, 0 reports; community e2e
+(proto change); `cargo test --lib` 234; `napi build`; `tsc` 0 (web + node); offscreen cache run: an answer
+loads the offline picture and marks the others missing without a fetch, peak 6 in flight for 40, 16 fetches
+for 30 requested with 20 scrolled away, 450 loaded → 400 after going off screen, an evicted picture
+reloads, logout mid-fetch leaves nothing; smoke scenes clean.
+
+Ships with the Hetzner central rebuild: against a central without `avatars`, this client takes every
+covered user without a presence entry as having no picture, so offline friends would show a letter.

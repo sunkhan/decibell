@@ -407,12 +407,39 @@ def test_presence_and_avatars():
     b.close()
     off = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub)
     check("the watcher hears bob offline", off and not off.presence_delta.online)
+    # Pictures of accounts that aren't visible ride the answer too.
+    version = r.update_avatar_res.version
+    a.watch()
+    offline = a.watch(ub)
+    check("watching an offline account: its picture", offline is not None and list(offline.covered_uids) == [ub]
+          and len(offline.users) == 0 and [(v.uid, v.version) for v in offline.avatars] == [(ub, version)], offline)
+    b = User("bob")
+    a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub)
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_INVISIBLE))
+    a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub and not p.presence_delta.online)
+    a.watch()
+    hidden = a.watch(ub)
+    check("an invisible account answers exactly like an offline one",
+          hidden is not None and hidden.SerializeToString() == offline.SerializeToString(), hidden)
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub and p.presence_delta.online)
+    a.watch()
+    shown = a.watch(ub)
+    check("a visible account's picture is in its entry only", shown is not None and len(shown.avatars) == 0
+          and [u.avatar_version for u in shown.users] == [version])
+    b.close()
     # The cap: the first 5000 accounts of a longer set.
     big = list(range(10_000_000, 10_006_000))
     ans = c.watch(*big)
     check("a watch set is cut at 5000", ans is not None and len(ans.covered_uids) == 5000
           and set(ans.covered_uids) == set(big[:5000]))
-    c.close(); a.close()
+    c.close()
+    time.sleep(0.3)
+    a.watch()
+    bare = a.watch(uid_of("carol"))
+    check("no picture: covered, nothing else", bare is not None and list(bare.covered_uids) == [uid_of("carol")]
+          and len(bare.users) == 0 and len(bare.avatars) == 0, bare)
+    a.close()
 
 
 def test_watch_cleanup():

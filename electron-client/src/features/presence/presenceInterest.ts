@@ -71,6 +71,12 @@ export function releasePresence(uids: Iterable<Uid>): void {
   if (changed) schedule();
 }
 
+/// Whether a mounted component shows `uid` right now (the avatar cache
+/// fetches and keeps pictures for these first).
+export function isOnScreen(uid: Uid): boolean {
+  return counts.has(uid);
+}
+
 /// Watch `uid` while the calling component is mounted.
 export function usePresenceInterest(uid: Uid): void {
   useEffect(() => {

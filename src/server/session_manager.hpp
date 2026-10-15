@@ -41,8 +41,10 @@ struct Presence {
 /// presence, and who watches whom. All state sessions share lives here,
 /// behind one mutex; a session never reads another session's fields.
 /// Delivery collects its targets under the lock and posts to them after
-/// releasing it (Session::deliver is thread-safe). Every method may be
-/// called from any thread.
+/// releasing it (Session::deliver is thread-safe and only posts, so it
+/// may also be called under the lock: a subscription answer is, to keep
+/// its order against later pushes). Every method may be called from any
+/// thread.
 ///
 /// `deliver_to_user` is the one way to reach an account. In a multi-node
 /// deployment it is where a message bus plugs in; nothing else needs to know.
@@ -83,9 +85,12 @@ public:
     /// isn't signed in here.
     bool update_presence(int64_t uid, const std::function<void(Presence&)>& change);
     /// Replace the set of accounts `session` (signed in as `uid`) shows;
-    /// the newly watched are answered with a PRESENCE_UPDATE. Cut at
-    /// MAX_WATCH; non-accounts are dropped.
-    void watch(const std::shared_ptr<Session>& session, int64_t uid, const std::vector<int64_t>& uids);
+    /// the newly watched are answered with a PRESENCE_UPDATE: presence for
+    /// the visible, the avatar version for the rest (read from the
+    /// database outside the lock for accounts not signed in). Cut at
+    /// MAX_WATCH; non-positive uids are dropped.
+    void watch(const std::shared_ptr<Session>& session, int64_t uid, const std::vector<int64_t>& uids,
+               AuthManager& auth_manager);
 
     // --- Profile pushes (to the account's watchers) ---
     void push_user_renamed(int64_t uid, const std::string& username);

@@ -1150,6 +1150,35 @@ std::pair<std::string, std::string> AuthManager::getAvatar(int64_t uid) {
     }
 }
 
+std::unordered_map<int64_t, std::string> AuthManager::getAvatarVersions(const std::vector<int64_t>& uids) {
+    std::unordered_map<int64_t, std::string> versions;
+    if (uids.empty()) return versions;
+    // A bigint[] literal: the uids are numbers, so nothing needs quoting.
+    std::string array = "{";
+    for (size_t i = 0; i < uids.size(); ++i) {
+        if (i) array += ',';
+        array += std::to_string(uids[i]);
+    }
+    array += '}';
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::nontransaction txn(conn);
+        pqxx::result rs = txn.exec_params(
+            "SELECT uid, avatar_version FROM users "
+            "WHERE uid = ANY($1::bigint[]) AND avatar_version <> ''",
+            array);
+        versions.reserve(rs.size());
+        for (const auto& row : rs) {
+            versions.emplace(row[0].as<int64_t>(), row[1].as<std::string>());
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getAvatarVersions: " << e.what() << "\n";
+        versions.clear();
+    }
+    return versions;
+}
+
 AuthManager::PresenceProfile AuthManager::getPresenceProfile(int64_t uid) {
     PresenceProfile profile;
     try {

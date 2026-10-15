@@ -58,9 +58,13 @@ cleared there, saved, and announced from the sweep thread.
 - `PRESENCE_SUBSCRIBE { repeated int64 uids }` (client → central): the full set of accounts the client
   is showing; each request replaces the previous set. At most 5,000 uids (the rest are ignored); a
   per-session bucket (10 burst, 2 per second) bounds the rate.
-- Central answers with `PRESENCE_UPDATE { users, covered_uids }` for the accounts **newly** added:
-  `covered_uids` lists them, `users` holds those visible right now; a covered uid without an entry is
-  offline.
+- Central answers with `PRESENCE_UPDATE { users, covered_uids, avatars }` for the accounts **newly**
+  added: `covered_uids` lists them, `users` holds those visible right now; a covered uid without an entry
+  is offline. `avatars` gives the picture version of every covered account not in `users` that has one
+  (offline people show their pictures; before, only online users and friends did). Versions of accounts
+  not signed in come from one database read outside the lock; a signed-in account's comes from the
+  directory, and the two agree, so an invisible account answers byte for byte like an offline one. The
+  answer is built and posted under the lock, so a later push about those accounts can't overtake it.
 - `PRESENCE_DELTA`, `USER_RENAMED`, `AVATAR_CHANGED` and `E2EE_KEYS_CHANGED` go to the account's
   watchers only. Statuses stay visible to every signed-in user (owner decision 2026-10-11): anyone may
   watch anyone; only delivery changed.
@@ -72,6 +76,9 @@ cleared there, saved, and announced from the sweep thread.
   set; native keeps the last set and re-sends it after every central login. The presence store tracks
   which uids central has answered for: one of those without a status is offline; one it hasn't is drawn
   from the community roster's own flag until the answer arrives.
+- The client's avatar cache fetches at most 6 pictures at once, newest request first, and skips users
+  scrolled away before their turn; past 400 loaded pictures, those of users off screen drop their bytes
+  (version kept) and are fetched again if shown. A known "no picture" never costs a fetch.
 - The client never watches itself; its own state comes from the login reply and its own requests: status
   and message from `LoginResponse`, the avatar fetched at login and announced by `upload_avatar`, a rename
   by `rename_account`.

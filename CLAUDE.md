@@ -132,8 +132,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   own fields, on its strand; everything shared (connections, signed-in accounts with their presence,
   the watch index) lives in `SessionManager` behind its mutex, and `deliver_to_user` is the one way to
   reach an account — the seam a message bus replaces when central splits across machines. Deliveries
-  and closes are posted to the target's strand; never call into a session or the database while holding
-  the directory's lock. Decided for later: DM attachments go to object storage as end-to-end encrypted
+  and closes are posted to the target's strand; never call into a session (beyond `deliver`, which only
+  posts) or the database while holding the directory's lock. Decided for later: DM attachments go to object storage as end-to-end encrypted
   blobs (central stores no file bytes), and message ids (DM and channel) promise only "64-bit and
   increasing over time" (room for Snowflake-style ids).
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
@@ -226,7 +226,11 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   (`usePresence`, `useStatusMessage` and `UserAvatar` register interest; `features/presence/presenceInterest.ts`
   sends the set, native re-sends it after every login), and central sends `PRESENCE_DELTA` and the
   profile pushes (renames, avatars, E2EE keys) to watchers only, answering newly watched users with a
-  `PRESENCE_UPDATE` (`covered_uids`); there's no login snapshot. An invisible user is absent, never
+  `PRESENCE_UPDATE` (`covered_uids`, plus `avatars`: the picture of each one not visible, so offline people
+  show theirs; an invisible user answers exactly like an offline one); there's no login snapshot. The
+  client never watches itself: its own state comes from the login reply and its own requests. The avatar
+  cache (`stores/avatarStore.ts`) fetches 6 at a time, skips users scrolled away, and keeps at most 400
+  loaded pictures of users off screen. An invisible user is absent, never
   "invisible" on the wire. Invisible is airtight by owner decision: every
   presence-revealing path asks `is_user_visible` (friend lists, call INVITE → PEER_OFFLINE), friends-only
   DMs are saved on the account so the DM gate answers the same online or not, and clients tell each
