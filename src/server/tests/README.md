@@ -66,7 +66,9 @@ Phases: password sign-ins (bcrypt throughput); a ramp of connected clients, each
 and pinging (central memory and CPU, presence and DM latency at each step); traffic at full population
 (DMs at rising rates, auto-away flips, re-subscriptions; delivery latency of every DM); and a restart of
 central with everyone connected (time until all have resumed). The report lands in
-`$RUN/load-report.md` and `.json`. It needs `cryptography` in the venv (`setup_deps.sh` installs it) and a
+`$RUN/load-report.md` and `.json`. **Put PostgreSQL on a real disk** (`--pg-dir`, or a `$RUN` that isn't
+tmpfs; the script refuses tmpfs): every DM commits and waits for the disk to flush, and that wait, not
+CPU, sets the DM rate. On tmpfs the first runs reported ~15,000 DMs/s; on an NVMe it was ~1,500. It needs `cryptography` in the venv (`setup_deps.sh` installs it) and a
 few GB of memory for 40,000 clients.
 
 Requires `uv`, `protoc`, `g++`, `cmake`, `openssl` and `pkg-config` with protobuf.

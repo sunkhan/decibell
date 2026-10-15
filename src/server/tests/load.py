@@ -557,6 +557,8 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--password-logins", type=int, default=120)
     ap.add_argument("--hold", type=float, default=20.0, help="seconds per traffic step")
+    ap.add_argument("--pg-dir", default="", help="PostgreSQL data dir (default: $RUN/pg). Must be on a real "
+                    "disk: on tmpfs every commit's flush is free and DM throughput comes out ~10x too high")
     args = ap.parse_args()
     steps = [int(x) for x in args.steps.split(",")]
     rates = [int(x) for x in args.rates.split(",")]
@@ -567,7 +569,16 @@ def main():
     os.sched_setaffinity(0, worker_cpus)
     report = {"steps": [], "traffic": [], "config": vars(args)}
 
-    e2e.PG = pgserver.get_server(os.path.join(run, "pg"), cleanup_mode="stop")
+    pg_dir = args.pg_dir or os.path.join(run, "pg")
+    os.makedirs(pg_dir, exist_ok=True)
+    fs = next((p.fstype for p in psutil.disk_partitions(all=True)
+               if os.path.realpath(pg_dir).startswith(p.mountpoint.rstrip("/") + "/")
+               and len(p.mountpoint) == max(len(q.mountpoint) for q in psutil.disk_partitions(all=True)
+                                           if os.path.realpath(pg_dir).startswith(q.mountpoint.rstrip("/") + "/"))), "")
+    if fs in ("tmpfs", "ramfs"):
+        sys.exit(f"{pg_dir} is on {fs}: commits would never wait for a disk. Pass --pg-dir on a real disk.")
+    report["pg_fs"] = fs
+    e2e.PG = pgserver.get_server(pg_dir, cleanup_mode="stop")
     e2e.fresh_db()
     pin_postgres(server_cpus)
     env = {"DECIBELL_IO_THREADS": str(len(server_cpus)), "DECIBELL_CPU_THREADS": str(max(1, len(server_cpus) // 2))}

@@ -3003,3 +3003,23 @@ its address's failures, not the account-wide count. Signed-in apps were never af
 Verified: central e2e 221 with the migration check (10 failures hold the griefer's address, the owner signs
 in from another, which doesn't release the griefer; 100 failures from many addresses hold the account,
 whose resume token still works) and under ThreadSanitizer.
+
+### Correction: the load test's DM rate was measured with PostgreSQL in RAM (2026-10-15)
+
+The "Central hardening + load test" entry's traffic table (up to 15,100 DMs/s at 17 ms p99) ran PostgreSQL
+in `/tmp`, which is tmpfs on the test machine: commits never waited for a disk flush. Rerun with the
+database on the machine's NVMe (consumer Samsung 990 EVO Plus, btrfs; `pg_test_fsync` ≈ 620 flushes/s,
+1.6 ms each), 10,000 clients:
+
+| DMs/s target | delivered /s | p50 | p99 |
+|---:|---:|---:|---:|
+| 500 | 485 | 8 ms | 92 ms |
+| 1,000 | 973 | 23 ms | 46 ms |
+| 2,000 | 1,543 | 1.5 s | 4.1 s |
+
+So central sustains **about 1,000–1,500 DMs/s** on a disk like that, bound by the disk flush each DM's
+commit waits for (holding one of the six io threads meanwhile), not by CPU. The connection, memory,
+presence and restart figures are unaffected (they don't commit per packet). What sets this ceiling: the
+disk's flush latency (datacenter SSDs with power-loss protection flush in tens of microseconds, a 7,200 rpm
+HDD in ~8 ms) and how many commits can share one flush (Postgres groups concurrent commits; six io threads
+allow at most six). `load.py` now refuses a tmpfs database (`--pg-dir`).
