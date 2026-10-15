@@ -85,9 +85,9 @@ export default function UserContextMenu() {
     open &&
     !!contextServerId &&
     uid !== ownUid &&
-    username !== serverOwner &&
+    uid !== serverOwner &&
     !!targetVoiceChannel &&
-    canManage(username) &&
+    canManage(uid) &&
     (canMute || canDeafen || canMove);
   const runVoiceMod = useCallback(
     (action: string, channelId?: string) => {

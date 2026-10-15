@@ -1541,19 +1541,6 @@ std::optional<DbMember> CommunityDb::get_member(int64_t uid) const {
     return member_from_row(q);
 }
 
-std::optional<DbMember> CommunityDb::find_member_by_name(const std::string& username) const {
-    if (username.empty()) return std::nullopt;
-    std::lock_guard<std::mutex> lock(mutex_);
-    // Real accounts before placeholders, should both carry the name.
-    const std::string sql = std::string("SELECT ") + kMemberCols +
-                            " FROM members WHERE username=? ORDER BY uid > 0 DESC, joined_at ASC LIMIT 1;";
-    Stmt q(db_, sql.c_str());
-    if (!q.s) return std::nullopt;
-    q.bind_text(1, username);
-    if (q.step() != SQLITE_ROW) return std::nullopt;
-    return member_from_row(q);
-}
-
 bool CommunityDb::set_timeout(int64_t uid, int64_t until) {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_, "UPDATE members SET timed_out_until=? WHERE uid=?;");
@@ -1628,23 +1615,6 @@ std::optional<DbBan> CommunityDb::get_ban(int64_t uid) const {
     DbBan b;
     if (!ban_active_unlocked(db_, uid, "", &b)) return std::nullopt;
     return b;
-}
-
-int64_t CommunityDb::placeholder_for_name(const std::string& username) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    {
-        Stmt q(db_, "SELECT uid FROM legacy_claims WHERE username=?;");
-        if (q.s) {
-            q.bind_text(1, username);
-            if (q.step() == SQLITE_ROW) return q.col_int64(0);
-        }
-    }
-    const int64_t placeholder = next_placeholder_unlocked_();
-    Stmt q(db_, "INSERT INTO legacy_claims(username, uid) VALUES(?, ?);");
-    if (!q.s) return 0;
-    q.bind_text(1, username);
-    q.bind_int64(2, placeholder);
-    return q.step() == SQLITE_DONE ? placeholder : 0;
 }
 
 bool CommunityDb::add_ban(int64_t uid, const std::string& username,

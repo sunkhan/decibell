@@ -76,9 +76,9 @@ export default function MembersList() {
   const { online, offline, statusOf } = useMemo(() => {
     const presence = { statuses, loaded, ownStatus, idle };
     const statusOf = new Map<Uid, DisplayStatus>();
-    for (const m of roster) statusOf.set(m.uid ?? 0, resolvePresence(presence, me, m.uid ?? 0, m.isOnline));
-    const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.uid ?? 0)!));
-    const offlineList = roster.filter((m) => !isOnlineStatus(statusOf.get(m.uid ?? 0)!));
+    for (const m of roster) statusOf.set(m.uid, resolvePresence(presence, me, m.uid, m.isOnline));
+    const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.uid)!));
+    const offlineList = roster.filter((m) => !isOnlineStatus(statusOf.get(m.uid)!));
     const shown = (m: ServerMember) => m.nickname || (m.uid ? names.get(m.uid) : undefined) || m.username;
     const byName = (a: ServerMember, b: ServerMember) => collator.compare(shown(a), shown(b));
     // Sort by display name (nickname when set), matching how the list reads.
@@ -89,9 +89,9 @@ export default function MembersList() {
 
   const renderRow = (m: ServerMember) => (
     <MemberRow
-      key={m.uid ?? m.username}
+      key={m.uid}
       member={m}
-      status={statusOf.get(m.uid ?? 0) ?? "offline"}
+      status={statusOf.get(m.uid) ?? "offline"}
       serverId={activeServerId}
     />
   );
@@ -154,7 +154,7 @@ const MemberRow = memo(function MemberRow({
   serverId: string | null;
 }) {
   const isOnline = isOnlineStatus(status);
-  const uid = m.uid ?? 0;
+  const uid = m.uid;
   const name = useUserName(uid, m.username);
   const message = useStatusMessage(uid);
   return (

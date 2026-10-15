@@ -436,7 +436,7 @@ SearchOutcome SearchWorker::execute_(const SearchSpec& spec) {
                                            search_has::kAudio | search_has::kDocument);
     const Driver driver =
         fts ? Driver::Fts
-        : (!spec.author_uids.empty() && spec.author_names.empty()) ? Driver::Author
+        : !spec.author_uids.empty() ? Driver::Author
         : file_bits ? Driver::Files
         : spec.channels.size() == 1 ? Driver::Channel
         : Driver::Scan;
@@ -488,18 +488,9 @@ SearchOutcome SearchWorker::execute_(const SearchSpec& spec) {
         sql += " AND +m.channel_id IN (" + placeholders(spec.channels.size()) + ")";
         for (const auto& c : spec.channels) binds.emplace_back(c);
     }
-    if (driver != Driver::Author && (!spec.author_uids.empty() || !spec.author_names.empty())) {
-        sql += " AND (";
-        if (!spec.author_uids.empty()) {
-            sql += "+m.sender_uid IN (" + placeholders(spec.author_uids.size()) + ")";
-            for (int64_t uid : spec.author_uids) binds.emplace_back(uid);
-        }
-        if (!spec.author_names.empty()) {
-            if (!spec.author_uids.empty()) sql += " OR ";
-            sql += "m.sender IN (" + placeholders(spec.author_names.size()) + ")";
-            for (const auto& name : spec.author_names) binds.emplace_back(name);
-        }
-        sql += ")";
+    if (driver != Driver::Author && !spec.author_uids.empty()) {
+        sql += " AND +m.sender_uid IN (" + placeholders(spec.author_uids.size()) + ")";
+        for (int64_t uid : spec.author_uids) binds.emplace_back(uid);
     }
     if (spec.after > 0) { sql += " AND +m.timestamp >= ?"; binds.emplace_back(spec.after); }
     if (spec.before > 0) { sql += " AND +m.timestamp < ?"; binds.emplace_back(spec.before); }

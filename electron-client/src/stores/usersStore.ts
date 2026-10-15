@@ -54,3 +54,11 @@ export function nameOf(uid: Uid | null | undefined, fallback = ""): string {
 export function useUserName(uid: Uid | null | undefined, fallback = ""): string {
   return useUsersStore((s) => (uid && uid > 0 ? s.names.get(uid) : undefined) ?? fallback);
 }
+
+/// The account currently named `name`, as far as the servers have said.
+/// Only for names saved before uids (old per-user volume settings);
+/// everything else carries the uid.
+export function uidNamed(name: string): Uid | undefined {
+  for (const [uid, n] of useUsersStore.getState().names) if (n === name) return uid;
+  return undefined;
+}

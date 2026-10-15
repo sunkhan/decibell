@@ -8,7 +8,7 @@ import { toast } from "../../../stores/toastStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import Switch from "../../../components/Switch";
 import type { MenuAnchor } from "../../../hooks/useMenuPosition";
-import type { ChannelInfo, ServerMember, ServerRole } from "../../../types";
+import type { ChannelInfo, ChannelOverwrite, ServerMember, ServerRole } from "../../../types";
 import {
   CHANNEL_OVERWRITE_PERMISSIONS,
   PERM,
@@ -23,7 +23,7 @@ import { Icon, Popover, SearchField, SectionLabel, anchorBelow, type IconName } 
 import { useMemberSearch } from "../tabs/useMemberSearch";
 import { Notice } from "./ui";
 import { EmptyState } from "../tabs/AuditLogTab";
-import { legacyUid, uidOf } from "../../users/userDirectory";
+import { nameOf, useUsersStore } from "../../../stores/usersStore";
 
 type TriState = "allow" | "inherit" | "deny";
 type Bits = { allow: number; deny: number };
@@ -32,11 +32,15 @@ const NO_BITS: Bits = { allow: 0, deny: 0 };
 const stateOf = (b: Bits, bit: number): TriState =>
   hasBits(b.deny, bit) ? "deny" : hasBits(b.allow, bit) ? "allow" : "inherit";
 
-/// "role:<id>" | "member:<username>" → its two halves (usernames never
-/// contain ':', but split on the first one only anyway).
+/// "role:<id>" | "member:<uid>" → its two halves.
 function splitTarget(key: string): ["role" | "member", string] {
   const i = key.indexOf(":");
   return [key.slice(0, i) as "role" | "member", key.slice(i + 1)];
+}
+
+/// The draft key of a stored overwrite: members by account, never by name.
+function overwriteKey(o: ChannelOverwrite): string {
+  return o.targetType === "member" ? `member:${o.targetUid}` : `role:${o.targetId}`;
 }
 
 /// Which overwrite bits a channel type shows. A text channel has no use
@@ -68,11 +72,10 @@ export function usePermissionDraft(serverId: string, channel: ChannelInfo | unde
   // Staged rows the server now holds drop out of the draft: that's how a
   // save settles (the re-pushed overwrites arrive after the calls return).
   useEffect(() => {
-    const keyOf = (o: (typeof overwrites)[number]) => `${o.targetType}:${o.targetId}`;
     setPending((p) => {
       let out: Record<string, Bits> | null = null;
       for (const [key, bits] of Object.entries(p)) {
-        const ow = overwrites.find((o) => keyOf(o) === key);
+        const ow = overwrites.find((o) => overwriteKey(o) === key);
         if ((ow?.allow ?? 0) === bits.allow && (ow?.deny ?? 0) === bits.deny) {
           out ??= { ...p };
           delete out[key];
@@ -81,7 +84,7 @@ export function usePermissionDraft(serverId: string, channel: ChannelInfo | unde
       return out ?? p;
     });
     setAdded((a) => {
-      const next = a.filter((k) => !overwrites.some((o) => keyOf(o) === k));
+      const next = a.filter((k) => !overwrites.some((o) => overwriteKey(o) === k));
       return next.length === a.length ? a : next;
     });
   }, [overwrites]);
@@ -101,13 +104,14 @@ export function usePermissionDraft(serverId: string, channel: ChannelInfo | unde
   const commit = async () => {
     if (!channel) return;
     for (const [key, bits] of Object.entries(pending)) {
-      const [targetType, targetId] = splitTarget(key);
+      const [targetType, id] = splitTarget(key);
+      const uid = targetType === "member" ? Number(id) : 0;
       await invoke("set_channel_overwrite", {
         serverId,
         channelId: channel.id,
         targetType,
-        targetId,
-        targetUid: targetType === "member" ? uidOf(targetId) : undefined,
+        targetId: targetType === "member" ? "" : id,
+        targetUid: uid,
         allow: bits.allow,
         deny: bits.deny,
       });
@@ -139,8 +143,9 @@ export default function PermissionsTab({
   draft: PermissionDraft;
 }) {
   const { pending, setPending, syncDraft, setSyncDraft, added, setAdded } = draft;
-  const localUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const owner = useChatStore((s) => s.serverOwner[serverId]);
+  const names = useUsersStore((s) => s.names);
   const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
   const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
   const overwrites = useChatStore(
@@ -175,9 +180,9 @@ export default function PermissionsTab({
   }, [serverChannels, channel.id, isCategory]);
   const followers = children.filter((c) => c.permissionsSynced).length;
 
-  const isOwner = !!owner && owner === localUsername;
+  const isOwner = !!owner && owner === ownUid;
   const myBits = isOwner ? PERM_ALL : channel.myPermissions ?? 0;
-  const me = members.find((m) => m.username === localUsername);
+  const me = members.find((m) => m.uid === ownUid);
   const myLevel = isOwner
     ? Number.MAX_SAFE_INTEGER
     : Math.max(0, ...(me?.roleIds ?? []).map((id) => roles.find((r) => r.id === id)?.position ?? 0));
@@ -193,7 +198,7 @@ export default function PermissionsTab({
 
   const stored = useCallback(
     (key: string): Bits => {
-      const ow = overwrites.find((o) => `${o.targetType}:${o.targetId}` === key);
+      const ow = overwrites.find((o) => overwriteKey(o) === key);
       return ow ? { allow: ow.allow, deny: ow.deny } : NO_BITS;
     },
     [overwrites],
@@ -204,7 +209,7 @@ export default function PermissionsTab({
   // added. Roles by rank, then members by name; @everyone apart.
   const targets = useMemo(() => {
     const keys = new Set<string>([
-      ...overwrites.map((o) => `${o.targetType}:${o.targetId}`),
+      ...overwrites.map(overwriteKey),
       ...Object.keys(pending),
       ...added,
     ]);
@@ -223,6 +228,8 @@ export default function PermissionsTab({
   const [picker, setPicker] = useState<MenuAnchor | null>(null);
   const addRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
+  // Names of members picked this session, for one the roster never loaded.
+  const pickedNames = useRef(new Map<number, string>());
 
   const describe = (key: string) => {
     const [type, id] = splitTarget(key);
@@ -230,8 +237,16 @@ export default function PermissionsTab({
       const r = roles.find((x) => String(x.id) === id);
       return { kind: "role" as const, role: r, name: r ? (r.isDefault ? "@everyone" : r.name) : "Deleted role", sub: "" };
     }
-    const m = members.find((x) => x.username === id);
-    return { kind: "member" as const, username: id, name: m?.nickname || id, sub: m?.nickname ? id : "" };
+    const uid = Number(id);
+    const m = members.find((x) => x.uid === uid);
+    // A community placeholder (no account) is named only by its rows.
+    const username =
+      names.get(uid) ||
+      m?.username ||
+      overwrites.find((o) => o.targetType === "member" && o.targetUid === uid)?.targetId ||
+      pickedNames.current.get(uid) ||
+      "Unknown user";
+    return { kind: "member" as const, uid, username, name: m?.nickname || username, sub: m?.nickname ? username : "" };
   };
 
   const visible = CHANNEL_OVERWRITE_PERMISSIONS.filter((p) => groupsFor(channel.type).includes(p.group));
@@ -261,10 +276,12 @@ export default function PermissionsTab({
   const removeTarget = (key: string) => {
     stage(key, NO_BITS);
     setAdded((a) => a.filter((k) => k !== key));
-    if (!overwrites.some((o) => `${o.targetType}:${o.targetId}` === key)) setSelected(everyoneKey);
+    if (!overwrites.some((o) => overwriteKey(o) === key)) setSelected(everyoneKey);
   };
 
-  const addTarget = (key: string) => {
+  const addTarget = (key: string, name?: string) => {
+    const [type, id] = splitTarget(key);
+    if (type === "member" && name) pickedNames.current.set(Number(id), name);
     setPicker(null);
     if (key !== everyoneKey && !targets.includes(key)) setAdded((a) => [...a, key]);
     setSelected(key);
@@ -439,7 +456,7 @@ export default function PermissionsTab({
           <section className="min-w-0 flex-1">
             <header className="flex items-center gap-4 pb-7">
               {t.kind === "member" ? (
-                <UserAvatar uid={legacyUid(t.username)} name={t.username} size={48} />
+                <UserAvatar uid={t.uid} name={t.username} size={48} />
               ) : (
                 <span
                   className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg"
@@ -577,7 +594,7 @@ function TargetRow({
   selected,
   onSelect,
 }: {
-  info: { kind: "role"; role?: ServerRole; name: string } | { kind: "member"; username: string; name: string };
+  info: { kind: "role"; role?: ServerRole; name: string } | { kind: "member"; uid: number; username: string; name: string };
   counts: { allow: number; deny: number };
   unsaved: boolean;
   locked?: boolean;
@@ -596,7 +613,7 @@ function TargetRow({
       }`}
     >
       {info.kind === "member" ? (
-        <UserAvatar uid={legacyUid(info.username)} name={info.username} size={18} />
+        <UserAvatar uid={info.uid} name={info.username} size={18} />
       ) : (
         <span className="flex h-4.5 w-4.5 shrink-0 items-center justify-center">
           <span
@@ -694,7 +711,7 @@ function AddTargetPopover({
   roles: ServerRole[];
   taken: Set<string>;
   onClose: () => void;
-  onPick: (key: string) => void;
+  onPick: (key: string, name?: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -702,7 +719,7 @@ function AddTargetPopover({
   const shownRoles = roles
     .filter((r) => !taken.has(`role:${r.id}`) && (!q || r.name.toLowerCase().includes(q)))
     .sort((a, b) => b.position - a.position);
-  const shownMembers = found.members.filter((m: ServerMember) => !m.isOwner && !taken.has(`member:${m.username}`));
+  const shownMembers = found.members.filter((m: ServerMember) => !m.isOwner && !taken.has(`member:${m.uid}`));
   return (
     <Popover anchor={anchor} onClose={onClose} ignore={ignore} className="flex w-72 flex-col p-2">
       <SearchField value={query} onChange={setQuery} placeholder="Find a role or member" autoFocus />
@@ -731,16 +748,16 @@ function AddTargetPopover({
             <SectionLabel className="px-2 pb-1.5 pt-3">Members</SectionLabel>
             {shownMembers.map((m) => (
               <button
-                key={m.username}
+                key={m.uid}
                 type="button"
                 role="menuitem"
-                onClick={() => onPick(`member:${m.username}`)}
+                onClick={() => onPick(`member:${m.uid}`, nameOf(m.uid, m.username))}
                 className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left outline-none hover:bg-surface-hover focus-visible:bg-surface-hover"
               >
-                <UserAvatar uid={m.uid ?? 0} name={m.username} size={24} />
+                <UserAvatar uid={m.uid} name={nameOf(m.uid, m.username)} size={24} />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
-                  {m.nickname || m.username}
-                  {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{m.username}</span>}
+                  {m.nickname || nameOf(m.uid, m.username)}
+                  {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{nameOf(m.uid, m.username)}</span>}
                 </span>
               </button>
             ))}

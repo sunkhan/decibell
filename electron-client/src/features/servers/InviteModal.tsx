@@ -7,6 +7,7 @@ import type { ServerInvite } from "../../types";
 import { PERM, usePermission } from "./permissions";
 import { buildInviteLink } from "./inviteLink";
 import Select from "../../components/Select";
+import { useUsersStore } from "../../stores/usersStore";
 
 const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
   { label: "1 hour", seconds: 3600 },
@@ -33,6 +34,7 @@ export default function InviteModal() {
   useEscapeToClose(closeModal, activeModal === "invite-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const invitesByServer = useChatStore((s) => s.invitesByServer);
+  const names = useUsersStore((s) => s.names);
 
   const [expirySec, setExpirySec] = useState(604800);
   const [maxUsesUnlimited, setMaxUsesUnlimited] = useState(true);
@@ -361,9 +363,11 @@ export default function InviteModal() {
                         <circle cx="12" cy="8" r="4" />
                         <path d="M20 21a8 8 0 1 0-16 0" />
                       </svg>
-                      {invite.createdBy}
+                      {names.get(invite.createdByUid) ?? invite.createdBy}
                       {invite.forUser ? (
-                        <span title="A personal invite: only they can use it">→ {invite.forUser}</span>
+                        <span title="A personal invite: only they can use it">
+                          → {names.get(invite.forUid) ?? invite.forUser}
+                        </span>
                       ) : null}
                     </span>
                     <span className="flex items-center gap-1.5">

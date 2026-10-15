@@ -52,7 +52,7 @@ export function useStreamThumbnails() {
         const owner = stream.ownerUid;
         if (s.streamThumbnails[owner] || requested.has(stream.streamId)) continue;
         requested.add(stream.streamId);
-        invoke("fetch_stream_thumbnail", { serverId, uid: owner, username: stream.ownerUsername })
+        invoke("fetch_stream_thumbnail", { serverId, uid: owner })
           .then((res) => {
             const jpeg = (res as { jpeg?: Uint8Array } | null)?.jpeg;
             if (!jpeg || jpeg.byteLength === 0) return; // nothing cached yet — a push follows

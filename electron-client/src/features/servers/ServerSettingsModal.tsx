@@ -56,8 +56,8 @@ export default function ServerSettingsModal({ serverId }: Props) {
     (s) => s.serverMeta[serverId]?.name ?? server?.name ?? "Server",
   );
   const owner = useChatStore((s) => s.serverOwner[serverId]);
-  const currentUser = useAuthStore((s) => s.username);
-  const isOwner = !!currentUser && !!owner && owner === currentUser;
+  const ownUid = useAuthStore((s) => s.uid);
+  const isOwner = !!ownUid && !!owner && owner === ownUid;
   const canManageRoles = usePermission(serverId, PERM.MANAGE_ROLES);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
   const canAudit = usePermission(serverId, PERM.VIEW_AUDIT_LOG);

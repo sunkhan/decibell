@@ -10,7 +10,6 @@ import {
   type SearchQuery,
   type SearchSort,
 } from "./searchQuery";
-import { uidOf } from "../users/userDirectory";
 
 /// Message search state (spec 2026-10-14). One search at a time: the
 /// results panel belongs to the active server. The header box's own text
@@ -114,7 +113,7 @@ export const useSearchStore = create<SearchState>((set, get) => {
         error: "The server didn't answer. It may need an update before it can search.",
       });
     }, NO_ANSWER_MS);
-    invoke("search_messages", toSearchArgs(s.serverId, s.query, s.sort, seq, page, uidOf)).catch((e) => {
+    invoke("search_messages", toSearchArgs(s.serverId, s.query, s.sort, seq, page)).catch((e) => {
       if (get().seq !== seq) return;
       clearTimers();
       set({ status: "error", loadingMore: false, error: String(e) || "Couldn't reach the server." });

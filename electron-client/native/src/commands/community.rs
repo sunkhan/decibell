@@ -193,10 +193,10 @@ pub async fn set_storage_min_free(args: SetStorageMinFreeArgs) -> napi::Result<(
 #[napi(object)]
 pub struct TimeoutMemberArgs {
     pub server_id: String,
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
     /// Unix seconds; 0 clears an active timeout.
     pub until: i64,
     pub reason: Option<String>,
@@ -210,10 +210,10 @@ pub async fn timeout_member(args: TimeoutMemberArgs) -> napi::Result<()> {
         &args.server_id,
         packet::Type::TimeoutMemberReq,
         packet::Payload::TimeoutMemberReq(TimeoutMemberRequest {
-            username: args.username,
+            username: args.username.unwrap_or_default(),
             until: args.until,
             reason: args.reason.unwrap_or_default(),
-            uid: args.uid.unwrap_or(0),
+            uid: args.uid,
         }),
     )
     .await
@@ -222,10 +222,10 @@ pub async fn timeout_member(args: TimeoutMemberArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct VoiceModArgs {
     pub server_id: String,
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
     /// "server_mute" | "server_unmute" | "server_deafen" | "server_undeafen" | "move" | "disconnect"
     pub action: String,
     /// "move" only.
@@ -252,10 +252,10 @@ pub async fn voice_mod(args: VoiceModArgs) -> napi::Result<()> {
         &args.server_id,
         packet::Type::VoiceModReq,
         packet::Payload::VoiceModReq(VoiceModRequest {
-            username: args.username,
+            username: args.username.unwrap_or_default(),
             action: action as i32,
             channel_id: args.channel_id.unwrap_or_default(),
-            uid: args.uid.unwrap_or(0),
+            uid: args.uid,
         }),
     )
     .await
@@ -265,8 +265,8 @@ pub async fn voice_mod(args: VoiceModArgs) -> napi::Result<()> {
 pub struct TransferOwnershipArgs {
     pub server_id: String,
     pub new_owner: String,
-    /// The new owner's uid (preferred over the name).
-    pub new_owner_uid: Option<i64>,
+    /// The new owner's uid (users by uid).
+    pub new_owner_uid: i64,
 }
 
 /// Owner only. Response via mod_action_responded action="transfer";
@@ -278,7 +278,7 @@ pub async fn transfer_ownership(args: TransferOwnershipArgs) -> napi::Result<()>
         packet::Type::TransferOwnershipReq,
         packet::Payload::TransferOwnershipReq(TransferOwnershipRequest {
             new_owner: args.new_owner,
-            new_owner_uid: args.new_owner_uid.unwrap_or(0),
+            new_owner_uid: args.new_owner_uid,
         }),
     )
     .await
@@ -303,10 +303,10 @@ pub async fn list_bans(args: ListBansArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct KickMemberArgs {
     pub server_id: String,
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
     /// Optional — the UI doesn't collect a reason yet. A required
     /// String here made napi reject every kick with "Missing field
     /// 'reason'".
@@ -325,9 +325,9 @@ pub async fn kick_member(args: KickMemberArgs) -> napi::Result<()> {
         &server_id,
         packet::Type::KickMemberReq,
         packet::Payload::KickMemberReq(KickMemberRequest {
-            username,
+            username: username.unwrap_or_default(),
             reason: reason.unwrap_or_default(),
-            uid: uid.unwrap_or(0),
+            uid,
         }),
     )
     .await
@@ -336,10 +336,10 @@ pub async fn kick_member(args: KickMemberArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct BanMemberArgs {
     pub server_id: String,
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
     /// Optional — see KickMemberArgs.
     pub reason: Option<String>,
     /// Unix seconds when the ban lifts; omit / 0 = permanent.
@@ -362,11 +362,11 @@ pub async fn ban_member(args: BanMemberArgs) -> napi::Result<()> {
         &server_id,
         packet::Type::BanMemberReq,
         packet::Payload::BanMemberReq(BanMemberRequest {
-            username,
+            username: username.unwrap_or_default(),
             reason: reason.unwrap_or_default(),
             expires_at: expires_at.unwrap_or(0),
             delete_message_seconds: delete_message_seconds.unwrap_or(0),
-            uid: uid.unwrap_or(0),
+            uid,
         }),
     )
     .await
@@ -397,7 +397,7 @@ pub struct CreateInviteArgs {
     /// Personal invite: only this user can redeem it (single-use; the
     /// server hands back their live one if it exists).
     pub for_user: Option<String>,
-    /// The invitee's account uid (preferred over `for_user`).
+    /// A personal invite's account uid (users by uid; `for_user` only labels it).
     pub for_uid: Option<i64>,
     /// Echoed on invite_create_responded.
     pub request_id: Option<u32>,
@@ -548,10 +548,10 @@ pub async fn delete_role(args: DeleteRoleArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct SetMemberRolesArgs {
     pub server_id: String,
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
     /// The member's full desired role set (default role implicit).
     pub role_ids: Vec<i64>,
 }
@@ -562,9 +562,9 @@ pub async fn set_member_roles(args: SetMemberRolesArgs) -> napi::Result<()> {
         &args.server_id,
         packet::Type::MemberRolesUpdateReq,
         packet::Payload::MemberRolesUpdateReq(MemberRolesUpdateRequest {
-            username: args.username,
+            username: args.username.unwrap_or_default(),
             role_ids: args.role_ids,
-            uid: args.uid.unwrap_or(0),
+            uid: args.uid,
         }),
     )
     .await
@@ -573,10 +573,10 @@ pub async fn set_member_roles(args: SetMemberRolesArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct UnbanMemberArgs {
     pub server_id: String,
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
 }
 
 #[napi]
@@ -585,8 +585,8 @@ pub async fn unban_member(args: UnbanMemberArgs) -> napi::Result<()> {
         &args.server_id,
         packet::Type::UnbanMemberReq,
         packet::Payload::UnbanMemberReq(UnbanMemberRequest {
-            username: args.username,
-            uid: args.uid.unwrap_or(0),
+            username: args.username.unwrap_or_default(),
+            uid: args.uid,
         }),
     )
     .await
@@ -597,10 +597,10 @@ pub struct SetNicknameArgs {
     pub server_id: String,
     /// Target member — may be the local user (self-changes are always
     /// allowed; others need MANAGE_NICKNAMES + a strictly higher role).
-    pub username: String,
-    /// The target's account uid (users by uid); the server falls back to
-    /// `username` when it is absent.
-    pub uid: Option<i64>,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
     /// Empty clears the nickname.
     pub nickname: String,
 }
@@ -616,7 +616,7 @@ pub async fn set_nickname(args: SetNicknameArgs) -> napi::Result<()> {
     send_for_server(
         &server_id,
         packet::Type::SetNicknameReq,
-        packet::Payload::SetNicknameReq(SetNicknameRequest { username, nickname, uid: uid.unwrap_or(0) }),
+        packet::Payload::SetNicknameReq(SetNicknameRequest { username: username.unwrap_or_default(), nickname, uid }),
     )
     .await
 }

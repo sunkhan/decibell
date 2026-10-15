@@ -1,5 +1,6 @@
 import { useAuthStore } from "../../stores/authStore";
-import { findMember } from "../../hooks/useDisplayName";
+import { findMember, memberIndex } from "../../hooks/useDisplayName";
+import type { Uid } from "../../stores/usersStore";
 import { useChatStore } from "../../stores/chatStore";
 import type { ServerMember, ServerRole } from "../../types";
 
@@ -276,7 +277,6 @@ export function memberLevel(
 /// role list fall back to owner-only gating, matching their server-side
 /// behavior.
 export function usePermission(serverId: string | null, perm: number): boolean {
-  const localUsername = useAuthStore((s) => s.username);
   const owner = useChatStore((s) =>
     serverId ? s.serverOwner[serverId] : undefined,
   );
@@ -290,8 +290,8 @@ export function usePermission(serverId: string | null, perm: number): boolean {
   const me = useChatStore((s) =>
     serverId && localUid ? findMember(s.membersByServer, serverId, localUid) : undefined,
   );
-  if (!serverId || !localUsername) return false;
-  if (!!owner && owner === localUsername) return true;
+  if (!serverId || !localUid) return false;
+  if (!!owner && owner === localUid) return true;
   const perms = computeEffectivePermissions(roles, me?.roleIds);
   return hasBits(perms, perm);
 }
@@ -305,7 +305,7 @@ export function useChannelPermission(
   channelId: string | null,
   perm: number,
 ): boolean {
-  const localUsername = useAuthStore((s) => s.username);
+  const localUid = useAuthStore((s) => s.uid);
   const owner = useChatStore((s) =>
     serverId ? s.serverOwner[serverId] : undefined,
   );
@@ -315,7 +315,7 @@ export function useChannelPermission(
       ?.myPermissions;
   });
   if (!serverId || !channelId) return false;
-  if (!!owner && owner === localUsername) return true;
+  if (!!owner && owner === localUid) return true;
   if (mine === undefined) return false;
   return hasBits(mine, perm);
 }
@@ -341,13 +341,13 @@ function highestRole(
 export function useHierarchy(serverId: string | null): {
   isOwner: boolean;
   level: number;
-  levelOf: (username: string) => number;
-  canManage: (username: string) => boolean;
+  levelOf: (uid: Uid) => number;
+  canManage: (uid: Uid) => boolean;
   /// `canManage` for a member record held outside the roster (a search
   /// result for an offline member the sidebar never loaded).
-  canManageRecord: (member: Pick<ServerMember, "username" | "roleIds">) => boolean;
+  canManageRecord: (member: Pick<ServerMember, "uid" | "roleIds">) => boolean;
 } {
-  const localUsername = useAuthStore((s) => s.username);
+  const localUid = useAuthStore((s) => s.uid);
   const owner = useChatStore((s) =>
     serverId ? s.serverOwner[serverId] : undefined,
   );
@@ -357,44 +357,42 @@ export function useHierarchy(serverId: string | null): {
   const members = useChatStore((s) =>
     serverId ? s.membersByServer[serverId] : undefined,
   );
-  return hierarchyOf(localUsername, owner, roles, members);
+  return hierarchyOf(localUid, owner, roles, members);
 }
 
 /// `useHierarchy`'s `canManage` read once from the stores — for event
 /// handlers (e.g. a drag start) where a per-row subscription to the whole
 /// member list would re-render every row on each member delta.
-export function canManageMember(serverId: string, username: string): boolean {
+export function canManageMember(serverId: string, uid: Uid): boolean {
   const chat = useChatStore.getState();
   return hierarchyOf(
-    useAuthStore.getState().username,
+    useAuthStore.getState().uid,
     chat.serverOwner[serverId],
     chat.rolesByServer[serverId],
     chat.membersByServer[serverId],
-  ).canManage(username);
+  ).canManage(uid);
 }
 
 function hierarchyOf(
-  localUsername: string | null | undefined,
-  owner: string | undefined,
+  localUid: Uid,
+  owner: Uid | undefined,
   roles: ServerRole[] | undefined,
   members: ServerMember[] | undefined,
 ) {
-  const isOwner = !!localUsername && !!owner && owner === localUsername;
-  const me = members?.find((m) => m.username === localUsername);
+  const isOwner = !!localUid && !!owner && owner === localUid;
+  const index = members ? memberIndex(members) : undefined;
+  const me = localUid ? index?.get(localUid) : undefined;
   const level = memberLevel(roles, me?.roleIds);
-  const levelOf = (username: string) => {
-    const m = members?.find((x) => x.username === username);
-    return memberLevel(roles, m?.roleIds);
-  };
+  const levelOf = (uid: Uid) => memberLevel(roles, index?.get(uid)?.roleIds);
   const peerFlag = !!highestRole(roles, me?.roleIds)?.manageEachOther;
-  const manages = (username: string, theirs: number) => {
-    if (username === owner) return false;
+  const manages = (uid: Uid, theirs: number) => {
+    if (uid === owner) return false;
     if (isOwner) return true;
     if (theirs < level) return true;
-    return peerFlag && theirs === level && username !== localUsername;
+    return peerFlag && theirs === level && uid !== localUid;
   };
-  const canManage = (username: string) => manages(username, levelOf(username));
-  const canManageRecord = (m: Pick<ServerMember, "username" | "roleIds">) =>
-    manages(m.username, memberLevel(roles, m.roleIds));
+  const canManage = (uid: Uid) => manages(uid, levelOf(uid));
+  const canManageRecord = (m: Pick<ServerMember, "uid" | "roleIds">) =>
+    manages(m.uid, memberLevel(roles, m.roleIds));
   return { isOwner, level, levelOf, canManage, canManageRecord };
 }

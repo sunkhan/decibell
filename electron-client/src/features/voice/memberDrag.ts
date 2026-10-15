@@ -45,17 +45,16 @@ function ensureWindowListeners() {
 }
 
 export function canMoveMember(serverId: string, channelId: string, uid: Uid): boolean {
-  const me = useAuthStore.getState().username;
-  const username = nameOf(uid);
-  if (!me || !username || uid === useAuthStore.getState().uid) return false;
+  const me = useAuthStore.getState().uid;
+  if (!me || !uid || uid === me) return false;
   const chat = useChatStore.getState();
   const owner = chat.serverOwner[serverId];
-  if (username === owner) return false;
+  if (uid === owner) return false;
   if (owner !== me) {
     const perms = chat.channelsByServer[serverId]?.find((c) => c.id === channelId)?.myPermissions ?? 0;
     if (!hasBits(perms, PERM.MOVE_MEMBERS)) return false;
   }
-  return canManageMember(serverId, username);
+  return canManageMember(serverId, uid);
 }
 
 /// dragstart on a participant row. Rows are only `draggable` where we hold

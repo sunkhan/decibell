@@ -51,8 +51,7 @@ struct SearchSpec {
     // contain / must not contain, in its text or an unencrypted file name.
     std::vector<std::string> contains;
     std::vector<std::string> excludes;
-    std::vector<int64_t> author_uids;       // members: every row their account sent
-    std::vector<std::string> author_names;  // non-members: rows sent under this name
+    std::vector<int64_t> author_uids;       // senders: every row their account sent
     int64_t after = 0;                      // unix seconds, inclusive; 0 = unbounded
     int64_t before = 0;                     // unix seconds, exclusive; 0 = unbounded
     uint32_t has = 0;                       // search_has bits, each must hold

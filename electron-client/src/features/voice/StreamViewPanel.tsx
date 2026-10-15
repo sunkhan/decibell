@@ -398,7 +398,7 @@ function StreamViewPanel() {
         <div className={`pointer-events-none absolute left-3 top-3 flex gap-1.5 ${overlayClass}`}>
           <LivePill size="lg" />
           <span className={SCRIM_LG}>
-            <UserAvatar uid={displayUser} name={stream.ownerUsername} size={18} />
+            <UserAvatar uid={displayUser} name={nameOf(displayUser, stream.ownerUsername)} size={18} />
             {isOwnStream ? "Your screen" : `${displayName}'s screen`}
           </span>
           <QualityPill stream={stream} large />

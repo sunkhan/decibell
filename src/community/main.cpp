@@ -452,8 +452,6 @@ public:
     // so a rename never touches it.
     void relay_keyframe_request(int64_t target_uid, boost::asio::ip::udp::socket& udp_socket);
     void relay_nack(const char* data, size_t length, int64_t target_uid, boost::asio::ip::udp::socket& udp_socket);
-    // The uid of the online user currently known by `name` (0 = none).
-    int64_t online_uid_by_name(const std::string& name);
     void broadcast_voice_presence(const std::string& channel_id);
     void send_initial_voice_presences(std::shared_ptr<Session> session);
     std::shared_ptr<Session> find_session_by_token(const std::string& token, const std::string& jwt_secret);
@@ -1550,12 +1548,12 @@ private:
             accepted.reserve(req.blobs_size());
             for (const auto& b : req.blobs()) {
                 if (b.blob().empty() || b.blob().size() > kMaxBlobBytes) continue;
-                // The recipient by uid, or by name from older clients. Only
-                // *members* who can VIEW the channel get keys (the permission
-                // resolver answers for anyone with the default role's
-                // rights, so membership is checked explicitly).
-                auto m = b.recipient_uid() != 0 ? db->get_member(b.recipient_uid())
-                                                : db->find_member_by_name(b.recipient());
+                // The recipient by uid. Only *members* who can VIEW the
+                // channel get keys (the permission resolver answers for
+                // anyone with the default role's rights, so membership is
+                // checked explicitly).
+                if (b.recipient_uid() == 0) continue;
+                auto m = db->get_member(b.recipient_uid());
                 if (!m) continue;
                 if (!(manager_.authz().channel_permissions(m->uid, req.channel_id()) & chatproj::perms::kViewChannel)) continue;
                 // The blob is sealed to the name the publisher used; keep it
@@ -1643,16 +1641,13 @@ private:
                                         {uid_, req.channel_id(), 0})) {
                 return;
             }
-            // The streamer by uid, or by name from older clients (a
-            // streamer is online, so their name resolves among sessions).
-            const int64_t streamer = req.target_uid() > 0
-                ? req.target_uid() : manager_.online_uid_by_name(req.target_username());
+            const int64_t streamer = req.target_uid();
             // Ignore watch requests for a user who isn't actually streaming:
             // avoids bloating the watcher map and firing a keyframe/notify for
             // a non-stream (part of the keyframe-amplification surface).
             if (streamer <= 0 || !manager_.has_active_stream(req.channel_id(), streamer)) {
                 std::cout << "[Community] Rejected WATCH_STREAM_REQ from " << username_
-                          << ": '" << req.target_username() << "' is not streaming\n";
+                          << ": uid " << streamer << " is not streaming\n";
                 return;
             }
             // Plan C: defensive — drop the request if the stream is
@@ -1690,8 +1685,7 @@ private:
             // rebroadcast — otherwise STOP_WATCHING for a stream you never
             // subscribed to was a free all-session broadcast and a fake
             // LEFT signal into the streamer's cooldown logic.
-            const int64_t streamer = req.target_uid() > 0
-                ? req.target_uid() : manager_.online_uid_by_name(req.target_username());
+            const int64_t streamer = req.target_uid();
             if (streamer <= 0 || !manager_.remove_watcher(shared_from_this(), req.channel_id(), streamer)) {
                 return;
             }
@@ -1745,13 +1739,11 @@ private:
         else if (packet.type() == chatproj::Packet::FETCH_STREAM_THUMBNAIL_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.fetch_stream_thumbnail_req();
-            const int64_t target = req.owner_uid() > 0
-                ? req.owner_uid() : manager_.online_uid_by_name(req.owner_username());
+            const int64_t target = req.owner_uid();
 
             chatproj::Packet response;
             response.set_type(chatproj::Packet::FETCH_STREAM_THUMBNAIL_RES);
             auto* res = response.mutable_fetch_stream_thumbnail_res();
-            res->set_owner_username(req.owner_username());
             res->set_owner_uid(target);
             std::vector<uint8_t> bytes;
             if (target > 0 && manager_.get_thumbnail(uid_, target, bytes)) {
@@ -2466,27 +2458,22 @@ private:
                 refuse("Invite expiry is in the past.");
                 return;
             }
-            // Personal invite (Invite friends): single-use, for one account —
-            // by uid, or by name from older clients (a name this server has
-            // no uid for gets a placeholder, claimed when that name's token
-            // first authenticates; see CommunityDb::claim_legacy).
+            // Personal invite (Invite friends): single-use, for one account,
+            // by uid (for_user only labels it).
             const std::string& for_user = req.for_user();
-            const bool personal = req.for_uid() > 0 || !for_user.empty();
+            const bool personal = req.for_uid() != 0 || !for_user.empty();
             int64_t for_uid = 0;
             if (personal) {
-                if (for_user.size() > 64 || req.for_uid() == uid_ || (req.for_uid() <= 0 && for_user == username_)) {
+                if (for_user.size() > 64 || req.for_uid() <= 0 || req.for_uid() == uid_) {
                     refuse("Invalid invitee.");
                     return;
                 }
-                const bool member = req.for_uid() > 0 ? db->is_member(req.for_uid())
-                                                      : db->find_member_by_name(for_user).has_value();
-                if (member) {
+                if (auto m = db->get_member(req.for_uid())) {
                     res->set_already_member(true);
-                    refuse(for_user + " is already a member.");
+                    refuse(m->username + " is already a member.");
                     return;
                 }
-                for_uid = req.for_uid() > 0 ? req.for_uid() : db->placeholder_for_name(for_user);
-                if (for_uid == 0) { refuse("Failed to create invite."); return; }
+                for_uid = req.for_uid();
             }
             // Negative max_uses used to be stored verbatim and read as
             // "unlimited" by every `> 0` check — normalise to 0.
@@ -2649,7 +2636,7 @@ private:
             if (!db) return;
             const auto& req = packet.kick_member_req();
             const std::string& reason = req.reason();
-            auto member = resolve_member(req.uid(), req.username());
+            auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
             const std::string target = member ? member->username : req.username();
             // Permission + owner/self guards + hierarchy all live in authz.
@@ -2686,13 +2673,12 @@ private:
             if (!db) return;
             const auto& req = packet.ban_member_req();
             const std::string& reason = req.reason();
-            // The target by uid (a member, or someone who left), or by name;
-            // a name this server has no uid for is banned under a
-            // placeholder that matches the name until its token claims it.
-            auto member = resolve_member(req.uid(), req.username());
-            int64_t target_uid = member ? member->uid : req.uid();
+            // The target by uid: a member, or someone who left (their name
+            // from the request only labels the ban row).
+            const int64_t target_uid = req.uid();
+            if (target_uid == 0) return;
+            auto member = resolve_member(target_uid);
             const std::string target = member ? member->username : req.username();
-            if (target_uid == 0 && target.empty()) return;
             if (auto a = manager_.authz().check(chatproj::Action::BanMember,
                                                 {uid_, "", target_uid}); !a) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "ban", target_uid);
@@ -2710,8 +2696,7 @@ private:
             if (purge_seconds < 0) purge_seconds = 0;
             if (purge_seconds > 7 * 86400) purge_seconds = 7 * 86400;
 
-            if (target_uid == 0) target_uid = db->placeholder_for_name(target);
-            bool ok = target_uid != 0 && db->add_ban(target_uid, target, uid_, username_, reason, expires_at);
+            bool ok = db->add_ban(target_uid, target, uid_, username_, reason, expires_at);
             if (target_uid > 0) {
                 // Unconditional for the same reason as the kick path: the
                 // target may be offline and force_disconnect would skip it.
@@ -2776,16 +2761,10 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.unban_member_req();
-            // By uid (ban entries carry it), or by the name it was banned under.
-            int64_t target_uid = req.uid();
-            std::string target = req.username();
-            if (target_uid == 0) {
-                for (const auto& b : db->list_bans()) {
-                    if (b.username == target) { target_uid = b.uid; break; }
-                }
-            } else if (auto b = db->get_ban(target_uid)) {
-                target = b->username;
-            }
+            // By uid (ban entries carry it).
+            const int64_t target_uid = req.uid();
+            std::string target;
+            if (auto b = target_uid != 0 ? db->get_ban(target_uid) : std::nullopt) target = b->username;
             if (auto a = manager_.authz().check(chatproj::Action::UnbanMember, {uid_, "", 0}); !a) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "unban", target_uid);
                 return;
@@ -2997,7 +2976,7 @@ private:
                 fail(a.reason.c_str());
                 return;
             }
-            auto target = resolve_member(req.uid(), req.username());
+            auto target = resolve_member(req.uid());
             if (!target) { fail("Not a member."); return; }
 
             // Hierarchy applies to the DELTA: every role being added or
@@ -3221,7 +3200,7 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.set_nickname_req();
-            auto member = resolve_member(req.uid(), req.username());
+            auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
             const std::string target = member ? member->username : req.username();
             std::string nickname = chatproj::clamp_utf8(req.nickname(), chatproj::kMaxNicknameBytes);
@@ -3322,11 +3301,10 @@ private:
             row.channel_id = ow.channel_id();
             row.target_type = ow.target_type() == chatproj::ChannelOverwrite::MEMBER ? 1 : 0;
             row.target_id = ow.target_id();
-            // A member row is stored by uid (decimal): target_uid, or the
-            // name older clients put in target_id.
+            // A member row is stored by uid (decimal), from target_uid.
             std::optional<chatproj::DbMember> member_target;
             if (row.target_type == 1) {
-                member_target = resolve_member(ow.target_uid(), ow.target_id());
+                member_target = resolve_member(ow.target_uid());
                 if (!member_target) { fail("Not a member."); return; }
                 row.target_id = std::to_string(member_target->uid);
             }
@@ -3569,7 +3547,7 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.timeout_member_req();
-            auto member = resolve_member(req.uid(), req.username());
+            auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
             const std::string target = member ? member->username : req.username();
             if (auto a = manager_.authz().check(chatproj::Action::TimeoutMember, {uid_, "", target_uid}); !a) {
@@ -3608,7 +3586,7 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.voice_mod_req();
-            auto member = resolve_member(req.uid(), req.username());
+            auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
             const std::string target = member ? member->username : req.username();
             auto fail = [&](const std::string& msg) {
@@ -3699,7 +3677,7 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.transfer_ownership_req();
-            auto member = resolve_member(req.new_owner_uid(), req.new_owner());
+            auto member = resolve_member(req.new_owner_uid());
             const int64_t new_owner_uid = member ? member->uid : req.new_owner_uid();
             const std::string new_owner = member ? member->username : req.new_owner();
             if (auto a = manager_.authz().check(chatproj::Action::TransferOwnership, {uid_, "", new_owner_uid}); !a) {
@@ -3779,13 +3757,12 @@ private:
     // Helper used by moderation paths to send a short response (KICK/BAN/LEAVE
     // all share MOD_ACTION_RES; invite paths have their own response types but
     // follow the same shape).
-    /// The member a request targets: by uid, or by name from older clients
-    /// (resolved against members' current names).
-    std::optional<chatproj::DbMember> resolve_member(int64_t uid, const std::string& name) {
+    /// The member a request targets, by account uid (users by uid: a
+    /// request never names its target).
+    std::optional<chatproj::DbMember> resolve_member(int64_t uid) {
         auto* db = manager_.db();
-        if (!db) return std::nullopt;
-        if (uid != 0) return db->get_member(uid);
-        return db->find_member_by_name(name);
+        if (!db || uid == 0) return std::nullopt;
+        return db->get_member(uid);
     }
 
     void send_simple_mod_res(chatproj::Packet::Type type, bool success,
@@ -3970,22 +3947,10 @@ private:
             spec.channels.push_back(ch.id);
         }
 
-        // Senders: by account (every name they posted under) — author_uids,
-        // or a member's current name from older clients; anyone else by the
-        // name on the messages.
+        // Senders by account: every name they posted under.
         std::unordered_set<int64_t> seen_uids;
         for (int64_t uid : req.author_uids()) {
             if (uid != 0 && seen_uids.insert(uid).second) spec.author_uids.push_back(uid);
-        }
-        std::unordered_set<std::string> seen_names;
-        for (const auto& name : req.authors()) {
-            if (name.empty() || !seen_names.insert(name).second) continue;
-            auto m = db->find_member_by_name(name);
-            if (m) {
-                if (seen_uids.insert(m->uid).second) spec.author_uids.push_back(m->uid);
-            } else {
-                spec.author_names.push_back(name);
-            }
         }
         spec.after = req.after();
         spec.before = req.before();
@@ -5552,17 +5517,6 @@ void SessionManager::broadcast_to_voice_channel(const char* data, size_t length,
     send_udp_to_targets(data, length, udp_socket);
 }
 
-int64_t SessionManager::online_uid_by_name(const std::string& name) {
-    if (name.empty()) return 0;
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [uid, sessions] : sessions_by_user_) {
-        for (const auto& s : sessions) {
-            if (s->get_username() == name) return uid;
-        }
-    }
-    return 0;
-}
-
 void SessionManager::relay_keyframe_request(int64_t target, boost::asio::ip::udp::socket& udp_socket) {
     if (target <= 0) return;
     // Build a minimal KEYFRAME_REQUEST packet to send to the streamer
@@ -5676,13 +5630,10 @@ void SessionManager::handle_stream_codec_changed(
     const std::shared_ptr<Session>& sender) {
     if (!packet.has_stream_codec_changed_notify()) return;
     const auto& notify = packet.stream_codec_changed_notify();
-    // Validate sender owns the stream — otherwise drop. By uid, or by the
-    // name an older client puts in streamer_username.
-    const bool own = notify.streamer_uid() != 0 ? notify.streamer_uid() == sender->get_uid()
-                                                : notify.streamer_username() == sender->get_username();
-    if (!own) {
-        std::cout << "[Community] STREAM_CODEC_CHANGED_NOTIFY from non-owner ignored ("
-                  << sender->get_username() << " vs " << notify.streamer_username() << ")\n";
+    // Validate sender owns the stream — otherwise drop.
+    if (notify.streamer_uid() != sender->get_uid()) {
+        std::cout << "[Community] STREAM_CODEC_CHANGED_NOTIFY from non-owner ignored (uid "
+                  << sender->get_uid() << " vs " << notify.streamer_uid() << ")\n";
         return;
     }
     {

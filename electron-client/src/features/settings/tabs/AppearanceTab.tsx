@@ -16,7 +16,6 @@ import { StatusDot } from "../../../components/StatusDot";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { useAuthStore } from "../../../stores/authStore";
 import { userColor } from "../../../utils/colors";
-import { ownUid } from "../../users/userDirectory";
 
 /// Enough of each palette to draw its preview swatch. These duplicate
 /// the authoritative values in globals.css on purpose: a swatch has to
@@ -255,6 +254,7 @@ export default function AppearanceTab() {
   const setTextSizePx = useUiStore((s) => s.setTextSizePx);
   const setRowScale = useUiStore((s) => s.setRowScale);
   const username = useAuthStore((s) => s.username);
+  const selfUid = useAuthStore((s) => s.uid);
 
   // The slider is a multiplier, but users think in points, so the
   // readout is the message body's actual rendered size. Measuring the
@@ -423,7 +423,7 @@ export default function AppearanceTab() {
             someone else's account reads as a bug. */}
         <div className="flex gap-3">
           {username ? (
-            <UserAvatar uid={ownUid()} name={username} size={38} />
+            <UserAvatar uid={selfUid} name={username} size={38} />
           ) : (
             <LetterAvatar uid={0} name="?" size={38} />
           )}
@@ -431,7 +431,7 @@ export default function AppearanceTab() {
             <div className="flex items-baseline gap-2">
               <span
                 className="font-channel text-sender font-emphasis"
-                style={{ color: userColor(ownUid(), username ?? "?") }}
+                style={{ color: userColor(selfUid, username ?? "?") }}
               >
                 {username ?? "You"}
               </span>

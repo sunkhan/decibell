@@ -431,9 +431,6 @@ public:
     // Text channels with a non-zero epoch (for removal-driven rotations).
     std::vector<std::string> channel_key_channels_with_epochs() const;
     std::optional<DbMember> get_member(int64_t uid) const;
-    // The member currently known by `username` — for requests that name a
-    // target by name (older clients, typed names). Never an identity check.
-    std::optional<DbMember> find_member_by_name(const std::string& username) const;
     int64_t count_members() const;
     // Timeout (unix seconds; 0 clears). False if not a member.
     bool set_timeout(int64_t uid, int64_t until);
@@ -454,9 +451,6 @@ public:
                  int64_t expires_at = 0);
     bool remove_ban(int64_t uid);
     std::vector<DbBan> list_bans() const;
-    // The placeholder uid for a name nobody here has a uid for yet (a ban
-    // of a never-seen name), allocated on first use.
-    int64_t placeholder_for_name(const std::string& username);
 
     // --- invites ---
     // Generates a code and inserts a new invite. Returns the created invite on

@@ -339,9 +339,9 @@ export interface SetChannelOverwriteArgs {
   channelId: string
   /** "role" | "member" */
   targetType: string
-  /** Role id (decimal string) or username. */
+  /** Role id (decimal string); empty for a member (see `target_uid`). */
   targetId: string
-  /** Member targets: the member's uid (preferred over the name). */
+  /** Member targets: the member's uid (users by uid). */
   targetUid?: number
   allow: number
   deny: number
@@ -476,12 +476,10 @@ export interface SetStorageMinFreeArgs {
 export declare function setStorageMinFree(args: SetStorageMinFreeArgs): Promise<void>
 export interface TimeoutMemberArgs {
   serverId: string
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  /** Only labels the request; the server goes by `uid`. */
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
   /** Unix seconds; 0 clears an active timeout. */
   until: number
   reason?: string
@@ -493,12 +491,10 @@ export interface TimeoutMemberArgs {
 export declare function timeoutMember(args: TimeoutMemberArgs): Promise<void>
 export interface VoiceModArgs {
   serverId: string
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  /** Only labels the request; the server goes by `uid`. */
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
   /** "server_mute" | "server_unmute" | "server_deafen" | "server_undeafen" | "move" | "disconnect" */
   action: string
   /** "move" only. */
@@ -508,8 +504,8 @@ export declare function voiceMod(args: VoiceModArgs): Promise<void>
 export interface TransferOwnershipArgs {
   serverId: string
   newOwner: string
-  /** The new owner's uid (preferred over the name). */
-  newOwnerUid?: number
+  /** The new owner's uid (users by uid). */
+  newOwnerUid: number
 }
 /**
  * Owner only. Response via mod_action_responded action="transfer";
@@ -523,12 +519,10 @@ export interface ListBansArgs {
 export declare function listBans(args: ListBansArgs): Promise<void>
 export interface KickMemberArgs {
   serverId: string
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  /** Only labels the request; the server goes by `uid`. */
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
   /**
    * Optional — the UI doesn't collect a reason yet. A required
    * String here made napi reject every kick with "Missing field
@@ -539,12 +533,10 @@ export interface KickMemberArgs {
 export declare function kickMember(args: KickMemberArgs): Promise<void>
 export interface BanMemberArgs {
   serverId: string
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  /** Only labels the request; the server goes by `uid`. */
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
   /** Optional — see KickMemberArgs. */
   reason?: string
   /** Unix seconds when the ban lifts; omit / 0 = permanent. */
@@ -568,7 +560,7 @@ export interface CreateInviteArgs {
    * server hands back their live one if it exists).
    */
   forUser?: string
-  /** The invitee's account uid (preferred over `for_user`). */
+  /** A personal invite's account uid (users by uid; `for_user` only labels it). */
   forUid?: number
   /** Echoed on invite_create_responded. */
   requestId?: number
@@ -615,24 +607,20 @@ export interface DeleteRoleArgs {
 export declare function deleteRole(args: DeleteRoleArgs): Promise<void>
 export interface SetMemberRolesArgs {
   serverId: string
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  /** Only labels the request; the server goes by `uid`. */
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
   /** The member's full desired role set (default role implicit). */
   roleIds: Array<number>
 }
 export declare function setMemberRoles(args: SetMemberRolesArgs): Promise<void>
 export interface UnbanMemberArgs {
   serverId: string
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  /** Only labels the request; the server goes by `uid`. */
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
 }
 export declare function unbanMember(args: UnbanMemberArgs): Promise<void>
 export interface SetNicknameArgs {
@@ -640,13 +628,11 @@ export interface SetNicknameArgs {
   /**
    * Target member — may be the local user (self-changes are always
    * allowed; others need MANAGE_NICKNAMES + a strictly higher role).
+   * Only labels the request; the server goes by `uid`.
    */
-  username: string
-  /**
-   * The target's account uid (users by uid); the server falls back to
-   * `username` when it is absent.
-   */
-  uid?: number
+  username?: string
+  /** The target's account uid (users by uid). */
+  uid: number
   /** Empty clears the nickname. */
   nickname: string
 }
@@ -1220,11 +1206,8 @@ export interface FetchStreamThumbnailArgs {
   serverId: string
   /** The streamer's uid. */
   uid: number
-  username?: string
 }
 export interface FetchStreamThumbnailResult {
-  /** The streamer's current name as the server knows it. */
-  username: string
   uid: number
   /**
    * Empty Buffer when the server has no cached thumbnail yet

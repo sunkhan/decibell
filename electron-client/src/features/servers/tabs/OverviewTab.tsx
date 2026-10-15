@@ -15,7 +15,7 @@ import { useEchoSave } from "../saveEcho";
 import { useLeaveGuard } from "../leaveGuard";
 import { SaveBar } from "./settingsUi";
 import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
-import { uidOf } from "../../users/userDirectory";
+import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
 
 const MAX_BYTES = 1024 * 1024;
 
@@ -34,9 +34,11 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   const pictureDataUrl = useChatStore((s) => s.serverPictures[serverId]);
   const canManageServer = usePermission(serverId, PERM.MANAGE_SERVER);
   const hasPicture = pictureVersion !== "";
-  const currentUser = useAuthStore((s) => s.username);
-  const isOwner = !!currentUser && !!owner && owner === currentUser;
+  const ownUid = useAuthStore((s) => s.uid);
+  const isOwner = !!ownUid && !!owner && owner === ownUid;
   const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
+  const ownerName = useUserName(owner, members.find((m) => m.uid === owner)?.username ?? "Unknown user");
+  const names = useUsersStore((s) => s.names);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cropperFile, setCropperFile] = useState<File | null>(null);
@@ -123,16 +125,20 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   }, [serverId, stopMeta, stopPublic]);
 
   // Ownership transfer (owner only, typed confirmation).
-  const [transferTarget, setTransferTarget] = useState("");
+  const [transferTarget, setTransferTarget] = useState<Uid>(0);
   const [transferConfirm, setTransferConfirm] = useState("");
   const [transferring, setTransferring] = useState(false);
-  const transferCandidates = members.filter((m) => m.username !== currentUser);
+  // Accounts only: a community placeholder can't own the server.
+  const transferCandidates = members.filter((m) => m.uid > 0 && m.uid !== ownUid);
+  const nameFor = (m: { uid: Uid; username: string }) => names.get(m.uid) ?? m.username;
+  const targetMember = transferTarget ? transferCandidates.find((m) => m.uid === transferTarget) : undefined;
+  const targetName = targetMember ? nameFor(targetMember) : "";
   const runTransfer = async () => {
-    if (!isOwner || !transferTarget || transferConfirm !== transferTarget) return;
+    if (!isOwner || !targetName || transferConfirm !== targetName) return;
     setTransferring(true);
     try {
-      await invoke("transfer_ownership", { serverId, newOwner: transferTarget, newOwnerUid: uidOf(transferTarget) });
-      setTransferTarget("");
+      await invoke("transfer_ownership", { serverId, newOwner: targetName, newOwnerUid: transferTarget });
+      setTransferTarget(0);
       setTransferConfirm("");
     } catch (err) {
       toast.error("Transfer failed", String(err));
@@ -255,7 +261,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                 <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                   Owner
                 </div>
-                <div className="mt-0.5 text-[13px] text-text-secondary">{owner}</div>
+                <div className="mt-0.5 text-[13px] text-text-secondary">{ownerName}</div>
               </div>
             )}
           </div>
@@ -284,25 +290,25 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                   setTransferConfirm("");
                 }}
                 options={transferCandidates.map((m) => ({
-                  value: m.username,
-                  label: m.nickname ? `${m.nickname} (${m.username})` : m.username,
-                  icon: <UserAvatar uid={m.uid ?? 0} name={m.username} size={18} />,
+                  value: m.uid,
+                  label: m.nickname ? `${m.nickname} (${nameFor(m)})` : nameFor(m),
+                  icon: <UserAvatar uid={m.uid} name={nameFor(m)} size={18} />,
                 }))}
               />
-              {transferTarget && (
+              {targetName && (
                 <>
                   <input
                     value={transferConfirm}
                     onChange={(e) => setTransferConfirm(e.target.value)}
-                    placeholder={`Type ${transferTarget} to confirm`}
+                    placeholder={`Type ${targetName} to confirm`}
                     className="mt-2 w-full rounded-md border border-border bg-bg-lighter px-3 py-2 text-[13px] text-text-primary outline-none transition-all focus:border-error"
                   />
                   <button
                     onClick={runTransfer}
-                    disabled={transferConfirm !== transferTarget || transferring}
+                    disabled={transferConfirm !== targetName || transferring}
                     className="mt-2 w-full rounded-md bg-error px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    {transferring ? "Transferring…" : `Transfer ownership to ${transferTarget}`}
+                    {transferring ? "Transferring…" : `Transfer ownership to ${targetName}`}
                   </button>
                 </>
               )}

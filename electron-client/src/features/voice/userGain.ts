@@ -5,8 +5,7 @@
 
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
-import { useUsersStore, type Uid } from "../../stores/usersStore";
-import { uidOf } from "../users/userDirectory";
+import { uidNamed, useUsersStore, type Uid } from "../../stores/usersStore";
 
 export const MIN_DB = -40;
 export const MAX_DB = 15;
@@ -107,14 +106,14 @@ function migrateLegacyGains(): void {
   const store = useVoiceStore.getState();
   let moved = false;
   for (const [name, db] of legacyVolumes) {
-    const uid = uidOf(name);
+    const uid = uidNamed(name);
     if (uid === undefined) continue;
     if (!(uid in useVoiceStore.getState().userVolumes)) store.setUserVolume(uid, db);
     legacyVolumes.delete(name);
     moved = true;
   }
   for (const name of legacyMuted) {
-    const uid = uidOf(name);
+    const uid = uidNamed(name);
     if (uid === undefined) continue;
     if (!useVoiceStore.getState().localMutedUsers.has(uid)) store.toggleLocalMute(uid);
     legacyMuted.delete(name);

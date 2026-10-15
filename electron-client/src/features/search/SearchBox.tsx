@@ -37,7 +37,7 @@ import {
   trailingToken,
   type TokenContext,
 } from "./searchTokens";
-import { legacyUid } from "../users/userDirectory";
+import { nameOf, useUserName } from "../../stores/usersStore";
 
 /// The search box in a text channel's header (spec 2026-10-14). Filters
 /// are chips before the text; typing `from:`, `in:`, `has:`, `before:`,
@@ -87,7 +87,7 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
   const run = useSearchStore((s) => s.run);
   const focusNonce = useSearchStore((s) => s.focusNonce);
 
-  const me = useAuthStore((s) => s.username);
+  const me = useAuthStore((s) => s.uid);
   const isOwner = useChatStore((s) => !!me && s.serverOwner[serverId] === me);
   const allChannels = useChatStore((s) => s.channelsByServer[serverId]) ?? EMPTY_LIST;
   const roster = useChatStore((s) => s.membersByServer[serverId]) ?? EMPTY_LIST;
@@ -99,8 +99,8 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
   const [found, setFound] = useState<ServerMember[]>(EMPTY_LIST);
   const members = useMemo(() => {
     if (found.length === 0) return roster;
-    const seen = new Set(roster.map((m) => m.username));
-    return [...roster, ...found.filter((m) => !seen.has(m.username))];
+    const seen = new Set(roster.map((m) => m.uid));
+    return [...roster, ...found.filter((m) => !seen.has(m.uid))];
   }, [roster, found]);
   const ctx: TokenContext = useMemo(() => ({ members, channels }), [members, channels]);
 
@@ -151,7 +151,7 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
             .filter(
               (m) =>
                 !q ||
-                m.username.toLowerCase().includes(q) ||
+                nameOf(m.uid, m.username).toLowerCase().includes(q) ||
                 (m.nickname && m.nickname.toLowerCase().includes(q)),
             )
             .slice(0, 8)
@@ -235,7 +235,7 @@ export default function SearchBox({ serverId, channelId }: { serverId: string; c
         });
         return focusInput();
       case "member":
-        return addChip({ kind: "from", username: row.member.username });
+        return addChip({ kind: "from", uid: row.member.uid, username: nameOf(row.member.uid, row.member.username) });
       case "channel":
         return addChip({ kind: "in", channelId: row.channel.id });
       case "has":
@@ -631,13 +631,14 @@ function MenuBody({
 }
 
 function MemberRow({ serverId, member }: { serverId: string; member: ServerMember }) {
-  const name = useDisplayName(serverId, member.uid ?? 0, member.username);
+  const username = useUserName(member.uid, member.username);
+  const name = useDisplayName(serverId, member.uid, username);
   return (
     <>
-      <UserAvatar uid={member.uid ?? 0} name={member.username} size={22} />
+      <UserAvatar uid={member.uid} name={username} size={22} />
       <span className="min-w-0 truncate font-medium text-text-primary">{name}</span>
-      {name !== member.username ? (
-        <span className="min-w-0 flex-1 truncate text-[12px] text-text-muted">{member.username}</span>
+      {name !== username ? (
+        <span className="min-w-0 flex-1 truncate text-[12px] text-text-muted">{username}</span>
       ) : (
         <span className="flex-1" />
       )}
@@ -670,7 +671,7 @@ function MenuHint({ keys }: { keys: [string, string][] }) {
 function chipText(f: SearchFilter, serverId: string, channels: ChannelInfo[]): [string, string] {
   switch (f.kind) {
     case "from":
-      return ["from", resolveDisplayName(serverId, legacyUid(f.username), f.username)];
+      return ["from", resolveDisplayName(serverId, f.uid, f.username)];
     case "in":
       return ["in", `#${channels.find((c) => c.id === f.channelId)?.name ?? "deleted-channel"}`];
     case "has":

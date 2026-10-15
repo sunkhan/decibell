@@ -95,31 +95,34 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   purges on the account uid so a rename never breaks a feature; resolve names to uids at the request
   edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them. The migration
   is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (all five stages done): every
-  wire user reference carries `*_uid` next to the name, requests prefer the
-  uid (the name is the typed-name fallback), payload names are current names, and rows with an
+  wire user reference carries `*_uid` next to the name, requests target by uid (community requests
+  are uid-only; central keeps a typed-name lookup for add friend / message someone), payload names are
+  current names, and rows with an
   envelope also carry `sealed_*` names (what a v1 envelope binds). Never rewrite a stored sent-under
   name. Encryption binds the uid too: bundles (`binding` 2, existing ones rebound in place), uid
   fingerprints / safety numbers, DM envelopes `0x03`, channel envelopes `0x04`, call auth v2, MLS
-  credentials `"<uid>:<name>"`, the keystore `e2ee/u<uid>.json` with uid-keyed pins. New envelopes
+  credentials `"<uid>"`, the keystore `e2ee/u<uid>.json` with uid-keyed pins. New envelopes
   are always v2; v1 (`0x01` / `0x02`) opens with the `sealed_*` names. Renames (Settings → Account):
   password-confirmed, two a day; the old name is reserved for the account for 14 days and still signs
-  it in meanwhile. `USER_RENAMED` goes out only for visible users. The client re-keys its stores in
-  `features/users/applyRename.ts`. A rename is only a database change: the fresh token reaches each
+  it in meanwhile. `USER_RENAMED` goes out only for visible users. **The renderer keys every user store on the uid**
+  (owner, 2026-10-15): names come from `stores/usersStore.ts` (`useUserName(uid, fallback)` /
+  `nameOf`), fed by `features/users/userDirectory.ts`, so a rename re-labels without moving state.
+  People never see uids: the fallback is the payload's name, else "Unknown user". A community
+  placeholder (negative uid) is drawn from its member row. A rename is only a database change: the fresh token reaches each
   community as `SESSION_TOKEN_UPDATE`, which renames the live session in place (no reconnect; the
   same packet carries the 6-hourly `TOKEN_REFRESH_REQ` renewal), and `members.name_iat` stops an older
   token from renaming a member back. **The media plane names people by uid**: the relay stamps the
   decimal uid into `sender_id`, keyframe/NACK target `target_id` (a uid), streams are `<uid>_screen`,
   MLS credentials and per-sender media keys are the uid, P2P calls use both uids. Native media state
-  keys on that string; the renderer maps uid → name at its listeners (`userDirectory.nameOf`) and sends
-  uids (`uidOf`). A connection's UDP key stays the tail of the token it authenticated with
+  keys on that string. A connection's UDP key stays the tail of the token it authenticated with
   (`CommunityClient::auth_jwt`).
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.
   On/off switches are `components/Switch.tsx` — never hand-roll one (an absolutely positioned knob
   without an inset lands wherever the button centres content, i.e. off the track).
-- Server nicknames render through `useDisplayName(serverId, username)`; avatars/colors key
-  on the real username.
+- Server nicknames render through `useDisplayName(serverId, uid, name)`; avatar colors hash the
+  uid (stable across renames), the avatar letter is the current name's.
 - The text channel header (`features/chat/ChannelHeader.tsx`: name, topic, members toggle, then the
   search box at the right end, 244 px centred over the 260 px members column — owner's order and
   placement) spans the chat **and** the right panel (members list / search results), which start under it, as in

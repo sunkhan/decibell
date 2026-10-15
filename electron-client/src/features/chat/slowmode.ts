@@ -28,7 +28,7 @@ type ChatSnapshot = ReturnType<typeof useChatStore.getState>;
 
 /// The slowmode interval that applies to `me` in a channel, in seconds:
 /// 0 when it's off or bypassed (the owner, or Manage Messages there).
-function intervalFor(chat: ChatSnapshot, me: string | null, serverId: string, channelId: string): number {
+function intervalFor(chat: ChatSnapshot, me: number, serverId: string, channelId: string): number {
   const ch = chat.channelsByServer[serverId]?.find((c) => c.id === channelId);
   const seconds = ch?.slowmodeSeconds ?? 0;
   if (!ch || seconds <= 0) return 0;
@@ -38,7 +38,7 @@ function intervalFor(chat: ChatSnapshot, me: string | null, serverId: string, ch
 }
 
 export function slowmodeInterval(serverId: string, channelId: string): number {
-  return intervalFor(useChatStore.getState(), useAuthStore.getState().username, serverId, channelId);
+  return intervalFor(useChatStore.getState(), useAuthStore.getState().uid, serverId, channelId);
 }
 
 /// A message of ours was accepted in this channel: a new window starts.
@@ -65,11 +65,11 @@ export function slowmodeHolds(serverId: string, channelId: string): boolean {
   if (!slowmodeInterval(serverId, channelId)) return false;
   const key = channelKey(serverId, channelId);
   if ((useSlowmodeStore.getState().until[key] ?? 0) > Date.now()) return true;
-  const me = useAuthStore.getState().username;
+  const me = useAuthStore.getState().uid;
   const messages = useChatStore.getState().messagesByChannel[key] ?? [];
   // Our in-flight bubbles sit at the tail.
   for (let i = messages.length - 1; i >= 0 && i >= messages.length - 20; i--) {
-    if (messages[i].pending && messages[i].sender === me) return true;
+    if (messages[i].pending && messages[i].senderUid === me) return true;
   }
   return false;
 }
@@ -87,7 +87,7 @@ export function useSlowmode(
   serverId: string | null,
   channelId: string | null,
 ): { interval: number; remaining: number } {
-  const me = useAuthStore((s) => s.username);
+  const me = useAuthStore((s) => s.uid);
   const interval = useChatStore((s) =>
     serverId && channelId ? intervalFor(s, me, serverId, channelId) : 0,
   );

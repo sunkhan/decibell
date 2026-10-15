@@ -27,7 +27,8 @@ import { useMemberSearch } from "./useMemberSearch";
 import { useEchoSave } from "../saveEcho";
 import { useLeaveGuard } from "../leaveGuard";
 import { ROLE_NAME_MAX_BYTES } from "../limits";
-import { ownUid, uidOf } from "../../users/userDirectory";
+import { useUsersStore, type Uid } from "../../../stores/usersStore";
+import { findMember } from "../../../hooks/useDisplayName";
 
 /// The editable fields of a role. A new role is a draft with id null.
 interface RoleFields {
@@ -579,7 +580,8 @@ function DisplaySection({
   autoFocus: boolean;
 }) {
   const me = useAuthStore((s) => s.username) ?? "you";
-  const myNick = useChatStore((s) => s.membersByServer[serverId]?.find((m) => m.username === me)?.nickname);
+  const myUid = useAuthStore((s) => s.uid);
+  const myNick = useChatStore((s) => findMember(s.membersByServer, serverId, myUid)?.nickname);
   const previewName = myNick || me;
   return (
     <div className="flex flex-col gap-7">
@@ -636,7 +638,7 @@ function DisplaySection({
       </Field>
       <Field label="Preview" hint="How a member whose highest role this is shows up in chat.">
         <div className="flex gap-3 rounded-lg border border-border-divider bg-bg-mid px-4 py-3.5">
-          <UserAvatar uid={ownUid()} name={me} size={40} />
+          <UserAvatar uid={myUid} name={me} size={40} />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span className="truncate font-channel text-sender font-emphasis" style={{ color: fields.color ? roleColor(fields.color) : "var(--color-text-primary)" }}>
@@ -780,20 +782,22 @@ function MembersSection({
 }) {
   const [query, setQuery] = useState("");
   const [picker, setPicker] = useState<MenuAnchor | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Uid | null>(null);
   const addRef = useRef<HTMLButtonElement>(null);
   const holders = useMemberSearch(serverId, query, role.id);
+  const names = useUsersStore((s) => s.names);
+  const nameFor = (m: ServerMember) => names.get(m.uid) ?? m.username;
 
   const setRole = async (m: ServerMember, on: boolean) => {
     const ids = new Set(m.roleIds);
     if (on) ids.add(role.id);
     else ids.delete(role.id);
-    setBusy(m.username);
+    setBusy(m.uid);
     try {
       await invoke("set_member_roles", {
         serverId,
-        username: m.username,
-        uid: m.uid || uidOf(m.username),
+        username: nameFor(m),
+        uid: m.uid,
         roleIds: Array.from(ids),
       });
     } catch (err) {
@@ -831,27 +835,27 @@ function MembersSection({
       ) : (
         <div className="flex flex-col">
           {holders.members.map((m) => (
-            <div key={m.username} className="group flex h-12 items-center gap-3 rounded-md px-3 hover:bg-surface-hover">
+            <div key={m.uid} className="group flex h-12 items-center gap-3 rounded-md px-3 hover:bg-surface-hover">
               <div className="relative shrink-0">
-                <UserAvatar uid={m.uid ?? 0} name={m.username} size={28} />
+                <UserAvatar uid={m.uid} name={nameFor(m)} size={28} />
                 <PresenceDot
-                  uid={m.uid ?? 0}
+                  uid={m.uid}
                   communityOnline={m.isOnline}
                   ring="var(--color-bg-dark)"
                   className="avatar-dot absolute -bottom-px -right-px"
                 />
               </div>
               <div className="min-w-0 flex-1">
-                <span className="truncate text-[14px] font-medium text-text-primary">{m.nickname || m.username}</span>
-                {m.nickname && <span className="ml-2 font-meta text-meta text-text-muted">{m.username}</span>}
+                <span className="truncate text-[14px] font-medium text-text-primary">{m.nickname || nameFor(m)}</span>
+                {m.nickname && <span className="ml-2 font-meta text-meta text-text-muted">{nameFor(m)}</span>}
               </div>
               {canAssign && (
                 <button
                   type="button"
-                  disabled={busy === m.username}
+                  disabled={busy === m.uid}
                   onClick={() => setRole(m, false)}
-                  title={`Remove ${role.name} from ${m.nickname || m.username}`}
-                  aria-label={`Remove ${role.name} from ${m.nickname || m.username}`}
+                  title={`Remove ${role.name} from ${m.nickname || nameFor(m)}`}
+                  aria-label={`Remove ${role.name} from ${m.nickname || nameFor(m)}`}
                   className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted opacity-0 hover:bg-error/10 hover:text-error focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
                 >
                   <Icon name="x" size={14} strokeWidth={2.5} />
@@ -910,8 +914,10 @@ function AddMembersPopover({
 }) {
   const [query, setQuery] = useState("");
   // Records, not names: a pick stays picked while the search moves on.
-  const [picked, setPicked] = useState<Map<string, ServerMember>>(new Map());
+  const [picked, setPicked] = useState<Map<Uid, ServerMember>>(new Map());
   const found = useMemberSearch(serverId, query, 0);
+  const names = useUsersStore((s) => s.names);
+  const nameFor = (m: ServerMember) => names.get(m.uid) ?? m.username;
   const shown = found.members.filter((m) => !m.isOwner && !m.roleIds.includes(roleId));
   // Right-aligned under the button: shift the anchor left by our width.
   const right = useMemo(() => ({ x: anchor.x - 288, y: anchor.y }), [anchor]);
@@ -920,25 +926,25 @@ function AddMembersPopover({
       <SearchField value={query} onChange={setQuery} placeholder="Find members" autoFocus />
       <div className="mt-2 flex max-h-64 flex-col overflow-y-auto scrollbar-thin">
         {shown.map((m) => {
-          const on = picked.has(m.username);
+          const on = picked.has(m.uid);
           return (
             <button
-              key={m.username}
+              key={m.uid}
               type="button"
               role="menuitemcheckbox"
               aria-checked={on}
               onClick={() => {
                 const next = new Map(picked);
-                if (on) next.delete(m.username);
-                else next.set(m.username, m);
+                if (on) next.delete(m.uid);
+                else next.set(m.uid, m);
                 setPicked(next);
               }}
               className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-surface-hover"
             >
-              <UserAvatar uid={m.uid ?? 0} name={m.username} size={24} />
+              <UserAvatar uid={m.uid} name={nameFor(m)} size={24} />
               <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
-                {m.nickname || m.username}
-                {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{m.username}</span>}
+                {m.nickname || nameFor(m)}
+                {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{nameFor(m)}</span>}
               </span>
               <span
                 className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border ${

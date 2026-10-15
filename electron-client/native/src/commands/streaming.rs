@@ -781,13 +781,10 @@ pub struct FetchStreamThumbnailArgs {
     pub server_id: String,
     /// The streamer's uid.
     pub uid: i64,
-    pub username: Option<String>,
 }
 
 #[napi(object)]
 pub struct FetchStreamThumbnailResult {
-    /// The streamer's current name as the server knows it.
-    pub username: String,
     pub uid: i64,
     /// Empty Buffer when the server has no cached thumbnail yet
     /// (stream just started, or fetch arrived between frames).
@@ -807,7 +804,7 @@ pub async fn fetch_stream_thumbnail(
 ) -> napi::Result<FetchStreamThumbnailResult> {
     use tokio::sync::oneshot;
 
-    let FetchStreamThumbnailArgs { server_id, username, uid } = args;
+    let FetchStreamThumbnailArgs { server_id, uid } = args;
     let slot = uid.to_string();
     let state_arc = state::shared();
 
@@ -825,7 +822,7 @@ pub async fn fetch_stream_thumbnail(
         let pkt = build_packet(
             packet::Type::FetchStreamThumbnailReq,
             packet::Payload::FetchStreamThumbnailReq(FetchStreamThumbnailReq {
-                owner_username: username.unwrap_or_default(),
+                owner_username: String::new(),
                 owner_uid: uid,
             }),
             Some(&client.jwt),
@@ -847,7 +844,6 @@ pub async fn fetch_stream_thumbnail(
 
     match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
         Ok(Ok(resp)) => Ok(FetchStreamThumbnailResult {
-            username: resp.owner_username,
             uid: resp.owner_uid,
             jpeg: resp.thumbnail_data.into(),
         }),

@@ -95,7 +95,7 @@ export interface DmMessage {
 export interface ServerMember {
   username: string;
   /// The account (users by uid); what moderation requests target.
-  uid?: number;
+  uid: number;
   joinedAt: number;
   nickname: string;
   isOwner: boolean;
@@ -133,7 +133,7 @@ export interface ServerRole {
 export interface ServerInvite {
   code: string;
   createdBy: string;
-  createdByUid?: number;
+  createdByUid: number;
   createdAt: number;
   expiresAt: number; // 0 = never
   maxUses: number; // 0 = unlimited
@@ -141,7 +141,7 @@ export interface ServerInvite {
   /// Personal invite (Invite friends): only this user can redeem it.
   /// "" = anyone; absent from servers that predate it.
   forUser?: string;
-  forUid?: number;
+  forUid: number;
 }
 
 /// CHANNEL_MSG_REJECTED — the community refused one of our messages;
@@ -261,7 +261,7 @@ export type StreamCodecChangeReason =
 export interface StreamCodecChangedNotify {
   channelId: string;
   streamerUsername: string;
-  streamerUid?: number;
+  streamerUid: number;
   newCodec: VideoCodec;
   newWidth: number;
   newHeight: number;
@@ -485,7 +485,7 @@ export interface ChannelOverwrite {
   /// Role id (decimal string) or username.
   targetId: string;
   /// Member rows: the member's uid (targetId then carries their name).
-  targetUid?: number;
+  targetUid: number;
   allow: number;
   deny: number;
 }
@@ -522,15 +522,15 @@ export interface MemberUpsertPayload {
 export interface MemberRemovePayload {
   serverId: string;
   username: string;
-  uid?: number;
+  uid: number;
   revision: number;
 }
 
 export interface BanInfo {
   username: string;
-  uid?: number;
+  uid: number;
   bannedBy: string;
-  bannedByUid?: number;
+  bannedByUid: number;
   reason: string;
   bannedAt: number;
   expiresAt: number; // 0 = permanent
@@ -549,7 +549,7 @@ export interface ServerMetaUpdatedPayload {
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
-  ownerUid?: number;
+  ownerUid: number;
   publicListing: boolean;
 }
 
@@ -557,10 +557,10 @@ export interface AuditEntry {
   id: number;
   timestamp: number;
   actor: string;
-  actorUid?: number;
+  actorUid: number;
   action: string;
   target: string;
-  targetUid?: number;
+  targetUid: number;
   channelId: string;
   details: string;
 }
@@ -656,7 +656,7 @@ export interface CommunityAuthRespondedPayload {
   serverName: string;
   serverDescription: string;
   ownerUsername: string;
-  ownerUid?: number;
+  ownerUid: number;
   attachmentPort: number;
   maxAttachmentBytes: number;
   publicListing: boolean;
@@ -816,7 +816,7 @@ export interface ChannelWipedPayload {
   channelId: string;
   wipedAt: number;
   wipedBy: string;
-  wipedByUid?: number;
+  wipedByUid: number;
 }
 
 export interface ChannelUpdatedPayload {

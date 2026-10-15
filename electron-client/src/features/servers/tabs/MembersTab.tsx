@@ -27,7 +27,7 @@ import {
 import { EmptyState } from "./AuditLogTab";
 import { ECHO_WAIT_MS, useEchoSave } from "../saveEcho";
 import { NICKNAME_MAX_BYTES } from "../limits";
-import { legacyUid, uidOf } from "../../users/userDirectory";
+import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
 
 /// Visible role chips per row before the rest fold into "+N".
 const MAX_CHIPS = 3;
@@ -52,7 +52,10 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   const roster = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
   const totalMembers = useChatStore((s) => s.memberRosterMeta[serverId]?.totalMembers);
   const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
-  const currentUser = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
+  // Current names: member records keep the name they were fetched with.
+  const names = useUsersStore((s) => s.names);
+  const nameFor = (m: ServerMember) => names.get(m.uid) ?? m.username;
 
   const canKick = usePermission(serverId, PERM.KICK_MEMBERS);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
@@ -66,22 +69,22 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<{ kind: ModKind; username: string } | null>(null);
-  const [menu, setMenu] = useState<{ username: string; anchor: MenuAnchor } | null>(null);
-  const [rolePicker, setRolePicker] = useState<{ username: string; anchor: MenuAnchor } | null>(null);
-  const [nickOpen, setNickOpen] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{ kind: ModKind; uid: Uid } | null>(null);
+  const [menu, setMenu] = useState<{ uid: Uid; anchor: MenuAnchor } | null>(null);
+  const [rolePicker, setRolePicker] = useState<{ uid: Uid; anchor: MenuAnchor } | null>(null);
+  const [nickOpen, setNickOpen] = useState<Uid | null>(null);
   const [nickDraft, setNickDraft] = useState("");
   // Moderation dialog fields (reset when the dialog opens).
   const [reason, setReason] = useState("");
   const [banDurationSec, setBanDurationSec] = useState(0); // 0 = permanent
   const [purgeSec, setPurgeSec] = useState(0); // 0 = none
   const [timeoutSec, setTimeoutSec] = useState(600);
-  const openConfirm = (kind: ModKind, username: string) => {
+  const openConfirm = (kind: ModKind, uid: Uid) => {
     setReason("");
     setBanDurationSec(0);
     setPurgeSec(0);
     setTimeoutSec(600);
-    setConfirm({ kind, username });
+    setConfirm({ kind, uid });
   };
 
   const rolesById = useMemo(() => {
@@ -111,7 +114,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   /// What the local user may do to `m` — one place, read by the row and
   /// its menu alike.
   const actionsFor = (m: ServerMember): Acts => {
-    const isSelf = m.username === currentUser;
+    const isSelf = m.uid === ownUid;
     // From the record itself: an offline member found by search may not
     // be in the roster at all.
     const outranked = isOwner || memberLevel(roles, m.roleIds) < myLevel;
@@ -129,9 +132,9 @@ export default function MembersTab({ serverId }: { serverId: string }) {
 
   // A nickname save keeps the field open until the member's record shows
   // it (saveEcho.ts); a refusal or the wait running out leaves it open.
-  const { saving: nickSaving, start: startNick, stop: stopNick } = useEchoSave<{ username: string; nickname: string }>(
-    (sent) => visible.find((m) => m.username === sent.username)?.nickname === sent.nickname,
-    (sent) => setNickOpen((open) => (open === sent.username ? null : open)),
+  const { saving: nickSaving, start: startNick, stop: stopNick } = useEchoSave<{ uid: Uid; nickname: string }>(
+    (sent) => visible.find((m) => m.uid === sent.uid)?.nickname === sent.nickname,
+    (sent) => setNickOpen((open) => (open === sent.uid ? null : open)),
   );
 
   // Role toggles settle on the echo too. A toggle shows at once and holds
@@ -139,17 +142,17 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   // the next toggle builds on it rather than on the stale record, which
   // used to drop the first of two quick toggles. A refusal or
   // ECHO_WAIT_MS shows the record again.
-  const [assigning, setAssigning] = useState<ReadonlyMap<string, PendingRoles>>(new Map());
-  const roleIdsOf = (m: ServerMember) => assigning.get(m.username)?.roleIds ?? m.roleIds;
+  const [assigning, setAssigning] = useState<ReadonlyMap<Uid, PendingRoles>>(new Map());
+  const roleIdsOf = (m: ServerMember) => assigning.get(m.uid)?.roleIds ?? m.roleIds;
   useEffect(() => {
     if (assigning.size === 0) return;
     const now = Date.now();
     const left = new Map(assigning);
-    for (const [username, p] of assigning) {
-      const m = visible.find((x) => x.username === username);
+    for (const [uid, p] of assigning) {
+      const m = visible.find((x) => x.uid === uid);
       // A fresh record (not the one the toggle was built on) that matches.
       const echoed = !!m && m.roleIds !== p.base && sameSet(m.roleIds, p.roleIds);
-      if (echoed || p.until <= now) left.delete(username);
+      if (echoed || p.until <= now) left.delete(uid);
     }
     if (left.size !== assigning.size) {
       setAssigning(left);
@@ -196,43 +199,43 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     }
   };
 
-  const runKick = (username: string) =>
-    run(`kick:${username}`, () => invoke("kick_member", { serverId, username, uid: uidOf(username), reason: reason.trim() })).then(() =>
+  const runKick = (m: ServerMember) =>
+    run(`kick:${m.uid}`, () => invoke("kick_member", { serverId, username: nameFor(m), uid: m.uid, reason: reason.trim() })).then(() =>
       setConfirm(null),
     );
-  const runBan = (username: string) =>
-    run(`ban:${username}`, () =>
+  const runBan = (m: ServerMember) =>
+    run(`ban:${m.uid}`, () =>
       invoke("ban_member", {
         serverId,
-        username,
-        uid: uidOf(username),
+        username: nameFor(m),
+        uid: m.uid,
         reason: reason.trim(),
         expiresAt: banDurationSec > 0 ? Math.floor(Date.now() / 1000) + banDurationSec : 0,
         deleteMessageSeconds: purgeSec,
       }),
     ).then(() => setConfirm(null));
-  const runTimeout = (username: string, clear = false) =>
-    run(`timeout:${username}`, () =>
+  const runTimeout = (m: ServerMember, clear = false) =>
+    run(`timeout:${m.uid}`, () =>
       invoke("timeout_member", {
         serverId,
-        username,
-        uid: uidOf(username),
+        username: nameFor(m),
+        uid: m.uid,
         until: clear ? 0 : Math.floor(Date.now() / 1000) + timeoutSec,
         reason: clear ? "" : reason.trim(),
       }),
     ).then(() => setConfirm(null));
-  const runSetNickname = (username: string) => {
+  const runSetNickname = (m: ServerMember) => {
     if (nickSaving) return;
     const nickname = nickDraft.trim();
     setError(null);
-    startNick({ username, nickname });
-    invoke("set_nickname", { serverId, username, uid: uidOf(username), nickname }).catch((err) => {
+    startNick({ uid: m.uid, nickname });
+    invoke("set_nickname", { serverId, username: nameFor(m), uid: m.uid, nickname }).catch((err) => {
       setError(String(err));
       stopNick();
     });
   };
-  const runToggleMemberRole = (username: string, roleId: number) => {
-    const member = visible.find((m) => m.username === username);
+  const runToggleMemberRole = (uid: Uid, roleId: number) => {
+    const member = visible.find((m) => m.uid === uid);
     if (!member) return;
     const ids = new Set(roleIdsOf(member));
     if (ids.has(roleId)) ids.delete(roleId);
@@ -241,12 +244,12 @@ export default function MembersTab({ serverId }: { serverId: string }) {
     const drop = () =>
       setAssigning((cur) => {
         const left = new Map(cur);
-        left.delete(username);
+        left.delete(uid);
         return left;
       });
-    setAssigning((cur) => new Map(cur).set(username, { roleIds, base: member.roleIds, until: Date.now() + ECHO_WAIT_MS }));
-    run(`assign:${username}`, () =>
-      invoke("set_member_roles", { serverId, username, uid: uidOf(username), roleIds }).catch((err) => {
+    setAssigning((cur) => new Map(cur).set(uid, { roleIds, base: member.roleIds, until: Date.now() + ECHO_WAIT_MS }));
+    run(`assign:${uid}`, () =>
+      invoke("set_member_roles", { serverId, username: nameFor(member), uid, roleIds }).catch((err) => {
         drop();
         throw err;
       }),
@@ -256,8 +259,9 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   const closeMenu = useCallback(() => setMenu(null), []);
   const closeRolePicker = useCallback(() => setRolePicker(null), []);
 
-  const menuMember = menu ? visible.find((m) => m.username === menu.username) : undefined;
-  const pickerMember = rolePicker ? visible.find((m) => m.username === rolePicker.username) : undefined;
+  const menuMember = menu ? visible.find((m) => m.uid === menu.uid) : undefined;
+  const pickerMember = rolePicker ? visible.find((m) => m.uid === rolePicker.uid) : undefined;
+  const confirmMember = confirm ? visible.find((m) => m.uid === confirm.uid) : undefined;
 
   return (
     <div className="flex flex-col">
@@ -348,7 +352,8 @@ export default function MembersTab({ serverId }: { serverId: string }) {
       ) : (
         <div className="flex flex-col pt-1.5">
           {visible.map((m) => {
-            const isSelf = m.username === currentUser;
+            const isSelf = m.uid === ownUid;
+            const name = nameFor(m);
             const acts = actionsFor(m);
             const anyAction = acts.nick || acts.roles || acts.timeout || acts.endTimeout || acts.kick || acts.ban;
             const memberRoles = roleIdsOf(m)
@@ -357,14 +362,14 @@ export default function MembersTab({ serverId }: { serverId: string }) {
               .sort((a, b) => b.position - a.position);
             const topColor = memberRoles.find((r) => r.color)?.color;
             const timedOut = (m.timedOutUntil ?? 0) * 1000 > Date.now();
-            const menuOpen = menu?.username === m.username || rolePicker?.username === m.username;
+            const menuOpen = menu?.uid === m.uid || rolePicker?.uid === m.uid;
             const openMenuAt = (anchor: MenuAnchor) => {
               setRolePicker(null);
-              setMenu({ username: m.username, anchor });
+              setMenu({ uid: m.uid, anchor });
             };
             return (
               <div
-                key={m.username}
+                key={m.uid}
                 onContextMenu={(e) => {
                   if (!anyAction) return;
                   e.preventDefault();
@@ -375,20 +380,20 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                 {/* Who */}
                 <div className="flex min-w-0 items-center gap-3">
                   <div className="relative shrink-0">
-                    <UserAvatar uid={m.uid ?? 0} name={m.username} size={32} />
+                    <UserAvatar uid={m.uid} name={name} size={32} />
                     <PresenceDot
-                      uid={m.uid ?? 0}
+                      uid={m.uid}
                       communityOnline={m.isOnline}
                       ring="var(--color-bg-dark)"
                       className="avatar-dot absolute -bottom-px -right-px"
                     />
                   </div>
-                  {nickOpen === m.username ? (
+                  {nickOpen === m.uid ? (
                     <form
                       className="flex min-w-0 flex-1 items-center gap-1.5"
                       onSubmit={(e) => {
                         e.preventDefault();
-                        runSetNickname(m.username);
+                        runSetNickname(m);
                       }}
                     >
                       <input
@@ -401,7 +406,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                             setNickOpen(null);
                           }
                         }}
-                        placeholder={m.username}
+                        placeholder={name}
                         className="h-8 min-w-0 flex-1 rounded-sm border border-accent bg-bg-lighter px-2.5 text-[13px] text-text-primary shadow-ring outline-none"
                       />
                       <button
@@ -420,7 +425,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                           className="truncate text-[14px] font-medium text-text-primary"
                           style={topColor ? { color: roleColor(topColor) } : undefined}
                         >
-                          {m.nickname || m.username}
+                          {m.nickname || name}
                         </span>
                         {m.isOwner && (
                           <span title="Server owner" className="flex shrink-0 text-warning">
@@ -443,7 +448,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                         )}
                       </div>
                       {m.nickname && (
-                        <div className="truncate font-meta text-meta text-text-muted">{m.username}</div>
+                        <div className="truncate font-meta text-meta text-text-muted">{name}</div>
                       )}
                     </div>
                   )}
@@ -455,7 +460,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                     <RoleChip
                       key={r.id}
                       role={r}
-                      onRemove={acts.roles && assignable.has(r.id) ? () => runToggleMemberRole(m.username, r.id) : undefined}
+                      onRemove={acts.roles && assignable.has(r.id) ? () => runToggleMemberRole(m.uid, r.id) : undefined}
                     />
                   ))}
                   {memberRoles.length > MAX_CHIPS && (
@@ -469,18 +474,18 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                   {acts.roles && (
                     <button
                       type="button"
-                      aria-label={`Edit roles for ${m.nickname || m.username}`}
+                      aria-label={`Edit roles for ${m.nickname || name}`}
                       title={memberRoles.length ? "Add role" : undefined}
                       onClick={(e) => {
                         setMenu(null);
                         setRolePicker(
-                          rolePicker?.username === m.username ? null : { username: m.username, anchor: anchorBelow(e.currentTarget) },
+                          rolePicker?.uid === m.uid ? null : { uid: m.uid, anchor: anchorBelow(e.currentTarget) },
                         );
                       }}
                       className={`flex h-6 shrink-0 items-center justify-center gap-1 rounded-sm border text-text-muted hover:border-accent hover:text-accent-bright focus-visible:opacity-100 ${
                         memberRoles.length ? "w-6" : "-ml-2 px-2 text-[12px] font-medium"
                       } ${
-                        rolePicker?.username === m.username
+                        rolePicker?.uid === m.uid
                           ? "border-accent text-accent-bright"
                           : memberRoles.length
                             ? "border-border opacity-0 group-hover:opacity-100"
@@ -491,8 +496,8 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                         <Icon name="plus" size={12} strokeWidth={2.5} />
                       ) : (
                         <>
-                          <span className={rolePicker?.username === m.username ? "hidden" : "group-hover:hidden"}>No roles</span>
-                          <span className={`items-center gap-1 ${rolePicker?.username === m.username ? "inline-flex" : "hidden group-hover:inline-flex"}`}>
+                          <span className={rolePicker?.uid === m.uid ? "hidden" : "group-hover:hidden"}>No roles</span>
+                          <span className={`items-center gap-1 ${rolePicker?.uid === m.uid ? "inline-flex" : "hidden group-hover:inline-flex"}`}>
                             <Icon name="plus" size={12} strokeWidth={2.5} />
                             Add role
                           </span>
@@ -513,12 +518,12 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                   {anyAction && (
                     <button
                       type="button"
-                      aria-label={`Actions for ${m.nickname || m.username}`}
+                      aria-label={`Actions for ${m.nickname || name}`}
                       aria-haspopup="menu"
-                      aria-expanded={menu?.username === m.username}
-                      onClick={(e) => (menu?.username === m.username ? setMenu(null) : openMenuAt(anchorBelow(e.currentTarget)))}
+                      aria-expanded={menu?.uid === m.uid}
+                      onClick={(e) => (menu?.uid === m.uid ? setMenu(null) : openMenuAt(anchorBelow(e.currentTarget)))}
                       className={`flex h-8 w-8 items-center justify-center rounded-sm text-text-muted hover:bg-surface-active hover:text-text-primary ${
-                        menu?.username === m.username ? "bg-surface-active text-text-primary" : ""
+                        menu?.uid === m.uid ? "bg-surface-active text-text-primary" : ""
                       }`}
                     >
                       <Icon name="more" size={16} />
@@ -554,19 +559,19 @@ export default function MembersTab({ serverId }: { serverId: string }) {
           acts={actionsFor(menuMember)}
           onNick={() => {
             setNickDraft(menuMember.nickname);
-            setNickOpen(menuMember.username);
+            setNickOpen(menuMember.uid);
             setMenu(null);
           }}
           onRoles={() => {
-            setRolePicker({ username: menuMember.username, anchor: menu.anchor });
+            setRolePicker({ uid: menuMember.uid, anchor: menu.anchor });
             setMenu(null);
           }}
           onEndTimeout={() => {
-            runTimeout(menuMember.username, true);
+            runTimeout(menuMember, true);
             setMenu(null);
           }}
           onMod={(kind) => {
-            openConfirm(kind, menuMember.username);
+            openConfirm(kind, menuMember.uid);
             setMenu(null);
           }}
         />
@@ -586,8 +591,8 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                 type="button"
                 role="menuitemcheckbox"
                 aria-checked={has}
-                disabled={pendingAction === `assign:${pickerMember.username}`}
-                onClick={() => runToggleMemberRole(pickerMember.username, r.id)}
+                disabled={pendingAction === `assign:${pickerMember.uid}`}
+                onClick={() => runToggleMemberRole(pickerMember.uid, r.id)}
                 className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-text-primary hover:bg-surface-hover"
               >
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: roleColor(r.color) }} />
@@ -611,12 +616,12 @@ export default function MembersTab({ serverId }: { serverId: string }) {
       )}
 
       {/* Kick / ban / timeout dialog */}
-      {confirm && (
+      {confirm && confirmMember && (
         <ModerationDialog
           serverId={serverId}
           kind={confirm.kind}
-          username={confirm.username}
-          member={visible.find((m) => m.username === confirm.username)}
+          username={nameFor(confirmMember)}
+          member={confirmMember}
           reason={reason}
           setReason={setReason}
           banDurationSec={banDurationSec}
@@ -628,9 +633,9 @@ export default function MembersTab({ serverId }: { serverId: string }) {
           busy={!!pendingAction}
           onCancel={() => setConfirm(null)}
           onConfirm={() => {
-            if (confirm.kind === "kick") runKick(confirm.username);
-            else if (confirm.kind === "ban") runBan(confirm.username);
-            else runTimeout(confirm.username);
+            if (confirm.kind === "kick") runKick(confirmMember);
+            else if (confirm.kind === "ban") runBan(confirmMember);
+            else runTimeout(confirmMember);
           }}
         />
       )}
@@ -657,16 +662,17 @@ function MemberMenu({
   onEndTimeout: () => void;
   onMod: (k: ModKind) => void;
 }) {
-  const name = m.nickname || m.username;
+  const username = useUserName(m.uid, m.username);
+  const name = m.nickname || username;
   const anchorRef = useRef<HTMLElement | null>(null);
   return (
     <Popover anchor={anchor} onClose={onClose} ignore={anchorRef} className="w-56 p-1.5">
       <div role="menu" aria-label={`Actions for ${name}`}>
         <div className="flex items-center gap-2.5 px-2 pb-2 pt-1">
-          <UserAvatar uid={m.uid ?? 0} name={m.username} size={24} />
+          <UserAvatar uid={m.uid} name={username} size={24} />
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold text-text-primary">{name}</div>
-            {m.nickname && <div className="truncate font-meta text-meta text-text-muted">{m.username}</div>}
+            {m.nickname && <div className="truncate font-meta text-meta text-text-muted">{username}</div>}
           </div>
         </div>
         <MenuDivider />
@@ -695,7 +701,7 @@ function ModerationDialog(p: {
   serverId: string;
   kind: ModKind;
   username: string;
-  member?: ServerMember;
+  member: ServerMember;
   reason: string;
   setReason: (v: string) => void;
   banDurationSec: number;
@@ -708,7 +714,7 @@ function ModerationDialog(p: {
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const name = p.member?.nickname || p.username;
+  const name = p.member.nickname || p.username;
   const copy = {
     kick: {
       title: `Kick ${name}`,
@@ -743,7 +749,7 @@ function ModerationDialog(p: {
       >
         <div className="mb-4 flex items-center gap-3">
           <div className="relative shrink-0">
-            <UserAvatar uid={legacyUid(p.username)} name={p.username} size={40} />
+            <UserAvatar uid={p.member.uid} name={p.username} size={40} />
             <span
               className={`absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-bg-dark ${
                 p.kind === "timeout" ? "bg-warning text-bg-dark" : "bg-error text-on-error"
@@ -754,7 +760,7 @@ function ModerationDialog(p: {
           </div>
           <div className="min-w-0">
             <h3 className="truncate font-display text-[16px] font-semibold text-text-primary">{copy.title}</h3>
-            {p.member?.nickname && <div className="truncate font-meta text-meta text-text-muted">{p.username}</div>}
+            {p.member.nickname && <div className="truncate font-meta text-meta text-text-muted">{p.username}</div>}
           </div>
         </div>
         <p className="mb-4 text-[13px] leading-[1.55] text-text-secondary">{copy.body}</p>

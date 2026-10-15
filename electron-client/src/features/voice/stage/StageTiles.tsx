@@ -289,7 +289,7 @@ export const StreamTile = memo(function StreamTile({
   mini,
 }: StreamTileProps) {
   const owner = stream.ownerUid;
-  const ownerName = stream.ownerUsername;
+  const ownerName = useUserName(owner, stream.ownerUsername);
   const thumbnail = useVoiceStore((s) => s.streamThumbnails[owner]);
   const displayName = useDisplayName(connectedServerId, owner, ownerName);
   const decodeCaps = useCodecSettingsStore.getState().decodeCaps;

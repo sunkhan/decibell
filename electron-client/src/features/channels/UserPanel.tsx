@@ -24,7 +24,6 @@ import { StreamAudioButton } from "../voice/StreamAudioPopover";
 import { announceCallStreamStop, endCall } from "../call/callActions";
 import { PERM, useChannelPermission } from "../servers/permissions";
 import { leaveVoiceChannel, toggleDeafen, toggleMute } from "../voice/voiceActions";
-import { ownUid } from "../users/userDirectory";
 
 const EMPTY_CHANNELS: never[] = [];
 
@@ -391,7 +390,7 @@ function SelfAvatar({ username, status }: { username: string | null; status: Dis
         boxShadow: isSpeaking ? "0 0 0 2px var(--color-success)" : "none",
       }}
     >
-      <UserAvatar uid={ownUid()} name={username ?? ""} size={36} />
+      <UserAvatar uid={uid} name={username ?? ""} size={36} />
       {status && (
         <StatusDot
           status={status}

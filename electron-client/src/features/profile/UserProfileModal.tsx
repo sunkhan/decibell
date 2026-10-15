@@ -110,7 +110,7 @@ function ProfileScreen({
   // A pending request either way, or a block, is not a conversation yet
   // (the friends page draws the same line).
   const canMessage =
-    !isSelf && (!friend || friend.status === "online" || friend.status === "offline");
+    uid > 0 && !isSelf && (!friend || friend.status === "online" || friend.status === "offline");
 
   return (
     <div
@@ -149,7 +149,7 @@ function ProfileScreen({
             <SecondaryButton onClick={() => openSettings("account")}>Edit profile</SecondaryButton>
           ) : (
             <>
-              <FriendActions uid={uid} username={username} friend={friend} />
+              {uid > 0 && <FriendActions uid={uid} username={username} friend={friend} />}
               {canMessage && <PrimaryButton onClick={openMessage}>Message</PrimaryButton>}
             </>
           )}

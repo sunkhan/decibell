@@ -396,7 +396,7 @@ export default function UserProfilePopup() {
         {serverId && (
           <>
             <div className="mx-4 my-3 h-px bg-border-divider" />
-            <div className={`px-4 ${uid === ownUid ? "pb-4" : ""}`}>
+            <div className={`px-4 ${uid === ownUid || uid < 0 ? "pb-4" : ""}`}>
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Roles
               </div>
@@ -409,8 +409,9 @@ export default function UserProfilePopup() {
           </>
         )}
 
-        {/* Quick-DM input — hidden when looking at our own profile. */}
-        {uid !== ownUid && (
+        {/* Quick-DM input — hidden on our own profile, and for a community
+            placeholder (a legacy name with no account to message). */}
+        {uid > 0 && uid !== ownUid && (
           <>
             <div className="mx-4 my-3 h-px bg-border-divider" />
             <div className="px-4 pb-4">

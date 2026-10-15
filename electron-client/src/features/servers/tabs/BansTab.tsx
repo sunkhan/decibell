@@ -5,7 +5,7 @@ import { EMPTY_LIST } from "../../../lib/empty";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { PERM, usePermission } from "../permissions";
 import { formatJoined } from "./helpers";
-import { uidOf } from "../../users/userDirectory";
+import { useUsersStore, type Uid } from "../../../stores/usersStore";
 
 /// Bans: the ban list (only BAN_MEMBERS holders receive it from the
 /// server) with reason / moderator / expiry and unban. The list refresh
@@ -15,12 +15,13 @@ export default function BansTab({ serverId }: { serverId: string }) {
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const names = useUsersStore((s) => s.names);
 
-  const runUnban = async (username: string) => {
-    setPendingAction(`unban:${username}`);
+  const runUnban = async (uid: Uid, username: string) => {
+    setPendingAction(`unban:${uid}`);
     setError(null);
     try {
-      await invoke("unban_member", { serverId, username, uid: uidOf(username) });
+      await invoke("unban_member", { serverId, username, uid });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -46,18 +47,18 @@ export default function BansTab({ serverId }: { serverId: string }) {
         <div className="flex flex-col gap-1">
           {bans.map((b) => (
             <div
-              key={b.username}
+              key={b.uid}
               className="flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-hover"
             >
               <div className="opacity-50">
-                <UserAvatar uid={b.uid ?? 0} name={b.username} size={36} />
+                <UserAvatar uid={b.uid} name={names.get(b.uid) ?? b.username} size={36} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] font-medium text-text-secondary">
-                  {b.username}
+                  {names.get(b.uid) ?? b.username}
                 </div>
                 <div className="truncate text-[11px] text-text-muted">
-                  {b.bannedBy ? `by ${b.bannedBy}` : ""}
+                  {b.bannedBy ? `by ${names.get(b.bannedByUid) ?? b.bannedBy}` : ""}
                   {b.bannedAt ? ` · ${formatJoined(b.bannedAt)}` : ""}
                   {b.expiresAt
                     ? ` · until ${new Date(b.expiresAt * 1000).toLocaleString()}`
@@ -67,8 +68,8 @@ export default function BansTab({ serverId }: { serverId: string }) {
               </div>
               {canBan && (
                 <button
-                  onClick={() => runUnban(b.username)}
-                  disabled={pendingAction === `unban:${b.username}`}
+                  onClick={() => runUnban(b.uid, names.get(b.uid) ?? b.username)}
+                  disabled={pendingAction === `unban:${b.uid}`}
                   className="rounded-sm bg-bg-light px-2.5 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-success/15 hover:text-success disabled:opacity-50"
                 >
                   Unban

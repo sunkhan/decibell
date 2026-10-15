@@ -6,6 +6,7 @@ import type {
   MemberUpsertPayload,
   ServerMember,
 } from "../../../types";
+import { toUid } from "../../../stores/usersStore";
 
 /// 0 = any role, > 0 = holds that role, -1 = holds no role (wire contract).
 export type RoleFilter = number;
@@ -102,7 +103,7 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
       const { query: q, roleId: r } = filterRef.current;
       setState((s) => {
         if (!s.loaded) return s;
-        const idx = s.members.findIndex((m) => m.username === member.username);
+        const idx = s.members.findIndex((m) => m.uid === member.uid);
         const fits = matches(member, q, r);
         if (idx >= 0) {
           const members = s.members.slice();
@@ -111,7 +112,8 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
           return { ...s, members, total: fits ? s.total : Math.max(0, s.total - 1) };
         }
         if (!fits) return s;
-        // Only inside the loaded range, so paging leaves no gap.
+        // Only inside the loaded range, so paging leaves no gap (pages run
+        // in name order: the server's cursor is the member's name).
         const last = s.members[s.members.length - 1];
         if (s.hasMore && last && member.username > last.username) return s;
         const at = s.members.findIndex((m) => m.username > member.username);
@@ -121,11 +123,12 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
       });
     });
     const unRm = listen<MemberRemovePayload>("member_remove", (event) => {
-      const { serverId: sid, username } = event.payload;
+      const { serverId: sid } = event.payload;
+      const uid = toUid(event.payload.uid);
       if (sid !== serverId) return;
       setState((s) => {
-        if (!s.members.some((m) => m.username === username)) return s;
-        return { ...s, members: s.members.filter((m) => m.username !== username), total: Math.max(0, s.total - 1) };
+        if (!s.members.some((m) => m.uid === uid)) return s;
+        return { ...s, members: s.members.filter((m) => m.uid !== uid), total: Math.max(0, s.total - 1) };
       });
     });
     return () => {

@@ -13,9 +13,9 @@ branch, which merges to `main` at the end of each stage that can ship alone.
    the latest name it knows for each uid in `members`. The one exception is the name a message was sent
    under: rows keep it, because v1 encryption binds it (see rule 4).
 3. **The wire carries both.** Every user reference gains an `int64 *_uid` field next to its name.
-   - Requests target by uid. The name stays as the fallback, for names a person typed (add friend,
-     message someone) and for clients that don't send the uid yet. Servers resolve that name to a uid at
-     the request edge, before anything is written.
+   - Requests target by uid. Central keeps a name lookup for names a person types (add friend, message
+     someone), resolved to a uid at the request edge before anything is written. Community requests are
+     uid-only (since §The renderer by uid): every target there comes from a payload that carried its uid.
    - Payloads carry the uid and the **current** name.
 4. **Rows sealed under a name say so.** A v1 envelope binds the names it was sealed under: a DM binds both
    names (key derivation and AAD), a channel message binds the sender. After a rename those can differ
@@ -39,6 +39,8 @@ Each stage leaves every tier working with every other, so they can deploy one at
    re-keys its stores.
 
 ### Why the client keeps name-keyed stores
+
+*Superseded by §The renderer by uid: the stores moved to uid keys after all, and `applyRename` is gone.*
 
 The renderer has about 800 username references and native about 1,300. Re-keying all of them by uid would
 be the largest and riskiest part of the work, for an event (a rename) that is rare. With rules 3 and 4 in
@@ -153,6 +155,7 @@ Still name-based on purpose until the client stage, because old clients parse th
 ### Wire (additive)
 
 - Requests carry the target's uid, with the name as the fallback (resolved against `members.username`).
+  The fallback is gone since §The renderer by uid.
 - Payloads carry uids next to current names.
 - `ChannelMessage` gains `sender_uid`, `reply_to_sender_uid`, `sealed_sender` and
   `reply_to_sealed_sender` (rule 4).
@@ -339,3 +342,55 @@ media plane still named people. Both are gone: a rename is now only a database c
   update agrees.
 - Older clients can't decode anyone's media against this relay (and the reverse): release with the
   community rebuild.
+
+## The renderer by uid ✅
+
+Owner decision (2026-10-15): use the uid everywhere, avatar colors included. With every store keyed by
+name, each rename needed `applyRename` to move state between keys, and each new store had to remember to
+join it. Keying by uid makes a rename one entry in one map.
+
+### Stores
+
+- **`stores/usersStore.ts`** maps uid → current name. `features/users/userDirectory.ts` feeds it from
+  every payload that names someone with their uid (rosters, presence, friends, DM previews and history,
+  channel history and search, voice and stream presence, bans, audit entries, invites, wipes, call
+  signals, renames). Draw a name with `useUserName(uid, fallback)` (reactive) or `nameOf(uid, fallback)`.
+- **Keyed by uid:** DM conversations, the active DM, pending deletions, DM drafts, presence and status
+  messages, friends, avatars, E2EE peer notices, profile popup / modal / context-menu targets, voice
+  (rosters, speaking, mutes, volumes, watches, streams, thumbnails, stats), the call peer, the server
+  owner, roster merges and removals, member search results, moderation UI state, channel overwrite
+  drafts (`member:<uid>`), invite-friends rows and the search `from:` chip.
+- `Message.senderUid` / `DmMessage.senderUid` are required. Own-message checks (edit, delete, ArrowUp,
+  slowmode, "replies to you", invite cards), grouping and reply previews compare uids. Channel messages
+  never copied `senderUid` before (history, live and search rows all dropped it); a name bridge had
+  hidden that.
+- `features/users/applyRename.ts` is deleted. A rename sets the users-store entry (and our own name in
+  `authStore`); every view re-labels.
+
+### Names on screen
+
+- People see names, never uids. When the users store has no name yet, a view shows the name its payload
+  carried, else "Unknown user".
+- Avatar colors and gradients hash `uid:<n>`, so they survive a rename. The letter is the current name's.
+- A community placeholder (negative uid: a legacy name that never reconnected) isn't in the users store;
+  views draw it from its member row, and it has no DM or friend actions.
+- Server nicknames: `useDisplayName(serverId, uid, name)` / `resolveDisplayName`.
+- Saved per-user volumes and mutes from before uids migrate through `uidNamed(name)`, a reverse lookup in
+  the users store, once the account's name arrives.
+
+### Servers: no more name fallbacks on the community
+
+The client always sends the uid, so the community dropped every name path:
+
+- key-blob recipients, watch / stop-watching, thumbnail fetches and the codec-change notify;
+- `resolve_member` (kick, ban, timeout, nickname, roles, voice moderation, overwrites, ownership transfer)
+  and unban;
+- personal invites (`for_uid` required; `for_user` only labels it) and bans of a never-seen name (the
+  placeholder allocation `placeholder_for_name` is gone; migrated legacy data keeps its placeholders);
+- message search senders (`authors` is ignored; the index's `author_names` path is gone). A row with no
+  account (sender uid 0) can't be found by sender.
+
+Native moderation commands take a required `uid` (`username` is an optional label), and
+`fetch_stream_thumbnail` takes only the uid. Central keeps its typed-name lookups. A request that names
+its target only by name is refused (e2e: "a kick naming its target only by name is refused").
+

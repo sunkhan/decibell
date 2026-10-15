@@ -568,9 +568,9 @@ pub struct SetChannelOverwriteArgs {
     pub channel_id: String,
     /// "role" | "member"
     pub target_type: String,
-    /// Role id (decimal string) or username.
+    /// Role id (decimal string); empty for a member (see `target_uid`).
     pub target_id: String,
-    /// Member targets: the member's uid (preferred over the name).
+    /// Member targets: the member's uid (users by uid).
     pub target_uid: Option<i64>,
     pub allow: i64,
     pub deny: i64,

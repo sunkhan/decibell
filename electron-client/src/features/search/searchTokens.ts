@@ -1,5 +1,6 @@
 import type { ChannelInfo, ServerMember } from "../../types";
 import { PERM, hasBits } from "../servers/permissions";
+import { nameOf } from "../../stores/usersStore";
 import {
   parseDay,
   withFilter,
@@ -58,9 +59,9 @@ export function resolveToken(op: FilterKind, value: string, ctx: TokenContext): 
     case "from": {
       const lower = v.replace(/^@/, "").toLowerCase();
       const m =
-        ctx.members.find((x) => x.username.toLowerCase() === lower) ??
+        ctx.members.find((x) => nameOf(x.uid, x.username).toLowerCase() === lower) ??
         ctx.members.find((x) => x.nickname && x.nickname.toLowerCase() === lower);
-      return m ? { kind: "from", username: m.username } : null;
+      return m ? { kind: "from", uid: m.uid, username: nameOf(m.uid, m.username) } : null;
     }
     case "in": {
       const lower = v.replace(/^#/, "").toLowerCase();

@@ -4,6 +4,7 @@ import { parseInviteLink } from "./inviteLink";
 import { invoke, listen } from "../../lib/ipc";
 import { applySavedUserGains } from "../voice/userGain";
 import { useChatStore } from "../../stores/chatStore";
+import { toUid } from "../../stores/usersStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
@@ -201,7 +202,7 @@ export function useServerEvents() {
           name: p.serverName,
           description: p.serverDescription,
         });
-        useChatStore.getState().setServerOwner(p.serverId, p.ownerUsername);
+        useChatStore.getState().setServerOwner(p.serverId, toUid(p.ownerUid));
         useChatStore.getState().setServerPublicListing(p.serverId, p.publicListing);
         useChatStore.getState().setServerAttachmentConfig(
           p.serverId,
@@ -292,8 +293,8 @@ export function useServerEvents() {
     const unlistenMemberRemove = listen<MemberRemovePayload>(
       "member_remove",
       (event) => {
-        const { serverId, username, revision } = event.payload;
-        if (!useChatStore.getState().removeMember(serverId, username, revision)) {
+        const { serverId, uid, revision } = event.payload;
+        if (!useChatStore.getState().removeMember(serverId, toUid(uid), revision)) {
           refetchRoster(serverId);
         }
       },
@@ -315,7 +316,7 @@ export function useServerEvents() {
         const p = event.payload;
         const chat = useChatStore.getState();
         chat.setServerMeta(p.serverId, { name: p.serverName, description: p.serverDescription });
-        chat.setServerOwner(p.serverId, p.ownerUsername);
+        chat.setServerOwner(p.serverId, toUid(p.ownerUid));
         chat.setServerPublicListing(p.serverId, p.publicListing);
         // Keep the ServerBar tile's name in sync too.
         useChatStore.setState((state) => ({

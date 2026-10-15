@@ -18,8 +18,7 @@ import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
 import { announceCallStreamStop } from "../call/callActions";
 import { applySavedUserGains } from "./userGain";
-import { nameOf } from "../users/userDirectory";
-import { toUid, type Uid } from "../../stores/usersStore";
+import { nameOf, toUid, type Uid } from "../../stores/usersStore";
 
 /// Voice-channel event subscriber. Listens for:
 ///   • voice_presence_updated — channel roster + per-user mute/deafen
@@ -352,7 +351,8 @@ export function useVoiceEvents() {
         const built = buildCodecToast(
           {
             channelId: event.payload.channelId,
-            streamerUsername: event.payload.streamerUsername,
+            streamerUsername: nameOf(toUid(event.payload.streamerUid), event.payload.streamerUsername),
+            streamerUid: toUid(event.payload.streamerUid),
             newCodec: event.payload.newCodec as VideoCodec,
             newWidth: event.payload.newWidth,
             newHeight: event.payload.newHeight,

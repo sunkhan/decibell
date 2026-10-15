@@ -2704,3 +2704,39 @@ Verified:
 Ships with the community rebuild: an older client and this relay can't decode each other's media.
 Live tests are still pending: a rename mid-call and mid-stream with two clients, a P2P call, and token
 renewal past 6 h.
+
+**The renderer by uid, and no name fallbacks on the community (2026-10-15) ✅** — Owner asked to use the
+uid everywhere, avatar colors included (`2026-10-15-uid-identity-design.md` §The renderer by uid). Every
+renderer store that holds users keys on the account uid now, so a rename changes one entry and nothing
+moves.
+- **Users store.** `stores/usersStore.ts` maps uid → current name, fed by every payload that names someone
+  with their uid. Views draw names with `useUserName(uid, fallback)` / `nameOf`. People never see uids: the
+  fallback is the payload's name, else "Unknown user".
+- **Converted:** DMs (threads, active DM, drafts, pending deletions), presence and status messages,
+  friends, avatars, E2EE notices, profile popup / modal / context menu, voice and streams, calls, the
+  server owner, rosters and member search, the Members / Roles / Bans / Audit Log tabs, channel overwrites
+  (`member:<uid>`), ownership transfer, personal invites, the search `from:` chip and the hierarchy checks.
+- **Avatar colors** hash the uid, so a rename keeps them. `useDisplayName(serverId, uid, name)`.
+- `applyRename.ts` and the temporary name bridges (`legacyUid`, `uidOf`, `mediaKeyOf`, `ownUid`) are
+  gone. Saved per-user volumes from before uids migrate through `uidNamed`.
+- **Fixed on the way:**
+  - Channel messages dropped `senderUid` in all three paths (live, history, search). The name bridge hid
+    it. `Message.senderUid` is required now, and own-message checks, grouping and replies compare uids.
+  - A profile popup or modal for a community placeholder (a legacy name with no account) offered DM and
+    friend actions that couldn't reach anyone. They're hidden now.
+- **Community: request names are labels only.** The client always sends uids, so the community dropped
+  every name fallback: key-blob recipients, watch / stop watching, thumbnail fetches, the codec notify,
+  `resolve_member` (kick, ban, timeout, nickname, roles, voice moderation, overwrites, transfer), unban,
+  personal invites, bans of a never-seen name, and search senders by name. Native moderation commands
+  take a required uid. Central keeps its typed-name lookups.
+
+Verified:
+- community e2e 588 passed, including the v14 migration and a new check that a kick naming its target
+  only by name is refused (the harness now targets by uid; the "from: non-member by name" check is gone
+  with the feature);
+- `cargo test --lib` 233 passed; `napi build`; `tsc` 0 errors (web + node);
+- offscreen captures of the real chat, members list, DM, friends page, profile popup and context menu,
+  with a live `user_renamed`: every view relabels, colors stay, the list re-sorts, and nothing is logged
+  to the console.
+
+Central is unchanged. This ships with the community rebuild and the client release, all at once.

@@ -204,6 +204,13 @@ def sql(q, *args):
         c.close()
 
 
+def uid_of(username):
+    """The account a request targets (users by uid: requests never name
+    their target): the member row's uid, else the uid its token carries."""
+    rows = sql("select uid from members where username=?", username)
+    return rows[0][0] if rows else uid_for(username)
+
+
 def auth_ok(c):
     r = c.wait(pb.Packet.COMMUNITY_AUTH_RES)
     return r is not None and r.community_auth_res.success, r
@@ -288,7 +295,7 @@ def test_b3_utf8_truncation():
     owner.flush(0.5); bob.flush(0.5)
     # 30 ASCII bytes + 4-byte emoji = 34 bytes > 32 cap; a byte cut at 32 would split the emoji.
     nick = "a" * 30 + "\U0001F600"
-    bob.send(pb.Packet.SET_NICKNAME_REQ, set_nickname_req=pb.SetNicknameRequest(username="bob", nickname=nick))
+    bob.send(pb.Packet.SET_NICKNAME_REQ, set_nickname_req=pb.SetNicknameRequest(username="bob", uid=uid_of("bob"), nickname=nick))
     r = bob.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "nickname")
     check("nickname accepted", r is not None and r.mod_action_res.success)
     got = None
@@ -324,7 +331,7 @@ def test_b4_multi_session_ban():
     bob1 = join("bob2", owner, nonce="one")
     bob2 = Client("bob2", nonce="two"); assert auth_ok(bob2)[0]   # second device, different JWT
     owner.flush(0.5); bob1.flush(0.5); bob2.flush(0.5)
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="bob2", reason="bye"))
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="bob2", uid=uid_of("bob2"), reason="bye"))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     check("ban succeeded", r is not None and r.mod_action_res.success)
     rev1 = bob1.wait(pb.Packet.MEMBERSHIP_REVOKED, timeout=2)
@@ -371,7 +378,7 @@ def test_role_assign_guard():
     owner.send(pb.Packet.ROLE_UPDATE_REQ, role_update_req=pb.RoleUpdateRequest(role_id=mod.id, name="Mod", color=0,
                                                                               permissions=pb.PERM_MANAGE_ROLES, position=2))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "update")
-    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", role_ids=[mod.id]))
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", uid=uid_of("erin"), role_ids=[mod.id]))
     r = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     check("owner assigned Mod to erin", r is not None and r.role_action_res.success)
     owner.flush(0.5)
@@ -380,18 +387,18 @@ def test_role_assign_guard():
     pos = {x.name: x.position for x in rl.role_list_res.roles}
     check("hierarchy: Mod above Admin", pos.get("Mod", 0) > pos.get("Admin", 0), str(pos))
     erin.flush(0.5)
-    erin.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", role_ids=[mod.id, admin.id]))
+    erin.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", uid=uid_of("erin"), role_ids=[mod.id, admin.id]))
     r = erin.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     check("erin self-assigning Admin rejected", r is not None and not r.role_action_res.success, r.role_action_res.message if r else None)
     # Sanity: erin can still assign a harmless lower role she holds bits for.
     owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Helper", color=0, permissions=0))
     helper = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
     erin.flush(0.5)
-    erin.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", role_ids=[mod.id, helper.id]))
+    erin.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", uid=uid_of("erin"), role_ids=[mod.id, helper.id]))
     r = erin.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     check("erin assigning Helper (no extra bits) allowed", r is not None and r.role_action_res.success, r.role_action_res.message if r else None)
     # Removing a role above... erin removes Helper again (fine).
-    erin.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", role_ids=[mod.id]))
+    erin.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="erin", uid=uid_of("erin"), role_ids=[mod.id]))
     r = erin.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     check("erin removing Helper allowed", r is not None and r.role_action_res.success)
     erin.close(); owner.close()
@@ -425,13 +432,13 @@ def test_offline_kick_roster():
     heidi.close()
     time.sleep(0.5)
     owner.flush(0.8)   # swallow the leave-triggered roster broadcast
-    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="heidi", reason=""))
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="heidi", uid=uid_of("heidi"), reason=""))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
     check("offline kick succeeded", r is not None and r.mod_action_res.success)
     rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "heidi")
     check("MEMBER_REMOVE after offline kick", rm is not None)
     ivan = join("ivan", owner); ivan.close(); time.sleep(0.5); owner.flush(0.8)
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="ivan", reason=""))
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="ivan", uid=uid_of("ivan"), reason=""))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     check("offline ban succeeded", r is not None and r.mod_action_res.success)
     rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "ivan")
@@ -462,7 +469,7 @@ def test_no_ghost_after_leave_or_ban():
     kim.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
     owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "kim" in p.voice_presence_update.active_users)
     owner.flush(0.5)
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="kim", reason=""))
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="kim", uid=uid_of("kim"), reason=""))
     vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=3, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge" and len(p.voice_presence_update.active_users) == 0)
     check("voice presence cleared after ban (session reaped)", vp is not None)
     check("kim socket closed", kim.is_closed())
@@ -586,13 +593,13 @@ def test_b26_stop_watching_spoof():
         c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
     ned.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
     time.sleep(0.5); ned.flush(0.5); oli.flush(0.5); owner.flush(0.5)
-    oli.send(pb.Packet.STOP_WATCHING_REQ, stop_watching_req=pb.StopWatchingRequest(channel_id="voice-lounge", target_username="ned"))
+    oli.send(pb.Packet.STOP_WATCHING_REQ, stop_watching_req=pb.StopWatchingRequest(channel_id="voice-lounge", target_username="ned", target_uid=uid_of("ned")))
     n = ned.wait(pb.Packet.STREAM_WATCHER_NOTIFY, timeout=1.5)
     check("no LEFT notify for a never-subscribed watcher", n is None)
-    oli.send(pb.Packet.WATCH_STREAM_REQ, watch_stream_req=pb.WatchStreamRequest(channel_id="voice-lounge", target_username="ned"))
+    oli.send(pb.Packet.WATCH_STREAM_REQ, watch_stream_req=pb.WatchStreamRequest(channel_id="voice-lounge", target_username="ned", target_uid=uid_of("ned")))
     n = ned.wait(pb.Packet.STREAM_WATCHER_NOTIFY, timeout=2, pred=lambda p: p.stream_watcher_notify.action == pb.StreamWatcherNotify.JOINED)
     check("real watch → JOINED notify", n is not None)
-    oli.send(pb.Packet.STOP_WATCHING_REQ, stop_watching_req=pb.StopWatchingRequest(channel_id="voice-lounge", target_username="ned"))
+    oli.send(pb.Packet.STOP_WATCHING_REQ, stop_watching_req=pb.StopWatchingRequest(channel_id="voice-lounge", target_username="ned", target_uid=uid_of("ned")))
     n = ned.wait(pb.Packet.STREAM_WATCHER_NOTIFY, timeout=2, pred=lambda p: p.stream_watcher_notify.action == pb.StreamWatcherNotify.LEFT)
     check("real unwatch → LEFT notify", n is not None)
     ned.close(); oli.close(); owner.close()
@@ -628,7 +635,7 @@ def test_stream_thumbnails():
     check("4th in a burst refused", relayed(1.0) is None)
 
     tia.send(pb.Packet.FETCH_STREAM_THUMBNAIL_REQ,
-             fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_username="sam"))
+             fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_uid=uid_of("sam")))
     r = tia.wait(pb.Packet.FETCH_STREAM_THUMBNAIL_RES, timeout=3)
     d = r.fetch_stream_thumbnail_res.thumbnail_data if r is not None else b""
     check("fetch serves the last accepted thumbnail", len(d) == 256 * 1024 and d[:1] == b"\x03", len(d))
@@ -650,7 +657,7 @@ def test_p2_perm_cache_invalidation():
     check("no MANAGE_CHANNELS → create rejected", r is not None and not r.channel_action_res.success)
     owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Builder", color=0, permissions=pb.PERM_MANAGE_CHANNELS))
     role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
-    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="pat", role_ids=[role.id]))
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="pat", uid=uid_of("pat"), role_ids=[role.id]))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     pat.flush(0.5)
     pat.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="pat-2", type=pb.ChannelInfo.TEXT))
@@ -781,8 +788,12 @@ def set_everyone_perms(owner, perms):
 
 
 def set_overwrite(c, channel_id, target_type, target_id, allow=0, deny=0):
+    """A member target is given by name here and sent as its uid (the
+    name stays in target_id for the pre-uid build in migration checks)."""
+    target_uid = uid_of(target_id) if target_type == pb.ChannelOverwrite.MEMBER else 0
     c.send(pb.Packet.CHANNEL_OVERWRITE_SET_REQ, channel_overwrite_set_req=pb.ChannelOverwriteSetRequest(
-        overwrite=pb.ChannelOverwrite(channel_id=channel_id, target_type=target_type, target_id=str(target_id), allow=allow, deny=deny)))
+        overwrite=pb.ChannelOverwrite(channel_id=channel_id, target_type=target_type, target_id=str(target_id),
+                                      target_uid=target_uid, allow=allow, deny=deny)))
     return c.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "overwrite")
 
 
@@ -913,7 +924,7 @@ def test_v2_overwrite_guards():
     # sam gets a role with MANAGE_ROLES (but not MANAGE_SERVER / BAN)
     owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Curator", color=0, permissions=pb.PERM_MANAGE_ROLES))
     role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
-    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="sam", role_ids=[role.id]))
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="sam", uid=uid_of("sam"), role_ids=[role.id]))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     sam.flush(0.5)
     r = set_overwrite(sam, "general", pb.ChannelOverwrite.MEMBER, "sam", allow=pb.PERM_BAN_MEMBERS)
@@ -930,11 +941,11 @@ def test_v2_overwrite_guards():
     set_everyone_perms(owner, ALL_MEMBER_BITS | pb.PERM_KICK_MEMBERS)
     tia.flush(0.5)
     uma = join("uma", owner); tia.flush(0.5); uma.flush(0.5)
-    tia.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="uma", reason=""))
+    tia.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="uma", uid=uid_of("uma"), reason=""))
     r = tia.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
     check("role-less member can't kick a role-less member (equal level)", r is not None and not r.mod_action_res.success)
     sam.flush(0.5)
-    sam.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="uma", reason=""))
+    sam.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="uma", uid=uid_of("uma"), reason=""))
     r = sam.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
     check("role holder (level 1) can kick a role-less member", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
     set_everyone_perms(owner, ALL_MEMBER_BITS)
@@ -1066,11 +1077,11 @@ def test_server_update_and_transfer():
     c = Client("alice"); ok, ar = auth_ok(c); check("auth response carries new name", ok and ar.community_auth_res.server_name == "Renamed Server"); c.close()
     # transfer: non-owner denied; owner → yul
     yul.flush(0.3)
-    yul.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="yul"))
+    yul.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="yul", new_owner_uid=uid_of("yul")))
     r = yul.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "transfer")
     check("transfer denied for non-owner", r is not None and not r.mod_action_res.success)
     owner.flush(0.3)
-    owner.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="yul"))
+    owner.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="yul", new_owner_uid=uid_of("yul")))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "transfer")
     check("owner transfers to yul", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
     m = yul.wait(pb.Packet.SERVER_META_UPDATE, timeout=2, pred=lambda p: p.server_meta_update.owner_username == "yul")
@@ -1083,7 +1094,7 @@ def test_server_update_and_transfer():
     r = owner.wait(pb.Packet.SERVER_UPDATE_RES)
     check("former owner lost MANAGE_SERVER", r is not None and not r.server_update_res.success)
     # transfer back so later tests keep alice as owner
-    yul.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="alice"))
+    yul.send(pb.Packet.TRANSFER_OWNERSHIP_REQ, transfer_ownership_req=pb.TransferOwnershipRequest(new_owner="alice", new_owner_uid=uid_of("alice")))
     r = yul.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "transfer")
     check("transfer back", r is not None and r.mod_action_res.success)
     yul.close(); owner.close()
@@ -1135,7 +1146,7 @@ def test_member_search_and_role_counts():
     check("role list: member_count per role", counts.get("Searchers") == 3, str(counts))
     check("role list: everyone counts every member", everyone == total, f"{everyone} vs {total}")
     owner.flush(0.3)
-    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="zq010", role_ids=[role.id]))
+    owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="zq010", uid=uid_of("zq010"), role_ids=[role.id]))
     pushed = owner.wait(pb.Packet.ROLE_LIST_RES, timeout=2,
                         pred=lambda p: any(x.name == "Searchers" and x.member_count == 4 for x in p.role_list_res.roles))
     check("assigning a role pushes the new count", pushed is not None)
@@ -1221,10 +1232,10 @@ def test_timeouts():
     print("[timeout] timed-out member can't post / join voice; clear restores")
     owner = Client("alice"); assert auth_ok(owner)[0]
     amy = join("amy", owner); owner.flush(0.5); amy.flush(0.5)
-    amy.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="alice", until=int(time.time()) + 60))
+    amy.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="alice", uid=uid_of("alice"), until=int(time.time()) + 60))
     r = amy.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
     check("denied without MODERATE_MEMBERS / on owner", r is not None and not r.mod_action_res.success)
-    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="amy", until=int(time.time()) + 60, reason="cool off"))
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="amy", uid=uid_of("amy"), until=int(time.time()) + 60, reason="cool off"))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
     check("owner times out amy", r is not None and r.mod_action_res.success)
     up = amy.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "amy")
@@ -1235,7 +1246,7 @@ def test_timeouts():
     amy.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
     r = amy.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice")
     check("voice join rejected while timed out", r is not None and not r.mod_action_res.success)
-    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="amy", until=0))
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="amy", uid=uid_of("amy"), until=0))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
     amy.flush(0.5); owner.flush(0.3)
     amy.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="back"))
@@ -1253,7 +1264,7 @@ def test_ban_expiry_and_purge():
     ids = [p.channel_msg.id for p in owner.inbox if p.type == pb.Packet.CHANNEL_MSG and p.channel_msg.sender == "ben"]
     check("3 messages landed", len(ids) == 3)
     owner.inbox.clear()
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="ben", reason="spam", expires_at=int(time.time()) + 6, delete_message_seconds=3600))
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="ben", uid=uid_of("ben"), reason="spam", expires_at=int(time.time()) + 6, delete_message_seconds=3600))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     check("temp ban with purge succeeded", r is not None and r.mod_action_res.success)
     rev = ben.wait(pb.Packet.MEMBERSHIP_REVOKED, timeout=2)
@@ -1373,17 +1384,14 @@ def test_message_search():
     r = search_req(bob, next(seq), query='deploy" OR "x NEAR(')
     check("FTS syntax in the input is inert", r is not None and r.success, r.message if r else None)
 
-    # Senders: a member by account (every name they posted under), a
-    # non-member by the name on the messages.
+    # Senders by account: every name they posted under.
     mine = [ch_a, ch_b, sealed, private]
-    r = search_req(carol, next(seq), authors=["sbob"], channel_ids=mine)
+    r = search_req(carol, next(seq), author_uids=[uid_of("sbob")], channel_ids=mine)
     got = ids(r) or []
     check("from: member matches every row of their account, incl. pre-rename + encrypted", r is not None and set(got) == {m1, m3, m5, m8, m9, m11}, str(got))
     sealed_row = next((m for m in r.messages if m.id == m9), None) if r else None
     check("from: encrypted rows come with their envelope", sealed_row is not None and sealed_row.envelope == b"\x02SEALED")
-    r = search_req(carol, next(seq), authors=["ghost"])
-    check("from: non-member by name", r is not None and ids(r) == [m6], str(ids(r)))
-    r = search_req(carol, next(seq), query="deploy", authors=["sbob", "scarol"])
+    r = search_req(carol, next(seq), query="deploy", author_uids=[uid_of("sbob"), uid_of("scarol")])
     check("from: several people + words", r is not None and ids(r) == [m5, m2, m1], str(ids(r)))
 
     # Channel scope and access.
@@ -1497,7 +1505,7 @@ def test_message_search():
     cm2 = put(ch_a, "scarol", "spam", 11)
     sql("update messages set timestamp=? where id in (?, ?)", int(time.time()) - 60, cm, cm2)
     owner.flush(0.3)
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="scarol", reason="t", delete_message_seconds=3600))
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="scarol", uid=uid_of("scarol"), reason="t", delete_message_seconds=3600))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     check("ban purge goes by uid (pre-rename row purged too)", sql("select count(*) from messages where id in (?, ?)", cm, cm2) == [(0,)])
     sql("delete from bans where username='scarol'")
@@ -1565,7 +1573,7 @@ def test_message_search_turkish_and_within():
     check("inside words: exclusions", r is not None and ids(r) == [x3, x2], str(ids(r)))
     r = search_req(owner, next(seq), query="roadm", match_within_words=True, **W)
     check("inside words: file names", r is not None and ids(r) == [x6], str(ids(r)))
-    r = search_req(owner, next(seq), query="eploy", match_within_words=True, authors=["alice"], **W)
+    r = search_req(owner, next(seq), query="eploy", match_within_words=True, author_uids=[uid_of("alice")], **W)
     check("inside words + a sender", r is not None and ids(r) == [x4, x2], str(ids(r)))
     r = search_req(owner, next(seq), query="eploy", match_within_words=True, sort=pb.MessageSearchRequest.RELEVANCE, **W)
     check("inside words: relevance sorts newest first", r is not None and ids(r) == [x4, x2], str(ids(r)))
@@ -1699,7 +1707,8 @@ def test_personal_invites():
 
     def create(c, request_id, for_user="", expires_at=0, max_uses=0):
         c.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(
-            expires_at=expires_at, max_uses=max_uses, for_user=for_user, request_id=request_id))
+            expires_at=expires_at, max_uses=max_uses, for_user=for_user, for_uid=uid_of(for_user) if for_user else 0,
+            request_id=request_id))
         return c.wait(pb.Packet.INVITE_CREATE_RES, pred=lambda p: p.invite_create_res.request_id == request_id)
 
     r = create(owner, 41, for_user="pia", max_uses=0)
@@ -1751,20 +1760,20 @@ def test_voice_moderation():
     dee = join("dee", owner); owner.flush(0.5); dee.flush(0.5)
     dee.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
     owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "dee" in p.voice_presence_update.active_users)
-    dee.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="alice", action=pb.VoiceModRequest.SERVER_MUTE))
+    dee.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="alice", uid=uid_of("alice"), action=pb.VoiceModRequest.SERVER_MUTE))
     r = dee.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     check("denied without MUTE_MEMBERS", r is not None and not r.mod_action_res.success)
     owner.flush(0.3)
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.SERVER_MUTE))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", uid=uid_of("dee"), action=pb.VoiceModRequest.SERVER_MUTE))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     check("owner server-mutes dee", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
     vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: any(s.username == "dee" and s.is_server_muted for s in p.voice_presence_update.user_states))
     check("presence shows is_server_muted", vp is not None)
     check("persisted on member", sql("select server_muted from members where username='dee'") == [(1,)])
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.SERVER_UNMUTE))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", uid=uid_of("dee"), action=pb.VoiceModRequest.SERVER_UNMUTE))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     dee.flush(0.5); owner.flush(0.5)
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.MOVE, channel_id="voice-lounge-2"))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", uid=uid_of("dee"), action=pb.VoiceModRequest.MOVE, channel_id="voice-lounge-2"))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     check("move succeeded", r is not None and r.mod_action_res.success, r.mod_action_res.message if r else None)
     n = dee.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2)
@@ -1772,14 +1781,14 @@ def test_voice_moderation():
     vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge-2" and "dee" in p.voice_presence_update.active_users)
     check("presence in new channel", vp is not None)
     owner.flush(0.3); dee.flush(0.3)
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.DISCONNECT))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", uid=uid_of("dee"), action=pb.VoiceModRequest.DISCONNECT))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     check("disconnect succeeded", r is not None and r.mod_action_res.success)
     n = dee.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2)
     check("target gets DISCONNECTED", n is not None and n.voice_force_notify.action == pb.VoiceForceNotify.DISCONNECTED)
     vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=2, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge-2" and len(p.voice_presence_update.active_users) == 0)
     check("presence cleared", vp is not None)
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", action=pb.VoiceModRequest.DISCONNECT))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="dee", uid=uid_of("dee"), action=pb.VoiceModRequest.DISCONNECT))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     check("disconnect of a non-voice member fails cleanly", r is not None and not r.mod_action_res.success)
     dee.close(); owner.close()
@@ -1825,7 +1834,7 @@ def test_udp_relay():
         pass
     check("burst of 50 relayed (drained per wakeup)", n == 50, f"got {n}")
     # server-mute ann → her audio is dropped at the relay
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", action=pb.VoiceModRequest.SERVER_MUTE))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", uid=uid_of("ann"), action=pb.VoiceModRequest.SERVER_MUTE))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     time.sleep(0.3)
     ua.sendto(udp_audio_packet(ann.jwt, 99, b"muted"), (HOST, 8083))
@@ -1835,7 +1844,7 @@ def test_udp_relay():
     except socket.timeout:
         dropped = True
     check("server-muted member's audio dropped by the relay", dropped)
-    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", action=pb.VoiceModRequest.SERVER_UNMUTE))
+    owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", uid=uid_of("ann"), action=pb.VoiceModRequest.SERVER_UNMUTE))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
     # media socket PING echo (also registers the media endpoint)
     um = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); um.bind((HOST, 0)); um.settimeout(2)
@@ -2115,12 +2124,12 @@ def test_encrypted_channels():
     k = ed.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=2)
     check("keys: no epoch yet, members listed", k is not None and k.channel_keys_res.encrypted and k.channel_keys_res.current_epoch == 0 and set(k.channel_keys_res.members) >= {"alice", "edith", "fay"})
     # gap-fill before any epoch is a stale epoch
-    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=2, blobs=[pb.ChannelKeyBlob(recipient="fay", blob=b"B")]))
+    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=2, blobs=[pb.ChannelKeyBlob(recipient="fay", recipient_uid=uid_of("fay"), blob=b"B")]))
     r = ed.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("skipping an epoch is refused", r is not None and not r.channel_keys_publish_res.success and r.channel_keys_publish_res.message == "stale_epoch")
     # edith creates epoch 1 for herself + alice (not fay), plus a non-viewer that must be dropped
     ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, blobs=[
-        pb.ChannelKeyBlob(recipient="edith", blob=b"E1-edith"), pb.ChannelKeyBlob(recipient="alice", blob=b"E1-alice"), pb.ChannelKeyBlob(recipient="nobody", blob=b"E1-x")]))
+        pb.ChannelKeyBlob(recipient="edith", recipient_uid=uid_of("edith"), blob=b"E1-edith"), pb.ChannelKeyBlob(recipient="alice", recipient_uid=uid_of("alice"), blob=b"E1-alice"), pb.ChannelKeyBlob(recipient="nobody", recipient_uid=uid_of("nobody"), blob=b"E1-x")]))
     r = ed.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("epoch 1 created", r is not None and r.channel_keys_publish_res.success and r.channel_keys_publish_res.current_epoch == 1)
     ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=2, pred=lambda p: p.channel_keys_changed.channel_id == enc)
@@ -2134,7 +2143,7 @@ def test_encrypted_channels():
     check("needs lists fay for epoch 1", needs.get("fay") == [1] and "alice" not in needs)
     # gap fill: alice seals epoch 1 for fay; a duplicate for herself is ignored, not overwritten
     owner.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, blobs=[
-        pb.ChannelKeyBlob(recipient="fay", blob=b"E1-fay"), pb.ChannelKeyBlob(recipient="alice", blob=b"OVERWRITE")]))
+        pb.ChannelKeyBlob(recipient="fay", recipient_uid=uid_of("fay"), blob=b"E1-fay"), pb.ChannelKeyBlob(recipient="alice", recipient_uid=uid_of("alice"), blob=b"OVERWRITE")]))
     r = owner.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("gap fill accepted at the current epoch", r is not None and r.channel_keys_publish_res.success and r.channel_keys_publish_res.current_epoch == 1)
     check("existing blob never overwritten", sql("select blob from channel_key_blobs where recipient='alice' and epoch=1") == [(b"E1-alice",)])
@@ -2294,14 +2303,14 @@ def test_v15_uid_migration():
         for c in (owner, bob, carol, frank): c.flush(0.4)
         owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="Mods", color=0, permissions=0))
         mods = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
-        owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="bob", role_ids=[mods.id]))
+        owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(username="bob", uid=uid_of("bob"), role_ids=[mods.id]))
         owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
         set_overwrite(owner, "general", pb.ChannelOverwrite.MEMBER, "carol", deny=pb.PERM_SEND_MESSAGES)
         owner.send(pb.Packet.INVITE_CREATE_REQ, invite_create_req=pb.InviteCreateRequest(for_user="dana", request_id=7))
         dana_code = owner.wait(pb.Packet.INVITE_CREATE_RES).invite_create_res.invite.code
-        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="eve", reason="never seen"))
+        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="eve", uid=uid_of("eve"), reason="never seen"))
         owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
-        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="frank", reason="seen"))
+        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="frank", uid=uid_of("frank"), reason="seen"))
         owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
         bob.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="from v14", nonce="m1"))
         bob_msg = bob.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.content == "from v14").channel_msg.id
@@ -2581,9 +2590,9 @@ def test_c2_username_reuse():
     bob_uid = uid_for("c2bob")
     bob = join("c2bob", owner)
     owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
-               member_roles_update_req=pb.MemberRolesUpdateRequest(username="c2bob", role_ids=[role.id]))
+               member_roles_update_req=pb.MemberRolesUpdateRequest(username="c2bob", uid=uid_of("c2bob"), role_ids=[role.id]))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
-    check("bob granted the role (by name, older clients)", sql("select role_id from member_roles where uid=?", bob_uid) == [(role.id,)])
+    check("bob granted the role", sql("select role_id from member_roles where uid=?", bob_uid) == [(role.id,)])
     bob.close()
     owner.flush(0.5)
 
@@ -2599,6 +2608,12 @@ def test_c2_username_reuse():
     up = owner.wait(pb.Packet.MEMBER_UPSERT, pred=lambda p: p.member_upsert.member.username == "c2bob_renamed")
     check("roster: old name removed, new name upserted, same uid",
           rm is not None and rm.member_remove.uid == bob_uid and up is not None and up.member_upsert.member.uid == bob_uid)
+    # Requests target accounts only: a name alone addresses nobody.
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="c2bob_renamed", reason=""))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")
+    check("a kick naming its target only by name is refused",
+          r is not None and not r.mod_action_res.success
+          and sql("select count(*) from members where uid=?", bob_uid) == [(1,)])
     renamed.close(); owner.close()
 
 
@@ -2625,7 +2640,7 @@ def test_public_join():
     c.close()
 
     # Bans still win over public join.
-    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="pubj2", reason=""))
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="pubj2", uid=uid_of("pubj2"), reason=""))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
     c = Client("pubj2"); ok, r = auth_ok(c)
     check("banned user rejected even on a public server",
@@ -2891,7 +2906,7 @@ def test_m1_m4_timeout():
     role = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create").role_action_res.role
     mia = join("mia", owner)
     owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ,
-               member_roles_update_req=pb.MemberRolesUpdateRequest(username="mia", role_ids=[role.id]))
+               member_roles_update_req=pb.MemberRolesUpdateRequest(username="mia", uid=uid_of("mia"), role_ids=[role.id]))
     owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
     mia.flush(0.5); owner.flush(0.5)
 
@@ -2905,7 +2920,7 @@ def test_m1_m4_timeout():
 
     # Owner times mia out.
     owner.send(pb.Packet.TIMEOUT_MEMBER_REQ,
-               timeout_member_req=pb.TimeoutMemberRequest(username="mia", until=int(time.time()) + 60))
+               timeout_member_req=pb.TimeoutMemberRequest(username="mia", uid=uid_of("mia"), until=int(time.time()) + 60))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
     # M1: mia is force-disconnected from voice.
     fn = mia.wait(pb.Packet.VOICE_FORCE_NOTIFY, timeout=2,
@@ -2920,7 +2935,7 @@ def test_m1_m4_timeout():
     check("no channel created during timeout", sql("select count(*) from channels where name='mia-during'") == [(0,)])
 
     # Clearing the timeout restores the power.
-    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="mia", until=0))
+    owner.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="mia", uid=uid_of("mia"), until=0))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "timeout")
     mia.flush(0.5)
     mia.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="mia-post", type=pb.ChannelInfo.TEXT))
@@ -2995,7 +3010,7 @@ def delete_role(owner, role_id):
 
 def assign_roles(actor, username, role_ids):
     actor.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(
-        username=username, role_ids=role_ids))
+        username=username, uid=uid_of(username), role_ids=role_ids))
     return actor.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "assign")
 
 
@@ -3008,12 +3023,12 @@ def mod_ok(r):
 
 
 def voice_mod(c, username, action, channel_id=""):
-    c.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username=username, action=action, channel_id=channel_id))
+    c.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username=username, uid=uid_of(username), action=action, channel_id=channel_id))
     return mod_res(c, "voice_mod")
 
 
 def set_nick(c, username, nickname):
-    c.send(pb.Packet.SET_NICKNAME_REQ, set_nickname_req=pb.SetNicknameRequest(username=username, nickname=nickname))
+    c.send(pb.Packet.SET_NICKNAME_REQ, set_nickname_req=pb.SetNicknameRequest(username=username, uid=uid_of(username), nickname=nickname))
     return mod_res(c, "nickname")
 
 
@@ -3193,11 +3208,11 @@ def test_v3_peer_management():
     check("peer nickname allowed with the flag", mod_ok(set_nick(kip, "lev", "Levvy")))
     check("peer server-mute allowed", mod_ok(voice_mod(kip, "lev", pb.VoiceModRequest.SERVER_MUTE)))
     voice_mod(kip, "lev", pb.VoiceModRequest.SERVER_UNMUTE)
-    kip.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="lev", reason=""))
+    kip.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="lev", uid=uid_of("lev"), reason=""))
     check("peer kick still denied", not mod_ok(mod_res(kip, "kick")))
-    kip.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="lev", reason=""))
+    kip.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="lev", uid=uid_of("lev"), reason=""))
     check("peer ban still denied", not mod_ok(mod_res(kip, "ban")))
-    kip.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="lev", until=int(time.time()) + 60))
+    kip.send(pb.Packet.TIMEOUT_MEMBER_REQ, timeout_member_req=pb.TimeoutMemberRequest(username="lev", uid=uid_of("lev"), until=int(time.time()) + 60))
     check("peer timeout still denied", not mod_ok(mod_res(kip, "timeout")))
     r = assign_roles(kip, "lev", [])
     check("removing the shared role from a peer denied", r is not None and not r.role_action_res.success)
@@ -3355,7 +3370,7 @@ def test_v3_thumbnail_scope():
     time.sleep(0.5)
 
     def fetch(c):
-        c.send(pb.Packet.FETCH_STREAM_THUMBNAIL_REQ, fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_username="rex"))
+        c.send(pb.Packet.FETCH_STREAM_THUMBNAIL_REQ, fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_uid=uid_of("rex")))
         r = c.wait(pb.Packet.FETCH_STREAM_THUMBNAIL_RES, timeout=3)
         return r.fetch_stream_thumbnail_res.thumbnail_data if r is not None else None
 

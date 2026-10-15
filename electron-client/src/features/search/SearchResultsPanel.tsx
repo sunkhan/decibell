@@ -6,6 +6,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import SegmentedControl from "../../components/SegmentedControl";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { userColor } from "../../utils/colors";
+import { useUserName } from "../../stores/usersStore";
 import MessageText from "../chat/MessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { buildAttachmentUrl, formatFileSize, pickThumbnailSize } from "../chat/attachmentHelpers";
@@ -325,7 +326,8 @@ const SearchResult = memo(function SearchResult({
   jumped: boolean;
   onJump: (m: Message) => void;
 }) {
-  const name = useDisplayName(serverId, message.senderUid ?? 0, message.sender);
+  const senderName = useUserName(message.senderUid, message.sender);
+  const name = useDisplayName(serverId, message.senderUid, senderName);
   const replyName = useDisplayName(serverId, message.replyToSenderUid ?? 0, message.replyToSender ?? "");
   return (
     <div
@@ -365,12 +367,12 @@ const SearchResult = memo(function SearchResult({
         </div>
       ) : null}
       <div className="flex gap-2.5">
-        <UserAvatar uid={message.senderUid ?? 0} name={message.sender} size={32} />
+        <UserAvatar uid={message.senderUid} name={senderName} size={32} />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2 pr-12">
             <span
               className="min-w-0 truncate font-channel text-[14px] font-semibold"
-              style={{ color: userColor(message.senderUid, message.sender) }}
+              style={{ color: userColor(message.senderUid, senderName) }}
             >
               {name}
             </span>

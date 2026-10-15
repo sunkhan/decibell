@@ -12,6 +12,7 @@ import type {
   ServerRole,
 } from "../types";
 import { channelKey, type ChannelKey } from "../lib/channelKey";
+import type { Uid } from "./usersStore";
 
 // PR4 chatStore — text channels, messages, history paging, optimistic
 // bubbles. Members/bans/invites are deferred to later PRs. The LRU
@@ -65,7 +66,8 @@ interface ChatState {
   /// cached bytes.
   serverPictures: Record<string, string>;
   serverMeta: Record<string, { name: string; description: string }>;
-  serverOwner: Record<string, string>;
+  /// serverId → the owner's uid.
+  serverOwner: Record<string, Uid>;
   serverPublicListing: Record<string, boolean>;
   membersByServer: Record<string, ServerMember[]>;
   bansByServer: Record<string, BanInfo[]>;
@@ -160,7 +162,7 @@ interface ChatState {
     serverId: string,
     meta: { name: string; description: string },
   ) => void;
-  setServerOwner: (serverId: string, owner: string) => void;
+  setServerOwner: (serverId: string, owner: Uid) => void;
   setServerPublicListing: (serverId: string, on: boolean) => void;
   /// Apply one roster page. The first page replaces the list (it carries
   /// every online member); later pages append offline members.
@@ -172,7 +174,7 @@ interface ChatState {
   /// Live deltas. Return false when the revision doesn't continue the
   /// last applied one (a gap) so the caller can refetch page 1.
   upsertMember: (serverId: string, member: ServerMember, revision: number) => boolean;
-  removeMember: (serverId: string, username: string, revision: number) => boolean;
+  removeMember: (serverId: string, uid: Uid, revision: number) => boolean;
   setMembersLoadingMore: (serverId: string, loading: boolean) => void;
   setBansForServer: (serverId: string, bans: BanInfo[]) => void;
   setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
@@ -555,10 +557,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   applyMemberPage: (serverId, members, meta) =>
     set((state) => {
       const existing = meta.firstPage ? [] : state.membersByServer[serverId] ?? [];
-      const byName = new Map(existing.map((m) => [m.username, m]));
-      for (const m of members) byName.set(m.username, m);
+      const byUid = new Map(existing.map((m) => [m.uid, m]));
+      for (const m of members) byUid.set(m.uid, m);
       return {
-        membersByServer: { ...state.membersByServer, [serverId]: Array.from(byName.values()) },
+        membersByServer: { ...state.membersByServer, [serverId]: Array.from(byUid.values()) },
         memberRosterMeta: {
           ...state.memberRosterMeta,
           [serverId]: {
@@ -579,7 +581,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!meta) return true;
     if (revision !== meta.revision + 1) return false;
     const list = state.membersByServer[serverId] ?? [];
-    const idx = list.findIndex((m) => m.username === member.username);
+    const idx = list.findIndex((m) => m.uid === member.uid);
     const next = idx >= 0 ? list.map((m, i) => (i === idx ? member : m)) : [...list, member];
     set({
       membersByServer: { ...state.membersByServer, [serverId]: next },
@@ -595,13 +597,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return true;
   },
 
-  removeMember: (serverId, username, revision) => {
+  removeMember: (serverId, uid, revision) => {
     const state = get();
     const meta = state.memberRosterMeta[serverId];
     if (!meta) return true;
     if (revision !== meta.revision + 1) return false;
     const list = state.membersByServer[serverId] ?? [];
-    const next = list.filter((m) => m.username !== username);
+    const next = list.filter((m) => m.uid !== uid);
     set({
       membersByServer: { ...state.membersByServer, [serverId]: next },
       memberRosterMeta: {

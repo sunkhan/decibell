@@ -10,7 +10,7 @@ import type { AuditEntry, AuditLogReceivedPayload, ChannelInfo, ServerRole } fro
 import { EDITABLE_PERMISSIONS, hasBits } from "../permissions";
 import { roleColor } from "./helpers";
 import { Icon, SearchField, SectionLabel, type IconName } from "./settingsUi";
-import { legacyUid } from "../../users/userDirectory";
+import { nameOf, useUserName } from "../../../stores/usersStore";
 
 type Tone = "danger" | "warning" | "success" | "neutral";
 type Category = "moderation" | "members" | "roles" | "channels" | "invites" | "server";
@@ -112,9 +112,11 @@ function Strong({ children, title }: { children: ReactNode; title?: string }) {
   );
 }
 
-function MemberRef({ serverId, username }: { serverId: string; username: string }) {
-  const name = useDisplayName(serverId, legacyUid(username), username);
-  return <Strong title={name !== username ? username : undefined}>{name}</Strong>;
+/// `uid` 0: a name from a detail string, shown as written.
+function MemberRef({ serverId, uid, username }: { serverId: string; uid: number; username: string }) {
+  const current = useUserName(uid, username);
+  const name = useDisplayName(serverId, uid, current);
+  return <Strong title={name !== current ? current : undefined}>{name}</Strong>;
 }
 
 function RoleRef({ role, fallback }: { role?: ServerRole; fallback: string }) {
@@ -188,12 +190,12 @@ interface Ctx {
 function describe(e: AuditEntry, ctx: Ctx): Described {
   const meta = ACTIONS[e.action] ?? { cat: "server" as Category, icon: "gear" as IconName, tone: "neutral" as Tone };
   const out: Described = { icon: meta.icon, tone: meta.tone, text: null, chips: [] };
-  const member = (u: string) => <MemberRef serverId={ctx.serverId} username={u} />;
+  const member = (u: string, uid = 0) => <MemberRef serverId={ctx.serverId} uid={uid} username={u} />;
   const ch = <ChannelRef channel={ctx.channel(e.channelId)} fallback={e.target || e.channelId} />;
   const chIn = e.channelId ? <> in <ChannelRef channel={ctx.channel(e.channelId)} fallback={e.channelId} /></> : null;
   const parts = detailParts(e.details);
   const rest: string[] = [];
-  const self = e.actor === e.target;
+  const self = e.actorUid !== 0 ? e.actorUid === e.targetUid : e.actor === e.target;
 
   // Shared detail grammar: "reason: …", "until <utc>", "N messages purged".
   for (const p of parts) {
@@ -216,23 +218,23 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
 
   switch (e.action) {
     case "kick":
-      out.text = <>kicked {member(e.target)}</>;
+      out.text = <>kicked {member(e.target, e.targetUid)}</>;
       break;
     case "ban":
-      out.text = <>banned {member(e.target)}</>;
+      out.text = <>banned {member(e.target, e.targetUid)}</>;
       if (!parts.some((p) => p.startsWith("until "))) out.chips.unshift(<Chip key="perm" icon="ban">Permanent</Chip>);
       break;
     case "unban":
-      out.text = <>unbanned {member(e.target)}</>;
+      out.text = <>unbanned {member(e.target, e.targetUid)}</>;
       break;
     case "timeout":
-      out.text = <>timed out {member(e.target)}</>;
+      out.text = <>timed out {member(e.target, e.targetUid)}</>;
       break;
     case "timeout_clear":
-      out.text = <>ended the timeout on {member(e.target)}</>;
+      out.text = <>ended the timeout on {member(e.target, e.targetUid)}</>;
       break;
     case "message_delete":
-      out.text = <>deleted a message by {member(e.target)}{chIn}</>;
+      out.text = <>deleted a message by {member(e.target, e.targetUid)}{chIn}</>;
       rest.length = 0; // "message <id>" — the id means nothing to a reader
       break;
     case "voice_mod": {
@@ -241,7 +243,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
       if (verb.startsWith("voice_move")) {
         out.icon = "move";
         out.tone = "neutral";
-        out.text = <>moved {member(e.target)} to {where}</>;
+        out.text = <>moved {member(e.target, e.targetUid)} to {where}</>;
         if (verb.includes("voice pass"))
           out.chips.push(
             <Chip key="pass" icon="key" title="They couldn't join that channel themselves, so the move granted a one-time voice pass.">
@@ -250,7 +252,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
           );
       } else if (verb === "voice_disconnect") {
         out.icon = "logout";
-        out.text = <>disconnected {member(e.target)} from {where}</>;
+        out.text = <>disconnected {member(e.target, e.targetUid)} from {where}</>;
       } else {
         const undo = verb.includes("un");
         const deafen = verb.includes("deafen");
@@ -259,7 +261,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
         out.text = (
           <>
             {undo ? (deafen ? "undeafened" : "unmuted") : deafen ? "server-deafened" : "server-muted"}{" "}
-            {member(e.target)} in {where}
+            {member(e.target, e.targetUid)} in {where}
           </>
         );
       }
@@ -280,7 +282,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
       break;
     }
     case "member_roles": {
-      out.text = self ? <>changed their own roles</> : <>changed the roles of {member(e.target)}</>;
+      out.text = self ? <>changed their own roles</> : <>changed the roles of {member(e.target, e.targetUid)}</>;
       const d = rest.shift() ?? "";
       for (const m of d.matchAll(/([+-])(.+?) (?=[+-]|$)/g)) {
         const role = ctx.roleByName(m[2]);
@@ -416,7 +418,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
       break;
     }
     case "ownership_transfer":
-      out.text = <>transferred ownership to {member(e.target)}</>;
+      out.text = <>transferred ownership to {member(e.target, e.targetUid)}</>;
       break;
     default:
       out.text = (
@@ -670,9 +672,9 @@ function AuditRow({ entry: e, ctx }: { entry: AuditEntry; ctx: Ctx }) {
       <div className="min-w-0 flex-1 pt-1.5">
         <div className="text-[13px] leading-5 text-text-secondary">
           <span className="mr-1.5 inline-flex translate-y-[3px]">
-            <UserAvatar uid={e.actorUid ?? 0} name={e.actor} size={18} />
+            <UserAvatar uid={e.actorUid} name={nameOf(e.actorUid, e.actor)} size={18} />
           </span>
-          <MemberRef serverId={ctx.serverId} username={e.actor} /> {d.text}
+          <MemberRef serverId={ctx.serverId} uid={e.actorUid} username={e.actor} /> {d.text}
         </div>
         {d.reason && (
           <div className="mt-1.5 border-l-2 border-bg-surface pl-2.5 text-[13px] leading-5 text-text-secondary">
