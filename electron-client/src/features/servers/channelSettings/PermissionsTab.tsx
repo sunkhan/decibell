@@ -23,7 +23,7 @@ import { Icon, Popover, SearchField, SectionLabel, anchorBelow, type IconName } 
 import { useMemberSearch } from "../tabs/useMemberSearch";
 import { Notice } from "./ui";
 import { EmptyState } from "../tabs/AuditLogTab";
-import { uidOf } from "../../users/userDirectory";
+import { legacyUid, uidOf } from "../../users/userDirectory";
 
 type TriState = "allow" | "inherit" | "deny";
 type Bits = { allow: number; deny: number };
@@ -439,7 +439,7 @@ export default function PermissionsTab({
           <section className="min-w-0 flex-1">
             <header className="flex items-center gap-4 pb-7">
               {t.kind === "member" ? (
-                <UserAvatar username={t.username} size={48} />
+                <UserAvatar uid={legacyUid(t.username)} name={t.username} size={48} />
               ) : (
                 <span
                   className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg"
@@ -596,7 +596,7 @@ function TargetRow({
       }`}
     >
       {info.kind === "member" ? (
-        <UserAvatar username={info.username} size={18} />
+        <UserAvatar uid={legacyUid(info.username)} name={info.username} size={18} />
       ) : (
         <span className="flex h-4.5 w-4.5 shrink-0 items-center justify-center">
           <span
@@ -737,7 +737,7 @@ function AddTargetPopover({
                 onClick={() => onPick(`member:${m.username}`)}
                 className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left outline-none hover:bg-surface-hover focus-visible:bg-surface-hover"
               >
-                <UserAvatar username={m.username} size={24} />
+                <UserAvatar uid={m.uid ?? 0} name={m.username} size={24} />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
                   {m.nickname || m.username}
                   {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{m.username}</span>}

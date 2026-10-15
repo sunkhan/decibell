@@ -141,7 +141,7 @@ pub struct AppState {
     /// resolves to nothing and the renderer-side .await times out
     /// at 5s.
     pub pending_avatar_update: Option<oneshot::Sender<UpdateAvatarRes>>,
-    /// In-flight FETCH_AVATAR_REQ calls keyed by target username. The
+    /// In-flight FETCH_AVATAR_REQ calls keyed by target uid (decimal). The
     /// central router resolves each waiter when the matching
     /// FETCH_AVATAR_RES arrives; the caller drops its half after a 5s
     /// timeout.

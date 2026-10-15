@@ -21,14 +21,14 @@ import {
   formatDb,
   mediaSessionActive,
 } from "./userGain";
-import { uidOf } from "../users/userDirectory";
+import { legacyUid, uidOf } from "../users/userDirectory";
 
 export default function UserContextMenu() {
   const username = useUiStore((s) => s.contextMenuUser);
   const anchor = useUiStore((s) => s.contextMenuAnchor);
   const contextServerId = useUiStore((s) => s.contextMenuServerId);
   const closeContextMenu = useUiStore((s) => s.closeContextMenu);
-  const displayName = useDisplayName(contextServerId, username ?? "");
+  const displayName = useDisplayName(contextServerId, legacyUid(username), username ?? "");
   const userVolumes = useVoiceStore((s) => s.userVolumes);
   const setUserVolume = useVoiceStore((s) => s.setUserVolume);
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
@@ -190,7 +190,7 @@ export default function UserContextMenu() {
     >
       {/* User header */}
       <div className="flex items-center gap-2.5 border-b border-border-divider px-3.5 py-3">
-        <UserAvatar username={username} size={32} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={32} />
         <span className="truncate font-display text-[14px] font-medium text-text-primary">
           {displayName}
         </span>

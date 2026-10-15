@@ -11,12 +11,13 @@
 
 import { memo } from "react";
 import type { AttachmentKind } from "../../types";
-import { stringToColor } from "../../utils/colors";
+import { userColor } from "../../utils/colors";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { useUiStore } from "../../stores/uiStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import MessageText from "./MessageText";
+import { legacyUid } from "../users/userDirectory";
 
 // Row geometry the spine is drawn against: MessageBubble's 38px avatar
 // and its gap-3 gutter.
@@ -141,7 +142,7 @@ export const ReplyHeader = memo(function ReplyHeader({
   onJump,
 }: ReplyHeaderProps) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const displayName = useDisplayName(serverId, sender ?? "");
+  const displayName = useDisplayName(serverId, legacyUid(sender), sender ?? "");
   // The panels resolve the sender from the loaded window, falling back to
   // the server-embedded parent preview — so no sender means the parent was
   // deleted (or a pre-embed server): the tombstone, not clickable.
@@ -172,13 +173,13 @@ export const ReplyHeader = memo(function ReplyHeader({
             jumpable ? "cursor-pointer hover:text-text-primary" : "cursor-default"
           }`}
         >
-          <UserAvatar username={sender} size={MINI_AVATAR_PX} />
+          <UserAvatar uid={legacyUid(sender)} name={sender} size={MINI_AVATAR_PX} />
           <span
             // A fixed cap, not a share of the line: this button is only as
             // wide as its content, so a percentage shrank with a short
             // snippet and clipped even 10-letter names.
             className="max-w-56 shrink-0 truncate font-channel font-emphasis hover:underline"
-            style={{ color: stringToColor(sender) }}
+            style={{ color: userColor(legacyUid(sender), sender) }}
             onClick={(e) => {
               // The name opens the profile like everywhere else; the rest
               // of the line jumps to the parent.
@@ -226,13 +227,13 @@ export function ReplyComposerBar({
   attachmentKinds,
   onCancel,
 }: ReplyComposerBarProps) {
-  const displayName = useDisplayName(serverId, sender);
+  const displayName = useDisplayName(serverId, legacyUid(sender), sender);
   return (
     <div className="flex min-w-0 items-center gap-1.5 border-b border-border-divider pb-2 text-reply text-text-muted">
       <ReplyGlyph className="h-3.5 w-3.5 shrink-0 text-accent" />
       <span className="shrink-0">Replying to</span>
-      <UserAvatar username={sender} size={MINI_AVATAR_PX} />
-      <span className="max-w-1/2 shrink-0 truncate font-channel font-emphasis" style={{ color: stringToColor(sender) }}>
+      <UserAvatar uid={legacyUid(sender)} name={sender} size={MINI_AVATAR_PX} />
+      <span className="max-w-1/2 shrink-0 truncate font-channel font-emphasis" style={{ color: userColor(legacyUid(sender), sender) }}>
         {displayName}
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-1.5">

@@ -7,7 +7,7 @@ import { useDisplayName } from "../../../hooks/useDisplayName";
 import { useMenuPosition, type MenuAnchor } from "../../../hooks/useMenuPosition";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { AVATAR_RADIUS } from "../../../components/LetterAvatar";
-import { avatarColor } from "../../../utils/colors";
+import { userAvatarColor } from "../../../utils/colors";
 import { canWatchStream } from "../../../utils/canWatchStream";
 import { VideoCodec, type StreamInfo } from "../../../types";
 import StreamVideoPlayer from "../StreamVideoPlayer";
@@ -26,6 +26,7 @@ import {
   PlusIcon,
   SpeakerIcon,
 } from "./icons";
+import { legacyUid } from "../../users/userDirectory";
 
 // The voice stage's tiles. Every tile is 16:9 at a width the stage computes;
 // each subscribes to its own slices (speaking, thumbnail, …) so an event for
@@ -172,7 +173,7 @@ export const ParticipantTile = memo(function ParticipantTile({
   const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
   const selfMuted = useVoiceStore((s) => isLocal && s.isMuted);
   const selfDeafened = useVoiceStore((s) => isLocal && s.isDeafened);
-  const displayName = useDisplayName(connectedServerId, username);
+  const displayName = useDisplayName(connectedServerId, legacyUid(username), username);
 
   const muted = isLocal ? selfMuted : rosterMuted;
   const deafened = isLocal ? selfDeafened : rosterDeafened;
@@ -196,7 +197,7 @@ export const ParticipantTile = memo(function ParticipantTile({
       } ${isSpeaking ? "outline-2 -outline-offset-2 outline-success" : ""} ${lift}`}
       style={{
         width,
-        background: `color-mix(in srgb, ${avatarColor(username)} var(--tile-tint), var(--color-bg-light))`,
+        background: `color-mix(in srgb, ${userAvatarColor(legacyUid(username), username)} var(--tile-tint), var(--color-bg-light))`,
       }}
     >
       <span aria-hidden className="pointer-events-none absolute inset-0 group-hover:bg-surface-hover" />
@@ -204,7 +205,7 @@ export const ParticipantTile = memo(function ParticipantTile({
         className={`relative ${isSpeaking ? "ring-4 ring-success/25" : ""}`}
         style={{ borderRadius: AVATAR_RADIUS }}
       >
-        <UserAvatar username={username} size={avatarFor(height)} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={avatarFor(height)} />
       </div>
       {/* Not in the filmstrip: the stream itself sits right beside it there. */}
       {isStreaming && !mini && <LivePill className="absolute left-2 top-2" />}
@@ -285,7 +286,7 @@ export const StreamTile = memo(function StreamTile({
 }: StreamTileProps) {
   const owner = stream.ownerUsername;
   const thumbnail = useVoiceStore((s) => s.streamThumbnails[owner]);
-  const displayName = useDisplayName(connectedServerId, owner);
+  const displayName = useDisplayName(connectedServerId, legacyUid(owner), owner);
   const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
   const { canWatch, reason } = isOwnStream ? { canWatch: true, reason: undefined } : canWatchStream(stream, decodeCaps);
   const label = isOwnStream ? "Your screen" : `${displayName}'s screen`;
@@ -339,7 +340,7 @@ export const StreamTile = memo(function StreamTile({
         ) : thumbnail ? (
           <img src={thumbnail} alt="" className="h-full w-full object-cover" draggable={false} />
         ) : (
-          <UserAvatar username={owner} size={mini ? 28 : 56} />
+          <UserAvatar uid={legacyUid(owner)} name={owner} size={mini ? 28 : 56} />
         )}
       </div>
 
@@ -421,7 +422,7 @@ export const StreamTile = memo(function StreamTile({
           <QualityPill stream={stream} className="absolute right-2 top-2" />
           <div className="absolute bottom-2 left-2 flex max-w-[calc(100%-4.5rem)]">
             <span className={`${SCRIM} min-w-0`}>
-              <UserAvatar username={owner} size={16} />
+              <UserAvatar uid={legacyUid(owner)} name={owner} size={16} />
               <span className="truncate">{label}</span>
               {stream.hasAudio && (
                 <span className="text-white/70" title="Has audio">
@@ -501,7 +502,7 @@ export const OverflowTile = memo(function OverflowTile({
               className={`ring-2 ring-bg-light ${i > 0 ? "-ml-2" : ""}`}
               style={{ borderRadius: AVATAR_RADIUS }}
             >
-              <UserAvatar username={u} size={stackSize} />
+              <UserAvatar uid={legacyUid(u)} name={u} size={stackSize} />
             </div>
           ))}
         </div>
@@ -591,7 +592,7 @@ const HiddenRow = memo(function HiddenRow({
   const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
   const p = useVoiceStore((s) => s.participants.find((x) => x.username === username));
   const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
-  const displayName = useDisplayName(connectedServerId, username);
+  const displayName = useDisplayName(connectedServerId, legacyUid(username), username);
   return (
     <div
       role="button"
@@ -613,7 +614,7 @@ const HiddenRow = memo(function HiddenRow({
         className={`shrink-0 ${isSpeaking ? "ring-2 ring-success" : ""}`}
         style={{ borderRadius: AVATAR_RADIUS }}
       >
-        <UserAvatar username={username} size={24} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={24} />
       </div>
       <span
         className={`min-w-0 truncate ${isSpeaking ? "text-success" : "text-text-secondary group-hover:text-text-primary"}`}

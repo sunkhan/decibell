@@ -15,7 +15,8 @@ import { LetterAvatar } from "../../../components/LetterAvatar";
 import { StatusDot } from "../../../components/StatusDot";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { useAuthStore } from "../../../stores/authStore";
-import { stringToColor } from "../../../utils/colors";
+import { userColor } from "../../../utils/colors";
+import { ownUid } from "../../users/userDirectory";
 
 /// Enough of each palette to draw its preview swatch. These duplicate
 /// the authoritative values in globals.css on purpose: a swatch has to
@@ -422,15 +423,15 @@ export default function AppearanceTab() {
             someone else's account reads as a bug. */}
         <div className="flex gap-3">
           {username ? (
-            <UserAvatar username={username} size={38} />
+            <UserAvatar uid={ownUid()} name={username} size={38} />
           ) : (
-            <LetterAvatar username="?" size={38} />
+            <LetterAvatar uid={0} name="?" size={38} />
           )}
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span
                 className="font-channel text-sender font-emphasis"
-                style={{ color: stringToColor(username ?? "?") }}
+                style={{ color: userColor(ownUid(), username ?? "?") }}
               >
                 {username ?? "You"}
               </span>
@@ -477,7 +478,7 @@ export default function AppearanceTab() {
           {SAMPLE_ROWS.map((row) => (
             <div key={row.name} className="list-row flex items-center rounded-sm">
               <div className="relative shrink-0">
-                <LetterAvatar username={row.name} size={34} />
+                <LetterAvatar uid={0} name={row.name} size={34} />
                 <StatusDot
                   status={row.online ? "online" : "offline"}
                   ring="var(--color-bg-light)"

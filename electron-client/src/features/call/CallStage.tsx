@@ -36,6 +36,7 @@ import {
   unwatchCallStream,
   watchCallStream,
 } from "./callActions";
+import { legacyUid } from "../users/userDirectory";
 
 /// The P2P call "stage": the top of the DM conversation while a call with
 /// `peer` is ringing / connecting / active (design: Direction A,
@@ -626,7 +627,7 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
               : ""
           }`}
         >
-          <UserAvatar username={username} size={88} />
+          <UserAvatar uid={legacyUid(username)} name={username} size={88} />
         </div>
         {showMuted && (
           <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-darkest bg-bg-light">
@@ -678,7 +679,7 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
           size="small"
         />
         <div className="flex h-full w-full items-center justify-center">
-          <UserAvatar username={owner} size={40} />
+          <UserAvatar uid={legacyUid(owner)} name={owner} size={40} />
         </div>
         <div className="absolute left-2 top-2 flex items-center gap-[5px] rounded-sm bg-error/90 px-1.5 py-0.5">
           <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
@@ -691,7 +692,7 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
         </div>
       </div>
       <div className="flex items-center gap-2 px-2.5 py-2">
-        <UserAvatar username={owner} size={20} />
+        <UserAvatar uid={legacyUid(owner)} name={owner} size={20} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-medium text-text-primary">{label}</div>
           {qualityLabel(info) && (
@@ -730,7 +731,7 @@ const PeerChip = memo(function PeerChip({ username, muted }: { username: string;
           isSpeaking ? "shadow-[0_0_0_2px_rgba(0,0,0,0.9),0_0_0_4px_var(--color-success)]" : ""
         }`}
       >
-        <UserAvatar username={username} size={24} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={24} />
       </div>
       {username}
       {(muted || peerMuted) && (

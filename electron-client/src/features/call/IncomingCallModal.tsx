@@ -2,6 +2,7 @@ import { useCallStore } from "../../stores/callStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { acceptCall, declineCall } from "./callActions";
+import { legacyUid } from "../users/userDirectory";
 
 /// Incoming DM call prompt. Mounted once in MainLayout, driven by
 /// callStore.incoming (the CertMismatchModal nullable-field pattern).
@@ -26,7 +27,7 @@ export default function IncomingCallModal() {
         <div className="relative shrink-0">
           <div className="absolute inset-0 animate-ping rounded-lg bg-success/30" />
           <div className="relative">
-            <UserAvatar username={incoming.from} size={44} />
+            <UserAvatar uid={legacyUid(incoming.from)} name={incoming.from} size={44} />
           </div>
         </div>
         <div className="min-w-0 flex-1">

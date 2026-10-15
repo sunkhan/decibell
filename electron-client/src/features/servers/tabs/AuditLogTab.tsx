@@ -10,6 +10,7 @@ import type { AuditEntry, AuditLogReceivedPayload, ChannelInfo, ServerRole } fro
 import { EDITABLE_PERMISSIONS, hasBits } from "../permissions";
 import { roleColor } from "./helpers";
 import { Icon, SearchField, SectionLabel, type IconName } from "./settingsUi";
+import { legacyUid } from "../../users/userDirectory";
 
 type Tone = "danger" | "warning" | "success" | "neutral";
 type Category = "moderation" | "members" | "roles" | "channels" | "invites" | "server";
@@ -112,7 +113,7 @@ function Strong({ children, title }: { children: ReactNode; title?: string }) {
 }
 
 function MemberRef({ serverId, username }: { serverId: string; username: string }) {
-  const name = useDisplayName(serverId, username);
+  const name = useDisplayName(serverId, legacyUid(username), username);
   return <Strong title={name !== username ? username : undefined}>{name}</Strong>;
 }
 
@@ -669,7 +670,7 @@ function AuditRow({ entry: e, ctx }: { entry: AuditEntry; ctx: Ctx }) {
       <div className="min-w-0 flex-1 pt-1.5">
         <div className="text-[13px] leading-5 text-text-secondary">
           <span className="mr-1.5 inline-flex translate-y-[3px]">
-            <UserAvatar username={e.actor} size={18} />
+            <UserAvatar uid={e.actorUid ?? 0} name={e.actor} size={18} />
           </span>
           <MemberRef serverId={ctx.serverId} username={e.actor} /> {d.text}
         </div>

@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { AttachmentKind, Message } from "../../types";
-import { stringToColor } from "../../utils/colors";
+import { userColor } from "../../utils/colors";
 import { useUiStore } from "../../stores/uiStore";
 import { useLinkPreviewStore } from "../../stores/linkPreviewStore";
 import { loneLink } from "./richText";
@@ -12,6 +12,7 @@ import LinkEmbeds from "./LinkEmbeds";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
 import { useRowHeightAudit } from "./devRowHeightAudit";
 import { ReplyHeader } from "./ReplyPreview";
+import { legacyUid } from "../users/userDirectory";
 
 // Inline edit box shown in place of a message's content. Plain textarea over
 // the raw wire string (MessageText re-renders it on save). Enter submits,
@@ -312,7 +313,11 @@ function MessageBubble({
   // Server nickname (or the username when none / in DMs). Identity visuals
   // (avatar, name color) stay keyed on message.sender.
   // Grouped rows never show the name, so they skip the roster lookup.
-  const displayName = useDisplayName(grouped ? null : serverId, message.sender);
+  const displayName = useDisplayName(
+    grouped ? null : serverId,
+    message.senderUid || legacyUid(message.sender),
+    message.sender,
+  );
   // Dev-only: log any post-mount height settle (a settle above the
   // viewport shifts content unless anchored — candidate glitch causes).
   const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
@@ -498,14 +503,14 @@ function MessageBubble({
           onClick={handleSenderClick}
           onContextMenu={handleSenderContextMenu}
         >
-          <UserAvatar username={message.sender} size={38} />
+          <UserAvatar uid={message.senderUid || legacyUid(message.sender)} name={message.sender} size={38} />
         </div>
 
         <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
           <div className="flex items-baseline gap-2">
             <span
               className="cursor-pointer font-channel text-sender font-emphasis hover:underline"
-              style={{ color: stringToColor(message.sender) }}
+              style={{ color: userColor(message.senderUid || legacyUid(message.sender), message.sender) }}
               onClick={handleSenderClick}
               onContextMenu={handleSenderContextMenu}
             >

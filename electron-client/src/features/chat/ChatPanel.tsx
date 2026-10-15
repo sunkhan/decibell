@@ -122,10 +122,10 @@ export default function ChatPanel() {
   const canManageChannel = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_CHANNELS);
   const canManageChannelRoles = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_ROLES);
   // Timed out (MODERATE_MEMBERS): the server rejects sends; show why.
-  const ownUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const timedOutUntil = useChatStore((s) =>
-    activeServerId && ownUsername
-      ? findMember(s.membersByServer, activeServerId, ownUsername)?.timedOutUntil ?? 0
+    activeServerId && ownUid
+      ? findMember(s.membersByServer, activeServerId, ownUid)?.timedOutUntil ?? 0
       : 0,
   );
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));

@@ -10,6 +10,7 @@ import { StatusDot } from "../../components/StatusDot";
 import { EMPTY_LIST } from "../../lib/empty";
 import { AlreadyMemberError, inviteFriend } from "./personalInvite";
 import type { ServerMember } from "../../types";
+import { legacyUid } from "../users/userDirectory";
 
 /// "member": the server refused the invite because they're already in —
 /// an offline member the loaded roster didn't include.
@@ -28,7 +29,7 @@ function FriendRow({
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-1.5">
       <div className="relative shrink-0">
-        <UserAvatar username={username} size={32} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={32} />
         <StatusDot
           status={status}
           ring="var(--color-bg-dark)"

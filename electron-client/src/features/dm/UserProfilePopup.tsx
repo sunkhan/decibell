@@ -9,7 +9,7 @@ import { openServer } from "../servers/openServer";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
-import { stringToGradient } from "../../utils/colors";
+import { userGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
 import { usePresence, useStatusMessage } from "../../stores/presenceStore";
@@ -18,7 +18,7 @@ import { CodecBadge } from "../voice/CodecBadge";
 import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { RoleChips } from "../profile/RoleChips";
-import { uidOf } from "../users/userDirectory";
+import { legacyUid, uidOf } from "../users/userDirectory";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
@@ -246,7 +246,7 @@ export default function UserProfilePopup() {
     }
   };
 
-  const gradient = stringToGradient(username);
+  const gradient = userGradient(legacyUid(username), username);
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] isolate">
@@ -282,7 +282,7 @@ export default function UserProfilePopup() {
             title="View full profile"
             className="group absolute -top-9 left-0 cursor-pointer rounded-xl border-[4px] border-bg-light"
           >
-            <UserAvatar username={username} size={64} />
+            <UserAvatar uid={legacyUid(username)} name={username} size={64} />
             <span
               className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 text-center text-[9px] font-semibold uppercase leading-tight tracking-[0.06em] text-white opacity-0 transition-opacity group-hover:opacity-100"
               style={{ borderRadius: "var(--radius-avatar)" }}
@@ -357,7 +357,7 @@ export default function UserProfilePopup() {
                       refreshes doesn't flash empty. */}
                   <div
                     className="absolute inset-0 animate-pulse"
-                    style={{ background: stringToGradient(username) }}
+                    style={{ background: userGradient(legacyUid(username), username) }}
                   />
                   {thumbnailUrl && (
                     <img

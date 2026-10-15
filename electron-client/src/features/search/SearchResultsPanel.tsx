@@ -5,7 +5,7 @@ import type { Attachment, ChannelInfo, Message } from "../../types";
 import { UserAvatar } from "../../components/UserAvatar";
 import SegmentedControl from "../../components/SegmentedControl";
 import { useDisplayName } from "../../hooks/useDisplayName";
-import { stringToColor } from "../../utils/colors";
+import { userColor } from "../../utils/colors";
 import MessageText from "../chat/MessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { buildAttachmentUrl, formatFileSize, pickThumbnailSize } from "../chat/attachmentHelpers";
@@ -325,8 +325,8 @@ const SearchResult = memo(function SearchResult({
   jumped: boolean;
   onJump: (m: Message) => void;
 }) {
-  const name = useDisplayName(serverId, message.sender);
-  const replyName = useDisplayName(serverId, message.replyToSender ?? "");
+  const name = useDisplayName(serverId, message.senderUid ?? 0, message.sender);
+  const replyName = useDisplayName(serverId, message.replyToSenderUid ?? 0, message.replyToSender ?? "");
   return (
     <div
       role="button"
@@ -352,7 +352,7 @@ const SearchResult = memo(function SearchResult({
           </svg>
           {message.replyToSender ? (
             <>
-              <span className="shrink-0 font-semibold" style={{ color: stringToColor(message.replyToSender) }}>
+              <span className="shrink-0 font-semibold" style={{ color: userColor(message.replyToSenderUid, message.replyToSender ?? "") }}>
                 {replyName}
               </span>
               <span className="min-w-0 truncate">
@@ -365,12 +365,12 @@ const SearchResult = memo(function SearchResult({
         </div>
       ) : null}
       <div className="flex gap-2.5">
-        <UserAvatar username={message.sender} size={32} />
+        <UserAvatar uid={message.senderUid ?? 0} name={message.sender} size={32} />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2 pr-12">
             <span
               className="min-w-0 truncate font-channel text-[14px] font-semibold"
-              style={{ color: stringToColor(message.sender) }}
+              style={{ color: userColor(message.senderUid, message.sender) }}
             >
               {name}
             </span>

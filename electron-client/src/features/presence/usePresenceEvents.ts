@@ -35,7 +35,7 @@ export function usePresenceEvents() {
       usePresenceStore.getState().applySnapshot(users);
       useAvatarStore
         .getState()
-        .setVersions(users.map((u) => ({ username: u.username, version: u.avatarVersion })));
+        .setVersions(users.map((u) => ({ uid: Number(u.uid ?? 0) || 0, version: u.avatarVersion })));
       const online = new Set(users.map((u) => u.username));
       reconcileFriends((u) => online.has(u));
     });
@@ -43,6 +43,7 @@ export function usePresenceEvents() {
     // One user's full current presence.
     const unlistenDelta = listen<{
       username: string;
+      uid?: number | bigint;
       online: boolean;
       status: string;
       avatarVersion: string;
@@ -51,7 +52,7 @@ export function usePresenceEvents() {
     }>("presence_delta", (event) => {
       const { username, online, status, avatarVersion, statusText, statusEmoji } = event.payload;
       usePresenceStore.getState().applyDelta(username, online, status, statusText, statusEmoji);
-      if (online) useAvatarStore.getState().setVersion(username, avatarVersion);
+      if (online) useAvatarStore.getState().setVersion(Number(event.payload.uid ?? 0) || 0, avatarVersion);
       reconcileFriends((u) => (u === username ? online : !!usePresenceStore.getState().statuses[u]));
     });
 

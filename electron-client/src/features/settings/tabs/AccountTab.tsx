@@ -6,6 +6,7 @@ import { useAvatarStore } from "../../../stores/avatarStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { AvatarCropperModal } from "../AvatarCropperModal";
 import RenameUsernameModal from "../RenameUsernameModal";
+import { ownUid } from "../../users/userDirectory";
 
 export default function AccountTab() {
   const username = useAuthStore((s) => s.username);
@@ -63,7 +64,7 @@ export default function AccountTab() {
 
   // Subscribe so the preview re-renders the moment the broadcast +
   // re-fetch lands.
-  const entry = useAvatarStore((s) => (username ? s.entries.get(username) : undefined));
+  const entry = useAvatarStore((s) => s.entries.get(ownUid()));
   const hasAvatar = entry?.status === "loaded";
 
   return (
@@ -71,7 +72,7 @@ export default function AccountTab() {
       {/* User card */}
       <div className="flex items-center gap-4 rounded-md border border-border-divider bg-bg-light px-5 py-4">
         {username ? (
-          <UserAvatar username={username} size={64} />
+          <UserAvatar uid={ownUid()} name={username} size={64} />
         ) : (
           <div className="h-16 w-16 rounded-sm bg-bg-darkest" />
         )}

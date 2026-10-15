@@ -4,7 +4,7 @@
 // still make sense, and as the fallback for UserAvatar (loading /
 // missing / error states).
 
-import { stringToGradient } from "../utils/colors";
+import { userGradient } from "../utils/colors";
 
 /// Avatar corner radius, per theme. `nocturne`, `matinee` and
 /// `graphite*` keep the DS v1
@@ -21,13 +21,16 @@ import { stringToGradient } from "../utils/colors";
 export const AVATAR_RADIUS = "var(--radius-avatar)";
 
 interface Props {
-  username: string;
+  /// Colours hash the account uid (stable across renames); without one
+  /// (0 / negative) they hash the name.
+  uid: number;
+  name: string;
   size: number;
   className?: string;
 }
 
-export function LetterAvatar({ username, size, className }: Props) {
-  const initial = (username.charAt(0) || "?").toUpperCase();
+export function LetterAvatar({ uid, name, size, className }: Props) {
+  const initial = (name.charAt(0) || "?").toUpperCase();
   return (
     <div
       className={`flex shrink-0 items-center justify-center font-semibold ${className ?? ""}`}
@@ -41,7 +44,7 @@ export function LetterAvatar({ username, size, className }: Props) {
         // Same gradient generator the existing inline avatars use, so
         // a user's letter colour stays consistent across rendering
         // sites and across the load → fail-back transition.
-        background: stringToGradient(username),
+        background: userGradient(uid, name),
         fontSize: `calc(${Math.max(10, Math.floor(size * 0.42))}px * var(--avatar-scale, 1))`,
       }}
     >

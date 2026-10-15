@@ -13,10 +13,12 @@ export function useAuthEvents() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const unlistenSuccess = listen<{ username: string; renames?: boolean }>(
+    const unlistenSuccess = listen<{ username: string; renames?: boolean; uid?: number | bigint }>(
       "login_succeeded",
       (event) => {
-        useAuthStore.getState().login(event.payload.username, !!event.payload.renames);
+        useAuthStore
+          .getState()
+          .login(event.payload.username, !!event.payload.renames, Number(event.payload.uid ?? 0) || 0);
         // Replace, never push: a history entry is something back/forward
         // could walk to, and the app has no page worth walking back to.
         navigate("/", { replace: true });
@@ -91,12 +93,12 @@ export function useAuthEvents() {
     // their picture. setVersion invalidates the cache when the new
     // version differs from the cached one; the next UserAvatar render
     // for that user will re-fetch.
-    const unlistenAvatar = listen<{ username: string; version: string }>(
+    const unlistenAvatar = listen<{ username: string; uid?: number | bigint; version: string }>(
       "avatar_changed",
       (event) => {
         useAvatarStore
           .getState()
-          .setVersion(event.payload.username, event.payload.version);
+          .setVersion(Number(event.payload.uid ?? 0) || 0, event.payload.version);
       },
     );
 

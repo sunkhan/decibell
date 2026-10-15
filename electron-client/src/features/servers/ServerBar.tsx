@@ -9,6 +9,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import { TILE_WIDTH, TILE_HEIGHT } from "./serverTileDimensions";
 import type { CommunityServer } from "../../types";
+import { legacyUid } from "../users/userDirectory";
 
 // Tiny 1×1 transparent PNG. Used as the <img> placeholder while the
 // picture bytes are in-flight so we don't flash a broken-image icon.
@@ -198,7 +199,7 @@ function UnreadDmTiles() {
             className="relative shrink-0 cursor-pointer animate-[dropIn_150ms_ease-out]"
             style={{ borderRadius: AVATAR_RADIUS }}
           >
-            <UserAvatar username={conv.username} size={TILE_HEIGHT} />
+            <UserAvatar uid={legacyUid(conv.username)} name={conv.username} size={TILE_HEIGHT} />
             <div className="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-[2px] border-bg-darkest bg-error px-1 text-[10px] font-semibold leading-none text-white">
               {count}
             </div>

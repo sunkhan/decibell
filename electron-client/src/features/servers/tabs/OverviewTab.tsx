@@ -286,7 +286,7 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                 options={transferCandidates.map((m) => ({
                   value: m.username,
                   label: m.nickname ? `${m.nickname} (${m.username})` : m.username,
-                  icon: <UserAvatar username={m.username} size={18} />,
+                  icon: <UserAvatar uid={m.uid ?? 0} name={m.username} size={18} />,
                 }))}
               />
               {transferTarget && (

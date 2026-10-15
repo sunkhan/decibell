@@ -377,7 +377,8 @@ pub struct FetchAvatarResult {
 
 #[napi(object)]
 pub struct FetchAvatarArgs {
-    pub username: String,
+    /// The account whose avatar to fetch (users by uid).
+    pub uid: i64,
 }
 
 /// Fetch a specific user's avatar bytes + current version. Empty
@@ -385,7 +386,8 @@ pub struct FetchAvatarArgs {
 /// exist — same response shape).
 #[napi]
 pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResult> {
-    let FetchAvatarArgs { username } = args;
+    let FetchAvatarArgs { uid } = args;
+    let slot = uid.to_string();
     let state_arc = state::shared();
 
     let (write_tx, data, rx) = {
@@ -400,16 +402,16 @@ pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResu
         let pkt = build_packet(
             packet::Type::FetchAvatarReq,
             packet::Payload::FetchAvatarReq(FetchAvatarReq {
-                username: username.clone(),
-                uid: 0,
+                username: String::new(),
+                uid,
             }),
             token.as_deref(),
         );
         let (otx, orx) = oneshot::channel();
-        // Last-request-wins per username — a previous in-flight
+        // Last-request-wins per account — a previous in-flight
         // fetch for the same user gets its oneshot replaced; the
         // earlier .await times out, no harm.
-        s.pending_avatar_fetches.insert(username.clone(), otx);
+        s.pending_avatar_fetches.insert(slot.clone(), otx);
         (tx, pkt, orx)
     };
 
@@ -417,7 +419,7 @@ pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResu
         .await
         .is_err()
     {
-        state_arc.lock().await.pending_avatar_fetches.remove(&username);
+        state_arc.lock().await.pending_avatar_fetches.remove(&slot);
         return Err(napi::Error::from_reason("Failed to send fetch request"));
     }
 
@@ -434,7 +436,7 @@ pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResu
                 .lock()
                 .await
                 .pending_avatar_fetches
-                .remove(&username);
+                .remove(&slot);
             Err(napi::Error::from_reason("Fetch timed out"))
         }
     }

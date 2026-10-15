@@ -170,7 +170,7 @@ const MemberRow = memo(function MemberRow({
       }}
     >
       <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
-        <UserAvatar username={m.username} size={34} />
+        <UserAvatar uid={m.uid ?? 0} name={m.username} size={34} />
         <StatusDot
           status={status}
           ring="var(--color-bg-tertiary)"

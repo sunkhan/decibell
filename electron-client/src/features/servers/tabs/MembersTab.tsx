@@ -27,7 +27,7 @@ import {
 import { EmptyState } from "./AuditLogTab";
 import { ECHO_WAIT_MS, useEchoSave } from "../saveEcho";
 import { NICKNAME_MAX_BYTES } from "../limits";
-import { uidOf } from "../../users/userDirectory";
+import { legacyUid, uidOf } from "../../users/userDirectory";
 
 /// Visible role chips per row before the rest fold into "+N".
 const MAX_CHIPS = 3;
@@ -375,7 +375,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                 {/* Who */}
                 <div className="flex min-w-0 items-center gap-3">
                   <div className="relative shrink-0">
-                    <UserAvatar username={m.username} size={32} />
+                    <UserAvatar uid={m.uid ?? 0} name={m.username} size={32} />
                     <PresenceDot
                       username={m.username}
                       communityOnline={m.isOnline}
@@ -663,7 +663,7 @@ function MemberMenu({
     <Popover anchor={anchor} onClose={onClose} ignore={anchorRef} className="w-56 p-1.5">
       <div role="menu" aria-label={`Actions for ${name}`}>
         <div className="flex items-center gap-2.5 px-2 pb-2 pt-1">
-          <UserAvatar username={m.username} size={24} />
+          <UserAvatar uid={m.uid ?? 0} name={m.username} size={24} />
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold text-text-primary">{name}</div>
             {m.nickname && <div className="truncate font-meta text-meta text-text-muted">{m.username}</div>}
@@ -743,7 +743,7 @@ function ModerationDialog(p: {
       >
         <div className="mb-4 flex items-center gap-3">
           <div className="relative shrink-0">
-            <UserAvatar username={p.username} size={40} />
+            <UserAvatar uid={legacyUid(p.username)} name={p.username} size={40} />
             <span
               className={`absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-bg-dark ${
                 p.kind === "timeout" ? "bg-warning text-bg-dark" : "bg-error text-on-error"

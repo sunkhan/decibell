@@ -8,7 +8,10 @@
 // themes would otherwise be speckled with GitHub-blue avatars.
 //
 // Both generators hash identically and index the same 8 slots, so a
-// user's avatar fill and their name colour never drift apart.
+// user's avatar fill and their name colour never drift apart. People hash
+// their account uid (`userColor` & co.), so a rename keeps their colour;
+// the plain string versions are for things that aren't people (servers)
+// and for senders with no account (uid 0), which hash the name.
 
 const RAMP_SIZE = 8;
 
@@ -38,4 +41,25 @@ export function avatarColor(str: string): string {
 export function stringToGradient(str: string): string {
   const base = `var(--color-av-${rampIndex(str)})`;
   return `linear-gradient(135deg, ${base}, color-mix(in srgb, ${base} 72%, #000))`;
+}
+
+/// The string a person's colour hashes: their uid when they have an
+/// account, else the name they were shown under.
+function personKey(uid: number | null | undefined, name: string): string {
+  return uid && uid > 0 ? `uid:${uid}` : name;
+}
+
+/// A person's name colour (see `stringToColor`).
+export function userColor(uid: number | null | undefined, name: string): string {
+  return stringToColor(personKey(uid, name));
+}
+
+/// A person's flat avatar colour (see `avatarColor`).
+export function userAvatarColor(uid: number | null | undefined, name: string): string {
+  return avatarColor(personKey(uid, name));
+}
+
+/// A person's avatar fill (see `stringToGradient`).
+export function userGradient(uid: number | null | undefined, name: string): string {
+  return stringToGradient(personKey(uid, name));
 }

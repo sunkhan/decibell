@@ -518,10 +518,10 @@ impl CentralClient {
                 }
                 Some(packet::Payload::FetchAvatarRes(resp)) => {
                     // Fulfil the fetch_avatar waiter keyed by the
-                    // echoed username.
+                    // echoed uid.
                     let waiter = {
                         let mut s = state.lock().await;
-                        s.pending_avatar_fetches.remove(&resp.username)
+                        s.pending_avatar_fetches.remove(&resp.uid.to_string())
                     };
                     if let Some(tx) = waiter {
                         let _ = tx.send(resp);

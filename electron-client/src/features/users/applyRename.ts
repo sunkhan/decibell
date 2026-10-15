@@ -1,5 +1,4 @@
 import { useAuthStore } from "../../stores/authStore";
-import { useAvatarStore } from "../../stores/avatarStore";
 import { useCallStore } from "../../stores/callStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useDmStore } from "../../stores/dmStore";
@@ -130,15 +129,6 @@ export function applyRename(from: string, to: string, self: boolean): void {
     const statuses = moveKey(s.statuses, from, to);
     const messages = moveKey(s.messages, from, to);
     return statuses === s.statuses && messages === s.messages ? s : { statuses, messages };
-  });
-
-  useAvatarStore.setState((s) => {
-    const entry = s.entries.get(from);
-    if (!entry) return s;
-    const entries = new Map(s.entries);
-    entries.delete(from);
-    entries.set(to, entry);
-    return { entries };
   });
 
   useDraftsStore.setState((s) => {

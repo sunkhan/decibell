@@ -37,6 +37,7 @@ import {
   trailingToken,
   type TokenContext,
 } from "./searchTokens";
+import { legacyUid } from "../users/userDirectory";
 
 /// The search box in a text channel's header (spec 2026-10-14). Filters
 /// are chips before the text; typing `from:`, `in:`, `has:`, `before:`,
@@ -630,10 +631,10 @@ function MenuBody({
 }
 
 function MemberRow({ serverId, member }: { serverId: string; member: ServerMember }) {
-  const name = useDisplayName(serverId, member.username);
+  const name = useDisplayName(serverId, member.uid ?? 0, member.username);
   return (
     <>
-      <UserAvatar username={member.username} size={22} />
+      <UserAvatar uid={member.uid ?? 0} name={member.username} size={22} />
       <span className="min-w-0 truncate font-medium text-text-primary">{name}</span>
       {name !== member.username ? (
         <span className="min-w-0 flex-1 truncate text-[12px] text-text-muted">{member.username}</span>
@@ -669,7 +670,7 @@ function MenuHint({ keys }: { keys: [string, string][] }) {
 function chipText(f: SearchFilter, serverId: string, channels: ChannelInfo[]): [string, string] {
   switch (f.kind) {
     case "from":
-      return ["from", resolveDisplayName(serverId, f.username)];
+      return ["from", resolveDisplayName(serverId, legacyUid(f.username), f.username)];
     case "in":
       return ["in", `#${channels.find((c) => c.id === f.channelId)?.name ?? "deleted-channel"}`];
     case "has":

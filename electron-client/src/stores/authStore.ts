@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 interface AuthState {
   username: string | null;
+  /// Our account uid: every "is this me?" check compares it.
+  uid: number;
   /// Central accepts username changes (LoginResponse.renames).
   renames: boolean;
   isAuthenticated: boolean;
@@ -9,7 +11,7 @@ interface AuthState {
   loginError: string | null;
   isRegistering: boolean;
   registerResult: { success: boolean; message: string } | null;
-  login: (username: string, renames?: boolean) => void;
+  login: (username: string, renames?: boolean, uid?: number) => void;
   logout: () => void;
   setLoggingIn: (v: boolean) => void;
   setLoginError: (msg: string | null) => void;
@@ -19,17 +21,19 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>((set) => ({
   username: null,
+  uid: 0,
   renames: false,
   isAuthenticated: false,
   isLoggingIn: false,
   loginError: null,
   isRegistering: false,
   registerResult: null,
-  login: (username, renames = false) =>
-    set({ username, renames, isAuthenticated: true, isLoggingIn: false, loginError: null }),
+  login: (username, renames = false, uid = 0) =>
+    set({ username, uid, renames, isAuthenticated: true, isLoggingIn: false, loginError: null }),
   logout: () =>
     set({
       username: null,
+      uid: 0,
       isAuthenticated: false,
       isLoggingIn: false,
       loginError: null,

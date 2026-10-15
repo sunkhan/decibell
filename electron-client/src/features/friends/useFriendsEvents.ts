@@ -6,10 +6,11 @@ import { useFriendsStore } from "../../stores/friendsStore";
 export function useFriendsEvents() {
   useEffect(() => {
     const unlistenList = listen<{
-      friends: { username: string; status: string; avatarVersion: string }[];
+      friends: { username: string; uid?: number | bigint; status: string; avatarVersion: string }[];
     }>("friend_list_received", (event) => {
       const friends = event.payload.friends.map((f) => ({
         username: f.username,
+        uid: Number(f.uid ?? 0) || 0,
         status: f.status as
           | "online"
           | "offline"
@@ -26,7 +27,7 @@ export function useFriendsEvents() {
       // UserAvatar renders trigger fetches only when versions differ
       // from what we already have on disk for that user.
       useAvatarStore.getState().setVersions(
-        event.payload.friends.map((f) => ({ username: f.username, version: f.avatarVersion })),
+        event.payload.friends.map((f) => ({ uid: Number(f.uid ?? 0) || 0, version: f.avatarVersion })),
       );
     });
 

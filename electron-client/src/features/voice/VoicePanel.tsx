@@ -41,7 +41,7 @@ import {
   UserPlusIcon,
   UsersIcon,
 } from "./stage/icons";
-import { nameOf } from "../users/userDirectory";
+import { legacyUid, nameOf } from "../users/userDirectory";
 
 /// The community voice view (design: the "Voice View Redesign" canvas,
 /// 2026-10-04 — tiled stage + floating dock, shared with the DM CallStage).
@@ -157,7 +157,7 @@ function VoiceHeader({
   connectedServerId: string | null;
   participantCount: number;
 }) {
-  const focusedName = useDisplayName(connectedServerId, focused ?? "");
+  const focusedName = useDisplayName(connectedServerId, legacyUid(focused), focused ?? "");
   return (
     <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border-divider px-4">
       <SpeakerIcon size={18} className="text-text-muted" />

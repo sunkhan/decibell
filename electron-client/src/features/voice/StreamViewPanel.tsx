@@ -41,7 +41,7 @@ import {
   SpeakerIcon,
   StatsIcon,
 } from "./stage/icons";
-import { uidOf } from "../users/userDirectory";
+import { legacyUid, uidOf } from "../users/userDirectory";
 
 // One handle for the panel's lifetime: getCurrentWindow() builds a fresh
 // object per call, which made the fullscreen callbacks (and the Escape /
@@ -149,7 +149,7 @@ function StreamViewPanel() {
   }, [fullscreenStream]);
 
   const displayUser = fullscreenStream || lastStreamUser;
-  const displayName = useDisplayName(connectedServerId, displayUser ?? "");
+  const displayName = useDisplayName(connectedServerId, legacyUid(displayUser), displayUser ?? "");
 
   // Claim the shared, persistent stream player node into the full-view slot
   // whenever a stream is focused here. The player is reparented (not remounted)
@@ -398,7 +398,7 @@ function StreamViewPanel() {
         <div className={`pointer-events-none absolute left-3 top-3 flex gap-1.5 ${overlayClass}`}>
           <LivePill size="lg" />
           <span className={SCRIM_LG}>
-            <UserAvatar username={displayUser} size={18} />
+            <UserAvatar uid={legacyUid(displayUser)} name={displayUser} size={18} />
             {isOwnStream ? "Your screen" : `${displayName}'s screen`}
           </span>
           <QualityPill stream={stream} large />

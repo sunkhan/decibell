@@ -11,16 +11,23 @@
 
 import { useEffect } from "react";
 import { useAvatarStore } from "../stores/avatarStore";
+import { useUserName, type Uid } from "../stores/usersStore";
 import { LetterAvatar, AVATAR_RADIUS } from "./LetterAvatar";
 
 interface Props {
-  username: string;
+  /// The account (avatar image, colour). 0 / negative: no account here
+  /// (system sender, a community's legacy placeholder) — letter only.
+  uid: Uid;
+  /// The name the caller has for them: the letter until the users store
+  /// knows the current name.
+  name: string;
   size: number;
   className?: string;
 }
 
-export function UserAvatar({ username, size, className }: Props) {
-  const entry = useAvatarStore((s) => s.entries.get(username));
+export function UserAvatar({ uid, name, size, className }: Props) {
+  const shown = useUserName(uid, name);
+  const entry = useAvatarStore((s) => (uid > 0 ? s.entries.get(uid) : undefined));
   const fetchIfNeeded = useAvatarStore((s) => s.fetchIfNeeded);
 
   // Re-evaluate every time the entry's status changes; the store
@@ -28,14 +35,14 @@ export function UserAvatar({ username, size, className }: Props) {
   // call on every render — it'll no-op once a fetch is in flight
   // or has resolved.
   useEffect(() => {
-    fetchIfNeeded(username);
-  }, [username, fetchIfNeeded, entry?.status, entry?.version]);
+    if (uid > 0) fetchIfNeeded(uid);
+  }, [uid, fetchIfNeeded, entry?.status, entry?.version]);
 
   if (entry?.status === "loaded" && entry.blobUrl) {
     return (
       <img
         src={entry.blobUrl}
-        alt={username}
+        alt={shown}
         className={`shrink-0 object-cover ${className ?? ""}`}
         style={{
           width: `calc(${size}px * var(--avatar-scale, 1))`,
@@ -49,5 +56,5 @@ export function UserAvatar({ username, size, className }: Props) {
       />
     );
   }
-  return <LetterAvatar username={username} size={size} className={className} />;
+  return <LetterAvatar uid={uid} name={shown} size={size} className={className} />;
 }

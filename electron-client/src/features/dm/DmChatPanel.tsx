@@ -10,7 +10,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
-import { stringToColor } from "../../utils/colors";
+import { userColor } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
 import { isOnlineStatus, usePresence, useStatusMessage } from "../../stores/presenceStore";
@@ -31,7 +31,7 @@ import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModa
 import EncryptionBadge from "../e2ee/EncryptionBadge";
 import DmEncryptionBanner from "../e2ee/DmEncryptionBanner";
 import type { Attachment, DmMessage, GifResult, Message } from "../../types";
-import { uidOf } from "../users/userDirectory";
+import { legacyUid, uidOf } from "../users/userDirectory";
 
 // Canonical reject strings the central server echoes back as a DM
 // from us-to-us. Pattern-matched here so we can render them as a
@@ -807,7 +807,7 @@ export default function DmChatPanel() {
       {/* DM header */}
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <div className="relative">
-          <UserAvatar username={activeDmUser} size={26} />
+          <UserAvatar uid={legacyUid(activeDmUser)} name={activeDmUser} size={26} />
           <StatusDot
             status={peerPresence}
             ring="var(--color-bg-tertiary)"
@@ -922,7 +922,7 @@ export default function DmChatPanel() {
         <div className="flex-1 overflow-y-auto pr-4 py-4">
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
             <div className="border-b border-border pb-5 mb-5">
-              <UserAvatar username={activeDmUser} size={60} className="mb-3" />
+              <UserAvatar uid={legacyUid(activeDmUser)} name={activeDmUser} size={60} className="mb-3" />
               <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
                 {activeDmUser}
               </h1>
@@ -930,7 +930,7 @@ export default function DmChatPanel() {
                 This is the beginning of your conversation with{" "}
                 <span
                   className="font-semibold"
-                  style={{ color: stringToColor(activeDmUser) }}
+                  style={{ color: userColor(legacyUid(activeDmUser), activeDmUser) }}
                 >
                   {activeDmUser}
                 </span>

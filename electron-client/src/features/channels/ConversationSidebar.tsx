@@ -6,6 +6,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
 import MessageText from "../chat/MessageText";
 import { useSidebarResize } from "./useSidebarResize";
+import { legacyUid } from "../users/userDirectory";
 
 function formatRelativeTime(epochMs: number, nowMs: number): string {
   const diff = nowMs - epochMs;
@@ -144,7 +145,7 @@ const ConversationRow = memo(function ConversationRow({
       }`}
     >
       <div className="relative shrink-0">
-        <UserAvatar username={username} size={34} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={34} />
         <StatusDot
           status={status}
           ring="var(--color-bg-dmbar)"

@@ -27,7 +27,7 @@ import { useMemberSearch } from "./useMemberSearch";
 import { useEchoSave } from "../saveEcho";
 import { useLeaveGuard } from "../leaveGuard";
 import { ROLE_NAME_MAX_BYTES } from "../limits";
-import { uidOf } from "../../users/userDirectory";
+import { ownUid, uidOf } from "../../users/userDirectory";
 
 /// The editable fields of a role. A new role is a draft with id null.
 interface RoleFields {
@@ -636,7 +636,7 @@ function DisplaySection({
       </Field>
       <Field label="Preview" hint="How a member whose highest role this is shows up in chat.">
         <div className="flex gap-3 rounded-lg border border-border-divider bg-bg-mid px-4 py-3.5">
-          <UserAvatar username={me} size={40} />
+          <UserAvatar uid={ownUid()} name={me} size={40} />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span className="truncate font-channel text-sender font-emphasis" style={{ color: fields.color ? roleColor(fields.color) : "var(--color-text-primary)" }}>
@@ -833,7 +833,7 @@ function MembersSection({
           {holders.members.map((m) => (
             <div key={m.username} className="group flex h-12 items-center gap-3 rounded-md px-3 hover:bg-surface-hover">
               <div className="relative shrink-0">
-                <UserAvatar username={m.username} size={28} />
+                <UserAvatar uid={m.uid ?? 0} name={m.username} size={28} />
                 <PresenceDot
                   username={m.username}
                   communityOnline={m.isOnline}
@@ -935,7 +935,7 @@ function AddMembersPopover({
               }}
               className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-surface-hover"
             >
-              <UserAvatar username={m.username} size={24} />
+              <UserAvatar uid={m.uid ?? 0} name={m.username} size={24} />
               <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
                 {m.nickname || m.username}
                 {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{m.username}</span>}

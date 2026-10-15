@@ -1,4 +1,4 @@
-// Per-user avatar cache, keyed by username.
+// Per-user avatar cache, keyed by account uid (a rename keeps the cache).
 //
 // Cache shape:
 //   { version, data, blobUrl, status }
@@ -19,6 +19,7 @@
 
 import { create } from "zustand";
 import { invoke } from "../lib/ipc";
+import type { Uid } from "./usersStore";
 
 type AvatarStatus = "idle" | "loading" | "loaded" | "missing" | "error";
 
@@ -30,21 +31,21 @@ interface AvatarEntry {
 }
 
 interface AvatarStoreState {
-  entries: Map<string, AvatarEntry>;
+  entries: Map<Uid, AvatarEntry>;
   /// Update the known current version for a user. If it differs from
   /// the cached entry's version, invalidate (revoke blobUrl, mark
   /// idle) so the next render fetches fresh.
-  setVersion: (username: string, version: string) => void;
+  setVersion: (uid: Uid, version: string) => void;
   /// Batched setVersion — one Map copy and one notify for a whole
   /// friend / presence list instead of one per user.
-  setVersions: (list: { username: string; version: string }[]) => void;
+  setVersions: (list: { uid: Uid; version: string }[]) => void;
   /// Trigger a fetch if the entry is `idle` (just-invalidated or
   /// never-seen). No-op when already loading/loaded/missing/error.
-  fetchIfNeeded: (username: string) => void;
+  fetchIfNeeded: (uid: Uid) => void;
   /// Drop the cached entry, revoke its blob URL, mark idle. Internal
   /// helper called by setVersion when versions differ; also exposed
   /// for forcing a re-fetch.
-  invalidate: (username: string) => void;
+  invalidate: (uid: Uid) => void;
   /// Logout cleanup: revoke every blob URL, clear the map.
   clearAll: () => void;
 }
@@ -52,14 +53,15 @@ interface AvatarStoreState {
 export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
   entries: new Map(),
 
-  setVersion: (username, version) => {
-    const existing = get().entries.get(username);
+  setVersion: (uid, version) => {
+    if (!(uid > 0)) return;
+    const existing = get().entries.get(uid);
     if (existing && existing.version === version) return;
     // Versions differ (or no entry). Revoke + reset.
     if (existing?.blobUrl) URL.revokeObjectURL(existing.blobUrl);
     set((s) => {
       const next = new Map(s.entries);
-      next.set(username, {
+      next.set(uid, {
         version,
         data: null,
         blobUrl: null,
@@ -71,30 +73,31 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
 
   setVersions: (list) => {
     const cur = get().entries;
-    let next: Map<string, AvatarEntry> | null = null;
-    for (const { username, version } of list) {
-      const existing = cur.get(username);
+    let next: Map<Uid, AvatarEntry> | null = null;
+    for (const { uid, version } of list) {
+      if (!(uid > 0)) continue;
+      const existing = cur.get(uid);
       if (existing && existing.version === version) continue;
       if (existing?.blobUrl) URL.revokeObjectURL(existing.blobUrl);
       if (!next) next = new Map(cur);
-      next.set(username, { version, data: null, blobUrl: null, status: "idle" });
+      next.set(uid, { version, data: null, blobUrl: null, status: "idle" });
     }
     if (next) set({ entries: next });
   },
 
-  fetchIfNeeded: (username) => {
-    const entry = get().entries.get(username);
+  fetchIfNeeded: (uid) => {
+    const entry = get().entries.get(uid);
     // Only fetch from `idle`. Loading / loaded / missing / error skip.
     if (!entry || entry.status !== "idle") return;
     set((s) => {
       const next = new Map(s.entries);
-      const cur = next.get(username);
-      if (cur) next.set(username, { ...cur, status: "loading" });
+      const cur = next.get(uid);
+      if (cur) next.set(uid, { ...cur, status: "loading" });
       return { entries: next };
     });
     void (async () => {
       try {
-        const result = (await invoke("fetch_avatar", { username })) as {
+        const result = (await invoke("fetch_avatar", { uid })) as {
           version: string;
           data: Uint8Array;
         };
@@ -112,9 +115,9 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
         }
         set((s) => {
           const next = new Map(s.entries);
-          const cur = next.get(username);
+          const cur = next.get(uid);
           if (!blobUrl) {
-            next.set(username, {
+            next.set(uid, {
               version: result.version,
               data: null,
               blobUrl: null,
@@ -125,7 +128,7 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
             // previous version (defensive — setVersion should have
             // done this on invalidation, but races are cheap to guard).
             if (cur?.blobUrl) URL.revokeObjectURL(cur.blobUrl);
-            next.set(username, {
+            next.set(uid, {
               version: result.version,
               // Drop the raw bytes once the blob URL exists — only blobUrl
               // is ever consumed, so keeping `data` doubled memory per
@@ -138,23 +141,23 @@ export const useAvatarStore = create<AvatarStoreState>((set, get) => ({
           return { entries: next };
         });
       } catch (e) {
-        console.warn(`[avatarStore] fetch failed for ${username}:`, e);
+        console.warn(`[avatarStore] fetch failed for uid ${uid}:`, e);
         set((s) => {
           const next = new Map(s.entries);
-          const cur = next.get(username);
-          if (cur) next.set(username, { ...cur, status: "error" });
+          const cur = next.get(uid);
+          if (cur) next.set(uid, { ...cur, status: "error" });
           return { entries: next };
         });
       }
     })();
   },
 
-  invalidate: (username) => {
-    const entry = get().entries.get(username);
+  invalidate: (uid) => {
+    const entry = get().entries.get(uid);
     if (entry?.blobUrl) URL.revokeObjectURL(entry.blobUrl);
     set((s) => {
       const next = new Map(s.entries);
-      next.delete(username);
+      next.delete(uid);
       return { entries: next };
     });
   },

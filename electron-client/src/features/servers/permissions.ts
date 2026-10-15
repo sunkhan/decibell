@@ -286,10 +286,9 @@ export function usePermission(serverId: string | null, perm: number): boolean {
   // Only my own member record: it keeps its identity across other members'
   // presence deltas, so those no longer re-render every permission-gated
   // component (the channel sidebar, the chat panel).
+  const localUid = useAuthStore((s) => s.uid);
   const me = useChatStore((s) =>
-    serverId && localUsername
-      ? findMember(s.membersByServer, serverId, localUsername)
-      : undefined,
+    serverId && localUid ? findMember(s.membersByServer, serverId, localUid) : undefined,
   );
   if (!serverId || !localUsername) return false;
   if (!!owner && owner === localUsername) return true;

@@ -18,7 +18,7 @@ import { StatusDot } from "../../components/StatusDot";
 import { STATUS_LABEL as PRESENCE_LABEL, usePresence, useStatusMessage } from "../../stores/presenceStore";
 import { StatusMessageText } from "../../components/StatusMessageText";
 import type { FriendInfo } from "../../types";
-import { uidOf } from "../users/userDirectory";
+import { legacyUid, uidOf } from "../users/userDirectory";
 
 // Mirrors FriendActionType in proto/messages.proto.
 const ACTION = { ADD: 0, REMOVE: 1, BLOCK: 2, ACCEPT: 3, REJECT: 4 } as const;
@@ -225,7 +225,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       }}
     >
       <div className="relative shrink-0">
-        <UserAvatar username={username} size={36} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={36} />
         {(status === "online" || status === "offline") && (
           <StatusDot
             status={presence}

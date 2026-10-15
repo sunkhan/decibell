@@ -6,6 +6,7 @@ import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import { PERM, useChannelPermission } from "../servers/permissions";
 import { onMemberDragEnd, onMemberDragStart } from "./memberDrag";
+import { legacyUid } from "../users/userDirectory";
 
 /// `usernames` (+ the channel's `serverId` / `channelId`) renders another
 /// channel's roster from presence; without it, the connected channel's
@@ -107,7 +108,7 @@ const PresenceRow = memo(function PresenceRow({
   const userState = useVoiceStore((s) => s.channelUserStates[voiceKey(serverId, channelId)]?.[username]);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(serverId, username);
+  const displayName = useDisplayName(serverId, legacyUid(username), username);
 
   return (
     <div
@@ -128,7 +129,7 @@ const PresenceRow = memo(function PresenceRow({
       onDragStart={draggable ? (e) => onMemberDragStart(e, serverId, channelId, username) : undefined}
       onDragEnd={draggable ? onMemberDragEnd : undefined}
     >
-      <UserAvatar username={username} size={22} />
+      <UserAvatar uid={legacyUid(username)} name={username} size={22} />
       <span className="min-w-0 truncate text-text-secondary transition-colors group-hover:text-text-primary">
         {displayName}
       </span>
@@ -188,7 +189,7 @@ const ActiveRow = memo(function ActiveRow({
   const selfDeafened = useVoiceStore((s) => s.isDeafened);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(connectedServerId, username);
+  const displayName = useDisplayName(connectedServerId, legacyUid(username), username);
 
   const userMuted = isLocal ? selfMuted : rosterMuted;
   const userDeafened = isLocal ? selfDeafened : rosterDeafened;
@@ -225,7 +226,7 @@ const ActiveRow = memo(function ActiveRow({
           boxShadow: isSpeaking ? "0 0 0 2px var(--color-success), 0 0 6px var(--color-success)" : "none",
         }}
       >
-        <UserAvatar username={username} size={22} />
+        <UserAvatar uid={legacyUid(username)} name={username} size={22} />
       </div>
       <span
         className={`min-w-0 truncate ${

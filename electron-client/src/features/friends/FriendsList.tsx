@@ -30,7 +30,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       }}
     >
       <div className="relative shrink-0">
-        <UserAvatar username={friend.username} size={32} />
+        <UserAvatar uid={friend.uid ?? 0} name={friend.username} size={32} />
         {(friend.status === "online" || friend.status === "offline") && (
           <StatusDot
             status={status}

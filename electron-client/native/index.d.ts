@@ -53,7 +53,8 @@ export interface FetchAvatarResult {
   data: Buffer
 }
 export interface FetchAvatarArgs {
-  username: string
+  /** The account whose avatar to fetch (users by uid). */
+  uid: number
 }
 /**
  * Fetch a specific user's avatar bytes + current version. Empty

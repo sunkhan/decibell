@@ -12,7 +12,7 @@ import { useDisplayName } from "../../hooks/useDisplayName";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { usePeerE2ee } from "../e2ee/usePeerE2ee";
 import { formatJoined } from "../servers/tabs/helpers";
-import { stringToGradient } from "../../utils/colors";
+import { userGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
 import {
@@ -25,7 +25,7 @@ import { StatusMessageText } from "../../components/StatusMessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
-import { uidOf } from "../users/userDirectory";
+import { legacyUid, uidOf } from "../users/userDirectory";
 
 // The full profile screen: a centred modal reached by clicking the avatar
 // in the anchored popup (UserProfilePopup), the way Discord's popout opens
@@ -81,7 +81,7 @@ function ProfileScreen({
   const [tab, setTab] = useState<Tab>("profile");
   const currentUsername = useAuthStore((s) => s.username);
   const isSelf = username === currentUsername;
-  const displayName = useDisplayName(serverId, username);
+  const displayName = useDisplayName(serverId, legacyUid(username), username);
   // `find` returns the stored object (or undefined) — a stable ref.
   const friend = useFriendsStore((s) => s.friends.find((f) => f.username === username));
   const memberEntry = useChatStore((s) =>
@@ -118,7 +118,7 @@ function ProfileScreen({
       aria-label={`${displayName}'s profile`}
     >
       {/* Banner */}
-      <div className="relative h-[120px] shrink-0" style={{ background: stringToGradient(username) }}>
+      <div className="relative h-[120px] shrink-0" style={{ background: userGradient(legacyUid(username), username) }}>
         <button
           onClick={onClose}
           aria-label="Close"
@@ -134,7 +134,7 @@ function ProfileScreen({
       {/* Identity row: avatar overlapping the banner, actions on the right */}
       <div className="relative shrink-0 px-6">
         <div className="absolute -top-12 left-6 rounded-2xl border-[6px] border-bg-dark bg-bg-dark">
-          <UserAvatar username={username} size={96} />
+          <UserAvatar uid={legacyUid(username)} name={username} size={96} />
           <StatusDot
             status={presence}
             ring="var(--color-bg-dark)"
