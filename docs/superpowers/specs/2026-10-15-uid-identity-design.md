@@ -310,6 +310,14 @@ media plane still named people. Both are gone: a rename is now only a database c
 
 ### Token renewal and in-place renames
 
+Why the token still carries the name (owner decision, 2026-10-15): Discord's tokens encode only the
+user id, but Discord has one backend with one user table. A Decibell community has no user database;
+central's signature on `(uid, sub)` is the only name it can trust. Without the name in the token the
+community would have to take the client's word (impersonation), ask central on every connect (a hard
+dependency on an optional link, plus a round trip, and central would see every login), or receive a
+second signed name statement, which needs the same renewal on rename. Identity already comes only
+from the `uid` claim; `sub` is the label.
+
 - `TOKEN_REFRESH_REQ` → `TOKEN_REFRESH_RES {jwt_token}`: central mints a fresh 24 h token for the
   session. The client asks every 6 hours (a task owned by its central client) and with every rename.
 - `SESSION_TOKEN_UPDATE {jwt_token}` (client → community, no reply): the community verifies the token,

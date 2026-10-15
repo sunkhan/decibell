@@ -111,7 +111,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   placeholder (negative uid) is drawn from its member row. A rename is only a database change: the fresh token reaches each
   community as `SESSION_TOKEN_UPDATE`, which renames the live session in place (no reconnect; the
   same packet carries the 6-hourly `TOKEN_REFRESH_REQ` renewal), and `members.name_iat` stops an older
-  token from renaming a member back. **The media plane names people by uid**: the relay stamps the
+  token from renaming a member back. The token keeps the name by owner decision (2026-10-15): a
+  community has no user database, so central's signature on (uid, name) is how it learns a name it can
+  trust. A uid-only token (Discord's design: one backend, one user table) would only move the rename
+  path elsewhere. **The media plane names people by uid**: the relay stamps the
   decimal uid into `sender_id`, keyframe/NACK target `target_id` (a uid), streams are `<uid>_screen`,
   MLS credentials and per-sender media keys are the uid, P2P calls use both uids. Native media state
   keys on that string. A connection's UDP key stays the tail of the token it authenticated with
