@@ -99,7 +99,6 @@ impl CentralClient {
             packet::Payload::LoginReq(LoginRequest {
                 username: username.into(),
                 password: password.into(),
-                presence_deltas: true,
             }),
             None,
         );
@@ -165,7 +164,6 @@ impl CentralClient {
                                     packet::Payload::LoginReq(LoginRequest {
                                         username: user.clone(),
                                         password: pass.clone(),
-                                        presence_deltas: true,
                                     }),
                                     None,
                                 );
@@ -284,23 +282,36 @@ impl CentralClient {
                         let invisible =
                             resp.status == crate::net::proto::PresenceStatus::PresenceInvisible as i32;
                         crate::presence::set_hidden(resp.presence_statuses && invisible);
-                        let idle_resend = (resp.presence_statuses && crate::presence::idle())
-                            .then(|| s.central.as_ref().and_then(|c| c.connection_write_tx()))
-                            .flatten()
-                            .map(|tx| {
-                                let pkt = build_packet(
-                                    packet::Type::SetIdleReq,
-                                    packet::Payload::SetIdleReq(crate::net::proto::SetIdleRequest {
-                                        idle: true,
-                                    }),
-                                    Some(&resp.jwt_token),
-                                );
-                                (tx, pkt)
-                            });
+                        let central_tx = s.central.as_ref().and_then(|c| c.connection_write_tx());
+                        let mut resend = Vec::new();
+                        if resp.presence_statuses && crate::presence::idle() {
+                            resend.push(build_packet(
+                                packet::Type::SetIdleReq,
+                                packet::Payload::SetIdleReq(crate::net::proto::SetIdleRequest {
+                                    idle: true,
+                                }),
+                                Some(&resp.jwt_token),
+                            ));
+                        }
+                        // The renderer's watch set outlives a reconnect;
+                        // central starts every login with an empty one.
+                        if !s.presence_watch.is_empty() {
+                            resend.push(build_packet(
+                                packet::Type::PresenceSubscribe,
+                                packet::Payload::PresenceSubscribe(crate::net::proto::PresenceSubscribe {
+                                    uids: s.presence_watch.clone(),
+                                }),
+                                Some(&resp.jwt_token),
+                            ));
+                        }
                         drop(s);
-                        if let Some((tx, pkt)) = idle_resend {
+                        if let (Some(tx), false) = (central_tx, resend.is_empty()) {
                             tokio::spawn(async move {
-                                let _ = tx.send(pkt).await;
+                                for pkt in resend {
+                                    if tx.send(pkt).await.is_err() {
+                                        break;
+                                    }
+                                }
                             });
                         }
                         events::emit_own_presence(events::OwnPresencePayload {
@@ -390,6 +401,16 @@ impl CentralClient {
                         .await;
                 }
                 Some(packet::Payload::PresenceUpdate(update)) => {
+                    // Newly watched: a key change missed while not watching
+                    // them is caught by forgetting their cached bundle.
+                    {
+                        let mut s = state.lock().await;
+                        for uid in &update.covered_uids {
+                            s.e2ee.fresh.remove(uid);
+                            s.e2ee.current_ids.remove(uid);
+                        }
+                    }
+                    let covered = update.covered_uids;
                     let users: Vec<events::UserPresencePayload> = update
                         .users
                         .into_iter()
@@ -402,7 +423,7 @@ impl CentralClient {
                             status_emoji: u.status_emoji,
                         })
                         .collect();
-                    events::emit_user_list_updated(users);
+                    events::emit_user_list_updated(users, covered);
                 }
                 Some(packet::Payload::PresenceDelta(delta)) => {
                     let user = delta.user.unwrap_or_default();

@@ -12,16 +12,17 @@ import type { UserPresence } from "../../types";
 import { toUid, type Uid } from "../../stores/usersStore";
 
 /// Flip accepted friends between online and offline to match presence,
-/// leaving pending / blocked rows alone. Skips the store write (and every
-/// friends subscriber's re-render) when nothing flipped.
-function reconcileFriends(isOnline: (uid: Uid) => boolean) {
+/// leaving pending / blocked rows (and friends `isOnline` doesn't know
+/// about: undefined) alone. Skips the store write (and every friends
+/// subscriber's re-render) when nothing flipped.
+function reconcileFriends(isOnline: (uid: Uid) => boolean | undefined) {
   const { friends, setFriends } = useFriendsStore.getState();
   if (friends.length === 0) return;
   let changed = false;
   const updated = friends.map((f) => {
     if (f.status !== "online" && f.status !== "offline") return f;
     const online = isOnline(f.uid);
-    if ((f.status === "online") === online) return f;
+    if (online === undefined || (f.status === "online") === online) return f;
     changed = true;
     return { ...f, status: online ? ("online" as const) : ("offline" as const) };
   });
@@ -30,14 +31,20 @@ function reconcileFriends(isOnline: (uid: Uid) => boolean) {
 
 export function usePresenceEvents() {
   useEffect(() => {
-    // Full snapshot: at login (and on every change from an older central).
-    const unlistenSnapshot = listen<{ users: UserPresence[] }>("user_list_updated", (event) => {
-      const users = event.payload.users.map((u) => ({ ...u, uid: toUid(u.uid) }));
-      usePresenceStore.getState().applySnapshot(users);
-      useAvatarStore.getState().setVersions(users.map((u) => ({ uid: u.uid, version: u.avatarVersion })));
-      const online = new Set(users.map((u) => u.uid));
-      reconcileFriends((u) => online.has(u));
-    });
+    // A subscription answer: the newly watched users' presence (those not
+    // in `users` are offline).
+    const unlistenSnapshot = listen<{ users: UserPresence[]; covered?: (number | bigint)[] }>(
+      "user_list_updated",
+      (event) => {
+        const users = event.payload.users.map((u) => ({ ...u, uid: toUid(u.uid) }));
+        const covered = (event.payload.covered ?? []).map(toUid);
+        usePresenceStore.getState().applyCovered(covered, users);
+        useAvatarStore.getState().setVersions(users.map((u) => ({ uid: u.uid, version: u.avatarVersion })));
+        const online = new Set(users.map((u) => u.uid));
+        const answered = new Set(covered);
+        reconcileFriends((u) => (answered.has(u) ? online.has(u) : undefined));
+      },
+    );
 
     // One user's full current presence.
     const unlistenDelta = listen<{

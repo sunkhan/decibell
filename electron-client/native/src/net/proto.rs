@@ -10,7 +10,6 @@ mod tests {
         let req = LoginRequest {
             username: "alice".into(),
             password: "secret123".into(),
-            presence_deltas: true,
         };
         let bytes = req.encode_to_vec();
         let decoded = LoginRequest::decode(&bytes[..]).unwrap();
@@ -27,7 +26,6 @@ mod tests {
             payload: Some(packet::Payload::LoginReq(LoginRequest {
                 username: "bob".into(),
                 password: "pass".into(),
-                presence_deltas: true,
             })),
         };
         let bytes = packet.encode_to_vec();

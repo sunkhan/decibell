@@ -915,6 +915,9 @@ pub fn emit_channel_wiped(payload: ChannelWipedPayload) {
 #[serde(rename_all = "camelCase")]
 pub struct UserListUpdatedPayload {
     pub users: Vec<UserPresencePayload>,
+    /// The accounts this answer covers (newly watched): one without an
+    /// entry in `users` is offline.
+    pub covered: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -985,8 +988,8 @@ pub struct FriendActionRespondedPayload {
     pub message: String,
 }
 
-pub fn emit_user_list_updated(users: Vec<UserPresencePayload>) {
-    send(USER_LIST_UPDATED, UserListUpdatedPayload { users });
+pub fn emit_user_list_updated(users: Vec<UserPresencePayload>, covered: Vec<i64>) {
+    send(USER_LIST_UPDATED, UserListUpdatedPayload { users, covered });
 }
 
 pub fn emit_presence_delta(payload: PresenceDeltaPayload) {

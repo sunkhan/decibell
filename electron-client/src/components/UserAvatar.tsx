@@ -13,6 +13,7 @@ import { useEffect } from "react";
 import { useAvatarStore } from "../stores/avatarStore";
 import { useUserName, type Uid } from "../stores/usersStore";
 import { LetterAvatar, AVATAR_RADIUS } from "./LetterAvatar";
+import { usePresenceInterest } from "../features/presence/presenceInterest";
 
 interface Props {
   /// The account (avatar image, colour). 0 / negative: no account here
@@ -26,6 +27,9 @@ interface Props {
 }
 
 export function UserAvatar({ uid, name, size, className }: Props) {
+  // Someone on screen: central sends their avatar and name changes (and
+  // status) while they are (presence by subscription).
+  usePresenceInterest(uid);
   const shown = useUserName(uid, name);
   const entry = useAvatarStore((s) => (uid > 0 ? s.entries.get(uid) : undefined));
   const fetchIfNeeded = useAvatarStore((s) => s.fetchIfNeeded);

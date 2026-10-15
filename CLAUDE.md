@@ -49,6 +49,8 @@ cd src/community/tests && D=/tmp/decibell-deps && ./setup_deps.sh "$D" ../../.. 
 cd src/server/tests && D=/tmp/decibell-central-deps && ./setup_deps.sh "$D" ../../.. \
   && ./build.sh "$D" ../../.. "$D/central_server" \
   && DECIBELL_E2E_PB="$D/pb" DECIBELL_E2E_SERVER="$D/central_server" DECIBELL_E2E_RUN="$D/run" "$D/pgvenv/bin/python" -I e2e.py
+# Central is multi-threaded: after touching src/server, also run the suite under ThreadSanitizer and
+# AddressSanitizer + UBSan (README §Sanitizers; both must report nothing)
 ```
 The system has no libpqxx/boost/jwt-cpp, so IDE diagnostics on `src/server/*` are header
 noise; the central harness builds against its own copies (libpqxx 7 + pgserver's PostgreSQL
@@ -123,6 +125,17 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   MLS credentials and per-sender media keys are the uid, P2P calls use both uids. Native media state
   keys on that string. A connection's UDP key stays the tail of the token it authenticated with
   (`CommunityClient::auth_jwt`).
+- **Central is multi-threaded** (`docs/superpowers/specs/2026-10-15-central-scaling-design.md`):
+  `DECIBELL_IO_THREADS` io threads with a strand per connection, bcrypt on a CPU pool
+  (`DECIBELL_CPU_THREADS`; the session stops reading meanwhile so packets stay in order), Postgres
+  through `PgPool` (a lease per operation, never a connection per query). A session touches only its
+  own fields, on its strand; everything shared (connections, signed-in accounts with their presence,
+  the watch index) lives in `SessionManager` behind its mutex, and `deliver_to_user` is the one way to
+  reach an account — the seam a message bus replaces when central splits across machines. Deliveries
+  and closes are posted to the target's strand; never call into a session or the database while holding
+  the directory's lock. Decided for later: DM attachments go to object storage as end-to-end encrypted
+  blobs (central stores no file bytes), and message ids (DM and channel) promise only "64-bit and
+  increasing over time" (room for Snowflake-style ids).
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.
@@ -209,8 +222,12 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   channel-settings topic field says so for encrypted channels. Design:
   `2026-09-04-encrypted-text-channels-design.md`.
 - **User statuses are central's** (online / away / dnd / invisible; `users.presence_status`), shown
-  to every signed-in user. Others see only `PRESENCE_DELTA` / snapshot entries; an invisible user is
-  absent, never "invisible" on the wire. Invisible is airtight by owner decision: every
+  to every signed-in user, **delivered by subscription**: a client watches the users it shows
+  (`usePresence`, `useStatusMessage` and `UserAvatar` register interest; `features/presence/presenceInterest.ts`
+  sends the set, native re-sends it after every login), and central sends `PRESENCE_DELTA` and the
+  profile pushes (renames, avatars, E2EE keys) to watchers only, answering newly watched users with a
+  `PRESENCE_UPDATE` (`covered_uids`); there's no login snapshot. An invisible user is absent, never
+  "invisible" on the wire. Invisible is airtight by owner decision: every
   presence-revealing path asks `is_user_visible` (friend lists, call INVITE → PEER_OFFLINE), friends-only
   DMs are saved on the account so the DM gate answers the same online or not, and clients tell each
   community `presence_hidden` / `PRESENCE_VISIBILITY` so rosters list them offline. Profile pushes are
@@ -218,7 +235,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   while invisible, because clients need them; that they reveal activity is accepted. Statuses stay
   visible to every signed-in user, so rename notices aren't narrowed to friends either. Auto-away is a
   session idle flag (user threshold, default 10 min, + lock/sleep); DND only silences the call ring /
-  flash. Member lists show central's status, the community's `is_online` only before the first snapshot.
+  flash. Member lists show central's status, the community's `is_online` only until central has answered
+  for that user.
   Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`. Custom status messages (emoji + 128
   chars, clear-after) ride the same presence entries, so others see them only while the user is visible;
   DM list rows keep the last-message preview instead (`2026-10-12-status-messages-design.md`).

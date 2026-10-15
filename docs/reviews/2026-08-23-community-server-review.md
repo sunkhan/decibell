@@ -2819,3 +2819,51 @@ Verified:
 
 Central's `legacy_*` tables (pre-migration name-keyed copies, unused) stay, by owner decision: central moves
 to a new machine eventually, without them. Ships with a community + central rebuild and a client release, together.
+
+**Central: ready to scale (2026-10-15) ✅** — Owner asked to do now what keeps a later scale-out cheap
+("optimized, clean and scalable, no bugs or memory leaks"). Design: `2026-10-15-central-scaling-design.md`.
+- **Threads.** Central ran everything on one io thread and blocked it on every Postgres query and every
+  bcrypt (cost 12, about 0.25 s per login). One login stalled everyone, and a reconnect storm after a
+  restart froze central for seconds.
+  - It now runs `DECIBELL_IO_THREADS` io threads, with a strand per connection.
+  - Password hashing moves to a CPU pool; the connection stops reading meanwhile, so its packets stay
+    in order.
+  - In the login-storm check, a DM crosses with no measurable delay during 12 simultaneous logins.
+- **One delivery seam.** Fan-out code walked every session reading its fields, which was only safe with one
+  thread.
+  - All shared state now lives in `SessionManager`: connections, signed-in accounts with their presence,
+    and the watch index.
+  - Sessions touch only their own fields. Deliveries and closes are posted to the target's strand.
+  - `deliver_to_user` is the one way to reach an account: the place a message bus plugs in later.
+- **Presence by subscription.** Every status change went to every signed-in session, and every login got a
+  snapshot of every visible user, so the work grew with the square of the online count.
+  - Clients now send `PRESENCE_SUBSCRIBE` with the users on screen: status hooks and `UserAvatar`
+    register interest, a throttled flush sends the set, and native re-sends it after every login.
+  - Central answers newly watched users with `PRESENCE_UPDATE.covered_uids`, and sends deltas, renames,
+    avatar changes and key changes to watchers only (at most 5,000 watched per connection).
+  - Statuses stay visible to everyone: anyone may watch anyone, only delivery changed.
+  - Native forgets a newly watched user's cached bundle, so a key change missed meanwhile is caught.
+  - `LoginRequest.presence_deltas` is reserved.
+- **Postgres pool.** `PgPool` replaced 46 connections-per-query: idle connections are reused, broken ones
+  dropped, and acquiring never blocks.
+- **Fixed on the way:**
+  - Concurrent key publishes of one account now take a row lock; key ids used to rely on the single
+    thread.
+  - Expiring a status message no longer wipes one set at the same moment (conditional clear).
+  - Handler exceptions no longer kill an io thread.
+  - The per-packet debug log line is gone.
+  - SIGTERM shuts down cleanly (threads joined, pool released).
+- **Decided for later:** DM attachments go to object storage as encrypted blobs; message ids promise only
+  "64-bit, increasing over time".
+
+Verified:
+- central e2e 182 (subscriptions: covered answers, watcher-only deltas and profile pushes, a replaced set
+  stops deltas, the 5,000 cap, cleanup on disconnect and on a replacing login, a login storm);
+- the same suite under ThreadSanitizer (zero reports) and under AddressSanitizer + UBSan + LeakSanitizer
+  (zero reports, clean shutdown). Two documented protobuf-ASan mismatches are configured around;
+- warnings-enabled compile clean for the new code; community e2e 592; `cargo test --lib` 234;
+  `napi build`; `tsc` 0 (web + node);
+- offscreen smoke: one throttled subscribe with exactly the users on screen, no console errors.
+
+Ships with the Hetzner central rebuild and a client release together: an older client gets no presence from
+this central, and this client gets no presence from an older one.

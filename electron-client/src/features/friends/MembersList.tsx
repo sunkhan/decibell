@@ -70,11 +70,11 @@ export default function MembersList() {
   // Current names (nickname first), so a rename re-sorts the list.
   const names = useUsersStore((s) => s.names);
   const statuses = usePresenceStore((s) => s.statuses);
-  const loaded = usePresenceStore((s) => s.loaded);
+  const known = usePresenceStore((s) => s.known);
   const ownStatus = usePresenceStore((s) => s.ownStatus);
   const idle = usePresenceStore((s) => s.idle);
   const { online, offline, statusOf } = useMemo(() => {
-    const presence = { statuses, loaded, ownStatus, idle };
+    const presence = { statuses, known, ownStatus, idle };
     const statusOf = new Map<Uid, DisplayStatus>();
     for (const m of roster) statusOf.set(m.uid, resolvePresence(presence, me, m.uid, m.isOnline));
     const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.uid)!));
@@ -85,7 +85,7 @@ export default function MembersList() {
     onlineList.sort(byName);
     offlineList.sort(byName);
     return { online: onlineList, offline: offlineList, statusOf };
-  }, [roster, statuses, loaded, ownStatus, idle, me, names]);
+  }, [roster, statuses, known, ownStatus, idle, me, names]);
 
   const renderRow = (m: ServerMember) => (
     <MemberRow

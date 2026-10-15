@@ -21,8 +21,15 @@
 #ifdef __linux__
 #include <netinet/tcp.h>
 #endif
+#include <atomic>
+#include <csignal>
+#include <cstring>
+#include <thread>
+#include <unordered_set>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
 #include "auth_utils.hpp"
@@ -47,12 +54,12 @@ constexpr size_t E2EE_PUB_LEN = 32;
 constexpr size_t E2EE_SIG_LEN = 64;
 constexpr size_t MAX_E2EE_BACKUP = 8 * 1024;
 
-/// Minimal per-session token bucket. Central has no general rate limiting
-/// and runs a single io thread with synchronous Postgres, so an unthrottled
-/// storm from one client would stall every user. Used for CALL_SIGNAL
+/// Minimal per-session token bucket (strand-only, like the session). Each
+/// throttled request costs a database round trip or a fan-out, so one
+/// client's storm must not tie up the io threads. Used for CALL_SIGNAL
 /// (20 burst / 5 per second: far above a real handshake, ~6 signals per
 /// call, and keeps the INVITE-only DB touch bounded), the E2EE key
-/// endpoints, and status changes.
+/// endpoints, status changes, renames, renewals and presence subscriptions.
 struct RateBucket {
     RateBucket(double capacity, double per_second)
         : capacity(capacity), per_second(per_second), tokens(capacity) {}
@@ -119,13 +126,28 @@ static std::string normalize_status_line(const std::string& in, size_t max_chars
     return out;
 }
 
+/// What a login reads, gathered on the CPU pool.
+struct LoginOutcome {
+    AuthManager::LoginResult login;
+    AuthManager::PresenceProfile profile;
+    std::vector<chatproj::CommunityServerInfo> memberships;
+};
+
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager)
+    /// `socket` comes from the acceptor on a fresh strand (docs/superpowers/
+    /// specs/2026-10-15-central-scaling-design.md): every read, write and
+    /// handler of this session runs there, one at a time, while other
+    /// sessions run on the other io threads. Password hashing goes to
+    /// `cpu_pool` (run_blocking).
+    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager,
+            boost::asio::thread_pool& cpu_pool)
         : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager),
-          last_activity_(std::chrono::steady_clock::now()) {
+          cpu_pool_(cpu_pool) {
+        touch();
         // Tighten TCP keepalive: 15s idle, 5s interval, 3 retries (~30s detection)
-        socket_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true));
+        boost::system::error_code ec;
+        socket_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true), ec);
 #ifdef __linux__
         int fd = socket_.lowest_layer().native_handle();
         int idle = 15, interval = 5, count = 3;
@@ -135,162 +157,159 @@ public:
 #endif
     }
 
-    std::chrono::steady_clock::time_point last_activity() const { return last_activity_; }
-    void touch() { last_activity_ = std::chrono::steady_clock::now(); }
+    /// When the last packet arrived. Read by the stale sweep, any thread.
+    std::chrono::steady_clock::time_point last_activity() const {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::steady_clock::duration(last_activity_.load(std::memory_order_relaxed)));
+    }
 
     void start() {
-        auto self(shared_from_this());
+        auto self = shared_from_this();
         socket_.async_handshake(ssl::stream_base::server,
             [this, self](const boost::system::error_code& error) {
                 if (!error) {
                     do_read_header();
                 } else {
                     std::cerr << "[Session] TLS Handshake failed: " << error.message() << "\n";
-                    manager_.leave(shared_from_this());
+                    manager_.leave(self);
                 }
             });
     }
 
-    void deliver(std::shared_ptr<std::vector<uint8_t>> framed_data) {
-        // Cap the per-session backlog. A client that stops reading (or reads
-        // slowly) would otherwise let broadcasts / presence / DMs pile up in
-        // memory without bound. Over the cap, drop the connection.
-        constexpr size_t MAX_QUEUED_MESSAGES = 1024;
-        if (write_queue_.size() >= MAX_QUEUED_MESSAGES) {
-            // Post the disconnect rather than calling leave() synchronously:
-            // deliver() runs inside broadcast loops that iterate sessions_,
-            // and erasing here would invalidate the iterator.
-            auto self = shared_from_this();
-            boost::asio::post(socket_.lowest_layer().get_executor(),
-                              [this, self]() { manager_.leave(self); });
-            return;
-        }
-        bool write_in_progress = !write_queue_.empty();
-        write_queue_.push_back(framed_data);
-        if (!write_in_progress) {
-            do_write();
-        }
+    /// Queue `frame` for this connection. Any thread: posts to the strand.
+    void deliver(Frame frame) {
+        auto self = shared_from_this();
+        boost::asio::post(socket_.get_executor(), [this, self, frame = std::move(frame)]() mutable {
+            enqueue(std::move(frame));
+        });
     }
 
-    std::string username() const { return username_; }
-    /// The account (users.uid); 0 until login. Sessions are matched on it.
-    int64_t uid() const { return uid_; }
-    bool authenticated() const { return authenticated_; }
-
-    /// Cancel in-flight I/O and close the socket. SessionManager::leave()
-    /// calls this: removing the session from the set was never enough —
-    /// the pending async_read kept the Session alive, so a kicked or
-    /// swept session stayed `authenticated_`, could still send DMs and
-    /// friend actions, yet was invisible to presence / send_private and
-    /// never swept again (sweep iterates sessions_).
-    void close_connection() {
-        boost::system::error_code ec;
-        socket_.lowest_layer().cancel(ec);
-        socket_.lowest_layer().close(ec);
+    /// Cancel in-flight I/O and close the socket, on the strand. Only
+    /// SessionManager::leave calls this (it forgets the session first, so
+    /// a closed session never receives fan-out). Idempotent.
+    void close() {
+        auto self = shared_from_this();
+        boost::asio::post(socket_.get_executor(), [this, self]() {
+            if (closed_) return;
+            closed_ = true;
+            // The write queue stays until the session is destroyed: an
+            // in-flight write still references its front buffer.
+            boost::system::error_code ec;
+            socket_.lowest_layer().cancel(ec);
+            socket_.lowest_layer().close(ec);
+        });
     }
-    /// The user's current avatar_version, loaded at login and
-    /// refreshed inline on UPDATE_AVATAR_REQ. broadcast_presence
-    /// reads this so each UserPresence entry carries the version
-    /// without an extra DB query per broadcast.
-    const std::string& avatar_version() const { return avatar_version_; }
-    bool dm_friends_only() const { return dm_friends_only_; }
-
-    // --- User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md) ---
-    /// Seen by others: authenticated and not invisible.
-    bool presence_visible() const {
-        return authenticated_ && presence_status_ != chatproj::PRESENCE_INVISIBLE;
-    }
-    /// What others see: the chosen status, AWAY while an ONLINE user idles.
-    chatproj::PresenceStatus effective_status() const {
-        if (presence_status_ == chatproj::PRESENCE_ONLINE && idle_) return chatproj::PRESENCE_AWAY;
-        return presence_status_;
-    }
-    /// The client applies PresenceDelta (LoginRequest.presence_deltas).
-    bool presence_deltas() const { return presence_deltas_; }
-    /// Custom status message (empty = none); seen with the presence.
-    const std::string& status_text() const { return status_text_; }
-    const std::string& status_emoji() const { return status_emoji_; }
-    /// Unix seconds when the message runs out; 0 = never (or none).
-    int64_t status_expires_at() const { return status_expires_at_; }
-    /// The clear-after ran out (SessionManager::expire_status_messages).
-    /// Returns whether others could see the change.
-    bool clear_expired_status_message() {
-        const PresenceView before = presence_view();
-        status_text_.clear();
-        status_emoji_.clear();
-        status_expires_at_ = 0;
-        auth_manager_.setStatusMessage(uid_, "", "", 0);
-        return presence_view() != before;
-    }
-
-    SessionManager& manager_;
 
 private:
+    void touch() {
+        last_activity_.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                             std::memory_order_relaxed);
+    }
+
+    void deliver(const chatproj::Packet& packet) { deliver(make_frame(packet)); }
+
+    // --- Strand only below ---
+
+    void enqueue(Frame frame) {
+        if (closed_) return;
+        // Cap the per-session backlog. A client that stops reading (or reads
+        // slowly) would otherwise let fan-out pile up in memory without
+        // bound. Over the cap, drop the connection.
+        constexpr size_t MAX_QUEUED_MESSAGES = 1024;
+        if (write_queue_.size() >= MAX_QUEUED_MESSAGES) {
+            std::cout << "[Session] Write backlog full; closing connection.\n";
+            manager_.leave(shared_from_this());
+            return;
+        }
+        write_queue_.push_back(std::move(frame));
+        if (write_queue_.size() == 1) do_write();
+    }
+
     void do_write() {
-        auto self(shared_from_this());
+        auto self = shared_from_this();
         boost::asio::async_write(socket_, boost::asio::buffer(*write_queue_.front()),
             [this, self](boost::system::error_code ec, std::size_t) {
                 if (ec) {
-                    manager_.leave(shared_from_this());
+                    manager_.leave(self);
                     return;
                 }
+                if (closed_) return;
                 write_queue_.pop_front();
-                if (!write_queue_.empty()) {
-                    do_write();
-                }
+                if (!write_queue_.empty()) do_write();
             });
     }
 
     void do_read_header() {
-        auto self(shared_from_this());
+        if (closed_) return;
+        auto self = shared_from_this();
         boost::asio::async_read(socket_,
             boost::asio::buffer(inbound_header_, 4),
             [this, self](boost::system::error_code ec, std::size_t /*length*/) {
-                if (!ec) {
-                    // memcpy rather than reinterpret_cast: reading a
-                    // uint32_t through a char[4] violates strict aliasing.
-                    uint32_t net_len;
-                    std::memcpy(&net_len, inbound_header_, 4);
-                    uint32_t body_length = ntohl(net_len);
-                    if (body_length > 2 * 1024 * 1024) {
-                        // Don't just `return` — that leaves the read loop
-                        // dead but the socket open, lingering until the
-                        // stale sweep. Drop the session (destroying it
-                        // closes the socket).
-                        std::cout << "[Session] Oversized frame (" << body_length
-                                  << " bytes); closing connection.\n";
-                        manager_.leave(shared_from_this());
-                        return;
-                    }
-                    inbound_body_.resize(body_length);
-                    do_read_body(body_length);
+                if (ec) {
+                    if (!closed_) std::cout << "[Session] Client disconnected: " << username_ << "\n";
+                    manager_.leave(self);
+                    return;
                 }
-                else {
-                    std::cout << "[Session] Client disconnected: " << username_ << "\n";
-                    manager_.leave(shared_from_this());
+                // memcpy rather than reinterpret_cast: reading a uint32_t
+                // through a char[4] violates strict aliasing.
+                uint32_t net_len;
+                std::memcpy(&net_len, inbound_header_, 4);
+                const uint32_t body_length = ntohl(net_len);
+                if (body_length > 2 * 1024 * 1024) {
+                    std::cout << "[Session] Oversized frame (" << body_length
+                              << " bytes); closing connection.\n";
+                    manager_.leave(self);
+                    return;
                 }
+                inbound_body_.resize(body_length);
+                do_read_body(body_length);
             });
     }
 
     void do_read_body(uint32_t length) {
-        auto self(shared_from_this());
+        auto self = shared_from_this();
         boost::asio::async_read(socket_,
             boost::asio::buffer(inbound_body_.data(), length),
             [this, self](boost::system::error_code ec, std::size_t /*length*/) {
-                if (!ec) {
-                    process_packet();
-                    do_read_header(); 
+                if (ec) {
+                    if (!closed_) std::cout << "[Session] Error in body read: " << username_ << "\n";
+                    manager_.leave(self);
+                    return;
                 }
-                else {
-                    std::cout << "[Session] Error in body read: " << username_ << "\n";
-                    manager_.leave(shared_from_this());
-                }
+                touch();  // for stale session detection
+                process_packet();
+                // A handler that went to the CPU pool resumes reading from
+                // its continuation, so this session's packets stay in order.
+                if (!read_paused_) do_read_header();
             });
     }
 
-    void process_packet() {
-        touch(); // Update activity timestamp for stale session detection
+    /// Run `work` on the CPU pool (password hashing), then `then(result)`
+    /// back on this session's strand. Reading pauses until then, so this
+    /// session's packets stay in order while the io threads serve everyone
+    /// else. `work` returns a type whose default value means failure (it
+    /// is what `then` gets if `work` throws).
+    template <class Work, class Then>
+    void run_blocking(Work work, Then then) {
+        read_paused_ = true;
+        auto self = shared_from_this();
+        boost::asio::post(cpu_pool_, [self, work = std::move(work), then = std::move(then)]() mutable {
+            decltype(work()) result{};
+            try {
+                result = work();
+            } catch (const std::exception& e) {
+                std::cerr << "[Session] Background work failed: " << e.what() << "\n";
+            }
+            boost::asio::post(self->socket_.get_executor(),
+                [self, then = std::move(then), result = std::move(result)]() mutable {
+                    then(std::move(result));
+                    self->read_paused_ = false;
+                    self->do_read_header();
+                });
+        });
+    }
 
+    void process_packet() {
         chatproj::Packet packet;
         if (!packet.ParseFromArray(inbound_body_.data(), static_cast<int>(inbound_body_.size()))) {
             return;
@@ -300,9 +319,6 @@ private:
         if (packet.type() == chatproj::Packet::CLIENT_PING) {
             return;
         }
-
-        // Log the raw integer type of every incoming packet
-        std::cout << "[Server] Raw packet received, type ID: " << packet.type() << "\n";
 
         // --- ENFORCE JWT VALIDATION ---
         // Heartbeats and invite/membership register/unregister/revoke from
@@ -332,54 +348,72 @@ private:
         }
 
         // --- REGISTRATION ---
+        // bcrypt (cost 12, ~0.25 s of CPU): on the CPU pool.
         if (packet.type() == chatproj::Packet::REGISTER_REQ) {
             const auto& req = packet.register_req();
-            std::string error_msg = auth_manager_.registerUser(req.username(), req.email(), req.password());
-            bool success = error_msg.empty();
-            send_response(chatproj::Packet::REGISTER_RES, success, success ? "Registration successful." : error_msg);
+            run_blocking(
+                [this, username = req.username(), email = req.email(), password = req.password()]() {
+                    return std::optional<std::string>(auth_manager_.registerUser(username, email, password));
+                },
+                [this](std::optional<std::string> error) {
+                    if (!error) {
+                        send_response(chatproj::Packet::REGISTER_RES, false, "Registration failed. Please try again.");
+                        return;
+                    }
+                    const bool success = error->empty();
+                    send_response(chatproj::Packet::REGISTER_RES, success,
+                                  success ? "Registration successful." : *error);
+                });
         }
-        
+
         // --- LOGIN ---
+        // The password check (bcrypt) and what a login reads (presence
+        // profile, memberships) run on the CPU pool; the session signs in
+        // on its strand.
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
+            if (authenticated_) return;
             const auto& req = packet.login_req();
-
-            auto login = auth_manager_.authenticateUser(req.username(), req.password());
-
-            if (login.has_value()) {
-                authenticated_ = true;
-                uid_ = login->uid;
-                username_ = login->username;
-                presence_deltas_ = req.presence_deltas();
-                // One users-row read for presence: avatar_version (each
-                // UserPresence entry carries it; UPDATE_AVATAR_REQ refreshes
-                // it inline), the saved status — applied before anyone hears
-                // about this login, so an invisible user never flashes
-                // online — and the friends-only DM setting.
-                const auto profile = auth_manager_.getPresenceProfile(uid_);
-                avatar_version_ = profile.avatar_version;
-                presence_status_ = profile.status;
-                dm_friends_only_ = profile.dm_friends_only;
-                status_text_ = profile.status_text;
-                status_emoji_ = profile.status_emoji;
-                status_expires_at_ = profile.status_expires_at;
-                idle_ = false;
-                // Only now that the password is verified, force-kick any
-                // stale session for this user (previous connection died
-                // without a clean TCP close, or another device). Kicking
-                // BEFORE the password check let any unauthenticated client
-                // evict any user by name (send LOGIN_REQ{victim} with a
-                // bogus password). After uid_ is set, so the old session's
-                // leave() sees this one and a reconnect doesn't announce the
-                // user offline in between.
-                manager_.kick_user(uid_, shared_from_this());
-                send_response(chatproj::Packet::LOGIN_RES, true, "Login successful!", login->token);
-                manager_.send_presence_snapshot(shared_from_this());
-                // Announce only a login others can see: an "offline" delta
-                // for an invisible login would itself give it away.
-                if (presence_visible()) manager_.broadcast_presence_change(uid_, username_);
-            } else {
-                send_response(chatproj::Packet::LOGIN_RES, false, "Invalid username or password.");
-            }
+            run_blocking(
+                [this, username = req.username(), password = req.password()]() -> std::optional<LoginOutcome> {
+                    auto login = auth_manager_.authenticateUser(username, password);
+                    if (!login) return std::nullopt;
+                    LoginOutcome out;
+                    out.login = std::move(*login);
+                    out.profile = auth_manager_.getPresenceProfile(out.login.uid);
+                    out.memberships = auth_manager_.getUserCommunities(out.login.uid);
+                    return out;
+                },
+                [this](std::optional<LoginOutcome> outcome) {
+                    if (!outcome) {
+                        send_response(chatproj::Packet::LOGIN_RES, false, "Invalid username or password.");
+                        return;
+                    }
+                    const auto& p = outcome->profile;
+                    Presence presence;
+                    presence.username = outcome->login.username;
+                    presence.avatar_version = p.avatar_version;
+                    presence.status = p.status;
+                    presence.status_text = p.status_text;
+                    presence.status_emoji = p.status_emoji;
+                    presence.status_expires_at = p.status_expires_at;
+                    presence.dm_friends_only = p.dm_friends_only;
+                    // Sign in only now that the password is verified, so an
+                    // unauthenticated client can't evict anyone: the
+                    // account's previous connection (a dead one, or another
+                    // device) is replaced. The saved status applies before
+                    // anyone hears of the login, so an invisible user never
+                    // flashes online.
+                    auto bound = manager_.bind(shared_from_this(), outcome->login.uid, std::move(presence));
+                    if (!bound.ok) return;  // the connection went away meanwhile
+                    authenticated_ = true;
+                    uid_ = outcome->login.uid;
+                    username_ = outcome->login.username;
+                    if (bound.replaced) {
+                        std::cout << "[Manager] Replacing the previous connection of uid " << uid_ << "\n";
+                        manager_.leave(bound.replaced);
+                    }
+                    send_login_success(*outcome);
+                });
         }
 
         // --- DIRECT MESSAGE ---
@@ -477,7 +511,7 @@ private:
             // Best-effort live delivery — return value is informational
             // only. Recipient gets it now if online, on next login
             // via DM_CONVERSATIONS_REQ / DM_HISTORY_REQ otherwise.
-            manager_.send_private(routed_packet, recipient.uid);
+            manager_.deliver_to_user(recipient.uid, routed_packet);
 
             // Always echo to sender so their UI shows the DM as
             // delivered, carrying the new id field.
@@ -542,7 +576,7 @@ private:
                 return;
             }
 
-            if (!manager_.send_private(routed, peer.uid)) {
+            if (!manager_.deliver_to_user(peer.uid, routed)) {
                 send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), peer.username, peer.uid);
             }
         }
@@ -733,7 +767,7 @@ private:
             rb->set_peer_uid(uid_);
             rb->set_message_id(req.message_id());
             rb->set_deleted_at(now_ts);
-            manager_.send_private(recv_bcast, peer.uid);
+            manager_.deliver_to_user(peer.uid, recv_bcast);
         }
 
         // --- DM_EDIT_REQ ---
@@ -806,7 +840,7 @@ private:
             rb->set_sender(username_);
             rb->set_sender_uid(uid_);
             if (!envelope.empty()) rb->set_envelope(envelope);
-            manager_.send_private(recv_bcast, peer.uid);
+            manager_.deliver_to_user(peer.uid, recv_bcast);
         }
 
         // --- E2EE: PUBLISH KEYS ---
@@ -863,7 +897,7 @@ private:
                     return;
                 }
                 reply(true, "", b.key_id());
-                manager_.broadcast_e2ee_keys_changed(uid_, username_, b.key_id());
+                manager_.push_e2ee_keys_changed(uid_, b.key_id());
                 return;
             }
 
@@ -888,7 +922,7 @@ private:
             }
             reply(true, "", key_id);
             if (has_bundle) {
-                manager_.broadcast_e2ee_keys_changed(uid_, username_, key_id);
+                manager_.push_e2ee_keys_changed(uid_, key_id);
             }
         }
 
@@ -899,40 +933,37 @@ private:
         // (SESSION_TOKEN_UPDATE), which renames the live session in place.
         else if (packet.type() == chatproj::Packet::RENAME_REQ) {
             if (!authenticated_) return;
-            auto reply = [&](bool success, const std::string& msg, const std::string& token) {
-                chatproj::Packet rsp;
-                rsp.set_type(chatproj::Packet::RENAME_RES);
-                auto* res = rsp.mutable_rename_res();
-                res->set_success(success);
-                res->set_message(msg);
-                res->set_username(username_);
-                res->set_jwt_token(token);
-                std::string serialized;
-                rsp.SerializeToString(&serialized);
-                deliver(std::make_shared<std::vector<uint8_t>>(
-                    chatproj::create_framed_packet(serialized)));
-            };
             if (!rename_bucket_.take()) {
-                reply(false, "Too many attempts. Try again in a minute.", "");
+                send_rename_res(false, "Too many attempts. Try again in a minute.", "");
                 return;
             }
             const auto& req = packet.rename_req();
             if (req.new_username().size() > 64 || req.password().size() > 1024) {
-                reply(false, "Invalid request.", "");
+                send_rename_res(false, "Invalid request.", "");
                 return;
             }
-            auto r = auth_manager_.renameUser(uid_, req.new_username(), req.password());
-            if (!r.error.empty()) {
-                reply(false, r.error, "");
-                return;
-            }
-            username_ = r.username;
-            std::cout << "[Rename] uid " << uid_ << ": " << r.old_username << " -> " << username_ << "\n";
-            reply(true, r.token.empty() ? "Renamed; sign in again." : "", r.token);
-            // Invisible users' too (owner, 2026-10-15): profile pushes
-            // (renames, avatars, E2EE keys) may reveal activity; clients
-            // need them.
-            manager_.broadcast_user_renamed(uid_, username_);
+            // The password check (bcrypt) runs on the CPU pool.
+            run_blocking(
+                [this, uid = uid_, name = req.new_username(), password = req.password()]() {
+                    return std::optional<AuthManager::RenameResult>(auth_manager_.renameUser(uid, name, password));
+                },
+                [this](std::optional<AuthManager::RenameResult> r) {
+                    if (!r) {
+                        send_rename_res(false, "Couldn't change your username. Please try again.", "");
+                        return;
+                    }
+                    if (!r->error.empty()) {
+                        send_rename_res(false, r->error, "");
+                        return;
+                    }
+                    username_ = r->username;
+                    std::cout << "[Rename] uid " << uid_ << ": " << r->old_username << " -> " << username_ << "\n";
+                    send_rename_res(true, r->token.empty() ? "Renamed; sign in again." : "", r->token);
+                    // Invisible users' too (owner, 2026-10-15): profile pushes
+                    // (renames, avatars, E2EE keys) may reveal activity;
+                    // clients need them.
+                    manager_.push_user_renamed(uid_, username_);
+                });
         }
 
         // --- TOKEN REFRESH ---
@@ -956,8 +987,8 @@ private:
 
         // --- E2EE: FETCH KEYS ---
         // Any authenticated user may read anyone's public bundle (that is
-        // the point of a public key); key_id 0 = current. Bucketed: the
-        // lookup is a DB round-trip on the single io thread.
+        // the point of a public key); key_id 0 = current. Bucketed: each
+        // lookup is a database round trip.
         else if (packet.type() == chatproj::Packet::E2EE_FETCH_KEYS_REQ) {
             if (!authenticated_) return;
             if (!key_bucket_.take()) return;
@@ -1091,7 +1122,7 @@ private:
                     }
                     *target_list->add_friends() = f;
                 }
-                manager_.send_private(target_list_pkt, target.uid);
+                manager_.deliver_to_user(target.uid, target_list_pkt);
             }
         }
         else if (packet.type() == chatproj::Packet::FRIEND_LIST_REQ) {
@@ -1170,11 +1201,6 @@ private:
                 return;
             }
 
-            // Refresh our cached version so subsequent
-            // broadcast_presence calls (e.g. on a new client joining)
-            // see this session's new avatar_version.
-            avatar_version_ = version;
-
             res->set_success(true);
             res->set_version(version);
             std::string s;
@@ -1182,7 +1208,7 @@ private:
             deliver(std::make_shared<std::vector<uint8_t>>(
                 chatproj::create_framed_packet(s)));
 
-            manager_.broadcast_avatar_changed(uid_, username_, version);
+            manager_.push_avatar_changed(uid_, version);
         }
 
         // --- AVATAR FETCH ---
@@ -1222,10 +1248,12 @@ private:
             if (!authenticated_) return;
             if (!status_bucket_.take()) return;
             const bool friends_only = packet.dm_privacy().friends_only();
-            if (friends_only == dm_friends_only_) return;
-            dm_friends_only_ = friends_only;
-            auth_manager_.setDmFriendsOnly(uid_, friends_only);
-            std::cout << "[Server] User " << username_ << " set dm_friends_only to " << dm_friends_only_ << "\n";
+            bool changed = false;
+            manager_.update_presence(uid_, [&](Presence& p) {
+                changed = p.dm_friends_only != friends_only;
+                p.dm_friends_only = friends_only;
+            });
+            if (changed) auth_manager_.setDmFriendsOnly(uid_, friends_only);
         }
 
         // --- USER STATUS ---
@@ -1241,11 +1269,12 @@ private:
             const int raw = static_cast<int>(packet.set_status_req().status());
             if (!chatproj::PresenceStatus_IsValid(raw)) return;
             const auto status = static_cast<chatproj::PresenceStatus>(raw);
-            if (status == presence_status_) return;
-            const PresenceView before = presence_view();
-            presence_status_ = status;
-            auth_manager_.setPresenceStatus(uid_, raw);
-            if (presence_view() != before) manager_.broadcast_presence_change(uid_, username_);
+            bool changed = false;
+            manager_.update_presence(uid_, [&](Presence& p) {
+                changed = p.status != status;
+                p.status = status;
+            });
+            if (changed) auth_manager_.setPresenceStatus(uid_, raw);
         }
 
         // --- AUTO-AWAY ---
@@ -1255,10 +1284,7 @@ private:
             if (!authenticated_ || !packet.has_set_idle_req()) return;
             if (!status_bucket_.take()) return;
             const bool idle = packet.set_idle_req().idle();
-            if (idle == idle_) return;
-            const PresenceView before = presence_view();
-            idle_ = idle;
-            if (presence_view() != before) manager_.broadcast_presence_change(uid_, username_);
+            manager_.update_presence(uid_, [&](Presence& p) { p.idle = idle; });
         }
 
         // --- CUSTOM STATUS MESSAGE ---
@@ -1279,13 +1305,30 @@ private:
                 std::clamp<int64_t>(req.clear_after(), 0, STATUS_CLEAR_AFTER_MAX);
             const bool empty = text.empty() && emoji.empty();
             const int64_t expires_at = empty || clear_after == 0 ? 0 : unix_now() + clear_after;
-            if (text == status_text_ && emoji == status_emoji_ && expires_at == status_expires_at_) return;
-            const PresenceView before = presence_view();
-            status_text_ = std::move(text);
-            status_emoji_ = std::move(emoji);
-            status_expires_at_ = expires_at;
-            auth_manager_.setStatusMessage(uid_, status_text_, status_emoji_, status_expires_at_);
-            if (presence_view() != before) manager_.broadcast_presence_change(uid_, username_);
+            bool changed = false;
+            manager_.update_presence(uid_, [&](Presence& p) {
+                if (p.status_text == text && p.status_emoji == emoji && p.status_expires_at == expires_at) return;
+                p.status_text = text;
+                p.status_emoji = emoji;
+                p.status_expires_at = expires_at;
+                changed = true;
+            });
+            if (changed) auth_manager_.setStatusMessage(uid_, text, emoji, expires_at);
+        }
+
+        // --- PRESENCE SUBSCRIPTIONS ---
+        // The accounts this client is showing (central-scaling-design.md):
+        // presence and profile pushes go to watchers only. Each request
+        // replaces the set; the newly watched are answered at once.
+        else if (packet.type() == chatproj::Packet::PRESENCE_SUBSCRIBE) {
+            if (!authenticated_ || !packet.has_presence_subscribe()) return;
+            if (!watch_bucket_.take()) {
+                std::cout << "[Presence] Subscription rate limit hit for uid " << uid_ << "\n";
+                return;
+            }
+            const auto& uids = packet.presence_subscribe().uids();
+            const auto n = std::min<size_t>(static_cast<size_t>(uids.size()), SessionManager::MAX_WATCH);
+            manager_.watch(shared_from_this(), uid_, std::vector<int64_t>(uids.begin(), uids.begin() + n));
         }
 
         // --- COMMUNITY SERVER HEARTBEAT ---
@@ -1401,7 +1444,7 @@ private:
             auto* b = bcast.mutable_server_picture_changed();
             b->set_server_id(server_id);
             b->set_version(req.version());
-            manager_.broadcast_to_users(bcast, members);
+            manager_.deliver_to_users(members, bcast);
 
             std::cout << "[Server] Server picture updated for community " << server_id
                       << " (" << members.size() << " online members broadcast)\n";
@@ -1466,6 +1509,17 @@ private:
         }
     }
 
+    void send_rename_res(bool success, const std::string& msg, const std::string& token) {
+        chatproj::Packet rsp;
+        rsp.set_type(chatproj::Packet::RENAME_RES);
+        auto* res = rsp.mutable_rename_res();
+        res->set_success(success);
+        res->set_message(msg);
+        res->set_username(username_);
+        res->set_jwt_token(token);
+        deliver(rsp);
+    }
+
     /// Central-originated CallSignal back to this session (PEER_OFFLINE /
     /// NOT_ALLOWED). Written from the recipient's point of view — `from`
     /// is the peer the request was addressed to, `to` is us — the same
@@ -1512,10 +1566,10 @@ private:
         deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
     }
 
-    void send_response(chatproj::Packet::Type type, bool success, const std::string& msg, const std::string& token = "") {
+    /// REGISTER_RES, or a refused LOGIN_RES.
+    void send_response(chatproj::Packet::Type type, bool success, const std::string& msg) {
         chatproj::Packet resp_packet;
         resp_packet.set_type(type);
-        
         if (type == chatproj::Packet::REGISTER_RES) {
             auto* resp = resp_packet.mutable_register_res();
             resp->set_success(success);
@@ -1524,94 +1578,75 @@ private:
             auto* resp = resp_packet.mutable_login_res();
             resp->set_success(success);
             resp->set_message(msg);
-            if (!token.empty()) {
-                resp->set_jwt_token(token);
-            }
-            // Auto-rejoin: on a successful login, ship the user's
-            // community memberships inline so the client can start
-            // auto-connecting without an extra round-trip. By this
-            // point in the LOGIN_REQ handler, uid_ has been set.
-            if (success && uid_ > 0) {
-                resp->set_uid(uid_);
-                resp->set_username(username_);
-                for (const auto& info : auth_manager_.getUserCommunities(uid_)) {
-                    *resp->add_memberships() = info;
-                }
-            }
-            // P2P DM calls: advertise that this central relays CALL_SIGNAL
-            // and hand out the operator's STUN list (may be empty → the
-            // client falls back to its built-in default).
-            if (success) {
-                for (const auto& stun : g_stun_servers) {
-                    resp->add_stun_servers(stun);
-                }
-                resp->set_call_signaling(true);
-                // E2EE DMs: this build serves the key endpoints.
-                resp->set_e2ee_keys(true);
-                resp->set_e2ee_uid_binding(true);
-                // Username changes (uid design, stage 5).
-                resp->set_renames(true);
-                // User statuses: this build understands SET_STATUS_REQ /
-                // SET_IDLE_REQ; echo the saved choice.
-                resp->set_presence_statuses(true);
-                resp->set_status(presence_status_);
-                // Custom status message, with the time left rather than
-                // the deadline so the client's timer ignores clock skew.
-                resp->set_status_text(status_text_);
-                resp->set_status_emoji(status_emoji_);
-                if (status_expires_at_ > 0) {
-                    resp->set_status_clear_in(std::max<int64_t>(1, status_expires_at_ - unix_now()));
-                }
-            }
         }
+        deliver(resp_packet);
+    }
 
-        std::string serialized;
-        resp_packet.SerializeToString(&serialized);
-
-        auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-        deliver(framed);
+    void send_login_success(const LoginOutcome& outcome) {
+        chatproj::Packet resp_packet;
+        resp_packet.set_type(chatproj::Packet::LOGIN_RES);
+        auto* resp = resp_packet.mutable_login_res();
+        resp->set_success(true);
+        resp->set_message("Login successful!");
+        resp->set_jwt_token(outcome.login.token);
+        resp->set_uid(uid_);
+        resp->set_username(username_);
+        // Auto-rejoin: the user's community memberships inline, so the
+        // client can start connecting without an extra round-trip.
+        for (const auto& info : outcome.memberships) {
+            *resp->add_memberships() = info;
+        }
+        // P2P DM calls: advertise that this central relays CALL_SIGNAL and
+        // hand out the operator's STUN list (may be empty → the client falls
+        // back to its built-in default).
+        for (const auto& stun : g_stun_servers) {
+            resp->add_stun_servers(stun);
+        }
+        resp->set_call_signaling(true);
+        // E2EE DMs: this build serves the key endpoints.
+        resp->set_e2ee_keys(true);
+        resp->set_e2ee_uid_binding(true);
+        // Username changes (uid design, stage 5).
+        resp->set_renames(true);
+        // User statuses: this build understands SET_STATUS_REQ /
+        // SET_IDLE_REQ; echo the saved choice.
+        const auto& p = outcome.profile;
+        resp->set_presence_statuses(true);
+        resp->set_status(p.status);
+        // Custom status message, with the time left rather than the
+        // deadline so the client's timer ignores clock skew.
+        resp->set_status_text(p.status_text);
+        resp->set_status_emoji(p.status_emoji);
+        if (p.status_expires_at > 0) {
+            resp->set_status_clear_in(std::max<int64_t>(1, p.status_expires_at - unix_now()));
+        }
+        deliver(resp_packet);
     }
 
     ssl::stream<tcp::socket> socket_;
+    SessionManager& manager_;
+    AuthManager& auth_manager_;
+    boost::asio::thread_pool& cpu_pool_;
     char inbound_header_[4];
     std::vector<uint8_t> inbound_body_;
-    
+
+    // Strand only. Others' view of this account (presence, avatar, DM
+    // privacy) lives in the SessionManager.
     bool authenticated_ = false;
     int64_t uid_ = 0;
     /// The name as stored, for labels and the names messages are sent under.
     std::string username_;
-    /// Cached on login from users.avatar_version; updated inline on
-    /// UPDATE_AVATAR_REQ. Read by broadcast_presence.
-    std::string avatar_version_;
-    /// Mirrors users.dm_friends_only: loaded at login, written by DM_PRIVACY.
-    bool dm_friends_only_ = false;
-    /// The saved status choice (users.presence_status), loaded at login.
-    chatproj::PresenceStatus presence_status_ = chatproj::PRESENCE_ONLINE;
-    /// Auto-away: the client reported no input (SET_IDLE_REQ). Session only.
-    bool idle_ = false;
-    bool presence_deltas_ = false;
-    /// Custom status message (users.status_*), loaded at login.
-    std::string status_text_;
-    std::string status_emoji_;
-    int64_t status_expires_at_ = 0;
-    /// What others can see of this session's presence; a change is what
-    /// warrants a PresenceDelta. Status and message only count while visible.
-    struct PresenceView {
-        bool visible;
-        chatproj::PresenceStatus status;
-        std::string text;
-        std::string emoji;
-        bool operator!=(const PresenceView& o) const {
-            return visible != o.visible ||
-                   (visible && (status != o.status || text != o.text || emoji != o.emoji));
-        }
-    };
-    PresenceView presence_view() const {
-        return {presence_visible(), effective_status(), status_text_, status_emoji_};
-    }
+    /// A handler is waiting on the CPU pool; its continuation resumes reading.
+    bool read_paused_ = false;
+    /// close() ran: no more writes or reads.
+    bool closed_ = false;
+    std::deque<Frame> write_queue_;
+    /// steady_clock ticks of the last packet (any thread reads it).
+    std::atomic<std::chrono::steady_clock::rep> last_activity_{0};
+
     RateBucket call_bucket_{20.0, 5.0};
     /// Same shape for the E2EE key endpoints (publish / fetch / backup):
-    /// each is a synchronous DB round-trip on the io thread.
+    /// each is a database round-trip.
     RateBucket key_bucket_{20.0, 5.0};
     /// Renames: each verifies the password (bcrypt), so a stolen token
     /// can't use this to guess it quickly. 10 burst (a few taken names in
@@ -1620,262 +1655,411 @@ private:
     /// Token renewal: clients ask every few hours; 3 burst / 1 per minute.
     RateBucket refresh_bucket_{3.0, 1.0 / 60.0};
     /// Status / idle / DM-privacy changes: each is a DB write or a fan-out
-    /// to every session. A person picks a status a few times a day and
-    /// auto-away flips at most every few minutes; 10 burst / 1 per 2 s
+    /// to the account's watchers. A person picks a status a few times a day
+    /// and auto-away flips at most every few minutes; 10 burst / 1 per 2 s
     /// never refuses a real client.
     RateBucket status_bucket_{10.0, 0.5};
-    AuthManager& auth_manager_;
-    std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
-    std::chrono::steady_clock::time_point last_activity_;
+    /// Presence subscriptions: the client sends its whole watch set at most
+    /// every 600 ms (throttled); 10 burst / 2 per second never refuses it.
+    RateBucket watch_bucket_{10.0, 2.0};
 };
 
 
 // --- SessionManager Implementations ---
 
-void SessionManager::broadcast(const chatproj::Packet& packet) {
+Frame make_frame(const chatproj::Packet& packet) {
     std::string serialized;
     packet.SerializeToString(&serialized);
-    auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        if (session->authenticated()) session->deliver(framed);
-    }
+    return std::make_shared<const std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
 }
 
-void SessionManager::leave(std::shared_ptr<Session> session) {
-    bool removed = false;
-    size_t total = 0;
-    const int64_t uid = session->uid();
-    const std::string user = session->username();
-    const bool was_visible = session->presence_visible();
-    bool still_visible = false;
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        removed = sessions_.erase(session) > 0;
-        total = sessions_.size();
-        if (removed && was_visible) still_visible = user_visible_locked(uid);
+namespace {
+/// What others can see of an account; a change is what warrants a delta.
+/// Status and message only count while visible.
+struct PresenceView {
+    bool visible;
+    chatproj::PresenceStatus status;
+    std::string text;
+    std::string emoji;
+    explicit PresenceView(const Presence& p)
+        : visible(p.visible()), status(p.effective()), text(p.status_text), emoji(p.status_emoji) {}
+    bool operator!=(const PresenceView& o) const {
+        return visible != o.visible ||
+               (visible && (status != o.status || text != o.text || emoji != o.emoji));
     }
+};
 
-    if (removed) {
-        // Actually end the connection. Idempotent on an already-closed
-        // socket (the read/write error paths arrive here too).
-        session->close_connection();
-        std::cout << "[Manager] Session left. Total: " << total << "\n";
-        // Announce only what others could see: the user's last visible
-        // session going away. An invisible user's disconnect says nothing,
-        // and neither does the kick of a reconnecting user's old session.
-        if (was_visible && !still_visible) {
-            broadcast_presence_change(uid, user);
-        }
-    }
+void deliver_all(const std::vector<std::shared_ptr<Session>>& targets, const Frame& frame) {
+    for (const auto& session : targets) session->deliver(frame);
+}
+}  // namespace
+
+void SessionManager::fill_presence(chatproj::UserPresence* entry, int64_t uid, const Presence& p) {
+    entry->set_uid(uid);
+    entry->set_username(p.username);
+    entry->set_avatar_version(p.avatar_version);
+    entry->set_status(p.effective());
+    entry->set_status_text(p.status_text);
+    entry->set_status_emoji(p.status_emoji);
 }
 
-bool SessionManager::user_visible_locked(int64_t uid) const {
-    for (const auto& session : sessions_) {
-        if (session->uid() == uid && session->presence_visible()) return true;
-    }
-    return false;
-}
-
-void SessionManager::fill_presence_snapshot_locked(chatproj::PresenceUpdate* presence) const {
-    // Read each session's cached avatar_version (updated at login + on
-    // every UPDATE_AVATAR_REQ) rather than hitting the DB per broadcast.
-    // Invisible users are left out: to everyone else they are offline.
-    for (const auto& session : sessions_) {
-        if (!session->presence_visible()) continue;
-        auto* entry = presence->add_users();
-        entry->set_uid(session->uid());
-        entry->set_username(session->username());
-        entry->set_avatar_version(session->avatar_version());
-        entry->set_status(session->effective_status());
-        entry->set_status_text(session->status_text());
-        entry->set_status_emoji(session->status_emoji());
-    }
-}
-
-void SessionManager::send_presence_snapshot(std::shared_ptr<Session> session) {
+chatproj::Packet SessionManager::presence_delta(int64_t uid, const std::string& username, const Presence* p) {
     chatproj::Packet packet;
-    packet.set_type(chatproj::Packet::PRESENCE_UPDATE);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        fill_presence_snapshot_locked(packet.mutable_presence_update());
+    packet.set_type(chatproj::Packet::PRESENCE_DELTA);
+    auto* d = packet.mutable_presence_delta();
+    if (p && p->visible()) {
+        d->set_online(true);
+        fill_presence(d->mutable_user(), uid, *p);
+    } else {
+        d->mutable_user()->set_uid(uid);
+        d->mutable_user()->set_username(username);
     }
-    std::string serialized;
-    packet.SerializeToString(&serialized);
-    session->deliver(std::make_shared<std::vector<uint8_t>>(
-        chatproj::create_framed_packet(serialized)));
+    return packet;
 }
 
-void SessionManager::broadcast_presence_change(int64_t uid, const std::string& username) {
-    // One PresenceDelta with the user's full current state: online with
-    // their effective status if any visible session is theirs, else
-    // offline. Older clients (no LoginRequest.presence_deltas) get the
-    // full snapshot instead, as before. Authenticated sessions only — the
-    // pre-login and community-sync connections never needed presence.
-    std::lock_guard<std::mutex> lock(mutex_);
+std::vector<std::shared_ptr<Session>> SessionManager::watcher_sessions_locked(int64_t uid) const {
+    std::vector<std::shared_ptr<Session>> out;
+    auto it = watchers_.find(uid);
+    if (it == watchers_.end()) return out;
+    out.reserve(it->second.size());
+    for (int64_t watcher : it->second) {
+        auto acc = accounts_.find(watcher);
+        if (acc != accounts_.end()) out.push_back(acc->second.session);
+    }
+    return out;
+}
 
-    chatproj::Packet delta;
-    delta.set_type(chatproj::Packet::PRESENCE_DELTA);
-    auto* d = delta.mutable_presence_delta();
-    d->mutable_user()->set_uid(uid);
-    d->mutable_user()->set_username(username);
-    for (const auto& session : sessions_) {
-        if (session->uid() == uid && session->presence_visible()) {
-            d->set_online(true);
-            d->mutable_user()->set_avatar_version(session->avatar_version());
-            d->mutable_user()->set_status(session->effective_status());
-            d->mutable_user()->set_status_text(session->status_text());
-            d->mutable_user()->set_status_emoji(session->status_emoji());
-            break;
+void SessionManager::unwatch_all_locked(int64_t uid, Account& account) {
+    for (int64_t target : account.watching) {
+        auto it = watchers_.find(target);
+        if (it == watchers_.end()) continue;
+        it->second.erase(uid);
+        if (it->second.empty()) watchers_.erase(it);
+    }
+    account.watching.clear();
+}
+
+void SessionManager::join(const std::shared_ptr<Session>& session) {
+    size_t total;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sessions_.emplace(session, 0);
+        total = sessions_.size();
+    }
+    std::cout << "[Manager] Session joined. Total: " << total << "\n";
+}
+
+void SessionManager::leave(const std::shared_ptr<Session>& session) {
+    size_t total = 0;
+    int64_t uid = 0;
+    std::string username;
+    bool announce_offline = false;
+    std::vector<std::shared_ptr<Session>> watchers;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = sessions_.find(session);
+        if (it == sessions_.end()) return;  // already gone
+        uid = it->second;
+        sessions_.erase(it);
+        total = sessions_.size();
+        // The account goes offline only if this was its connection: a
+        // login that replaced it keeps the account (and says nothing).
+        auto acc = uid > 0 ? accounts_.find(uid) : accounts_.end();
+        if (acc != accounts_.end() && acc->second.session == session) {
+            announce_offline = acc->second.presence.visible();
+            username = acc->second.presence.username;
+            unwatch_all_locked(uid, acc->second);
+            accounts_.erase(acc);
+            if (announce_offline) watchers = watcher_sessions_locked(uid);
         }
     }
-    std::string delta_ser;
-    delta.SerializeToString(&delta_ser);
-    auto delta_framed = std::make_shared<std::vector<uint8_t>>(
-        chatproj::create_framed_packet(delta_ser));
-
-    std::shared_ptr<std::vector<uint8_t>> snapshot_framed;
-    for (auto& session : sessions_) {
-        if (!session->authenticated()) continue;
-        if (session->presence_deltas()) {
-            session->deliver(delta_framed);
-            continue;
-        }
-        if (!snapshot_framed) {
-            chatproj::Packet snapshot;
-            snapshot.set_type(chatproj::Packet::PRESENCE_UPDATE);
-            fill_presence_snapshot_locked(snapshot.mutable_presence_update());
-            std::string snapshot_ser;
-            snapshot.SerializeToString(&snapshot_ser);
-            snapshot_framed = std::make_shared<std::vector<uint8_t>>(
-                chatproj::create_framed_packet(snapshot_ser));
-        }
-        session->deliver(snapshot_framed);
+    session->close();
+    std::cout << "[Manager] Session left. Total: " << total << "\n";
+    // An invisible user's disconnect says nothing.
+    if (announce_offline && !watchers.empty()) {
+        deliver_all(watchers, make_frame(presence_delta(uid, username, nullptr)));
     }
+}
+
+SessionManager::Bound SessionManager::bind(const std::shared_ptr<Session>& session, int64_t uid,
+                                           Presence presence) {
+    Bound out;
+    std::vector<std::shared_ptr<Session>> online_to;
+    std::vector<std::shared_ptr<Session>> offline_to;
+    int64_t previous_uid = 0;
+    std::string previous_name;
+    Frame online;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = sessions_.find(session);
+        if (it == sessions_.end()) return out;  // left while the login ran
+        // Signing in again on the same connection as someone else: the
+        // previous account leaves first.
+        if (it->second > 0 && it->second != uid) {
+            previous_uid = it->second;
+            auto prev = accounts_.find(previous_uid);
+            if (prev != accounts_.end() && prev->second.session == session) {
+                if (prev->second.presence.visible()) {
+                    previous_name = prev->second.presence.username;
+                    offline_to = watcher_sessions_locked(previous_uid);
+                }
+                unwatch_all_locked(previous_uid, prev->second);
+                accounts_.erase(prev);
+            }
+        }
+        it->second = uid;
+        auto& account = accounts_[uid];
+        if (account.session && account.session != session) {
+            out.replaced = account.session;
+            // No longer this account's connection: its leave says nothing.
+            if (auto old = sessions_.find(out.replaced); old != sessions_.end()) old->second = 0;
+            unwatch_all_locked(uid, account);
+        }
+        account.session = session;
+        account.presence = std::move(presence);
+        if (account.presence.visible()) {
+            online_to = watcher_sessions_locked(uid);
+            if (!online_to.empty()) online = make_frame(presence_delta(uid, account.presence.username, &account.presence));
+        }
+        out.ok = true;
+    }
+    if (!offline_to.empty()) deliver_all(offline_to, make_frame(presence_delta(previous_uid, previous_name, nullptr)));
+    if (online) deliver_all(online_to, online);
+    return out;
+}
+
+bool SessionManager::deliver_to_user(int64_t uid, const Frame& frame) {
+    if (uid <= 0) return false;
+    std::shared_ptr<Session> target;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = accounts_.find(uid);
+        if (it == accounts_.end()) return false;
+        target = it->second.session;
+    }
+    target->deliver(frame);
+    return true;
+}
+
+bool SessionManager::deliver_to_user(int64_t uid, const chatproj::Packet& packet) {
+    return deliver_to_user(uid, make_frame(packet));
+}
+
+void SessionManager::deliver_to_users(const std::vector<int64_t>& uids, const chatproj::Packet& packet) {
+    if (uids.empty()) return;
+    std::vector<std::shared_ptr<Session>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::unordered_set<int64_t> seen;
+        for (int64_t uid : uids) {
+            if (!seen.insert(uid).second) continue;
+            auto it = accounts_.find(uid);
+            if (it != accounts_.end()) targets.push_back(it->second.session);
+        }
+    }
+    if (!targets.empty()) deliver_all(targets, make_frame(packet));
+}
+
+void SessionManager::deliver_to_watchers(int64_t uid, const chatproj::Packet& packet) {
+    std::vector<std::shared_ptr<Session>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        targets = watcher_sessions_locked(uid);
+    }
+    if (!targets.empty()) deliver_all(targets, make_frame(packet));
 }
 
 bool SessionManager::is_user_visible(int64_t uid) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return user_visible_locked(uid);
+    auto it = accounts_.find(uid);
+    return it != accounts_.end() && it->second.presence.visible();
 }
 
-void SessionManager::kick_user(int64_t uid, std::shared_ptr<Session> except) {
-    std::shared_ptr<Session> stale;
+bool SessionManager::update_presence(int64_t uid, const std::function<void(Presence&)>& change) {
+    std::vector<std::shared_ptr<Session>> targets;
+    Frame delta;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& session : sessions_) {
-            if (session != except && session->uid() == uid) {
-                stale = session;
-                break;
-            }
+        auto it = accounts_.find(uid);
+        if (it == accounts_.end()) return false;
+        Presence& p = it->second.presence;
+        const PresenceView before(p);
+        change(p);
+        if (PresenceView(p) != before) {
+            targets = watcher_sessions_locked(uid);
+            if (!targets.empty()) delta = make_frame(presence_delta(uid, p.username, &p));
         }
     }
-    if (stale) {
-        std::cout << "[Manager] Kicking stale session for: " << stale->username() << "\n";
-        leave(stale);
+    if (delta) deliver_all(targets, delta);
+    return true;
+}
+
+void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid, const std::vector<int64_t>& uids) {
+    chatproj::Packet answer;
+    answer.set_type(chatproj::Packet::PRESENCE_UPDATE);
+    auto* update = answer.mutable_presence_update();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto acc = accounts_.find(uid);
+        if (acc == accounts_.end() || acc->second.session != session) return;  // replaced meanwhile
+        Account& account = acc->second;
+        std::unordered_set<int64_t> next;
+        next.reserve(std::min(uids.size(), MAX_WATCH));
+        for (int64_t target : uids) {
+            if (next.size() >= MAX_WATCH) break;
+            if (target > 0) next.insert(target);
+        }
+        for (int64_t target : account.watching) {
+            if (next.count(target)) continue;
+            auto it = watchers_.find(target);
+            if (it == watchers_.end()) continue;
+            it->second.erase(uid);
+            if (it->second.empty()) watchers_.erase(it);
+        }
+        for (int64_t target : next) {
+            if (account.watching.count(target)) continue;
+            watchers_[target].insert(uid);
+            update->add_covered_uids(target);
+            auto other = accounts_.find(target);
+            if (other != accounts_.end() && other->second.presence.visible()) {
+                fill_presence(update->add_users(), target, other->second.presence);
+            }
+        }
+        account.watching = std::move(next);
     }
+    if (update->covered_uids_size() > 0) session->deliver(make_frame(answer));
+}
+
+void SessionManager::push_user_renamed(int64_t uid, const std::string& username) {
+    std::vector<std::shared_ptr<Session>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = accounts_.find(uid);
+        if (it != accounts_.end()) it->second.presence.username = username;
+        targets = watcher_sessions_locked(uid);
+    }
+    if (targets.empty()) return;
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::USER_RENAMED);
+    auto* payload = packet.mutable_user_renamed();
+    payload->set_uid(uid);
+    payload->set_username(username);
+    deliver_all(targets, make_frame(packet));
+}
+
+void SessionManager::push_avatar_changed(int64_t uid, const std::string& version) {
+    std::vector<std::shared_ptr<Session>> targets;
+    std::string username;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = accounts_.find(uid);
+        if (it != accounts_.end()) {
+            it->second.presence.avatar_version = version;
+            username = it->second.presence.username;
+        }
+        targets = watcher_sessions_locked(uid);
+    }
+    if (targets.empty()) return;
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::AVATAR_CHANGED);
+    auto* payload = packet.mutable_avatar_changed();
+    payload->set_uid(uid);
+    payload->set_username(username);
+    payload->set_version(version);
+    deliver_all(targets, make_frame(packet));
+}
+
+void SessionManager::push_e2ee_keys_changed(int64_t uid, uint32_t key_id) {
+    std::vector<std::shared_ptr<Session>> targets;
+    std::string username;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = accounts_.find(uid);
+        if (it != accounts_.end()) username = it->second.presence.username;
+        targets = watcher_sessions_locked(uid);
+    }
+    if (targets.empty()) return;
+    chatproj::Packet packet;
+    packet.set_type(chatproj::Packet::E2EE_KEYS_CHANGED);
+    auto* payload = packet.mutable_e2ee_keys_changed();
+    payload->set_uid(uid);
+    payload->set_username(username);
+    payload->set_key_id(key_id);
+    deliver_all(targets, make_frame(packet));
 }
 
 void SessionManager::sweep_stale(std::chrono::seconds timeout) {
-    auto now = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     std::vector<std::shared_ptr<Session>> stale;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& session : sessions_) {
-            if (now - session->last_activity() > timeout) {
-                stale.push_back(session);
-            }
+        for (const auto& [session, uid] : sessions_) {
+            if (now - session->last_activity() > timeout) stale.push_back(session);
         }
     }
-    for (auto& s : stale) {
-        std::cout << "[Manager] Sweeping stale session: " << s->username() << "\n";
-        leave(s);
+    for (const auto& session : stale) {
+        std::cout << "[Manager] Sweeping a stale session\n";
+        leave(session);
     }
 }
 
-void SessionManager::expire_status_messages() {
+void SessionManager::expire_status_messages(AuthManager& auth_manager) {
     const int64_t now = unix_now();
-    std::vector<std::shared_ptr<Session>> expired;
+    struct Expired {
+        int64_t uid;
+        int64_t expires_at;
+        std::vector<std::shared_ptr<Session>> watchers;
+        Frame delta;
+    };
+    std::vector<Expired> expired;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& session : sessions_) {
-            const int64_t at = session->status_expires_at();
-            if (at > 0 && at <= now) expired.push_back(session);
+        for (auto& [uid, account] : accounts_) {
+            Presence& p = account.presence;
+            if (p.status_expires_at <= 0 || p.status_expires_at > now) continue;
+            Expired e{uid, p.status_expires_at, {}, nullptr};
+            const PresenceView before(p);
+            p.status_text.clear();
+            p.status_emoji.clear();
+            p.status_expires_at = 0;
+            if (PresenceView(p) != before) {
+                e.watchers = watcher_sessions_locked(uid);
+                if (!e.watchers.empty()) e.delta = make_frame(presence_delta(uid, p.username, &p));
+            }
+            expired.push_back(std::move(e));
         }
     }
-    // Outside the lock: broadcast_presence_change takes it.
-    for (auto& session : expired) {
-        if (session->clear_expired_status_message()) {
-            broadcast_presence_change(session->uid(), session->username());
-        }
-    }
-}
-
-bool SessionManager::send_private(const chatproj::Packet& packet, int64_t target_uid) {
-    if (target_uid <= 0) return false;
-    std::string serialized;
-    packet.SerializeToString(&serialized);
-    auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        if (session->authenticated() && session->uid() == target_uid) {
-            session->deliver(framed);
-            return true;
-        }
-    }
-    return false;
-}
-
-void SessionManager::broadcast_to_users(const chatproj::Packet& packet,
-                                          const std::vector<int64_t>& uids) {
-    if (uids.empty()) return;
-    std::string serialized;
-    packet.SerializeToString(&serialized);
-    auto framed = std::make_shared<std::vector<uint8_t>>(
-        chatproj::create_framed_packet(serialized));
-
-    std::set<int64_t> targets(uids.begin(), uids.end());
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& session : sessions_) {
-        if (!session || !session->authenticated()) continue;
-        if (targets.count(session->uid()) == 0) continue;
-        session->deliver(framed);
+    // Outside the lock: a database write each, then the announcements.
+    for (const auto& e : expired) {
+        auth_manager.clearExpiredStatusMessage(e.uid, e.expires_at);
+        if (e.delta) deliver_all(e.watchers, e.delta);
     }
 }
 
 bool SessionManager::check_dm_allowed(int64_t sender, int64_t recipient, AuthManager& auth_manager) {
     // Blocking applies regardless of the recipient's online state or
     // friends-only setting — a blocked user must not DM the person who
-    // blocked them, even into the offline queue. Checked before taking the
-    // lock (isBlocked hits the DB) so it doesn't extend the mutex hold.
+    // blocked them, even into the offline queue.
     if (auth_manager.isBlocked(sender, recipient)) {
         return false;
     }
 
     // Friends-only is saved on the account, so an online recipient (the
-    // session's cached copy) and an offline or invisible one (read from
-    // the DB) get the same answer — the result must never reveal whether
-    // the recipient is connected.
+    // directory's copy) and an offline or invisible one (read from the DB)
+    // get the same answer — the result must never reveal whether the
+    // recipient is connected.
     std::optional<bool> friends_only;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& session : sessions_) {
-            if (session->authenticated() && session->uid() == recipient) {
-                friends_only = session->dm_friends_only();
-                break;
-            }
-        }
+        auto it = accounts_.find(recipient);
+        if (it != accounts_.end()) friends_only = it->second.presence.dm_friends_only;
     }
     if (!friends_only) friends_only = auth_manager.getDmFriendsOnly(recipient);
     if (!*friends_only) {
         return true;
     }
 
-    // Recipient only allows DMs from friends (outside the lock: a DB
-    // round trip).
+    // Recipient only allows DMs from friends (a DB round trip, outside the lock).
     return auth_manager.areFriends(sender, recipient);
 }
 
@@ -1884,11 +2068,14 @@ bool SessionManager::check_dm_allowed(int64_t sender, int64_t recipient, AuthMan
 
 class Server {
 public:
-    Server(boost::asio::io_context& io_context, short port, SessionManager& manager, AuthManager& auth_manager)
-        : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
+    Server(boost::asio::io_context& io_context, short port, SessionManager& manager, AuthManager& auth_manager,
+           boost::asio::thread_pool& cpu_pool)
+        : io_context_(io_context),
+          acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
           ssl_context_(ssl::context::tlsv12),
           manager_(manager),
-          auth_manager_(auth_manager) { 
+          auth_manager_(auth_manager),
+          cpu_pool_(cpu_pool) {
 
         ssl_context_.set_options(
             ssl::context::default_workarounds |
@@ -1904,21 +2091,38 @@ public:
     }
 private:
     void do_accept() {
-        acceptor_.async_accept(
+        // Each connection gets its own strand: its handlers never run
+        // concurrently, different connections run on different threads.
+        acceptor_.async_accept(boost::asio::make_strand(io_context_),
             [this](boost::system::error_code ec, tcp::socket socket) {
                 if (!ec) {
-                    auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_, auth_manager_);
+                    auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_,
+                                                             auth_manager_, cpu_pool_);
                     manager_.join(session);
                     session->start();
                 }
                 do_accept();
             });
     }
+    boost::asio::io_context& io_context_;
     tcp::acceptor acceptor_;
     ssl::context ssl_context_;
-    SessionManager& manager_; 
+    SessionManager& manager_;
     AuthManager& auth_manager_;
+    boost::asio::thread_pool& cpu_pool_;
 };
+
+/// A thread count from the environment: `fallback` when unset or invalid.
+static unsigned env_threads(const char* name, unsigned fallback) {
+    if (const char* v = std::getenv(name)) {
+        try {
+            const long n = std::stol(v);
+            if (n > 0 && n <= 256) return static_cast<unsigned>(n);
+        } catch (...) {}
+        std::cerr << "[Server] Ignoring " << name << "=" << v << " (expected 1..256)\n";
+    }
+    return fallback;
+}
 
 int main() {
     try {
@@ -1985,10 +2189,21 @@ int main() {
         }
         AuthManager auth_manager(community_secret, db_conn, jwt_private_pem, jwt_public_pem);
 
-        boost::asio::io_context io_context;
-        
+        // Threads (central-scaling-design.md): io threads serve the
+        // connections (each on its own strand); the CPU pool hashes
+        // passwords, so a login burst queues there instead of stalling
+        // everyone. Each thread may hold a Postgres connection.
+        const unsigned cores = std::max(2u, std::thread::hardware_concurrency());
+        const unsigned io_threads = env_threads("DECIBELL_IO_THREADS", cores);
+        const unsigned cpu_threads = env_threads("DECIBELL_CPU_THREADS", std::max(1u, cores / 2));
+        auth_manager.set_pool_idle(io_threads + cpu_threads + 2);
+        std::cout << "[Server] " << io_threads << " io threads, " << cpu_threads << " CPU threads\n";
+
+        boost::asio::io_context io_context(static_cast<int>(io_threads));
+        boost::asio::thread_pool cpu_pool(cpu_threads);
+
         SessionManager manager;
-        Server s(io_context, 8080, manager, auth_manager);
+        Server s(io_context, 8080, manager, auth_manager, cpu_pool);
 
         // Periodic sweep of stale sessions (no activity for 60s).
         // Catches dead connections where TCP FIN was never sent (e.g. client crash).
@@ -1999,7 +2214,7 @@ int main() {
         sweep_fn = [&](const boost::system::error_code& ec) {
             if (ec) return;
             manager.sweep_stale(std::chrono::seconds(60));
-            manager.expire_status_messages();
+            manager.expire_status_messages(auth_manager);
             if (sweeps_until_prune-- == 0) {
                 auth_manager.pruneNameChanges();
                 sweeps_until_prune = 120;
@@ -2010,9 +2225,38 @@ int main() {
         sweep_timer.expires_after(std::chrono::seconds(30));
         sweep_timer.async_wait(sweep_fn);
 
+        // SIGINT / SIGTERM (systemd stop): stop serving and exit cleanly —
+        // threads joined, connections and the database pool released.
+        boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
+        signals.async_wait([&io_context](const boost::system::error_code& ec, int signo) {
+            if (ec) return;
+            std::cout << "[Server] Signal " << signo << ": shutting down\n";
+            io_context.stop();
+        });
+
         std::cout << "Decibell Central Server running on port 8080...\n";
 
-        io_context.run();
+        // A handler that throws must not take its thread (or the server)
+        // down: log it and keep serving.
+        auto run_io = [&io_context]() {
+            for (;;) {
+                try {
+                    io_context.run();
+                    return;
+                } catch (const std::exception& e) {
+                    std::cerr << "[Server] Handler threw: " << e.what() << "\n";
+                }
+            }
+        };
+        std::vector<std::thread> threads;
+        threads.reserve(io_threads - 1);
+        for (unsigned i = 1; i < io_threads; ++i) threads.emplace_back(run_io);
+        run_io();
+        for (auto& t : threads) t.join();
+        // Password checks still running finish (their continuations land in
+        // the stopped io_context and are dropped with it).
+        cpu_pool.join();
+        std::cout << "[Server] Stopped.\n";
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
     }

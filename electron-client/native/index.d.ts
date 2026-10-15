@@ -814,6 +814,16 @@ export interface SendPrivateMessageArgs {
   nonce?: string
 }
 export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
+export interface PresenceSubscribeArgs {
+  /** Every account the renderer is showing; replaces the previous set. */
+  uids: Array<number>
+}
+/**
+ * Presence by subscription (docs/superpowers/specs/2026-10-15-central-
+ * scaling-design.md): central sends statuses and profile changes only for
+ * these accounts. Kept here and re-sent after every central login.
+ */
+export declare function presenceSubscribe(args: PresenceSubscribeArgs): Promise<void>
 export interface SetStatusArgs {
   /** "online" | "away" | "dnd" | "invisible" */
   status: string

@@ -183,16 +183,22 @@ def register(username, password="password123", email=None):
 class User(Conn):
     """A logged-in client session."""
 
-    def __init__(self, username, password="password123", deltas=True):
+    def __init__(self, username, password="password123"):
         super().__init__()
         self.username = username
-        self.send(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(
-            username=username, password=password, presence_deltas=deltas))
-        r = self.wait(pb.Packet.LOGIN_RES)
+        self.send(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=username, password=password))
+        r = self.wait(pb.Packet.LOGIN_RES, timeout=15)
         self.login = r.login_res if r else None
         self.ok = bool(self.login and self.login.success)
         if self.ok:
             self.token = self.login.jwt_token
+
+    def watch(self, *uids):
+        """Replace the watch set (PRESENCE_SUBSCRIBE); returns the answer
+        for the newly watched (None when nothing was new)."""
+        self.send(pb.Packet.PRESENCE_SUBSCRIBE, presence_subscribe=pb.PresenceSubscribe(uids=list(uids)))
+        r = self.wait(pb.Packet.PRESENCE_UPDATE, timeout=1.5)
+        return r.presence_update if r else None
 
     def claims(self):
         part = self.token.split(".")[1]
@@ -355,27 +361,121 @@ def test_dm_gates():
 
 
 def test_presence_and_avatars():
-    print("presence / avatars")
+    print("presence / avatars (by subscription)")
+    ua, ub = uid_of("alice"), uid_of("bob")
     a = User("alice")
     a.clear()
+    check("no snapshot at login", not any(p.type == pb.Packet.PRESENCE_UPDATE for p in a.inbox))
+    ans = a.watch(ub)
+    check("watching an offline account: covered, no entry",
+          ans is not None and list(ans.covered_uids) == [ub] and len(ans.users) == 0, ans)
     b = User("bob")
-    snap = b.wait(pb.Packet.PRESENCE_UPDATE)
-    check("snapshot lists alice", snap and "alice" in [u.username for u in snap.presence_update.users])
-    delta = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.username == "bob")
-    check("alice hears bob online", delta and delta.presence_delta.online)
+    delta = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub)
+    check("a watcher hears the login", delta and delta.presence_delta.online and delta.presence_delta.user.username == "bob")
+    b.clear()
+    ans = b.watch(ua)
+    check("watching an online account: its presence", ans is not None and list(ans.covered_uids) == [ua]
+          and [u.uid for u in ans.users] == [ua] and ans.users[0].username == "alice")
+    check("re-sending the same set answers nothing", b.watch(ua) is None)
     jpeg = b"\xff\xd8" + b"x" * 100
     b.send(pb.Packet.UPDATE_AVATAR_REQ, update_avatar_req=pb.UpdateAvatarReq(data=jpeg))
     r = b.wait(pb.Packet.UPDATE_AVATAR_RES)
     check("avatar stored", r and r.update_avatar_res.success and r.update_avatar_res.version)
     ch = a.wait(pb.Packet.AVATAR_CHANGED)
-    check("avatar change broadcast", ch and ch.avatar_changed.username == "bob")
-    a.send(pb.Packet.FETCH_AVATAR_REQ, fetch_avatar_req=pb.FetchAvatarReq(username="bob", uid=uid_of("bob")))
+    check("avatar change reaches the watcher", ch and ch.avatar_changed.uid == ub and ch.avatar_changed.username == "bob")
+    a.send(pb.Packet.FETCH_AVATAR_REQ, fetch_avatar_req=pb.FetchAvatarReq(username="bob", uid=ub))
     f = a.wait(pb.Packet.FETCH_AVATAR_RES)
     check("avatar fetched", f and f.fetch_avatar_res.data == jpeg)
+    # Someone not watching hears none of it.
+    c = User("carol")
+    c.clear()
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_DND))
+    d = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub)
+    check("a status change reaches the watcher", d and d.presence_delta.user.status == pb.PRESENCE_DND)
+    c.drain(0.5)
+    check("... and nobody else", not any(p.type in (pb.Packet.PRESENCE_DELTA, pb.Packet.AVATAR_CHANGED)
+                                         for p in c.inbox))
+    # A replaced set stops the deltas.
+    check("dropping bob from the set", a.watch() is None)
+    a.clear()
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    a.drain(0.5)
+    check("... stops his deltas", not any(p.type == pb.Packet.PRESENCE_DELTA for p in a.inbox))
+    ans = a.watch(ub)
+    check("watching again answers his current state", ans is not None and [u.uid for u in ans.users] == [ub]
+          and ans.users[0].status == pb.PRESENCE_ONLINE and ans.users[0].avatar_version == r.update_avatar_res.version)
     b.close()
-    off = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.username == "bob")
-    check("alice hears bob offline", off and not off.presence_delta.online)
-    a.close()
+    off = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.uid == ub)
+    check("the watcher hears bob offline", off and not off.presence_delta.online)
+    # The cap: the first 5000 accounts of a longer set.
+    big = list(range(10_000_000, 10_006_000))
+    ans = c.watch(*big)
+    check("a watch set is cut at 5000", ans is not None and len(ans.covered_uids) == 5000
+          and set(ans.covered_uids) == set(big[:5000]))
+    c.close(); a.close()
+
+
+def test_watch_cleanup():
+    print("presence: a watcher's disconnect and re-login")
+    ua, ub = uid_of("alice"), uid_of("bob")
+    b = User("bob")
+    a = User("alice")
+    a.watch(ub)
+    a.close()  # disconnects while watching
+    time.sleep(0.3)
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_AWAY))
+    time.sleep(0.3)
+    a2 = User("alice")
+    a2.clear()
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    a2.drain(0.5)
+    check("a new login starts with an empty watch set", not any(p.type == pb.Packet.PRESENCE_DELTA for p in a2.inbox))
+    # A second login replaces the first connection; the old one's set goes.
+    a2.watch(ub)
+    a3 = User("alice")
+    a3.clear()
+    time.sleep(0.3)
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_DND))
+    a3.drain(0.5)
+    check("the replacing login doesn't inherit the old set", not any(p.type == pb.Packet.PRESENCE_DELTA for p in a3.inbox))
+    a2.drain(0.5)
+    check("the replaced connection was closed", a2.closed)
+    b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    a3.close(); b.close()
+
+
+def test_login_storm():
+    """bcrypt runs on the CPU pool: a burst of logins must not stall
+    everyone else (it used to block the only io thread)."""
+    print("login storm")
+    import threading
+    for i in range(12):
+        register(f"storm{i}")
+    a = User("alice")
+    b = User("bob")
+    done = []
+
+    def login(i):
+        u = User(f"storm{i}")
+        done.append(u.ok)
+        u.close()
+
+    threads = [threading.Thread(target=login, args=(i,)) for i in range(12)]
+    t0 = time.time()
+    for t in threads:
+        t.start()
+    time.sleep(0.05)
+    t1 = time.time()
+    m = a.dm("bob", "during the storm", nonce="storm1")
+    got = b.wait(pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.content == "during the storm")
+    dm_latency = time.time() - t1
+    for t in threads:
+        t.join()
+    storm = time.time() - t0
+    check("every storm login succeeded", len(done) == 12 and all(done), done)
+    check(f"a DM crosses during the storm ({dm_latency:.2f} s; the storm took {storm:.2f} s)",
+          m is not None and got is not None and dm_latency < max(1.0, storm / 2))
+    a.close(); b.close()
 
 
 def test_calls():
@@ -402,11 +502,12 @@ def bundle(seed):
 def test_e2ee_keys():
     print("e2ee keys")
     a, b = User("alice"), User("bob")
+    b.watch(uid_of("alice"))
     a.send(pb.Packet.E2EE_PUBLISH_KEYS_REQ, e2ee_publish_keys_req=pb.E2eePublishKeysReq(bundle=bundle(1), backup=b"wrapped"))
     r = a.wait(pb.Packet.E2EE_PUBLISH_KEYS_RES)
     check("publish", r and r.e2ee_publish_keys_res.success and r.e2ee_publish_keys_res.key_id == 1)
     ch = b.wait(pb.Packet.E2EE_KEYS_CHANGED)
-    check("keys-changed broadcast", ch and ch.e2ee_keys_changed.username == "alice" and ch.e2ee_keys_changed.key_id == 1)
+    check("keys-changed reaches the watcher", ch and ch.e2ee_keys_changed.username == "alice" and ch.e2ee_keys_changed.key_id == 1)
     b.send(pb.Packet.E2EE_FETCH_KEYS_REQ, e2ee_fetch_keys_req=pb.E2eeFetchKeysReq(username="alice"))
     f = b.wait(pb.Packet.E2EE_FETCH_KEYS_RES)
     check("fetch current", f and f.e2ee_fetch_keys_res.found and f.e2ee_fetch_keys_res.bundle.dh_pub == bytes([1]) * 32)
@@ -430,6 +531,7 @@ def test_e2ee_binding():
     register("erin")
     register("frank")
     e, f = User("erin"), User("frank")
+    f.watch(e.login.uid)
     check("login advertises the uid binding", e.login.e2ee_uid_binding)
 
     def publish(req):
@@ -589,12 +691,13 @@ def test_uid_wire():
     check("avatar by uid", f and f.fetch_avatar_res.uid == ub and f.fetch_avatar_res.username == "bob"
           and f.fetch_avatar_res.data)
     # Presence carries uids.
+    a.watch(uid_of("carol"))
     a.clear()
     c = User("carol")
     delta = a.wait(pb.Packet.PRESENCE_DELTA, pred=lambda p: p.presence_delta.user.username == "carol")
     check("presence delta carries the uid", delta and delta.presence_delta.user.uid == uid_of("carol"))
-    snap = c.wait(pb.Packet.PRESENCE_UPDATE)
-    check("snapshot carries uids", snap and all(u.uid > 0 for u in snap.presence_update.users))
+    snap = c.watch(ua)
+    check("subscription answers carry uids", snap and all(u.uid > 0 for u in snap.users) and ua in snap.covered_uids)
     a.close(); b.close(); c.close()
 
 
@@ -700,6 +803,7 @@ def test_rename():
     check("a taken name refused", r and not r.success and r.message == "That username is taken.")
     r = rename(g, "gina")
     check("the same name refused", r and not r.success)
+    h.watch(ug, uid_of("ivan"))
     h.clear()
     lurker = Conn()   # connected, never signed in
     r = rename(g, "gina2")
@@ -901,6 +1005,8 @@ def main():
         test_dms()
         test_dm_gates()
         test_presence_and_avatars()
+        test_watch_cleanup()
+        test_login_storm()
         test_calls()
         test_e2ee_keys()
         test_e2ee_binding()

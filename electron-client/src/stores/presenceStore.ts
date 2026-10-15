@@ -1,14 +1,17 @@
 // User statuses (docs/superpowers/specs/2026-10-11-user-status-design.md).
 //
-// Central is the source of truth: a PRESENCE_UPDATE snapshot at login,
-// then one PresenceDelta per change. A user absent from `statuses` is
-// offline — invisible users are never on the wire. Community rosters'
-// own is_online flag is only a fallback before the first snapshot (e.g.
-// central unreachable), see usePresence.
+// Central is the source of truth, by subscription (2026-10-15-central-
+// scaling-design.md): every status hook registers interest in its user
+// (features/presence/presenceInterest.ts); central answers the newly
+// watched with a PRESENCE_UPDATE and then sends a PresenceDelta per change.
+// A watched user central has answered for and absent from `statuses` is
+// offline — invisible users are never on the wire. Until central answers,
+// a community roster's own is_online flag stands in, see usePresence.
 
 import { create } from "zustand";
 import { useAuthStore } from "./authStore";
 import type { Uid } from "./usersStore";
+import { usePresenceInterest } from "../features/presence/presenceInterest";
 
 /// What others can be seen as.
 export type PresenceStatus = "online" | "away" | "dnd";
@@ -75,8 +78,9 @@ let ownClearTimer: ReturnType<typeof setTimeout> | null = null;
 interface PresenceState {
   /// Visible online users (by uid) → their effective status.
   statuses: Record<Uid, PresenceStatus>;
-  /// A central snapshot arrived since login.
-  loaded: boolean;
+  /// Users central has answered for since the last (re)connect: one of
+  /// these absent from `statuses` is offline.
+  known: ReadonlySet<Uid>;
   /// This central understands statuses (LoginResponse.presence_statuses);
   /// false hides the status menu.
   supported: boolean;
@@ -91,7 +95,10 @@ interface PresenceState {
   ownMessage: StatusMessage | null;
   /// When central clears it (local ms epoch); null = never.
   ownMessageClearsAt: number | null;
-  applySnapshot: (
+  /// A subscription answer: `covered` users' current presence (those not
+  /// in `users` are offline).
+  applyCovered: (
+    covered: Uid[],
     users: { uid: Uid; status: string; statusText?: string; statusEmoji?: string }[],
   ) => void;
   applyDelta: (
@@ -111,7 +118,7 @@ interface PresenceState {
   setOwnMessage: (message: StatusMessage | null, clearsAt: number | null) => void;
   setIdle: (idle: boolean) => void;
   /// Central connection lost: what we had is stale. Lists fall back to
-  /// the communities' own online flags until the next snapshot.
+  /// the communities' own online flags until central answers again.
   markDisconnected: () => void;
   /// Logout (a different account may sign in next).
   reset: () => void;
@@ -119,24 +126,32 @@ interface PresenceState {
 
 export const usePresenceStore = create<PresenceState>((set, get) => ({
   statuses: {},
-  loaded: false,
+  known: new Set(),
   supported: false,
   ownStatus: "online",
   idle: false,
   messages: {},
   ownMessage: null,
   ownMessageClearsAt: null,
-  applySnapshot: (users) =>
-    set(() => {
-      const statuses: Record<Uid, PresenceStatus> = {};
-      const messages: Record<Uid, StatusMessage> = {};
+  applyCovered: (covered, users) =>
+    set((state) => {
+      if (covered.length === 0) return state;
+      const statuses = { ...state.statuses };
+      const messages = { ...state.messages };
+      const known = new Set(state.known);
+      for (const uid of covered) {
+        if (!(uid > 0)) continue;
+        delete statuses[uid];
+        delete messages[uid];
+        known.add(uid);
+      }
       for (const u of users) {
         if (!(u.uid > 0)) continue;
         statuses[u.uid] = isPresenceStatus(u.status) ? u.status : "online";
         const message = toMessage(u.statusText, u.statusEmoji);
         if (message) messages[u.uid] = message;
       }
-      return { statuses, messages, loaded: true };
+      return { statuses, messages, known };
     }),
   applyDelta: (uid, online, status, statusText, statusEmoji) =>
     set((state) => {
@@ -150,9 +165,11 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       const nextMessage = online ? toMessage(statusText, statusEmoji) : null;
       const statusSame = cur === next;
       const messageSame = sameMessage(curMessage, nextMessage);
+      const knownSame = state.known.has(uid);
       // `return state` is the only no-op updater — `{}` still notifies.
-      if (statusSame && messageSame) return state;
+      if (statusSame && messageSame && knownSame) return state;
       const patch: Partial<PresenceState> = {};
+      if (!knownSame) patch.known = new Set(state.known).add(uid);
       if (!statusSame) {
         const statuses = { ...state.statuses };
         if (next) statuses[uid] = next;
@@ -191,14 +208,14 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     set({ ownMessage, ownMessageClearsAt });
   },
   setIdle: (idle) => set((state) => (state.idle === idle ? state : { idle })),
-  markDisconnected: () => set({ statuses: {}, messages: {}, loaded: false }),
+  markDisconnected: () => set({ statuses: {}, messages: {}, known: new Set() }),
   reset: () => {
     if (ownClearTimer) clearTimeout(ownClearTimer);
     ownClearTimer = null;
     set({
       statuses: {},
       messages: {},
-      loaded: false,
+      known: new Set(),
       supported: false,
       ownStatus: "online",
       idle: false,
@@ -216,22 +233,26 @@ export function useOwnDisplayStatus(): DisplayStatus {
   );
 }
 
-/// One user's status for display. `communityOnline` is the community
-/// roster's own flag, used only until central's first snapshot arrives.
+/// One user's status for display; watches them while mounted.
+/// `communityOnline` is the community roster's own flag, used only until
+/// central has answered for this user.
 export function usePresence(uid: Uid, communityOnline?: boolean): DisplayStatus {
+  usePresenceInterest(uid);
   const me = useAuthStore((s) => s.uid);
   const own = useOwnDisplayStatus();
   const other = usePresenceStore((s): DisplayStatus => {
     const st = s.statuses[uid];
     if (st) return st;
-    return !s.loaded && communityOnline ? "online" : "offline";
+    return !s.known.has(uid) && communityOnline ? "online" : "offline";
   });
   return uid > 0 && uid === me ? own : other;
 }
 
-/// One user's custom status message, or null. Others' ride their presence,
-/// so only a visible user has one; our own shows to us even while invisible.
+/// One user's custom status message, or null; watches them while mounted.
+/// Others' ride their presence, so only a visible user has one; our own
+/// shows to us even while invisible.
 export function useStatusMessage(uid: Uid): StatusMessage | null {
+  usePresenceInterest(uid);
   const me = useAuthStore((s) => s.uid);
   const own = usePresenceStore((s) => s.ownMessage);
   const other = usePresenceStore((s) => s.messages[uid] ?? null);
@@ -242,9 +263,10 @@ export function useStatusMessage(uid: Uid): StatusMessage | null {
 export const isOnlineStatus = (s: DisplayStatus) =>
   s === "online" || s === "away" || s === "dnd";
 
-/// Non-hook resolver for list splitting (MembersList groups).
+/// Non-hook resolver for list splitting (MembersList groups). The list
+/// must watch its users (usePresenceInterest) for central to answer.
 export function resolvePresence(
-  state: Pick<PresenceState, "statuses" | "loaded" | "ownStatus" | "idle">,
+  state: Pick<PresenceState, "statuses" | "known" | "ownStatus" | "idle">,
   me: Uid,
   uid: Uid,
   communityOnline?: boolean,
@@ -252,7 +274,7 @@ export function resolvePresence(
   if (uid > 0 && uid === me) return state.ownStatus === "online" && state.idle ? "away" : state.ownStatus;
   const st = state.statuses[uid];
   if (st) return st;
-  return !state.loaded && communityOnline ? "online" : "offline";
+  return !state.known.has(uid) && communityOnline ? "online" : "offline";
 }
 
 /// The local user, for code outside React (call ringing).

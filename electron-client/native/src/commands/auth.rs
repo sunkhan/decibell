@@ -242,6 +242,7 @@ pub async fn logout() -> napi::Result<()> {
         let audio = s.audio_stream_engine.take();
         s.username = None;
         s.uid = 0;
+        s.presence_watch.clear();
         s.token = None;
         s.credentials = None;
         s.connected_voice_server = None;

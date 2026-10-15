@@ -121,6 +121,10 @@ pub struct AppState {
     /// older central that never relays CALL_SIGNAL (the renderer gates
     /// the Call button on it).
     pub stun_servers: Vec<String>,
+    /// The accounts the renderer is showing (PRESENCE_SUBSCRIBE): sent on
+    /// change and again after every central login, so a reconnect keeps
+    /// the subscription (central-scaling-design.md).
+    pub presence_watch: Vec<i64>,
     pub call_signaling: bool,
     /// A DM call between `call_prepare` (sockets bound, STUN done, keypair
     /// minted) and `call_connect`. Replaced by a newer prepare; aborted by
@@ -207,6 +211,7 @@ impl Default for AppState {
             decoder_caps: Vec::new(),
             encoder_caps: Vec::new(),
             stun_servers: Vec::new(),
+            presence_watch: Vec::new(),
             call_signaling: false,
             pending_call: None,
             active_call: None,

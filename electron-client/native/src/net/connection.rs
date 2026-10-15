@@ -287,7 +287,6 @@ mod tests {
             packet::Payload::LoginReq(LoginRequest {
                 username: "test".into(),
                 password: "pass".into(),
-                presence_deltas: false,
             }),
             Some("my_token"),
         );

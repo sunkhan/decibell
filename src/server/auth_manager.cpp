@@ -8,7 +8,8 @@
 
 void AuthManager::initializeDatabase() {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Schema version (2026-10-15). Everything below `version < 1` is the
         // schema as it stood before users were keyed by uid: it brings an
@@ -465,7 +466,8 @@ std::string AuthManager::registerUser(const std::string& username, const std::st
     }
     // A name someone renamed away from stays theirs for the reservation.
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         if (nameReservedForOther(txn, username, 0)) return "Username or email already exists.";
     } catch (const std::exception& e) {
@@ -569,7 +571,8 @@ static void prune_name_changes(pqxx::work& txn) {
 
 void AuthManager::pruneNameChanges() {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         prune_name_changes(txn);
         txn.commit();
@@ -580,7 +583,8 @@ void AuthManager::pruneNameChanges() {
 
 std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReservedName(const std::string& username) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         const int64_t cutoff = static_cast<int64_t>(std::time(nullptr)) - NAME_RESERVATION_SECONDS;
         // The latest account to leave the name, if within the reservation.
@@ -610,7 +614,8 @@ AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string
         return out;
     }
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result me = txn.exec_params(
             "SELECT username, password_hash FROM users WHERE uid = $1 FOR UPDATE", uid);
@@ -635,9 +640,10 @@ AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string
             out.error = "You can change your username twice a day. Try again tomorrow.";
             return out;
         }
-        // Central runs one io thread with synchronous queries, so nothing
-        // interleaves between these checks and the update; the unique
-        // index on users.username backs them up regardless.
+        // The renamer's row is locked (FOR UPDATE above), so their own
+        // renames serialize; another account taking the name meanwhile is
+        // stopped by the unique index on users.username (the UPDATE fails
+        // and the rename reports an error).
         if (!txn.exec_params("SELECT 1 FROM users WHERE username = $1", new_username).empty() ||
             nameReservedForOther(txn, new_username, uid)) {
             out.error = "That username is taken.";
@@ -678,7 +684,8 @@ AuthManager::UserRef AuthManager::resolveUser(int64_t uid, const std::string& us
     UserRef out;
     if (uid <= 0 && username.empty()) return out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result res = uid > 0
             ? txn.exec_params("SELECT uid, username FROM users WHERE uid = $1", uid)
@@ -698,7 +705,8 @@ AuthManager::UserRef AuthManager::resolveUser(int64_t uid, const std::string& us
 
 bool AuthManager::userExists(const std::string& username, const std::string& email) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Check for either a conflicting username or conflicting email
         pqxx::result res = txn.exec_params(
@@ -714,7 +722,8 @@ bool AuthManager::userExists(const std::string& username, const std::string& ema
 
 bool AuthManager::insertUser(const std::string& username, const std::string& email, const std::string& hash) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params(
             "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3)",
@@ -730,7 +739,8 @@ bool AuthManager::insertUser(const std::string& username, const std::string& ema
 
 std::optional<AuthManager::StoredCredentials> AuthManager::getCredentials(const std::string& username) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result res = txn.exec_params(
             "SELECT uid, username, password_hash FROM users WHERE username = $1", username);
@@ -760,7 +770,8 @@ bool AuthManager::verifyPassword(const std::string& plain_password, const std::s
 std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
     std::vector<chatproj::CommunityServerInfo> servers;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         
         // Fetch up to 50 LIVE public community servers sorted by member
@@ -802,7 +813,8 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
                                        int64_t known_id, const std::string& cert_fingerprint,
                                        bool is_public) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         if (known_id > 0) {
             // Identity by id: the community moved (new public IP / port)
@@ -853,7 +865,8 @@ int AuthManager::upsertCommunityServer(const std::string& name, const std::strin
 
 void AuthManager::registerCommunityInvite(const std::string& code, const std::string& host, int port, int64_t expires_at) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
                                 std::chrono::system_clock::now().time_since_epoch())
@@ -874,7 +887,8 @@ void AuthManager::registerCommunityInvite(const std::string& code, const std::st
 
 void AuthManager::unregisterCommunityInvite(const std::string& code) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params("DELETE FROM community_invites WHERE code = $1", code);
         txn.commit();
@@ -885,7 +899,8 @@ void AuthManager::unregisterCommunityInvite(const std::string& code) {
 
 std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(const std::string& code) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // LEFT JOIN, not a subselect: the invite must still resolve to
         // host:port when the community has no directory row yet. The
@@ -947,7 +962,8 @@ std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(c
 std::string AuthManager::handleFriendAction(int64_t requester, chatproj::FriendActionType action, int64_t target) {
     if (requester == target) return "Cannot perform action on yourself.";
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
 
         const int64_t u1 = (std::min)(requester, target);
@@ -991,7 +1007,8 @@ std::string AuthManager::handleFriendAction(int64_t requester, chatproj::FriendA
 
 bool AuthManager::isBlocked(int64_t a, int64_t b) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result res = txn.exec_params(
             "SELECT 1 FROM friendships WHERE uid1 = $1 AND uid2 = $2 AND status = 'BLOCKED'",
@@ -1009,7 +1026,8 @@ bool AuthManager::isBlocked(int64_t a, int64_t b) {
 
 bool AuthManager::areFriends(int64_t a, int64_t b) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result res = txn.exec_params(
             "SELECT 1 FROM friendships WHERE uid1 = $1 AND uid2 = $2 AND status = 'ACCEPTED'",
@@ -1025,7 +1043,8 @@ bool AuthManager::areFriends(int64_t a, int64_t b) {
 std::vector<chatproj::FriendInfo> AuthManager::getFriends(int64_t uid) {
     std::vector<chatproj::FriendInfo> friends;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
 
         // JOIN users on the other side of each pair for its current name
@@ -1077,7 +1096,8 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(int64_t uid) {
 // ─── Avatar storage ──────────────────────────────────────────────────────
 
 std::string AuthManager::setAvatar(int64_t uid, const std::string& data) {
-    pqxx::connection conn(db_conn_str_);
+    auto lease = pool_.acquire();
+    pqxx::connection& conn = *lease;
     pqxx::work txn(conn);
     if (data.empty()) {
         // Remove: NULL the bytes, clear the version.
@@ -1104,7 +1124,8 @@ std::string AuthManager::setAvatar(int64_t uid, const std::string& data) {
 
 std::pair<std::string, std::string> AuthManager::getAvatar(int64_t uid) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT avatar, avatar_version FROM users WHERE uid = $1",
@@ -1132,7 +1153,8 @@ std::pair<std::string, std::string> AuthManager::getAvatar(int64_t uid) {
 AuthManager::PresenceProfile AuthManager::getPresenceProfile(int64_t uid) {
     PresenceProfile profile;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT avatar_version, presence_status, dm_friends_only, "
@@ -1172,7 +1194,8 @@ AuthManager::PresenceProfile AuthManager::getPresenceProfile(int64_t uid) {
 
 void AuthManager::setPresenceStatus(int64_t uid, int status) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params(
             "UPDATE users SET presence_status = $1 WHERE uid = $2",
@@ -1186,7 +1209,8 @@ void AuthManager::setPresenceStatus(int64_t uid, int status) {
 void AuthManager::setStatusMessage(int64_t uid, const std::string& text,
                                    const std::string& emoji, int64_t expires_at) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params(
             "UPDATE users SET status_text = $1, status_emoji = $2, "
@@ -1198,9 +1222,26 @@ void AuthManager::setStatusMessage(int64_t uid, const std::string& text,
     }
 }
 
+void AuthManager::clearExpiredStatusMessage(int64_t uid, int64_t expires_at) {
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        // Only the message that ran out: one the user set meanwhile stays.
+        txn.exec_params(
+            "UPDATE users SET status_text = '', status_emoji = '', status_expires_at = 0 "
+            "WHERE uid = $1 AND status_expires_at = $2",
+            uid, expires_at);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] clearExpiredStatusMessage: " << e.what() << "\n";
+    }
+}
+
 void AuthManager::setDmFriendsOnly(int64_t uid, bool friends_only) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params(
             "UPDATE users SET dm_friends_only = $1 WHERE uid = $2",
@@ -1213,7 +1254,8 @@ void AuthManager::setDmFriendsOnly(int64_t uid, bool friends_only) {
 
 bool AuthManager::getDmFriendsOnly(int64_t uid) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT dm_friends_only FROM users WHERE uid = $1",
@@ -1251,7 +1293,8 @@ int64_t AuthManager::insertDm(int64_t sender_uid, const std::string& sender,
                                int64_t reply_to,
                                const std::string& envelope) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Two statements rather than a nullable parameter: an empty
         // envelope must land as NULL (plaintext row), and passing a
@@ -1325,7 +1368,8 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistory(
     has_more = false;
     std::vector<DmHistoryRow> out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Pull one extra row so we can detect has_more cheaply.
         const int32_t clamped = std::max(1, std::min(limit, 200));
@@ -1360,7 +1404,8 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAround(
     has_more_after = false;
     std::vector<DmHistoryRow> out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         const int32_t clamped = limit > 0 ? std::min(limit, 100) : 25;
         const int32_t fetch_n = clamped + 1;
@@ -1409,7 +1454,8 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
     has_more_after = false;
     std::vector<DmHistoryRow> out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         const int32_t clamped = limit > 0 ? std::min(limit, 200) : 50;
         const int32_t fetch_n = clamped + 1;
@@ -1436,7 +1482,8 @@ std::vector<AuthManager::DmHistoryRow> AuthManager::fetchDmHistoryAfter(
 std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
     int64_t user_a, int64_t user_b, int64_t message_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT m.sender_uid, su.username, m.sender, m.recipient, m.content, m.envelope "
@@ -1465,7 +1512,8 @@ std::vector<AuthManager::DmConversationPreviewRow>
 AuthManager::fetchDmConversations(int64_t uid) {
     std::vector<DmConversationPreviewRow> out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Picks the latest message id per conversation (pair grouped
         // by LEAST/GREATEST), then joins back to dm_messages for the
@@ -1528,7 +1576,8 @@ AuthManager::fetchDmConversations(int64_t uid) {
 
 void AuthManager::markDmRead(int64_t reader, int64_t peer, int64_t up_to_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // The peer must be an account (the caller resolved it; this keeps
         // a forged uid from tripping the foreign key into an error log).
@@ -1551,7 +1600,8 @@ void AuthManager::markDmRead(int64_t reader, int64_t peer, int64_t up_to_id) {
 
 bool AuthManager::deleteDmMessage(int64_t sender, int64_t peer, int64_t message_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Atomic auth: WHERE clause enforces sender-only + correct pair
         // + existence in one shot. affected_rows == 1 means all three
@@ -1574,7 +1624,8 @@ bool AuthManager::editDmMessage(int64_t sender, int64_t peer,
                                 int64_t edited_at,
                                 const std::string& envelope) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // WHERE enforces sender-only + correct pair + existence atomically.
         // An edit always rewrites the envelope column: a plaintext edit of
@@ -1607,10 +1658,13 @@ uint32_t AuthManager::publishE2eeKeys(int64_t uid, const std::string& signed_nam
                                       int binding,
                                       int64_t created_at) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
-        // MAX+1 inside one transaction; central runs a single io thread
-        // so two publishes from the same user can't interleave anyway.
+        // MAX+1 under the account's row lock: two publishes of the same
+        // account (a connection being replaced, on another thread) take
+        // turns; the (uid, key_id) primary key backs it up.
+        txn.exec_params("SELECT 1 FROM users WHERE uid = $1 FOR UPDATE", uid);
         // The uid is passed TWICE on purpose: Postgres types an untyped
         // parameter from its first use, and one $n used both as an
         // inserted value and in a comparison has failed before with
@@ -1640,7 +1694,8 @@ bool AuthManager::rebindE2eeKeys(int64_t uid, uint32_t key_id,
                                  int binding,
                                  const std::string& signed_name) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Only the current row, and only with the same keys: a rebind
         // changes what the signature binds, never which keys are published.
@@ -1660,7 +1715,8 @@ bool AuthManager::rebindE2eeKeys(int64_t uid, uint32_t key_id,
 
 std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(int64_t uid, uint32_t key_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = key_id == 0
             ? txn.exec_params(
@@ -1692,7 +1748,8 @@ std::optional<AuthManager::E2eeKeyRow> AuthManager::getE2eeKeys(int64_t uid, uin
 bool AuthManager::setE2eeBackup(int64_t uid, uint32_t key_id,
                                 const std::string& blob, int64_t updated_at) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params(
             "INSERT INTO e2ee_backups (uid, key_id, blob, updated_at) "
@@ -1710,7 +1767,8 @@ bool AuthManager::setE2eeBackup(int64_t uid, uint32_t key_id,
 
 std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(int64_t uid) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT key_id, blob FROM e2ee_backups WHERE uid = $1",
@@ -1730,7 +1788,8 @@ std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(int64
 
 void AuthManager::registerMembership(int64_t uid, int64_t server_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         auto now = std::chrono::system_clock::now();
         int64_t now_ts = std::chrono::system_clock::to_time_t(now);
@@ -1752,7 +1811,8 @@ void AuthManager::registerMembership(int64_t uid, int64_t server_id) {
 
 void AuthManager::revokeMembership(int64_t uid, int64_t server_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         txn.exec_params(
             "DELETE FROM community_memberships "
@@ -1768,7 +1828,8 @@ std::vector<chatproj::CommunityServerInfo>
 AuthManager::getUserCommunities(int64_t uid) {
     std::vector<chatproj::CommunityServerInfo> out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT cs.id, cs.name, cs.description, cs.host_ip, "
@@ -1812,7 +1873,8 @@ int AuthManager::setServerPicture(const std::string& host_ip, int port,
     // address for communities that haven't learned their id yet.
     if (known_id > 0) {
         try {
-            pqxx::connection conn(db_conn_str_);
+            auto lease = pool_.acquire();
+            pqxx::connection& conn = *lease;
             pqxx::work txn(conn);
             pqxx::result rs;
             if (data.empty()) {
@@ -1838,7 +1900,8 @@ int AuthManager::setServerPicture(const std::string& host_ip, int port,
                                     const std::string& data,
                                     const std::string& version) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs;
         if (data.empty()) {
@@ -1869,7 +1932,8 @@ int AuthManager::setServerPicture(const std::string& host_ip, int port,
 std::pair<std::string, std::string>
 AuthManager::getServerPicture(int server_id) {
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT COALESCE(picture_version, ''), picture "
@@ -1898,7 +1962,8 @@ AuthManager::getServerPicture(int server_id) {
 std::vector<int64_t> AuthManager::getServerMembers(int server_id) {
     std::vector<int64_t> out;
     try {
-        pqxx::connection conn(db_conn_str_);
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
             "SELECT uid FROM community_memberships "

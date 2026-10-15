@@ -112,7 +112,7 @@ message Packet {
     UPDATE_AVATAR_RES = 62;            // central→client
     FETCH_AVATAR_REQ = 63;             // client→central
     FETCH_AVATAR_RES = 64;             // central→client
-    AVATAR_CHANGED = 65;               // central→all online sessions
+    AVATAR_CHANGED = 65;               // central→the account's watchers
 
     // Live-stream popup: on-demand thumbnail fetch (community server).
     FETCH_STREAM_THUMBNAIL_REQ = 66;
@@ -238,7 +238,7 @@ message Packet {
     E2EE_FETCH_KEYS_RES   = 132;    // central→client
     E2EE_FETCH_BACKUP_REQ = 133;    // client→central: the caller's own backup blob
     E2EE_FETCH_BACKUP_RES = 134;    // central→client
-    E2EE_KEYS_CHANGED     = 135;    // central→every session: a user published a new bundle
+    E2EE_KEYS_CHANGED     = 135;    // central→the account's watchers: a new bundle
     // MLS-encrypted voice channels (docs/superpowers/specs/
     // 2026-09-03-mls-voice-channel-encryption-design.md). The community
     // server is the MLS delivery service: it sequences commits per voice
@@ -289,13 +289,17 @@ message Packet {
     // stage 5): password-confirmed, the old name reserved for 14 days.
     RENAME_REQ   = 158;   // client→central
     RENAME_RES   = 159;   // central→requester
-    USER_RENAMED = 160;   // central→every session: a visible user's new name
+    USER_RENAMED = 160;   // central→the account's watchers: its new name
     // Token renewal: central mints a fresh token for the signed-in session
     // (renames, and before the 24 h expiry); the client hands it to each
     // community it's connected to, which updates the session in place.
     TOKEN_REFRESH_REQ    = 161;   // client→central
     TOKEN_REFRESH_RES    = 162;   // central→requester
     SESSION_TOKEN_UPDATE = 163;   // client→community (no reply)
+    // Presence by subscription (docs/superpowers/specs/2026-10-15-central-
+    // scaling-design.md): the accounts a client shows; answered with a
+    // PRESENCE_UPDATE for the newly watched.
+    PRESENCE_SUBSCRIBE   = 164;   // client→central
   }
 
   Type type = 1;
@@ -502,6 +506,7 @@ message Packet {
     TokenRefreshRequest      token_refresh_req      = 163;
     TokenRefreshResponse     token_refresh_res      = 164;
     SessionTokenUpdate       session_token_update   = 165;
+    PresenceSubscribe        presence_subscribe     = 166;
   }
 }
 
@@ -524,11 +529,9 @@ message RegisterResponse {
 message LoginRequest {
   string username = 1;
   string password = 2;
-  // The client applies PRESENCE_DELTA packets. Central then sends this
-  // session one PRESENCE_UPDATE snapshot at login and deltas after; a
-  // session without the flag (an older client) keeps getting a full
-  // snapshot on every change.
-  bool presence_deltas = 3;
+  // presence_deltas: every client takes deltas, for the accounts it
+  // subscribes to (PRESENCE_SUBSCRIBE).
+  reserved 3;
 }
 
 message LoginResponse {
@@ -604,9 +607,9 @@ message SessionTokenUpdate {
   string jwt_token = 1;
 }
 
-// To every signed-in session when a user changes their name (invisible users
-// too, by owner decision). Clients hold people by uid, so the old name isn't
-// sent: it would hand everyone the link.
+// To the account's watchers (PRESENCE_SUBSCRIBE) when it changes its name,
+// invisible or not (owner decision). Clients hold people by uid, so the old
+// name isn't sent: it would hand everyone the link.
 message UserRenamed {
   int64  uid = 1;
   reserved 2;  // old_username
@@ -675,13 +678,22 @@ message UserPresence {
   int64 uid = 6;
 }
 
-// Wire-breaking change from `repeated string online_users = 1;` —
-// each online user now carries their current avatar_version so
-// clients can detect cache misses without an explicit poll.
-// Every visible online user. Sent to a session once at login (and on
-// every change to sessions without LoginRequest.presence_deltas).
+// The answer to a PRESENCE_SUBSCRIBE, for the accounts it newly watches:
+// `covered_uids` lists them, `users` holds those visible right now (a
+// covered uid without an entry is offline). Each entry carries the
+// avatar_version, so clients see a changed avatar without polling.
 message PresenceUpdate {
   repeated UserPresence users = 1;
+  repeated int64 covered_uids = 2;
+}
+
+// The full set of accounts the client is showing (friends, DM peers,
+// member lists, profiles): PRESENCE_DELTA, USER_RENAMED, AVATAR_CHANGED
+// and E2EE_KEYS_CHANGED for them reach this session; nothing else does.
+// Each request replaces the previous set. At most 5,000 uids (the rest are
+// ignored).
+message PresenceSubscribe {
+  repeated int64 uids = 1;
 }
 
 // One user's presence changed: came online, went offline (or invisible),
@@ -2450,9 +2462,10 @@ message E2eeFetchBackupRes {
   bytes  backup = 3;
 }
 
-// Broadcast to every session when a user publishes a new bundle, like
-// AVATAR_CHANGED. Clients drop their cached "current" bundle for that
-// user and re-fetch on the next send.
+// To the account's watchers when it publishes a new bundle, like
+// AVATAR_CHANGED. Clients drop their cached "current" bundle for that user
+// and re-fetch on the next send (and forget it when they start watching,
+// in case they missed a change meanwhile).
 message E2eeKeysChanged {
   string username = 1;
   uint32 key_id = 2;

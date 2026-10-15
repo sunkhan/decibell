@@ -7,7 +7,8 @@ use napi_derive::napi;
 
 use crate::net::connection::build_packet;
 use crate::net::proto::{
-    packet, PresenceVisibility, SetIdleRequest, SetStatusMessageRequest, SetStatusRequest,
+    packet, PresenceSubscribe, PresenceVisibility, SetIdleRequest, SetStatusMessageRequest,
+    SetStatusRequest,
 };
 use crate::state;
 
@@ -23,6 +24,46 @@ async fn send_to_central(ty: packet::Type, payload: packet::Payload) {
         (tx, build_packet(ty, payload, s.token.as_deref()))
     };
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await;
+}
+
+/// Most accounts central watches for one connection (SessionManager::MAX_WATCH).
+const MAX_WATCH: usize = 5000;
+
+#[napi(object)]
+pub struct PresenceSubscribeArgs {
+    /// Every account the renderer is showing; replaces the previous set.
+    pub uids: Vec<i64>,
+}
+
+/// Presence by subscription (docs/superpowers/specs/2026-10-15-central-
+/// scaling-design.md): central sends statuses and profile changes only for
+/// these accounts. Kept here and re-sent after every central login.
+#[napi]
+pub async fn presence_subscribe(args: PresenceSubscribeArgs) -> napi::Result<()> {
+    let mut uids: Vec<i64> = args.uids.into_iter().filter(|u| *u > 0).collect();
+    uids.truncate(MAX_WATCH);
+    let state_arc = state::shared();
+    let (tx, data) = {
+        let mut s = state_arc.lock().await;
+        if s.presence_watch == uids {
+            return Ok(());
+        }
+        s.presence_watch = uids.clone();
+        let (Some(tx), Some(token)) = (s.central.as_ref().and_then(|c| c.connection_write_tx()), s.token.as_deref())
+        else {
+            return Ok(());  // sent with the next login
+        };
+        (
+            tx,
+            build_packet(
+                packet::Type::PresenceSubscribe,
+                packet::Payload::PresenceSubscribe(PresenceSubscribe { uids }),
+                Some(token),
+            ),
+        )
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await;
+    Ok(())
 }
 
 #[napi(object)]

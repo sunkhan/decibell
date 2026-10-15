@@ -5,6 +5,7 @@
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
 #include <pqxx/pqxx>
 #include "messages.pb.h"
+#include "pg_pool.hpp"
 
 class AuthManager {
 public:
@@ -15,9 +16,15 @@ public:
     AuthManager(const std::string& community_secret, const std::string& db_conn_str,
                 const std::string& jwt_private_pem, const std::string& jwt_public_pem)
         : secret_key_(community_secret), db_conn_str_(db_conn_str),
-          jwt_private_pem_(jwt_private_pem), jwt_public_pem_(jwt_public_pem) {
+          jwt_private_pem_(jwt_private_pem), jwt_public_pem_(jwt_public_pem),
+          pool_(db_conn_str, 4) {
         initializeDatabase();
     }
+
+    /// Idle Postgres connections kept for reuse: one per thread that queries
+    /// (central-scaling-design.md). Every method is safe to call from any
+    /// thread: each takes its own connection lease.
+    void set_pool_idle(std::size_t max_idle) { pool_.set_max_idle(max_idle); }
 
     // Processes registration. Returns error message if failed, empty string if successful.
     std::string registerUser(const std::string& username, const std::string& email, const std::string& password);
@@ -165,6 +172,9 @@ public:
     /// The caller normalised text / emoji; expires_at is unix seconds (0 = never).
     void setStatusMessage(int64_t uid, const std::string& text,
                           const std::string& emoji, int64_t expires_at);
+    /// Clear the message that expires at `expires_at` (the sweep); a newer
+    /// one the user set meanwhile is kept.
+    void clearExpiredStatusMessage(int64_t uid, int64_t expires_at);
     void setDmFriendsOnly(int64_t uid, bool friends_only);
     /// For DMs to an offline (or invisible) recipient — an online one's
     /// session caches the same value.
@@ -385,6 +395,7 @@ private:
     std::string db_conn_str_;
     std::string jwt_private_pem_;
     std::string jwt_public_pem_;
+    PgPool pool_;
     struct StoredCredentials {
         int64_t uid = 0;
         std::string username;
