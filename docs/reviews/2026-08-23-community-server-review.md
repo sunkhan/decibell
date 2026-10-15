@@ -2771,3 +2771,51 @@ nothing, expired renames forgotten); community e2e 588; `cargo test --lib` 233; 
   this as the exception to "invisible is airtight".
 
 Verified: central e2e 166 passed ("invisible user renamed ... and announced like anyone's").
+
+**Audit sweep: no name left as identity (2026-10-15) ✅** — The owner asked for another review once the
+servers were rebuilt. Five parallel audits read each tier with two failure modes in mind: a rename breaks
+something, or a newcomer who takes a freed name inherits something. Findings, each verified in the
+code and fixed (details: uid spec §Audit sweep):
+- **High (community): a ban could become a ban by name, outside the hierarchy.** BAN_MEMBER_REQ accepted
+  any negative uid, and `ban_active_unlocked` matched negative-uid rows against every connecting name.
+  So a BAN_MEMBERS holder could lock out the owner. Bans now match by uid only, a placeholder can be
+  banned only as a member, and an account banned by uid is refused before it can claim a placeholder.
+  This also fixed a member renamed onto a legacy-banned name being refused.
+- **High (native): pre-uid pins never adopted and kept being looked up by name.** A newcomer under a
+  pinned name looked pinned, could get stuck behind "refusing to send unencrypted", and could be handed
+  the old account's key. Adoption is now by identity key, and a legacy pin only opens v1 history.
+- **Medium-high (renderer): stale community names overwrote current ones.** Central's names now win;
+  ban, audit and invite labels no longer feed the store.
+- **Medium:**
+  - live avatar changes never reached anyone (native dropped the uid);
+  - audit entries reached the client without uids;
+  - a prepared call failed if the callee renamed while it was ringing;
+  - the DM jump-to-reply fetch sent a number where native wanted a name;
+  - unclaimed legacy placeholders never expired. They now end 2026-10-29; until then nobody else can
+    hold a legacy member's name.
+- **Low:**
+  - central answered non-typed requests by name (BLOCK by a stale name hit a newcomer); now uid-only;
+  - a rename's MEMBER_REMOVE + upsert became one upsert, invisible members and every session included;
+  - member paging had a name-only cursor;
+  - search authors by name (now reserved);
+  - escrow sealed channel keys to placeholders by name lookup;
+  - our own pre-uid key file migrated on a name match alone;
+  - "am I the sender" fell back to names;
+  - stream watchers were keyed by name;
+  - logout kept the uid;
+  - saved volumes were migrated by name, and all-digit names read as uids;
+  - downloads labelled the sender by a stale name;
+  - the OS window title showed a uid;
+  - blank names where "Unknown user" belonged;
+  - stale comments and types.
+- **Not a name issue, fixed on the way:** logout kept the previous account's DMs, drafts and friends.
+
+Verified:
+- central e2e 168 (name-only revoke and BLOCK refused, the test suite now targets by uid);
+- community e2e 592 (made-up placeholder ban refused, placeholder ban never matches by name, claims
+  expire, audit uids on the wire, renames relabel without MEMBER_REMOVE);
+- `cargo test --lib` 234 (key-based pin adoption); `napi build`; `tsc` 0 (web + node);
+- offscreen smoke captures through a live rename, no console errors.
+
+Open: central's `legacy_*` tables (pre-migration name-keyed copies, unused) await an owner decision to drop
+them. Ships with a community + central rebuild and a client release, together.

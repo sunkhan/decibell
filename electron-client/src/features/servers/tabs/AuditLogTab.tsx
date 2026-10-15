@@ -365,7 +365,7 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
     case "overwrite_set": {
       const [kind, id] = [e.target.slice(0, e.target.indexOf(":")), e.target.slice(e.target.indexOf(":") + 1)];
       const who =
-        kind === "role" ? <RoleRef role={ctx.roleById(Number(id))} fallback={`a deleted role`} /> : member(id);
+        kind === "role" ? <RoleRef role={ctx.roleById(Number(id))} fallback={`a deleted role`} /> : member(id, e.targetUid);
       out.text = <>changed permissions for {who}{chIn}</>;
       const d = rest.shift() ?? "";
       const m = /^allow (\d+) deny (\d+)$/.exec(d);

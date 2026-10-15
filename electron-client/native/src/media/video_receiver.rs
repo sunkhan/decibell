@@ -50,7 +50,7 @@ pub struct ReassembledFrame {
     pub frame_id: u32,
     pub data: Vec<u8>,
     pub is_keyframe: bool,
-    pub streamer_username: String,
+    pub streamer_id: String,
     /// Codec byte from the per-packet UdpVideoPacket.codec field
     /// (taken from the first packet of the frame). Drives WebCodecs
     /// decoder configuration on the viewer side.
@@ -273,7 +273,8 @@ fn seq_before(a: u32, b: u32) -> bool {
 /// other's buffers and pointed NACK/PLI at whichever streamer's packet
 /// happened to arrive last.
 struct SenderState {
-    username: String,
+    /// The streamer's media id (their uid in decimal, stamped by the relay).
+    id: String,
     frames_in_progress: HashMap<u32, FrameAssembly>,
     /// Completed frames waiting for their predecessor (in flight via
     /// NACK/FEC) so delivery stays in frame_id order. Only ever holds
@@ -295,9 +296,9 @@ struct SenderState {
 }
 
 impl SenderState {
-    fn new(username: String, now: Instant) -> Self {
+    fn new(id: String, now: Instant) -> Self {
         SenderState {
-            username,
+            id,
             frames_in_progress: HashMap::new(),
             pending_delivery: BTreeMap::new(),
             next_delivery: None,
@@ -389,7 +390,7 @@ impl SenderState {
         if expired {
             log::debug!(
                 "[video-recv] '{}': gap before frame {:?} not recovered in {:?} — dropping {} held frames, requesting keyframe",
-                self.username,
+                self.id,
                 self.pending_delivery.keys().next(),
                 DELIVERY_HOLD,
                 self.pending_delivery.len(),
@@ -423,7 +424,7 @@ impl VideoReceiver {
         }
     }
 
-    fn sender_entry(&mut self, id: &[u8; SENDER_ID_SIZE], username: impl FnOnce() -> String, now: Instant) -> &mut SenderState {
+    fn sender_entry(&mut self, id: &[u8; SENDER_ID_SIZE], id_str: impl FnOnce() -> String, now: Instant) -> &mut SenderState {
         if !self.senders.contains_key(id) && self.senders.len() >= MAX_SENDERS {
             // Evict the least-recently-active sender.
             if let Some(&stale) = self
@@ -437,7 +438,7 @@ impl VideoReceiver {
         }
         self.senders
             .entry(*id)
-            .or_insert_with(|| SenderState::new(username(), now))
+            .or_insert_with(|| SenderState::new(id_str(), now))
     }
 
     /// Process an incoming video packet. Returns every frame that became
@@ -463,7 +464,7 @@ impl VideoReceiver {
         }
 
         let now = Instant::now();
-        let sender = self.sender_entry(&pkt.sender_id, || pkt.sender_username(), now);
+        let sender = self.sender_entry(&pkt.sender_id, || pkt.sender_id_str(), now);
         sender.last_activity = now;
 
         // Skip fragments for frames the delivery cursor has already
@@ -507,7 +508,7 @@ impl VideoReceiver {
             let reassembled = ReassembledFrame {
                 frame_id,
                 is_keyframe: assembly.is_keyframe,
-                streamer_username: sender.username.clone(),
+                streamer_id: sender.id.clone(),
                 codec: assembly.codec,
                 description: None,
                 data: assembly.into_data(),
@@ -549,7 +550,7 @@ impl VideoReceiver {
             let reassembled = ReassembledFrame {
                 frame_id,
                 is_keyframe: assembly.is_keyframe,
-                streamer_username: sender.username.clone(),
+                streamer_id: sender.id.clone(),
                 codec: assembly.codec,
                 description: None,
                 data: assembly.into_data(),
@@ -598,7 +599,7 @@ impl VideoReceiver {
                     }
                     if !missing.is_empty() {
                         nacks.push(NackRequest {
-                            target: sender.username.clone(),
+                            target: sender.id.clone(),
                             frame_id,
                             missing,
                         });
@@ -619,7 +620,7 @@ impl VideoReceiver {
                 if due {
                     sender.last_pli = Some(now);
                     sender.want_pli = false;
-                    plis.push(sender.username.clone());
+                    plis.push(sender.id.clone());
                 }
             }
         }
@@ -690,7 +691,7 @@ mod tests {
         assert_eq!(frame.frame_id, 0);
         assert_eq!(frame.data, b"keyframe data");
         assert!(frame.is_keyframe);
-        assert_eq!(frame.streamer_username, "streamer1");
+        assert_eq!(frame.streamer_id, "streamer1");
     }
 
     #[test]
@@ -747,11 +748,11 @@ mod tests {
         let a = receiver.process_packet(&a1);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].data, b"aaaaAAAA");
-        assert_eq!(a[0].streamer_username, "alice");
+        assert_eq!(a[0].streamer_id, "alice");
         let b = receiver.process_packet(&b1);
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].data, b"bbbbBBBB");
-        assert_eq!(b[0].streamer_username, "bob");
+        assert_eq!(b[0].streamer_id, "bob");
     }
 
     #[test]

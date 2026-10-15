@@ -49,9 +49,10 @@ pub async fn request_dm_conversations() -> napi::Result<()> {
 
 #[napi(object)]
 pub struct RequestDmHistoryArgs {
+    /// The peer's current name (a label).
     pub peer: String,
-    /// The peer's uid (users by uid; preferred over `peer`).
-    pub peer_uid: Option<i64>,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
     pub before_id: i64,
     pub limit: i32,
     /// >0: fetch a context window centered on this DM id (windowed jump).
@@ -80,7 +81,7 @@ pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> 
                 limit: args.limit,
                 around_id: args.around_id.unwrap_or(0),
                 after_id: args.after_id.unwrap_or(0),
-                peer_uid: args.peer_uid.unwrap_or(0),
+                peer_uid: args.peer_uid,
             }),
             token.as_deref(),
         );
@@ -98,9 +99,10 @@ pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> 
 
 #[napi(object)]
 pub struct MarkDmReadArgs {
+    /// The peer's current name (a label).
     pub peer: String,
-    /// The peer's uid (users by uid; preferred over `peer`).
-    pub peer_uid: Option<i64>,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
     pub up_to_id: i64,
 }
 
@@ -121,7 +123,7 @@ pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
             packet::Payload::DmMarkReadReq(DmMarkReadReq {
                 peer: args.peer,
                 up_to_id: args.up_to_id,
-                peer_uid: args.peer_uid.unwrap_or(0),
+                peer_uid: args.peer_uid,
             }),
             token.as_deref(),
         );
@@ -134,9 +136,10 @@ pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
 
 #[napi(object)]
 pub struct DeleteDmMessageArgs {
+    /// The peer's current name (a label).
     pub peer: String,
-    /// The peer's uid (users by uid; preferred over `peer`).
-    pub peer_uid: Option<i64>,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
     pub message_id: i64,
 }
 
@@ -161,7 +164,7 @@ pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
             packet::Payload::DmDeleteReq(DmDeleteReq {
                 peer: args.peer,
                 message_id: args.message_id,
-                peer_uid: args.peer_uid.unwrap_or(0),
+                peer_uid: args.peer_uid,
             }),
             token.as_deref(),
         );
@@ -177,9 +180,10 @@ pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
 
 #[napi(object)]
 pub struct EditDmMessageArgs {
+    /// The peer's current name (a label).
     pub peer: String,
-    /// The peer's uid (users by uid; preferred over `peer`).
-    pub peer_uid: Option<i64>,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
     pub message_id: i64,
     pub content: String,
 }
@@ -193,7 +197,7 @@ pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
     // E2EE: the new body is sealed exactly like a fresh send (same
     // policy — encrypted when both sides have keys).
     let (content, envelope) =
-        match e2ee::seal_outbound(&state_arc, args.peer_uid.unwrap_or(0), &args.peer, &args.content)
+        match e2ee::seal_outbound(&state_arc, args.peer_uid, &args.peer, &args.content)
         .await
         .map_err(napi::Error::from_reason)?
     {
@@ -216,7 +220,7 @@ pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
                 message_id: args.message_id,
                 content,
                 envelope,
-                peer_uid: args.peer_uid.unwrap_or(0),
+                peer_uid: args.peer_uid,
             }),
             token.as_deref(),
         );

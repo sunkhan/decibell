@@ -22,20 +22,6 @@ public:
 
     void leave(std::shared_ptr<Session> session);
 
-    void broadcast_system_message(const std::string& text) {
-        auto now = std::chrono::system_clock::now();
-        int64_t current_time = std::chrono::system_clock::to_time_t(now);
-
-        chatproj::Packet packet;
-        packet.set_type(chatproj::Packet::DIRECT_MSG);
-        auto* msg = packet.mutable_direct_msg();
-        msg->set_sender("SYSTEM");
-        msg->set_content(text);
-        msg->set_timestamp(current_time);
-        
-        broadcast(packet);
-    }
-
     /// To every signed-in session; pre-login and community-sync
     /// connections get nothing.
     void broadcast(const chatproj::Packet& packet);

@@ -143,8 +143,8 @@ struct SelectorState {
     enforced: Option<CodecKind>,
     streamer_encode: Vec<CodecCap>,
     toggles: Toggles,
-    /// Username → decode caps (only watchers, not all voice members).
-    watchers: HashMap<String, Vec<CodecCap>>,
+    /// Watcher uid → decode caps (only watchers, not all voice members).
+    watchers: HashMap<i64, Vec<CodecCap>>,
     timer: Option<TimerInfo>,
     timer_generation: u64,
 }
@@ -195,17 +195,17 @@ impl CodecSelector {
         s.timer = None;
     }
 
-    pub fn on_watcher_joined(self: &Arc<Self>, username: String, decode: Vec<CodecCap>) {
+    pub fn on_watcher_joined(self: &Arc<Self>, uid: i64, decode: Vec<CodecCap>) {
         let mut s = self.inner.lock().unwrap();
         if s.enforced.is_some() { return; }
-        s.watchers.insert(username, decode);
+        s.watchers.insert(uid, decode);
         self.recompute_locked(&mut s);
     }
 
-    pub fn on_watcher_left(self: &Arc<Self>, username: &str) {
+    pub fn on_watcher_left(self: &Arc<Self>, uid: i64) {
         let mut s = self.inner.lock().unwrap();
         if s.enforced.is_some() { return; }
-        s.watchers.remove(username);
+        s.watchers.remove(&uid);
         self.recompute_locked(&mut s);
     }
 
@@ -364,7 +364,7 @@ mod tests {
         let (sel, mut rx) = CodecSelector::new(initial, None, enc, toggles_all());
         let sel = Arc::new(sel);
 
-        sel.on_watcher_joined("alice".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1001, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         assert!(rx.try_recv().is_err()); // not yet
         tokio::time::advance(Duration::from_millis(250)).await;
         let event = rx.recv().await.expect("swap event");
@@ -379,9 +379,9 @@ mod tests {
         let (sel, mut rx) = CodecSelector::new(initial, None, enc, toggles_all());
         let sel = Arc::new(sel);
 
-        sel.on_watcher_joined("alice".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1001, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         tokio::time::advance(Duration::from_millis(100)).await;
-        sel.on_watcher_joined("bob".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1002, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         tokio::time::advance(Duration::from_millis(250)).await;
 
         let event = rx.recv().await.expect("swap event");
@@ -397,12 +397,12 @@ mod tests {
         let (sel, mut rx) = CodecSelector::new(initial, None, enc, toggles_all());
         let sel = Arc::new(sel);
 
-        sel.on_watcher_joined("alice".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1001, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         tokio::time::advance(Duration::from_millis(250)).await;
         let downgrade = rx.recv().await.unwrap();
         sel.record_swap(downgrade.target);
 
-        sel.on_watcher_left("alice");
+        sel.on_watcher_left(1001);
         tokio::time::advance(Duration::from_secs(10)).await;
         assert!(rx.try_recv().is_err(), "shouldn't fire before 30s");
 
@@ -418,14 +418,14 @@ mod tests {
         let (sel, mut rx) = CodecSelector::new(initial, None, enc, toggles_all());
         let sel = Arc::new(sel);
 
-        sel.on_watcher_joined("alice".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1001, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         tokio::time::advance(Duration::from_millis(250)).await;
         let downgrade = rx.recv().await.unwrap();
         sel.record_swap(downgrade.target);
 
-        sel.on_watcher_left("alice");
+        sel.on_watcher_left(1001);
         tokio::time::advance(Duration::from_secs(10)).await;
-        sel.on_watcher_joined("alice".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1001, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         tokio::time::advance(Duration::from_secs(60)).await;
         assert!(rx.try_recv().is_err(), "no upgrade should fire — and no further downgrade either");
     }
@@ -437,7 +437,7 @@ mod tests {
         let (sel, mut rx) = CodecSelector::new(initial, Some(CodecKind::Av1), enc, toggles_all());
         let sel = Arc::new(sel);
 
-        sel.on_watcher_joined("alice".into(), caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
+        sel.on_watcher_joined(1001, caps(&[(CodecKind::H264Hw, 3840, 2160, 60)]));
         tokio::time::advance(Duration::from_secs(60)).await;
         assert!(rx.try_recv().is_err(), "enforcement should block all recompute");
     }

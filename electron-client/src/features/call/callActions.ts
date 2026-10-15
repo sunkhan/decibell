@@ -127,7 +127,7 @@ export async function startCall(peer: Uid): Promise<void> {
   try {
     await leaveCommunityVoiceIfAny();
     flushSaveSettings();
-    const prep = await invoke<CallPrepareResult>("call_prepare", { callId, peer: nameOf(peer) });
+    const prep = await invoke<CallPrepareResult>("call_prepare", { callId, peer: nameOf(peer), peerUid: peer });
     if (useCallStore.getState().callId !== callId) {
       // Cancelled while gathering candidates.
       await invoke("call_end").catch(() => {});
@@ -169,6 +169,7 @@ export async function acceptCall(): Promise<void> {
     const prep = await invoke<CallPrepareResult>("call_prepare", {
       callId: inc.callId,
       peer: nameOf(inc.fromUid, inc.from),
+      peerUid: inc.fromUid,
     });
     if (useCallStore.getState().callId !== inc.callId) {
       await invoke("call_end").catch(() => {});

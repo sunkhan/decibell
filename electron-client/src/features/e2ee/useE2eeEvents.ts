@@ -60,7 +60,7 @@ export function useE2eeEvents() {
       if (uid > 0) useE2eeStore.getState().markPeerChanged(uid, Math.floor(Date.now() / 1000));
       toast.warning(
         "Encryption keys changed",
-        `${username}'s encryption keys changed. If that's unexpected, compare safety numbers in their profile.`,
+        `${nameOf(uid, username)}'s encryption keys changed. If that's unexpected, compare safety numbers in their profile.`,
       );
     });
 

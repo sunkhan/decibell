@@ -55,7 +55,7 @@ pub struct UdpVideoPacket {
 pub struct UdpKeyframeRequest {
     pub packet_type: u8,
     pub sender_id: [u8; SENDER_ID_SIZE],
-    pub target_username: [u8; SENDER_ID_SIZE],
+    pub target_id: [u8; SENDER_ID_SIZE],
 }
 
 #[repr(C, packed)]
@@ -63,7 +63,7 @@ pub struct UdpKeyframeRequest {
 pub struct UdpNackPacket {
     pub packet_type: u8,
     pub sender_id: [u8; SENDER_ID_SIZE],
-    pub target_username: [u8; SENDER_ID_SIZE],
+    pub target_id: [u8; SENDER_ID_SIZE],
     pub frame_id: u32,
     pub nack_count: u16,
     pub missing_indices: [u16; NACK_MAX_ENTRIES],
@@ -194,15 +194,15 @@ impl UdpVideoPacket {
         Some(pkt)
     }
 
-    pub fn sender_username(&self) -> String {
+    pub fn sender_id_str(&self) -> String {
         let end = self.sender_id.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
         String::from_utf8_lossy(&self.sender_id[..end]).to_string()
     }
 
-    /// Allocation-free comparison against an already-known username —
+    /// Allocation-free comparison against an already-known sender id —
     /// the recv loop checks the streamer per packet (up to ~2000/sec),
     /// which must not cost a String per datagram.
-    pub fn sender_username_matches(&self, other: &str) -> bool {
+    pub fn sender_id_matches(&self, other: &str) -> bool {
         let end = self.sender_id.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
         self.sender_id[..end] == *other.as_bytes()
     }
@@ -224,13 +224,13 @@ impl UdpKeyframeRequest {
     pub fn new(sender_id_str: &str, target: &str) -> Self {
         let mut sender_id = [0u8; SENDER_ID_SIZE];
         fill_id(&mut sender_id, sender_id_str);
-        let mut target_username = [0u8; SENDER_ID_SIZE];
-        fill_id(&mut target_username, target);
+        let mut target_id = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut target_id, target);
 
         UdpKeyframeRequest {
             packet_type: PACKET_TYPE_KEYFRAME_REQUEST,
             sender_id,
-            target_username,
+            target_id,
         }
     }
 
@@ -292,8 +292,8 @@ impl UdpNackPacket {
     pub fn new(sender_id_str: &str, target: &str, frame_id: u32, missing: &[u16]) -> Self {
         let mut sender_id = [0u8; SENDER_ID_SIZE];
         fill_id(&mut sender_id, sender_id_str);
-        let mut target_username = [0u8; SENDER_ID_SIZE];
-        fill_id(&mut target_username, target);
+        let mut target_id = [0u8; SENDER_ID_SIZE];
+        fill_id(&mut target_id, target);
 
         let count = missing.len().min(NACK_MAX_ENTRIES);
         let mut missing_indices = [0u16; NACK_MAX_ENTRIES];
@@ -302,7 +302,7 @@ impl UdpNackPacket {
         UdpNackPacket {
             packet_type: PACKET_TYPE_NACK,
             sender_id,
-            target_username,
+            target_id,
             frame_id,
             nack_count: count as u16,
             missing_indices,
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(codec, CODEC_H264_HW);
         assert_eq!(psize, data.len() as u16);
         assert_eq!(decoded.payload_data(), data);
-        assert_eq!(decoded.sender_username(), "testuser");
+        assert_eq!(decoded.sender_id_str(), "testuser");
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod tests {
         // Should still round-trip correctly
         let decoded = UdpVideoPacket::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.payload_data(), data);
-        assert_eq!(decoded.sender_username(), "testuser");
+        assert_eq!(decoded.sender_id_str(), "testuser");
     }
 
     #[test]
@@ -443,12 +443,12 @@ mod tests {
     }
 
     #[test]
-    fn sender_username_matches_is_alloc_free_equivalent() {
+    fn sender_id_matches_is_alloc_free_equivalent() {
         let pkt = UdpVideoPacket::new("alice", 1, 0, 1, false, b"x");
-        assert!(pkt.sender_username_matches("alice"));
-        assert!(!pkt.sender_username_matches("alicia"));
-        assert!(!pkt.sender_username_matches("ali"));
-        assert!(!pkt.sender_username_matches(""));
-        assert_eq!(pkt.sender_username(), "alice");
+        assert!(pkt.sender_id_matches("alice"));
+        assert!(!pkt.sender_id_matches("alicia"));
+        assert!(!pkt.sender_id_matches("ali"));
+        assert!(!pkt.sender_id_matches(""));
+        assert_eq!(pkt.sender_id_str(), "alice");
     }
 }

@@ -24,17 +24,26 @@ export function toUid(v: number | bigint | null | undefined): Uid {
 interface UsersState {
   /// uid → the latest name the servers sent for it.
   names: Map<Uid, string>;
-  /// Record (uid, name) pairs; one notify for the batch, none when nothing changed.
-  remember: (pairs: Iterable<readonly [Uid, string | undefined]>) => void;
+  /// Record (uid, name) pairs; one notify for the batch, none when nothing
+  /// changed. `fromCentral`: central always sends the current name, so it
+  /// wins. A community's name can be older (it learns a rename when the
+  /// member next connects to it), so it only fills in a uid central hasn't
+  /// named yet.
+  remember: (pairs: Iterable<readonly [Uid, string | undefined]>, fromCentral: boolean) => void;
 }
+
+/// uids whose name came from central (this run).
+const fromCentralUids = new Set<Uid>();
 
 export const useUsersStore = create<UsersState>((set, get) => ({
   names: new Map(),
-  remember: (pairs) => {
+  remember: (pairs, fromCentral) => {
     const cur = get().names;
     let next: Map<Uid, string> | null = null;
     for (const [uid, name] of pairs) {
       if (!(uid > 0) || !name) continue;
+      if (fromCentral) fromCentralUids.add(uid);
+      else if (fromCentralUids.has(uid)) continue;
       if ((next ?? cur).get(uid) === name) continue;
       if (!next) next = new Map(cur);
       next.set(uid, name);
@@ -53,12 +62,4 @@ export function nameOf(uid: Uid | null | undefined, fallback = ""): string {
 /// Reactive `nameOf`: re-renders when the user is renamed.
 export function useUserName(uid: Uid | null | undefined, fallback = ""): string {
   return useUsersStore((s) => (uid && uid > 0 ? s.names.get(uid) : undefined) ?? fallback);
-}
-
-/// The account currently named `name`, as far as the servers have said.
-/// Only for names saved before uids (old per-user volume settings);
-/// everything else carries the uid.
-export function uidNamed(name: string): Uid | undefined {
-  for (const [uid, n] of useUsersStore.getState().names) if (n === name) return uid;
-  return undefined;
 }

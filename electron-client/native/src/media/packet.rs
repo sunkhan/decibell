@@ -132,7 +132,7 @@ impl UdpAudioPacket {
         })
     }
 
-    pub fn sender_username(&self) -> String {
+    pub fn sender_id_str(&self) -> String {
         let end = self
             .sender_id
             .iter()
@@ -161,7 +161,7 @@ mod tests {
         let back = UdpAudioPacket::from_bytes(&bytes).unwrap();
         assert_eq!(back.payload_data(), &max[..]);
         assert_eq!(back.sequence, 3);
-        assert_eq!(back.sender_username(), "alice");
+        assert_eq!(back.sender_id_str(), "alice");
         // One byte over: refused, never clamped.
         let over = vec![0u8; MAX_PAYLOAD_SIZE + 1];
         assert!(UdpAudioPacket::new_audio("alice", 4, &over).is_none());

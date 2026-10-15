@@ -50,12 +50,15 @@ pub struct AppSettings {
     /// a config that already carries the field keeps whatever it says.
     #[serde(default = "default_true")]
     pub agc_enabled: bool,
-    /// Per-user volume in dB (username → dB). 0 = default, negative = quieter, positive = louder.
+    /// Per-user volume in dB by account uid (decimal). 0 = default,
+    /// negative = quieter, positive = louder. (The name-keyed
+    /// `user_volumes` / `local_muted_users` it replaced are dropped: a name
+    /// can belong to someone else after a rename.)
     #[serde(default)]
-    pub user_volumes: std::collections::HashMap<String, f64>,
-    /// Users locally muted by this client
+    pub user_volumes_by_uid: std::collections::HashMap<String, f64>,
+    /// Accounts (uid, decimal) locally muted by this client.
     #[serde(default)]
-    pub local_muted_users: Vec<String>,
+    pub local_muted_uids: Vec<String>,
     /// Attachment upload cap in bytes per second. 0 = unlimited.
     #[serde(default)]
     pub upload_limit_bps: u64,

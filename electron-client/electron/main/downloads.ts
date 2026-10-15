@@ -47,7 +47,10 @@ export interface DownloadContext {
   channelId: string;
   channelName: string;
   messageId: number;
+  /// The sender's name when the download started (a fallback label).
   sender: string;
+  /// The sender's account: the renderer draws their current name.
+  senderUid: number;
 }
 
 interface DownloadRecord {
@@ -539,6 +542,7 @@ function cleanContext(c: Partial<DownloadContext> | undefined): DownloadContext 
     channelName: String(c?.channelName ?? ""),
     messageId: Number(c?.messageId) || 0,
     sender: String(c?.sender ?? ""),
+    senderUid: Number(c?.senderUid) || 0,
   };
 }
 

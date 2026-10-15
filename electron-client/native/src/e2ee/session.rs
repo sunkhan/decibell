@@ -259,7 +259,12 @@ async fn accept_fetched(
     // history shouldn't cost a fetch every session.
     let mut dirty = false;
     if let Some(store) = s.e2ee.store.as_mut() {
-        if store.peer_dh_pub(uid, "", kid).is_none() {
+        // A pin from the name-keyed store moves to the uid once this
+        // account's bundle proves it (by key, never by name).
+        if store.adopt_legacy(uid, &bundle.sign_pub, bundle.binding, &bundle.signed_name) {
+            dirty = true;
+        }
+        if store.peer_dh_pub(uid, kid).is_none() {
             store.remember_peer_key(uid, kid, &bundle.dh_pub);
             dirty = true;
         }
@@ -345,11 +350,6 @@ pub async fn resolve_peer_current(
     let mut dirty = false;
     if let Some(store) = s.e2ee.store.as_mut() {
         let now = now_secs();
-        // A pin from the name-keyed store moves to the uid (names can't
-        // have changed hands before renames exist).
-        if store.adopt_legacy(uid, &bundle.username) {
-            dirty = true;
-        }
         match store.peers.get_mut(&uid) {
             None => {
                 store.peers.insert(
@@ -428,7 +428,7 @@ pub async fn seal_outbound(
     }
     let pinned = {
         let s = state.lock().await;
-        s.e2ee.store.as_ref().map(|st| st.is_pinned(uid, peer)).unwrap_or(false)
+        s.e2ee.store.as_ref().map(|st| st.is_pinned(uid)).unwrap_or(false)
     };
     if status == Status::Locked {
         if pinned {
@@ -542,11 +542,8 @@ async fn resolve_open_keys(
             return Err(DecryptError::Locked);
         }
         let store = s.e2ee.store.as_ref().ok_or(DecryptError::Locked)?;
-        let i_am_sender = if parties.sender_uid > 0 && s.uid > 0 {
-            parties.sender_uid == s.uid
-        } else {
-            s.username.as_deref() == Some(parties.sender_name)
-        };
+        // By uid only: a row with no account (0) or a placeholder isn't ours.
+        let i_am_sender = parties.sender_uid != 0 && parties.sender_uid == s.uid;
         let (my_kid, peer_uid, peer_name, peer_kid) = if i_am_sender {
             (hdr.sender_key_id, parties.recipient_uid, parties.recipient_name, hdr.recipient_key_id)
         } else {
@@ -554,8 +551,11 @@ async fn resolve_open_keys(
         };
         let mine = store.key(my_kid).ok_or(DecryptError::NoKey)?;
         let my_priv = arr32(&mine.dh_priv).ok_or(DecryptError::Bad)?;
+        // A v1 envelope may also open with a not-yet-adopted pin under the
+        // name it was sealed with (both predate renames).
         let cached = store
-            .peer_dh_pub(peer_uid, peer_name, peer_kid)
+            .peer_dh_pub(peer_uid, peer_kid)
+            .or_else(|| if hdr.version == envelope::VERSION_V1 { store.legacy_dh_pub(peer_name, peer_kid) } else { None })
             .or_else(|| s.e2ee.cache.get(&(peer_uid, peer_kid)).map(|b| b.dh_pub.clone()));
         (i_am_sender, my_priv, my_kid, peer_uid, peer_kid, cached)
     };
@@ -686,7 +686,11 @@ pub async fn bootstrap(state: Arc<Mutex<AppState>>) {
         emit_status(&s);
         return;
     }
-    match keystore::load(uid, &username) {
+    let loaded = match keystore::load(uid) {
+        Ok(None) => migrate_own_legacy_store(&state, uid, &username).await,
+        other => other,
+    };
+    match loaded {
         Ok(Some(store)) if store.current().is_some() => {
             {
                 let mut s = state.lock().await;
@@ -721,11 +725,39 @@ pub async fn bootstrap(state: Arc<Mutex<AppState>>) {
     emit_status(&s);
 }
 
+/// Our pre-uid store (filed under our name) becomes the uid file only when
+/// central's current bundle for our uid is one of its keys: on a shared OS
+/// profile, a reused name's file may be another account's.
+async fn migrate_own_legacy_store(
+    state: &Arc<Mutex<AppState>>,
+    uid: i64,
+    username: &str,
+) -> Result<Option<KeyStore>, String> {
+    let Some(store) = keystore::load_legacy(username)? else { return Ok(None) };
+    let ours = match fetch_bundle(state, uid, 0).await {
+        Ok(Some(b)) => store
+            .keys
+            .iter()
+            .any(|k| k.sign_public().map(|p| p.as_slice() == b.sign_pub.as_slice()).unwrap_or(false)),
+        Ok(None) => false,
+        Err(e) => {
+            log::warn!("[e2ee] can't check the pre-uid key store against central: {e}");
+            return Ok(None);
+        }
+    };
+    if !ours {
+        log::warn!("[e2ee] the key store filed under {username:?} isn't this account's; left alone");
+        return Ok(None);
+    }
+    keystore::adopt_legacy_file(uid, username, &store)?;
+    Ok(Some(store))
+}
+
 /// Re-sign our current bundle over the uid when central still holds the
 /// name-bound one (uid design, stage 4). Same keys, same key_id: central
 /// swaps the signature in place, so history and other devices are
 /// untouched. Runs whenever the keys become ready on this device.
-async fn rebind_if_needed(state: &Arc<Mutex<AppState>>) {
+pub async fn rebind_if_needed(state: &Arc<Mutex<AppState>>) {
     let (uid, username, identity) = {
         let s = state.lock().await;
         if !s.e2ee.uid_binding || s.e2ee.status != Status::Ready || s.uid <= 0 {

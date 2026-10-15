@@ -39,8 +39,8 @@ interface LoadedConfigShape {
     output_device: string | null;
     separate_stream_output: boolean;
     stream_output_device: string | null;
-    user_volumes: Record<string, number>;
-    local_muted_users: string[];
+    user_volumes_by_uid: Record<string, number>;
+    local_muted_uids: string[];
     aec_enabled: boolean;
     noise_suppression_level: number;
     agc_enabled: boolean;
@@ -261,7 +261,7 @@ export async function loadSettings(): Promise<void> {
 
   // Per-user volume + local mute restoration (by uid; older name-keyed
   // entries move to their uid as the servers name them).
-  restoreSavedUserGains(settings.user_volumes ?? {}, settings.local_muted_users ?? []);
+  restoreSavedUserGains(settings.user_volumes_by_uid ?? {}, settings.local_muted_uids ?? []);
 
   // Auto-login. If the user has saved credentials we attempt them
   // silently; failure (wrong password / server gone / no internet)

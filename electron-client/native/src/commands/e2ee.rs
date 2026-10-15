@@ -123,7 +123,7 @@ pub async fn e2ee_peer_info(args: PeerInfoArgs) -> napi::Result<E2eePeerInfo> {
     };
     let s = state_arc.lock().await;
     let me = s.uid;
-    let rec = s.e2ee.store.as_ref().and_then(|st| st.pin(uid, &args.username));
+    let rec = s.e2ee.store.as_ref().and_then(|st| st.pin(uid));
     let (pinned, changed_at) = rec
         .map(|r| (!r.sign_pub.is_empty(), r.changed_at))
         .unwrap_or((false, 0));

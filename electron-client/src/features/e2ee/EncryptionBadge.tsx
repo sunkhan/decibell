@@ -9,7 +9,7 @@ import { useUserName, type Uid } from "../../stores/usersStore";
 /// while the peer's state is still being looked up (no "Unencrypted"
 /// flash on open).
 export default function EncryptionBadge({ peer }: { peer: Uid }) {
-  const peerName = useUserName(peer);
+  const peerName = useUserName(peer, "Unknown user");
   const status = useE2eeStore((s) => s.status);
   const info = usePeerE2ee(peer);
   if (status === "unavailable") return null;

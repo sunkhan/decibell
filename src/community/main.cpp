@@ -16,6 +16,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <limits>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -381,7 +382,9 @@ public:
     /// A live session took a new name (SESSION_TOKEN_UPDATE): retire the
     /// old roster row, publish the new one, and refresh the voice / stream
     /// views that show the name.
-    void on_member_renamed(std::shared_ptr<Session> session, const std::string& old_username);
+    /// A member's new name, taken in place by every session of theirs and
+    /// shown to every roster / voice / stream view.
+    void on_member_renamed(int64_t uid, const std::string& name);
     void broadcast_bans();
     uint64_t roster_revision() const { return roster_revision_; }
     // Builds the wire MemberInfo for one member (nullopt if not a member).
@@ -834,6 +837,7 @@ public:
     int64_t get_uid() const { return uid_; }
     /// The name from this session's token (the current one), for labels.
     std::string get_username() const { return username_; }
+    void set_username(const std::string& name) { username_ = name; }
     std::string get_token() const { return token_; }
     std::string get_udp_key() const { return udp_key_; }
     bool is_authenticated() const { return authenticated_; }
@@ -1067,16 +1071,19 @@ private:
                 return;
             }
 
-            // A name seen here before uids were (a member who hasn't
+            // A banned account is refused before it can claim anything.
+            // Then a name seen here before uids were (a member who hasn't
             // connected since, a name-only ban, a fresh server's configured
-            // owner) becomes this account's now — only if it isn't a member
-            // under its uid already.
+            // owner) becomes this account's — only if it isn't a member
+            // under its uid already; a claimed legacy ban bans it too.
             bool member = db->is_member(candidate_uid);
-            if (!member && db->claim_legacy(candidate_uid, candidate_username)) {
+            bool banned = db->is_banned(candidate_uid);
+            if (!banned && !member && db->claim_legacy(candidate_uid, candidate_username)) {
                 member = db->is_member(candidate_uid);
+                banned = db->is_banned(candidate_uid);
             }
 
-            if (db->is_banned(candidate_uid, candidate_username)) {
+            if (banned) {
                 std::cout << "[Community] Blocked banned user: " << candidate_username << "\n";
                 send_auth_response(false, "You are banned from this server.", "banned");
                 manager_.leave(shared_from_this());
@@ -1202,9 +1209,10 @@ private:
             // member flipping online — one MemberInfo to everyone. Not for
             // an invisible member already on the roster: an upsert at
             // connect time would itself give the connection away. A rename
-            // also retires the old name's row (clients key rows by name).
-            if (renamed_from) manager_.emit_member_remove(uid_, *renamed_from);
-            if (roster_changed || manager_.user_presence_visible(uid_)) {
+            // also relabels their other sessions (another device).
+            if (renamed_from) {
+                manager_.on_member_renamed(uid_, username_);
+            } else if (roster_changed || manager_.user_presence_visible(uid_)) {
                 manager_.emit_member_upsert(uid_);
             }
             // Encrypted channels: if this member lacks epoch keys anywhere
@@ -1241,10 +1249,8 @@ private:
             db->refresh_member_name(uid_, claims->username, claims->iat, &current);
             // No member row (removed meanwhile) or nothing new: nothing to do.
             if (current.empty() || current == username_) return;
-            const std::string old = username_;
-            username_ = current;
-            std::cout << "[Community] uid " << uid_ << " renamed " << old << " -> " << username_ << " (live)\n";
-            manager_.on_member_renamed(shared_from_this(), old);
+            std::cout << "[Community] uid " << uid_ << " renamed " << username_ << " -> " << current << " (live)\n";
+            manager_.on_member_renamed(uid_, current);
             return;
         }
 
@@ -2673,11 +2679,17 @@ private:
             if (!db) return;
             const auto& req = packet.ban_member_req();
             const std::string& reason = req.reason();
-            // The target by uid: a member, or someone who left (their name
-            // from the request only labels the ban row).
+            // The target by uid: a member, or an account that left (their
+            // name from the request only labels the ban row). A placeholder
+            // (negative uid) only as a member: a made-up one would ban
+            // nobody, outside the hierarchy check.
             const int64_t target_uid = req.uid();
             if (target_uid == 0) return;
             auto member = resolve_member(target_uid);
+            if (target_uid < 0 && !member) {
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Not a member.", req.username(), "ban", target_uid);
+                return;
+            }
             const std::string target = member ? member->username : req.username();
             if (auto a = manager_.authz().check(chatproj::Action::BanMember,
                                                 {uid_, "", target_uid}); !a) {
@@ -3532,8 +3544,10 @@ private:
                 out->set_id(e.id);
                 out->set_timestamp(e.timestamp);
                 out->set_actor(e.actor);
+                out->set_actor_uid(e.actor_uid);
                 out->set_action(e.action);
                 out->set_target(e.target);
+                out->set_target_uid(e.target_uid);
                 out->set_channel_id(e.channel_id);
                 out->set_details(e.details);
             }
@@ -3893,7 +3907,8 @@ private:
             return;
         }
         if (req.query().size() > 512) { fail("That search is too long."); return; }
-        const int people = req.authors_size() + req.author_uids_size();
+        int people = 0;
+        for (int64_t uid : req.author_uids()) if (uid != 0) ++people;
         if (people > 10) { fail("Search for at most 10 people at once."); return; }
         if (req.channel_ids_size() > 100) { fail("Search at most 100 channels at once."); return; }
         if (req.after() < 0 || req.before() < 0 ||
@@ -4729,13 +4744,12 @@ void SessionManager::emit_member_upsert(int64_t uid) {
     broadcast_to_members(p);
 }
 
-void SessionManager::on_member_renamed(std::shared_ptr<Session> session, const std::string& old_username) {
-    const int64_t uid = session->get_uid();
-    const std::string name = session->get_username();
-    const std::string voice_channel = session->get_current_voice_channel();
+void SessionManager::on_member_renamed(int64_t uid, const std::string& name) {
+    std::vector<std::shared_ptr<Session>> sessions;
     std::vector<std::string> stream_channels;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (auto it = sessions_by_user_.find(uid); it != sessions_by_user_.end()) sessions = it->second;
         for (auto& [ch, streams] : active_streams_) {
             auto it = streams.find(uid);
             if (it == streams.end()) continue;
@@ -4743,15 +4757,16 @@ void SessionManager::on_member_renamed(std::shared_ptr<Session> session, const s
             stream_channels.push_back(ch);
         }
     }
-    // Roster rows are keyed by name on clients: retire the old one. Not for
-    // an invisible member: the change would show they're connected (central
-    // holds back USER_RENAMED the same way); rosters pick the name up on
-    // their next fetch.
-    if (user_presence_visible(uid)) {
-        emit_member_remove(uid, old_username);
-        emit_member_upsert(uid);
+    std::set<std::string> voice_channels;
+    for (const auto& s : sessions) {
+        s->set_username(name);
+        if (auto vc = s->get_current_voice_channel(); !vc.empty()) voice_channels.insert(vc);
     }
-    if (!voice_channel.empty()) broadcast_voice_presence(voice_channel);
+    // Clients key roster rows by uid: an upsert relabels the row. Invisible
+    // members too (owner decision 2026-10-15: profile changes may reveal
+    // activity, as central's USER_RENAMED does).
+    emit_member_upsert(uid);
+    for (const auto& ch : voice_channels) broadcast_voice_presence(ch);
     for (const auto& ch : stream_channels) broadcast_stream_presence(ch);
 }
 
@@ -4768,6 +4783,38 @@ void SessionManager::emit_member_remove(int64_t uid, const std::string& username
     if (!db_ || !db_->is_member(uid)) broadcast_roles();
 }
 
+namespace {
+// Member pages run in (name, uid) order: names aren't unique (a stale row
+// beside the account now holding the name, a placeholder beside a member
+// renamed onto it). The cursor is opaque to clients: "<name>\x1f<uid>".
+// A bare name (an older client's cursor) resumes after every row of it.
+struct MemberCursor {
+    std::string name;
+    int64_t uid = 0;
+};
+MemberCursor parse_member_cursor(const std::string& s) {
+    MemberCursor c;
+    const auto sep = s.find('\x1f');
+    if (sep == std::string::npos) {
+        c.name = s;
+        c.uid = std::numeric_limits<int64_t>::max();
+        return c;
+    }
+    c.name = s.substr(0, sep);
+    c.uid = std::strtoll(s.c_str() + sep + 1, nullptr, 10);
+    return c;
+}
+std::string member_cursor(const chatproj::DbMember& m) {
+    return m.username + '\x1f' + std::to_string(m.uid);
+}
+bool member_order(const chatproj::DbMember& a, const chatproj::DbMember& b) {
+    return a.username != b.username ? a.username < b.username : a.uid < b.uid;
+}
+bool past_cursor(const chatproj::DbMember& m, const MemberCursor& c) {
+    return m.username != c.name ? m.username > c.name : m.uid > c.uid;
+}
+}  // namespace
+
 void SessionManager::fill_member_page(const std::string& after, int32_t limit,
                                       chatproj::MemberListResponse* res) {
     if (!db_) { res->set_success(false); res->set_message("Server misconfigured."); return; }
@@ -4783,11 +4830,9 @@ void SessionManager::fill_member_page(const std::string& after, int32_t limit,
         roles_by_user[uid].push_back(role_id);
     }
     auto members = db_->list_members();
-    std::sort(members.begin(), members.end(),
-              [](const chatproj::DbMember& a, const chatproj::DbMember& b) {
-                  return a.username < b.username;
-              });
+    std::sort(members.begin(), members.end(), member_order);
     const bool first_page = after.empty();
+    const MemberCursor cursor = parse_member_cursor(after);
     auto emit = [&](const chatproj::DbMember& m) {
         auto* info = res->add_members();
         info->set_username(m.username);
@@ -4811,11 +4856,11 @@ void SessionManager::fill_member_page(const std::string& after, int32_t limit,
     std::string next_after;
     for (const auto& m : members) {
         if (online.count(m.uid)) continue;
-        if (!first_page && m.username <= after) continue;
+        if (!first_page && !past_cursor(m, cursor)) continue;
         if (offline_sent >= limit) { has_more = true; break; }
         emit(m);
         ++offline_sent;
-        next_after = m.username;
+        next_after = member_cursor(m);
     }
     res->set_success(true);
     res->set_revision(roster_revision_);
@@ -4847,10 +4892,8 @@ void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req
     std::unordered_map<int64_t, std::vector<int64_t>> roles_by_user;
     for (const auto& [uid, rid] : db_->list_all_member_roles()) roles_by_user[uid].push_back(rid);
     auto members = db_->list_members();
-    std::sort(members.begin(), members.end(),
-              [](const chatproj::DbMember& a, const chatproj::DbMember& b) {
-                  return a.username < b.username;
-              });
+    std::sort(members.begin(), members.end(), member_order);
+    const MemberCursor cursor = parse_member_cursor(req.after());
     int64_t total = 0;
     int32_t sent = 0;
     bool has_more = false;
@@ -4864,7 +4907,7 @@ void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req
             ascii_lower(m.username).find(needle) == std::string::npos &&
             ascii_lower(m.nickname).find(needle) == std::string::npos) continue;
         ++total;
-        if (!req.after().empty() && m.username <= req.after()) continue;
+        if (!req.after().empty() && !past_cursor(m, cursor)) continue;
         if (sent >= limit) { has_more = true; continue; }
         auto* info = res->add_members();
         info->set_username(m.username);
@@ -4876,7 +4919,7 @@ void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req
         info->set_timed_out_until(m.timed_out_until);
         if (any_role) for (int64_t rid : rit->second) info->add_role_ids(rid);
         ++sent;
-        next_after = m.username;
+        next_after = member_cursor(m);
     }
     res->set_success(true);
     res->set_total_matches(total);

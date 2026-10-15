@@ -13,8 +13,11 @@
 //!
 //! Before the uid binding (uid design, stage 4) the file was
 //! `<hex(username)>.json`, bound to the name, with pins keyed by name. The
-//! first load migrates it: pins move to `legacy_peers` and are adopted by
-//! uid when that peer next resolves under the same name.
+//! first load migrates it (once the keys prove to be this account's): pins
+//! move to `legacy_peers` and are adopted by uid when a fetched bundle
+//! proves the account by its identity key, never by its name (names change
+//! hands). Until then a legacy pin only opens v1 history sealed under that
+//! name (both from before renames existed).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,7 +64,8 @@ pub struct KeyStore {
     /// Pins by account uid.
     #[serde(default)]
     pub peers: HashMap<i64, PeerRecord>,
-    /// Pins from the name-keyed store, waiting to be adopted by uid.
+    /// Pins from the name-keyed store, waiting to be adopted by uid. Only
+    /// `adopt_legacy` and `legacy_dh_pub` (v1 history) read them.
     #[serde(default)]
     pub legacy_peers: HashMap<String, PeerRecord>,
 }
@@ -94,44 +98,57 @@ impl KeyStore {
         self.keys.iter().find(|k| k.key_id == key_id)
     }
 
-    /// The pin for `uid`, or the name-keyed one a pre-uid store held for
-    /// `name` while it hasn't been adopted.
-    pub fn pin(&self, uid: i64, name: &str) -> Option<&PeerRecord> {
-        self.peers
-            .get(&uid)
-            .or_else(|| if name.is_empty() { None } else { self.legacy_peers.get(name) })
+    /// The pin for `uid`.
+    pub fn pin(&self, uid: i64) -> Option<&PeerRecord> {
+        self.peers.get(&uid)
     }
 
     /// True when we've pinned an identity for this peer.
-    pub fn is_pinned(&self, uid: i64, name: &str) -> bool {
-        self.pin(uid, name).map(|p| !p.sign_pub.is_empty()).unwrap_or(false)
+    pub fn is_pinned(&self, uid: i64) -> bool {
+        self.pin(uid).map(|p| !p.sign_pub.is_empty()).unwrap_or(false)
     }
 
-    /// Move the name-keyed pin for `name` to `uid` (when `uid` has none
-    /// yet). Called with the name central reports for the uid, so it's the
-    /// same account as long as names haven't changed hands. True if moved.
-    pub fn adopt_legacy(&mut self, uid: i64, name: &str) -> bool {
-        if uid <= 0 || name.is_empty() || self.peers.contains_key(&uid) {
+    /// Move a name-keyed pin to `uid` once a verified bundle of that
+    /// account proves it: the pinned identity key is this bundle's (any
+    /// generation), or the bundle is name-bound (binding 1) to the pin's
+    /// name (signed by this account while it held the name; keys changed
+    /// since). Never by the current name alone: names change hands. A uid
+    /// already pinned keeps its pin. True if moved.
+    pub fn adopt_legacy(&mut self, uid: i64, sign_pub: &[u8], binding: u32, signed_name: &str) -> bool {
+        if uid <= 0 || self.legacy_peers.is_empty() || self.is_pinned(uid) {
             return false;
         }
-        match self.legacy_peers.remove(name) {
-            Some(rec) => {
-                self.peers.insert(uid, rec);
-                true
+        let name = self
+            .legacy_peers
+            .iter()
+            .find(|(_, rec)| !rec.sign_pub.is_empty() && rec.sign_pub == sign_pub)
+            .map(|(name, _)| name.clone())
+            .or_else(|| {
+                (binding == 1 && !signed_name.is_empty() && self.legacy_peers.contains_key(signed_name))
+                    .then(|| signed_name.to_string())
+            });
+        let Some(name) = name else { return false };
+        let Some(mut rec) = self.legacy_peers.remove(&name) else { return false };
+        // Keep the generations already cached under the uid.
+        if let Some(cur) = self.peers.remove(&uid) {
+            for (kid, pubkey) in cur.history {
+                rec.history.entry(kid).or_insert(pubkey);
             }
-            None => false,
         }
+        self.peers.insert(uid, rec);
+        true
     }
 
     /// A peer's public agreement key for one generation, if cached.
-    pub fn peer_dh_pub(&self, uid: i64, name: &str, key_id: u32) -> Option<Vec<u8>> {
-        use base64::Engine as _;
-        let p = self.pin(uid, name)?;
-        if p.key_id == key_id && !p.dh_pub.is_empty() {
-            return Some(p.dh_pub.clone());
-        }
-        let b = p.history.get(&key_id)?;
-        base64::engine::general_purpose::STANDARD.decode(b).ok()
+    pub fn peer_dh_pub(&self, uid: i64, key_id: u32) -> Option<Vec<u8>> {
+        record_dh_pub(self.pin(uid)?, key_id)
+    }
+
+    /// The key a not-yet-adopted name-keyed pin holds for `name`: only for
+    /// opening a v1 envelope sealed under that name (v1 history and the
+    /// pin both come from before names could change hands).
+    pub fn legacy_dh_pub(&self, name: &str, key_id: u32) -> Option<Vec<u8>> {
+        record_dh_pub(self.legacy_peers.get(name)?, key_id)
     }
 
     pub fn remember_peer_key(&mut self, uid: i64, key_id: u32, dh_pub: &[u8]) {
@@ -140,6 +157,15 @@ impl KeyStore {
         rec.history
             .insert(key_id, base64::engine::general_purpose::STANDARD.encode(dh_pub));
     }
+}
+
+fn record_dh_pub(p: &PeerRecord, key_id: u32) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    if p.key_id == key_id && !p.dh_pub.is_empty() {
+        return Some(p.dh_pub.clone());
+    }
+    let b = p.history.get(&key_id)?;
+    base64::engine::general_purpose::STANDARD.decode(b).ok()
 }
 
 /// On-disk envelope around the encrypted store.
@@ -216,18 +242,23 @@ fn open_file(path: &PathBuf, version: u32, aad: &[u8]) -> Result<Option<Vec<u8>>
 
 /// `Ok(None)` = no store for this account. `Err` = present but unreadable
 /// (different at-rest key, corruption) — the caller treats that as locked.
-/// A pre-uid store for `username` is migrated to the uid file on the way.
-pub fn load(uid: i64, username: &str) -> Result<Option<KeyStore>, String> {
-    if let Some(mut plain) = open_file(&path_for(uid), FILE_VERSION_UID, &uid_aad(uid))? {
-        let store = serde_json::from_slice::<KeyStore>(&plain).map_err(|e| format!("decode store: {e}"));
-        plain.zeroize();
-        return store.map(Some);
-    }
+pub fn load(uid: i64) -> Result<Option<KeyStore>, String> {
+    let Some(mut plain) = open_file(&path_for(uid), FILE_VERSION_UID, &uid_aad(uid))? else {
+        return Ok(None);
+    };
+    let store = serde_json::from_slice::<KeyStore>(&plain).map_err(|e| format!("decode store: {e}"));
+    plain.zeroize();
+    store.map(Some)
+}
+
+/// A pre-uid store filed under `username`, unsaved: the caller checks its
+/// keys are this account's (a reused name on a shared OS profile could be
+/// someone else's) before `adopt_legacy_file` moves it to the uid file.
+pub fn load_legacy(username: &str) -> Result<Option<KeyStore>, String> {
     if username.is_empty() {
         return Ok(None);
     }
-    let legacy = legacy_path_for(username);
-    let Some(mut plain) = open_file(&legacy, FILE_VERSION_NAME, username.as_bytes())? else {
+    let Some(mut plain) = open_file(&legacy_path_for(username), FILE_VERSION_NAME, username.as_bytes())? else {
         return Ok(None);
     };
     let old = serde_json::from_slice::<KeyStoreV1>(&plain).map_err(|e| format!("decode store: {e}"));
@@ -235,10 +266,15 @@ pub fn load(uid: i64, username: &str) -> Result<Option<KeyStore>, String> {
     let old = old?;
     let mut store = KeyStore::new(old.current_key_id, old.keys);
     store.legacy_peers = old.peers;
-    save(uid, &store)?;
-    let _ = std::fs::remove_file(&legacy);
-    log::info!("[e2ee] key store migrated to the uid file ({} pins to adopt)", store.legacy_peers.len());
     Ok(Some(store))
+}
+
+/// Save a verified pre-uid store as `uid`'s and remove the name-keyed file.
+pub fn adopt_legacy_file(uid: i64, username: &str, store: &KeyStore) -> Result<(), String> {
+    save(uid, store)?;
+    let _ = std::fs::remove_file(legacy_path_for(username));
+    log::info!("[e2ee] key store migrated to the uid file ({} pins to adopt)", store.legacy_peers.len());
+    Ok(())
 }
 
 pub fn save(uid: i64, store: &KeyStore) -> Result<(), String> {
@@ -336,15 +372,15 @@ mod tests {
         store.peers.get_mut(&20).unwrap().sign_pub = vec![1u8; 32];
         save(uid, &store).unwrap();
         assert!(exists(uid, ""));
-        let back = load(uid, "alice/Ünïcode").unwrap().unwrap();
+        let back = load(uid).unwrap().unwrap();
         assert_eq!(back.current_key_id, 4);
         assert_eq!(back.current().unwrap().key_id, 4);
-        assert_eq!(back.peer_dh_pub(20, "", 2).unwrap(), vec![9u8; 32]);
-        assert!(back.peer_dh_pub(20, "", 3).is_none());
+        assert_eq!(back.peer_dh_pub(20, 2).unwrap(), vec![9u8; 32]);
+        assert!(back.peer_dh_pub(20, 3).is_none());
         assert_eq!(back.peers[&20].sign_pub, vec![1u8; 32]);
-        assert!(back.is_pinned(20, "bob") && !back.is_pinned(21, "bob"));
+        assert!(back.is_pinned(20) && !back.is_pinned(21));
         delete(uid);
-        assert!(load(uid, "").unwrap().is_none());
+        assert!(load(uid).unwrap().is_none());
         assert!(save(0, &store).is_err());
     }
 
@@ -355,7 +391,7 @@ mod tests {
         save(9101, &store).unwrap();
         // Copy one account's file over another's: the AAD refuses it.
         std::fs::copy(path_for(9101), path_for(9102)).unwrap();
-        assert!(load(9102, "").is_err());
+        assert!(load(9102).is_err());
         delete(9101);
         delete(9102);
     }
@@ -375,20 +411,41 @@ mod tests {
         });
         save_legacy("migrant", &serde_json::to_vec(&old).unwrap());
         assert!(exists(9201, "migrant"));
-        let mut store = load(9201, "migrant").unwrap().unwrap();
+        assert!(load(9201).unwrap().is_none(), "a uid load never reads a name-keyed file");
+        let mut store = load_legacy("migrant").unwrap().unwrap();
         assert_eq!(store.current().unwrap().dh_public().unwrap(), k.dh_public().unwrap());
-        assert!(store.peers.is_empty());
-        assert!(store.is_pinned(77, "bob"), "a legacy pin counts until adopted");
-        assert_eq!(store.peer_dh_pub(77, "bob", 5).unwrap(), vec![2u8; 32]);
+        assert!(legacy_path_for("migrant").exists(), "nothing moves before the caller checks the keys");
+        adopt_legacy_file(9201, "migrant", &store).unwrap();
         assert!(!legacy_path_for("migrant").exists(), "the name-keyed file is gone");
         assert!(path_for(9201).is_file());
-        // Adoption moves the pin to the uid, once.
-        assert!(store.adopt_legacy(77, "bob"));
-        assert!(!store.adopt_legacy(78, "bob"));
-        assert!(store.is_pinned(77, "") && !store.is_pinned(78, "bob"));
+        // A legacy pin counts for nothing until adopted, and only v1 history
+        // opens with it by name.
+        assert!(store.peers.is_empty() && !store.is_pinned(77));
+        assert_eq!(store.legacy_dh_pub("bob", 5).unwrap(), vec![2u8; 32]);
+        // The current name alone adopts nothing (names change hands)...
+        assert!(!store.adopt_legacy(77, &[9u8; 32], 2, "bob"));
+        // ...the pinned identity key does, once.
+        assert!(store.adopt_legacy(77, &[1u8; 32], 2, ""));
+        assert!(!store.adopt_legacy(78, &[1u8; 32], 2, ""));
+        assert!(store.is_pinned(77) && !store.is_pinned(78));
+        assert_eq!(store.peer_dh_pub(77, 5).unwrap(), vec![2u8; 32]);
         // A second load reads the uid file.
-        let again = load(9201, "migrant").unwrap().unwrap();
+        let again = load(9201).unwrap().unwrap();
         assert_eq!(again.legacy_peers.len(), 1);
         delete(9201);
+    }
+
+    #[test]
+    fn a_name_bound_bundle_adopts_its_names_pin() {
+        let mut store = KeyStore::new(1, vec![IdentityKeys::generate(1).unwrap()]);
+        let rec = PeerRecord { sign_pub: vec![1u8; 32], key_id: 5, dh_pub: vec![2u8; 32], first_seen: 1, changed_at: 0, history: HashMap::new() };
+        store.legacy_peers.insert("carol".into(), rec);
+        // Keys generations already cached under the uid are kept.
+        store.remember_peer_key(42, 6, &[3u8; 32]);
+        // A binding-1 bundle signed for "carol" by uid 42 (new keys since).
+        assert!(store.adopt_legacy(42, &[7u8; 32], 1, "carol"));
+        assert!(store.is_pinned(42) && store.legacy_peers.is_empty());
+        assert_eq!(store.peers[&42].sign_pub, vec![1u8; 32], "the old pin stays, so the change is surfaced");
+        assert_eq!(store.peer_dh_pub(42, 6).unwrap(), vec![3u8; 32]);
     }
 }

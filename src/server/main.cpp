@@ -505,13 +505,15 @@ private:
 
             chatproj::Packet routed = packet;
             auto* sig = routed.mutable_call_signal();
-            if (sig->to_uid() <= 0 && sig->to().empty()) return;
+            // The peer by uid; only an INVITE may name someone typed.
+            const bool invite = sig->kind() == chatproj::CallSignal::INVITE;
+            if (sig->to_uid() <= 0 && (!invite || sig->to().empty())) return;
             if (sig->to().size() > 64 || sig->call_id().size() > 64 ||
                 sig->pub_key().size() > 64 || sig->pub_key_sig().size() > 64 ||
                 sig->candidates_size() > 16) {
                 return;
             }
-            const auto peer = auth_manager_.resolveUser(sig->to_uid(), sig->to());
+            const auto peer = auth_manager_.resolveUser(sig->to_uid(), invite ? sig->to() : std::string());
             if (!peer.found()) {
                 // No such account: offline to the caller, as before.
                 send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(),
@@ -587,8 +589,8 @@ private:
         else if (packet.type() == chatproj::Packet::DM_HISTORY_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_history_req();
-            if (req.peer_uid() <= 0 && req.peer().empty()) return;
-            const auto peer = auth_manager_.resolveUser(req.peer_uid(), req.peer());
+            if (req.peer_uid() <= 0) return;
+            const auto peer = auth_manager_.resolveUser(req.peer_uid(), "");
 
             int32_t limit = req.limit();
             if (limit <= 0) limit = 50;
@@ -660,8 +662,8 @@ private:
         else if (packet.type() == chatproj::Packet::DM_MARK_READ_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_mark_read_req();
-            if (req.peer_uid() <= 0 && req.peer().empty()) return;
-            const auto peer = auth_manager_.resolveUser(req.peer_uid(), req.peer());
+            if (req.peer_uid() <= 0) return;
+            const auto peer = auth_manager_.resolveUser(req.peer_uid(), "");
             if (!peer.found()) return;
             auth_manager_.markDmRead(uid_, peer.uid, req.up_to_id());
         }
@@ -673,9 +675,7 @@ private:
         else if (packet.type() == chatproj::Packet::DM_DELETE_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_delete_req();
-            const auto peer = (req.peer_uid() > 0 || !req.peer().empty())
-                ? auth_manager_.resolveUser(req.peer_uid(), req.peer())
-                : AuthManager::UserRef{};
+            const auto peer = auth_manager_.resolveUser(req.peer_uid(), "");
 
             // Build RES skeleton early so failure branches can reuse.
             auto build_res = [&](bool success, const std::string& msg) {
@@ -741,9 +741,7 @@ private:
         else if (packet.type() == chatproj::Packet::DM_EDIT_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.dm_edit_req();
-            const auto peer = (req.peer_uid() > 0 || !req.peer().empty())
-                ? auth_manager_.resolveUser(req.peer_uid(), req.peer())
-                : AuthManager::UserRef{};
+            const auto peer = auth_manager_.resolveUser(req.peer_uid(), "");
 
             auto build_res = [&](bool success, const std::string& msg) {
                 chatproj::Packet rsp;
@@ -897,8 +895,8 @@ private:
         // --- RENAME (uid design, stage 5) ---
         // Password-confirmed. Central allows one session per account (a
         // login kicks the others), so this session is the only one to
-        // update; communities learn the name when the client reconnects
-        // with the fresh token.
+        // update; the client hands the fresh token to each community
+        // (SESSION_TOKEN_UPDATE), which renames the live session in place.
         else if (packet.type() == chatproj::Packet::RENAME_REQ) {
             if (!authenticated_) return;
             auto reply = [&](bool success, const std::string& msg, const std::string& token) {
@@ -1044,8 +1042,9 @@ private:
         else if (packet.type() == chatproj::Packet::FRIEND_ACTION_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.friend_action_req();
-            // The target by uid, or by the typed name.
-            const auto target = auth_manager_.resolveUser(req.target_uid(), req.target_username());
+            // The target by uid; only ADD takes a typed name.
+            const auto target = auth_manager_.resolveUser(
+                req.target_uid(), req.action() == chatproj::ADD ? req.target_username() : std::string());
 
             std::string error_msg = target.found()
                 ? auth_manager_.handleFriendAction(uid_, req.action(), target.uid)
@@ -1192,7 +1191,7 @@ private:
         else if (packet.type() == chatproj::Packet::FETCH_AVATAR_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.fetch_avatar_req();
-            const auto target = auth_manager_.resolveUser(req.uid(), req.username());
+            const auto target = auth_manager_.resolveUser(req.uid(), "");
 
             std::string version, data;
             if (target.found()) std::tie(version, data) = auth_manager_.getAvatar(target.uid);
@@ -1349,26 +1348,22 @@ private:
                 return;
             }
             const auto& req = packet.membership_register_req();
-            if ((req.uid() <= 0 && req.username().empty()) || req.server_id() == 0) return;
-            // The member by uid; a community that doesn't send it yet names
-            // them by username.
-            const int64_t uid = req.uid() > 0 ? req.uid() : auth_manager_.resolveUser(0, req.username()).uid;
-            if (uid <= 0) return;
-            auth_manager_.registerMembership(uid, req.server_id());
+            if (req.uid() <= 0 || req.server_id() == 0) return;
+            auth_manager_.registerMembership(req.uid(), req.server_id());
         }
 
         // --- AUTO-REJOIN: REVOKE A MEMBERSHIP (dual-origin) ---
         // Two callers can revoke: community server (shared-secret,
         // kick/ban/leave path) or JWT-authed client (stale-membership
-        // cleanup). Community can revoke any user; client can only
-        // revoke its own (enforced via session username).
+        // cleanup). Community can revoke any user (by uid); client can
+        // only revoke its own (the session's uid).
         else if (packet.type() == chatproj::Packet::MEMBERSHIP_REVOKE_REQ) {
             const auto& req = packet.membership_revoke_req();
             if (req.server_id() == 0) return;
 
             int64_t target_uid = 0;
             if (auth_manager_.verifySharedSecret(packet.auth_token())) {
-                target_uid = req.uid() > 0 ? req.uid() : auth_manager_.resolveUser(0, req.username()).uid;
+                target_uid = req.uid();
                 if (target_uid <= 0) return;
             } else if (authenticated_) {
                 target_uid = uid_;

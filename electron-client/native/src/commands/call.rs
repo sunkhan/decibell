@@ -94,8 +94,8 @@ pub struct CallStreamMetaArg {
 pub struct SendCallSignalArgs {
     pub call_id: String,
     pub to: String,
-    /// The peer's uid (users by uid; preferred over `to`).
-    pub to_uid: Option<i64>,
+    /// The peer's uid (users by uid): central routes by it.
+    pub to_uid: i64,
     /// proto CallSignal.Kind name: "INVITE", "ACCEPT", "HANGUP", …
     pub kind: String,
     /// base64 X25519 public key — INVITE / ACCEPT only.
@@ -145,7 +145,7 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
     let (pub_key_sig, key_id) = if !pub_key.is_empty()
         && matches!(kind, call_signal::Kind::Invite | call_signal::Kind::Accept)
     {
-        e2ee::sign_own_call_key(&state_arc, &args.call_id, args.to_uid.unwrap_or(0), &args.to, &pub_key)
+        e2ee::sign_own_call_key(&state_arc, &args.call_id, args.to_uid, &args.to, &pub_key)
             .await
             .unwrap_or_default()
     } else {
@@ -177,7 +177,7 @@ pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
                 pub_key_sig,
                 key_id,
                 from_uid: 0, // central stamps it
-                to_uid: args.to_uid.unwrap_or(0),
+                to_uid: args.to_uid,
             }),
             token.as_deref(),
         );
@@ -271,7 +271,10 @@ fn parse_remote(cands: &[CallCandidateArg], socket: &str) -> Vec<RemoteCandidate
 #[napi(object)]
 pub struct CallPrepareArgs {
     pub call_id: String,
+    /// The peer's name (logs only).
     pub peer: String,
+    /// The peer's uid: the call is theirs, whatever name they go by.
+    pub peer_uid: i64,
 }
 
 #[napi(object)]
@@ -286,7 +289,7 @@ pub async fn call_prepare(args: CallPrepareArgs) -> napi::Result<CallPrepareResu
     use base64::Engine as _;
 
     let state_arc = state::shared();
-    let (stun_servers, username) = {
+    let stun_servers = {
         let mut s = state_arc.lock().await;
         if s.active_call.is_some() {
             return Err(napi::Error::from_reason("Already in a call"));
@@ -296,21 +299,19 @@ pub async fn call_prepare(args: CallPrepareArgs) -> napi::Result<CallPrepareResu
         }
         // A newer prepare supersedes an older one — its sockets just close.
         s.pending_call = None;
-        let username = s
-            .username
-            .clone()
-            .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?;
+        if s.uid <= 0 {
+            return Err(napi::Error::from_reason("Not authenticated"));
+        }
+        if args.peer_uid <= 0 || args.peer_uid == s.uid {
+            return Err(napi::Error::from_reason("Cannot call yourself"));
+        }
         let servers: Vec<String> = if s.stun_servers.is_empty() {
             stun::DEFAULT_STUN_SERVERS.iter().map(|x| x.to_string()).collect()
         } else {
             s.stun_servers.clone()
         };
-        (servers, username)
+        servers
     };
-    if args.peer == username {
-        return Err(napi::Error::from_reason("Cannot call yourself"));
-    }
-
     // Bind + STUN off the async runtime: each query blocks up to 2.5 s, the
     // two sockets are queried in parallel.
     let gathered = tokio::task::spawn_blocking(
@@ -371,7 +372,7 @@ pub async fn call_prepare(args: CallPrepareArgs) -> napi::Result<CallPrepareResu
         }
         s.pending_call = Some(PendingCall {
             call_id: args.call_id,
-            peer: args.peer,
+            peer_uid: args.peer_uid,
             local,
             voice,
             media,
@@ -385,9 +386,11 @@ pub async fn call_prepare(args: CallPrepareArgs) -> napi::Result<CallPrepareResu
 #[napi(object)]
 pub struct CallConnectArgs {
     pub call_id: String,
+    /// The peer's current name (labels only).
     pub peer: String,
-    /// The peer's uid (users by uid): their call key signature binds it.
-    pub peer_uid: Option<i64>,
+    /// The peer's uid (users by uid): their call key signature binds it,
+    /// and it must be the prepared call's.
+    pub peer_uid: i64,
     /// base64 of the peer's 32-byte X25519 public key.
     pub remote_pub_key: String,
     pub remote_candidates: Vec<CallCandidateArg>,
@@ -420,11 +423,10 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
     let state_arc = state::shared();
     // The media plane names both ends by uid (sender ids, socket self ids,
     // key direction), so the call needs the peer's.
-    let peer_uid = match e2ee::resolve_uid(&state_arc, args.peer_uid.unwrap_or(0), &args.peer).await {
-        Ok(u) if u > 0 => u,
-        Ok(_) => return Err(napi::Error::from_reason(format!("{} isn't an account", args.peer))),
-        Err(e) => return Err(napi::Error::from_reason(format!("Couldn't look up {}: {e}", args.peer))),
-    };
+    let peer_uid = args.peer_uid;
+    if peer_uid <= 0 {
+        return Err(napi::Error::from_reason(format!("{} isn't an account", args.peer)));
+    }
     // Verify the peer's identity over their ephemeral key BEFORE any key
     // is derived. Fails closed: a peer who has E2EE keys must have signed,
     // and the signature must verify under their current (pinned)
@@ -461,7 +463,7 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
             .pending_call
             .take()
             .ok_or_else(|| napi::Error::from_reason("Call not prepared"))?;
-        if pending.call_id != args.call_id || pending.peer != args.peer {
+        if pending.call_id != args.call_id || pending.peer_uid != peer_uid {
             return Err(napi::Error::from_reason("Prepared call does not match"));
         }
         // Our media key: the uid, as the peer's pipeline expects it in

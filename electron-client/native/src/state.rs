@@ -31,8 +31,8 @@ use crate::net::proto::{
 #[derive(Clone, Debug)]
 pub struct WatcherEvent {
     pub channel_id: String,
-    pub streamer_username: String,
-    pub watcher_username: String,
+    pub streamer_uid: i64,
+    pub watcher_uid: i64,
     /// Mirrors chatproj::StreamWatcherNotify::Action — 1 = JOINED, 2 = LEFT.
     pub action: i32,
 }
@@ -40,7 +40,7 @@ pub struct WatcherEvent {
 /// See `AppState::pending_call`.
 pub struct PendingCall {
     pub call_id: String,
-    pub peer: String,
+    pub peer_uid: i64,
     pub local: crate::media::call_crypto::LocalKeyPair,
     pub voice: std::net::UdpSocket,
     pub media: std::net::UdpSocket,

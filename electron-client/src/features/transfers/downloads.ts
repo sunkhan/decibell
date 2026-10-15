@@ -62,7 +62,7 @@ function locate(serverId: string, attachmentId: number): Located {
       if (a) {
         return {
           attachment: a,
-          context: { serverName, channelId: ch.id, channelName: ch.name, messageId: m.id, sender: m.sender },
+          context: { serverName, channelId: ch.id, channelName: ch.name, messageId: m.id, sender: m.sender, senderUid: m.senderUid },
         };
       }
     }
@@ -76,6 +76,7 @@ function locate(serverId: string, attachmentId: number): Located {
       channelName: channels.find((c) => c.id === channelId)?.name ?? "",
       messageId: 0,
       sender: "",
+      senderUid: 0,
     },
   };
 }

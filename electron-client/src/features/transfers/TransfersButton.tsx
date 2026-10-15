@@ -5,6 +5,7 @@ import { toast } from "../../stores/toastStore";
 import type { DownloadView } from "../../types";
 import TransfersPanel from "./TransfersPanel";
 import { isRiskyFile } from "./format";
+import { nameOf } from "../../stores/usersStore";
 
 const RING_R = 10;
 const RING_C = 2 * Math.PI * RING_R;
@@ -185,7 +186,9 @@ function TransfersButton() {
         <span className="font-semibold text-text-primary">{risky?.filename}</span> can run programs on
         your computer. Only open it if you trust{" "}
         {risky?.context.sender ? (
-          <span className="font-semibold text-text-primary">{risky.context.sender}</span>
+          <span className="font-semibold text-text-primary">
+            {nameOf(risky.context.senderUid, risky.context.sender)}
+          </span>
         ) : (
           "whoever sent it"
         )}

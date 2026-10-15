@@ -116,52 +116,6 @@ impl CentralClient {
         self.send(data).await
     }
 
-    /// Send a DirectMessage to another user via the central server.
-    /// The reply path is asynchronous: peer-side delivery (or an
-    /// "offline / friends-only" reject) arrives back as a DirectMsg
-    /// to *us* with the sender swapped to ourselves and the canonical
-    /// error string in `content` — see route_packets.
-    pub async fn send_private_message(
-        &self,
-        sender: &str,
-        recipient: &str,
-        content: &str,
-        token: Option<&str>,
-    ) -> Result<(), String> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let data = build_packet(
-            packet::Type::DirectMsg,
-            packet::Payload::DirectMsg(DirectMessage {
-                sender: sender.into(),
-                recipient: recipient.into(),
-                content: content.into(),
-                timestamp,
-                // Server stamps the persisted id on the routed packet
-                // after insertDm; outbound from client is always 0.
-                id: 0,
-                edited_at: 0,
-                reply_to: 0,
-                // Server-resolved on broadcast; never set by the client.
-                reply_to_sender: String::new(),
-                reply_to_content: String::new(),
-                nonce: String::new(),
-                envelope: Vec::new(),
-                reply_to_envelope: Vec::new(),
-                sender_uid: 0,
-                recipient_uid: 0,
-                reply_to_sender_uid: 0,
-                reply_to_sealed_sender: String::new(),
-                reply_to_sealed_recipient: String::new(),
-            }),
-            token,
-        );
-        self.send(data).await
-    }
-
     /// Disconnect from the central server. Stops reconnection and keepalive.
     pub fn disconnect(&mut self) {
         if let Some(task) = self.ping_task.take() {
@@ -539,6 +493,7 @@ impl CentralClient {
                     events::send(
                         "avatar_changed",
                         serde_json::json!({
+                            "uid": resp.uid,
                             "username": resp.username,
                             "version": resp.version,
                         }),
@@ -614,7 +569,14 @@ impl CentralClient {
                 // Someone else changed their name; our own rename is
                 // announced by `rename_account` once its reply lands.
                 Some(packet::Payload::UserRenamed(b)) => {
-                    let me = state.lock().await.uid;
+                    let me = {
+                        let mut s = state.lock().await;
+                        // Re-fetch their bundle on next use: a name-bound
+                        // (v1) one stops counting once the name moves on.
+                        s.e2ee.fresh.remove(&b.uid);
+                        s.e2ee.current_ids.remove(&b.uid);
+                        s.uid
+                    };
                     if b.uid > 0 && b.uid != me {
                         events::emit_user_renamed(events::UserRenamedPayload {
                             uid: b.uid,

@@ -482,9 +482,10 @@ export interface ChannelInfo {
 export interface ChannelOverwrite {
   channelId: string;
   targetType: "role" | "member";
-  /// Role id (decimal string) or username.
+  /// Role id (decimal string); member rows carry the member's current
+  /// name here as a label.
   targetId: string;
-  /// Member rows: the member's uid (targetId then carries their name).
+  /// Member rows: the member's uid (their identity); 0 for roles.
   targetUid: number;
   allow: number;
   deny: number;
@@ -1011,7 +1012,10 @@ export interface DownloadContext {
   channelId: string;
   channelName: string;
   messageId: number;
+  /// The sender's name when the download started (a fallback label).
   sender: string;
+  /// The sender's account: draw `nameOf(senderUid, sender)`.
+  senderUid: number;
 }
 
 /// One download as main reports it (`downloads_changed`, `list()`).

@@ -442,7 +442,7 @@ export default function StreamVideoPlayer({ streamerUid, className }: Props) {
 
     // For our own stream, subscribe directly to the local encoder's
     // output — no wire round-trip. For everyone else, subscribe to the
-    // binary stream bus and filter by username (the broadcaster fans
+    // binary stream bus and filter by the streamer's uid key (the broadcaster fans
     // out every active watcher's frames; multiple players coexist by
     // each filtering independently).
     //

@@ -5,7 +5,7 @@
 
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
-import { uidNamed, useUsersStore, type Uid } from "../../stores/usersStore";
+import type { Uid } from "../../stores/usersStore";
 
 export const MIN_DB = -40;
 export const MAX_DB = 15;
@@ -61,12 +61,8 @@ export function applySavedUserGains(uids: Iterable<Uid>): void {
   }
 }
 
-// Saved per-user volume / local mute are keyed by uid (as decimal strings in
-// settings). Settings written before uids keyed them by name: those entries
-// wait here and move to their uid the first time the servers pair that name
-// with one, and are written back unchanged until then.
-const legacyVolumes = new Map<string, number>();
-const legacyMuted = new Set<string>();
+// Saved per-user volume / local mute are keyed by uid (decimal strings in
+// settings: user_volumes_by_uid / local_muted_uids).
 
 function asUid(key: string): Uid | null {
   const n = Number(key);
@@ -79,53 +75,18 @@ export function restoreSavedUserGains(volumes: Record<string, number>, muted: st
   for (const [key, db] of Object.entries(volumes)) {
     const uid = asUid(key);
     if (uid !== null) store.setUserVolume(uid, db);
-    else legacyVolumes.set(key, db);
   }
   for (const key of muted) {
     const uid = asUid(key);
-    if (uid === null) legacyMuted.add(key);
-    else if (!useVoiceStore.getState().localMutedUsers.has(uid)) store.toggleLocalMute(uid);
+    if (uid !== null && !useVoiceStore.getState().localMutedUsers.has(uid)) store.toggleLocalMute(uid);
   }
-  migrateLegacyGains();
 }
 
-/// What saveSettings writes: the uid-keyed settings plus any name-keyed ones
-/// still waiting for their uid.
-export function savedUserGains(): { user_volumes: Record<string, number>; local_muted_users: string[] } {
+/// What saveSettings writes.
+export function savedUserGains(): { user_volumes_by_uid: Record<string, number>; local_muted_uids: string[] } {
   const { userVolumes, localMutedUsers } = useVoiceStore.getState();
-  const volumes: Record<string, number> = Object.fromEntries(legacyVolumes);
-  for (const [uid, db] of Object.entries(userVolumes)) volumes[uid] = db;
   return {
-    user_volumes: volumes,
-    local_muted_users: [...legacyMuted, ...[...localMutedUsers].map(String)],
+    user_volumes_by_uid: Object.fromEntries(Object.entries(userVolumes)),
+    local_muted_uids: [...localMutedUsers].map(String),
   };
 }
-
-function migrateLegacyGains(): void {
-  if (legacyVolumes.size === 0 && legacyMuted.size === 0) return;
-  const store = useVoiceStore.getState();
-  let moved = false;
-  for (const [name, db] of legacyVolumes) {
-    const uid = uidNamed(name);
-    if (uid === undefined) continue;
-    if (!(uid in useVoiceStore.getState().userVolumes)) store.setUserVolume(uid, db);
-    legacyVolumes.delete(name);
-    moved = true;
-  }
-  for (const name of legacyMuted) {
-    const uid = uidNamed(name);
-    if (uid === undefined) continue;
-    if (!useVoiceStore.getState().localMutedUsers.has(uid)) store.toggleLocalMute(uid);
-    legacyMuted.delete(name);
-    moved = true;
-  }
-  if (moved) {
-    import("../settings/saveSettings").then(({ saveSettings }) => saveSettings());
-    applySavedUserGains(useVoiceStore.getState().participants.map((p) => p.uid));
-  }
-}
-
-// New name → uid pairs arrive through the users store.
-useUsersStore.subscribe((s, prev) => {
-  if (s.names !== prev.names) migrateLegacyGains();
-});

@@ -273,7 +273,7 @@ pub fn run_audio_pipeline(
     let mut was_muted_before_deafen = false;
     let mut voice_threshold_db: f32 = -50.0; // dB threshold; below this, send silence
     let mut stream_volume: f32 = 1.0; // 0.0–1.0 viewer-side stream audio volume
-    let mut user_volumes: HashMap<String, f32> = HashMap::new(); // username → linear gain
+    let mut user_volumes: HashMap<String, f32> = HashMap::new(); // media id (uid) → linear gain
 
     // Noise gate state: hysteresis + hang time to stop near-threshold flutter.
     // When the level hovers around voice_threshold_db, raw per-frame thresholding
@@ -1043,7 +1043,7 @@ pub fn run_audio_pipeline(
                     pkt_count_this_iter += 1;
                     if raw.len() >= AUDIO_HEADER_SIZE {
                         if let Some(pkt) = UdpAudioPacket::from_bytes(&raw) {
-                            let username = pkt.sender_username();
+                            let username = pkt.sender_id_str();
 
                             if pkt.packet_type == PACKET_TYPE_PING {
                                 let payload = pkt.payload_data();

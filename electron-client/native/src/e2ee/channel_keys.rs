@@ -56,11 +56,16 @@ pub struct ChannelKeyring {
 }
 
 /// The server's viewer list with its parallel uids.
+/// The viewers keys are sealed to: accounts only. A community placeholder
+/// (a legacy name, negative uid) has no identity of its own, and its name
+/// may belong to someone else at central by now; whoever claims it shows
+/// up in `needs` under their uid.
 fn members_of(res: &ChannelKeysRes) -> Vec<(String, i64)> {
     res.members
         .iter()
         .enumerate()
         .map(|(i, name)| (name.clone(), res.member_uids.get(i).copied().unwrap_or(0)))
+        .filter(|(_, uid)| *uid > 0)
         .collect()
 }
 
@@ -192,6 +197,9 @@ async fn seal_blobs_for(
     (recipient, recipient_uid): (&str, i64),
     keys: &[(u32, [u8; KEY_LEN])],
 ) -> Result<Option<Vec<ChannelKeyBlob>>, String> {
+    if recipient_uid <= 0 {
+        return Ok(None);
+    }
     let mut out = Vec::with_capacity(keys.len());
     for (epoch, key) in keys {
         let content = channel_envelope::key_blob_content(channel_id, *epoch, key);

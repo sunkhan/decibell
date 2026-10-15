@@ -96,8 +96,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them. The migration
   is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (all five stages done): every
   wire user reference carries `*_uid` next to the name, requests target by uid (community requests
-  are uid-only; central keeps a typed-name lookup for add friend / message someone), payload names are
-  current names, and rows with an
+  are uid-only; central takes a typed name only on DIRECT_MSG, friend ADD, call INVITE and key fetch),
+  payload names are current names, and rows with an
   envelope also carry `sealed_*` names (what a v1 envelope binds). Never rewrite a stored sent-under
   name. Encryption binds the uid too: bundles (`binding` 2, existing ones rebound in place), uid
   fingerprints / safety numbers, DM envelopes `0x03`, channel envelopes `0x04`, call auth v2, MLS
@@ -109,7 +109,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   (owner, 2026-10-15): names come from `stores/usersStore.ts` (`useUserName(uid, fallback)` /
   `nameOf`), fed by `features/users/userDirectory.ts`, so a rename re-labels without moving state.
   People never see uids: the fallback is the payload's name, else "Unknown user". A community
-  placeholder (negative uid) is drawn from its member row. A rename is only a database change: the fresh token reaches each
+  placeholder (negative uid) is drawn from its member row;
+  legacy name claims end 2026-10-29 (`legacy_claims_until`: 14 days after renames shipped, when a
+  newcomer could first hold the name). Central's names win in the users store; a community's only fill
+  gaps (it learns renames late). A rename is only a database change: the fresh token reaches each
   community as `SESSION_TOKEN_UPDATE`, which renames the live session in place (no reconnect; the
   same packet carries the 6-hourly `TOKEN_REFRESH_REQ` renewal), and `members.name_iat` stops an older
   token from renaming a member back. The token keeps the name by owner decision (2026-10-15): a

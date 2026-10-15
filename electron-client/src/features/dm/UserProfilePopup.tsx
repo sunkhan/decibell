@@ -52,7 +52,7 @@ export default function UserProfilePopup() {
   const memberEntry = useChatStore((s) =>
     serverId && uid ? findMember(s.membersByServer, serverId, uid) : undefined,
   );
-  const username = useUserName(uid, memberEntry?.username ?? "");
+  const username = useUserName(uid, memberEntry?.username ?? "Unknown user");
   const presence = usePresence(uid ?? 0, memberEntry?.isOnline);
   const statusMessage = useStatusMessage(uid ?? 0);
 

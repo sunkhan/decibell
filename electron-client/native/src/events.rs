@@ -59,7 +59,7 @@ pub struct StreamFrame {
     pub data: Vec<u8>,
     pub description: Option<Vec<u8>>,
     /// Set by `send_stream_frame` (callers pass `false`): an earlier frame
-    /// for this username was shed by the bounded queue, so this one's
+    /// for this streamer was shed by the bounded queue, so this one's
     /// reference chain is broken. The renderer gates deltas on the next
     /// keyframe and asks the streamer for one.
     pub discontinuity: bool,
@@ -180,7 +180,7 @@ fn note_stream_frame_drop() {
 // Usernames that lost a frame to the bounded queue and whose next queued
 // frame must carry `discontinuity: true`. The AtomicBool is a lock-free
 // "set is non-empty" fast path so the common case never touches the mutex.
-// Per username there is a single producer thread (the voice event bridge
+// Per streamer key there is a single producer thread (the voice event bridge
 // for remote streams, the encoder thread for our own), so mark → take for
 // one name always happens in program order on one thread.
 static DISCONTINUITY_ANY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

@@ -83,7 +83,7 @@ export function useVoiceEvents() {
         if (p.state === "quarantine" && prev?.state !== "quarantine") {
           toast.warning(
             "Unverified member in voice",
-            `${p.unverified.map((u) => nameOf(Number(u)) ?? `user ${u}`).join(", ")} could not be verified against the key directory. Nothing is sent until they are removed.`,
+            `${p.unverified.map((u) => nameOf(Number(u), "Unknown user")).join(", ")} could not be verified against the key directory. Nothing is sent until they are removed.`,
           );
         } else if (p.state === "failed" && prev?.state !== "failed") {
           toast.error("Voice encryption failed", "Couldn't join the channel's encryption group. Leave and rejoin.");

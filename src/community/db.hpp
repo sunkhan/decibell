@@ -442,7 +442,7 @@ public:
     // lazily deleted. A ban matches by uid; a name-only ban (negative uid:
     // legacy, or a name never seen here) matches `username` until that
     // name's first token claims it.
-    bool is_banned(int64_t uid, const std::string& username) const;
+    bool is_banned(int64_t uid) const;
     std::optional<DbBan> get_ban(int64_t uid) const;
     // Removes the membership (roles, overwrites) and records the ban.
     bool add_ban(int64_t uid, const std::string& username,
@@ -965,6 +965,9 @@ private:
     // renamed/repositioned (the IGNORE clause skips collisions on `id`).
     void ensure_default_channels_();
     std::string get_meta_(const std::string& key) const;
+    /// Legacy name claims end 14 days after renames shipped (or after a
+    /// fresh server's owner was configured): `legacy_claims_until`.
+    void ensure_legacy_claims_deadline_();
     void set_meta_(const std::string& key, const std::string& value);
 
     sqlite3* db_ = nullptr;

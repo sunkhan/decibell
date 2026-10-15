@@ -85,8 +85,8 @@ export interface CallStreamMetaArg {
 export interface SendCallSignalArgs {
   callId: string
   to: string
-  /** The peer's uid (users by uid; preferred over `to`). */
-  toUid?: number
+  /** The peer's uid (users by uid): central routes by it. */
+  toUid: number
   /** proto CallSignal.Kind name: "INVITE", "ACCEPT", "HANGUP", … */
   kind: string
   /** base64 X25519 public key — INVITE / ACCEPT only. */
@@ -97,7 +97,10 @@ export interface SendCallSignalArgs {
 export declare function sendCallSignal(args: SendCallSignalArgs): Promise<void>
 export interface CallPrepareArgs {
   callId: string
+  /** The peer's name (logs only). */
   peer: string
+  /** The peer's uid: the call is theirs, whatever name they go by. */
+  peerUid: number
 }
 export interface CallPrepareResult {
   /** base64 of our 32-byte X25519 public key. */
@@ -107,9 +110,13 @@ export interface CallPrepareResult {
 export declare function callPrepare(args: CallPrepareArgs): Promise<CallPrepareResult>
 export interface CallConnectArgs {
   callId: string
+  /** The peer's current name (labels only). */
   peer: string
-  /** The peer's uid (users by uid): their call key signature binds it. */
-  peerUid?: number
+  /**
+   * The peer's uid (users by uid): their call key signature binds it,
+   * and it must be the prepared call's.
+   */
+  peerUid: number
   /** base64 of the peer's 32-byte X25519 public key. */
   remotePubKey: string
   remoteCandidates: Array<CallCandidateArg>
@@ -152,8 +159,6 @@ export interface SearchMessagesArgs {
   query?: string
   /** Empty / absent = every text channel the user can read. */
   channelIds?: Array<string>
-  /** Usernames — for senders who left; members go in `author_uids`. */
-  authors?: Array<string>
   /** Senders by account uid (every name they posted under). */
   authorUids?: Array<number>
   /** Unix seconds; after inclusive, before exclusive. */
@@ -639,9 +644,10 @@ export interface SetNicknameArgs {
 export declare function setNickname(args: SetNicknameArgs): Promise<void>
 export declare function requestDmConversations(): Promise<void>
 export interface RequestDmHistoryArgs {
+  /** The peer's current name (a label). */
   peer: string
-  /** The peer's uid (users by uid; preferred over `peer`). */
-  peerUid?: number
+  /** The peer's uid (users by uid): the conversation is theirs. */
+  peerUid: number
   beforeId: number
   limit: number
   /** >0: fetch a context window centered on this DM id (windowed jump). */
@@ -651,16 +657,18 @@ export interface RequestDmHistoryArgs {
 }
 export declare function requestDmHistory(args: RequestDmHistoryArgs): Promise<void>
 export interface MarkDmReadArgs {
+  /** The peer's current name (a label). */
   peer: string
-  /** The peer's uid (users by uid; preferred over `peer`). */
-  peerUid?: number
+  /** The peer's uid (users by uid): the conversation is theirs. */
+  peerUid: number
   upToId: number
 }
 export declare function markDmRead(args: MarkDmReadArgs): Promise<void>
 export interface DeleteDmMessageArgs {
+  /** The peer's current name (a label). */
   peer: string
-  /** The peer's uid (users by uid; preferred over `peer`). */
-  peerUid?: number
+  /** The peer's uid (users by uid): the conversation is theirs. */
+  peerUid: number
   messageId: number
 }
 /**
@@ -671,9 +679,10 @@ export interface DeleteDmMessageArgs {
  */
 export declare function deleteDmMessage(args: DeleteDmMessageArgs): Promise<void>
 export interface EditDmMessageArgs {
+  /** The peer's current name (a label). */
   peer: string
-  /** The peer's uid (users by uid; preferred over `peer`). */
-  peerUid?: number
+  /** The peer's uid (users by uid): the conversation is theirs. */
+  peerUid: number
   messageId: number
   content: string
 }

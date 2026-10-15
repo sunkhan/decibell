@@ -410,3 +410,47 @@ Native moderation commands take a required `uid` (`username` is an optional labe
 `fetch_stream_thumbnail` takes only the uid. Central keeps its typed-name lookups. A request that names
 its target only by name is refused (e2e: "a kick naming its target only by name is refused").
 
+## Audit sweep: no name left as identity ✅
+
+A five-way review (central, community, native, renderer + Electron main, wire) after the servers were
+rebuilt, read for two failures: a rename breaks something, or a newcomer who takes a freed name inherits
+something. What it changed:
+
+- **Central** answers by name only where a person typed it: `DIRECT_MSG`, friend `ADD`, call `INVITE`
+  and `E2EE_FETCH_KEYS`. DM history / read / edit / delete, avatar fetches, the other friend actions,
+  the other call signals and community membership sync need the uid (a stale name could have blocked
+  a newcomer instead of the person meant).
+- **Community**
+  - Bans match by uid only. A made-up negative uid used to store a ban the server then matched
+    against every connecting name, outside the hierarchy (a moderator could lock the owner out), and
+    a member renamed onto a legacy-banned name was refused. A placeholder can be banned only as a
+    member. An account banned by uid is refused before it can claim a placeholder.
+  - **Legacy claims end** at `legacy_claims_until` (server meta): 14 days after renames shipped
+    (2026-10-15, so 2026-10-29), or after a fresh server's owner was configured. Until then no other
+    account can carry a legacy member's name; after, a newcomer could, so unclaimed placeholders stay
+    as they are (moderators can remove them).
+  - Audit entries carry `actor_uid` / `target_uid` on the wire. A rename relabels the roster row
+    with one upsert (no `MEMBER_REMOVE`), invisible members included, and renames every session of
+    the uid. Member pages run in (name, uid) order with an opaque cursor. Search ignores names
+    (`MessageSearchRequest.authors` is `reserved 4`).
+- **Native**
+  - Pre-uid pins are adopted when a fetched bundle proves the account by its identity key (or a
+    binding-1 bundle signed for the pin's name), never by the current name. They used to never adopt
+    (the fetch created the uid entry first) and kept being looked up by name. A legacy pin now only
+    opens v1 history sealed under its name.
+  - Our own pre-uid key file migrates only when central's bundle for our uid is one of its keys.
+  - Calls are prepared and matched by uid. The shutdown hang-up goes to the uid. Channel keys are
+    never sealed to placeholders. A rename first rebinds a still name-bound bundle. A peer's
+    rename drops their cached bundle. `avatar_changed` forwards the uid (live avatar changes had
+    stopped reaching anyone). DM / call commands take a required uid.
+- **Renderer**
+  - Central's names win in the users store. A community's only fill in a uid central hasn't named
+    (communities learn renames late). Ban, audit, invite and wipe labels no longer feed it.
+  - Saved per-user volumes moved to `user_volumes_by_uid` / `local_muted_uids`. The name-keyed ones
+    are dropped instead of being matched by name.
+  - Downloads remember the sender's uid. The window title shows the DM peer's name (it showed the
+    uid).
+  - Logout clears DMs, drafts and friends.
+- **Still name-keyed, deliberately:** central's `legacy_*` tables (pre-migration copies nothing reads)
+  stay until the owner decides to drop them; sent-under names (`sealed_*`, `messages.sender`); the
+  JWT `sub`; labels.

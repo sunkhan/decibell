@@ -6,6 +6,9 @@ import { useAuthStore } from "../../stores/authStore";
 import { useAvatarStore } from "../../stores/avatarStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useDmStore } from "../../stores/dmStore";
+import { useDraftsStore } from "../../stores/draftsStore";
+import { useFriendsStore } from "../../stores/friendsStore";
 import type { ServerInfoPayload } from "../../types";
 import { clearRetainedImages } from "../chat/imageRetention";
 
@@ -83,6 +86,11 @@ export function useAuthEvents() {
       useAuthStore.getState().logout();
       useChatStore.getState().resetForLogout();
       usePresenceStore.getState().reset();
+      // The next account on this device sees none of this one's DMs,
+      // drafts or friends.
+      useDmStore.setState({ conversations: {}, activeDmUser: null, pendingDmDeletions: {} });
+      useDraftsStore.setState({ channelDrafts: {}, dmDrafts: {}, restored: null });
+      useFriendsStore.setState({ friends: [], lastActionError: null });
       useUiStore.getState().setActiveView("home");
       useAvatarStore.getState().clearAll();
       clearRetainedImages();

@@ -9,7 +9,7 @@ import { useUserName, type Uid } from "../../stores/usersStore";
 /// has no keys. Nothing when everything is sealed or the central can't do
 /// encryption.
 export default function DmEncryptionBanner({ peer }: { peer: Uid }) {
-  const peerName = useUserName(peer);
+  const peerName = useUserName(peer, "Unknown user");
   const status = useE2eeStore((s) => s.status);
   const nudgeDismissed = useE2eeStore((s) => s.setupNudgeDismissed);
   const changedAt = useE2eeStore((s) => s.changedPeers[peer] ?? 0);

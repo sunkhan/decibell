@@ -86,6 +86,10 @@ pub struct RenameAccountResult {
 #[napi]
 pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccountResult> {
     let state_arc = state::shared();
+    // A bundle still signed over our old name would read as "no keys" to
+    // peers once the name changes: rebind it to the uid first (a no-op
+    // when it already is).
+    crate::e2ee::session::rebind_if_needed(&state_arc).await;
     let (write_tx, data, rx) = {
         let mut s = state_arc.lock().await;
         let central = s
@@ -237,6 +241,7 @@ pub async fn logout() -> napi::Result<()> {
         let video = s.video_engine.take();
         let audio = s.audio_stream_engine.take();
         s.username = None;
+        s.uid = 0;
         s.token = None;
         s.credentials = None;
         s.connected_voice_server = None;

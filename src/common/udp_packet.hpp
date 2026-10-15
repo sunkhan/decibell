@@ -4,7 +4,8 @@
 
 namespace chatproj {
 
-// Sender ID size: 32 bytes is enough for usernames and short JWT identifiers.
+// Sender ID size: 32 bytes. Upstream it carries the connection's UDP key;
+// the relay stamps the sender's uid in decimal before forwarding.
 // The community server maps tokens→sessions separately, so full JWTs are not
 // needed in every UDP packet.  This saves 224 bytes/packet vs the old 256.
 constexpr uint16_t SENDER_ID_SIZE = 32;

@@ -1129,8 +1129,8 @@ impl CommunityClient {
                 Some(packet::Payload::StreamWatcherNotify(notify)) => {
                     let evt = crate::state::WatcherEvent {
                         channel_id: notify.channel_id,
-                        streamer_username: notify.streamer_username,
-                        watcher_username: notify.watcher_username,
+                        streamer_uid: notify.streamer_uid,
+                        watcher_uid: notify.watcher_uid,
                         action: notify.action,
                     };
                     let s = state.lock().await;

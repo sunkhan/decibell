@@ -5,7 +5,8 @@ import { loadOrCreateE2eeLocalKey } from "./e2eeLocalKey";
 
 type EventEnvelope = { name: string; payload: unknown };
 type StreamFrame = {
-  username: string;
+  /// The streamer's media key: their uid in decimal.
+  key: string;
   codec: number;
   keyframe: boolean;
   timestamp: number;
@@ -15,6 +16,7 @@ type StreamFrame = {
 };
 type StreamThumbnail = {
   ownerUsername: string;
+  ownerUid: number;
   data: Uint8Array;
 };
 type InitOptions = {

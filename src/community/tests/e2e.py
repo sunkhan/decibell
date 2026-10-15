@@ -1184,6 +1184,7 @@ def test_audit_search():
 
     r = search(21, query="100%_")
     check("audit search: % and _ match literally", r is not None and [e.target for e in r.entries] == ["victim1"], str([e.target for e in r.entries] if r else None))
+    check("audit entries carry the actor's uid", r is not None and [e.actor_uid for e in r.entries] == [uid_for("auditor1")])
     r = search(22, query="NIGHT OWL")
     check("audit search: actor nickname, case-insensitive", r is not None and [e.target for e in r.entries] == ["victim2"])
     r = search(23, query="lanterns")
@@ -1499,6 +1500,35 @@ def test_message_search():
           and sql("select count(*) from member_roles where uid=?", uid_for("lazy"))[0][0] == had_role
           and sql("select count(*) from legacy_claims where username='lazy'") == [(0,)])
     lazy.close()
+
+    # Bans go by uid: a made-up placeholder can't be banned (it would only
+    # have matched a name, outside the hierarchy), and a placeholder ban row
+    # never matches a member by name.
+    owner.flush(0.3)
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="bob", uid=-999, reason="x"))
+    r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "ban")
+    check("a ban on a made-up placeholder is refused",
+          r is not None and not r.mod_action_res.success and sql("select count(*) from bans where uid=-999") == [(0,)])
+    sql("insert into bans(uid, username, banned_at, banned_by_uid, banned_by, reason, expires_at) "
+        "values(-777, 'bob', ?, 0, '', '', 0)", int(time.time()))
+    bob2 = Client("bob"); ok, _ = auth_ok(bob2)
+    check("a placeholder ban never matches a member by name", ok)
+    bob2.close()
+    sql("delete from bans where uid=-777")
+
+    # Past the claim deadline a legacy name claims nothing: by then the name
+    # may belong to someone else.
+    sql("insert into members(uid, username, joined_at, nickname) values(-501, 'late', ?, 'Late')", int(time.time()))
+    sql("insert into legacy_claims(username, uid) values('late', -501)")
+    sql("insert or replace into server_meta(key, value) values('legacy_claims_until', ?)", str(int(time.time()) - 1))
+    late = Client("late"); auth_ok(late)
+    check("legacy claims expire (a later holder of the name inherits nothing)",
+          sql("select uid, nickname from members where uid = -501") == [(-501, "Late")]
+          and sql("select nickname from members where uid = ?", uid_for("late")) in ([], [("",)])
+          and sql("select count(*) from legacy_claims") == [(0,)])
+    late.close()
+    sql("delete from server_meta where key='legacy_claims_until'")
+    sql("delete from members where uid = -501")
 
     # Ban purge by uid: a rename inside the window doesn't shield messages.
     cm = put(ch_a, "scarol_old", "spam under an older name", 11, uid=uid_for("scarol"))
@@ -2516,10 +2546,10 @@ def test_live_rename():
           sql("select username from members where uid=?", U("liveren")) == [("liveren",)])
     time.sleep(1.1)   # a later token (central's verifier refuses one issued in the future)
     update(jwt("liveren2", uid=U("liveren")))
-    rm = owner.wait(pb.Packet.MEMBER_REMOVE, pred=lambda p: p.member_remove.uid == U("liveren"))
     up = owner.wait(pb.Packet.MEMBER_UPSERT, pred=lambda p: p.member_upsert.member.uid == U("liveren"))
-    check("roster retires the old name and publishes the new", rm is not None and rm.member_remove.username == "liveren"
-          and up is not None and up.member_upsert.member.username == "liveren2")
+    check("roster relabels the row in place (an upsert, no remove)",
+          up is not None and up.member_upsert.member.username == "liveren2"
+          and not any(p.type == pb.Packet.MEMBER_REMOVE and p.member_remove.uid == U("liveren") for p in owner.inbox))
     vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge"
                     and "liveren2" in p.voice_presence_update.active_users)
     check("voice presence shows the new name", vp is not None)
@@ -2604,10 +2634,10 @@ def test_c2_username_reuse():
           sql("select uid from members where username='c2bob_renamed'") == [(bob_uid,)]
           and sql("select count(*) from members where username='c2bob'") == [(0,)])
     check("renamed account kept its role", sql("select role_id from member_roles where uid=?", bob_uid) == [(role.id,)])
-    rm = owner.wait(pb.Packet.MEMBER_REMOVE, pred=lambda p: p.member_remove.username == "c2bob")
     up = owner.wait(pb.Packet.MEMBER_UPSERT, pred=lambda p: p.member_upsert.member.username == "c2bob_renamed")
-    check("roster: old name removed, new name upserted, same uid",
-          rm is not None and rm.member_remove.uid == bob_uid and up is not None and up.member_upsert.member.uid == bob_uid)
+    check("roster: the same uid's row relabelled, nothing removed",
+          up is not None and up.member_upsert.member.uid == bob_uid
+          and not any(p.type == pb.Packet.MEMBER_REMOVE and p.member_remove.uid == bob_uid for p in owner.inbox))
     # Requests target accounts only: a name alone addresses nobody.
     owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="c2bob_renamed", reason=""))
     r = owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "kick")

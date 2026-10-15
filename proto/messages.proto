@@ -1457,8 +1457,9 @@ message MemberInfo {
 //   * Bans are their own list (BAN_LIST_REQ/RES), sent only to
 //     BAN_MEMBERS holders, pushed on change.
 message MemberListRequest {
-  // Username cursor: "" for the first page, else next_after of the page
-  // before. Offline members only after the first page.
+  // Opaque cursor (pages run in name, uid order): "" for the first page,
+  // else next_after of the page before. Offline members only after the
+  // first page.
   string after = 1;
   // Offline members per page; server clamps to [1, 200], default 100.
   int32 limit = 2;
@@ -1487,7 +1488,7 @@ message MemberSearchRequest {
   string query = 1;
   // 0 = any role; > 0 = holds that role; -1 = holds no role at all.
   int64 role_id = 2;
-  // Username cursor: "" for the first page, else next_after.
+  // Opaque cursor: "" for the first page, else next_after.
   string after = 3;
   // Server clamps to [1, 200], default 100.
   int32 limit = 4;
@@ -1509,7 +1510,7 @@ message MemberSearchResponse {
 }
 
 // Message search (spec 2026-10-14). Every filter that is set narrows the
-// results. At least one of query / authors / has / after / before /
+// results. At least one of query / author_uids / has / after / before /
 // channel_ids must be set. Text channels only; a future thread is a channel
 // of its own, so scoping stays a list of channel ids.
 message MessageSearchRequest {
@@ -1523,10 +1524,7 @@ message MessageSearchRequest {
   // Text channels to search; empty = every one the requester can read
   // (VIEW_CHANNEL + READ_HISTORY). Others are dropped silently. <= 100.
   repeated string channel_ids = 3;
-  // Usernames (<= 10). A member matches every message their account sent,
-  // under any earlier name (the server resolves them to uids); a
-  // non-member matches by the name on the messages.
-  repeated string authors = 4;
+  reserved 4;  // authors: senders by name (users by uid: author_uids only)
   // Unix seconds: after is inclusive, before exclusive; 0 = unbounded.
   int64 after = 5;
   int64 before = 6;
@@ -1558,7 +1556,9 @@ message MessageSearchRequest {
   // of the text rather than an index lookup, so it's slower on a big
   // server; RELEVANCE then sorts as NEWEST.
   bool match_within_words = 12;
-  repeated int64 author_uids = 13;   // preferred over authors (names, for senders who left)
+  // Senders (<= 10): each matches every message their account sent, under
+  // any name.
+  repeated int64 author_uids = 13;
 }
 
 message MessageSearchResponse {
@@ -2369,9 +2369,10 @@ message CallSignal {
   repeated CallCandidate candidates = 6;  // ≤16 (INVITE/ACCEPT)
   CallStreamMeta stream = 7;              // STREAM_START only
   int64 timestamp = 8;                    // central-stamped
-  // Authenticated key exchange (2026-09-03): Ed25519 signature by the
-  // sender's E2EE identity over
-  //   "decibell-call-auth-v1" ‖ call_id ‖ from ‖ to ‖ pub_key
+  // Authenticated key exchange (2026-09-03; v2 binds uids since the uid
+  // design's stage 4): Ed25519 signature by the sender's E2EE identity over
+  //   "decibell-call-auth-v2" ‖ 0 ‖ call_id ‖ 0 ‖ from_uid ‖ to_uid ‖ pub_key
+  // (uids as i64 LE; see native e2ee/call_auth.rs)
   // and the identity generation that signed it. Empty / 0 when the
   // sender has no E2EE keys. The receiver verifies against the peer's
   // current identity before deriving media keys — a central that swaps
@@ -2379,7 +2380,7 @@ message CallSignal {
   bytes pub_key_sig = 9;                  // 64 bytes
   uint32 key_id = 10;
   int64 from_uid = 11;                    // central-stamped, like `from`
-  int64 to_uid = 12;                      // preferred over `to`
+  int64 to_uid = 12;                      // routes the signal; `to` is read only on an INVITE to a typed name
 }
 
 // --- End-to-end encrypted DMs ---

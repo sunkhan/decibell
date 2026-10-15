@@ -421,7 +421,7 @@ impl VoiceEngine {
                         // WebCodecs.VideoDecoder reads from the bitstream.
                         // No more native avcC fallback — encoder.rs is gone.
                         events::send_stream_frame(events::StreamFrame {
-                            key: frame.streamer_username,
+                            key: frame.streamer_id,
                             codec: frame.codec,
                             keyframe: frame.is_keyframe,
                             timestamp: video_ts_epoch.elapsed().as_micros() as i64,
@@ -656,14 +656,14 @@ fn run_video_recv_thread(
         // Only forward frames for streams we're actually watching. See
         // WATCHED_STREAMS above: defense against spoofed/over-relayed senders,
         // and it drops the IPC/renderer work for frames nobody subscribed to.
-        if !is_watched(&frame.streamer_username) {
+        if !is_watched(&frame.streamer_id) {
             return;
         }
         // Watched but not on screen (no renderer subscriber — e.g. the
         // focused view hides the grid's other watched streams): skip the
         // decrypt and the bridge/IPC hops. send_stream_frame re-checks; the
         // player asks for a keyframe when it subscribes again.
-        if !events::is_stream_frame_sink(&frame.streamer_username) {
+        if !events::is_stream_frame_sink(&frame.streamer_id) {
             return;
         }
         // Encrypted channel: the reassembled bytes are one sealed frame —
@@ -671,7 +671,7 @@ fn run_video_recv_thread(
         if let Some(r) = &ring {
             match frame_crypto::open_video_frame(
                 &r.load(),
-                &frame.streamer_username,
+                &frame.streamer_id,
                 frame.frame_id,
                 frame.is_keyframe,
                 frame.codec,
@@ -682,7 +682,7 @@ fn run_video_recv_thread(
                     log::debug!(
                         "[video-recv] frame {} from '{}' did not open (epoch/key)",
                         frame.frame_id,
-                        frame.streamer_username
+                        frame.streamer_id
                     );
                     return;
                 }
@@ -722,7 +722,7 @@ fn run_video_recv_thread(
                                 log::debug!(
                                     "[video-recv] Frame {} from '{}': {} bytes, keyframe={} (total={})",
                                     frame.frame_id,
-                                    frame.streamer_username,
+                                    frame.streamer_id,
                                     frame.data.len(),
                                     frame.is_keyframe,
                                     video_frames_received
@@ -752,7 +752,7 @@ fn run_video_recv_thread(
                             video_frames_received += 1;
                             log::debug!(
                                 "[video-recv] Frame {} from '{}' completed via FEC: {} bytes, keyframe={}",
-                                frame.frame_id, frame.streamer_username,
+                                frame.frame_id, frame.streamer_id,
                                 frame.data.len(), frame.is_keyframe
                             );
                             emit_frame(frame);

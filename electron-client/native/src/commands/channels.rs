@@ -84,8 +84,6 @@ pub struct SearchMessagesArgs {
     pub query: Option<String>,
     /// Empty / absent = every text channel the user can read.
     pub channel_ids: Option<Vec<String>>,
-    /// Usernames — for senders who left; members go in `author_uids`.
-    pub authors: Option<Vec<String>>,
     /// Senders by account uid (every name they posted under).
     pub author_uids: Option<Vec<i64>>,
     /// Unix seconds; after inclusive, before exclusive.
@@ -120,7 +118,6 @@ pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
             seq: args.seq.unwrap_or(0),
             query: args.query.unwrap_or_default(),
             channel_ids: args.channel_ids.unwrap_or_default(),
-            authors: args.authors.unwrap_or_default(),
             after: args.after.unwrap_or(0),
             before: args.before.unwrap_or(0),
             has: args.has.unwrap_or(0),

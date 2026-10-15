@@ -348,7 +348,7 @@ function Stage({ peer }: { peer: Uid }) {
         {focused ? (
           <>
             <Pill live>
-              {focused === me ? "Your screen" : `${nameOf(focused)}'s screen`}
+              {focused === me ? "Your screen" : `${nameOf(focused, "Unknown user")}'s screen`}
             </Pill>
             {(qualityLabel(focusedInfo) || hasStatus) && (
               <Pill>
@@ -598,7 +598,7 @@ const CallTile = memo(function CallTile({ uid, muted, dim, pulse }: CallTileProp
   const peerMuted = useVoiceStore(
     (s) => s.participants.find((p) => p.uid === uid)?.isMuted ?? false,
   );
-  const username = useUserName(uid);
+  const username = useUserName(uid, "Unknown user");
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   const showMuted = muted || peerMuted;
@@ -719,7 +719,7 @@ const PeerChip = memo(function PeerChip({ uid, muted }: { uid: Uid; muted?: bool
   const peerMuted = useVoiceStore(
     (s) => s.participants.find((p) => p.uid === uid)?.isMuted ?? false,
   );
-  const username = useUserName(uid);
+  const username = useUserName(uid, "Unknown user");
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   return (
     <div
@@ -751,7 +751,7 @@ const PeerChip = memo(function PeerChip({ uid, muted }: { uid: Uid; muted?: bool
 /// Local mute + volume for the peer, inline under their tile (the same
 /// controls the right-click menu offers, made discoverable).
 function PeerAudioControls({ uid }: { uid: Uid }) {
-  const username = useUserName(uid);
+  const username = useUserName(uid, "Unknown user");
   const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
   const currentDb = useVoiceStore((s) => s.userVolumes[uid] ?? DEFAULT_DB);
   const setUserVolume = useVoiceStore((s) => s.setUserVolume);

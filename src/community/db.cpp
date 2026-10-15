@@ -23,6 +23,14 @@ int64_t now_seconds() {
         .count();
 }
 
+// Central shipped renames on this day (unix seconds, 2026-10-15 00:00 UTC).
+// A name renamed away from is reserved for 14 days, so until 14 days after
+// it no account but its holder can carry a name, and a claim by name
+// reaches the account that left the row. After that a newcomer could
+// register a legacy member's old name and inherit their row.
+constexpr int64_t kRenamesShippedAt = 1792022400;
+constexpr int64_t kNameReservation = 14 * 24 * 3600;
+
 // Crockford base32 alphabet (no I, L, O, U) for human-friendly invite codes.
 constexpr char kBase32[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -177,6 +185,7 @@ bool CommunityDb::open(const std::string& path,
 
     init_schema_();
     seed_if_empty_(owner_username, server_name, server_description);
+    ensure_legacy_claims_deadline_();
     // Versioned, one-shot: a no-op once the DB has been stamped with the
     // current seed version (see ensure_default_channels_). It used to run
     // INSERT OR IGNORE on every boot, which resurrected any default
@@ -1169,6 +1178,9 @@ void CommunityDb::seed_if_empty_(const std::string& owner,
         Stmt q(db_, "INSERT OR REPLACE INTO legacy_claims(username, uid) VALUES(?, ?);");
         if (q.s) { q.bind_text(1, owner); q.bind_int64(2, placeholder); q.step(); }
     }
+    // The configured name claims ownership for 14 days: the operator names
+    // themselves, and nobody else can hold that name sooner.
+    set_meta_("legacy_claims_until", std::to_string(now_seconds() + kNameReservation));
     // schema_version is stamped by the migrations in init_schema_ —
     // don't overwrite it here.
     set_meta_("owner_uid", std::to_string(placeholder));
@@ -1370,9 +1382,27 @@ bool CommunityDb::add_member(int64_t uid, const std::string& username, int64_t n
     return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
 }
 
+void CommunityDb::ensure_legacy_claims_deadline_() {
+    if (!get_meta_("legacy_claims_until").empty()) return;
+    Stmt q(db_, "SELECT COUNT(*) FROM legacy_claims;");
+    if (!q.s || q.step() != SQLITE_ROW || q.col_int64(0) == 0) return;
+    const int64_t until = std::min(now_seconds(), kRenamesShippedAt) + kNameReservation;
+    set_meta_("legacy_claims_until", std::to_string(until));
+}
+
 bool CommunityDb::claim_legacy(int64_t uid, const std::string& username) {
     if (uid <= 0 || username.empty()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
+    // Past the deadline a name may belong to someone else: what's left
+    // unclaimed stays with its placeholder (moderators can still remove it).
+    {
+        int64_t until = 0;
+        try { until = std::stoll(get_meta_("legacy_claims_until")); } catch (...) {}
+        if (until > 0 && now_seconds() >= until) {
+            exec_sql(db_, "DELETE FROM legacy_claims;");
+            return false;
+        }
+    }
     int64_t placeholder = 0;
     {
         Stmt q(db_, "SELECT uid FROM legacy_claims WHERE username=?;");
@@ -1584,15 +1614,15 @@ DbBan ban_from_row(const Stmt& q) {
     return b;
 }
 // Shared by is_banned / get_ban / redeem_invite (mutex held by caller):
-// an expired ban is deleted on sight and reported as "not banned". By uid;
-// a name-only ban (negative uid) by `username` until claimed.
-bool ban_active_unlocked(sqlite3* db, int64_t uid, const std::string& username, DbBan* out) {
-    const std::string sql = std::string("SELECT ") + kBanCols +
-        " FROM bans WHERE (?1 > 0 AND uid=?1) OR (uid < 0 AND ?2 <> '' AND username=?2) LIMIT 1;";
+// an expired ban is deleted on sight and reported as "not banned". By uid
+// only: a legacy ban on a placeholder moves to the account that claims the
+// placeholder (claim_legacy), and a name never matches a ban by itself.
+bool ban_active_unlocked(sqlite3* db, int64_t uid, DbBan* out) {
+    if (uid == 0) return false;
+    const std::string sql = std::string("SELECT ") + kBanCols + " FROM bans WHERE uid=?1 LIMIT 1;";
     Stmt q(db, sql.c_str());
     if (!q.s) return false;
     q.bind_int64(1, uid);
-    q.bind_text(2, username);
     if (q.step() != SQLITE_ROW) return false;
     DbBan b = ban_from_row(q);
     if (b.expires_at != 0 && b.expires_at <= now_seconds()) {
@@ -1605,15 +1635,15 @@ bool ban_active_unlocked(sqlite3* db, int64_t uid, const std::string& username, 
 }
 } // namespace
 
-bool CommunityDb::is_banned(int64_t uid, const std::string& username) const {
+bool CommunityDb::is_banned(int64_t uid) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return ban_active_unlocked(db_, uid, username, nullptr);
+    return ban_active_unlocked(db_, uid, nullptr);
 }
 
 std::optional<DbBan> CommunityDb::get_ban(int64_t uid) const {
     std::lock_guard<std::mutex> lock(mutex_);
     DbBan b;
-    if (!ban_active_unlocked(db_, uid, "", &b)) return std::nullopt;
+    if (!ban_active_unlocked(db_, uid, &b)) return std::nullopt;
     return b;
 }
 
@@ -2529,7 +2559,7 @@ InviteResult CommunityDb::redeem_invite(const std::string& code,
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Ban check first — banned users can never redeem, regardless of invite.
-    if (ban_active_unlocked(db_, redeeming_uid, redeeming_name, nullptr)) return InviteResult::Banned;
+    if (ban_active_unlocked(db_, redeeming_uid, nullptr)) return InviteResult::Banned;
 
     // If already a member, the invite code is moot — treat as success and skip
     // the uses increment so invites aren't wasted on double-joins.

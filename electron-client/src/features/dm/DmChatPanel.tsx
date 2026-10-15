@@ -683,7 +683,7 @@ export default function DmChatPanel() {
       loadNewerInFlightRef.current = false;
       lastRequestedAfterIdRef.current = 0;
       invoke("request_dm_history", {
-        peer,
+        peer: nameOf(peer),
         peerUid: peer,
         beforeId: 0,
         aroundId: id,
