@@ -5,9 +5,12 @@ import { useAuthStore } from "../../../stores/authStore";
 import { useAvatarStore } from "../../../stores/avatarStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { AvatarCropperModal } from "../AvatarCropperModal";
+import RenameUsernameModal from "../RenameUsernameModal";
 
 export default function AccountTab() {
   const username = useAuthStore((s) => s.username);
+  const renames = useAuthStore((s) => s.renames);
+  const [renaming, setRenaming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pickedFile, setPickedFile] = useState<File | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -74,7 +77,18 @@ export default function AccountTab() {
         )}
         <div className="flex-1">
           <div className="text-[14px] font-medium text-text-primary">{username}</div>
-          <div className="mt-0.5 text-[12px] text-text-muted">Logged in</div>
+          <div className="mt-0.5 flex items-center gap-2 text-[12px] text-text-muted">
+            <span>Logged in</span>
+            {renames && <span aria-hidden>·</span>}
+            {renames && (
+              <button
+                onClick={() => setRenaming(true)}
+                className="text-text-secondary underline-offset-2 hover:text-text-primary hover:underline"
+              >
+                Change username
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex flex-col gap-2">
           <button
@@ -100,6 +114,8 @@ export default function AccountTab() {
         onChange={handleFileChange}
         className="hidden"
       />
+
+      <RenameUsernameModal open={renaming} onClose={() => setRenaming(false)} />
 
       {pickedFile && (
         <AvatarCropperModal

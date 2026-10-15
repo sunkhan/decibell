@@ -8,6 +8,22 @@ export interface LoginArgs {
   password: string
 }
 export declare function login(args: LoginArgs): Promise<void>
+export interface RenameAccountArgs {
+  newUsername: string
+  password: string
+}
+export interface RenameAccountResult {
+  username: string
+}
+/**
+ * Change our username (uid design, stage 5). Central checks the password
+ * and the name, and reserves the old name for this account for 14 days.
+ * On success the fresh token replaces ours, the saved credentials follow
+ * the new name, the renderer hears `user_renamed {self: true}`, and every
+ * community reconnects so it learns the name from the new token. Refused
+ * while in a voice channel: the reconnect would drop it.
+ */
+export declare function renameAccount(args: RenameAccountArgs): Promise<RenameAccountResult>
 export interface RegisterArgs {
   username: string
   email: string

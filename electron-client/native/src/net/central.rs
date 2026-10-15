@@ -287,6 +287,23 @@ impl CentralClient {
                                 .map(|(user, _)| user.clone())
                                 .unwrap_or_else(|| "unknown".to_string())
                         };
+                        // Signed in with a name the account renamed away
+                        // from (still reserved for it): the saved
+                        // credentials follow the current name.
+                        if let Some((typed, pass)) = s.credentials.clone() {
+                            if !resp.username.is_empty() && typed != resp.username {
+                                s.credentials = Some((resp.username.clone(), pass.clone()));
+                                if let Ok(cfg) = crate::config::load() {
+                                    if cfg.credentials.is_some() {
+                                        let creds = crate::config::Credentials {
+                                            username: resp.username.clone(),
+                                            password: pass,
+                                        };
+                                        let _ = crate::config::save(Some(&creds), &cfg.settings);
+                                    }
+                                }
+                            }
+                        }
                         s.username = Some(username.clone());
                         s.uid = resp.uid;
                         // P2P DM calls: remember what this central offers
@@ -333,7 +350,7 @@ impl CentralClient {
                             status_emoji: resp.status_emoji.clone(),
                             status_clear_in: resp.status_clear_in.max(0) as f64,
                         });
-                        events::emit_login_succeeded(username, resp.uid);
+                        events::emit_login_succeeded(username, resp.uid, resp.renames);
                         tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
                         // Auto-rejoin: ship memberships to the renderer
@@ -577,6 +594,24 @@ impl CentralClient {
                 }
                 Some(packet::Payload::E2eeFetchBackupRes(res)) => {
                     crate::e2ee::session::on_fetch_backup_res(&state, res).await;
+                }
+                Some(packet::Payload::RenameRes(res)) => {
+                    if let Some(w) = state.lock().await.pending_rename.take() {
+                        let _ = w.send(res);
+                    }
+                }
+                // Someone else changed their name; our own rename is
+                // announced by `rename_account` once its reply lands.
+                Some(packet::Payload::UserRenamed(b)) => {
+                    let me = state.lock().await.uid;
+                    if b.uid > 0 && b.uid != me {
+                        events::emit_user_renamed(events::UserRenamedPayload {
+                            uid: b.uid,
+                            old_username: b.old_username,
+                            username: b.username,
+                            is_self: false,
+                        });
+                    }
                 }
                 Some(packet::Payload::E2eeKeysChanged(b)) => {
                     crate::e2ee::session::on_keys_changed(&state, b.uid, b.key_id).await;

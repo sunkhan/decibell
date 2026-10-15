@@ -96,6 +96,17 @@ public:
         broadcast(packet);
     }
 
+    /// Push USER_RENAMED to every session (uid design, stage 5).
+    void broadcast_user_renamed(int64_t uid, const std::string& old_username, const std::string& username) {
+        chatproj::Packet packet;
+        packet.set_type(chatproj::Packet::USER_RENAMED);
+        auto* payload = packet.mutable_user_renamed();
+        payload->set_uid(uid);
+        payload->set_old_username(old_username);
+        payload->set_username(username);
+        broadcast(packet);
+    }
+
     /// Evict the user's session(s) other than `except` (the new login).
     void kick_user(int64_t uid, std::shared_ptr<Session> except);
 

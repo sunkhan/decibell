@@ -2,6 +2,7 @@
 #include "auth_utils.hpp"
 #include "bcrypt.h"
 #include <chrono>
+#include <ctime>
 #include <iostream>
 #include <algorithm>
 
@@ -214,6 +215,25 @@ void AuthManager::initializeDatabase() {
             txn.exec("ALTER TABLE e2ee_keys ADD COLUMN binding SMALLINT NOT NULL DEFAULT 1");
             txn.exec("UPDATE central_schema SET version = 2 WHERE id = 1");
             std::cout << "[DB] Migration 2: e2ee_keys.binding\n";
+        }
+        if (version < 3) {
+            // Migration 3: username changes (uid design, stage 5). One row
+            // per rename: the old name is reserved for the account while
+            // changed_at is within NAME_RESERVATION_SECONDS, and the rows
+            // of the last day rate-limit renames.
+            txn.exec(
+                "CREATE TABLE name_changes ("
+                "  id BIGSERIAL PRIMARY KEY,"
+                "  uid BIGINT NOT NULL REFERENCES users (uid),"
+                "  old_username VARCHAR(32) NOT NULL,"
+                "  new_username VARCHAR(32) NOT NULL,"
+                "  changed_at BIGINT NOT NULL"
+                ")"
+            );
+            txn.exec("CREATE INDEX name_changes_old_idx ON name_changes (old_username, changed_at)");
+            txn.exec("CREATE INDEX name_changes_uid_idx ON name_changes (uid, changed_at)");
+            txn.exec("UPDATE central_schema SET version = 3 WHERE id = 1");
+            std::cout << "[DB] Migration 3: name_changes\n";
         }
 
         txn.exec(
@@ -434,19 +454,7 @@ void AuthManager::migrateToUidKeys(pqxx::work& txn) {
 }
 
 std::string AuthManager::registerUser(const std::string& username, const std::string& email, const std::string& password) {
-    if (username.length() < 3 || username.length() > 32) return "Invalid username length.";
-    // Lowercase-only ASCII (2026-08-31). Case-mixed and non-ASCII names
-    // were both a UX trap (exact-match friend lookups, "Usernames are
-    // case-sensitive") and the trigger for the friends-pair CHECK
-    // mismatch fixed above. Existing mixed-case accounts keep working —
-    // this gate runs at registration only. `char` may be signed:
-    // non-ASCII UTF-8 bytes land in the negative range and fail every
-    // range test below, so multibyte names are rejected too.
-    for (const char c : username) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-                        c == '_' || c == '.' || c == '-';
-        if (!ok) return "Usernames may only contain lowercase letters, digits, '.', '_' and '-'.";
-    }
+    if (auto bad = validateUsername(username); !bad.empty()) return bad;
     if (email.empty() || email.find('@') == std::string::npos) return "Invalid email address.";
     // Reject empty / trivially-weak passwords at registration. Only affects
     // new accounts — existing users (any length) can still log in.
@@ -454,6 +462,15 @@ std::string AuthManager::registerUser(const std::string& username, const std::st
 
     if (userExists(username, email)) {
         return "Username or email already exists.";
+    }
+    // A name someone renamed away from stays theirs for the reservation.
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        if (nameReservedForOther(txn, username, 0)) return "Username or email already exists.";
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] registerUser reservation check: " << e.what() << "\n";
+        return "Registration failed. Please try again.";
     }
 
     std::string hash = hashPassword(password);
@@ -467,11 +484,32 @@ std::string AuthManager::registerUser(const std::string& username, const std::st
     return "";
 }
 
+std::string AuthManager::validateUsername(const std::string& username) {
+    if (username.length() < 3 || username.length() > 32) return "Invalid username length.";
+    // Lowercase-only ASCII (2026-08-31). Case-mixed and non-ASCII names
+    // were both a UX trap (exact-match friend lookups, "Usernames are
+    // case-sensitive") and the trigger for the friends-pair CHECK
+    // mismatch fixed above. Existing mixed-case accounts keep working —
+    // this gate runs at registration and on renames only. `char` may be signed:
+    // non-ASCII UTF-8 bytes land in the negative range and fail every
+    // range test below, so multibyte names are rejected too.
+    for (const char c : username) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                        c == '_' || c == '.' || c == '-';
+        if (!ok) return "Usernames may only contain lowercase letters, digits, '.', '_' and '-'.";
+    }
+    return "";
+}
+
 std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std::string& username, const std::string& password) {
     // The hash and the uid come from one row read, so a token is never
     // signed with a uid fetched separately (a second query that failed
     // used to mint uid 0, which sends communities down the name-only path).
+    // A name the account renamed away from still signs it in while it is
+    // reserved (a device that saved the old name); the token and the
+    // response carry the current name.
     auto stored = getCredentials(username);
+    if (!stored) stored = getCredentialsByReservedName(username);
 
     if (!stored) {
         // Equalize timing with the "user exists, wrong password" path so
@@ -491,24 +529,118 @@ std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std:
         return std::nullopt;
     }
 
+    auto token = mintToken(stored->uid, stored->username);
+    if (!token) return std::nullopt;
+    return LoginResult{*token, stored->uid, stored->username};
+}
+
+std::optional<std::string> AuthManager::mintToken(int64_t uid, const std::string& username) {
     // Generate a JWT valid for 24 hours. Ed25519 (EdDSA): only this
     // process holds the private key, so a community server — which gets
     // the public key — can verify tokens but never mint one.
     auto now = std::chrono::system_clock::now();
     try {
-        auto token = jwt::create()
+        return jwt::create()
             .set_issuer("decibell_central_auth")
             .set_type("JWS")
-            .set_subject(stored->username)
-            .set_payload_claim("uid", jwt::claim(nlohmann::json(stored->uid)))
+            .set_subject(username)
+            .set_payload_claim("uid", jwt::claim(nlohmann::json(uid)))
             .set_issued_at(now)
             .set_expires_at(now + std::chrono::hours(24))
             .sign(jwt::algorithm::ed25519{jwt_public_pem_, jwt_private_pem_});
-        return LoginResult{token, stored->uid, stored->username};
     } catch (const std::exception& e) {
         std::cerr << "[Auth] JWT signing failed: " << e.what() << "\n";
         return std::nullopt;
     }
+}
+
+bool AuthManager::nameReservedForOther(pqxx::work& txn, const std::string& username, int64_t uid) {
+    const int64_t cutoff = static_cast<int64_t>(std::time(nullptr)) - NAME_RESERVATION_SECONDS;
+    pqxx::result rs = txn.exec_params(
+        "SELECT 1 FROM name_changes WHERE old_username = $1 AND changed_at > $2 AND uid <> $3 LIMIT 1",
+        username, cutoff, uid);
+    return !rs.empty();
+}
+
+std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReservedName(const std::string& username) {
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        const int64_t cutoff = static_cast<int64_t>(std::time(nullptr)) - NAME_RESERVATION_SECONDS;
+        // The latest account to leave the name, if within the reservation.
+        pqxx::result res = txn.exec_params(
+            "SELECT u.uid, u.username, u.password_hash FROM name_changes c "
+            "JOIN users u ON u.uid = c.uid "
+            "WHERE c.old_username = $1 AND c.changed_at > $2 "
+            "ORDER BY c.changed_at DESC, c.id DESC LIMIT 1",
+            username, cutoff);
+        if (res.empty()) return std::nullopt;
+        StoredCredentials creds;
+        creds.uid = res[0][0].as<int64_t>();
+        creds.username = res[0][1].as<std::string>();
+        creds.password_hash = res[0][2].as<std::string>();
+        return creds;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] getCredentialsByReservedName: " << e.what() << "\n";
+        return std::nullopt;
+    }
+}
+
+AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string& new_username,
+                                                  const std::string& password) {
+    RenameResult out;
+    if (auto bad = validateUsername(new_username); !bad.empty()) {
+        out.error = bad;
+        return out;
+    }
+    try {
+        pqxx::connection conn(db_conn_str_);
+        pqxx::work txn(conn);
+        pqxx::result me = txn.exec_params(
+            "SELECT username, password_hash FROM users WHERE uid = $1 FOR UPDATE", uid);
+        if (me.empty()) {
+            out.error = "Your account wasn't found.";
+            return out;
+        }
+        out.old_username = me[0][0].as<std::string>();
+        if (!verifyPassword(password, me[0][1].as<std::string>())) {
+            out.error = "Wrong password.";
+            return out;
+        }
+        if (new_username == out.old_username) {
+            out.error = "That's already your username.";
+            return out;
+        }
+        const int64_t now = static_cast<int64_t>(std::time(nullptr));
+        const int64_t recent = txn.exec_params(
+            "SELECT count(*) FROM name_changes WHERE uid = $1 AND changed_at > $2",
+            uid, now - 24 * 3600)[0][0].as<int64_t>();
+        if (recent >= RENAMES_PER_DAY) {
+            out.error = "You can change your username twice a day. Try again tomorrow.";
+            return out;
+        }
+        // Central runs one io thread with synchronous queries, so nothing
+        // interleaves between these checks and the update; the unique
+        // index on users.username backs them up regardless.
+        if (!txn.exec_params("SELECT 1 FROM users WHERE username = $1", new_username).empty() ||
+            nameReservedForOther(txn, new_username, uid)) {
+            out.error = "That username is taken.";
+            return out;
+        }
+        txn.exec_params("UPDATE users SET username = $1 WHERE uid = $2", new_username, uid);
+        txn.exec_params(
+            "INSERT INTO name_changes (uid, old_username, new_username, changed_at) VALUES ($1, $2, $3, $4)",
+            uid, out.old_username, new_username, now);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] renameUser: " << e.what() << "\n";
+        out.error = "Couldn't change your username. Please try again.";
+        return out;
+    }
+    out.username = new_username;
+    // Without a token (signing failed) the client signs in again by name.
+    if (auto token = mintToken(uid, new_username)) out.token = *token;
+    return out;
 }
 
 bool AuthManager::validateToken(const std::string& token) {

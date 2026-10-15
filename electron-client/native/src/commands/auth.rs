@@ -14,7 +14,7 @@ use crate::config;
 use crate::events;
 use crate::net::central::CentralClient;
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, FetchAvatarReq, RegisterRequest, UpdateAvatarReq};
+use crate::net::proto::{packet, FetchAvatarReq, RegisterRequest, RenameRequest, UpdateAvatarReq};
 use crate::state;
 use tokio::sync::oneshot;
 
@@ -63,6 +63,108 @@ pub async fn login(args: LoginArgs) -> napi::Result<()> {
     let _ = config::save(Some(&creds), &settings);
 
     Ok(())
+}
+
+#[napi(object)]
+pub struct RenameAccountArgs {
+    pub new_username: String,
+    pub password: String,
+}
+
+#[napi(object)]
+pub struct RenameAccountResult {
+    pub username: String,
+}
+
+/// Change our username (uid design, stage 5). Central checks the password
+/// and the name, and reserves the old name for this account for 14 days.
+/// On success the fresh token replaces ours, the saved credentials follow
+/// the new name, the renderer hears `user_renamed {self: true}`, and every
+/// community reconnects so it learns the name from the new token. Refused
+/// while in a voice channel: the reconnect would drop it.
+#[napi]
+pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccountResult> {
+    let state_arc = state::shared();
+    let (write_tx, data, rx) = {
+        let mut s = state_arc.lock().await;
+        if s.connected_voice_channel.is_some() {
+            return Err(napi::Error::from_reason("Leave the voice channel before changing your username."));
+        }
+        let central = s
+            .central
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
+        let tx = central
+            .connection_write_tx()
+            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
+        let (wtx, wrx) = oneshot::channel();
+        s.pending_rename = Some(wtx);
+        let data = build_packet(
+            packet::Type::RenameReq,
+            packet::Payload::RenameReq(RenameRequest {
+                new_username: args.new_username.trim().to_string(),
+                password: args.password,
+            }),
+            s.token.as_deref(),
+        );
+        (tx, data, wrx)
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => {}
+        _ => {
+            state_arc.lock().await.pending_rename = None;
+            return Err(napi::Error::from_reason("Couldn't reach the server"));
+        }
+    }
+    let res = match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(res)) => res,
+        Ok(Err(_)) => return Err(napi::Error::from_reason("Connection closed before the reply")),
+        Err(_) => {
+            state_arc.lock().await.pending_rename = None;
+            return Err(napi::Error::from_reason("The server didn't answer"));
+        }
+    };
+    if !res.success {
+        return Err(napi::Error::from_reason(res.message));
+    }
+
+    let (old_username, uid, communities) = {
+        let mut s = state_arc.lock().await;
+        let old = s.username.replace(res.username.clone()).unwrap_or_default();
+        if !res.jwt_token.is_empty() {
+            s.token = Some(res.jwt_token.clone());
+        }
+        if let Some((_, pass)) = s.credentials.clone() {
+            s.credentials = Some((res.username.clone(), pass));
+        }
+        // Without a fresh token the communities would hear the old name;
+        // they catch up at the next sign-in instead.
+        let communities: Vec<(String, String, u16)> = if res.jwt_token.is_empty() {
+            Vec::new()
+        } else {
+            s.communities.values().map(|c| (c.server_id.clone(), c.host.clone(), c.port)).collect()
+        };
+        (old, s.uid, communities)
+    };
+    // Auto-login uses the saved credentials: they follow the new name.
+    if let Ok(cfg) = config::load() {
+        if let Some(saved) = cfg.credentials {
+            let creds = config::Credentials { username: res.username.clone(), password: saved.password };
+            let _ = config::save(Some(&creds), &cfg.settings);
+        }
+    }
+    events::emit_user_renamed(events::UserRenamedPayload {
+        uid,
+        old_username,
+        username: res.username.clone(),
+        is_self: true,
+    });
+    for (server_id, host, port) in communities {
+        if let Err(e) = crate::commands::servers::connect_with_invite(server_id.clone(), host, port, None).await {
+            log::warn!("[rename] reconnecting community {server_id} failed: {e}");
+        }
+    }
+    Ok(RenameAccountResult { username: res.username })
 }
 
 #[napi(object)]

@@ -894,6 +894,48 @@ private:
             }
         }
 
+        // --- RENAME (uid design, stage 5) ---
+        // Password-confirmed. Central allows one session per account (a
+        // login kicks the others), so this session is the only one to
+        // update; communities learn the name when the client reconnects
+        // with the fresh token.
+        else if (packet.type() == chatproj::Packet::RENAME_REQ) {
+            if (!authenticated_) return;
+            auto reply = [&](bool success, const std::string& msg, const std::string& token) {
+                chatproj::Packet rsp;
+                rsp.set_type(chatproj::Packet::RENAME_RES);
+                auto* res = rsp.mutable_rename_res();
+                res->set_success(success);
+                res->set_message(msg);
+                res->set_username(username_);
+                res->set_jwt_token(token);
+                std::string serialized;
+                rsp.SerializeToString(&serialized);
+                deliver(std::make_shared<std::vector<uint8_t>>(
+                    chatproj::create_framed_packet(serialized)));
+            };
+            if (!rename_bucket_.take()) {
+                reply(false, "Too many attempts. Try again in a minute.", "");
+                return;
+            }
+            const auto& req = packet.rename_req();
+            if (req.new_username().size() > 64 || req.password().size() > 1024) {
+                reply(false, "Invalid request.", "");
+                return;
+            }
+            auto r = auth_manager_.renameUser(uid_, req.new_username(), req.password());
+            if (!r.error.empty()) {
+                reply(false, r.error, "");
+                return;
+            }
+            username_ = r.username;
+            std::cout << "[Rename] uid " << uid_ << ": " << r.old_username << " -> " << username_ << "\n";
+            reply(true, r.token.empty() ? "Renamed; sign in again." : "", r.token);
+            // An invisible user's rename would give them away: others see
+            // the new name on their next fetch instead.
+            if (presence_visible()) manager_.broadcast_user_renamed(uid_, r.old_username, username_);
+        }
+
         // --- E2EE: FETCH KEYS ---
         // Any authenticated user may read anyone's public bundle (that is
         // the point of a public key); key_id 0 = current. Bucketed: the
@@ -1492,6 +1534,8 @@ private:
                 // E2EE DMs: this build serves the key endpoints.
                 resp->set_e2ee_keys(true);
                 resp->set_e2ee_uid_binding(true);
+                // Username changes (uid design, stage 5).
+                resp->set_renames(true);
                 // User statuses: this build understands SET_STATUS_REQ /
                 // SET_IDLE_REQ; echo the saved choice.
                 resp->set_presence_statuses(true);
@@ -1554,6 +1598,10 @@ private:
     /// Same shape for the E2EE key endpoints (publish / fetch / backup):
     /// each is a synchronous DB round-trip on the io thread.
     RateBucket key_bucket_{20.0, 5.0};
+    /// Renames: each verifies the password (bcrypt), so a stolen token
+    /// can't use this to guess it quickly. 10 burst (a few taken names in
+    /// a row) / 1 per 30 s.
+    RateBucket rename_bucket_{10.0, 1.0 / 30.0};
     /// Status / idle / DM-privacy changes: each is a DB write or a fan-out
     /// to every session. A person picks a status a few times a day and
     /// auto-away flips at most every few minutes; 10 burst / 1 per 2 s

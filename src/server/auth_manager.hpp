@@ -22,6 +22,23 @@ public:
     // Processes registration. Returns error message if failed, empty string if successful.
     std::string registerUser(const std::string& username, const std::string& email, const std::string& password);
 
+    /// The registration rules for a name: "" when valid, else why not.
+    static std::string validateUsername(const std::string& username);
+
+    /// A successful rename: the account's names and a fresh token.
+    struct RenameResult {
+        std::string error;        // "" on success
+        std::string old_username;
+        std::string username;
+        std::string token;
+    };
+    /// Change `uid`'s username (uid design, stage 5). Confirmed with the
+    /// password; the old name is reserved for this account for
+    /// NAME_RESERVATION_SECONDS; at most RENAMES_PER_DAY a day.
+    RenameResult renameUser(int64_t uid, const std::string& new_username, const std::string& password);
+    static constexpr int64_t NAME_RESERVATION_SECONDS = 14 * 24 * 3600;
+    static constexpr int RENAMES_PER_DAY = 2;
+
     /// A successful login: the signed JWT and the account it names.
     struct LoginResult {
         std::string token;
@@ -372,6 +389,13 @@ private:
     void initializeDatabase();
     /// Migration 1: users by uid (2026-10-15-uid-identity-design.md).
     void migrateToUidKeys(pqxx::work& txn);
+    /// A signed 24 h token naming the account.
+    std::optional<std::string> mintToken(int64_t uid, const std::string& username);
+    /// The account a reserved old name belongs to (renamed away from it
+    /// within the reservation), for signing in with it; nullopt otherwise.
+    std::optional<StoredCredentials> getCredentialsByReservedName(const std::string& username);
+    /// A name another account renamed away from within the reservation.
+    bool nameReservedForOther(pqxx::work& txn, const std::string& username, int64_t uid);
 
     // Password hashing using bcrypt (cost factor 12)
     std::string hashPassword(const std::string& plain_password);

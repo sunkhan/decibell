@@ -270,6 +270,22 @@ void CommunityDb::init_schema_() {
 
     // --- v15: users by uid ---
     migrate_to_v15_uid_keys_();
+
+    // --- v16: the token that last named each member (renames) ---
+    migrate_to_v16_name_iat_();
+}
+
+void CommunityDb::migrate_to_v16_name_iat_() {
+    // Renames (uid design, stage 5): a member's name follows the newest
+    // token. Tokens live 24 h, so a device that kept one across a rename
+    // must not rename the member back.
+    if (!column_exists(db_, "members", "name_iat")) {
+        if (!exec_sql(db_, "ALTER TABLE members ADD COLUMN name_iat INTEGER NOT NULL DEFAULT 0;")) {
+            std::cerr << "[DB] v16 (members.name_iat) migration failed\n";
+            return;
+        }
+    }
+    set_meta_("schema_version", "16");
 }
 
 void CommunityDb::migrate_to_v15_uid_keys_() {
@@ -1338,18 +1354,19 @@ bool CommunityDb::is_member(int64_t uid) const {
     return q.step() == SQLITE_ROW;
 }
 
-bool CommunityDb::add_member(int64_t uid, const std::string& username) {
+bool CommunityDb::add_member(int64_t uid, const std::string& username, int64_t name_iat) {
     if (uid <= 0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     // A newcomer starts clean: the row is keyed by their uid, so nothing
     // stored for another account (even under the same name) applies.
     invalidate_user_perms_(uid);
     Stmt q(db_,
-        "INSERT INTO members(uid, username, joined_at, nickname) VALUES(?, ?, ?, '');");
+        "INSERT INTO members(uid, username, joined_at, nickname, name_iat) VALUES(?, ?, ?, '', ?);");
     if (!q.s) return false;
     q.bind_int64(1, uid);
     q.bind_text(2, username);
     q.bind_int64(3, now_seconds());
+    q.bind_int64(4, name_iat);
     return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
 }
 
@@ -1426,23 +1443,33 @@ bool CommunityDb::claim_legacy(int64_t uid, const std::string& username) {
     return ok;
 }
 
-std::optional<std::string> CommunityDb::refresh_member_name(int64_t uid, const std::string& username) {
+std::optional<std::string> CommunityDb::refresh_member_name(int64_t uid, const std::string& username,
+                                                            int64_t iat, std::string* current) {
+    if (current) *current = username;
     if (uid <= 0 || username.empty()) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
     std::string old;
+    int64_t named_at = 0;
     {
-        Stmt q(db_, "SELECT username FROM members WHERE uid=?;");
+        Stmt q(db_, "SELECT username, name_iat FROM members WHERE uid=?;");
         if (!q.s) return std::nullopt;
         q.bind_int64(1, uid);
         if (q.step() != SQLITE_ROW) return std::nullopt;
         old = q.col_text(0);
+        named_at = q.col_int64(1);
     }
-    if (old == username) return std::nullopt;
-    Stmt q(db_, "UPDATE members SET username=? WHERE uid=?;");
+    if (iat < named_at) {
+        // An older token than the one that named them: keep the newer name.
+        if (current) *current = old;
+        return std::nullopt;
+    }
+    Stmt q(db_, "UPDATE members SET username=?, name_iat=? WHERE uid=?;");
     if (!q.s) return std::nullopt;
     q.bind_text(1, username);
-    q.bind_int64(2, uid);
+    q.bind_int64(2, iat);
+    q.bind_int64(3, uid);
     if (q.step() != SQLITE_DONE) return std::nullopt;
+    if (old == username) return std::nullopt;
     return old;
 }
 

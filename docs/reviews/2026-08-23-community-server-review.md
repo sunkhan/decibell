@@ -2616,3 +2616,48 @@ Verified:
 Live two-account tests are still pending: DMs both ways, history from before the switch, a call, a
 voice channel and an encrypted channel. Needs the Hetzner central rebuild (`pg_dump` first); the
 community rebuild is optional for this stage.
+
+**Users by uid, stage 5: username changes (2026-10-15) ✅** — People can change their username. Every
+feature follows the account (design: `docs/superpowers/specs/2026-10-15-uid-identity-design.md`
+§Stage 5).
+- **Central.**
+  - `RENAME_REQ` is password-confirmed and follows the registration rules (now shared). It allows two
+    renames a day, and a per-session bucket keeps a stolen token from guessing the password.
+  - Each rename is recorded in `name_changes` (migration 3).
+  - The old name is **reserved for the account for 14 days**. Nobody else can register it or rename to
+    it, while the account can rename back and can still sign in with it (the response carries the
+    current name).
+  - `USER_RENAMED` goes to every session, only for visible users (an invisible user's rename would show
+    activity).
+  - `LoginResponse.renames` advertises the feature.
+- **Community.** Schema v16 adds `members.name_iat`: a token older than the one that last named a member
+  can't rename them back (a device holding its 24 h token across a rename). That session runs under
+  the newer name.
+- **Client.**
+  - Settings → Account → "Change username" opens `RenameUsernameModal`.
+  - Native `rename_account` swaps the token, moves the saved credentials to the new name and
+    reconnects every community. It is refused while in a voice channel, because the reconnect would
+    drop it.
+  - `features/users/applyRename.ts` moves everything held under the old name, in place: DM threads and
+    their senders, channel senders, members and owners, friends, presence, avatars, drafts, E2EE
+    notices, the call peer, profile targets, and the saved per-user volume / local mute (saved again
+    and re-applied).
+  - Signing in with a reserved old name moves the saved credentials to the current name.
+
+Owner decisions applied: 14-day reservation, password confirmation. Defaults I chose, open to change:
+two renames a day, sign-in with the old name during the reservation, no live broadcast for invisible
+users, rename refused while in a voice channel.
+
+Verified:
+- central e2e 159 passed (wrong password, rules, taken / reserved / same name, the token, the
+  broadcast and its invisible exception, renaming back, the daily limit, old-name sign-in, release
+  after 14 days, migration 3);
+- community e2e 576 passed (an older token keeps the newer name, and its session acts under it);
+- `cargo test --lib` 232 passed;
+- `tsc` 0 errors; `napi build`;
+- a scratch bundle exercising `applyRename` (16 checks: re-keying, unchanged references, self rename);
+- dialog and Account tab captured in nocturne, matinee and console.
+
+Live tests are still pending: a rename seen from a friend's client, DMs and history afterwards, and
+the old name signing in from a second device. Needs both the Hetzner central rebuild (`pg_dump`
+first) and the community rebuild (back up `c.db` first).

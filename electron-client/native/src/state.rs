@@ -163,6 +163,8 @@ pub struct AppState {
     pub pending_key_publish: Option<oneshot::Sender<E2eePublishKeysRes>>,
     /// In-flight E2EE_FETCH_BACKUP_REQ.
     pub pending_backup_fetch: Option<oneshot::Sender<E2eeFetchBackupRes>>,
+    /// In-flight RENAME_REQ (one at a time, from the account settings).
+    pub pending_rename: Option<oneshot::Sender<crate::net::proto::RenameResponse>>,
     /// The ordered DM crypto worker's queue (installed on first DM
     /// packet; outlives reconnects). See e2ee/session.rs.
     pub dm_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::session::DmJob>>,
@@ -214,6 +216,7 @@ impl Default for AppState {
             pending_key_fetches: HashMap::new(),
             pending_key_publish: None,
             pending_backup_fetch: None,
+            pending_rename: None,
             dm_crypto_tx: None,
             voice_mls: None,
             channel_keys: HashMap::new(),

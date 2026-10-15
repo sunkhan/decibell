@@ -250,6 +250,51 @@ uid = int64, little-endian (8 bytes). Salts, key ids, tags and inner content are
 - **Community:** the refusal to edit an encrypted message sent under a previous name now applies to v1
   envelopes (`0x02`) only. A v2 edit binds the uid and stays readable.
 
-## Stage 5
+## Stage 5: the rename ✅
 
-Specified when it starts, in this file.
+Done on the branch (see the review log). Verified by central e2e checks for every rule below, a
+community e2e check for the token guard, and a scratch test of the client's re-keying.
+
+### Central
+
+- **`RENAME_REQ {new_username, password}`** → `RENAME_RES {success, message, username, jwt_token}`.
+  - The password is checked against the session's account.
+  - The name follows the registration rules (`AuthManager::validateUsername`, now shared).
+  - Refused when taken, when another account's reservation holds it, or when it is the current name.
+  - At most **two renames per 24 hours**. The rule allows a typo fix, and limits how many names one
+    account can hold in reservation.
+  - A per-session bucket (10 burst / 1 per 30 s) keeps a stolen token from guessing the password.
+  - On success the session's name changes and a fresh token naming it is returned. Central allows one
+    session per account, so there is no other session to update.
+- **`name_changes(uid, old_username, new_username, changed_at)`** (migration 3) records each rename.
+  - **Reservation:** an old name renamed away from in the last 14 days is closed to registration and to
+    other accounts' renames. The account that left it may rename back.
+  - **Sign-in with the old name** still works during the reservation (a device that saved it). The
+    response and token carry the current name, and the client updates its saved credentials.
+  - Rows are kept as an audit trail; the last day's rows rate-limit renames.
+- **`USER_RENAMED {uid, old_username, username}`** goes to every session, but only when the renamer is
+  visible. An invisible user's rename would reveal activity, so others see it at their next fetch.
+- **`LoginResponse.renames`** advertises the feature.
+
+### Community
+
+Members are renamed at auth from the token (stage 2). Schema v16 adds `members.name_iat`: a token
+issued before the one that last named the member can't rename them back, and that session runs under
+the newer name. A device can hold a token across a rename for up to 24 h.
+
+### Client
+
+- **Native `rename_account`.**
+  - Refused while in a community voice channel (the reconnect would drop it).
+  - On success it swaps the token, moves the saved credentials to the new name, emits
+    `user_renamed {self: true}` and reconnects every community with the new token.
+  - Central's `USER_RENAMED` for anyone else becomes `user_renamed {self: false}`.
+- **`features/users/applyRename.ts`** moves everything held under the old name to the new one, in place.
+  Untouched stores keep their references. It covers:
+  - DM threads (key, peer, senders), the active DM, pending deletions;
+  - channel message senders, members, owners;
+  - friends, presence, avatars, DM drafts, E2EE notices, call peer, profile / menu targets;
+  - saved per-user volume and local mute (saved again and re-applied).
+  Live voice state is left alone: the renamed user's session reconnects under the new name.
+- **Settings → Account → "Change username"** (`RenameUsernameModal`) asks for the new name and the
+  password.

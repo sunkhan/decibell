@@ -1021,6 +1021,7 @@ private:
             // (Theme A). This server can check a token but can't mint one.
             std::string candidate_username;
             int64_t candidate_uid = 0;
+            int64_t candidate_iat = 0;
             try {
                 auto decoded = jwt::decode(token);
                 auto verifier = jwt::verify()
@@ -1035,6 +1036,10 @@ private:
                     else if (c.get_type() == jwt::json::type::string) { try { candidate_uid = std::stoll(c.as_string()); } catch (...) {} }
                 }
                 if (candidate_username.empty()) throw std::runtime_error("empty subject");
+                if (decoded.has_issued_at()) {
+                    candidate_iat = std::chrono::duration_cast<std::chrono::seconds>(
+                        decoded.get_issued_at().time_since_epoch()).count();
+                }
             } catch (const std::exception& e) {
                 std::cout << "[Community] Auth failed (JWT): " << e.what() << "\n";
                 send_auth_response(false, "Invalid token.", "auth");
@@ -1085,7 +1090,15 @@ private:
             // The name their row holds, when central renamed them since.
             std::optional<std::string> renamed_from;
             if (member) {
-                renamed_from = db->refresh_member_name(candidate_uid, candidate_username);
+                // The session goes by the name the row holds: the token's,
+                // unless an older token than the one that named them.
+                std::string current;
+                renamed_from = db->refresh_member_name(candidate_uid, candidate_username, candidate_iat, &current);
+                if (current != candidate_username) {
+                    std::cout << "[Community] uid " << candidate_uid << " connected with an older token ("
+                              << candidate_username << "); keeping " << current << "\n";
+                    candidate_username = current;
+                }
                 if (renamed_from) {
                     roster_changed = true;
                     std::cout << "[Community] uid " << candidate_uid << " renamed "
@@ -1107,7 +1120,7 @@ private:
                         close_after_flush();
                         return;
                     }
-                    if (!db->add_member(candidate_uid, candidate_username)) {
+                    if (!db->add_member(candidate_uid, candidate_username, candidate_iat)) {
                         send_auth_response(false, "Failed to record membership.", "auth");
                         manager_.leave(shared_from_this());
                         close_after_flush();
@@ -1120,7 +1133,7 @@ private:
                     auto result = db->redeem_invite(invite_code, candidate_uid, candidate_username, &consumed);
                     switch (result) {
                         case chatproj::InviteResult::Ok:
-                            if (!db->add_member(candidate_uid, candidate_username)) {
+                            if (!db->add_member(candidate_uid, candidate_username, candidate_iat)) {
                                 send_auth_response(false, "Failed to record membership.", "auth");
                                 manager_.leave(shared_from_this());
                                 close_after_flush();

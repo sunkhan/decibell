@@ -285,6 +285,11 @@ message Packet {
     // (docs/superpowers/specs/2026-10-14-message-search-design.md).
     MESSAGE_SEARCH_REQ = 156;     // client→community (any member)
     MESSAGE_SEARCH_RES = 157;     // community→requester
+    // Username changes (docs/superpowers/specs/2026-10-15-uid-identity-design.md,
+    // stage 5): password-confirmed, the old name reserved for 14 days.
+    RENAME_REQ   = 158;   // client→central
+    RENAME_RES   = 159;   // central→requester
+    USER_RENAMED = 160;   // central→every session: a visible user's new name
   }
 
   Type type = 1;
@@ -485,6 +490,9 @@ message Packet {
     MemberSearchResponse     member_search_res      = 157;
     MessageSearchRequest     message_search_req     = 158;
     MessageSearchResponse    message_search_res     = 159;
+    RenameRequest            rename_req             = 160;
+    RenameResponse           rename_res             = 161;
+    UserRenamed              user_renamed           = 162;
   }
 }
 
@@ -554,6 +562,31 @@ message LoginResponse {
   // (E2eePublishKeysReq.rebind). Without it, clients publish name-bound
   // bundles and never rebind.
   bool e2ee_uid_binding = 15;
+  // This central accepts RENAME_REQ (uid design, stage 5).
+  bool renames = 16;
+}
+
+// Change the signed-in account's username. Confirmed with the password;
+// the name follows the registration rules. The old name stays reserved for
+// this account for 14 days (it can rename back, and it still signs in with
+// it), then anyone may take it. At most two renames per 24 hours.
+message RenameRequest {
+  string new_username = 1;
+  string password = 2;
+}
+message RenameResponse {
+  bool   success = 1;
+  string message = 2;
+  string username = 3;    // the account's name after the request
+  string jwt_token = 4;   // success: a fresh token naming the new username
+}
+// To every session when a user others can see changes their name (an
+// invisible user's rename shows on the next fetch instead). Clients re-key
+// what they hold under the old name.
+message UserRenamed {
+  int64  uid = 1;
+  string old_username = 2;
+  string username = 3;
 }
 
 message DirectMessage {

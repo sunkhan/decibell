@@ -671,6 +671,70 @@ def test_rename_keeps_everything():
     q.close(); a.close(); b.close()
 
 
+def test_rename():
+    print("rename (stage 5)")
+    for n in ("gina", "hank", "ivan"):
+        register(n)
+    g, h = User("gina"), User("hank")
+    ug = g.login.uid
+    check("login advertises renames", g.login.renames)
+
+    def rename(u, name, pw="password123"):
+        u.send(pb.Packet.RENAME_REQ, rename_req=pb.RenameRequest(new_username=name, password=pw))
+        r = u.wait(pb.Packet.RENAME_RES)
+        return r.rename_res if r else None
+
+    r = rename(g, "gina2", pw="wrong-password")
+    check("wrong password refused", r and not r.success and r.username == "gina" and r.message == "Wrong password.", r)
+    r = rename(g, "Gina2")
+    check("registration rules apply", r and not r.success and "lowercase" in r.message)
+    r = rename(g, "hank")
+    check("a taken name refused", r and not r.success and r.message == "That username is taken.")
+    r = rename(g, "gina")
+    check("the same name refused", r and not r.success)
+    h.clear()
+    r = rename(g, "gina2")
+    check("renamed", r and r.success and r.username == "gina2" and r.jwt_token, r)
+    g.token = r.jwt_token if r else g.token
+    claims = g.claims()
+    check("fresh token names the new username, same uid", claims.get("sub") == "gina2" and claims.get("uid") == ug)
+    rn = h.wait(pb.Packet.USER_RENAMED)
+    check("others are told", rn and rn.user_renamed.uid == ug and rn.user_renamed.old_username == "gina"
+          and rn.user_renamed.username == "gina2")
+    check("audit row", sql("SELECT old_username, new_username FROM name_changes WHERE uid = %s", ug) == [("gina", "gina2")])
+    m = g.dm("hank", "under my new name", nonce="rn1")
+    check("the session acts under the new name", m and m.sender == "gina2" and m.sender_uid == ug)
+    check("the old name is reserved for registration", not register("gina", email="other-gina@example.com").success)
+    i = User("ivan")
+    r = rename(i, "gina")
+    check("... and for other renames", r and not r.success and r.message == "That username is taken.")
+    r = rename(g, "gina")
+    check("renaming back to your own reserved name", r and r.success and r.username == "gina")
+    g.token = r.jwt_token if r else g.token
+    r = rename(g, "gina3")
+    check("two renames a day", r and not r.success and "twice a day" in r.message, r)
+    # Invisible: no broadcast (it would give them away).
+    i.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_INVISIBLE))
+    time.sleep(0.2)
+    h.clear()
+    r = rename(i, "ivan2")
+    check("invisible user renamed", r and r.success)
+    h.drain(0.5)
+    check("... without a broadcast", not any(p.type == pb.Packet.USER_RENAMED for p in h.inbox))
+    i.close()
+    # Signing in with a reserved old name reaches the account, under its current name.
+    old = User("ivan")
+    check("old name signs in during the reservation", old.ok and old.login.uid == uid_of("ivan2")
+          and old.login.username == "ivan2" and old.claims().get("sub") == "ivan2")
+    old.close()
+    # After the reservation the old name is free.
+    sql("UPDATE name_changes SET changed_at = changed_at - %s WHERE uid IN (%s, %s)",
+        15 * 24 * 3600, ug, uid_of("ivan2"))
+    check("old name no longer signs in", not User("ivan").ok)
+    check("old name free to register after 14 days", register("gina2", email="new-gina2@example.com").success)
+    g.close(); h.close()
+
+
 def seed_with_old_binary():
     """Data shapes as the pre-uid central writes them."""
     for n in ("alice", "bob", "carol", "dave"):
@@ -721,7 +785,7 @@ def test_migration():
         check("migration ran and logged its counts", "friendships 3/3" in line and "dm_messages 3/4" in line
               and "(1 for unknown names removed)" in line and "e2ee keys 3/3" in line
               and "e2ee backups 2/2" in line and "memberships 2/2" in line and "read cursors 1/1" in line, line)
-        check("schema version 2", sql("SELECT version FROM central_schema")[0][0] == 2)
+        check("schema version 3", sql("SELECT version FROM central_schema")[0][0] == 3)
         check("migrated bundles bind the name", sql("SELECT DISTINCT binding FROM e2ee_keys") == [(1,)])
         check("users keyed by uid", sql(
             "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid "
@@ -798,6 +862,7 @@ def main():
         test_uid_wire()
         test_memberships_by_uid()
         test_rename_keeps_everything()
+        test_rename()
     finally:
         stop_server(proc)
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

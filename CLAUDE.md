@@ -94,14 +94,18 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   (2026-10-14): every backend, central or community, keys stored rows, filters, ownership checks and
   purges on the account uid so a rename never breaks a feature; resolve names to uids at the request
   edge (e.g. `messages.sender_uid`). Flag username-keyed spots instead of leaving them. The migration
-  is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (stages 1–4 done; the rename
-  itself is stage 5): every wire user reference carries `*_uid` next to the name, requests prefer the
+  is staged in `docs/superpowers/specs/2026-10-15-uid-identity-design.md` (all five stages done): every
+  wire user reference carries `*_uid` next to the name, requests prefer the
   uid (the name is the typed-name fallback), payload names are current names, and rows with an
   envelope also carry `sealed_*` names (what a v1 envelope binds). Never rewrite a stored sent-under
   name. Encryption binds the uid too: bundles (`binding` 2, existing ones rebound in place), uid
   fingerprints / safety numbers, DM envelopes `0x03`, channel envelopes `0x04`, call auth v2, MLS
   credentials `"<uid>:<name>"`, the keystore `e2ee/u<uid>.json` with uid-keyed pins. New envelopes
-  are always v2; v1 (`0x01` / `0x02`) opens with the `sealed_*` names.
+  are always v2; v1 (`0x01` / `0x02`) opens with the `sealed_*` names. Renames (Settings → Account):
+  password-confirmed, two a day; the old name is reserved for the account for 14 days and still signs
+  it in meanwhile. `USER_RENAMED` goes out only for visible users. The client re-keys its stores in
+  `features/users/applyRename.ts` and reconnects communities with the fresh token; refused in voice.
+  The community's `members.name_iat` stops an older token from renaming a member back.
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.

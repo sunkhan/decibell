@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "../../lib/ipc";
+import { applyRename } from "./applyRename";
 
 // Users by uid (docs/superpowers/specs/2026-10-15-uid-identity-design.md).
 // The servers key every user on their central account uid, and every
@@ -12,6 +13,9 @@ import { listen, type UnlistenFn } from "../../lib/ipc";
 // name means the same account everywhere. The latest uid seen for a name
 // wins. Only real accounts count (> 0); a community's placeholder for a
 // name it has no uid for is addressed by name.
+//
+// A rename (`user_renamed`, stage 5) moves the account to its new name
+// here and in every store (applyRename).
 
 const uidByName = new Map<string, number>();
 let selfUid = 0;
@@ -102,6 +106,15 @@ export function useUserDirectory() {
         for (const b of payload.entries) remember(b.username, b.uid);
       }),
       listen<{ from: string; fromUid?: number }>("call_signal", ({ payload }) => remember(payload.from, payload.fromUid)),
+      listen<{ uid: number | bigint; oldUsername: string; username: string; self: boolean }>(
+        "user_renamed",
+        ({ payload }) => {
+          const uid = Number(payload.uid);
+          if (uidByName.get(payload.oldUsername) === uid) uidByName.delete(payload.oldUsername);
+          remember(payload.username, uid);
+          applyRename(payload.oldUsername, payload.username, payload.self);
+        },
+      ),
     ];
     return () => {
       for (const s of subs) s.then((off) => off()).catch(() => {});

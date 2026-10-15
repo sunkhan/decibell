@@ -2,12 +2,14 @@ import { create } from "zustand";
 
 interface AuthState {
   username: string | null;
+  /// Central accepts username changes (LoginResponse.renames).
+  renames: boolean;
   isAuthenticated: boolean;
   isLoggingIn: boolean;
   loginError: string | null;
   isRegistering: boolean;
   registerResult: { success: boolean; message: string } | null;
-  login: (username: string) => void;
+  login: (username: string, renames?: boolean) => void;
   logout: () => void;
   setLoggingIn: (v: boolean) => void;
   setLoginError: (msg: string | null) => void;
@@ -17,13 +19,14 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>((set) => ({
   username: null,
+  renames: false,
   isAuthenticated: false,
   isLoggingIn: false,
   loginError: null,
   isRegistering: false,
   registerResult: null,
-  login: (username) =>
-    set({ username, isAuthenticated: true, isLoggingIn: false, loginError: null }),
+  login: (username, renames = false) =>
+    set({ username, renames, isAuthenticated: true, isLoggingIn: false, loginError: null }),
   logout: () =>
     set({
       username: null,

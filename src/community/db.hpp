@@ -381,7 +381,7 @@ public:
     // --- membership ---
     bool is_member(int64_t uid) const;
     // Records a new membership. True only if a row was actually inserted.
-    bool add_member(int64_t uid, const std::string& username);
+    bool add_member(int64_t uid, const std::string& username, int64_t name_iat = 0);
     // A legacy placeholder for `username` (a name seen before uids reached
     // this server, or a fresh server's configured owner) becomes `uid` in
     // every table, in one transaction. Only when `uid` has no member row
@@ -390,7 +390,11 @@ public:
     // The member's token carries another name than their row (renamed at
     // central): store the new one. Returns the previous name, or nullopt
     // when unchanged / not a member.
-    std::optional<std::string> refresh_member_name(int64_t uid, const std::string& username);
+    /// `iat` is the token's issue time: a token older than the one that
+    /// last set the name can't change it back (a device that held its
+    /// token across a rename). `current` gets the name the row holds after.
+    std::optional<std::string> refresh_member_name(int64_t uid, const std::string& username,
+                                                   int64_t iat, std::string* current = nullptr);
     bool remove_member(int64_t uid);
     std::vector<DbMember> list_members() const;
 
@@ -949,6 +953,7 @@ private:
     void migrate_to_v14_search_();
     // Users by uid (2026-10-15-uid-identity-design.md).
     void migrate_to_v15_uid_keys_();
+    void migrate_to_v16_name_iat_();
     // Next free placeholder (negative) uid; mutex held.
     int64_t next_placeholder_unlocked_();
     // Creates messages_fts + its triggers and backfills it (once).

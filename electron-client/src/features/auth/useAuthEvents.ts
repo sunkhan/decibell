@@ -13,10 +13,10 @@ export function useAuthEvents() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const unlistenSuccess = listen<{ username: string }>(
+    const unlistenSuccess = listen<{ username: string; renames?: boolean }>(
       "login_succeeded",
       (event) => {
-        useAuthStore.getState().login(event.payload.username);
+        useAuthStore.getState().login(event.payload.username, !!event.payload.renames);
         // Replace, never push: a history entry is something back/forward
         // could walk to, and the app has no page worth walking back to.
         navigate("/", { replace: true });

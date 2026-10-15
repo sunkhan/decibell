@@ -50,12 +50,12 @@ def uid_for(username):
     return _uid_counter.setdefault(username, 1000 + len(_uid_counter))
 
 
-def jwt(username, nonce="", uid=None):
+def jwt(username, nonce="", uid=None, iat=None):
     ensure_keys()
     h = b64(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
     now = int(time.time())
     p = b64(json.dumps({"iss": "decibell_central_auth", "sub": username, "uid": uid if uid is not None else uid_for(username),
-                        "iat": now, "exp": now + 3600, "n": nonce}).encode())
+                        "iat": now if iat is None else iat, "exp": now + 3600, "n": nonce}).encode())
     return f"{h}.{p}.{b64(ed25519_sign(KEY_PEM, f'{h}.{p}'.encode()))}"
 
 
@@ -72,14 +72,14 @@ def ed25519_sign(key_pem, data):
 
 
 class Client:
-    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False):
+    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False, iat=None):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         raw = socket.create_connection((HOST, 8082), timeout=timeout)
         self.s = ctx.wrap_socket(raw)
         self.username = username
-        self.jwt = jwt(username, nonce, uid)
+        self.jwt = jwt(username, nonce, uid, iat)
         self.buf = b""
         self.inbox = []
         self.closed = False
@@ -1605,7 +1605,7 @@ def test_v14_search_migration():
     check("... including bound file names", sql("select rowid from messages_fts where messages_fts match '\"okapi\"'") == [(plain,)])
     check("sender_uid back-filled from members by name", sql("select sender_uid from messages where id=?", plain) == [(4242,)])
     check("a name no member holds stays 0", sql("select sender_uid from messages where id=?", stranger) == [(0,)])
-    check("schema stamped 15", sql("select value from server_meta where key='schema_version'") == [("15",)])
+    check("schema stamped 16", sql("select value from server_meta where key='schema_version'") == [("16",)])
     check("index at version 2", sql("select value from server_meta where key='search_index_version'") == [("2",)])
     # Version 1 (ı kept as ı) is rebuilt once: a row added while the
     # triggers are gone shows up folded afterwards.
@@ -2279,7 +2279,7 @@ def test_v15_uid_migration():
     stop_server(new)
     U = uid_for
     ph = dict(sql("select username, uid from legacy_claims"))
-    check("v15: schema stamped", sql("select value from server_meta where key='schema_version'") == [("15",)])
+    check("v15 then v16: schema stamped at the latest", sql("select value from server_meta where key='schema_version'") == [("16",)])
     check("v15: placeholders for names with no uid", set(ph) == {"lazy2", "eve", "dana"} and all(v < 0 for v in ph.values()), str(ph))
     check("v15: owner by uid", sql("select value from server_meta where key='owner_uid'") == [(str(U("alice")),)]
           and sql("select count(*) from server_meta where key='owner'") == [(0,)])
@@ -2344,7 +2344,7 @@ def test_v15_uid_migration():
     finally:
         stop_server(proc)
     proc = start_server(); stop_server(proc)
-    check("v15 doesn't run twice", sql("select value from server_meta where key='schema_version'") == [("15",)]
+    check("v15 and v16 don't run twice", sql("select value from server_meta where key='schema_version'") == [("16",)]
           and sql("select count(*) from members") == [(5,)])
 
 
@@ -2420,6 +2420,19 @@ def test_uid_wire():
           and m1.channel_msg.id in [m.id for m in sr.messages]
           and all(m.sender_uid == U("uidw1") for m in sr.messages))
     for c in (owner, w1, w2): c.close()
+    # Renames follow the newest token: one issued before the token that
+    # last named a member (a device that kept it across a rename) can't
+    # rename them back, and its session goes by the newer name.
+    c = Client("uidw1y", uid=U("uidw1")); ok, _ = auth_ok(c); c.close()
+    check("a newer token renames", ok and sql("select username from members where uid=?", U("uidw1")) == [("uidw1y",)])
+    stale = Client("uidw1", uid=U("uidw1"), iat=int(time.time()) - 600); ok, _ = auth_ok(stale)
+    check("an older token keeps the newer name", ok
+          and sql("select username from members where uid=?", U("uidw1")) == [("uidw1y",)])
+    stale.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="stale token", nonce="st1"))
+    echo = stale.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.nonce == "st1")
+    check("... and its session acts under it", echo is not None and echo.channel_msg.sender == "uidw1y")
+    stale.close()
+    back = Client("uidw1", uid=U("uidw1")); auth_ok(back); back.close()
 
 
 def test_auth_failure_closes():
@@ -2996,7 +3009,7 @@ def test_v11_migration():
     proc = start_server(); stop_server(proc)
     check("v10 → v12: a category with rows stays a plain group", sql("select category_sync from channels where id='old-cat'") == [(0,)])
     check("...and its channel follows nothing", perm_synced("old-child") == 0)
-    check("schema at the latest (v15)", sql("select value from server_meta where key='schema_version'") == [("15",)])
+    check("schema at the latest (v16)", sql("select value from server_meta where key='schema_version'") == [("16",)])
     # A DB that ran v11 live keeps the categories whose rows were applying.
     sql("update channels set perm_synced=1 where id='old-child'")
     sql("update server_meta set value='11' where key='schema_version'")

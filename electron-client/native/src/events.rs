@@ -381,6 +381,9 @@ pub fn send<P: Serialize>(name: &'static str, payload: P) {
 pub const CONNECTION_LOST: &str = "connection_lost";
 pub const CONNECTION_RESTORED: &str = "connection_restored";
 pub const LOGIN_SUCCEEDED: &str = "login_succeeded";
+/// A user changed their username (uid design, stage 5): ours (`self`)
+/// after `rename_account`, anyone else's from central's USER_RENAMED.
+pub const USER_RENAMED: &str = "user_renamed";
 pub const LOGIN_FAILED: &str = "login_failed";
 pub const REGISTER_RESPONDED: &str = "register_responded";
 pub const LOGGED_OUT: &str = "logged_out";
@@ -484,6 +487,22 @@ pub struct ConnectionEventPayload {
 pub struct LoginSucceededPayload {
     pub username: String,
     pub uid: i64,
+    /// Central accepts username changes.
+    pub renames: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRenamedPayload {
+    pub uid: i64,
+    pub old_username: String,
+    pub username: String,
+    #[serde(rename = "self")]
+    pub is_self: bool,
+}
+
+pub fn emit_user_renamed(payload: UserRenamedPayload) {
+    send(USER_RENAMED, payload);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -834,8 +853,8 @@ pub fn emit_connection_restored(server_type: &str, server_id: Option<String>) {
     );
 }
 
-pub fn emit_login_succeeded(username: String, uid: i64) {
-    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username, uid });
+pub fn emit_login_succeeded(username: String, uid: i64, renames: bool) {
+    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username, uid, renames });
 }
 
 pub fn emit_login_failed(message: String) {
