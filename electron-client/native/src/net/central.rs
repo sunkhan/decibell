@@ -26,6 +26,8 @@ pub struct CentralClient {
     router_task: Option<JoinHandle<()>>,
     reconnect_task: Option<JoinHandle<()>>,
     ping_task: Option<JoinHandle<()>>,
+    /// Token renewal (net/token.rs), for as long as this client lives.
+    refresh_task: Option<JoinHandle<()>>,
 }
 
 impl CentralClient {
@@ -73,6 +75,7 @@ impl CentralClient {
             router_task: Some(router_task),
             reconnect_task: None,
             ping_task: Some(ping_task),
+            refresh_task: Some(crate::net::token::spawn_refresh_loop(state.clone())),
         })
     }
 
@@ -162,6 +165,9 @@ impl CentralClient {
     /// Disconnect from the central server. Stops reconnection and keepalive.
     pub fn disconnect(&mut self) {
         if let Some(task) = self.ping_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.refresh_task.take() {
             task.abort();
         }
         if let Some(task) = self.reconnect_task.take() {
@@ -595,6 +601,11 @@ impl CentralClient {
                 Some(packet::Payload::E2eeFetchBackupRes(res)) => {
                     crate::e2ee::session::on_fetch_backup_res(&state, res).await;
                 }
+                Some(packet::Payload::TokenRefreshRes(res)) => {
+                    if res.success {
+                        crate::net::token::adopt(&state, res.jwt_token).await;
+                    }
+                }
                 Some(packet::Payload::RenameRes(res)) => {
                     if let Some(w) = state.lock().await.pending_rename.take() {
                         let _ = w.send(res);
@@ -721,6 +732,9 @@ impl Drop for CentralClient {
             t.abort();
         }
         if let Some(t) = self.ping_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.refresh_task.take() {
             t.abort();
         }
     }

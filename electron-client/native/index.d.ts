@@ -18,10 +18,11 @@ export interface RenameAccountResult {
 /**
  * Change our username (uid design, stage 5). Central checks the password
  * and the name, and reserves the old name for this account for 14 days.
- * On success the fresh token replaces ours, the saved credentials follow
- * the new name, the renderer hears `user_renamed {self: true}`, and every
- * community reconnects so it learns the name from the new token. Refused
- * while in a voice channel: the reconnect would drop it.
+ * On success the saved credentials follow the new name, the renderer
+ * hears `user_renamed {self: true}`, and the fresh token replaces ours and
+ * goes to every community session (net/token.rs), which takes the new
+ * name in place: no reconnect, so voice and streams carry on (the media
+ * plane identifies people by uid).
  */
 export declare function renameAccount(args: RenameAccountArgs): Promise<RenameAccountResult>
 export interface RegisterArgs {
@@ -1174,14 +1175,17 @@ export interface SendVideoFrameArgs {
 }
 export declare function sendVideoFrame(args: SendVideoFrameArgs): void
 export interface SetStreamFrameSinkArgs {
-  /** Streamer whose encoded frames the renderer now (no longer) displays. */
-  username: string
+  /**
+   * Media key (the streamer's uid, decimal) whose encoded frames the
+   * renderer now (no longer) displays.
+   */
+  key: string
   enabled: boolean
 }
 /**
  * Renderer-side stream-frame subscriptions, mirrored natively. The preload
- * bridge calls this when the first subscriber for a username appears
- * (enabled) and when the last one goes (disabled); frames for usernames
+ * bridge calls this when the first subscriber for a media key appears
+ * (enabled) and when the last one goes (disabled); frames for keys
  * without a sink are dropped before the TSFN — and own-stream self-preview
  * isn't even copied. Sync, and sent over the same `decibell:invoke`
  * channel as the player's follow-up keyframe request, so the sink is in
@@ -1197,30 +1201,30 @@ export declare function clearStreamFrameSinks(): void
 export interface WatchStreamArgs {
   serverId: string
   channelId: string
-  targetUsername: string
-  /**
-   * The streamer's uid (preferred by the server; the media plane still
-   * names streamers, so `target_username` stays required).
-   */
-  targetUid?: number
+  /** The streamer's uid: the media plane names streamers by uid. */
+  targetUid: number
+  /** Their name, for the server's logs only. */
+  targetUsername?: string
 }
 export declare function watchStream(args: WatchStreamArgs): Promise<void>
 export interface StopWatchingArgs {
   serverId: string
   channelId: string
-  targetUsername: string
   /** See WatchStreamArgs. */
-  targetUid?: number
+  targetUid: number
+  targetUsername?: string
 }
 export declare function stopWatching(args: StopWatchingArgs): Promise<void>
 export interface FetchStreamThumbnailArgs {
   serverId: string
-  username: string
-  /** The streamer's uid (preferred by the server). */
-  uid?: number
+  /** The streamer's uid. */
+  uid: number
+  username?: string
 }
 export interface FetchStreamThumbnailResult {
+  /** The streamer's current name as the server knows it. */
   username: string
+  uid: number
   /**
    * Empty Buffer when the server has no cached thumbnail yet
    * (stream just started, or fetch arrived between frames).
@@ -1234,7 +1238,7 @@ export interface FetchStreamThumbnailResult {
  * cached yet — caller renders the gradient placeholder.
  *
  * Same shape as `fetch_avatar` in commands/auth.rs: single-slot
- * oneshot per username, 5-second timeout, slot cleanup on timeout.
+ * oneshot per streamer (by uid), 5-second timeout, slot cleanup on timeout.
  */
 export declare function fetchStreamThumbnail(args: FetchStreamThumbnailArgs): Promise<FetchStreamThumbnailResult>
 export interface CodecCapValue {
@@ -1314,8 +1318,8 @@ export declare function probeNativeEncoders(): Promise<Array<NativeEncoderCap>>
  */
 export declare function forceKeyframe(): Promise<void>
 export interface RequestStreamKeyframeArgs {
-  /** Username of the streamer whose next frame should be an IDR. */
-  username: string
+  /** Uid of the streamer whose next frame should be an IDR. */
+  uid: number
 }
 export declare function requestStreamKeyframe(args: RequestStreamKeyframeArgs): Promise<void>
 export interface JoinVoiceChannelArgs {
@@ -1360,7 +1364,8 @@ export interface SetStreamStereoArgs {
 }
 export declare function setStreamStereo(args: SetStreamStereoArgs): Promise<void>
 export interface SetUserVolumeArgs {
-  username: string
+  /** The speaker's uid: the media plane names senders by uid. */
+  uid: number
   gain: number
 }
 export declare function setUserVolume(args: SetUserVolumeArgs): Promise<void>

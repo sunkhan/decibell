@@ -5,6 +5,7 @@
 
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
+import { uidOf } from "../users/userDirectory";
 
 export const MIN_DB = -40;
 export const MAX_DB = 15;
@@ -47,7 +48,10 @@ export function effectiveGain(username: string): number {
 /// it (`applySavedUserGains`).
 export function pushUserGain(username: string): void {
   if (!mediaSessionActive()) return;
-  invoke("set_user_volume", { username, gain: effectiveGain(username) }).catch(console.error);
+  // The media plane names speakers by uid.
+  const uid = uidOf(username);
+  if (uid === undefined) return;
+  invoke("set_user_volume", { uid, gain: effectiveGain(username) }).catch(console.error);
 }
 
 /// Replay saved volume / local-mute for every listed user — on a voice

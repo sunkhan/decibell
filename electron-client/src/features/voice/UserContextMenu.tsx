@@ -115,9 +115,9 @@ export default function UserContextMenu() {
   const sendGainToNative = useCallback(
     (targetUsername: string, gain: number) => {
       if (!mediaSessionActive()) return;
-      invoke("set_user_volume", { username: targetUsername, gain }).catch(
-        console.error,
-      );
+      const uid = uidOf(targetUsername);
+      if (uid === undefined) return;
+      invoke("set_user_volume", { uid, gain }).catch(console.error);
     },
     [],
   );

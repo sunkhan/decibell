@@ -735,6 +735,29 @@ def test_rename():
     g.close(); h.close()
 
 
+def test_token_refresh():
+    print("token refresh")
+    a = User("hank")
+    old = a.claims()
+    time.sleep(1.1)
+    a.send(pb.Packet.TOKEN_REFRESH_REQ, token_refresh_req=pb.TokenRefreshRequest())
+    r = a.wait(pb.Packet.TOKEN_REFRESH_RES)
+    check("fresh token issued", r and r.token_refresh_res.success and r.token_refresh_res.username == "hank"
+          and r.token_refresh_res.jwt_token and r.token_refresh_res.jwt_token != a.token)
+    if r:
+        a.token = r.token_refresh_res.jwt_token
+    new = a.claims()
+    check("same account, later issue time", new.get("uid") == old.get("uid") and new.get("sub") == "hank"
+          and new.get("iat", 0) > old.get("iat", 0))
+    convs = a.conversations()
+    check("the session keeps working on the new token", convs is not None)
+    a.close()
+    c = Conn()
+    c.send(pb.Packet.TOKEN_REFRESH_REQ, token_refresh_req=pb.TokenRefreshRequest())
+    check("refused without a session", c.wait(pb.Packet.TOKEN_REFRESH_RES, timeout=1.0) is None)
+    c.close()
+
+
 def seed_with_old_binary():
     """Data shapes as the pre-uid central writes them."""
     for n in ("alice", "bob", "carol", "dave"):
@@ -863,6 +886,7 @@ def main():
         test_memberships_by_uid()
         test_rename_keeps_everything()
         test_rename()
+        test_token_refresh()
     finally:
         stop_server(proc)
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

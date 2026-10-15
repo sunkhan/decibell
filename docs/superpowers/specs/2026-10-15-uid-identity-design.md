@@ -285,16 +285,57 @@ the newer name. A device can hold a token across a rename for up to 24 h.
 ### Client
 
 - **Native `rename_account`.**
-  - Refused while in a community voice channel (the reconnect would drop it).
-  - On success it swaps the token, moves the saved credentials to the new name, emits
-    `user_renamed {self: true}` and reconnects every community with the new token.
+  - On success it moves the saved credentials to the new name, emits `user_renamed {self: true}` and
+    hands the new token to every community (originally by reconnecting them, refused in voice; since
+    §Live renames, in place, voice included).
   - Central's `USER_RENAMED` for anyone else becomes `user_renamed {self: false}`.
 - **`features/users/applyRename.ts`** moves everything held under the old name to the new one, in place.
   Untouched stores keep their references. It covers:
   - DM threads (key, peer, senders), the active DM, pending deletions;
   - channel message senders, members, owners;
   - friends, presence, avatars, DM drafts, E2EE notices, call peer, profile / menu targets;
-  - saved per-user volume and local mute (saved again and re-applied).
-  Live voice state is left alone: the renamed user's session reconnects under the new name.
+  - saved per-user volume and local mute (saved again and re-applied);
+  - live voice and stream state (since §Live renames).
 - **Settings → Account → "Change username"** (`RenameUsernameModal`) asks for the new name and the
   password.
+
+## Live renames: the media plane by uid ✅
+
+Stage 5 renamed people at central, but communities took the new name only at re-authentication, so the
+client reconnected every community, and refused a rename in voice (the reconnect would drop it). The
+media plane still named people. Both are gone: a rename is now only a database change.
+
+### Token renewal and in-place renames
+
+- `TOKEN_REFRESH_REQ` → `TOKEN_REFRESH_RES {jwt_token}`: central mints a fresh 24 h token for the
+  session. The client asks every 6 hours (a task owned by its central client) and with every rename.
+- `SESSION_TOKEN_UPDATE {jwt_token}` (client → community, no reply): the community verifies the token,
+  requires the same uid and an issue time no earlier than the last one, and takes its name in place.
+  The member row, the session, the roster (remove + upsert, held back for invisible members as at
+  central), the voice presence and the stream presence follow.
+- A connection's UDP key stays the tail of the token it authenticated with: the community never
+  changes `udp_key_`, and the client starts media engines from `CommunityClient::auth_jwt`. A reconnect
+  authenticates with the newest token.
+
+### Media identity = the uid in decimal
+
+| Where | Before | Now |
+|---|---|---|
+| `sender_id` stamped by the relay (audio, video, FEC) | username | uid |
+| Keyframe request / NACK target | `target_username` | `target_id` = uid |
+| Stream id | `<name>_screen` | `<uid>_screen` |
+| MLS credential | `"<uid>:<name>"` | `"<uid>"` |
+| Per-sender media keys, AAD | name | uid |
+| P2P call `sender_id`, socket ids, key direction | usernames (`decibell-call-v1`) | uids (`decibell-call-v2`) |
+| Native per-speaker state (jitter, decoders, volumes, watches, frame sinks) | name | uid |
+| Renderer events (speaking, mute state, stream frames, unverified leaves) | name | uid → name at the listener |
+
+- A relayed NACK no longer carries the viewer's UDP key; the relay zeroes `sender_id`.
+- The first voice presence a client receives now carries uids. Before, only later updates did.
+- Names longer than 31 bytes stopped mattering. The relay truncated sender names to 31 bytes, while
+  the AAD padded to 32.
+- The renderer keeps its voice stores keyed by name (as all its stores). `applyRename` moves rosters,
+  speaking, watches, the full-screen and mini player and thumbnails; the community's next presence
+  update agrees.
+- Older clients can't decode anyone's media against this relay (and the reverse): release with the
+  community rebuild.

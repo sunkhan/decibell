@@ -290,6 +290,12 @@ message Packet {
     RENAME_REQ   = 158;   // client→central
     RENAME_RES   = 159;   // central→requester
     USER_RENAMED = 160;   // central→every session: a visible user's new name
+    // Token renewal: central mints a fresh token for the signed-in session
+    // (renames, and before the 24 h expiry); the client hands it to each
+    // community it's connected to, which updates the session in place.
+    TOKEN_REFRESH_REQ    = 161;   // client→central
+    TOKEN_REFRESH_RES    = 162;   // central→requester
+    SESSION_TOKEN_UPDATE = 163;   // client→community (no reply)
   }
 
   Type type = 1;
@@ -493,6 +499,9 @@ message Packet {
     RenameRequest            rename_req             = 160;
     RenameResponse           rename_res             = 161;
     UserRenamed              user_renamed           = 162;
+    TokenRefreshRequest      token_refresh_req      = 163;
+    TokenRefreshResponse     token_refresh_res      = 164;
+    SessionTokenUpdate       session_token_update   = 165;
   }
 }
 
@@ -580,6 +589,21 @@ message RenameResponse {
   string username = 3;    // the account's name after the request
   string jwt_token = 4;   // success: a fresh token naming the new username
 }
+// A fresh 24 h token for the signed-in session.
+message TokenRefreshRequest {}
+message TokenRefreshResponse {
+  bool   success = 1;
+  string jwt_token = 2;
+  string username = 3;   // the name the token carries
+}
+// A newer token for an authenticated community session (same uid, issued
+// no earlier than the one it replaces). The community takes the name it
+// carries (a rename) without a reconnect; the session's UDP key stays the
+// one derived at auth.
+message SessionTokenUpdate {
+  string jwt_token = 1;
+}
+
 // To every session when a user others can see changes their name (an
 // invisible user's rename shows on the next fetch instead). Clients re-key
 // what they hold under the old name.

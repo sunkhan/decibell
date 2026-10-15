@@ -241,7 +241,7 @@ fn run_encode_loop(
         if events::is_stream_frame_sink(&cfg.local_username) {
             let timestamp_us = pkt_pts.saturating_mul(1_000_000) / cfg.fps.max(1) as i64;
             events::send_stream_frame(events::StreamFrame {
-                username: cfg.local_username.clone(),
+                key: cfg.local_username.clone(),
                 codec: cfg.codec_wire_byte,
                 keyframe: is_key,
                 timestamp: timestamp_us,

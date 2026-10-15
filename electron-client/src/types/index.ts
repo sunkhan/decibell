@@ -720,7 +720,8 @@ export interface VoiceE2eeStatePayload {
   state: VoiceE2eeStateKind;
   epoch: number;
   members: number;
-  /// Members whose leaf identity did not verify against central.
+  /// Members whose leaf identity did not verify against central: uids in
+  /// decimal (the UI shows names via userDirectory.nameOf).
   unverified: string[];
 }
 

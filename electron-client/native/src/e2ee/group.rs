@@ -14,14 +14,14 @@
 //!   any failure that leaves us behind ─► resync: rejoin by external commit
 //!   roster − members ─► the elected member (lowest verified uid) removes them
 //!
-//! Identity binding: a leaf's credential is `"<uid>:<name>"`. After every
+//! Identity binding: a leaf's credential is the account uid in decimal —
+//! also the media identity the relay stamps on every packet, so per-sender
+//! media keys derive from it and a rename changes nothing. After every
 //! merge each leaf's (uid, signature key) is checked against central's key
 //! directory via the E2EE session. An unverified (or unreadable) leaf
 //! quarantines the epoch (nothing is sealed) and the elected member commits
 //! its removal — a server can put anyone on the roster, but not a fake
-//! identity in the group. The name only labels the media plane, which names
-//! senders: per-sender media keys derive from it (any member can derive any
-//! sender's key from the exporter, so it isn't an authentication boundary).
+//! identity in the group.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -127,7 +127,6 @@ pub fn start(
     server_id: String,
     channel_id: String,
     uid: i64,
-    username: String,
     identity: &IdentityKeys,
     jwt: String,
     write_tx: mpsc::Sender<Vec<u8>>,
@@ -142,7 +141,7 @@ pub fn start(
     if uid <= 0 {
         return Err("no account uid for the voice credential".into());
     }
-    let credential: Credential = BasicCredential::new(credential_identity(uid, &username)).into();
+    let credential: Credential = BasicCredential::new(credential_identity(uid)).into();
     let credential = CredentialWithKey { credential, signature_key: signer.to_public_vec().into() };
     let (tx, rx) = mpsc::unbounded_channel();
     let driver = Driver {
@@ -188,35 +187,43 @@ fn join_config() -> MlsGroupJoinConfig {
         .build()
 }
 
-/// A leaf's credential identity: `"<uid>:<name>"`.
-fn credential_identity(uid: i64, name: &str) -> Vec<u8> {
-    format!("{uid}:{name}").into_bytes()
+/// A leaf's credential identity: the uid in decimal (the media key).
+fn credential_identity(uid: i64) -> Vec<u8> {
+    uid.to_string().into_bytes()
 }
 
-/// (uid, name) from a leaf's credential; None when it isn't ours to read.
-fn identity_of(credential: &Credential) -> Option<(i64, String)> {
+/// The uid a leaf's credential names; None when it isn't ours to read.
+fn identity_of(credential: &Credential) -> Option<i64> {
     let basic = BasicCredential::try_from(credential.clone()).ok()?;
-    let id = String::from_utf8(basic.identity().to_vec()).ok()?;
-    let (uid, name) = id.split_once(':')?;
-    let uid: i64 = uid.parse().ok()?;
-    (uid > 0 && !name.is_empty()).then(|| (uid, name.to_string()))
+    let id = std::str::from_utf8(basic.identity()).ok()?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    id.parse::<i64>().ok().filter(|u| *u > 0)
 }
 
 /// One group member as its leaf names it. An unreadable credential gets
 /// uid 0, which never verifies.
 struct Leaf {
     uid: i64,
-    name: String,
     key: Vec<u8>,
     index: LeafNodeIndex,
+}
+
+impl Leaf {
+    /// The media key: what the relay stamps as this member's sender id.
+    fn media_key(&self) -> String {
+        self.uid.to_string()
+    }
 }
 
 fn leaves(group: &MlsGroup) -> Vec<Leaf> {
     group
         .members()
-        .map(|m| {
-            let (uid, name) = identity_of(&m.credential).unwrap_or((0, "<unreadable credential>".to_string()));
-            Leaf { uid, name, key: m.signature_key.clone(), index: m.index }
+        .map(|m| Leaf {
+            uid: identity_of(&m.credential).unwrap_or(0),
+            key: m.signature_key.clone(),
+            index: m.index,
         })
         .collect()
 }
@@ -541,11 +548,11 @@ impl Driver {
             } else if self.verified.get(&leaf.uid) == Some(&leaf.key) {
                 true
             } else {
-                let ok = match e2ee::resolve_peer_current(&self.state, leaf.uid, &leaf.name).await {
+                let ok = match e2ee::resolve_peer_current(&self.state, leaf.uid, "").await {
                     Ok(Some(b)) => b.sign_pub == leaf.key,
                     Ok(None) => false,
                     Err(e) => {
-                        log::warn!("[mls] key lookup for {} (uid {}) failed: {e}", leaf.name, leaf.uid);
+                        log::warn!("[mls] key lookup for uid {} failed: {e}", leaf.uid);
                         false
                     }
                 };
@@ -556,7 +563,8 @@ impl Driver {
             };
             if !ok {
                 unverified.push(leaf.index);
-                labels.push(leaf.name.clone());
+                // The renderer shows these by name (uid → name there).
+                labels.push(leaf.media_key());
             }
         }
         // Some names may have been dropped by a resync of the peer; also
@@ -580,8 +588,8 @@ impl Driver {
                 return;
             }
         };
-        // Media senders are named, so per-sender keys derive from names.
-        let names: Vec<String> = members.iter().map(|l| l.name.clone()).collect();
+        // Per-sender keys derive from media keys (uids), as the relay names senders.
+        let names: Vec<String> = members.iter().map(|l| l.media_key()).collect();
         let keys = EpochKeys::derive(group.epoch().as_u64(), &exporter, &names);
         let next = self.ring.load().rotated(keys);
         self.ring.store(Arc::new(next));
@@ -735,7 +743,7 @@ mod tests {
             "bob" => 20,
             _ => 30,
         };
-        let credential: Credential = BasicCredential::new(credential_identity(uid, name)).into();
+        let credential: Credential = BasicCredential::new(credential_identity(uid)).into();
         let cred = CredentialWithKey { credential, signature_key: signer.to_public_vec().into() };
         Peer { provider, signer, cred, group: None }
     }
@@ -805,7 +813,7 @@ mod tests {
         apply(&mut bob, &c2);
         assert_eq!(export(&alice), export(&carol));
         assert_eq!(export(&bob), export(&carol));
-        let ids: Vec<(i64, String)> = alice
+        let ids: Vec<i64> = alice
             .group
             .as_ref()
             .unwrap()
@@ -813,13 +821,12 @@ mod tests {
             .filter_map(|m| identity_of(&m.credential))
             .collect();
         assert_eq!(ids.len(), 3);
-        assert!(ids.contains(&(30, "carol".to_string())));
+        assert!(ids.contains(&30));
         // leaf signature keys are the identity keys
         for m in alice.group.as_ref().unwrap().members() {
-            let (_, who) = identity_of(&m.credential).unwrap();
-            let expect = match who.as_str() {
-                "alice" => alice.signer.to_public_vec(),
-                "bob" => bob.signer.to_public_vec(),
+            let expect = match identity_of(&m.credential).unwrap() {
+                10 => alice.signer.to_public_vec(),
+                20 => bob.signer.to_public_vec(),
                 _ => carol.signer.to_public_vec(),
             };
             assert_eq!(m.signature_key, expect);
@@ -831,7 +838,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .members()
-            .find(|m| identity_of(&m.credential).map(|(uid, _)| uid) == Some(20))
+            .find(|m| identity_of(&m.credential) == Some(20))
             .unwrap()
             .index;
         let (commit, _, gi) = alice
@@ -861,16 +868,16 @@ mod tests {
     }
 
     #[test]
-    fn credentials_carry_uid_and_name() {
+    fn credentials_carry_the_uid() {
         let parse = |id: &[u8]| identity_of(&BasicCredential::new(id.to_vec()).into());
-        assert_eq!(parse(&credential_identity(42, "alice")), Some((42, "alice".to_string())));
-        assert_eq!(parse(b"7:na:me"), Some((7, "na:me".to_string())));
-        // A pre-uid credential (bare name) or a bad uid is unreadable, so
-        // its leaf can't verify.
+        assert_eq!(parse(&credential_identity(42)), Some(42));
+        // A name, an older "<uid>:<name>" credential or a bad uid is
+        // unreadable, so its leaf can't verify.
         assert_eq!(parse(b"alice"), None);
-        assert_eq!(parse(b"0:alice"), None);
-        assert_eq!(parse(b"-3:alice"), None);
-        assert_eq!(parse(b"42:"), None);
+        assert_eq!(parse(b"42:alice"), None);
+        assert_eq!(parse(b"0"), None);
+        assert_eq!(parse(b"-3"), None);
+        assert_eq!(parse(b""), None);
     }
 
     #[test]

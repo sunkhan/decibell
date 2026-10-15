@@ -145,9 +145,10 @@ declare global {
       };
       streamFrames: {
         subscribe: (
-          username: string,
+          /** The streamer's media key: their uid in decimal (ours for the self-preview). */
+          key: string,
           cb: (frame: {
-            username: string;
+            key: string;
             codec: number;
             keyframe: boolean;
             timestamp: number;

@@ -34,13 +34,15 @@ ipcRenderer.on("decibell:idle:awayEvent", (_e, away: boolean) => {
 
 // PR7c: stream frame fan-out. Encoded video bytes arrive as Uint8Array
 // (no JSON, no base64). Subscribers register for one specific
-// streamer's frames, keyed by username — the dispatch below does an
+// streamer's frames, keyed by media key (the streamer's uid in decimal: the
+// media plane names people by uid, so a rename never breaks a stream) — the dispatch below does an
 // O(1) Map lookup instead of fanning every frame to every subscribed
 // player. With M players watching N streamers, the old global Set
 // path was O(N·M) closure invocations per second; this is O(1) per
 // frame regardless of how many players are mounted.
 type StreamFrame = {
-  username: string;
+  /// The streamer's media key (uid, decimal); ours for the self-preview.
+  key: string;
   codec: number;
   keyframe: boolean;
   timestamp: number;
@@ -51,22 +53,22 @@ type StreamFrame = {
   discontinuity?: boolean;
 };
 type StreamFrameHandler = (frame: StreamFrame) => void;
-const streamFrameSubsByUser = new Map<string, Set<StreamFrameHandler>>();
+const streamFrameSubsByKey = new Map<string, Set<StreamFrameHandler>>();
 ipcRenderer.on("decibell:stream_frame", (_e, frame: StreamFrame) => {
-  const subs = streamFrameSubsByUser.get(frame.username);
+  const subs = streamFrameSubsByKey.get(frame.key);
   if (!subs) return;
   for (const cb of subs) cb(frame);
 });
 
-// Mirror "someone here displays <username>'s frames" into native, so it
+// Mirror "someone here displays <key>'s frames" into native, so it
 // stops pushing frames nobody subscribed to (and skips copying own-stream
 // self-preview frames) instead of letting them cross native → main → IPC
 // only to be dropped above. Same channel as invoke(): a player's
 // subscribe-then-request-keyframe sequence reaches native in order, so the
 // sink exists before the keyframe it asked for.
-function setStreamFrameSink(username: string, enabled: boolean): void {
+function setStreamFrameSink(key: string, enabled: boolean): void {
   ipcRenderer
-    .invoke("decibell:invoke", "setStreamFrameSink", { username, enabled })
+    .invoke("decibell:invoke", "setStreamFrameSink", { key, enabled })
     .catch(() => {});
 }
 // A (re)loaded renderer has no subscribers — drop whatever the previous
@@ -391,28 +393,28 @@ contextBridge.exposeInMainWorld("decibell", {
     },
   },
   streamFrames: {
-    /// Subscribe to encoded frames for ONE streamer (by username).
-    /// Pass the streamer's username so the preload bridge can dispatch
-    /// directly via Map lookup instead of fanning every frame to every
-    /// player and making the player check `frame.username` itself.
+    /// Subscribe to encoded frames for ONE streamer, by media key (their
+    /// uid in decimal), so the preload bridge can dispatch directly via
+    /// Map lookup instead of fanning every frame to every player and
+    /// making the player check `frame.key` itself.
     /// Returns an unsubscribe fn.
-    /// The first subscriber for a username registers it as a native frame
+    /// The first subscriber for a key registers it as a native frame
     /// sink; the last one to leave removes it (see setStreamFrameSink).
-    subscribe: (username: string, cb: StreamFrameHandler): (() => void) => {
-      let subs = streamFrameSubsByUser.get(username);
+    subscribe: (key: string, cb: StreamFrameHandler): (() => void) => {
+      let subs = streamFrameSubsByKey.get(key);
       if (!subs) {
         subs = new Set();
-        streamFrameSubsByUser.set(username, subs);
-        setStreamFrameSink(username, true);
+        streamFrameSubsByKey.set(key, subs);
+        setStreamFrameSink(key, true);
       }
       subs.add(cb);
       return () => {
-        const cur = streamFrameSubsByUser.get(username);
+        const cur = streamFrameSubsByKey.get(key);
         if (!cur) return;
         cur.delete(cb);
         if (cur.size === 0) {
-          streamFrameSubsByUser.delete(username);
-          setStreamFrameSink(username, false);
+          streamFrameSubsByKey.delete(key);
+          setStreamFrameSink(key, false);
         }
       };
     },

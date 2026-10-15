@@ -5,11 +5,12 @@
 //!
 //!   shared = X25519(my_secret, peer_public)
 //!   prk    = HKDF-Extract(salt = call_id, ikm = shared)
-//!   okm    = HKDF-Expand(prk, info = "decibell-call-v1|<lower>|<higher>", 144 B)
+//!   okm    = HKDF-Expand(prk, info = "decibell-call-v2|<lower>|<higher>", 144 B)
 //!
 //! `okm` is sliced into four (key, salt) pairs — voice a→b, voice b→a,
-//! media a→b, media b→a — where side A is the lexicographically lower
-//! username. Binding both usernames and the call id into the schedule
+//! media a→b, media b→a — where side A is the lexicographically lower id.
+//! The ids are the two media keys (uids in decimal; v1 used usernames), so
+//! a rename mid-call changes nothing. Binding both ids and the call id into the schedule
 //! means a key from one call/pair can never open another's datagrams.
 //! No key-confirmation message is needed: the first datagram that opens
 //! is the confirmation.
@@ -63,23 +64,24 @@ pub fn derive(
     local: LocalKeyPair,
     peer_public: &[u8],
     call_id: &str,
-    self_username: &str,
-    peer_username: &str,
+    self_id: &str,
+    peer_id: &str,
 ) -> Result<CallKeys, String> {
     if peer_public.len() != PUBLIC_KEY_LEN {
         return Err(format!("peer public key must be {PUBLIC_KEY_LEN} bytes"));
     }
-    if self_username == peer_username {
+    if self_id == peer_id {
         return Err("cannot call yourself".to_string());
     }
     let peer = agreement::UnparsedPublicKey::new(&agreement::X25519, peer_public);
-    let (lower, higher) = if self_username < peer_username {
-        (self_username, peer_username)
+    let (lower, higher) = if self_id < peer_id {
+        (self_id, peer_id)
     } else {
-        (peer_username, self_username)
+        (peer_id, self_id)
     };
-    let we_are_a = self_username == lower;
-    let info = format!("decibell-call-v1|{lower}|{higher}");
+    let we_are_a = self_id == lower;
+    // v2: the ids are media keys (uids in decimal), not names.
+    let info = format!("decibell-call-v2|{lower}|{higher}");
 
     let okm: [u8; OKM_LEN] = agreement::agree_ephemeral(local.secret, &peer, |shared| {
         let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, call_id.as_bytes()).extract(shared);
@@ -124,8 +126,8 @@ mod tests {
         let a = generate().unwrap();
         let b = generate().unwrap();
         let (pa, pb) = (a.public, b.public);
-        let ka = derive(a, &pb, "call-1", "alice", "bob").unwrap();
-        let kb = derive(b, &pa, "call-1", "bob", "alice").unwrap();
+        let ka = derive(a, &pb, "call-1", "10", "20").unwrap();
+        let kb = derive(b, &pa, "call-1", "20", "10").unwrap();
         assert_eq!(ka.voice.tx_key, kb.voice.rx_key);
         assert_eq!(ka.voice.rx_key, kb.voice.tx_key);
         assert_eq!(ka.voice.tx_salt, kb.voice.rx_salt);
@@ -140,17 +142,17 @@ mod tests {
         let a1 = generate().unwrap();
         let b1 = generate().unwrap();
         let (pa, pb) = (a1.public, b1.public);
-        let k1 = derive(a1, &pb, "call-1", "alice", "bob").unwrap();
+        let k1 = derive(a1, &pb, "call-1", "10", "20").unwrap();
         // same peer key material, different call id → different keys
         let a2 = generate().unwrap();
         let _ = pa;
-        let k2 = derive(a2, &pb, "call-2", "alice", "bob").unwrap();
+        let k2 = derive(a2, &pb, "call-2", "10", "20").unwrap();
         assert_ne!(k1.voice.tx_key, k2.voice.tx_key);
     }
 
     #[test]
     fn rejects_bad_peer_key() {
         let a = generate().unwrap();
-        assert!(derive(a, &[0u8; 31], "c", "alice", "bob").is_err());
+        assert!(derive(a, &[0u8; 31], "c", "10", "20").is_err());
     }
 }

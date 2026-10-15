@@ -140,6 +140,9 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
         let host = client.host.clone();
         let port = client.port;
         let jwt = client.jwt.clone();
+        // The UDP key is the tail of the token this connection authenticated
+        // with, not of a later refresh.
+        let udp_jwt = client.auth_jwt.clone();
         let mls_write_tx = join_tx.clone();
 
         // Strict E2EE: community voice is MLS-encrypted, so this device needs
@@ -150,11 +153,10 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
                 "Set up encryption (Settings → Privacy) to join voice channels",
             ));
         }
-        let username = s
-            .username
-            .clone()
-            .ok_or_else(|| napi::Error::from_reason("Not signed in"))?;
         let uid = s.uid;
+        if uid <= 0 {
+            return Err(napi::Error::from_reason("Not signed in"));
+        }
         let identity = s
             .e2ee
             .store
@@ -164,7 +166,8 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             .ok_or_else(|| napi::Error::from_reason("Encryption keys not loaded"))?;
         // A previous session's group driver dies with its engine.
         s.voice_mls = None;
-        let ring = crate::media::frame_crypto::new_shared(&username);
+        // Media keys are per sender, named by uid (the media identity).
+        let ring = crate::media::frame_crypto::new_shared(&uid.to_string());
 
         // Load the user's saved audio-device preferences from disk so the
         // pipeline starts with them on the first build attempt instead of
@@ -184,7 +187,7 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
         let mut engine = VoiceEngine::start(
             &host,
             port,
-            &jwt,
+            &udp_jwt,
             bitrate_bps,
             saved_input,
             saved_output,
@@ -199,7 +202,6 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             server_id.clone(),
             channel_id.clone(),
             uid,
-            username,
             &identity,
             jwt.clone(),
             mls_write_tx,
@@ -355,8 +357,10 @@ pub(crate) fn rebind_voice_group(
     s.connected_voice_channel = Some(channel_id.to_string());
     // The server dropped our watches with the old channel.
     crate::media::watched_streams_clear();
-    let username = s.username.clone().ok_or("Not signed in")?;
-    ring.store(std::sync::Arc::new(crate::media::frame_crypto::KeyRing::empty(&username)));
+    if s.uid <= 0 {
+        return Err("Not signed in".into());
+    }
+    ring.store(std::sync::Arc::new(crate::media::frame_crypto::KeyRing::empty(&s.uid.to_string())));
     let identity = s
         .e2ee
         .store
@@ -375,7 +379,6 @@ pub(crate) fn rebind_voice_group(
         server_id.to_string(),
         channel_id.to_string(),
         s.uid,
-        username,
         &identity,
         jwt,
         write_tx,
@@ -559,7 +562,8 @@ pub async fn set_stream_stereo(args: SetStreamStereoArgs) -> napi::Result<()> {
 
 #[napi(object)]
 pub struct SetUserVolumeArgs {
-    pub username: String,
+    /// The speaker's uid: the media plane names senders by uid.
+    pub uid: i64,
     pub gain: f64,
 }
 
@@ -568,7 +572,7 @@ pub async fn set_user_volume(args: SetUserVolumeArgs) -> napi::Result<()> {
     let state_arc = state::shared();
     let s = state_arc.lock().await;
     if let Some(ref engine) = s.voice_engine {
-        engine.set_user_volume(args.username, (args.gain as f32).max(0.0));
+        engine.set_user_volume(args.uid.to_string(), (args.gain as f32).max(0.0));
         Ok(())
     } else {
         Err(napi::Error::from_reason("Not in a voice channel"))

@@ -18,6 +18,7 @@ import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
 import { announceCallStreamStop } from "../call/callActions";
 import { applySavedUserGains } from "./userGain";
+import { nameOf } from "../users/userDirectory";
 
 /// Voice-channel event subscriber. Listens for:
 ///   • voice_presence_updated — channel roster + per-user mute/deafen
@@ -82,7 +83,7 @@ export function useVoiceEvents() {
         if (p.state === "quarantine" && prev?.state !== "quarantine") {
           toast.warning(
             "Unverified member in voice",
-            `${p.unverified.join(", ")} could not be verified against the key directory. Nothing is sent until they are removed.`,
+            `${p.unverified.map((u) => nameOf(Number(u)) ?? `user ${u}`).join(", ")} could not be verified against the key directory. Nothing is sent until they are removed.`,
           );
         } else if (p.state === "failed" && prev?.state !== "failed") {
           toast.error("Voice encryption failed", "Couldn't join the channel's encryption group. Leave and rejoin.");
@@ -142,10 +143,12 @@ export function useVoiceEvents() {
     );
 
     promises.push(
-      listen<{ username: string; speaking: boolean }>("voice_user_speaking", (event) => {
-        const username = useAuthStore.getState().username;
+      // The media plane names speakers by uid (0 = ourselves); the voice
+      // stores show names, looked up here.
+      listen<{ uid: number | bigint; speaking: boolean }>("voice_user_speaking", (event) => {
+        const uid = Number(event.payload.uid);
         const speakingUsername =
-          event.payload.username === "__local__" ? username ?? "" : event.payload.username;
+          uid === 0 ? useAuthStore.getState().username ?? "" : nameOf(uid) ?? "";
         if (speakingUsername) {
           useVoiceStore.getState().setSpeaking(speakingUsername, event.payload.speaking);
         }
@@ -161,12 +164,12 @@ export function useVoiceEvents() {
     );
 
     promises.push(
-      listen<{ username: string; isMuted: boolean; isDeafened: boolean }>(
+      listen<{ uid: number | bigint; isMuted: boolean; isDeafened: boolean }>(
         "voice_user_state_changed",
         (event) => {
-          useVoiceStore
-            .getState()
-            .setUserState(event.payload.username, event.payload.isMuted, event.payload.isDeafened);
+          const username = nameOf(Number(event.payload.uid));
+          if (!username) return;
+          useVoiceStore.getState().setUserState(username, event.payload.isMuted, event.payload.isDeafened);
         },
       ),
     );

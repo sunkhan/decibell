@@ -39,6 +39,9 @@ public:
     static constexpr int64_t NAME_RESERVATION_SECONDS = 14 * 24 * 3600;
     static constexpr int RENAMES_PER_DAY = 2;
 
+    /// A signed 24 h token naming the account (login, renames, renewal).
+    std::optional<std::string> mintToken(int64_t uid, const std::string& username);
+
     /// A successful login: the signed JWT and the account it names.
     struct LoginResult {
         std::string token;
@@ -389,8 +392,6 @@ private:
     void initializeDatabase();
     /// Migration 1: users by uid (2026-10-15-uid-identity-design.md).
     void migrateToUidKeys(pqxx::work& txn);
-    /// A signed 24 h token naming the account.
-    std::optional<std::string> mintToken(int64_t uid, const std::string& username);
     /// The account a reserved old name belongs to (renamed away from it
     /// within the reservation), for signing in with it; nullopt otherwise.
     std::optional<StoredCredentials> getCredentialsByReservedName(const std::string& username);

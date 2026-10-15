@@ -52,6 +52,19 @@ using boost::asio::ip::tcp;
 #endif
 
 namespace {
+/// A uid from a media packet's 32-byte id field (`target_id`): the
+/// decimal uid, NUL-padded. 0 when it isn't one.
+int64_t parse_media_uid(const char (&field)[chatproj::SENDER_ID_SIZE]) {
+    int64_t uid = 0;
+    int digits = 0;
+    for (int i = 0; i < chatproj::SENDER_ID_SIZE && field[i] != '\0'; ++i) {
+        const char c = field[i];
+        if (c < '0' || c > '9' || ++digits > 18) return 0;
+        uid = uid * 10 + (c - '0');
+    }
+    return uid;
+}
+
 /// Returns the lowercase sha256 hex digest of `data`. Used to derive
 /// the picture_version for SyncServerPictureReq — central trusts the
 /// community to compute it consistently with what it can re-verify on
@@ -365,6 +378,10 @@ public:
     void emit_member_upsert(int64_t uid);
     // `username` labels the removal for clients that key rows by name.
     void emit_member_remove(int64_t uid, const std::string& username);
+    /// A live session took a new name (SESSION_TOKEN_UPDATE): retire the
+    /// old roster row, publish the new one, and refresh the voice / stream
+    /// views that show the name.
+    void on_member_renamed(std::shared_ptr<Session> session, const std::string& old_username);
     void broadcast_bans();
     uint64_t roster_revision() const { return roster_revision_; }
     // Builds the wire MemberInfo for one member (nullopt if not a member).
@@ -430,10 +447,11 @@ public:
     // GroupInfo. Returns (accepted, current epoch after the call).
     std::pair<bool, uint64_t> mls_commit(const std::string& channel_id, uint64_t epoch,
                                          const std::string& group_info);
-    // Media requests name the streamer as the client knows them (its name
-    // in the relayed sender_id); resolved among online sessions.
-    void relay_keyframe_request(const std::string& target_name, boost::asio::ip::udp::socket& udp_socket);
-    void relay_nack(const char* data, size_t length, const std::string& target_name, boost::asio::ip::udp::socket& udp_socket);
+    // Media requests name the streamer by uid: the media plane identifies
+    // people by the decimal uid the relay stamps into sender_id (uid design),
+    // so a rename never touches it.
+    void relay_keyframe_request(int64_t target_uid, boost::asio::ip::udp::socket& udp_socket);
+    void relay_nack(const char* data, size_t length, int64_t target_uid, boost::asio::ip::udp::socket& udp_socket);
     // The uid of the online user currently known by `name` (0 = none).
     int64_t online_uid_by_name(const std::string& name);
     void broadcast_voice_presence(const std::string& channel_id);
@@ -1019,34 +1037,18 @@ private:
 
             // Step 1: JWT verification — Ed25519 with central's PUBLIC key
             // (Theme A). This server can check a token but can't mint one.
-            std::string candidate_username;
-            int64_t candidate_uid = 0;
-            int64_t candidate_iat = 0;
-            try {
-                auto decoded = jwt::decode(token);
-                auto verifier = jwt::verify()
-                    .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem_, ""})
-                    .with_issuer("decibell_central_auth");
-                verifier.verify(decoded);
-                candidate_username = decoded.get_subject();
-                if (decoded.has_payload_claim("uid")) {
-                    const auto& c = decoded.get_payload_claim("uid");
-                    if (c.get_type() == jwt::json::type::integer) candidate_uid = c.as_integer();
-                    else if (c.get_type() == jwt::json::type::number) candidate_uid = static_cast<int64_t>(c.as_number());
-                    else if (c.get_type() == jwt::json::type::string) { try { candidate_uid = std::stoll(c.as_string()); } catch (...) {} }
-                }
-                if (candidate_username.empty()) throw std::runtime_error("empty subject");
-                if (decoded.has_issued_at()) {
-                    candidate_iat = std::chrono::duration_cast<std::chrono::seconds>(
-                        decoded.get_issued_at().time_since_epoch()).count();
-                }
-            } catch (const std::exception& e) {
-                std::cout << "[Community] Auth failed (JWT): " << e.what() << "\n";
+            std::string error;
+            auto claims = verify_token(token, &error);
+            if (!claims) {
+                std::cout << "[Community] Auth failed (JWT): " << error << "\n";
                 send_auth_response(false, "Invalid token.", "auth");
                 manager_.leave(shared_from_this());
                 close_after_flush();
                 return;
             }
+            std::string candidate_username = claims->username;
+            const int64_t candidate_uid = claims->uid;
+            const int64_t candidate_iat = claims->iat;
 
             // Step 2: Membership + invite gating.
             auto* db = manager_.db();
@@ -1094,7 +1096,7 @@ private:
                 // unless an older token than the one that named them.
                 std::string current;
                 renamed_from = db->refresh_member_name(candidate_uid, candidate_username, candidate_iat, &current);
-                if (current != candidate_username) {
+                if (!current.empty() && current != candidate_username) {
                     std::cout << "[Community] uid " << candidate_uid << " connected with an older token ("
                               << candidate_username << "); keeping " << current << "\n";
                     candidate_username = current;
@@ -1178,6 +1180,7 @@ private:
             username_ = candidate_username;
             uid_ = candidate_uid;
             token_ = token;
+            token_iat_ = candidate_iat;
 
             constexpr size_t UDP_KEY_LEN = chatproj::SENDER_ID_SIZE - 1;
             if (token_.size() >= UDP_KEY_LEN) {
@@ -1221,6 +1224,29 @@ private:
             // every successful auth and serves as the bootstrap for
             // pre-feature memberships.
             manager_.sync_membership_register(uid_, username_);
+            return;
+        }
+
+        // A newer token for this session (renewal, or a rename at central):
+        // same account, issued no earlier than the last one. Its name is
+        // taken in place: the member row, this session, and every roster /
+        // voice / stream view that shows it. The UDP key stays the one
+        // derived at auth, so media keeps flowing.
+        if (packet.type() == chatproj::Packet::SESSION_TOKEN_UPDATE) {
+            if (!authenticated_) return;
+            auto claims = verify_token(packet.session_token_update().jwt_token(), nullptr);
+            if (!claims || claims->uid != uid_ || claims->iat < token_iat_) return;
+            token_iat_ = claims->iat;
+            auto* db = manager_.db();
+            if (!db) return;
+            std::string current;
+            db->refresh_member_name(uid_, claims->username, claims->iat, &current);
+            // No member row (removed meanwhile) or nothing new: nothing to do.
+            if (current.empty() || current == username_) return;
+            const std::string old = username_;
+            username_ = current;
+            std::cout << "[Community] uid " << uid_ << " renamed " << old << " -> " << username_ << " (live)\n";
+            manager_.on_member_renamed(shared_from_this(), old);
             return;
         }
 
@@ -4256,8 +4282,45 @@ private:
     // queue drains.
     bool closing_ = false;
     std::string username_;
+    // The token the session authenticated with (its tail is the UDP key)
+    // and the issue time of the newest token seen (SESSION_TOKEN_UPDATE).
     std::string token_;
+    int64_t token_iat_ = 0;
     std::string udp_key_;
+
+    struct TokenClaims {
+        std::string username;
+        int64_t uid = 0;
+        int64_t iat = 0;
+    };
+    /// Central's token, verified (Ed25519 with central's public key: this
+    /// server can check a token but can't mint one). nullopt with `error`.
+    std::optional<TokenClaims> verify_token(const std::string& token, std::string* error) const {
+        try {
+            auto decoded = jwt::decode(token);
+            auto verifier = jwt::verify()
+                .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem_, ""})
+                .with_issuer("decibell_central_auth");
+            verifier.verify(decoded);
+            TokenClaims c;
+            c.username = decoded.get_subject();
+            if (decoded.has_payload_claim("uid")) {
+                const auto& claim = decoded.get_payload_claim("uid");
+                if (claim.get_type() == jwt::json::type::integer) c.uid = claim.as_integer();
+                else if (claim.get_type() == jwt::json::type::number) c.uid = static_cast<int64_t>(claim.as_number());
+                else if (claim.get_type() == jwt::json::type::string) { try { c.uid = std::stoll(claim.as_string()); } catch (...) {} }
+            }
+            if (c.username.empty()) throw std::runtime_error("empty subject");
+            if (decoded.has_issued_at()) {
+                c.iat = std::chrono::duration_cast<std::chrono::seconds>(
+                    decoded.get_issued_at().time_since_epoch()).count();
+            }
+            return c;
+        } catch (const std::exception& e) {
+            if (error) *error = e.what();
+            return std::nullopt;
+        }
+    }
     std::string current_voice_channel_;
     boost::asio::ip::udp::endpoint udp_endpoint_;
     boost::asio::ip::udp::endpoint udp_media_endpoint_;
@@ -4491,7 +4554,7 @@ void SessionManager::broadcast_stream_presence(const std::string& channel_id) {
         if (active_streams_.find(channel_id) != active_streams_.end()) {
             for (const auto& pair : active_streams_[channel_id]) {
                 auto* info = update->add_active_streams();
-                info->set_stream_id(pair.second.owner_name + "_screen");
+                info->set_stream_id(std::to_string(pair.first) + "_screen");
                 info->set_owner_username(pair.second.owner_name);
                 info->set_owner_uid(pair.first);
                 info->set_has_audio(pair.second.has_audio);
@@ -4699,6 +4762,32 @@ void SessionManager::emit_member_upsert(int64_t uid) {
     *up->mutable_member() = std::move(*info);
     up->set_revision(++roster_revision_);
     broadcast_to_members(p);
+}
+
+void SessionManager::on_member_renamed(std::shared_ptr<Session> session, const std::string& old_username) {
+    const int64_t uid = session->get_uid();
+    const std::string name = session->get_username();
+    const std::string voice_channel = session->get_current_voice_channel();
+    std::vector<std::string> stream_channels;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [ch, streams] : active_streams_) {
+            auto it = streams.find(uid);
+            if (it == streams.end()) continue;
+            it->second.owner_name = name;
+            stream_channels.push_back(ch);
+        }
+    }
+    // Roster rows are keyed by name on clients: retire the old one. Not for
+    // an invisible member: the change would show they're connected (central
+    // holds back USER_RENAMED the same way); rosters pick the name up on
+    // their next fetch.
+    if (user_presence_visible(uid)) {
+        emit_member_remove(uid, old_username);
+        emit_member_upsert(uid);
+    }
+    if (!voice_channel.empty()) broadcast_voice_presence(voice_channel);
+    for (const auto& ch : stream_channels) broadcast_stream_presence(ch);
 }
 
 void SessionManager::emit_member_remove(int64_t uid, const std::string& username) {
@@ -5474,14 +5563,13 @@ int64_t SessionManager::online_uid_by_name(const std::string& name) {
     return 0;
 }
 
-void SessionManager::relay_keyframe_request(const std::string& target_name, boost::asio::ip::udp::socket& udp_socket) {
-    const int64_t target = online_uid_by_name(target_name);
-    if (target == 0) return;
+void SessionManager::relay_keyframe_request(int64_t target, boost::asio::ip::udp::socket& udp_socket) {
+    if (target <= 0) return;
     // Build a minimal KEYFRAME_REQUEST packet to send to the streamer
     chatproj::UdpKeyframeRequest req;
     req.packet_type = chatproj::UdpPacketType::KEYFRAME_REQUEST;
     std::memset(req.sender_id, 0, chatproj::SENDER_ID_SIZE);
-    std::memset(req.target_username, 0, chatproj::SENDER_ID_SIZE);
+    std::memset(req.target_id, 0, chatproj::SENDER_ID_SIZE);
 
     std::lock_guard<std::mutex> lock(mutex_);
     // Resolve the target FIRST: the rate-limit map is keyed by streamer,
@@ -5512,9 +5600,8 @@ void SessionManager::relay_keyframe_request(const std::string& target_name, boos
     }
 }
 
-void SessionManager::relay_nack(const char* data, size_t length, const std::string& target_name, boost::asio::ip::udp::socket& udp_socket) {
-    const int64_t target = online_uid_by_name(target_name);
-    if (target == 0) return;
+void SessionManager::relay_nack(const char* data, size_t length, int64_t target, boost::asio::ip::udp::socket& udp_socket) {
+    if (target <= 0) return;
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_by_user_.find(target);
     if (it == sessions_by_user_.end()) return;
@@ -5689,9 +5776,7 @@ void SessionManager::broadcast_to_watchers_voice(const char* data, size_t length
 
 void SessionManager::relay_keyframe_request_internal(int64_t target_uid) {
     if (!media_udp_socket_ptr_) return;
-    auto streamer = find_session_by_uid(target_uid);
-    if (!streamer) return;
-    relay_keyframe_request(streamer->get_username(), *media_udp_socket_ptr_);
+    relay_keyframe_request(target_uid, *media_udp_socket_ptr_);
 }
 
 void SessionManager::broadcast_voice_presence(const std::string& channel_id) {
@@ -5765,8 +5850,10 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
         
         for (auto& s : pair.second) {
             update->add_active_users(s->get_username());
+            update->add_active_uids(s->get_uid());
             auto* state = update->add_user_states();
             state->set_username(s->get_username());
+            state->set_uid(s->get_uid());
             state->set_is_muted(s->is_muted());
             state->set_is_deafened(s->is_deafened());
             state->set_is_server_muted(s->is_server_muted());
@@ -5800,7 +5887,7 @@ void SessionManager::send_initial_voice_presences(std::shared_ptr<Session> sessi
 
         for (const auto& stream : pair.second) {
             auto* info = update->add_active_streams();
-            info->set_stream_id(stream.second.owner_name + "_screen");
+            info->set_stream_id(std::to_string(stream.first) + "_screen");
             info->set_owner_username(stream.second.owner_name);
             info->set_owner_uid(stream.first);
             info->set_has_audio(stream.second.has_audio);
@@ -6378,10 +6465,12 @@ private:
                                 }
                                 std::string channel = session->get_current_voice_channel();
                                 if (!channel.empty()) {
-                                    std::string uname = session->get_username();
+                                    // Downstream, sender_id is the sender's uid
+                                    // in decimal (the media identity).
+                                    const std::string mid = std::to_string(session->get_uid());
                                     std::memset(udp_buffer_ + 1, 0, SID);
-                                    std::memcpy(udp_buffer_ + 1, uname.c_str(),
-                                                std::min(uname.size(), size_t(SID - 1)));
+                                    std::memcpy(udp_buffer_ + 1, mid.c_str(),
+                                                std::min(mid.size(), size_t(SID - 1)));
 
                                     if (is_audio) {
                                         // Server-muted (or -deafened) by a moderator, or
@@ -6485,14 +6574,8 @@ private:
                             !manager_.find_session_by_token(requester_token, jwt_secret_)) {
                             return;
                         }
-                        std::string target;
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->target_username[i] == '\0') break;
-                            target.push_back(packet->target_username[i]);
-                        }
-                        if (!target.empty()) {
-                            manager_.relay_keyframe_request(target, media_udp_socket_);
-                        }
+                        const int64_t target = parse_media_uid(packet->target_id);
+                        if (target > 0) manager_.relay_keyframe_request(target, media_udp_socket_);
                         return;
                     }
 
@@ -6513,12 +6596,11 @@ private:
                             !manager_.find_session_by_token(requester_token, jwt_secret_)) {
                             return;
                         }
-                        std::string target;
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->target_username[i] == '\0') break;
-                            target.push_back(packet->target_username[i]);
-                        }
-                        if (!target.empty()) {
+                        const int64_t target = parse_media_uid(packet->target_id);
+                        if (target > 0) {
+                            // The requester's sender_id is its UDP key (a
+                            // session secret): never hand it to the streamer.
+                            std::memset(packet->sender_id, 0, SID);
                             manager_.relay_nack(media_udp_buffer_, bytes_recvd, target, media_udp_socket_);
                         }
                         return;
@@ -6568,10 +6650,10 @@ private:
                                 }
                                 std::string channel = session->get_current_voice_channel();
                                 if (!channel.empty()) {
-                                    std::string uname = session->get_username();
+                                    const std::string mid = std::to_string(session->get_uid());
                                     std::memset(media_udp_buffer_ + 1, 0, SID);
-                                    std::memcpy(media_udp_buffer_ + 1, uname.c_str(),
-                                                std::min(uname.size(), size_t(SID - 1)));
+                                    std::memcpy(media_udp_buffer_ + 1, mid.c_str(),
+                                                std::min(mid.size(), size_t(SID - 1)));
 
                                     manager_.broadcast_to_watchers(
                                         media_udp_buffer_, bytes_recvd, channel, session->get_uid(), media_udp_socket_);

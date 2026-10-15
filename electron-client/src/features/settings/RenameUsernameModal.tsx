@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
-import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
 
 // Change username (uid design, stage 5). Central confirms the password,
 // applies the registration rules and reserves the old name for this
-// account for 14 days; native swaps the token, saves the new name for
-// auto-login and reconnects every community, and the `user_renamed` event
-// re-keys the stores (features/users/applyRename.ts). Same chrome as
-// PassphraseModal.
+// account for 14 days; native saves the new name for auto-login and hands
+// the fresh token to every community, which renames the live session in
+// place (voice and streams carry on: the media plane goes by uid), and the
+// `user_renamed` event re-keys the stores (features/users/applyRename.ts).
+// Same chrome as PassphraseModal.
 
 const NAME_RULE = /^[a-z0-9._-]{3,32}$/;
 
 export default function RenameUsernameModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const current = useAuthStore((s) => s.username);
-  // A community voice channel would drop on the reconnect: native refuses.
-  const inVoice = useVoiceStore((s) => s.connectedChannelId !== null);
 
   const [mounted, setMounted] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -53,7 +51,7 @@ export default function RenameUsernameModal({ open, onClose }: { open: boolean; 
   };
 
   const submit = async () => {
-    if (!open || busy || inVoice) return;
+    if (!open || busy) return;
     const next = name.trim();
     if (!NAME_RULE.test(next)) {
       setError("Use 3–32 lowercase letters, digits, '.', '_' or '-'.");
@@ -148,9 +146,6 @@ export default function RenameUsernameModal({ open, onClose }: { open: boolean; 
             disabled={busy}
             className={inputClass}
           />
-          {inVoice && (
-            <div className="text-[12px] text-text-muted">Leave the voice channel to change your username.</div>
-          )}
           {error && <div className="text-[12px] text-error">{error}</div>}
           <div className="mt-3 flex justify-end gap-2">
             <button
@@ -163,7 +158,7 @@ export default function RenameUsernameModal({ open, onClose }: { open: boolean; 
             </button>
             <button
               type="submit"
-              disabled={busy || inVoice}
+              disabled={busy}
               className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
             >
               {busy ? "Changing…" : "Change username"}

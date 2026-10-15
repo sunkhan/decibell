@@ -2661,3 +2661,46 @@ Verified:
 Live tests are still pending: a rename seen from a friend's client, DMs and history afterwards, and
 the old name signing in from a second device. Needs both the Hetzner central rebuild (`pg_dump`
 first) and the community rebuild (back up `c.db` first).
+
+**Live renames: the media plane by uid (2026-10-15) ✅** — A rename is now only a database change:
+voice, streams and calls carry on through it (design: `docs/superpowers/specs/2026-10-15-uid-identity-design.md`
+§Live renames). Stage 5 had reconnected every community after a rename, and refused one in voice,
+because communities learned names only at authentication and the media plane still named people.
+- **Token renewal.**
+  - Central mints a fresh token on `TOKEN_REFRESH_REQ`. The client asks every 6 hours and with a rename.
+  - The client hands the token to each community as `SESSION_TOKEN_UPDATE`. The community checks it
+    (same uid, not older than the last one) and renames the live session, the member row, the roster
+    (held back for invisible members), and voice and stream presence, without a reconnect.
+  - A connection's UDP key stays derived from the token it authenticated with.
+  - Reconnects now authenticate with the newest token. Before, they reused the original one, which
+    expires after 24 h.
+- **Media identity = the uid.**
+  - The relay stamps the decimal uid into `sender_id`.
+  - Keyframe requests and NACKs target a uid (`target_id`), and stream ids are `<uid>_screen`.
+  - MLS credentials and per-sender media keys are the uid.
+  - P2P calls name both ends by uid (`decibell-call-v2`).
+  - Native keys every per-speaker structure on it. The renderer maps uid → name where events arrive
+    and sends uids in `set_user_volume`, watch / stop watching, thumbnail fetches and keyframe requests.
+  - `applyRename` now also moves rosters, speaking, watches, the full-screen and mini player and
+    thumbnails.
+- **Fixed on the way:**
+  - The relay forwarded a viewer's NACK verbatim, handing the viewer's UDP key (a session secret) to
+    the streamer. It now zeroes it.
+  - The first voice presence after auth carried no uids, so the MLS roster started empty.
+  - A 31-byte truncation of sender names against a 32-byte AAD pad broke sealed media for 32-character
+    names.
+- The rename dialog no longer refuses while in a voice channel.
+
+Verified:
+- community e2e 588 passed (relay stamps the uid; keyframe and NACK by uid with the requester's key stripped;
+  names are no longer media targets; audio keeps flowing through a mid-call rename on the same UDP
+  key; a live `SESSION_TOKEN_UPDATE` renames roster, voice and stream in place while older, foreign or
+  bad tokens, or a removed member's, change nothing);
+- central e2e 163 passed (token refresh);
+- `cargo test --lib` 233 passed;
+- `tsc` 0 errors (web + node); `napi build`;
+- a scratch `applyRename` test (22 checks, including the voice state).
+
+Ships with the community rebuild: an older client and this relay can't decode each other's media.
+Live tests are still pending: a rename mid-call and mid-stream with two clients, a P2P call, and token
+renewal past 6 h.

@@ -18,17 +18,34 @@ import { applyRename } from "./applyRename";
 // here and in every store (applyRename).
 
 const uidByName = new Map<string, number>();
+const nameByUid = new Map<number, string>();
 let selfUid = 0;
 
 function remember(name: string | undefined, uid: number | bigint | undefined) {
   if (!name || uid === undefined) return;
   const n = Number(uid);
-  if (Number.isSafeInteger(n) && n > 0) uidByName.set(name, n);
+  if (Number.isSafeInteger(n) && n > 0) {
+    uidByName.set(name, n);
+    nameByUid.set(n, name);
+  }
 }
 
 /// The account a name belongs to, as far as the servers have said.
 export function uidOf(name: string | null | undefined): number | undefined {
   return name ? uidByName.get(name) : undefined;
+}
+
+/// The current name of an account, as far as the servers have said.
+export function nameOf(uid: number | bigint | null | undefined): string | undefined {
+  return uid === null || uid === undefined ? undefined : nameByUid.get(Number(uid));
+}
+
+/// The media plane names people by uid in decimal (the relay stamps it as
+/// sender id), so stream frames, watches and per-user volume go by this
+/// key. undefined until the servers have told us the name's uid.
+export function mediaKeyOf(name: string | null | undefined): string | undefined {
+  const uid = uidOf(name);
+  return uid === undefined ? undefined : String(uid);
 }
 
 /// Our own uid from the login response (0 before login, or against an

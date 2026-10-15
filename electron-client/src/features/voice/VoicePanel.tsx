@@ -41,6 +41,7 @@ import {
   UserPlusIcon,
   UsersIcon,
 } from "./stage/icons";
+import { nameOf } from "../users/userDirectory";
 
 /// The community voice view (design: the "Voice View Redesign" canvas,
 /// 2026-10-04 — tiled stage + floating dock, shared with the DM CallStage).
@@ -230,7 +231,7 @@ function VoiceEncryptionBadge() {
         ? {
             label: "Unverified member",
             tone: "bg-warning/15 text-warning",
-            title: `Not sending: ${e2ee?.unverified.join(", ")} could not be verified`,
+            title: `Not sending: ${e2ee?.unverified.map((u) => nameOf(Number(u)) ?? `user ${u}`).join(", ")} could not be verified`,
           }
         : state === "failed"
           ? { label: "Encryption failed", tone: "bg-error/15 text-error", title: "Leave and rejoin the channel" }

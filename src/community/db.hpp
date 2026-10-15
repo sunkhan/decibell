@@ -392,7 +392,8 @@ public:
     // when unchanged / not a member.
     /// `iat` is the token's issue time: a token older than the one that
     /// last set the name can't change it back (a device that held its
-    /// token across a rename). `current` gets the name the row holds after.
+    /// token across a rename). `current` gets the name the row holds after
+    /// (empty when there is no member row).
     std::optional<std::string> refresh_member_name(int64_t uid, const std::string& username,
                                                    int64_t iat, std::string* current = nullptr);
     bool remove_member(int64_t uid);

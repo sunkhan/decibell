@@ -113,10 +113,12 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         let sender_id = voice.sender_id().to_string();
         #[cfg(target_os = "windows")]
         let audio_sender_id = sender_id.clone();
-        let self_username = s
-            .username
-            .clone()
-            .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?;
+        // Our media key (the uid, as the relay stamps it): it names our own
+        // frames for the self-preview, like everyone else's.
+        if s.uid <= 0 {
+            return Err(napi::Error::from_reason("Not authenticated"));
+        }
+        let self_key = s.uid.to_string();
         // Community channel: the MLS epoch keys seal every frame; a DM call
         // has no group (its socket is sealed instead).
         let mls_ring = s.voice_mls.as_ref().map(|h| h.ring.clone());
@@ -156,7 +158,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             Some((tx, pkt))
         };
 
-        let mut engine = VideoEngine::start(media_socket, sender_id, self_username, mls_ring.clone());
+        let mut engine = VideoEngine::start(media_socket, sender_id, self_key, mls_ring.clone());
         let session_id = engine.session_id();
         // Remember where the stream is announced so a later stop without
         // ids (main process, after a renderer reload/crash) can still tell
@@ -660,14 +662,15 @@ pub fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
 
 #[napi(object)]
 pub struct SetStreamFrameSinkArgs {
-    /// Streamer whose encoded frames the renderer now (no longer) displays.
-    pub username: String,
+    /// Media key (the streamer's uid, decimal) whose encoded frames the
+    /// renderer now (no longer) displays.
+    pub key: String,
     pub enabled: bool,
 }
 
 /// Renderer-side stream-frame subscriptions, mirrored natively. The preload
-/// bridge calls this when the first subscriber for a username appears
-/// (enabled) and when the last one goes (disabled); frames for usernames
+/// bridge calls this when the first subscriber for a media key appears
+/// (enabled) and when the last one goes (disabled); frames for keys
 /// without a sink are dropped before the TSFN — and own-stream self-preview
 /// isn't even copied. Sync, and sent over the same `decibell:invoke`
 /// channel as the player's follow-up keyframe request, so the sink is in
@@ -675,7 +678,7 @@ pub struct SetStreamFrameSinkArgs {
 /// (media::WATCHED_STREAMS) — that one gates the server-side watch.
 #[napi]
 pub fn set_stream_frame_sink(args: SetStreamFrameSinkArgs) {
-    crate::events::set_stream_frame_sink(&args.username, args.enabled);
+    crate::events::set_stream_frame_sink(&args.key, args.enabled);
 }
 
 /// Drop every stream-frame sink. The preload calls this when it loads (a
@@ -689,17 +692,17 @@ pub fn clear_stream_frame_sinks() {
 pub struct WatchStreamArgs {
     pub server_id: String,
     pub channel_id: String,
-    pub target_username: String,
-    /// The streamer's uid (preferred by the server; the media plane still
-    /// names streamers, so `target_username` stays required).
-    pub target_uid: Option<i64>,
+    /// The streamer's uid: the media plane names streamers by uid.
+    pub target_uid: i64,
+    /// Their name, for the server's logs only.
+    pub target_username: Option<String>,
 }
 
 #[napi]
 pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
     // Record the watch so the video receive thread forwards this streamer's
     // frames (it drops frames for un-watched senders).
-    crate::media::watch_stream_add(&args.target_username);
+    crate::media::watch_stream_add(&args.target_uid.to_string());
     let state_arc = state::shared();
     let (write_tx, data) = {
         let s = state_arc.lock().await;
@@ -716,8 +719,8 @@ pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
             packet::Type::WatchStreamReq,
             packet::Payload::WatchStreamReq(WatchStreamRequest {
                 channel_id: args.channel_id,
-                target_username: args.target_username,
-                target_uid: args.target_uid.unwrap_or(0),
+                target_username: args.target_username.unwrap_or_default(),
+                target_uid: args.target_uid,
             }),
             Some(&client.jwt),
         );
@@ -735,14 +738,14 @@ pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
 pub struct StopWatchingArgs {
     pub server_id: String,
     pub channel_id: String,
-    pub target_username: String,
     /// See WatchStreamArgs.
-    pub target_uid: Option<i64>,
+    pub target_uid: i64,
+    pub target_username: Option<String>,
 }
 
 #[napi]
 pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
-    crate::media::watch_stream_remove(&args.target_username);
+    crate::media::watch_stream_remove(&args.target_uid.to_string());
     let state_arc = state::shared();
     let (write_tx, data) = {
         let s = state_arc.lock().await;
@@ -759,8 +762,8 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
             packet::Type::StopWatchingReq,
             packet::Payload::StopWatchingReq(StopWatchingRequest {
                 channel_id: args.channel_id,
-                target_username: args.target_username,
-                target_uid: args.target_uid.unwrap_or(0),
+                target_username: args.target_username.unwrap_or_default(),
+                target_uid: args.target_uid,
             }),
             Some(&client.jwt),
         );
@@ -776,14 +779,16 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
 #[napi(object)]
 pub struct FetchStreamThumbnailArgs {
     pub server_id: String,
-    pub username: String,
-    /// The streamer's uid (preferred by the server).
-    pub uid: Option<i64>,
+    /// The streamer's uid.
+    pub uid: i64,
+    pub username: Option<String>,
 }
 
 #[napi(object)]
 pub struct FetchStreamThumbnailResult {
+    /// The streamer's current name as the server knows it.
     pub username: String,
+    pub uid: i64,
     /// Empty Buffer when the server has no cached thumbnail yet
     /// (stream just started, or fetch arrived between frames).
     pub jpeg: napi::bindgen_prelude::Buffer,
@@ -795,7 +800,7 @@ pub struct FetchStreamThumbnailResult {
 /// cached yet — caller renders the gradient placeholder.
 ///
 /// Same shape as `fetch_avatar` in commands/auth.rs: single-slot
-/// oneshot per username, 5-second timeout, slot cleanup on timeout.
+/// oneshot per streamer (by uid), 5-second timeout, slot cleanup on timeout.
 #[napi]
 pub async fn fetch_stream_thumbnail(
     args: FetchStreamThumbnailArgs,
@@ -803,6 +808,7 @@ pub async fn fetch_stream_thumbnail(
     use tokio::sync::oneshot;
 
     let FetchStreamThumbnailArgs { server_id, username, uid } = args;
+    let slot = uid.to_string();
     let state_arc = state::shared();
 
     let (write_tx, data, rx) = {
@@ -819,15 +825,15 @@ pub async fn fetch_stream_thumbnail(
         let pkt = build_packet(
             packet::Type::FetchStreamThumbnailReq,
             packet::Payload::FetchStreamThumbnailReq(FetchStreamThumbnailReq {
-                owner_username: username.clone(),
-                owner_uid: uid.unwrap_or(0),
+                owner_username: username.unwrap_or_default(),
+                owner_uid: uid,
             }),
             Some(&client.jwt),
         );
         let (otx, orx) = oneshot::channel();
-        // Last-request-wins per username — supersedes any earlier
+        // Last-request-wins per streamer — supersedes any earlier
         // in-flight fetch (its .await will time out, harmless).
-        s.pending_thumbnail_fetches.insert(username.clone(), otx);
+        s.pending_thumbnail_fetches.insert(slot.clone(), otx);
         (tx, pkt, orx)
     };
 
@@ -835,13 +841,14 @@ pub async fn fetch_stream_thumbnail(
         .await
         .is_err()
     {
-        state_arc.lock().await.pending_thumbnail_fetches.remove(&username);
+        state_arc.lock().await.pending_thumbnail_fetches.remove(&slot);
         return Err(napi::Error::from_reason("Failed to send thumbnail fetch"));
     }
 
     match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
         Ok(Ok(resp)) => Ok(FetchStreamThumbnailResult {
             username: resp.owner_username,
+            uid: resp.owner_uid,
             jpeg: resp.thumbnail_data.into(),
         }),
         Ok(Err(_)) => Err(napi::Error::from_reason(
@@ -852,7 +859,7 @@ pub async fn fetch_stream_thumbnail(
                 .lock()
                 .await
                 .pending_thumbnail_fetches
-                .remove(&username);
+                .remove(&slot);
             Err(napi::Error::from_reason("Thumbnail fetch timed out"))
         }
     }
@@ -1156,8 +1163,8 @@ pub async fn force_keyframe() -> napi::Result<()> {
 
 #[napi(object)]
 pub struct RequestStreamKeyframeArgs {
-    /// Username of the streamer whose next frame should be an IDR.
-    pub username: String,
+    /// Uid of the streamer whose next frame should be an IDR.
+    pub uid: i64,
 }
 
 /// Watcher-side keyframe request: send a UdpKeyframeRequest (PLI) to
@@ -1181,12 +1188,13 @@ pub async fn request_stream_keyframe(args: RequestStreamKeyframeArgs) -> napi::R
             .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
         let mut guard = map.lock().unwrap();
         let now = std::time::Instant::now();
-        if let Some(&last) = guard.get(&args.username) {
+        let key = args.uid.to_string();
+        if let Some(&last) = guard.get(&key) {
             if now.duration_since(last) < std::time::Duration::from_millis(500) {
                 return Ok(()); // throttled — a PLI for this streamer went out recently
             }
         }
-        guard.insert(args.username.clone(), now);
+        guard.insert(key, now);
     }
     let (socket, sender_id) = {
         let state_arc = state::shared();
@@ -1197,7 +1205,7 @@ pub async fn request_stream_keyframe(args: RequestStreamKeyframeArgs) -> napi::R
             None => return Ok(()),
         }
     };
-    let pli = UdpKeyframeRequest::new(&sender_id, &args.username);
+    let pli = UdpKeyframeRequest::new(&sender_id, &args.uid.to_string());
     let _ = socket.send(&pli.to_bytes());
     Ok(())
 }

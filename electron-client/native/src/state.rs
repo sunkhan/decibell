@@ -50,6 +50,8 @@ pub struct PendingCall {
 pub struct ActiveCall {
     pub call_id: String,
     pub peer: String,
+    /// The peer's uid: their media key (what their packets name as sender).
+    pub peer_uid: i64,
     /// Set by `call_end` to abort an in-flight punch / silence the watchdog.
     pub stop: Arc<std::sync::atomic::AtomicBool>,
     pub watchdog: Option<tokio::task::JoinHandle<()>>,
@@ -144,10 +146,10 @@ pub struct AppState {
     /// FETCH_AVATAR_RES arrives; the caller drops its half after a 5s
     /// timeout.
     pub pending_avatar_fetches: HashMap<String, oneshot::Sender<FetchAvatarRes>>,
-    /// In-flight FETCH_STREAM_THUMBNAIL_REQ calls keyed by streamer
-    /// username. Resolved by the community router when the matching
-    /// FETCH_STREAM_THUMBNAIL_RES arrives. Last-request-wins per
-    /// username — a previous in-flight fetch for the same user gets
+    /// In-flight FETCH_STREAM_THUMBNAIL_REQ calls keyed by
+    /// streamer uid (decimal). Resolved by the community router when the
+    /// matching FETCH_STREAM_THUMBNAIL_RES arrives. Last-request-wins per
+    /// streamer — a previous in-flight fetch for the same user gets
     /// its sender replaced; the earlier .await times out, harmless.
     pub pending_thumbnail_fetches: HashMap<String, oneshot::Sender<FetchStreamThumbnailRes>>,
     /// E2EE DMs: status, own keys, peer pins, session caches. Reset on

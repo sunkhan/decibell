@@ -936,6 +936,25 @@ private:
             if (presence_visible()) manager_.broadcast_user_renamed(uid_, r.old_username, username_);
         }
 
+        // --- TOKEN REFRESH ---
+        // A fresh 24 h token for this session's account. Clients renew
+        // before expiry (every packet's token is checked) and pass the new
+        // one to their communities.
+        else if (packet.type() == chatproj::Packet::TOKEN_REFRESH_REQ) {
+            if (!authenticated_ || !refresh_bucket_.take()) return;
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::TOKEN_REFRESH_RES);
+            auto* res = rsp.mutable_token_refresh_res();
+            auto token = auth_manager_.mintToken(uid_, username_);
+            res->set_success(token.has_value());
+            if (token) res->set_jwt_token(*token);
+            res->set_username(username_);
+            std::string serialized;
+            rsp.SerializeToString(&serialized);
+            deliver(std::make_shared<std::vector<uint8_t>>(
+                chatproj::create_framed_packet(serialized)));
+        }
+
         // --- E2EE: FETCH KEYS ---
         // Any authenticated user may read anyone's public bundle (that is
         // the point of a public key); key_id 0 = current. Bucketed: the
@@ -1602,6 +1621,8 @@ private:
     /// can't use this to guess it quickly. 10 burst (a few taken names in
     /// a row) / 1 per 30 s.
     RateBucket rename_bucket_{10.0, 1.0 / 30.0};
+    /// Token renewal: clients ask every few hours; 3 burst / 1 per minute.
+    RateBucket refresh_bucket_{3.0, 1.0 / 60.0};
     /// Status / idle / DM-privacy changes: each is a DB write or a fan-out
     /// to every session. A person picks a status a few times a day and
     /// auto-away flips at most every few minutes; 10 burst / 1 per 2 s

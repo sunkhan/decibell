@@ -20,9 +20,15 @@ import { pushUserGain } from "../voice/userGain";
 // references (no needless re-render). Fetched lists already carry current
 // names, so whatever arrives later agrees.
 //
-// Live voice state is left alone: a renamed user's community session
-// reconnects under the new name (our own rename is refused while in a
-// voice channel), and the next presence update replaces it.
+// Voice and streams carry on through a rename (the media plane names people
+// by uid, and the community renames a live session in place), so their
+// name-keyed state moves too: rosters, speaking, the streams we watch or
+// show, thumbnails. The community's next presence update agrees.
+
+/// `list` with `from` replaced by `to`; the same array when absent.
+function renameIn(list: string[], from: string, to: string): string[] {
+  return list.includes(from) ? list.map((n) => (n === from ? to : n)) : list;
+}
 
 /// `rec` with key `from` moved to `to`; the same object when absent.
 function moveKey<V>(rec: Record<string, V>, from: string, to: string): Record<string, V> {
@@ -176,12 +182,63 @@ export function applyRename(from: string, to: string, self: boolean): void {
     }
     const userCapabilities = moveKey(s.userCapabilities, from, to);
     const callPeer = rename(s.callPeer, from, to) ?? null;
-    return userVolumes === s.userVolumes &&
-      localMutedUsers === s.localMutedUsers &&
-      userCapabilities === s.userCapabilities &&
-      callPeer === s.callPeer
-      ? s
-      : { userVolumes, localMutedUsers, userCapabilities, callPeer };
+    // Live voice / stream state.
+    const participants = s.participants.some((p) => p.username === from)
+      ? s.participants.map((p) => (p.username === from ? { ...p, username: to } : p))
+      : s.participants;
+    let speakingUsers = s.speakingUsers;
+    if (speakingUsers.has(from)) {
+      speakingUsers = new Set(speakingUsers);
+      speakingUsers.delete(from);
+      speakingUsers.add(to);
+    }
+    let channelPresence = s.channelPresence;
+    for (const [k, users] of Object.entries(channelPresence)) {
+      const next = renameIn(users, from, to);
+      if (next === users) continue;
+      if (channelPresence === s.channelPresence) channelPresence = { ...channelPresence };
+      channelPresence[k] = next;
+    }
+    let channelUserStates = s.channelUserStates;
+    for (const [k, states] of Object.entries(channelUserStates)) {
+      const next = moveKey(states, from, to);
+      if (next === states) continue;
+      if (channelUserStates === s.channelUserStates) channelUserStates = { ...channelUserStates };
+      channelUserStates[k] = next;
+    }
+    const renameStream = <T extends { ownerUsername: string }>(st: T): T =>
+      st.ownerUsername === from ? { ...st, ownerUsername: to } : st;
+    const activeStreams = s.activeStreams.some((st) => st.ownerUsername === from)
+      ? s.activeStreams.map(renameStream)
+      : s.activeStreams;
+    let streamsByUser = s.streamsByUser;
+    const loc = streamsByUser.get(from);
+    if (loc) {
+      streamsByUser = new Map(streamsByUser);
+      streamsByUser.delete(from);
+      streamsByUser.set(to, { ...loc, streamInfo: renameStream(loc.streamInfo) });
+    }
+    const streamThumbnails = moveKey(s.streamThumbnails, from, to);
+    const watchingStreams = renameIn(s.watchingStreams, from, to);
+    const fullscreenStream = rename(s.fullscreenStream, from, to) ?? null;
+    const pipStream = rename(s.pipStream, from, to) ?? null;
+    const next = {
+      userVolumes,
+      localMutedUsers,
+      userCapabilities,
+      callPeer,
+      participants,
+      speakingUsers,
+      channelPresence,
+      channelUserStates,
+      activeStreams,
+      streamsByUser,
+      streamThumbnails,
+      watchingStreams,
+      fullscreenStream,
+      pipStream,
+    };
+    return (Object.keys(next) as (keyof typeof next)[]).every((k) => next[k] === s[k]) ? s : next;
   });
   if (hadGain) {
     saveSettings();

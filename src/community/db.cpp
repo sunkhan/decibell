@@ -1445,7 +1445,7 @@ bool CommunityDb::claim_legacy(int64_t uid, const std::string& username) {
 
 std::optional<std::string> CommunityDb::refresh_member_name(int64_t uid, const std::string& username,
                                                             int64_t iat, std::string* current) {
-    if (current) *current = username;
+    if (current) current->clear();   // stays empty unless the member row exists
     if (uid <= 0 || username.empty()) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
     std::string old;
@@ -1468,7 +1468,11 @@ std::optional<std::string> CommunityDb::refresh_member_name(int64_t uid, const s
     q.bind_text(1, username);
     q.bind_int64(2, iat);
     q.bind_int64(3, uid);
-    if (q.step() != SQLITE_DONE) return std::nullopt;
+    if (q.step() != SQLITE_DONE) {
+        if (current) *current = old;
+        return std::nullopt;
+    }
+    if (current) *current = username;
     if (old == username) return std::nullopt;
     return old;
 }

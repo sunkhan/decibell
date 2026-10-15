@@ -56,13 +56,13 @@ constexpr uint16_t NACK_MAX_ENTRIES = 64;
 // Sent by a viewer to request the streamer to emit a keyframe immediately (PLI)
 struct UdpKeyframeRequest {
     uint8_t packet_type;                    // Should be UdpPacketType::KEYFRAME_REQUEST
-    char sender_id[SENDER_ID_SIZE];         // Token hash or username of the requester
-    char target_username[SENDER_ID_SIZE];   // Username of the streamer to request keyframe from
+    char sender_id[SENDER_ID_SIZE];         // UDP key of the requester (zeroed when relayed)
+    char target_id[SENDER_ID_SIZE];         // Streamer's uid, decimal, NUL-padded
 };
 
 struct UdpAudioPacket {
     uint8_t packet_type;                // Should be UdpPacketType::AUDIO
-    char sender_id[SENDER_ID_SIZE];     // Token hash upstream, Username downstream
+    char sender_id[SENDER_ID_SIZE];     // UDP key upstream; the sender's uid (decimal) downstream
     uint16_t sequence;                  // Sequence number to drop out-of-order packets
     uint16_t payload_size;              // Exact size of the compressed audio data
     uint8_t payload[UDP_MAX_PAYLOAD];
@@ -71,8 +71,8 @@ struct UdpAudioPacket {
 // Sent by a viewer to request retransmission of specific missing video packets
 struct UdpNackPacket {
     uint8_t packet_type;                    // Should be UdpPacketType::NACK
-    char sender_id[SENDER_ID_SIZE];         // Token hash of the requester (viewer)
-    char target_username[SENDER_ID_SIZE];   // Username of the streamer
+    char sender_id[SENDER_ID_SIZE];         // UDP key of the requester (zeroed when relayed)
+    char target_id[SENDER_ID_SIZE];         // Streamer's uid, decimal, NUL-padded
     uint32_t frame_id;                      // Frame containing missing packets
     uint16_t nack_count;                    // Number of entries in missing_indices
     uint16_t missing_indices[NACK_MAX_ENTRIES]; // Indices of missing packets
@@ -95,7 +95,7 @@ struct UdpFecPacket {
 
 struct UdpVideoPacket {
     uint8_t packet_type;                // Should be UdpPacketType::VIDEO
-    char sender_id[SENDER_ID_SIZE];     // Token hash or Username
+    char sender_id[SENDER_ID_SIZE];     // UDP key upstream; the sender's uid (decimal) downstream
     uint32_t frame_id;                  // Frame number
     uint16_t packet_index;              // Index of this packet within the frame
     uint16_t total_packets;             // Total packets for this frame

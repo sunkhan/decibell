@@ -4,6 +4,8 @@
 **Author:** sunkhan (with Claude)
 **Status:** Implemented (M1–M4 on `main`); live two-machine test pending
 
+**Update 2026-10-15 (users by uid):** Both ends are named by uid: `sender_id` and the sockets' own ids are the decimal uid, and the key schedule's info is `decibell-call-v2|<lower uid>|<higher uid>`. See `2026-10-15-uid-identity-design.md` §Live renames.
+
 ## Problem
 
 Voice and screen streaming only existed inside community voice channels: the

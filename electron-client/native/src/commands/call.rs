@@ -418,13 +418,20 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
     };
 
     let state_arc = state::shared();
+    // The media plane names both ends by uid (sender ids, socket self ids,
+    // key direction), so the call needs the peer's.
+    let peer_uid = match e2ee::resolve_uid(&state_arc, args.peer_uid.unwrap_or(0), &args.peer).await {
+        Ok(u) if u > 0 => u,
+        Ok(_) => return Err(napi::Error::from_reason(format!("{} isn't an account", args.peer))),
+        Err(e) => return Err(napi::Error::from_reason(format!("Couldn't look up {}: {e}", args.peer))),
+    };
     // Verify the peer's identity over their ephemeral key BEFORE any key
     // is derived. Fails closed: a peer who has E2EE keys must have signed,
     // and the signature must verify under their current (pinned)
     // identity. A peer without keys yields an unverified-but-allowed call.
     let verified = match e2ee::verify_peer_call_key(
         &state_arc,
-        args.peer_uid.unwrap_or(0),
+        peer_uid,
         &args.peer,
         &args.call_id,
         &peer_pub,
@@ -457,21 +464,24 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
         if pending.call_id != args.call_id || pending.peer != args.peer {
             return Err(napi::Error::from_reason("Prepared call does not match"));
         }
-        let username = s
-            .username
-            .clone()
-            .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?;
+        // Our media key: the uid, as the peer's pipeline expects it in
+        // sender ids (the same identity a relay would stamp).
+        if s.uid <= 0 {
+            return Err(napi::Error::from_reason("Not authenticated"));
+        }
+        let username = s.uid.to_string();
         let stop = Arc::new(AtomicBool::new(false));
         s.active_call = Some(ActiveCall {
             call_id: args.call_id.clone(),
             peer: args.peer.clone(),
+            peer_uid,
             stop: stop.clone(),
             watchdog: None,
         });
         (pending, username, stop)
     };
 
-    let keys = match call_crypto::derive(pending.local, &peer_pub, &args.call_id, &username, &args.peer) {
+    let keys = match call_crypto::derive(pending.local, &peer_pub, &args.call_id, &username, &peer_uid.to_string()) {
         Ok(k) => k,
         Err(e) => {
             let mut s = state_arc.lock().await;
@@ -715,7 +725,7 @@ pub async fn call_watch_stream(args: CallWatchStreamArgs) -> napi::Result<()> {
         let s = state_arc.lock().await;
         s.active_call
             .as_ref()
-            .map(|a| a.peer.clone())
+            .map(|a| a.peer_uid.to_string())
             .ok_or_else(|| napi::Error::from_reason("Not in a call"))?
     };
     if args.watch {

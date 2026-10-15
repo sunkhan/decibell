@@ -50,7 +50,9 @@ pub fn install(callback: JsFunction) -> Result<()> {
 /// fields wrap Vec<u8> — napi-rs hands the underlying allocation to V8
 /// as a real Uint8Array view (no copy on the way out).
 pub struct StreamFrame {
-    pub username: String,
+    /// The streamer's media key: their uid in decimal (ours for the
+    /// self-preview).
+    pub key: String,
     pub codec: u8,
     pub keyframe: bool,
     pub timestamp: i64,
@@ -105,7 +107,7 @@ fn release_stream_slot() {
 
 /// Install the stream-frame bus. Called from `init(...)` alongside the
 /// main bus install. The JS callback receives a single object:
-/// `{ username, codec, keyframe, timestamp, data: Uint8Array,
+/// `{ key, codec, keyframe, timestamp, data: Uint8Array,
 ///    description: Uint8Array | null, discontinuity: boolean }`.
 pub fn install_stream_bus(callback: JsFunction) -> Result<()> {
     // Bounded queue. With the previous unbounded queue (0), NonBlocking
@@ -125,7 +127,7 @@ pub fn install_stream_bus(callback: JsFunction) -> Result<()> {
             release_stream_slot();
             let env = &ctx.env;
             let mut obj = env.create_object()?;
-            obj.set_named_property("username", env.create_string(&ctx.value.username)?)?;
+            obj.set_named_property("key", env.create_string(&ctx.value.key)?)?;
             obj.set_named_property("codec", env.create_uint32(ctx.value.codec as u32)?)?;
             obj.set_named_property("keyframe", env.get_boolean(ctx.value.keyframe)?)?;
             obj.set_named_property("timestamp", env.create_int64(ctx.value.timestamp)?)?;
@@ -267,23 +269,23 @@ pub fn send_stream_frame(mut frame: StreamFrame) {
     let Some(bus) = STREAM_BUS.get() else {
         return;
     };
-    if !is_stream_frame_sink(&frame.username) {
+    if !is_stream_frame_sink(&frame.key) {
         return;
     }
     if !reserve_stream_slot() {
         // Queue full (busy/stalled renderer): shed this frame — it is freed
         // here — and flag the streamer so its next queued frame tells the
         // player the reference chain broke.
-        mark_discontinuity(&frame.username);
+        mark_discontinuity(&frame.key);
         note_stream_frame_drop();
         return;
     }
     // Unmark before the call; if the call itself fails, re-mark so the
     // flag rides the next frame instead. The name is only cloned on this
     // (rare) path.
-    let remark = if take_discontinuity(&frame.username) {
+    let remark = if take_discontinuity(&frame.key) {
         frame.discontinuity = true;
-        Some(frame.username.clone())
+        Some(frame.key.clone())
     } else {
         None
     };
@@ -1489,14 +1491,15 @@ pub struct VoiceStateChangedPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceUserSpeakingPayload {
-    pub username: String,
+    /// The speaker's uid (the media identity); 0 = ourselves.
+    pub uid: i64,
     pub speaking: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceUserStateChangedPayload {
-    pub username: String,
+    pub uid: i64,
     pub is_muted: bool,
     pub is_deafened: bool,
 }
@@ -1554,18 +1557,18 @@ pub fn emit_hotkeys_status(status: &crate::hotkeys::Status) {
     send(HOTKEYS_STATUS, status);
 }
 
-pub fn emit_voice_user_speaking(username: String, speaking: bool) {
+pub fn emit_voice_user_speaking(uid: i64, speaking: bool) {
     send(
         VOICE_USER_SPEAKING,
-        VoiceUserSpeakingPayload { username, speaking },
+        VoiceUserSpeakingPayload { uid, speaking },
     );
 }
 
-pub fn emit_voice_user_state_changed(username: String, is_muted: bool, is_deafened: bool) {
+pub fn emit_voice_user_state_changed(uid: i64, is_muted: bool, is_deafened: bool) {
     send(
         VOICE_USER_STATE_CHANGED,
         VoiceUserStateChangedPayload {
-            username,
+            uid,
             is_muted,
             is_deafened,
         },

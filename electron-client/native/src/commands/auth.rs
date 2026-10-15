@@ -78,18 +78,16 @@ pub struct RenameAccountResult {
 
 /// Change our username (uid design, stage 5). Central checks the password
 /// and the name, and reserves the old name for this account for 14 days.
-/// On success the fresh token replaces ours, the saved credentials follow
-/// the new name, the renderer hears `user_renamed {self: true}`, and every
-/// community reconnects so it learns the name from the new token. Refused
-/// while in a voice channel: the reconnect would drop it.
+/// On success the saved credentials follow the new name, the renderer
+/// hears `user_renamed {self: true}`, and the fresh token replaces ours and
+/// goes to every community session (net/token.rs), which takes the new
+/// name in place: no reconnect, so voice and streams carry on (the media
+/// plane identifies people by uid).
 #[napi]
 pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccountResult> {
     let state_arc = state::shared();
     let (write_tx, data, rx) = {
         let mut s = state_arc.lock().await;
-        if s.connected_voice_channel.is_some() {
-            return Err(napi::Error::from_reason("Leave the voice channel before changing your username."));
-        }
         let central = s
             .central
             .as_ref()
@@ -128,23 +126,13 @@ pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccou
         return Err(napi::Error::from_reason(res.message));
     }
 
-    let (old_username, uid, communities) = {
+    let (old_username, uid) = {
         let mut s = state_arc.lock().await;
         let old = s.username.replace(res.username.clone()).unwrap_or_default();
-        if !res.jwt_token.is_empty() {
-            s.token = Some(res.jwt_token.clone());
-        }
         if let Some((_, pass)) = s.credentials.clone() {
             s.credentials = Some((res.username.clone(), pass));
         }
-        // Without a fresh token the communities would hear the old name;
-        // they catch up at the next sign-in instead.
-        let communities: Vec<(String, String, u16)> = if res.jwt_token.is_empty() {
-            Vec::new()
-        } else {
-            s.communities.values().map(|c| (c.server_id.clone(), c.host.clone(), c.port)).collect()
-        };
-        (old, s.uid, communities)
+        (old, s.uid)
     };
     // Auto-login uses the saved credentials: they follow the new name.
     if let Ok(cfg) = config::load() {
@@ -159,11 +147,8 @@ pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccou
         username: res.username.clone(),
         is_self: true,
     });
-    for (server_id, host, port) in communities {
-        if let Err(e) = crate::commands::servers::connect_with_invite(server_id.clone(), host, port, None).await {
-            log::warn!("[rename] reconnecting community {server_id} failed: {e}");
-        }
-    }
+    // Without a fresh token the communities catch up at the next sign-in.
+    crate::net::token::adopt(&state_arc, res.jwt_token).await;
     Ok(RenameAccountResult { username: res.username })
 }
 

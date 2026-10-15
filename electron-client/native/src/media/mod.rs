@@ -111,10 +111,22 @@ use pipeline::{ControlMessage, VoiceEvent};
 
 use crate::events;
 
-/// Usernames of the remote streams the local user is currently watching. The
-/// video receive thread drops reassembled frames whose streamer isn't in this
-/// set: the client never validated that a relayed username matched an active
-/// watch, so a spoofed / over-relayed sender could be surfaced as another user;
+/// The media identity: the relay stamps each sender's account uid, in
+/// decimal, into `sender_id` (uid design), and a P2P call peer sends its own.
+/// Every per-sender key below (watches, peers, volumes, frame keys) is that
+/// string, so a rename never touches the media plane. `"__local__"` (our own
+/// speaking state) is 0; anything that isn't a uid is None.
+pub fn media_uid(key: &str) -> Option<i64> {
+    if key == "__local__" {
+        return Some(0);
+    }
+    key.parse::<i64>().ok().filter(|u| *u > 0)
+}
+
+/// Media keys (uids) of the remote streams the local user is currently
+/// watching. The video receive thread drops reassembled frames whose streamer
+/// isn't in this set: the client never validated that a relayed sender
+/// matched an active watch, so a spoofed / over-relayed sender could be surfaced as another user;
 /// this also skips the reassembly→IPC→renderer hops for frames nobody wants.
 /// Own-stream self-preview bypasses this entirely (it flows from the encoder
 /// thread's TSFN, not the receive thread). Lock-free reads on the hot path.
@@ -376,11 +388,15 @@ impl VoiceEngine {
         let event_bridge = tokio::task::spawn_blocking(move || loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(event) => match event {
-                    VoiceEvent::SpeakingChanged(username, speaking) => {
-                        events::emit_voice_user_speaking(username, speaking);
+                    VoiceEvent::SpeakingChanged(key, speaking) => {
+                        if let Some(uid) = media_uid(&key) {
+                            events::emit_voice_user_speaking(uid, speaking);
+                        }
                     }
-                    VoiceEvent::UserStateChanged(username, is_muted, is_deafened) => {
-                        events::emit_voice_user_state_changed(username, is_muted, is_deafened);
+                    VoiceEvent::UserStateChanged(key, is_muted, is_deafened) => {
+                        if let Some(uid) = media_uid(&key) {
+                            events::emit_voice_user_state_changed(uid, is_muted, is_deafened);
+                        }
                     }
                     VoiceEvent::InputLevel(db) => {
                         events::emit_voice_input_level(db);
@@ -405,7 +421,7 @@ impl VoiceEngine {
                         // WebCodecs.VideoDecoder reads from the bitstream.
                         // No more native avcC fallback — encoder.rs is gone.
                         events::send_stream_frame(events::StreamFrame {
-                            username: frame.streamer_username,
+                            key: frame.streamer_username,
                             codec: frame.codec,
                             keyframe: frame.is_keyframe,
                             timestamp: video_ts_epoch.elapsed().as_micros() as i64,
@@ -1443,5 +1459,21 @@ pub(crate) fn configure_udp_socket(socket: &UdpSocket) {
                 None,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod media_key_tests {
+    use super::media_uid;
+
+    #[test]
+    fn media_keys_are_uids() {
+        assert_eq!(media_uid("1042"), Some(1042));
+        assert_eq!(media_uid("__local__"), Some(0));
+        // A name (an older relay) or junk names nobody.
+        assert_eq!(media_uid("alice"), None);
+        assert_eq!(media_uid("0"), None);
+        assert_eq!(media_uid("-7"), None);
+        assert_eq!(media_uid(""), None);
     }
 }

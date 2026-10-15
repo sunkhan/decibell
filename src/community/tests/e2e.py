@@ -1810,7 +1810,9 @@ def test_udp_relay():
         got = ub.recv(2048)
     except socket.timeout:
         got = b""
-    check("audio relayed to the other member with sender rewritten", got[1:33].rstrip(b"\0") == b"ann" and got[-2:] == b"a0")
+    ann_mid = str(uid_for("ann")).encode()
+    check("audio relayed to the other member with sender rewritten to their uid",
+          got[1:33].rstrip(b"\0") == ann_mid and got[-2:] == b"a0")
     # burst: 50 packets, all delivered (drain-per-wakeup path)
     for i in range(50):
         ua.sendto(udp_audio_packet(ann.jwt, 2 + i, b"x" * 100), (HOST, 8083))
@@ -1840,7 +1842,52 @@ def test_udp_relay():
     mping = bytes([5]) + ann.jwt[-31:].encode().ljust(32, b"\0") + struct.pack("<I", 7)
     um.sendto(mping, (HOST, 8084))
     check("media PING echoed", um.recv(2048) == mping)
-    for sk in (ua, ub, um): sk.close()
+    # Keyframe requests and NACKs name the streamer by uid. A relayed NACK
+    # never carries the requester's UDP key (a session secret).
+    ub_media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ub_media.bind((HOST, 0)); ub_media.settimeout(2)
+    ub_media.sendto(bytes([5]) + bob.jwt[-31:].encode().ljust(32, b"\0") + struct.pack("<I", 8), (HOST, 8084))
+    ub_media.recv(2048)
+    bob_key = bob.jwt[-31:].encode().ljust(32, b"\0")
+    ub_media.sendto(bytes([2]) + bob_key + ann_mid.ljust(32, b"\0"), (HOST, 8084))
+    try:
+        kf = um.recv(2048)
+    except socket.timeout:
+        kf = b""
+    check("keyframe request reaches the streamer named by uid", kf[:1] == b"\x02" and kf[1:65] == b"\0" * 64)
+    nack = bytes([3]) + bob_key + ann_mid.ljust(32, b"\0") + struct.pack("<IH", 77, 1) + struct.pack("<H", 4) + b"\0" * 126
+    ub_media.sendto(nack, (HOST, 8084))
+    try:
+        got_nack = um.recv(2048)
+    except socket.timeout:
+        got_nack = b""
+    check("NACK relayed by uid, requester's key stripped", got_nack[:1] == b"\x03"
+          and got_nack[1:33] == b"\0" * 32 and got_nack[33:65].rstrip(b"\0") == ann_mid
+          and struct.unpack("<I", got_nack[65:69])[0] == 77)
+    ub_media.sendto(bytes([2]) + bob_key + b"ann".ljust(32, b"\0"), (HOST, 8084))
+    um.settimeout(0.6)
+    try:
+        um.recv(2048); by_name = True
+    except socket.timeout:
+        by_name = False
+    check("a name is not a media target any more", not by_name)
+    um.settimeout(2)
+    # A live rename mid-call: the media identity is the uid, so audio keeps
+    # its sender and the same UDP key keeps working.
+    time.sleep(1.1)
+    ann.send(pb.Packet.SESSION_TOKEN_UPDATE, session_token_update=pb.SessionTokenUpdate(
+        jwt_token=jwt("ann-renamed", uid=uid_for("ann"))))
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "ann-renamed" in p.voice_presence_update.active_users)
+    check("renamed mid-call: voice presence shows the new name", vp is not None)
+    ua.sendto(udp_audio_packet(ann.jwt, 500, b"still"), (HOST, 8083))
+    ub.settimeout(2)
+    try:
+        got = ub.recv(2048)
+    except socket.timeout:
+        got = b""
+    check("audio flows on through a rename, same sender uid", got[1:33].rstrip(b"\0") == ann_mid and got[-5:] == b"still")
+    time.sleep(1.1)
+    back = Client("ann", uid=uid_for("ann")); auth_ok(back); back.close()   # the name back, for later tests
+    for sk in (ua, ub, um, ub_media): sk.close()
     ann.close(); bob.close(); owner.close()
 
 
@@ -1906,7 +1953,8 @@ def test_mls_delivery_service():
         got = ub.recv(2048)
     except socket.timeout:
         got = b""
-    check("AUDIO_SEALED relayed with sender rewritten", got[:1] == b"\x07" and got[1:33].rstrip(b"\0") == b"ann" and got[-8:] == b"sealed-a")
+    check("AUDIO_SEALED relayed with sender rewritten", got[:1] == b"\x07"
+          and got[1:33].rstrip(b"\0") == str(uid_for("ann")).encode() and got[-8:] == b"sealed-a")
     # group dropped when the channel empties
     for c in (ann, bob):
         c.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
@@ -2433,6 +2481,58 @@ def test_uid_wire():
     check("... and its session acts under it", echo is not None and echo.channel_msg.sender == "uidw1y")
     stale.close()
     back = Client("uidw1", uid=U("uidw1")); auth_ok(back); back.close()
+
+
+def test_live_rename():
+    """A newer token for a connected member renames them in place: no
+    reconnect, and the voice and stream views follow."""
+    print("[uid] live rename via SESSION_TOKEN_UPDATE")
+    U = uid_for
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    lr = join("liveren", owner)
+    for c in (owner, lr): c.flush(0.4)
+    lr.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    lr.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge")
+    lr.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
+    owner.wait(pb.Packet.STREAM_PRESENCE_UPDATE, pred=lambda p: any(
+        s.owner_uid == U("liveren") for s in p.stream_presence_update.active_streams))
+    owner.flush(0.3)
+    update = lambda token: lr.send(pb.Packet.SESSION_TOKEN_UPDATE,
+                                   session_token_update=pb.SessionTokenUpdate(jwt_token=token))
+    update(jwt("liveold", uid=U("liveren"), iat=int(time.time()) - 600))
+    update(jwt("intruder", uid=U("liveren") + 1))
+    update("not-a-token")
+    time.sleep(0.4)
+    check("older, foreign or bad tokens change nothing",
+          sql("select username from members where uid=?", U("liveren")) == [("liveren",)])
+    time.sleep(1.1)   # a later token (central's verifier refuses one issued in the future)
+    update(jwt("liveren2", uid=U("liveren")))
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, pred=lambda p: p.member_remove.uid == U("liveren"))
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, pred=lambda p: p.member_upsert.member.uid == U("liveren"))
+    check("roster retires the old name and publishes the new", rm is not None and rm.member_remove.username == "liveren"
+          and up is not None and up.member_upsert.member.username == "liveren2")
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge"
+                    and "liveren2" in p.voice_presence_update.active_users)
+    check("voice presence shows the new name", vp is not None)
+    sp = owner.wait(pb.Packet.STREAM_PRESENCE_UPDATE, pred=lambda p: any(
+        s.owner_username == "liveren2" for s in p.stream_presence_update.active_streams))
+    check("the stream carries on under the new name", sp is not None and any(
+        s.owner_uid == U("liveren") for s in sp.stream_presence_update.active_streams))
+    check("member row renamed", sql("select username from members where uid=?", U("liveren")) == [("liveren2",)])
+    lr.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="after a live rename", nonce="lr1"))
+    echo = lr.wait(pb.Packet.CHANNEL_MSG, pred=lambda p: p.channel_msg.nonce == "lr1")
+    check("the same connection acts under the new name", echo is not None and echo.channel_msg.sender == "liveren2"
+          and not lr.closed)
+    # Removed meanwhile (row gone, socket still up): a token renames nobody.
+    sql("delete from members where uid=?", U("liveren"))
+    owner.flush(0.3)
+    time.sleep(1.1)
+    update(jwt("liveren3", uid=U("liveren")))
+    stray = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=0.8,
+                       pred=lambda p: p.member_upsert.member.username == "liveren3")
+    check("a removed member's token renames nobody", stray is None
+          and sql("select count(*) from members where uid=?", U("liveren")) == [(0,)])
+    lr.close(); owner.close()
 
 
 def test_auth_failure_closes():
@@ -3481,6 +3581,7 @@ if __name__ == "__main__":
         test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()
         test_uid_wire()
+        test_live_rename()
     finally:
         stop_server(proc)
     test_b9_timeouts()

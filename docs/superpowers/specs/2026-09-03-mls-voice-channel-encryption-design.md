@@ -4,7 +4,7 @@
 **Author:** sunkhan (with Claude)
 **Status:** Implemented on `main` in two steps (M1 group + voice, M2 streams); needs a community-server release and a multi-client live test
 
-**Update 2026-10-15 (users by uid, stage 4):** Leaf credentials (`"<uid>:<name>"`) now bind the account uid instead of the name, so a rename changes nothing. See `2026-10-15-uid-identity-design.md` §Stage 4 for the v2 formats. Verification, election and ghost removal go by uid; per-sender media keys still derive from the name, which the media plane uses.
+**Update 2026-10-15 (users by uid):** Leaf credentials are the account uid in decimal, and per-sender media keys derive from it: the relay now stamps uids, not names, into `sender_id`, so a rename changes nothing. Verification, election and ghost removal go by uid. See `2026-10-15-uid-identity-design.md` §Stage 4 and §Live renames.
 
 ## Problem
 

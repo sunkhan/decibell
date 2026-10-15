@@ -97,7 +97,12 @@ pub struct CommunityClient {
     pub server_id: String,
     pub host: String,
     pub port: u16,
+    /// The newest token: sent on every packet and used by a reconnect.
     pub jwt: String,
+    /// The token this connection authenticated with. The server derives
+    /// the session's UDP key from it (its tail), so media engines must use
+    /// this one even after a refresh replaced `jwt`.
+    pub auth_jwt: String,
     /// Populated from CommunityAuthResponse. 0 means the server didn't
     /// report an attachment endpoint (old server or HTTP disabled).
     pub attachment_port: u16,
@@ -186,6 +191,7 @@ impl CommunityClient {
             server_id,
             host,
             port,
+            auth_jwt: jwt.clone(),
             jwt,
             attachment_port: 0,
             max_attachment_bytes: 0,
@@ -242,36 +248,6 @@ impl CommunityClient {
             packet::Type::StopStreamReq,
             packet::Payload::StopStreamReq(StopStreamRequest {
                 channel_id: channel_id.into(),
-            }),
-            Some(&self.jwt),
-        );
-        self.send(data).await
-    }
-
-    pub async fn watch_stream(&self, channel_id: &str, target_username: &str) -> Result<(), String> {
-        let data = build_packet(
-            packet::Type::WatchStreamReq,
-            packet::Payload::WatchStreamReq(WatchStreamRequest {
-                channel_id: channel_id.into(),
-                target_username: target_username.into(),
-                target_uid: 0,
-            }),
-            Some(&self.jwt),
-        );
-        self.send(data).await
-    }
-
-    pub async fn stop_watching(
-        &self,
-        channel_id: &str,
-        target_username: &str,
-    ) -> Result<(), String> {
-        let data = build_packet(
-            packet::Type::StopWatchingReq,
-            packet::Payload::StopWatchingReq(StopWatchingRequest {
-                channel_id: channel_id.into(),
-                target_username: target_username.into(),
-                target_uid: 0,
             }),
             Some(&self.jwt),
         );
@@ -344,6 +320,9 @@ impl CommunityClient {
                 );
                 tokio::time::sleep(delay).await;
 
+                // The newest token we hold: the one this loop started with
+                // may have expired, or carry a name since changed.
+                let jwt = state.lock().await.token.clone().unwrap_or_else(|| jwt.clone());
                 match Connection::connect_pinned(&host, port).await {
                     Ok((connection, read_rx, fp)) => {
                         log::info!("Reconnected to community server {}", sid_for_task);
@@ -407,6 +386,8 @@ impl CommunityClient {
                             client.reconnect_task = None;
                             client.ping_task = Some(ping_task);
                             client.cert_fingerprint = fp;
+                            client.jwt = jwt.clone();
+                            client.auth_jwt = jwt.clone();
                         }
                         drop(s);
 
@@ -1129,7 +1110,7 @@ impl CommunityClient {
                     // drop silently — the caller already returned an
                     // error.
                     let mut s = state.lock().await;
-                    if let Some(tx) = s.pending_thumbnail_fetches.remove(&res.owner_username) {
+                    if let Some(tx) = s.pending_thumbnail_fetches.remove(&res.owner_uid.to_string()) {
                         let _ = tx.send(res);
                     }
                 }

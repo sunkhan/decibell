@@ -167,7 +167,7 @@ fn emit_encoded(
     // force_keyframe()s on subscribe, so resuming starts on an IDR.
     if events::is_stream_frame_sink(&cfg.local_username) {
         events::send_stream_frame(events::StreamFrame {
-            username: cfg.local_username.clone(),
+            key: cfg.local_username.clone(),
             codec,
             keyframe: ef.is_keyframe,
             timestamp: stream_start.elapsed().as_micros() as i64,

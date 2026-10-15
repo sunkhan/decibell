@@ -10,6 +10,7 @@ import {
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { useStreamStatsStore } from "./streamStats";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
+import { ownUid, uidOf } from "../users/userDirectory";
 
 // Stall detection thresholds (no painted frame for this long).
 const STALL_MS = 3000; // → show a "reconnecting" indicator + ping for a keyframe
@@ -36,7 +37,8 @@ interface Props {
 // dedicated stream bus, no JSON or base64 round-trip. Shape matches
 // `events::StreamFrame` on the native side.
 interface StreamFrame {
-  username: string;
+  /// The streamer's media key (uid, decimal).
+  key: string;
   codec: number;
   keyframe: boolean;
   timestamp: number;
@@ -128,9 +130,9 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     if (now - lastKeyframeRequestRef.current < 1000) return;
     lastKeyframeRequestRef.current = now;
     if (!isOwnStream) {
-      invoke("request_stream_keyframe", { username: streamerUsername }).catch(
-        () => {},
-      );
+      // The media plane names streamers by uid.
+      const uid = uidOf(streamerUsername);
+      if (uid !== undefined) invoke("request_stream_keyframe", { uid }).catch(() => {});
     } else if (isNativeEncodeActive()) {
       invoke("force_keyframe", {}).catch(() => {});
     } else {
@@ -447,8 +449,8 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     // Native pipelines (Windows always; Linux when a HW encoder was used)
     // are the exception: there is no renderer-side WebCodecs encoder, so
     // subscribeLocalFrames is silent. The native encoder thread fans into
-    // the same stream_frame TSFN remote streams use (keyed by our local
-    // username), so own-stream self-preview subscribes through that path
+    // the same stream_frame TSFN remote streams use (keyed by our own uid,
+    // the media key), so own-stream self-preview subscribes through that path
     // too. (Non-native Linux/macOS still paint from the renderer encoder's
     // local fan-out via subscribeLocalFrames.)
     const isNative = isNativeEncodeActive();
@@ -469,12 +471,13 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // several seconds away with OpenH264's default cadence).
       activeStreamCapture()?.forceKeyframe();
     } else {
-      // Per-username subscribe: only frames for *this* streamer wake
-      // the callback. The preload bridge handles the dispatch via Map
-      // lookup so other streamers' frames don't run through this
+      // Per-streamer subscribe, by media key (uid): only frames for *this*
+      // streamer wake the callback. The preload bridge handles the dispatch
+      // via Map lookup so other streamers' frames don't run through this
       // closure at all.
+      const uid = isOwnStream ? ownUid() : uidOf(streamerUsername);
       unsubscribe = window.decibell.streamFrames.subscribe(
-        streamerUsername,
+        uid !== undefined && uid > 0 ? String(uid) : "",
         (frame: StreamFrame) => {
           // Native shed an earlier frame for this streamer (its bounded
           // queue was full), so this delta's reference chain is broken:

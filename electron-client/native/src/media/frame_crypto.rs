@@ -3,18 +3,20 @@
 //! Every epoch of the channel's MLS group exports one secret; from it each
 //! member derives every sender's keys locally:
 //!
-//!   K(member, kind) = HKDF-Expand(exporter, "decibell-media-key" ‖ 0 ‖ username ‖ 0 ‖ kind, 32)
+//!   K(member, kind) = HKDF-Expand(exporter, "decibell-media-key" ‖ 0 ‖ member ‖ 0 ‖ kind, 32)
 //!   kinds: "voice" | "stream-audio" | "video"
+//!   member = the media key: the account uid in decimal, which is also what
+//!   the relay stamps as sender id (so a rename changes nothing here)
 //!
 //! Sealed packet types keep the plain twin's header (the relay reads it)
 //! and seal only the payload:
 //!
 //!   AUDIO_SEALED / STREAM_AUDIO_SEALED payload:
 //!       [epoch u32 LE][counter u64 LE][AES-256-GCM ct][tag]      (28 B overhead)
-//!       nonce = counter (LE, zero-prefixed to 12 B); AAD = type ‖ username(32) ‖ sequence
+//!       nonce = counter (LE, zero-prefixed to 12 B); AAD = type ‖ member(32) ‖ sequence
 //!   VIDEO_SEALED: one sealed *frame* [epoch u32][stream_salt u32][ct][tag] (24 B per frame),
 //!       chunked into packets like a plain frame; nonce = stream_salt ‖ frame_id ‖ 0;
-//!       AAD = type ‖ username(32) ‖ frame_id ‖ is_keyframe ‖ codec
+//!       AAD = type ‖ member(32) ‖ frame_id ‖ is_keyframe ‖ codec
 //!
 //! `stream_salt` is random per stream start, so a frame counter that restarts
 //! at 0 never reuses a nonce inside an epoch. The previous epoch's keys are
@@ -130,8 +132,8 @@ impl EpochKeys {
 }
 
 /// What the pipelines read: the current epoch, the previous one during its
-/// grace period, and our own name (the relay rewrites sender ids to it, so
-/// AADs use it on both ends).
+/// grace period, and our own media key in `username` (the uid in decimal:
+/// the relay rewrites sender ids to it, so AADs use it on both ends).
 pub struct KeyRing {
     pub username: String,
     current: Option<EpochKeys>,
