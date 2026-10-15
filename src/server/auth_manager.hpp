@@ -459,7 +459,7 @@ private:
     std::string hashPassword(const std::string& plain_password);
     bool verifyPassword(const std::string& plain_password, const std::string& hash);
 
-    // Database interaction stubs (to be replaced with PostgreSQL pool)
+    // Account rows (each takes a pool lease).
     bool userExists(const std::string& username, const std::string& email);
     bool insertUser(const std::string& username, const std::string& email, const std::string& hash);
     /// The uid, stored name and password hash from one read of the users
