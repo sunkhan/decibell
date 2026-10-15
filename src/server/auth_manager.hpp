@@ -91,8 +91,11 @@ public:
     static constexpr int64_t RESUME_LIFETIME_SECONDS = 30 * 24 * 3600;
     std::optional<std::string> mintResumeToken(int64_t uid, int64_t signed_in_at);
     /// Sign in with a resume token: the account (its current name) and a
-    /// fresh session token; nullopt when the token is invalid or expired or
-    /// the account is gone.
+    /// fresh session token; nullopt when the token is invalid or expired,
+    /// the account is gone, or its password sign-in predates the account's
+    /// `users.sessions_valid_after` (setting that column to now cancels
+    /// every resume token the account has; the hook for "log out other
+    /// devices" and password changes).
     std::optional<LoginResult> resumeSession(const std::string& resume_token);
 
     // Constant-time comparison of the community↔central secret. (Length is

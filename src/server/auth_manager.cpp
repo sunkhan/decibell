@@ -236,6 +236,14 @@ void AuthManager::initializeDatabase() {
             txn.exec("UPDATE central_schema SET version = 3 WHERE id = 1");
             std::cout << "[DB] Migration 3: name_changes\n";
         }
+        if (version < 4) {
+            // Migration 4: cancelling resume tokens (central-hardening-
+            // design.md). A resume token from a password sign-in before
+            // this time (unix seconds) is refused; 0 = none.
+            txn.exec("ALTER TABLE users ADD COLUMN sessions_valid_after BIGINT NOT NULL DEFAULT 0");
+            txn.exec("UPDATE central_schema SET version = 4 WHERE id = 1");
+            std::cout << "[DB] Migration 4: users.sessions_valid_after\n";
+        }
 
         txn.exec(
             "CREATE TABLE IF NOT EXISTS community_invites ("
@@ -710,10 +718,13 @@ std::optional<std::string> AuthManager::mintResumeToken(int64_t uid, int64_t sig
 
 std::optional<AuthManager::LoginResult> AuthManager::resumeSession(const std::string& resume_token) {
     int64_t uid = 0;
+    int64_t signed_in_at = 0;
     try {
         const auto decoded = jwt::decode(resume_token);
         resume_verifier_.verify(decoded);  // signature, issuer, audience, expiry
         uid = uid_claim(decoded);
+        signed_in_at = std::chrono::duration_cast<std::chrono::seconds>(
+            decoded.get_issued_at().time_since_epoch()).count();
     } catch (const std::exception&) {
         return std::nullopt;
     }
@@ -723,8 +734,11 @@ std::optional<AuthManager::LoginResult> AuthManager::resumeSession(const std::st
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
         pqxx::nontransaction txn(conn);
-        const pqxx::result rs = txn.exec_params("SELECT username FROM users WHERE uid = $1", uid);
+        const pqxx::result rs = txn.exec_params(
+            "SELECT username, sessions_valid_after FROM users WHERE uid = $1", uid);
         if (rs.empty()) return std::nullopt;
+        // Cancelled: the account's resume tokens from before the cutoff.
+        if (signed_in_at < rs[0][1].as<int64_t>(0)) return std::nullopt;
         username = rs[0][0].as<std::string>();
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] resumeSession: " << e.what() << "\n";

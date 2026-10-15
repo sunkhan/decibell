@@ -33,6 +33,12 @@ Postgres pool, presence by subscription).
 - **Lifetime: 30 days from the password sign-in.** A resume echoes the same token; it is not extended, so
   at most 30 days pass between password checks. A refused resume (expired, or a new signing key) falls
   back to the password silently; the client keeps its credentials as before (the "remember me" store).
+- **Cancelling.** Central keeps no list of the tokens it handed out (it checks signature and expiry), so
+  each account has a cutoff: `users.sessions_valid_after` (migration 4). A resume token whose password
+  sign-in predates it is refused, and the client falls back to the password. Setting it to now cancels
+  every resume token the account has; until a "log out other devices" or password-change feature uses it,
+  it is an operator's lever (SQL), and the account's live connection stays until it drops (or central
+  restarts). Replacing central's signing key cancels every token of every account at once.
 - The resume answer is a normal LoginResponse: a fresh session token naming the current username (a
   rename in between is picked up), memberships, statuses.
 - Reconnect delays are jittered (50–150% of each step), so a restart doesn't bring every client back in

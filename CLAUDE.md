@@ -144,7 +144,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   restart). Resume tokens are central-only by audience (`decibell_central_resume`): communities hold every
   member's session token, so a session token must never sign anyone into central, central refuses a token
   with an audience per packet, and communities refuse any token with an audience. They last 30 days from
-  the password sign-in and a resume never extends them. Limits live in `abuse_limits.hpp`: per address
+  the password sign-in and a resume never extends them; `users.sessions_valid_after` cancels an account's
+  older ones (the hook for "log out other devices" / password changes). Limits live in `abuse_limits.hpp`: per address
   (connections, new connections, password sign-ins, sign-ups), per account (failed sign-ins), the
   server-wide connection cap from the open-file limit; per connection, DMs / reads / writes / sign-in
   attempts are **paced** (an over-rate request waits, never dropped). Tests bind a fresh loopback source

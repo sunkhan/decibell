@@ -1001,6 +1001,15 @@ def test_resume():
     check("a resume signs in under the current name", d.ok and d.login.username == "rhea2"
           and jwt_claims(d.token).get("sub") == "rhea2")
     d.close()
+    # Cancelling: a cutoff after the token's password sign-in refuses it;
+    # a password sign-in after the cutoff hands out one that works.
+    time.sleep(1.1)
+    sql("UPDATE users SET sessions_valid_after = %s WHERE uid = %s", int(time.time()), d.login.uid)
+    check("a resume token from before the cutoff is refused", not User("", resume=rt).ok)
+    e = User("rhea2")
+    rt2 = e.login.resume_token if e.ok else ""
+    e.close()
+    check("one from a later password sign-in works", rt2 and User("", resume=rt2).ok)
 
 
 def test_dm_pacing():
@@ -1212,7 +1221,9 @@ def test_migration():
         check("migration ran and logged its counts", "friendships 3/3" in line and "dm_messages 3/4" in line
               and "(1 for unknown names removed)" in line and "e2ee keys 3/3" in line
               and "e2ee backups 2/2" in line and "memberships 2/2" in line and "read cursors 1/1" in line, line)
-        check("schema version 3", sql("SELECT version FROM central_schema")[0][0] == 3)
+        check("schema version 4", sql("SELECT version FROM central_schema")[0][0] == 4)
+        check("no account starts with a session cutoff",
+              sql("SELECT DISTINCT sessions_valid_after FROM users") == [(0,)])
         check("migrated bundles bind the name", sql("SELECT DISTINCT binding FROM e2ee_keys") == [(1,)])
         check("users keyed by uid", sql(
             "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid "

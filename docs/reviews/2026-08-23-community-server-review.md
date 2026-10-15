@@ -2977,3 +2977,16 @@ backoff, resume field); `napi build`; `tsc` 0; warnings-enabled compile clean.
 Ships with the Hetzner central rebuild and the next client release (an older client keeps reconnecting by
 password, which still works; this client against an older central gets no resume token and does the same).
 The community rebuild adds the audience check.
+
+### Cancelling resume tokens (2026-10-15)
+
+A review note on the hardening above: central keeps no list of the resume tokens it issues (it checks only
+signature and expiry), so a copied one would keep signing its account in for up to 30 days, with nothing to
+cancel it short of replacing the signing key for everyone. Added before the central rebuild:
+`users.sessions_valid_after` (migration 4, `central_schema` 4). A resume token whose password sign-in
+predates the account's cutoff is refused; the client falls back to the password. For now it is an
+operator's lever (SQL); "log out other devices" and a password change (neither exists yet) would set it and
+close the account's live connections.
+
+Verified: central e2e with the migration check (schema 4, no account starts with a cutoff; a token from
+before the cutoff is refused, one from a later password sign-in works) and under ThreadSanitizer.
