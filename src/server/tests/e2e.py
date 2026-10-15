@@ -719,14 +719,15 @@ def test_rename():
     g.token = r.jwt_token if r else g.token
     r = rename(g, "gina3")
     check("two renames a day", r and not r.success and "twice a day" in r.message, r)
-    # Invisible: no broadcast (it would give them away).
+    # Invisible: announced all the same (owner: profile pushes may reveal activity).
     i.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_INVISIBLE))
     time.sleep(0.2)
     h.clear()
     r = rename(i, "ivan2")
     check("invisible user renamed", r and r.success)
-    h.drain(0.5)
-    check("... without a broadcast", not any(p.type == pb.Packet.USER_RENAMED for p in h.inbox))
+    rn = h.wait(pb.Packet.USER_RENAMED)
+    check("... and announced like anyone's", rn and rn.user_renamed.uid == uid_of("ivan2")
+          and rn.user_renamed.username == "ivan2")
     i.close()
     # Signing in with a reserved old name reaches the account, under its current name.
     old = User("ivan")

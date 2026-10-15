@@ -931,9 +931,10 @@ private:
             username_ = r.username;
             std::cout << "[Rename] uid " << uid_ << ": " << r.old_username << " -> " << username_ << "\n";
             reply(true, r.token.empty() ? "Renamed; sign in again." : "", r.token);
-            // An invisible user's rename would give them away: others see
-            // the new name on their next fetch instead.
-            if (presence_visible()) manager_.broadcast_user_renamed(uid_, username_);
+            // Invisible users' too (owner, 2026-10-15): profile pushes
+            // (renames, avatars, E2EE keys) may reveal activity; clients
+            // need them.
+            manager_.broadcast_user_renamed(uid_, username_);
         }
 
         // --- TOKEN REFRESH ---

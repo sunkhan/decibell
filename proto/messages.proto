@@ -604,9 +604,9 @@ message SessionTokenUpdate {
   string jwt_token = 1;
 }
 
-// To every signed-in session when a user others can see changes their name
-// (an invisible user's rename shows on the next fetch instead). Clients hold
-// people by uid, so the old name isn't sent: it would hand everyone the link.
+// To every signed-in session when a user changes their name (invisible users
+// too, by owner decision). Clients hold people by uid, so the old name isn't
+// sent: it would hand everyone the link.
 message UserRenamed {
   int64  uid = 1;
   reserved 2;  // old_username

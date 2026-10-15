@@ -278,9 +278,10 @@ community e2e check for the token guard, and a scratch test of the client's re-k
   - Rows older than the reservation are deleted (hourly, and with every rename). Nothing reads them,
     and a lasting record of past names would follow someone who renamed to leave one behind. (Until
     2026-10-15 they were kept forever as an audit trail.)
-- **`USER_RENAMED {uid, username}`** goes to every signed-in session, but only when the renamer is
-  visible. An invisible user's rename would reveal activity, so others see it at their next fetch.
-  Until 2026-10-15 it also carried `old_username` (now `reserved 2`), and it went to every socket,
+- **`USER_RENAMED {uid, username}`** goes to every signed-in session, invisible renamers included
+  (owner decision, 2026-10-15: profile pushes may reveal activity, clients need them; they were held
+  back at first). Not narrowed to friends or co-members: presence already shows every signed-in user
+  each visible user's uid and name, by owner decision. Until 2026-10-15 it also carried `old_username` (now `reserved 2`), and it went to every socket,
   including connections that never signed in. Clients hold people by uid, so the old name was only a
   free "old → new" link for everyone. Avatar and E2EE key-change pushes had the same any-socket reach
   and are now signed-in only too.

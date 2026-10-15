@@ -2761,3 +2761,13 @@ rename notice would hide nothing. That's an owner question, raised separately.
 Verified: central e2e 166 passed (no old name on the wire, a connection that never signed in hears
 nothing, expired renames forgotten); community e2e 588; `cargo test --lib` 233; `napi build`; `tsc` 0
 (web + node). Ships with the Hetzner central rebuild.
+
+**Owner decisions on rename reach and invisible pushes (2026-10-15) ✅** — Answering the two questions above:
+- **Statuses stay visible to every signed-in user**, so rename notices aren't narrowed to friends, DM partners
+  or co-members either.
+- **Profile pushes go out even while invisible**: renames, avatar changes and E2EE key changes are
+  essential to clients, and revealing activity is accepted. Avatars and keys already did. Renames had
+  been held back until others' next fetch, and are now announced live like anyone's. CLAUDE.md records
+  this as the exception to "invisible is airtight".
+
+Verified: central e2e 166 passed ("invisible user renamed ... and announced like anyone's").

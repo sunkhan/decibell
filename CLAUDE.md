@@ -104,7 +104,7 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   credentials `"<uid>"`, the keystore `e2ee/u<uid>.json` with uid-keyed pins. New envelopes
   are always v2; v1 (`0x01` / `0x02`) opens with the `sealed_*` names. Renames (Settings → Account):
   password-confirmed, two a day; the old name is reserved for the account for 14 days and still signs
-  it in meanwhile. `USER_RENAMED {uid, username}` (no old name) goes to signed-in sessions, only for visible users, and
+  it in meanwhile. `USER_RENAMED {uid, username}` (no old name) goes to every signed-in session, and
   `name_changes` rows are deleted once the 14-day reservation ends. **The renderer keys every user store on the uid**
   (owner, 2026-10-15): names come from `stores/usersStore.ts` (`useUserName(uid, fallback)` /
   `nameOf`), fed by `features/users/userDirectory.ts`, so a rename re-labels without moving state.
@@ -210,7 +210,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   absent, never "invisible" on the wire. Invisible is airtight by owner decision: every
   presence-revealing path asks `is_user_visible` (friend lists, call INVITE → PEER_OFFLINE), friends-only
   DMs are saved on the account so the DM gate answers the same online or not, and clients tell each
-  community `presence_hidden` / `PRESENCE_VISIBILITY` so rosters list them offline. Auto-away is a
+  community `presence_hidden` / `PRESENCE_VISIBILITY` so rosters list them offline. Profile pushes are
+  the exception (owner, 2026-10-15): renames, avatar changes and E2EE key changes are announced even
+  while invisible, because clients need them; that they reveal activity is accepted. Statuses stay
+  visible to every signed-in user, so rename notices aren't narrowed to friends either. Auto-away is a
   session idle flag (user threshold, default 10 min, + lock/sleep); DND only silences the call ring /
   flash. Member lists show central's status, the community's `is_online` only before the first snapshot.
   Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`. Custom status messages (emoji + 128
