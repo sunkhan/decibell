@@ -368,7 +368,7 @@ export function useServerEvents() {
           // a channel shows an empty room.
           const st = useVoiceStore.getState();
           st.seedParticipants(serverId, channelId);
-          const roster = useVoiceStore.getState().participants.map((p) => p.username);
+          const roster = useVoiceStore.getState().participants.map((p) => p.uid);
           st.setActiveStreams(
             [...st.streamsByUser.values()]
               .filter((loc) => loc.serverId === serverId && loc.channelId === channelId)

@@ -60,7 +60,7 @@ export default function UserProfilePopup() {
   // any), pull the decode caps for the codec gate, and look up the
   // stream's channel name from the chat store.
   const streamEntry = useVoiceStore((s) =>
-    username ? s.streamsByUser.get(username) : undefined,
+    username ? s.streamsByUser.get(legacyUid(username)) : undefined,
   );
   const decodeCaps = useCodecSettingsStore((s) => s.decodeCaps);
   const streamChannelName = useChatStore((s) => {
@@ -163,10 +163,10 @@ export default function UserProfilePopup() {
         serverId: targetServerId,
         channelId: targetChannelId,
         targetUsername: username,
-        targetUid: uidOf(username),
+        targetUid: legacyUid(username),
       });
-      useVoiceStore.getState().addWatching(username);
-      useVoiceStore.getState().setFullscreenStream(username);
+      useVoiceStore.getState().addWatching(legacyUid(username));
+      useVoiceStore.getState().setFullscreenStream(legacyUid(username));
     } catch (err) {
       console.error("Join + watch failed:", err);
     }

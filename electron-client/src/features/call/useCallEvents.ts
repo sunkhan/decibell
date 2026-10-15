@@ -27,6 +27,7 @@ import {
   stopRing,
   unwatchCallStream,
 } from "./callActions";
+import { nameOf, toUid } from "../../stores/usersStore";
 
 
 // Central + native event surface for P2P DM calls. Mounted once in
@@ -66,18 +67,21 @@ export function useCallEvents() {
     const unlistenLogin = listen("login_succeeded", refreshConfig);
 
     const onSignal = (sig: CallSignalPayload) => {
-      const me = useAuthStore.getState().username ?? "";
+      const me = useAuthStore.getState().uid;
+      // The other side, by account (central stamps it).
+      const from = toUid(sig.fromUid);
+      if (!(from > 0)) return;
       const call = useCallStore.getState();
       const mine = call.callId === sig.callId;
 
       switch (sig.kind) {
         case "INVITE": {
           if (!sig.pubKey) return;
-          // Glare: both rang each other at once. The lexicographically
-          // lower username keeps its own INVITE (the other side answers
-          // it); the higher one drops its own and answers theirs.
-          if (call.status === "outgoing" && call.peer === sig.from) {
-            if (me < sig.from) return;
+          // Glare: both rang each other at once. The lower uid keeps its
+          // own INVITE (the other side answers it); the higher one drops
+          // its own and answers theirs.
+          if (call.status === "outgoing" && call.peer === from) {
+            if (me < from) return;
             if (call.callId && call.peer) {
               sendSignal(call.callId, call.peer, "CANCEL").catch(() => {});
             }
@@ -86,6 +90,7 @@ export function useCallEvents() {
             call.reset(null);
             useCallStore.getState().setIncoming({
               callId: sig.callId,
+              fromUid: from,
               from: sig.from,
               pubKey: sig.pubKey,
               candidates: sig.candidates,
@@ -96,18 +101,19 @@ export function useCallEvents() {
             return;
           }
           if (call.status !== "idle") {
-            sendSignal(sig.callId, sig.from, "BUSY").catch(() => {});
+            sendSignal(sig.callId, from, "BUSY").catch(() => {});
             return;
           }
           call.setIncoming({
             callId: sig.callId,
+            fromUid: from,
             from: sig.from,
             pubKey: sig.pubKey,
             candidates: sig.candidates,
             pubKeySig: sig.pubKeySig ?? null,
             keyId: sig.keyId ?? 0,
           });
-          sendSignal(sig.callId, sig.from, "RINGING").catch(() => {});
+          sendSignal(sig.callId, from, "RINGING").catch(() => {});
           // Do Not Disturb: the call still shows, silently — no ring, no
           // taskbar flash (owner decision). Unanswered, it's a missed call.
           if (ownDisplayStatus() !== "dnd") {
@@ -120,7 +126,7 @@ export function useCallEvents() {
             if (c.status === "incoming" && c.callId === sig.callId) {
               stopRing();
               c.reset("Missed call");
-              toast.info("Missed call", `${sig.from} tried to call you.`);
+              toast.info("Missed call", `${nameOf(from, sig.from)} tried to call you.`);
             }
           }, RING_TIMEOUT_MS);
           return;
@@ -132,7 +138,7 @@ export function useCallEvents() {
           if (mine && call.status === "outgoing" && sig.pubKey) {
             void connectAfterAccept(
               sig.callId,
-              sig.from,
+              from,
               sig.pubKey,
               sig.candidates,
               sig.pubKeySig ?? null,
@@ -147,7 +153,7 @@ export function useCallEvents() {
           return;
         case "BUSY":
           if (mine && call.status === "outgoing") {
-            toast.info("Busy", `${sig.from} is in another call.`);
+            toast.info("Busy", `${nameOf(from, sig.from)} is in another call.`);
             void endCall("Busy", { notifyPeer: false });
           }
           return;
@@ -156,7 +162,7 @@ export function useCallEvents() {
             clearIncomingTimer();
             stopRing();
             call.reset("Missed call");
-            toast.info("Missed call", `${sig.from} tried to call you.`);
+            toast.info("Missed call", `${nameOf(from, sig.from)} tried to call you.`);
           }
           return;
         case "HANGUP":
@@ -166,13 +172,13 @@ export function useCallEvents() {
           return;
         case "PEER_OFFLINE":
           if (mine) {
-            toast.info("Not available", `${sig.from} is offline.`);
+            toast.info("Not available", `${nameOf(from, sig.from)} is offline.`);
             void endCall("Offline", { notifyPeer: false });
           }
           return;
         case "NOT_ALLOWED":
           if (mine) {
-            toast.warning("Can't call", `${sig.from} only takes calls from friends.`);
+            toast.warning("Can't call", `${nameOf(from, sig.from)} only takes calls from friends.`);
             void endCall("Not allowed", { notifyPeer: false });
           }
           return;
@@ -180,8 +186,9 @@ export function useCallEvents() {
           if (!mine || call.status !== "active" || !sig.stream) return;
           const v = useVoiceStore.getState();
           const info: StreamInfo = {
-            streamId: callStreamId(sig.from),
+            streamId: callStreamId(from),
             ownerUsername: sig.from,
+            ownerUid: from,
             hasAudio: sig.stream.hasAudio,
             resolutionWidth: sig.stream.width,
             resolutionHeight: sig.stream.height,
@@ -190,7 +197,7 @@ export function useCallEvents() {
             enforcedCodec: 0 as VideoCodec,
             watcherCount: 0,
           };
-          const others = v.activeStreams.filter((s) => s.ownerUsername !== sig.from);
+          const others = v.activeStreams.filter((s) => s.ownerUid !== from);
           v.setActiveStreams([...others, info]);
           playSound("stream_start");
           return;
@@ -198,10 +205,10 @@ export function useCallEvents() {
         case "STREAM_STOP": {
           if (!mine) return;
           const v = useVoiceStore.getState();
-          if (v.activeStreams.some((s) => s.ownerUsername === sig.from)) {
-            v.setActiveStreams(v.activeStreams.filter((s) => s.ownerUsername !== sig.from));
-            if (v.watchingStreams.includes(sig.from)) {
-              void unwatchCallStream(sig.from);
+          if (v.activeStreams.some((s) => s.ownerUid === from)) {
+            v.setActiveStreams(v.activeStreams.filter((s) => s.ownerUid !== from));
+            if (v.watchingStreams.includes(from)) {
+              void unwatchCallStream(from);
             }
             playSound("stream_stop");
           }

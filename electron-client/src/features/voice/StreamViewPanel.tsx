@@ -41,7 +41,7 @@ import {
   SpeakerIcon,
   StatsIcon,
 } from "./stage/icons";
-import { legacyUid, uidOf } from "../users/userDirectory";
+import { nameOf, type Uid } from "../../stores/usersStore";
 
 // One handle for the panel's lifetime: getCurrentWindow() builds a fresh
 // object per call, which made the fullscreen callbacks (and the Escape /
@@ -131,7 +131,7 @@ function StreamViewPanel() {
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
 
-  const currentUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const isFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const setIsFullscreen = useVoiceStore((s) => s.setStreamFullscreen);
   const isMuted = useVoiceStore((s) => s.isMuted);
@@ -143,13 +143,13 @@ function StreamViewPanel() {
   const [showStats, setShowStats] = useState(false);
   const pipSlotRef = useRef<HTMLDivElement>(null);
 
-  const [lastStreamUser, setLastStreamUser] = useState<string | null>(null);
+  const [lastStreamUser, setLastStreamUser] = useState<Uid | null>(null);
   useEffect(() => {
     if (fullscreenStream) setLastStreamUser(fullscreenStream);
   }, [fullscreenStream]);
 
   const displayUser = fullscreenStream || lastStreamUser;
-  const displayName = useDisplayName(connectedServerId, legacyUid(displayUser), displayUser ?? "");
+  const displayName = useDisplayName(connectedServerId, displayUser ?? 0, nameOf(displayUser));
 
   // Claim the shared, persistent stream player node into the full-view slot
   // whenever a stream is focused here. The player is reparented (not remounted)
@@ -245,7 +245,7 @@ function StreamViewPanel() {
   useEffect(() => {
     if (!isFullscreen || !displayUser) return;
     const streamStillActive = activeStreams.some(
-      (s) => s.ownerUsername === displayUser,
+      (s) => s.ownerUid === displayUser,
     );
     if (!streamStillActive) {
       exitFullscreen();
@@ -282,8 +282,8 @@ function StreamViewPanel() {
     invoke("set_voice_deafen", { deafened: !isDeafened }).catch(console.error);
   };
 
-  const stream = activeStreams.find((s) => s.ownerUsername === displayUser);
-  const isOwnStream = displayUser === currentUsername;
+  const stream = activeStreams.find((s) => s.ownerUid === displayUser);
+  const isOwnStream = displayUser === ownUid;
 
   // Keep the latest slider value reachable from the mute effect's cleanup
   // without re-running that effect on every volume tick.
@@ -338,17 +338,17 @@ function StreamViewPanel() {
     if (!displayUser) return;
     if (useVoiceStore.getState().callPeer && !connectedChannelId) {
       // P2P DM call: no community watch subscription — ungate natively.
-      if (displayUser !== currentUsername) {
+      if (displayUser !== ownUid) {
         await invoke("call_watch_stream", { watch: false }).catch(() => {});
       }
     } else {
       if (!connectedServerId || !connectedChannelId) return;
-      if (displayUser !== currentUsername) {
+      if (displayUser !== ownUid) {
         await invoke("stop_watching", {
           serverId: connectedServerId,
           channelId: connectedChannelId,
-          targetUsername: displayUser,
-          targetUid: uidOf(displayUser),
+          targetUid: displayUser,
+          targetUsername: nameOf(displayUser),
         }).catch(() => {});
       }
     }
@@ -392,13 +392,13 @@ function StreamViewPanel() {
             survives moving to/from the grid tile and the mini player. */}
         <div ref={pipSlotRef} className="h-full w-full" />
 
-        {showStats && <StreamStatsOverlay username={displayUser} className="left-3 top-14" />}
+        {showStats && <StreamStatsOverlay uid={displayUser} className="left-3 top-14" />}
 
         {/* top-left: what this is */}
         <div className={`pointer-events-none absolute left-3 top-3 flex gap-1.5 ${overlayClass}`}>
           <LivePill size="lg" />
           <span className={SCRIM_LG}>
-            <UserAvatar uid={legacyUid(displayUser)} name={displayUser} size={18} />
+            <UserAvatar uid={displayUser} name={stream.ownerUsername} size={18} />
             {isOwnStream ? "Your screen" : `${displayName}'s screen`}
           </span>
           <QualityPill stream={stream} large />
@@ -500,13 +500,13 @@ function FullscreenDockButton({
 /// mini tiles, capped to one row with the same "+N more" and hidden-speaker
 /// swap as the grid. Subscribes to what it shows itself, so the focused
 /// panel's overlay timers don't re-render it.
-const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
+const Filmstrip = memo(function Filmstrip({ focused }: { focused: Uid }) {
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const participants = useVoiceStore((s) => s.participants);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
-  const ownUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const channelName = useChatStore((s) => {
     const list = connectedServerId ? s.channelsByServer[connectedServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS;
     return list.find((ch) => ch.id === connectedChannelId)?.name ?? "Voice";
@@ -515,16 +515,16 @@ const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const { width } = useElementSize(ref);
 
-  const others = activeStreams.filter((s) => s.ownerUsername !== focused);
-  const rosterKey = participants.map((p) => p.username).join("\n");
-  const roster = useMemo(() => (rosterKey ? rosterKey.split("\n") : []), [rosterKey]);
-  const streamersKey = activeStreams.map((s) => s.ownerUsername).join("\n");
+  const others = activeStreams.filter((s) => s.ownerUid !== focused);
+  const rosterKey = participants.map((p) => p.uid).join(",");
+  const roster = useMemo(() => (rosterKey ? rosterKey.split(",").map(Number) : []), [rosterKey]);
+  const streamersKey = activeStreams.map((s) => s.ownerUid).join(",");
   const pinned = useMemo(() => {
-    const set = new Set(streamersKey ? streamersKey.split("\n") : []);
-    if (ownUsername) set.add(ownUsername);
+    const set = new Set<Uid>(streamersKey ? streamersKey.split(",").map(Number) : []);
+    if (ownUid) set.add(ownUid);
     return set;
-  }, [streamersKey, ownUsername]);
-  const byName = useMemo(() => new Map(participants.map((p) => [p.username, p])), [participants]);
+  }, [streamersKey, ownUid]);
+  const byUid = useMemo(() => new Map(participants.map((p) => [p.uid, p])), [participants]);
 
   const cap = width > 0 ? rowCapacity(width, STRIP_TILE_W, STRIP_GAP) : others.length + roster.length;
   const streamSlots = Math.min(others.length, cap);
@@ -544,11 +544,11 @@ const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
         <StreamTile
           key={s.streamId}
           stream={s}
-          isWatching={watchingStreams.includes(s.ownerUsername)}
+          isWatching={watchingStreams.includes(s.ownerUid)}
           // Never the persistent player here: that one is on stage. A
           // watched stream in the strip runs its own decoder.
           isPip={false}
-          isOwnStream={s.ownerUsername === ownUsername}
+          isOwnStream={s.ownerUid === ownUid}
           watchingOthers
           connectedServerId={connectedServerId}
           width={STRIP_TILE_W}
@@ -556,12 +556,13 @@ const Filmstrip = memo(function Filmstrip({ focused }: { focused: string }) {
         />
       ))}
       {visible.map((u) => {
-        const p = byName.get(u);
+        const p = byUid.get(u);
         return (
           <ParticipantTile
             key={u}
-            username={u}
-            isLocal={u === ownUsername}
+            uid={u}
+            username={p?.username ?? nameOf(u)}
+            isLocal={u === ownUid}
             rosterMuted={p?.isMuted ?? false}
             rosterDeafened={p?.isDeafened ?? false}
             serverMuted={p?.isServerMuted}

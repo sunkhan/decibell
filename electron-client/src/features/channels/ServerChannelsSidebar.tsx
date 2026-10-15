@@ -1011,7 +1011,7 @@ const VoiceRow = memo(function VoiceRow({
   onClick: (channelId: string) => void;
 }) {
   const presence = useVoiceStore(
-    (s): string[] => s.channelPresence[voiceKey(serverId, channel.id)] ?? EMPTY_LIST,
+    (s): number[] => s.channelPresence[voiceKey(serverId, channel.id)] ?? EMPTY_LIST,
   );
   const connected = connectedChannelId === channel.id;
   // A voice member is being dragged (memberDrag.ts) and could land here;
@@ -1084,7 +1084,7 @@ const VoiceRow = memo(function VoiceRow({
       {connected ? (
         <VoiceParticipantList />
       ) : presence.length > 0 ? (
-        <VoiceParticipantList usernames={presence} serverId={serverId} channelId={channel.id} />
+        <VoiceParticipantList uids={presence} serverId={serverId} channelId={channel.id} />
       ) : null}
     </div>
   );

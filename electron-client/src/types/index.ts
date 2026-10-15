@@ -181,8 +181,10 @@ export interface ResolvedInvite {
 // ── Voice + streaming types ──────────────────────────────────────
 
 export interface VoiceParticipant {
+  /// The account (every voice structure keys on it).
+  uid: number;
+  /// Their name when the roster arrived; drawn via the users store.
   username: string;
-  uid?: number;
   isMuted: boolean;
   isDeafened: boolean;
   /// Moderator-applied (server mute/deafen), persisted on the member.
@@ -226,8 +228,10 @@ export interface ClientCapabilities {
 
 export interface StreamInfo {
   streamId: string;
+  /// The streamer's name when the presence arrived; drawn via the users store.
   ownerUsername: string;
-  ownerUid?: number;
+  /// The streamer (streams key on it).
+  ownerUid: number;
   hasAudio: boolean;
   resolutionWidth: number;
   resolutionHeight: number;

@@ -41,7 +41,7 @@ import {
   UserPlusIcon,
   UsersIcon,
 } from "./stage/icons";
-import { legacyUid, nameOf } from "../users/userDirectory";
+import { nameOf, type Uid } from "../../stores/usersStore";
 
 /// The community voice view (design: the "Voice View Redesign" canvas,
 /// 2026-10-04 — tiled stage + floating dock, shared with the DM CallStage).
@@ -84,6 +84,7 @@ export default function VoicePanel() {
     connectedServerId ? s.channelsByServer[connectedServerId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS,
   );
   const ownUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
 
   const [showPicker, setShowPicker] = useState(false);
 
@@ -97,7 +98,7 @@ export default function VoicePanel() {
         <VoiceHeader
           channelName={channelName}
           focused={fullscreenStream}
-          ownUsername={ownUsername}
+          ownUid={ownUid}
           connectedServerId={connectedServerId}
           participantCount={participants.length}
         />
@@ -119,6 +120,7 @@ export default function VoicePanel() {
           activeStreams={activeStreams}
           watchingStreams={watchingStreams}
           pipStream={pipStream}
+          ownUid={ownUid}
           ownUsername={ownUsername}
           connectedServerId={connectedServerId}
           channelName={channelName}
@@ -147,17 +149,17 @@ const HEADER_TITLE = "font-display text-title font-emphasis tracking-title text-
 function VoiceHeader({
   channelName,
   focused,
-  ownUsername,
+  ownUid,
   connectedServerId,
   participantCount,
 }: {
   channelName: string;
-  focused: string | null;
-  ownUsername: string | null;
+  focused: Uid | null;
+  ownUid: Uid;
   connectedServerId: string | null;
   participantCount: number;
 }) {
-  const focusedName = useDisplayName(connectedServerId, legacyUid(focused), focused ?? "");
+  const focusedName = useDisplayName(connectedServerId, focused ?? 0, nameOf(focused));
   return (
     <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border-divider px-4">
       <SpeakerIcon size={18} className="text-text-muted" />
@@ -175,7 +177,7 @@ function VoiceHeader({
           </button>
           <ChevronRightIcon size={14} className="-mx-1 text-text-muted" />
           <span className={`truncate ${HEADER_TITLE}`}>
-            {focused === ownUsername ? "Your screen" : `${focusedName}'s screen`}
+            {focused === ownUid ? "Your screen" : `${focusedName}'s screen`}
           </span>
         </>
       ) : (
@@ -231,7 +233,7 @@ function VoiceEncryptionBadge() {
         ? {
             label: "Unverified member",
             tone: "bg-warning/15 text-warning",
-            title: `Not sending: ${e2ee?.unverified.map((u) => nameOf(Number(u)) ?? `user ${u}`).join(", ")} could not be verified`,
+            title: `Not sending: ${e2ee?.unverified.map((u) => nameOf(Number(u), "Unknown user")).join(", ")} could not be verified`,
           }
         : state === "failed"
           ? { label: "Encryption failed", tone: "bg-error/15 text-error", title: "Leave and rejoin the channel" }
@@ -252,8 +254,9 @@ function VoiceEncryptionBadge() {
 interface VoiceStageProps {
   participants: VoiceParticipant[];
   activeStreams: StreamInfo[];
-  watchingStreams: string[];
-  pipStream: string | null;
+  watchingStreams: Uid[];
+  pipStream: Uid | null;
+  ownUid: Uid;
   ownUsername: string | null;
   connectedServerId: string | null;
   channelName: string;
@@ -266,6 +269,7 @@ function VoiceStage({
   activeStreams,
   watchingStreams,
   pipStream,
+  ownUid,
   ownUsername,
   connectedServerId,
   channelName,
@@ -276,17 +280,17 @@ function VoiceStage({
   const { width, height } = useElementSize(ref);
   const measured = width > 0 && height > 0;
 
-  // Keyed on the joined names so a mute flip (a fresh participants array)
+  // Keyed on the joined uids so a mute flip (a fresh participants array)
   // doesn't hand the visibility hook a "new" roster.
-  const rosterKey = participants.map((p) => p.username).join("\n");
-  const roster = useMemo(() => (rosterKey ? rosterKey.split("\n") : []), [rosterKey]);
-  const streamersKey = activeStreams.map((s) => s.ownerUsername).join("\n");
+  const rosterKey = participants.map((p) => p.uid).join(",");
+  const roster = useMemo(() => (rosterKey ? rosterKey.split(",").map(Number) : []), [rosterKey]);
+  const streamersKey = activeStreams.map((s) => s.ownerUid).join(",");
   const pinned = useMemo(() => {
-    const set = new Set(streamersKey ? streamersKey.split("\n") : []);
-    if (ownUsername) set.add(ownUsername);
+    const set = new Set<Uid>(streamersKey ? streamersKey.split(",").map(Number) : []);
+    if (ownUid) set.add(ownUid);
     return set;
-  }, [streamersKey, ownUsername]);
-  const byName = useMemo(() => new Map(participants.map((p) => [p.username, p])), [participants]);
+  }, [streamersKey, ownUid]);
+  const byUid = useMemo(() => new Map(participants.map((p) => [p.uid, p])), [participants]);
 
   const hasStreams = activeStreams.length > 0;
   const n = roster.length;
@@ -323,12 +327,13 @@ function VoiceStage({
   const peopleTiles = (
     <>
       {visible.map((u) => {
-        const p = byName.get(u);
+        const p = byUid.get(u);
         return (
           <ParticipantTile
             key={u}
-            username={u}
-            isLocal={u === ownUsername}
+            uid={u}
+            username={p?.username ?? nameOf(u)}
+            isLocal={u === ownUid}
             rosterMuted={p?.isMuted ?? false}
             rosterDeafened={p?.isDeafened ?? false}
             serverMuted={p?.isServerMuted}
@@ -356,9 +361,10 @@ function VoiceStage({
   } else if (!hasStreams && n <= 1) {
     body = (
       <AloneStage
-        username={roster[0] ?? ownUsername ?? ""}
+        uid={roster[0] ?? ownUid}
+        username={participants[0]?.username ?? ownUsername ?? ""}
         participant={participants[0]}
-        isLocal={!roster[0] || roster[0] === ownUsername}
+        isLocal={!roster[0] || roster[0] === ownUid}
         width={width}
         height={height}
         channelName={channelName}
@@ -375,10 +381,10 @@ function VoiceStage({
             <StreamTile
               key={stream.streamId}
               stream={stream}
-              isWatching={watchingStreams.includes(stream.ownerUsername)}
-              isPip={stream.ownerUsername === pipStream}
-              isOwnStream={stream.ownerUsername === ownUsername}
-              watchingOthers={watchingStreams.some((u) => u !== stream.ownerUsername)}
+              isWatching={watchingStreams.includes(stream.ownerUid)}
+              isPip={stream.ownerUid === pipStream}
+              isOwnStream={stream.ownerUid === ownUid}
+              watchingOthers={watchingStreams.some((u) => u !== stream.ownerUid)}
               connectedServerId={connectedServerId}
               width={streams.tileW}
             />
@@ -410,6 +416,7 @@ function VoiceStage({
 /// Only you in the channel: your tile, large, and a nudge to invite people
 /// or start sharing.
 function AloneStage({
+  uid,
   username,
   participant,
   isLocal,
@@ -420,6 +427,7 @@ function AloneStage({
   canStream,
   onShare,
 }: {
+  uid: Uid;
   username: string;
   participant: VoiceParticipant | undefined;
   isLocal: boolean;
@@ -452,6 +460,7 @@ function AloneStage({
   return (
     <div className="flex flex-col items-center justify-center gap-5.5" style={{ minHeight: height }}>
       <ParticipantTile
+        uid={uid}
         username={username}
         isLocal={isLocal}
         rosterMuted={participant?.isMuted ?? false}

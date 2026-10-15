@@ -26,7 +26,7 @@ import {
   PlusIcon,
   SpeakerIcon,
 } from "./icons";
-import { legacyUid } from "../../users/userDirectory";
+import { nameOf, type Uid } from "../../../stores/usersStore";
 
 // The voice stage's tiles. Every tile is 16:9 at a width the stage computes;
 // each subscribes to its own slices (speaking, thumbnail, …) so an event for
@@ -65,14 +65,14 @@ function avatarFor(height: number): number {
   return Math.min(96, Math.max(32, Math.round((height * 0.38) / 8) * 8));
 }
 
-function openProfile(e: React.SyntheticEvent<HTMLElement>, username: string, serverId: string | null) {
+function openProfile(e: React.SyntheticEvent<HTMLElement>, uid: Uid, name: string, serverId: string | null) {
   const rect = e.currentTarget.getBoundingClientRect();
-  useUiStore.getState().openProfilePopup(username, { x: rect.right + 8, y: rect.top }, serverId);
+  useUiStore.getState().openProfilePopup(nameOf(uid, name), { x: rect.right + 8, y: rect.top }, serverId);
 }
 
-function openMenu(e: React.MouseEvent, username: string, serverId: string | null) {
+function openMenu(e: React.MouseEvent, uid: Uid, name: string, serverId: string | null) {
   e.preventDefault();
-  useUiStore.getState().openContextMenu(username, { x: e.clientX, y: e.clientY }, serverId);
+  useUiStore.getState().openContextMenu(nameOf(uid, name), { x: e.clientX, y: e.clientY }, serverId);
 }
 
 /// Enter / Space activate a div-with-role=button like a real button.
@@ -141,6 +141,8 @@ export function QualityPill({
 // ── participant tile ─────────────────────────────────────────────
 
 interface ParticipantTileProps {
+  uid: Uid;
+  /// Their name as the roster carried it (drawn through the users store).
   username: string;
   isLocal: boolean;
   /// Roster snapshot; our own mute/deafen comes from the store toggles.
@@ -157,6 +159,7 @@ interface ParticipantTileProps {
 }
 
 export const ParticipantTile = memo(function ParticipantTile({
+  uid,
   username,
   isLocal,
   rosterMuted,
@@ -168,12 +171,12 @@ export const ParticipantTile = memo(function ParticipantTile({
   width,
   mini,
 }: ParticipantTileProps) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
-  const isStreaming = useVoiceStore((s) => s.activeStreams.some((st) => st.ownerUsername === username));
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
+  const isStreaming = useVoiceStore((s) => s.activeStreams.some((st) => st.ownerUid === uid));
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
   const selfMuted = useVoiceStore((s) => isLocal && s.isMuted);
   const selfDeafened = useVoiceStore((s) => isLocal && s.isDeafened);
-  const displayName = useDisplayName(connectedServerId, legacyUid(username), username);
+  const displayName = useDisplayName(connectedServerId, uid, username);
 
   const muted = isLocal ? selfMuted : rosterMuted;
   const deafened = isLocal ? selfDeafened : rosterDeafened;
@@ -187,9 +190,9 @@ export const ParticipantTile = memo(function ParticipantTile({
       role="button"
       tabIndex={0}
       title={displayName}
-      onClick={(e) => openProfile(e, username, connectedServerId)}
-      onContextMenu={(e) => openMenu(e, username, connectedServerId)}
-      onKeyDown={(e) => onActivateKey(e, () => openProfile(e, username, connectedServerId))}
+      onClick={(e) => openProfile(e, uid, username, connectedServerId)}
+      onContextMenu={(e) => openMenu(e, uid, username, connectedServerId)}
+      onKeyDown={(e) => onActivateKey(e, () => openProfile(e, uid, username, connectedServerId))}
       // Speaking flips the outline instantly (no transition): a fading
       // ring repaints for its whole duration on every VAD flip.
       className={`group relative flex aspect-video shrink-0 items-center justify-center overflow-hidden border border-border shadow-raised ${
@@ -197,7 +200,7 @@ export const ParticipantTile = memo(function ParticipantTile({
       } ${isSpeaking ? "outline-2 -outline-offset-2 outline-success" : ""} ${lift}`}
       style={{
         width,
-        background: `color-mix(in srgb, ${userAvatarColor(legacyUid(username), username)} var(--tile-tint), var(--color-bg-light))`,
+        background: `color-mix(in srgb, ${userAvatarColor(uid, username)} var(--tile-tint), var(--color-bg-light))`,
       }}
     >
       <span aria-hidden className="pointer-events-none absolute inset-0 group-hover:bg-surface-hover" />
@@ -205,7 +208,7 @@ export const ParticipantTile = memo(function ParticipantTile({
         className={`relative ${isSpeaking ? "ring-4 ring-success/25" : ""}`}
         style={{ borderRadius: AVATAR_RADIUS }}
       >
-        <UserAvatar uid={legacyUid(username)} name={username} size={avatarFor(height)} />
+        <UserAvatar uid={uid} name={username} size={avatarFor(height)} />
       </div>
       {/* Not in the filmstrip: the stream itself sits right beside it there. */}
       {isStreaming && !mini && <LivePill className="absolute left-2 top-2" />}
@@ -284,9 +287,10 @@ export const StreamTile = memo(function StreamTile({
   width,
   mini,
 }: StreamTileProps) {
-  const owner = stream.ownerUsername;
+  const owner = stream.ownerUid;
+  const ownerName = stream.ownerUsername;
   const thumbnail = useVoiceStore((s) => s.streamThumbnails[owner]);
-  const displayName = useDisplayName(connectedServerId, legacyUid(owner), owner);
+  const displayName = useDisplayName(connectedServerId, owner, ownerName);
   const decodeCaps = useCodecSettingsStore.getState().decodeCaps;
   const { canWatch, reason } = isOwnStream ? { canWatch: true, reason: undefined } : canWatchStream(stream, decodeCaps);
   const label = isOwnStream ? "Your screen" : `${displayName}'s screen`;
@@ -336,11 +340,11 @@ export const StreamTile = memo(function StreamTile({
         {hostsPip ? (
           <div ref={slotRef} className="h-full w-full" />
         ) : isWatching ? (
-          <StreamVideoPlayer streamerUsername={owner} className="h-full w-full object-cover" />
+          <StreamVideoPlayer streamerUid={owner} className="h-full w-full object-cover" />
         ) : thumbnail ? (
           <img src={thumbnail} alt="" className="h-full w-full object-cover" draggable={false} />
         ) : (
-          <UserAvatar uid={legacyUid(owner)} name={owner} size={mini ? 28 : 56} />
+          <UserAvatar uid={owner} name={ownerName} size={mini ? 28 : 56} />
         )}
       </div>
 
@@ -422,7 +426,7 @@ export const StreamTile = memo(function StreamTile({
           <QualityPill stream={stream} className="absolute right-2 top-2" />
           <div className="absolute bottom-2 left-2 flex max-w-[calc(100%-4.5rem)]">
             <span className={`${SCRIM} min-w-0`}>
-              <UserAvatar uid={legacyUid(owner)} name={owner} size={16} />
+              <UserAvatar uid={owner} name={ownerName} size={16} />
               <span className="truncate">{label}</span>
               {stream.hasAudio && (
                 <span className="text-white/70" title="Has audio">
@@ -447,7 +451,7 @@ export const StreamTile = memo(function StreamTile({
 // ── "+N more" overflow ───────────────────────────────────────────
 
 interface OverflowTileProps {
-  hidden: readonly string[];
+  hidden: readonly Uid[];
   width: number;
   mini?: boolean;
   connectedServerId: string | null;
@@ -502,7 +506,7 @@ export const OverflowTile = memo(function OverflowTile({
               className={`ring-2 ring-bg-light ${i > 0 ? "-ml-2" : ""}`}
               style={{ borderRadius: AVATAR_RADIUS }}
             >
-              <UserAvatar uid={legacyUid(u)} name={u} size={stackSize} />
+              <UserAvatar uid={u} name={nameOf(u)} size={stackSize} />
             </div>
           ))}
         </div>
@@ -538,7 +542,7 @@ function OverflowPopover({
   onClose,
 }: {
   anchor: MenuAnchor;
-  hidden: readonly string[];
+  hidden: readonly Uid[];
   connectedServerId: string | null;
   channelName: string;
   tileRef: React.RefObject<HTMLDivElement | null>;
@@ -574,37 +578,38 @@ function OverflowPopover({
         {hidden.length} more in {channelName}
       </div>
       {hidden.map((u) => (
-        <HiddenRow key={u} username={u} connectedServerId={connectedServerId} onPick={onClose} />
+        <HiddenRow key={u} uid={u} connectedServerId={connectedServerId} onPick={onClose} />
       ))}
     </div>
   );
 }
 
 const HiddenRow = memo(function HiddenRow({
-  username,
+  uid,
   connectedServerId,
   onPick,
 }: {
-  username: string;
+  uid: Uid;
   connectedServerId: string | null;
   onPick: () => void;
 }) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
-  const p = useVoiceStore((s) => s.participants.find((x) => x.username === username));
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
-  const displayName = useDisplayName(connectedServerId, legacyUid(username), username);
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
+  const p = useVoiceStore((s) => s.participants.find((x) => x.uid === uid));
+  const username = p?.username ?? nameOf(uid);
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
+  const displayName = useDisplayName(connectedServerId, uid, username);
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={(e) => {
-        openProfile(e, username, connectedServerId);
+        openProfile(e, uid, username, connectedServerId);
         onPick();
       }}
-      onContextMenu={(e) => openMenu(e, username, connectedServerId)}
+      onContextMenu={(e) => openMenu(e, uid, username, connectedServerId)}
       onKeyDown={(e) =>
         onActivateKey(e, () => {
-          openProfile(e, username, connectedServerId);
+          openProfile(e, uid, username, connectedServerId);
           onPick();
         })
       }
@@ -614,7 +619,7 @@ const HiddenRow = memo(function HiddenRow({
         className={`shrink-0 ${isSpeaking ? "ring-2 ring-success" : ""}`}
         style={{ borderRadius: AVATAR_RADIUS }}
       >
-        <UserAvatar uid={legacyUid(username)} name={username} size={24} />
+        <UserAvatar uid={uid} name={username} size={24} />
       </div>
       <span
         className={`min-w-0 truncate ${isSpeaking ? "text-success" : "text-text-secondary group-hover:text-text-primary"}`}

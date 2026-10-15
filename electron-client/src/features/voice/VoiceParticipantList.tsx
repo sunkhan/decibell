@@ -6,13 +6,13 @@ import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import { PERM, useChannelPermission } from "../servers/permissions";
 import { onMemberDragEnd, onMemberDragStart } from "./memberDrag";
-import { legacyUid } from "../users/userDirectory";
+import { nameOf, type Uid } from "../../stores/usersStore";
 
-/// `usernames` (+ the channel's `serverId` / `channelId`) renders another
+/// `uids` (+ the channel's `serverId` / `channelId`) renders another
 /// channel's roster from presence; without it, the connected channel's
 /// live participants.
 interface Props {
-  usernames?: string[];
+  uids?: Uid[];
   serverId?: string;
   channelId?: string;
 }
@@ -84,7 +84,7 @@ function LiveBadge() {
 // Memo'd so identical (props, derived) skip the function call entirely.
 
 interface PresenceRowProps {
-  username: string;
+  uid: Uid;
   serverId: string;
   channelId: string;
   /// We hold MOVE_MEMBERS here: drag the row onto another voice channel.
@@ -95,20 +95,21 @@ interface PresenceRowProps {
 /// at all, or one on another server — so everything keys on the row's
 /// own server: nickname, profile, the context menu's moderation, LIVE.
 const PresenceRow = memo(function PresenceRow({
-  username,
+  uid,
   serverId,
   channelId,
   draggable,
 }: PresenceRowProps) {
   const isStreaming = useVoiceStore((s) => {
-    const loc = s.streamsByUser.get(username);
+    const loc = s.streamsByUser.get(uid);
     return !!loc && loc.serverId === serverId && loc.channelId === channelId;
   });
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
-  const userState = useVoiceStore((s) => s.channelUserStates[voiceKey(serverId, channelId)]?.[username]);
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
+  const userState = useVoiceStore((s) => s.channelUserStates[voiceKey(serverId, channelId)]?.[uid]);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(serverId, legacyUid(username), username);
+  const username = nameOf(uid);
+  const displayName = useDisplayName(serverId, uid, username);
 
   return (
     <div
@@ -126,10 +127,10 @@ const PresenceRow = memo(function PresenceRow({
         openContextMenu(username, { x: e.clientX, y: e.clientY }, serverId);
       }}
       draggable={draggable}
-      onDragStart={draggable ? (e) => onMemberDragStart(e, serverId, channelId, username) : undefined}
+      onDragStart={draggable ? (e) => onMemberDragStart(e, serverId, channelId, uid) : undefined}
       onDragEnd={draggable ? onMemberDragEnd : undefined}
     >
-      <UserAvatar uid={legacyUid(username)} name={username} size={22} />
+      <UserAvatar uid={uid} name={username} size={22} />
       <span className="min-w-0 truncate text-text-secondary transition-colors group-hover:text-text-primary">
         {displayName}
       </span>
@@ -149,6 +150,7 @@ const PresenceRow = memo(function PresenceRow({
 });
 
 interface ActiveRowProps {
+  uid: Uid;
   username: string;
   isLocal: boolean;
   /// Snapshot props from the parent list (only change on roster updates,
@@ -167,6 +169,7 @@ interface ActiveRowProps {
 }
 
 const ActiveRow = memo(function ActiveRow({
+  uid,
   username,
   isLocal,
   rosterMuted,
@@ -178,18 +181,18 @@ const ActiveRow = memo(function ActiveRow({
   connectedChannelId,
   draggable,
 }: ActiveRowProps) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
   const isStreaming = useVoiceStore((s) =>
-    s.activeStreams.some((st) => st.ownerUsername === username),
+    s.activeStreams.some((st) => st.ownerUid === uid),
   );
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
   // Local user's mute/deafen comes from the top-level toggle, not the
   // roster — subscribe directly so our own indicator updates instantly.
   const selfMuted = useVoiceStore((s) => s.isMuted);
   const selfDeafened = useVoiceStore((s) => s.isDeafened);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const displayName = useDisplayName(connectedServerId, legacyUid(username), username);
+  const displayName = useDisplayName(connectedServerId, uid, username);
 
   const userMuted = isLocal ? selfMuted : rosterMuted;
   const userDeafened = isLocal ? selfDeafened : rosterDeafened;
@@ -212,7 +215,7 @@ const ActiveRow = memo(function ActiveRow({
       draggable={draggable}
       onDragStart={
         draggable && connectedServerId && connectedChannelId
-          ? (e) => onMemberDragStart(e, connectedServerId, connectedChannelId, username)
+          ? (e) => onMemberDragStart(e, connectedServerId, connectedChannelId, uid)
           : undefined
       }
       onDragEnd={draggable ? onMemberDragEnd : undefined}
@@ -226,7 +229,7 @@ const ActiveRow = memo(function ActiveRow({
           boxShadow: isSpeaking ? "0 0 0 2px var(--color-success), 0 0 6px var(--color-success)" : "none",
         }}
       >
-        <UserAvatar uid={legacyUid(username)} name={username} size={22} />
+        <UserAvatar uid={uid} name={username} size={22} />
       </div>
       <span
         className={`min-w-0 truncate ${
@@ -249,30 +252,30 @@ const ActiveRow = memo(function ActiveRow({
   );
 });
 
-export default function VoiceParticipantList({ usernames, serverId, channelId }: Props) {
+export default function VoiceParticipantList({ uids, serverId, channelId }: Props) {
   const participants = useVoiceStore((s) => s.participants);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
-  const localUsername = useAuthStore((s) => s.username);
+  const localUid = useAuthStore((s) => s.uid);
   // Drag-to-move (memberDrag.ts): MOVE_MEMBERS in the channel these rows
   // are in. The hierarchy is checked when a drag starts.
   const canMoveHere = useChannelPermission(
-    usernames ? serverId ?? null : connectedServerId,
-    usernames ? channelId ?? null : connectedChannelId,
+    uids ? serverId ?? null : connectedServerId,
+    uids ? channelId ?? null : connectedChannelId,
     PERM.MOVE_MEMBERS,
   );
 
-  if (usernames) {
-    if (usernames.length === 0 || !serverId || !channelId) return null;
+  if (uids) {
+    if (uids.length === 0 || !serverId || !channelId) return null;
     return (
       <div className="space-y-0.5 pb-1 pl-5">
-        {usernames.map((u) => (
+        {uids.map((u) => (
           <PresenceRow
             key={u}
-            username={u}
+            uid={u}
             serverId={serverId}
             channelId={channelId}
-            draggable={canMoveHere && u !== localUsername}
+            draggable={canMoveHere && u !== localUid}
           />
         ))}
       </div>
@@ -285,9 +288,10 @@ export default function VoiceParticipantList({ usernames, serverId, channelId }:
     <div className="space-y-0.5 pb-1 pl-5">
       {participants.map((p) => (
         <ActiveRow
-          key={p.username}
+          key={p.uid}
+          uid={p.uid}
           username={p.username}
-          isLocal={p.username === localUsername}
+          isLocal={p.uid === localUid}
           rosterMuted={p.isMuted}
           rosterDeafened={p.isDeafened}
           serverMuted={p.isServerMuted}
@@ -295,7 +299,7 @@ export default function VoiceParticipantList({ usernames, serverId, channelId }:
           suppressed={p.isSuppressed}
           connectedServerId={connectedServerId}
           connectedChannelId={connectedChannelId}
-          draggable={canMoveHere && p.username !== localUsername}
+          draggable={canMoveHere && p.uid !== localUid}
         />
       ))}
     </div>

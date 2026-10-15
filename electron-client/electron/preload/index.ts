@@ -77,6 +77,7 @@ ipcRenderer.invoke("decibell:invoke", "clearStreamFrameSinks", {}).catch(() => {
 
 type StreamThumbnail = {
   ownerUsername: string;
+  ownerUid: number;
   data: Uint8Array;
 };
 type StreamThumbnailHandler = (thumb: StreamThumbnail) => void;

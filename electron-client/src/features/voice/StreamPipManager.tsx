@@ -31,7 +31,7 @@ export default function StreamPipManager() {
       pipStream &&
       !(
         watchingStreams.includes(pipStream) &&
-        activeStreams.some((s) => s.ownerUsername === pipStream)
+        activeStreams.some((s) => s.ownerUid === pipStream)
       )
     ) {
       setPipStream(null);
@@ -52,7 +52,7 @@ export default function StreamPipManager() {
   const live =
     pipStream != null &&
     watchingStreams.includes(pipStream) &&
-    activeStreams.some((s) => s.ownerUsername === pipStream);
+    activeStreams.some((s) => s.ownerUid === pipStream);
 
   if (!live || !pipStream) return null;
 
@@ -62,7 +62,7 @@ export default function StreamPipManager() {
   return createPortal(
     <StreamVideoPlayer
       key={pipStream}
-      streamerUsername={pipStream}
+      streamerUid={pipStream}
       className="h-full w-full object-contain"
     />,
     getStreamPipHost(),

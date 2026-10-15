@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useVoiceStore } from "../../../stores/voiceStore";
+import type { Uid } from "../../../stores/usersStore";
 
 /// Layout maths + hooks for the voice stage (VoicePanel's tile grid and the
 /// focused-stream filmstrip). Every tile is 16:9; the grid picks the column
@@ -101,16 +102,16 @@ export function useElementSize(ref: RefObject<HTMLElement | null>): { width: num
 /// speakingUsers would re-render the whole grid on every VAD flip. React
 /// only hears about it when a swap actually happens.
 ///
-/// Returns the usernames in display order. Below the cap it is simply `all`.
+/// Returns the uids in display order. Below the cap it is simply `all`.
 export function useVisibleParticipants(
-  all: readonly string[],
+  all: readonly Uid[],
   slots: number,
-  pinned: ReadonlySet<string>,
-): readonly string[] {
+  pinned: ReadonlySet<Uid>,
+): readonly Uid[] {
   const [swapTick, setSwapTick] = useState(0);
-  const visibleRef = useRef<readonly string[]>([]);
-  const lastSpoke = useRef(new Map<string, number>());
-  const speakStart = useRef(new Map<string, number>());
+  const visibleRef = useRef<readonly Uid[]>([]);
+  const lastSpoke = useRef(new Map<Uid, number>());
+  const speakStart = useRef(new Map<Uid, number>());
   // -Infinity, not 0: performance.now() starts at page load, so a 0 here
   // held the very first swap back until 3 s after the app started.
   const lastSwap = useRef(-Infinity);
@@ -170,7 +171,7 @@ export function useVisibleParticipants(
       const speaking = useVoiceStore.getState().speakingUsers;
       const shown = new Set(visibleRef.current);
       const now = performance.now();
-      let candidate: string | null = null;
+      let candidate: Uid | null = null;
       let wait = Infinity;
       for (const u of speaking) {
         if (shown.has(u) || !roster.includes(u)) continue;

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 /// Live decode stats for a watched stream, published by the (single persistent)
-/// StreamVideoPlayer and read by the stats overlay. Keyed by streamer username
+/// StreamVideoPlayer and read by the stats overlay. Keyed by streamer uid
 /// so the overlay can look up the currently-focused stream.
 export interface StreamStats {
   /// Friendly codec label, e.g. "H.264", "HEVC", "AV1".
@@ -23,20 +23,20 @@ export interface StreamStats {
 }
 
 interface StreamStatsState {
-  statsByUser: Record<string, StreamStats | undefined>;
-  publishStats: (username: string, stats: StreamStats) => void;
-  clearStats: (username: string) => void;
+  statsByUser: Record<number, StreamStats | undefined>;
+  publishStats: (uid: number, stats: StreamStats) => void;
+  clearStats: (uid: number) => void;
 }
 
 export const useStreamStatsStore = create<StreamStatsState>((set) => ({
   statsByUser: {},
-  publishStats: (username, stats) =>
-    set((s) => ({ statsByUser: { ...s.statsByUser, [username]: stats } })),
-  clearStats: (username) =>
+  publishStats: (uid, stats) =>
+    set((s) => ({ statsByUser: { ...s.statsByUser, [uid]: stats } })),
+  clearStats: (uid) =>
     set((s) => {
-      if (!(username in s.statsByUser)) return s;
+      if (!(uid in s.statsByUser)) return s;
       const next = { ...s.statsByUser };
-      delete next[username];
+      delete next[uid];
       return { statsByUser: next };
     }),
 }));

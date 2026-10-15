@@ -1,18 +1,18 @@
 import { useStreamStatsStore } from "./streamStats";
 
 /// Live decode-stats overlay (toggled from the stream controls). Reads the
-/// stats the persistent StreamVideoPlayer publishes for `username`. Mounted only
+/// stats the persistent StreamVideoPlayer publishes for the streamer `uid`. Mounted only
 /// while the overlay is on, so it re-renders (~2/s) only when actually shown.
 export default function StreamStatsOverlay({
-  username,
+  uid,
   className = "left-3 top-3",
 }: {
-  username: string;
+  uid: number;
   /// Placement inside the video box (callers with their own top-left pills
   /// push it below them).
   className?: string;
 }) {
-  const stats = useStreamStatsStore((s) => s.statsByUser[username]);
+  const stats = useStreamStatsStore((s) => s.statsByUser[uid]);
   if (!stats) return null;
 
   const rows: [string, string][] = [

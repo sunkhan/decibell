@@ -830,7 +830,7 @@ export default function DmChatPanel() {
         <div className="flex-1" />
         <div className="flex gap-1">
           <button
-            onClick={() => void startCall(activeDmUser)}
+            onClick={() => void startCall(legacyUid(activeDmUser))}
             disabled={!isOnline || !callSignaling || callStatus !== "idle"}
             title={
               !callSignaling
@@ -908,7 +908,7 @@ export default function DmChatPanel() {
 
       {/* P2P call with this user: the stage (tiles, focused stream, dock).
           In theater it fills the panel and the conversation below is hidden. */}
-      <CallStage peer={activeDmUser} />
+      <CallStage peer={legacyUid(activeDmUser)} />
 
       {!theaterActive && (
       <>

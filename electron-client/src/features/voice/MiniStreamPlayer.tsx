@@ -11,7 +11,7 @@ import {
   placeStreamPip,
   recordMiniRect,
 } from "./streamPipHost";
-import { uidOf } from "../users/userDirectory";
+import { nameOf } from "../../stores/usersStore";
 
 type Corner = PipCorner;
 
@@ -109,7 +109,7 @@ function expandToStream() {
   const v = useVoiceStore.getState();
   if (v.pipStream) v.setFullscreenStream(v.pipStream);
   if (v.callPeer) {
-    useDmStore.getState().setActiveDmUser(v.callPeer);
+    useDmStore.getState().setActiveDmUser(nameOf(v.callPeer));
     useUiStore.getState().setActiveView("dm");
   } else {
     // The channel sidebar renders the *active* server, which Home / a DM
@@ -134,7 +134,7 @@ export default function MiniStreamPlayer() {
   const setPipWidth = useUiStore((s) => s.setPipWidth);
   const pipHeight = heightFor(pipWidth);
 
-  const ownUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const pipStream = useVoiceStore((s) => s.pipStream);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
@@ -155,11 +155,11 @@ export default function MiniStreamPlayer() {
   const streamLive =
     pipStream != null &&
     watchingStreams.includes(pipStream) &&
-    activeStreams.some((s) => s.ownerUsername === pipStream);
+    activeStreams.some((s) => s.ownerUid === pipStream);
   const dmShowsFullView =
     callPeer != null &&
     activeView === "dm" &&
-    activeDmUser === callPeer &&
+    activeDmUser === nameOf(callPeer) &&
     fullscreenStream === pipStream;
   const visible = streamLive && activeView !== "voice" && !dmShowsFullView;
 
@@ -442,14 +442,15 @@ export default function MiniStreamPlayer() {
   const handleClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const user = pipStream;
-    if (user !== ownUsername && callPeer && !connectedChannelId) {
+    if (user == null) return;
+    if (user !== ownUid && callPeer && !connectedChannelId) {
       await invoke("call_watch_stream", { watch: false }).catch(() => {});
-    } else if (user !== ownUsername && connectedServerId && connectedChannelId) {
+    } else if (user !== ownUid && connectedServerId && connectedChannelId) {
       await invoke("stop_watching", {
         serverId: connectedServerId,
         channelId: connectedChannelId,
-        targetUsername: user,
-        targetUid: uidOf(user),
+        targetUid: user,
+        targetUsername: nameOf(user),
       }).catch(() => {});
     }
     // removeWatching also clears pipStream/fullscreenStream when they match,

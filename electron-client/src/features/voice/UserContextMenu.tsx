@@ -21,14 +21,15 @@ import {
   formatDb,
   mediaSessionActive,
 } from "./userGain";
-import { legacyUid, uidOf } from "../users/userDirectory";
+import { legacyUid } from "../users/userDirectory";
 
 export default function UserContextMenu() {
   const username = useUiStore((s) => s.contextMenuUser);
+  const uid = legacyUid(username);
   const anchor = useUiStore((s) => s.contextMenuAnchor);
   const contextServerId = useUiStore((s) => s.contextMenuServerId);
   const closeContextMenu = useUiStore((s) => s.closeContextMenu);
-  const displayName = useDisplayName(contextServerId, legacyUid(username), username ?? "");
+  const displayName = useDisplayName(contextServerId, uid, username ?? "");
   const userVolumes = useVoiceStore((s) => s.userVolumes);
   const setUserVolume = useVoiceStore((s) => s.setUserVolume);
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
@@ -56,11 +57,11 @@ export default function UserContextMenu() {
   const targetVoiceChannel =
     username && contextServerId
       ? voiceChannels.find((c) =>
-          channelPresence[voiceKey(contextServerId, c.id)]?.includes(username),
+          channelPresence[voiceKey(contextServerId, c.id)]?.includes(uid),
         )?.id ?? null
       : null;
   const targetVoiceState = username && contextServerId && targetVoiceChannel
-    ? channelUserStates[voiceKey(contextServerId, targetVoiceChannel)]?.[username]
+    ? channelUserStates[voiceKey(contextServerId, targetVoiceChannel)]?.[uid]
     : undefined;
   const targetChannelPerms = targetVoiceChannel
     ? serverChannels.find((c) => c.id === targetVoiceChannel)?.myPermissions ?? 0
@@ -86,12 +87,12 @@ export default function UserContextMenu() {
   const runVoiceMod = useCallback(
     (action: string, channelId?: string) => {
       if (!username || !contextServerId) return;
-      invoke("voice_mod", { serverId: contextServerId, username, uid: uidOf(username), action, channelId }).catch((err) =>
+      invoke("voice_mod", { serverId: contextServerId, username, uid, action, channelId }).catch((err) =>
         toast.error("Voice moderation failed", String(err)),
       );
       closeContextMenu();
     },
-    [username, contextServerId, closeContextMenu],
+    [username, uid, contextServerId, closeContextMenu],
   );
   // Measured placement: the menu grows a moderation section for some
   // targets, so a fixed "approximate height" clamp left it clipped at the
@@ -101,9 +102,9 @@ export default function UserContextMenu() {
   // context menu would open a second floating layer over the first.
   const [moveOpen, setMoveOpen] = useState(false);
   useEffect(() => setMoveOpen(false), [anchor]);
-  const isLocallyMuted = username ? localMutedUsers.has(username) : false;
+  const isLocallyMuted = uid ? localMutedUsers.has(uid) : false;
 
-  const currentDb = username ? userVolumes[username] ?? DEFAULT_DB : DEFAULT_DB;
+  const currentDb = uid ? userVolumes[uid] ?? DEFAULT_DB : DEFAULT_DB;
 
   // The native set_user_volume command errors out with
   // "Not in a voice channel" when no engine is up (the gain map only
@@ -113,26 +114,24 @@ export default function UserContextMenu() {
   // the IPC call is safe. The store + saveSettings always run. A P2P DM
   // call counts as connected (same engine, no channel).
   const sendGainToNative = useCallback(
-    (targetUsername: string, gain: number) => {
-      if (!mediaSessionActive()) return;
-      const uid = uidOf(targetUsername);
-      if (uid === undefined) return;
-      invoke("set_user_volume", { uid, gain }).catch(console.error);
+    (target: number, gain: number) => {
+      if (!mediaSessionActive() || !(target > 0)) return;
+      invoke("set_user_volume", { uid: target, gain }).catch(console.error);
     },
     [],
   );
 
   const handleVolumeChange = useCallback(
     (db: number) => {
-      if (!username) return;
+      if (!uid) return;
       const clamped = Math.max(MIN_DB, Math.min(MAX_DB, db));
-      setUserVolume(username, clamped);
-      if (!localMutedUsers.has(username)) {
-        sendGainToNative(username, dbToGain(clamped));
+      setUserVolume(uid, clamped);
+      if (!localMutedUsers.has(uid)) {
+        sendGainToNative(uid, dbToGain(clamped));
       }
       saveSettings();
     },
-    [username, setUserVolume, localMutedUsers, sendGainToNative],
+    [uid, setUserVolume, localMutedUsers, sendGainToNative],
   );
 
   const handleReset = useCallback(() => {
@@ -140,17 +139,17 @@ export default function UserContextMenu() {
   }, [handleVolumeChange]);
 
   const handleToggleMute = useCallback(() => {
-    if (!username) return;
-    const willMute = !localMutedUsers.has(username);
-    toggleLocalMute(username);
+    if (!uid) return;
+    const willMute = !localMutedUsers.has(uid);
+    toggleLocalMute(uid);
     if (willMute) {
-      sendGainToNative(username, 0);
+      sendGainToNative(uid, 0);
     } else {
-      const db = userVolumes[username] ?? DEFAULT_DB;
-      sendGainToNative(username, dbToGain(db));
+      const db = userVolumes[uid] ?? DEFAULT_DB;
+      sendGainToNative(uid, dbToGain(db));
     }
     saveSettings();
-  }, [username, localMutedUsers, toggleLocalMute, userVolumes, sendGainToNative]);
+  }, [uid, localMutedUsers, toggleLocalMute, userVolumes, sendGainToNative]);
 
   useEffect(() => {
     if (!username) return;
@@ -190,7 +189,7 @@ export default function UserContextMenu() {
     >
       {/* User header */}
       <div className="flex items-center gap-2.5 border-b border-border-divider px-3.5 py-3">
-        <UserAvatar uid={legacyUid(username)} name={username} size={32} />
+        <UserAvatar uid={uid} name={username} size={32} />
         <span className="truncate font-display text-[14px] font-medium text-text-primary">
           {displayName}
         </span>

@@ -382,9 +382,8 @@ function SelfIdentity({ username }: { username: string | null }) {
 // flip (a few per second while talking) re-renders just this. A derived
 // boolean, not the whole Set, so other users' speaking events are no-ops.
 function SelfAvatar({ username, status }: { username: string | null; status: DisplayStatus | null }) {
-  const isSpeaking = useVoiceStore((s) =>
-    username ? s.speakingUsers.has(username) : false,
-  );
+  const uid = useAuthStore((s) => s.uid);
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
   return (
     <div
       className="relative shrink-0 rounded-md transition-shadow"

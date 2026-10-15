@@ -36,7 +36,7 @@ import {
   unwatchCallStream,
   watchCallStream,
 } from "./callActions";
-import { legacyUid } from "../users/userDirectory";
+import { nameOf, useUserName, type Uid } from "../../stores/usersStore";
 
 /// The P2P call "stage": the top of the DM conversation while a call with
 /// `peer` is ringing / connecting / active (design: Direction A,
@@ -55,7 +55,7 @@ import { legacyUid } from "../users/userDirectory";
 /// stream here, minimising it to the mini player and coming back never
 /// re-decodes. Which stream is "focused" is `voiceStore.fullscreenStream`
 /// (the peer's, or our own self-preview).
-export default function CallStage({ peer }: { peer: string }) {
+export default function CallStage({ peer }: { peer: Uid }) {
   const status = useCallStore((s) => s.status);
   const callPeer = useCallStore((s) => s.peer);
   if (status === "idle" || status === "incoming" || callPeer !== peer) return null;
@@ -106,8 +106,8 @@ function qualityLabel(info: StreamInfo | undefined): string {
     .join(" · ");
 }
 
-function Stage({ peer }: { peer: string }) {
-  const me = useAuthStore((s) => s.username) ?? "";
+function Stage({ peer }: { peer: Uid }) {
+  const me = useAuthStore((s) => s.uid);
   const status = useCallStore((s) => s.status);
   const verified = useCallStore((s) => s.verified);
   // Only whether there IS a start time — the ticking duration, ping and
@@ -125,23 +125,23 @@ function Stage({ peer }: { peer: string }) {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const setStreamFullscreen = useVoiceStore((s) => s.setStreamFullscreen);
-  const msgCount = useDmStore((s) => s.conversations[peer]?.messages.length ?? 0);
+  const msgCount = useDmStore((s) => s.conversations[nameOf(peer)]?.messages.length ?? 0);
   const voiceHeight = useUiStore((s) => s.callStageVoiceHeight);
   const streamHeight = useUiStore((s) => s.callStageStreamHeight);
   const setCallStageHeight = useUiStore((s) => s.setCallStageHeight);
 
   const live = status === "active";
-  const peerStream = activeStreams.find((st) => st.ownerUsername === peer);
-  const ownStream = activeStreams.find((st) => st.ownerUsername === me);
+  const peerStream = activeStreams.find((st) => st.ownerUid === peer);
+  const ownStream = activeStreams.find((st) => st.ownerUid === me);
   // The stream shown on the stage: the peer's, or our own preview.
   const focused =
     fullscreenStream != null &&
     (fullscreenStream === peer || fullscreenStream === me) &&
     watchingStreams.includes(fullscreenStream) &&
-    activeStreams.some((st) => st.ownerUsername === fullscreenStream)
+    activeStreams.some((st) => st.ownerUid === fullscreenStream)
       ? fullscreenStream
       : null;
-  const focusedInfo = focused ? activeStreams.find((st) => st.ownerUsername === focused) : undefined;
+  const focusedInfo = focused ? activeStreams.find((st) => st.ownerUid === focused) : undefined;
   const isFullscreen = isStreamFullscreen && focused != null;
 
   const [showPicker, setShowPicker] = useState(false);
@@ -313,10 +313,10 @@ function Stage({ peer }: { peer: string }) {
       {focused ? (
         <div key="video" className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
           <div ref={slotRef} className="h-full w-full" />
-          {showStats && <StreamStatsOverlay username={focused} />}
+          {showStats && <StreamStatsOverlay uid={focused} />}
           <div className={`absolute bottom-4 right-4 flex gap-1.5 ${overlayClass}`}>
-            <PeerChip username={me} muted={isMuted} />
-            <PeerChip username={peer} />
+            <PeerChip uid={me} muted={isMuted} />
+            <PeerChip uid={peer} />
           </div>
         </div>
       ) : (
@@ -325,10 +325,10 @@ function Stage({ peer }: { peer: string }) {
               a share is presented like another participant, not a banner
               competing with the peer's volume row. */}
           <div className="flex items-start justify-center gap-8">
-            <CallTile username={me} muted={isMuted} dim={!live} />
+            <CallTile uid={me} muted={isMuted} dim={!live} />
             <div className="flex flex-col items-center">
-              <CallTile username={peer} muted={false} dim={!live} pulse={!live} />
-              {live && <PeerAudioControls username={peer} />}
+              <CallTile uid={peer} muted={false} dim={!live} pulse={!live} />
+              {live && <PeerAudioControls uid={peer} />}
             </div>
             {live && peerStream && (
               <StreamCard info={peerStream} owner={peer} own={false} />
@@ -348,7 +348,7 @@ function Stage({ peer }: { peer: string }) {
         {focused ? (
           <>
             <Pill live>
-              {focused === me ? "Your screen" : `${focused}'s screen`}
+              {focused === me ? "Your screen" : `${nameOf(focused)}'s screen`}
             </Pill>
             {(qualityLabel(focusedInfo) || hasStatus) && (
               <Pill>
@@ -586,18 +586,19 @@ function DockDivider() {
 }
 
 interface CallTileProps {
-  username: string;
+  uid: Uid;
   muted: boolean;
   dim: boolean;
   pulse?: boolean;
 }
 
-const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTileProps) {
+const CallTile = memo(function CallTile({ uid, muted, dim, pulse }: CallTileProps) {
   // Per-tile speaking subscription so the other tile's events are no-ops.
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
   const peerMuted = useVoiceStore(
-    (s) => s.participants.find((p) => p.username === username)?.isMuted ?? false,
+    (s) => s.participants.find((p) => p.uid === uid)?.isMuted ?? false,
   );
+  const username = useUserName(uid);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   const showMuted = muted || peerMuted;
@@ -627,7 +628,7 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
               : ""
           }`}
         >
-          <UserAvatar uid={legacyUid(username)} name={username} size={88} />
+          <UserAvatar uid={uid} name={username} size={88} />
         </div>
         {showMuted && (
           <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-darkest bg-bg-light">
@@ -652,8 +653,9 @@ const CallTile = memo(function CallTile({ username, muted, dim, pulse }: CallTil
 /// avatar — P2P calls have no thumbnails), LIVE pill, codec badge, and the
 /// owner caption. Click → watch (the peer's) or preview (your own). Mirrors
 /// the community voice view's stream cards so the two read the same.
-function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own: boolean }) {
-  const label = own ? "Your screen" : `${owner}'s screen`;
+function StreamCard({ info, owner, own }: { info: StreamInfo; owner: Uid; own: boolean }) {
+  const ownerName = useUserName(owner, info.ownerUsername);
+  const label = own ? "Your screen" : `${ownerName}'s screen`;
   const open = () => void watchCallStream(owner);
   return (
     <div
@@ -666,7 +668,7 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
           open();
         }
       }}
-      title={own ? "Preview what you're sharing" : `Watch ${owner}'s screen`}
+      title={own ? "Preview what you're sharing" : `Watch ${ownerName}'s screen`}
       className="group mt-2 w-44 cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-light transition-all duration-150 ease-out hover:border-accent/30 hover:shadow-float"
     >
       <div className="relative aspect-video w-full bg-bg-darkest">
@@ -679,7 +681,7 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
           size="small"
         />
         <div className="flex h-full w-full items-center justify-center">
-          <UserAvatar uid={legacyUid(owner)} name={owner} size={40} />
+          <UserAvatar uid={owner} name={ownerName} size={40} />
         </div>
         <div className="absolute left-2 top-2 flex items-center gap-[5px] rounded-sm bg-error/90 px-1.5 py-0.5">
           <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
@@ -692,7 +694,7 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
         </div>
       </div>
       <div className="flex items-center gap-2 px-2.5 py-2">
-        <UserAvatar uid={legacyUid(owner)} name={owner} size={20} />
+        <UserAvatar uid={owner} name={ownerName} size={20} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-medium text-text-primary">{label}</div>
           {qualityLabel(info) && (
@@ -712,11 +714,12 @@ function StreamCard({ info, owner, own }: { info: StreamInfo; owner: string; own
 
 /// Small avatar + name chip over the video (bottom-right). Speaking ring,
 /// mute glyph, right-click → the user menu.
-const PeerChip = memo(function PeerChip({ username, muted }: { username: string; muted?: boolean }) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(username));
+const PeerChip = memo(function PeerChip({ uid, muted }: { uid: Uid; muted?: boolean }) {
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
   const peerMuted = useVoiceStore(
-    (s) => s.participants.find((p) => p.username === username)?.isMuted ?? false,
+    (s) => s.participants.find((p) => p.uid === uid)?.isMuted ?? false,
   );
+  const username = useUserName(uid);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   return (
     <div
@@ -731,7 +734,7 @@ const PeerChip = memo(function PeerChip({ username, muted }: { username: string;
           isSpeaking ? "shadow-[0_0_0_2px_rgba(0,0,0,0.9),0_0_0_4px_var(--color-success)]" : ""
         }`}
       >
-        <UserAvatar uid={legacyUid(username)} name={username} size={24} />
+        <UserAvatar uid={uid} name={username} size={24} />
       </div>
       {username}
       {(muted || peerMuted) && (
@@ -747,9 +750,10 @@ const PeerChip = memo(function PeerChip({ username, muted }: { username: string;
 
 /// Local mute + volume for the peer, inline under their tile (the same
 /// controls the right-click menu offers, made discoverable).
-function PeerAudioControls({ username }: { username: string }) {
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(username));
-  const currentDb = useVoiceStore((s) => s.userVolumes[username] ?? DEFAULT_DB);
+function PeerAudioControls({ uid }: { uid: Uid }) {
+  const username = useUserName(uid);
+  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
+  const currentDb = useVoiceStore((s) => s.userVolumes[uid] ?? DEFAULT_DB);
   const setUserVolume = useVoiceStore((s) => s.setUserVolume);
   const toggleLocalMute = useVoiceStore((s) => s.toggleLocalMute);
 
@@ -757,13 +761,13 @@ function PeerAudioControls({ username }: { username: string }) {
   const handleSlider = (val: number) => {
     const raw = MIN_DB + (val / 100) * (MAX_DB - MIN_DB);
     const db = Math.abs(raw) < 0.8 ? 0 : Math.round(raw * 10) / 10;
-    setUserVolume(username, Math.max(MIN_DB, Math.min(MAX_DB, db)));
-    pushUserGain(username);
+    setUserVolume(uid, Math.max(MIN_DB, Math.min(MAX_DB, db)));
+    pushUserGain(uid);
     saveSettings();
   };
   const handleToggleMute = () => {
-    toggleLocalMute(username);
-    pushUserGain(username);
+    toggleLocalMute(uid);
+    pushUserGain(uid);
     saveSettings();
   };
 

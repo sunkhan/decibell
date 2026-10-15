@@ -19,6 +19,7 @@ import { toast } from "../../stores/toastStore";
 import { announceCallStreamStop } from "../call/callActions";
 import { applySavedUserGains } from "./userGain";
 import { nameOf } from "../users/userDirectory";
+import { toUid, type Uid } from "../../stores/usersStore";
 
 /// Voice-channel event subscriber. Listens for:
 ///   • voice_presence_updated — channel roster + per-user mute/deafen
@@ -49,8 +50,8 @@ import { nameOf } from "../users/userDirectory";
 export function useVoiceEvents() {
   useEffect(() => {
     const promises: Promise<() => void>[] = [];
-    let prevParticipants: Set<string> | null = null;
-    let prevStreamOwners: Set<string> | null = null;
+    let prevParticipants: Set<Uid> | null = null;
+    let prevStreamOwners: Set<Uid> | null = null;
     const unsubSession = useVoiceStore.subscribe((s, prev) => {
       if (s.connectedServerId === prev.connectedServerId && s.connectedChannelId === prev.connectedChannelId) {
         return;
@@ -96,34 +97,41 @@ export function useVoiceEvents() {
         serverId: string;
         channelId: string;
         participants: string[];
-        userStates: { username: string; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }[];
+        participantUids?: (number | bigint)[];
+        userStates: { username: string; uid?: number | bigint; isMuted: boolean; isDeafened: boolean; isServerMuted?: boolean; isServerDeafened?: boolean; isSuppressed?: boolean }[];
         userCapabilities?: ClientCapabilities[];
       }>("voice_presence_updated", (event) => {
         const { serverId, channelId, participants, userStates, userCapabilities } = event.payload;
+        // The roster by uid (parallel to the names).
+        const uids: Uid[] = (event.payload.participantUids ?? []).map(toUid);
+        if (uids.length !== participants.length) return;
+        const names = new Map(uids.map((u, i) => [u, participants[i]] as const));
+        const states = (userStates ?? []).map((st) => ({ ...st, uid: toUid(st.uid) }));
         const store = useVoiceStore.getState();
-        const username = useAuthStore.getState().username;
-        store.setChannelPresence(serverId, channelId, participants, userStates, userCapabilities);
+        const me = useAuthStore.getState().uid;
+        store.setChannelPresence(serverId, channelId, uids, states, userCapabilities);
 
         const isConnected =
           serverId === store.connectedServerId && channelId === store.connectedChannelId;
         if (isConnected) {
-          const current = new Set(participants);
+          const current = new Set(uids);
           if (prevParticipants) {
-            for (const u of participants) {
-              if (!prevParticipants.has(u) && u !== username) playSound("user_join");
+            for (const u of uids) {
+              if (!prevParticipants.has(u) && u !== me) playSound("user_join");
             }
             for (const u of prevParticipants) {
-              if (!current.has(u) && u !== username) playSound("user_leave");
+              if (!current.has(u) && u !== me) playSound("user_leave");
             }
           }
           prevParticipants = current;
         }
 
         if (isConnected) {
-          const stateMap = new Map(userStates?.map((s) => [s.username, s]) ?? []);
+          const stateMap = new Map(states.map((st) => [st.uid, st]));
           store.setParticipants(
-            participants.map((u) => ({
-              username: u,
+            uids.map((u) => ({
+              uid: u,
+              username: names.get(u) ?? nameOf(u),
               isMuted: stateMap.get(u)?.isMuted ?? false,
               isDeafened: stateMap.get(u)?.isDeafened ?? false,
               isServerMuted: stateMap.get(u)?.isServerMuted ?? false,
@@ -137,7 +145,7 @@ export function useVoiceEvents() {
           // Re-apply saved per-user volume / local-mute on every roster
           // change so peers picked up after the user's muted them stay
           // muted, and so volume tweaks survive churn.
-          applySavedUserGains(participants);
+          applySavedUserGains(uids);
         }
       }),
     );
@@ -146,12 +154,9 @@ export function useVoiceEvents() {
       // The media plane names speakers by uid (0 = ourselves); the voice
       // stores show names, looked up here.
       listen<{ uid: number | bigint; speaking: boolean }>("voice_user_speaking", (event) => {
-        const uid = Number(event.payload.uid);
-        const speakingUsername =
-          uid === 0 ? useAuthStore.getState().username ?? "" : nameOf(uid) ?? "";
-        if (speakingUsername) {
-          useVoiceStore.getState().setSpeaking(speakingUsername, event.payload.speaking);
-        }
+        const raw = toUid(event.payload.uid);
+        const uid = raw === 0 ? useAuthStore.getState().uid : raw;
+        if (uid > 0) useVoiceStore.getState().setSpeaking(uid, event.payload.speaking);
       }),
     );
 
@@ -167,9 +172,8 @@ export function useVoiceEvents() {
       listen<{ uid: number | bigint; isMuted: boolean; isDeafened: boolean }>(
         "voice_user_state_changed",
         (event) => {
-          const username = nameOf(Number(event.payload.uid));
-          if (!username) return;
-          useVoiceStore.getState().setUserState(username, event.payload.isMuted, event.payload.isDeafened);
+          const uid = toUid(event.payload.uid);
+          if (uid > 0) useVoiceStore.getState().setUserState(uid, event.payload.isMuted, event.payload.isDeafened);
         },
       ),
     );
@@ -204,7 +208,7 @@ export function useVoiceEvents() {
     // Capture source ended (window closed, monitor disconnected) → auto-stop.
     promises.push(
       listen("stream_capture_ended", () => {
-        const username = useAuthStore.getState().username;
+        const me = useAuthStore.getState().uid;
         const {
           connectedServerId,
           connectedChannelId,
@@ -222,7 +226,7 @@ export function useVoiceEvents() {
           useVoiceStore.getState().setIsStreaming(false);
           if (inCall) announceCallStreamStop();
 
-          if (fullscreenStream === username && isStreamFullscreen) {
+          if (fullscreenStream === me && isStreamFullscreen) {
             useVoiceStore.getState().setFullscreenStream(null);
             useVoiceStore.getState().setStreamFullscreen(false);
             getCurrentWindow().setFullscreen(false).catch(() => {});
@@ -238,6 +242,7 @@ export function useVoiceEvents() {
         streams: {
           streamId: string;
           ownerUsername: string;
+          ownerUid?: number | bigint;
           hasAudio: boolean;
           resolutionWidth: number;
           resolutionHeight: number;
@@ -247,12 +252,13 @@ export function useVoiceEvents() {
           watcherCount?: number;
         }[];
       }>("stream_presence_updated", (event) => {
-        const username = useAuthStore.getState().username;
+        const me = useAuthStore.getState().uid;
         const { serverId, channelId } = event.payload;
 
         const mapped: StreamInfo[] = event.payload.streams.map((s) => ({
           streamId: s.streamId,
           ownerUsername: s.ownerUsername,
+          ownerUid: toUid(s.ownerUid),
           hasAudio: s.hasAudio,
           resolutionWidth: s.resolutionWidth || 0,
           resolutionHeight: s.resolutionHeight || 0,
@@ -273,13 +279,13 @@ export function useVoiceEvents() {
           if (
             loc.serverId === serverId &&
             loc.channelId === channelId &&
-            !mapped.some((s) => s.ownerUsername === user)
+            !mapped.some((s) => s.ownerUid === user)
           ) {
             next.delete(user);
           }
         }
         for (const s of mapped) {
-          next.set(s.ownerUsername, {
+          next.set(s.ownerUid, {
             serverId,
             channelId,
             streamInfo: s,
@@ -297,14 +303,14 @@ export function useVoiceEvents() {
         const connCh = useVoiceStore.getState().connectedChannelId;
         if (serverId !== connSrv || channelId !== connCh) return;
 
-        const owners = new Set(mapped.map((s) => s.ownerUsername));
+        const owners = new Set(mapped.map((s) => s.ownerUid));
         if (prevStreamOwners) {
           for (const owner of owners) {
-            if (!prevStreamOwners.has(owner) && owner !== username)
+            if (!prevStreamOwners.has(owner) && owner !== me)
               playSound("stream_start");
           }
           for (const owner of prevStreamOwners) {
-            if (!owners.has(owner) && owner !== username)
+            if (!owners.has(owner) && owner !== me)
               playSound("stream_stop");
           }
         }
@@ -314,13 +320,13 @@ export function useVoiceEvents() {
 
         const { watchingStreams, fullscreenStream } = useVoiceStore.getState();
         for (const w of watchingStreams) {
-          if (!mapped.some((s) => s.ownerUsername === w)) {
+          if (!mapped.some((s) => s.ownerUid === w)) {
             useVoiceStore.getState().removeWatching(w);
           }
         }
         if (
           fullscreenStream &&
-          !mapped.some((s) => s.ownerUsername === fullscreenStream)
+          !mapped.some((s) => s.ownerUid === fullscreenStream)
         ) {
           useVoiceStore.getState().setFullscreenStream(null);
           if (useVoiceStore.getState().isStreamFullscreen) {
@@ -335,14 +341,14 @@ export function useVoiceEvents() {
       listen<{
         channelId: string;
         streamerUsername: string;
+        streamerUid?: number | bigint;
         newCodec: number;
         newWidth: number;
         newHeight: number;
         newFps: number;
         reason: number;
       }>("stream_codec_changed", (event) => {
-        const username = useAuthStore.getState().username;
-        const isLocalUserStreamer = event.payload.streamerUsername === username;
+        const isLocalUserStreamer = toUid(event.payload.streamerUid) === useAuthStore.getState().uid;
         const built = buildCodecToast(
           {
             channelId: event.payload.channelId,

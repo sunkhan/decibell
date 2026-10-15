@@ -12,7 +12,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { useChatStore } from "../../stores/chatStore";
 import { toast } from "../../stores/toastStore";
 import { PERM, canManageMember, hasBits } from "../servers/permissions";
-import { uidOf } from "../users/userDirectory";
+import { nameOf, type Uid } from "../../stores/usersStore";
 
 const MIME = "application/x-decibell-voice-member";
 
@@ -20,7 +20,7 @@ interface MemberDrag {
   serverId: string;
   /// The channel the member is in — not a valid drop target.
   channelId: string;
-  username: string;
+  uid: Uid;
 }
 
 /// `hover` is the voice channel under the cursor while a drag is in flight.
@@ -44,9 +44,10 @@ function ensureWindowListeners() {
   window.addEventListener("drop", () => setTimeout(clear, 0), true);
 }
 
-export function canMoveMember(serverId: string, channelId: string, username: string): boolean {
+export function canMoveMember(serverId: string, channelId: string, uid: Uid): boolean {
   const me = useAuthStore.getState().username;
-  if (!me || username === me) return false;
+  const username = nameOf(uid);
+  if (!me || !username || uid === useAuthStore.getState().uid) return false;
   const chat = useChatStore.getState();
   const owner = chat.serverOwner[serverId];
   if (username === owner) return false;
@@ -64,19 +65,19 @@ export function onMemberDragStart(
   e: React.DragEvent,
   serverId: string,
   channelId: string,
-  username: string,
+  uid: Uid,
 ) {
   // The channel list delegates its reorder drag on the container and
   // cancels any drag that didn't start on a channel row.
   e.stopPropagation();
-  if (!canMoveMember(serverId, channelId, username)) {
+  if (!canMoveMember(serverId, channelId, uid)) {
     e.preventDefault();
     return;
   }
   ensureWindowListeners();
-  e.dataTransfer.setData(MIME, username);
+  e.dataTransfer.setData(MIME, String(uid));
   e.dataTransfer.effectAllowed = "move";
-  useMemberDragStore.setState({ drag: { serverId, channelId, username }, hover: null });
+  useMemberDragStore.setState({ drag: { serverId, channelId, uid }, hover: null });
 }
 
 export const onMemberDragEnd = clear;
@@ -111,7 +112,7 @@ export function memberDropHandlers(serverId: string, channelId: string) {
       e.preventDefault();
       e.stopPropagation();
       useMemberDragStore.setState({ drag: null, hover: null });
-      invoke("voice_mod", { serverId, username: drag.username, uid: uidOf(drag.username), action: "move", channelId }).catch((err) =>
+      invoke("voice_mod", { serverId, uid: drag.uid, username: nameOf(drag.uid), action: "move", channelId }).catch((err) =>
         toast.error("Couldn't move member", String(err)),
       );
     },

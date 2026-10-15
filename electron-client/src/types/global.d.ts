@@ -162,7 +162,7 @@ declare global {
       };
       streamThumbnails: {
         subscribe: (
-          cb: (thumb: { ownerUsername: string; data: Uint8Array }) => void,
+          cb: (thumb: { ownerUsername: string; ownerUid: number; data: Uint8Array }) => void,
         ) => () => void;
       };
       capture: {

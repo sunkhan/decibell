@@ -27,7 +27,7 @@ import { loopSound, playSound } from "../../utils/sounds";
 import { flushSaveSettings } from "../settings/saveSettings";
 import { applySavedUserGains } from "../voice/userGain";
 import type { CallCandidate, CallSignalKind, CallStreamMeta, StreamInfo, VideoCodec } from "../../types";
-import { uidOf } from "../users/userDirectory";
+import { nameOf, type Uid } from "../../stores/usersStore";
 
 /// How long an unanswered call rings before the caller gives up / the
 /// callee's prompt goes away.
@@ -35,7 +35,7 @@ export const RING_TIMEOUT_MS = 45_000;
 
 /// Stream id used for in-call screen shares in voiceStore.activeStreams
 /// (community streams carry the server's ids).
-export const callStreamId = (owner: string) => `call:${owner}`;
+export const callStreamId = (owner: Uid) => `call:${owner}`;
 
 interface CallPrepareResult {
   pubKey: string;
@@ -67,14 +67,14 @@ function clearRingTimeout(): void {
 
 export function sendSignal(
   callId: string,
-  to: string,
+  to: Uid,
   kind: CallSignalKind,
   extra: { pubKey?: string; candidates?: CallCandidate[]; stream?: CallStreamMeta } = {},
 ): Promise<void> {
   return invoke("send_call_signal", {
     callId,
-    to,
-    toUid: uidOf(to),
+    to: nameOf(to),
+    toUid: to,
     kind,
     pubKey: extra.pubKey,
     candidates: extra.candidates,
@@ -112,22 +112,22 @@ export async function leaveCommunityVoiceIfAny(): Promise<void> {
 
 /// Ring `peer`. Resolves once the INVITE is on its way (the answer arrives
 /// through useCallEvents).
-export async function startCall(peer: string): Promise<void> {
+export async function startCall(peer: Uid): Promise<void> {
   const call = useCallStore.getState();
   if (call.status !== "idle") return;
   if (!call.callSignaling) {
     toast.warning("Calls unavailable", "The server you're signed into doesn't support calls yet.");
     return;
   }
-  const me = useAuthStore.getState().username;
-  if (!me || me === peer) return;
+  const me = useAuthStore.getState().uid;
+  if (!me || !(peer > 0) || me === peer) return;
 
   const callId = crypto.randomUUID();
   call.startOutgoing(callId, peer);
   try {
     await leaveCommunityVoiceIfAny();
     flushSaveSettings();
-    const prep = await invoke<CallPrepareResult>("call_prepare", { callId, peer });
+    const prep = await invoke<CallPrepareResult>("call_prepare", { callId, peer: nameOf(peer) });
     if (useCallStore.getState().callId !== callId) {
       // Cancelled while gathering candidates.
       await invoke("call_end").catch(() => {});
@@ -160,7 +160,7 @@ export async function acceptCall(): Promise<void> {
   call.setConnecting();
 
   // Land on the caller's DM so the call panel is where the user looks.
-  useDmStore.getState().setActiveDmUser(inc.from);
+  useDmStore.getState().setActiveDmUser(nameOf(inc.fromUid, inc.from));
   useUiStore.getState().setActiveView("dm");
 
   try {
@@ -168,20 +168,20 @@ export async function acceptCall(): Promise<void> {
     flushSaveSettings();
     const prep = await invoke<CallPrepareResult>("call_prepare", {
       callId: inc.callId,
-      peer: inc.from,
+      peer: nameOf(inc.fromUid, inc.from),
     });
     if (useCallStore.getState().callId !== inc.callId) {
       await invoke("call_end").catch(() => {});
       return;
     }
-    await sendSignal(inc.callId, inc.from, "ACCEPT", {
+    await sendSignal(inc.callId, inc.fromUid, "ACCEPT", {
       pubKey: prep.pubKey,
       candidates: prep.candidates,
     });
     await invoke("call_connect", {
       callId: inc.callId,
-      peer: inc.from,
-      peerUid: uidOf(inc.from),
+      peer: nameOf(inc.fromUid, inc.from),
+      peerUid: inc.fromUid,
       remotePubKey: inc.pubKey,
       remoteCandidates: inc.candidates,
       remotePubKeySig: inc.pubKeySig ?? undefined,
@@ -204,7 +204,7 @@ export async function declineCall(): Promise<void> {
 /// candidates. Called from useCallEvents.
 export async function connectAfterAccept(
   callId: string,
-  peer: string,
+  peer: Uid,
   pubKey: string,
   candidates: CallCandidate[],
   pubKeySig: string | null,
@@ -218,8 +218,8 @@ export async function connectAfterAccept(
   try {
     await invoke("call_connect", {
       callId,
-      peer,
-      peerUid: uidOf(peer),
+      peer: nameOf(peer),
+      peerUid: peer,
       remotePubKey: pubKey,
       remoteCandidates: candidates,
       remotePubKeySig: pubKeySig ?? undefined,
@@ -239,14 +239,15 @@ export async function onCallConnected(
 ): Promise<void> {
   const call = useCallStore.getState();
   if (call.callId !== callId || !call.peer) return;
-  const me = useAuthStore.getState().username ?? "";
+  const me = useAuthStore.getState().uid;
   call.setActive(path, verified);
   const v = useVoiceStore.getState();
   v.setConnectedChannel(null, null);
   v.setCallPeer(call.peer);
   v.setParticipants(
-    [me, call.peer].map((username) => ({
-      username,
+    [me, call.peer].map((uid) => ({
+      uid,
+      username: nameOf(uid),
       isMuted: false,
       isDeafened: false,
       isSpeaking: false,
@@ -279,12 +280,13 @@ async function applyPrefs(): Promise<void> {
 export function announceCallStreamStart(meta: CallStreamMeta): void {
   const call = useCallStore.getState();
   if (call.status !== "active" || !call.callId || !call.peer) return;
-  const me = useAuthStore.getState().username ?? "";
+  const me = useAuthStore.getState().uid;
   sendSignal(call.callId, call.peer, "STREAM_START", { stream: meta }).catch(() => {});
   const v = useVoiceStore.getState();
   const own: StreamInfo = {
     streamId: callStreamId(me),
-    ownerUsername: me,
+    ownerUsername: useAuthStore.getState().username ?? "",
+    ownerUid: me,
     hasAudio: meta.hasAudio,
     resolutionWidth: meta.width,
     resolutionHeight: meta.height,
@@ -293,7 +295,7 @@ export function announceCallStreamStart(meta: CallStreamMeta): void {
     enforcedCodec: 0 as VideoCodec,
     watcherCount: 0,
   };
-  v.setActiveStreams([...v.activeStreams.filter((s) => s.ownerUsername !== me), own]);
+  v.setActiveStreams([...v.activeStreams.filter((s) => s.ownerUid !== me), own]);
 }
 
 /// Our screen share ended inside the active call (user stopped it, or the
@@ -301,11 +303,11 @@ export function announceCallStreamStart(meta: CallStreamMeta): void {
 export function announceCallStreamStop(): void {
   const call = useCallStore.getState();
   if (call.status !== "active" || !call.callId || !call.peer) return;
-  const me = useAuthStore.getState().username ?? "";
+  const me = useAuthStore.getState().uid;
   sendSignal(call.callId, call.peer, "STREAM_STOP").catch(() => {});
   const v = useVoiceStore.getState();
-  if (v.activeStreams.some((s) => s.ownerUsername === me)) {
-    v.setActiveStreams(v.activeStreams.filter((s) => s.ownerUsername !== me));
+  if (v.activeStreams.some((s) => s.ownerUid === me)) {
+    v.setActiveStreams(v.activeStreams.filter((s) => s.ownerUid !== me));
   }
   if (v.watchingStreams.includes(me)) v.removeWatching(me);
 }
@@ -313,8 +315,8 @@ export function announceCallStreamStop(): void {
 /// Open `owner`'s stream in the DM's full view. For the peer this gates
 /// their frames through natively (call_watch_stream); our own stream is
 /// the renderer-internal self-preview.
-export async function watchCallStream(owner: string): Promise<void> {
-  const me = useAuthStore.getState().username ?? "";
+export async function watchCallStream(owner: Uid): Promise<void> {
+  const me = useAuthStore.getState().uid;
   const v = useVoiceStore.getState();
   if (owner !== me && !v.watchingStreams.includes(owner)) {
     await invoke("call_watch_stream", { watch: true }).catch(() => {});
@@ -324,8 +326,8 @@ export async function watchCallStream(owner: string): Promise<void> {
 }
 
 /// Leave `owner`'s stream (full view + mini). Peer → ungate natively.
-export async function unwatchCallStream(owner: string): Promise<void> {
-  const me = useAuthStore.getState().username ?? "";
+export async function unwatchCallStream(owner: Uid): Promise<void> {
+  const me = useAuthStore.getState().uid;
   if (owner !== me) {
     await invoke("call_watch_stream", { watch: false }).catch(() => {});
   }

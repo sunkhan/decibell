@@ -30,7 +30,7 @@ import { applyVoicePrefs } from "./applyVoicePrefs";
 import { endCall } from "../../call/callActions";
 import { useE2eeStore } from "../../../stores/e2eeStore";
 import { toast } from "../../../stores/toastStore";
-import { uidOf } from "../../users/userDirectory";
+import { nameOf } from "../../../stores/usersStore";
 
 export async function joinVoiceChannel(
   serverId: string,
@@ -87,14 +87,14 @@ export async function joinVoiceChannel(
     prevChannelId &&
     voice.watchingStreams.length > 0
   ) {
-    const ownUsername = useAuthStore.getState().username;
+    const own = useAuthStore.getState().uid;
     for (const target of voice.watchingStreams) {
-      if (target === ownUsername) continue; // own self-preview isn't a server watch
+      if (target === own) continue; // own self-preview isn't a server watch
       invoke("stop_watching", {
         serverId: prevServerId,
         channelId: prevChannelId,
-        targetUsername: target,
-        targetUid: uidOf(target),
+        targetUid: target,
+        targetUsername: nameOf(target),
       }).catch(() => {});
     }
     useVoiceStore.setState({

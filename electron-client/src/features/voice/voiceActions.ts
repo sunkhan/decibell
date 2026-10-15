@@ -9,7 +9,7 @@ import { useCallStore } from "../../stores/callStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAuthStore } from "../../stores/authStore";
 import { endCall } from "../call/callActions";
-import { uidOf } from "../users/userDirectory";
+import { nameOf } from "../../stores/usersStore";
 
 /// Mic button. Unmuting while deafened also undeafens (Discord's rule).
 export function toggleMute(): void {
@@ -54,14 +54,14 @@ export async function leaveVoiceChannel(): Promise<void> {
     // Best-effort, un-awaited: leave_voice_channel below drops all watch
     // subscriptions server-side, so don't serialize N round-trips into the
     // disconnect path.
-    const own = useAuthStore.getState().username;
-    for (const username of useVoiceStore.getState().watchingStreams) {
-      if (username !== own) {
+    const own = useAuthStore.getState().uid;
+    for (const uid of useVoiceStore.getState().watchingStreams) {
+      if (uid !== own) {
         invoke("stop_watching", {
           serverId: connectedServerId,
           channelId: connectedChannelId,
-          targetUsername: username,
-          targetUid: uidOf(username),
+          targetUid: uid,
+          targetUsername: nameOf(uid),
         }).catch(() => {});
       }
     }

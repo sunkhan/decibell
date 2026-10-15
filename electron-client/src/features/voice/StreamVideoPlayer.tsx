@@ -10,7 +10,7 @@ import {
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { useStreamStatsStore } from "./streamStats";
 import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
-import { ownUid, uidOf } from "../users/userDirectory";
+import type { Uid } from "../../stores/usersStore";
 
 // Stall detection thresholds (no painted frame for this long).
 const STALL_MS = 3000; // → show a "reconnecting" indicator + ping for a keyframe
@@ -29,7 +29,8 @@ function codecLabel(codec: VideoCodec): string {
 }
 
 interface Props {
-  streamerUsername: string;
+  /// The streamer (the media plane names them by uid).
+  streamerUid: Uid;
   className?: string;
 }
 
@@ -69,9 +70,9 @@ function u8Equals(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-export default function StreamVideoPlayer({ streamerUsername, className }: Props) {
-  const ownUsername = useAuthStore((s) => s.username);
-  const isOwnStream = ownUsername !== null && streamerUsername === ownUsername;
+export default function StreamVideoPlayer({ streamerUid, className }: Props) {
+  const ownUid = useAuthStore((s) => s.uid);
+  const isOwnStream = ownUid > 0 && streamerUid === ownUid;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const decoderRef = useRef<VideoDecoder | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -131,14 +132,13 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
     lastKeyframeRequestRef.current = now;
     if (!isOwnStream) {
       // The media plane names streamers by uid.
-      const uid = uidOf(streamerUsername);
-      if (uid !== undefined) invoke("request_stream_keyframe", { uid }).catch(() => {});
+      invoke("request_stream_keyframe", { uid: streamerUid }).catch(() => {});
     } else if (isNativeEncodeActive()) {
       invoke("force_keyframe", {}).catch(() => {});
     } else {
       activeStreamCapture()?.forceKeyframe();
     }
-  }, [isOwnStream, streamerUsername]);
+  }, [isOwnStream, streamerUid]);
 
   const configureDecoder = useCallback(
     (decoder: VideoDecoder, description?: ArrayBuffer) => {
@@ -475,9 +475,8 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       // streamer wake the callback. The preload bridge handles the dispatch
       // via Map lookup so other streamers' frames don't run through this
       // closure at all.
-      const uid = isOwnStream ? ownUid() : uidOf(streamerUsername);
       unsubscribe = window.decibell.streamFrames.subscribe(
-        uid !== undefined && uid > 0 ? String(uid) : "",
+        String(streamerUid),
         (frame: StreamFrame) => {
           // Native shed an earlier frame for this streamer (its bounded
           // queue was full), so this delta's reference chain is broken:
@@ -546,7 +545,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       lastDecoded = decoded;
       lastReceived = received;
       lastSample = now;
-      useStreamStatsStore.getState().publishStats(streamerUsername, {
+      useStreamStatsStore.getState().publishStats(streamerUid, {
         codecLabel: codecLabel(activeCodecRef.current),
         width: srcDimsRef.current.w,
         height: srcDimsRef.current.h,
@@ -629,7 +628,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       window.clearInterval(stallTimer);
       stalledRef.current = false;
       setStalled(false);
-      useStreamStatsStore.getState().clearStats(streamerUsername);
+      useStreamStatsStore.getState().clearStats(streamerUid);
       if (decoder && decoder.state !== "closed") {
         decoder.close();
       }
@@ -638,7 +637,7 @@ export default function StreamVideoPlayer({ streamerUsername, className }: Props
       configuredRef.current = false;
       setHasFirstFrame(false);
     };
-  }, [streamerUsername, isOwnStream, handleDecoderError, configureDecoder, requestKeyframe]);
+  }, [streamerUid, isOwnStream, handleDecoderError, configureDecoder, requestKeyframe]);
 
   if (!DECODER_AVAILABLE) {
     return (

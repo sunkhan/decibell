@@ -26,6 +26,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
 import { StreamAudioMode, VideoCodec } from "../../types";
 import { normalizeAppId } from "../voice/streamAudioFilter";
+import { restoreSavedUserGains } from "../voice/userGain";
 
 interface LoadedConfigShape {
   credentials: { username: string; password: string } | null;
@@ -258,17 +259,9 @@ export async function loadSettings(): Promise<void> {
     }));
   }
 
-  // Per-user volume + local mute restoration.
-  if (settings.user_volumes) {
-    for (const [username, db] of Object.entries(settings.user_volumes)) {
-      useVoiceStore.getState().setUserVolume(username, db);
-    }
-  }
-  if (settings.local_muted_users) {
-    for (const username of settings.local_muted_users) {
-      useVoiceStore.getState().toggleLocalMute(username);
-    }
-  }
+  // Per-user volume + local mute restoration (by uid; older name-keyed
+  // entries move to their uid as the servers name them).
+  restoreSavedUserGains(settings.user_volumes ?? {}, settings.local_muted_users ?? []);
 
   // Auto-login. If the user has saved credentials we attempt them
   // silently; failure (wrong password / server gone / no internet)

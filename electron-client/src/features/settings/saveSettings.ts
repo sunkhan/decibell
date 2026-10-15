@@ -24,6 +24,7 @@ import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { useTransfersStore } from "../../stores/transfersStore";
 import { useHotkeysStore } from "../../stores/hotkeysStore";
+import { savedUserGains } from "../voice/userGain";
 
 const DEBOUNCE_MS = 250;
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -31,7 +32,7 @@ let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 function doSave(): void {
   const ui = useUiStore.getState();
   const { friendsOnlyDms } = useDmStore.getState();
-  const { userVolumes, localMutedUsers, streamSettings } = useVoiceStore.getState();
+  const { streamSettings } = useVoiceStore.getState();
   const { downloadDir, askDownloadLocation } = useTransfersStore.getState();
   const hotkeys = useHotkeysStore.getState();
 
@@ -52,8 +53,7 @@ function doSave(): void {
     output_device: ui.outputDevice,
     separate_stream_output: ui.separateStreamOutput,
     stream_output_device: ui.streamOutputDevice,
-    user_volumes: userVolumes,
-    local_muted_users: [...localMutedUsers],
+    ...savedUserGains(),
     aec_enabled: ui.aecEnabled,
     noise_suppression_level: ui.noiseSuppressionLevel,
     agc_enabled: ui.agcEnabled,

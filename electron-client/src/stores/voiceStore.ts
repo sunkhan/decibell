@@ -2,8 +2,13 @@ import type { VoiceE2eeStatePayload } from "../types";
 import { create } from "zustand";
 import { StreamAudioMode, type VoiceParticipant, type StreamInfo, type ClientCapabilities, type VideoCodec } from "../types";
 import { useVoiceStatsStore } from "./voiceStatsStore";
+import { nameOf, type Uid } from "./usersStore";
 
-/// Per-username view of all active streams across every connected
+// Every person here is keyed by account uid (the media plane names them by
+// uid too); names are drawn through the users store. So a rename moves
+// nothing in this store.
+
+/// Per-user view of all active streams across every connected
 /// community server. Used by UserPopup to look up "is this user live?"
 /// in O(1) without scanning all of activeStreams (which only tracks
 /// the local user's currently connected channel).
@@ -35,8 +40,8 @@ interface VoiceState {
   /// `connectedServerId === null && connectedChannelId === null` — the
   /// same native VoiceEngine, just reached peer-to-peer. Components that
   /// gate on "am I in a media session" use `mediaSessionActive` below.
-  callPeer: string | null;
-  setCallPeer: (peer: string | null) => void;
+  callPeer: Uid | null;
+  setCallPeer: (peer: Uid | null) => void;
   /// MLS encryption state of the connected community channel (null in a
   /// DM call or when not connected). Drives the header badge.
   e2ee: VoiceE2eeStatePayload | null;
@@ -45,23 +50,23 @@ interface VoiceState {
   activeStreams: StreamInfo[];
   /// Source-of-truth map of streaming users across every connected
   /// community server. Driven by the `stream_presence_updated`
-  /// listener; UserPopup reads it by `username` lookup.
-  streamsByUser: Map<string, StreamLocation>;
+  /// listener; UserPopup reads it by uid.
+  streamsByUser: Map<Uid, StreamLocation>;
   isMuted: boolean;
   isDeafened: boolean;
   /// Set instead of array so per-row subscribers can do O(1)
-  /// `s.speakingUsers.has(name)` and so the slice equality is a
+  /// `s.speakingUsers.has(uid)` and so the slice equality is a
   /// simple ref check (we replace the Set wholesale on every change,
   /// not mutate in place).
-  speakingUsers: Set<string>;
+  speakingUsers: Set<Uid>;
   latencyMs: number | null;
   error: string | null;
   /// Every visible voice channel's roster on every connected community,
   /// keyed by `voiceKey(serverId, channelId)`. The community sends these to
   /// all members (snapshot at auth, then each change), so they are
   /// community state, not voice-session state: leaving voice keeps them.
-  channelPresence: Record<string, string[]>;
-  channelUserStates: Record<string, Record<string, VoiceUserState>>;
+  channelPresence: Record<string, Uid[]>;
+  channelUserStates: Record<string, Record<Uid, VoiceUserState>>;
   setConnectedChannel: (serverId: string | null, channelId: string | null) => void;
   setParticipants: (participants: VoiceParticipant[]) => void;
   /// Rebuild the connected-channel roster from the presence cache — for a
@@ -72,33 +77,33 @@ interface VoiceState {
   /// the channels not in it (hidden or deleted ones).
   clearServerPresence: (serverId: string, keepChannelIds?: Set<string>) => void;
   setActiveStreams: (streams: StreamInfo[]) => void;
-  setStreamsByUser: (m: Map<string, StreamLocation>) => void;
+  setStreamsByUser: (m: Map<Uid, StreamLocation>) => void;
   setMuted: (muted: boolean) => void;
   setDeafened: (deafened: boolean) => void;
-  setSpeaking: (username: string, speaking: boolean) => void;
+  setSpeaking: (uid: Uid, speaking: boolean) => void;
   setLatency: (ms: number) => void;
   setError: (error: string | null) => void;
   setChannelPresence: (
     serverId: string,
     channelId: string,
-    users: string[],
-    userStates?: ({ username: string } & VoiceUserState)[],
+    uids: Uid[],
+    userStates?: ({ uid: Uid } & VoiceUserState)[],
     userCapabilities?: ClientCapabilities[],
   ) => void;
-  /// Username → that user's advertised codec capabilities. Populated
+  /// uid → that user's advertised codec capabilities. Populated
   /// from VoicePresenceUpdate.user_capabilities when the streaming
   /// PR lights up codec negotiation. Defaults to empty.
-  userCapabilities: Record<string, ClientCapabilities>;
-  setUserState: (username: string, isMuted: boolean, isDeafened: boolean) => void;
-  streamThumbnails: Record<string, string>;
-  setStreamThumbnail: (username: string, dataUrl: string) => void;
-  watchingStreams: string[];
-  fullscreenStream: string | null;
+  userCapabilities: Record<Uid, ClientCapabilities>;
+  setUserState: (uid: Uid, isMuted: boolean, isDeafened: boolean) => void;
+  streamThumbnails: Record<Uid, string>;
+  setStreamThumbnail: (uid: Uid, dataUrl: string) => void;
+  watchingStreams: Uid[];
+  fullscreenStream: Uid | null;
   /// The stream currently loaded in the single persistent player. Unlike
   /// fullscreenStream it survives going "back to the streams grid", so the
   /// decoder stays warm and re-focusing the same stream is instant. Managed by
   /// StreamPipManager (set on focus, dropped when unwatched / idle on the grid).
-  pipStream: string | null;
+  pipStream: Uid | null;
   isStreaming: boolean;
   streamSettings: {
     resolution: "1080p" | "720p" | "source";
@@ -114,18 +119,19 @@ interface VoiceState {
     enforcedCodec: VideoCodec;
     includeCursor: boolean;
   };
-  addWatching: (username: string) => void;
-  removeWatching: (username: string) => void;
-  setPipStream: (username: string | null) => void;
+  addWatching: (uid: Uid) => void;
+  removeWatching: (uid: Uid) => void;
+  setPipStream: (uid: Uid | null) => void;
   isStreamFullscreen: boolean;
-  setFullscreenStream: (username: string | null) => void;
+  setFullscreenStream: (uid: Uid | null) => void;
   setStreamFullscreen: (fs: boolean) => void;
   setIsStreaming: (streaming: boolean) => void;
   setStreamSettings: (settings: Partial<VoiceState["streamSettings"]>) => void;
-  userVolumes: Record<string, number>;
-  setUserVolume: (username: string, db: number) => void;
-  localMutedUsers: Set<string>;
-  toggleLocalMute: (username: string) => void;
+  /// Saved per-user volume (dB) and local mute, by uid (settings).
+  userVolumes: Record<Uid, number>;
+  setUserVolume: (uid: Uid, db: number) => void;
+  localMutedUsers: Set<Uid>;
+  toggleLocalMute: (uid: Uid) => void;
   disconnect: () => void;
 }
 
@@ -159,7 +165,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const states = state.channelUserStates[key] ?? {};
       return {
         participants: roster.map((u) => ({
-          username: u,
+          uid: u,
+          username: nameOf(u),
           isMuted: states[u]?.isMuted ?? false,
           isDeafened: states[u]?.isDeafened ?? false,
           isServerMuted: states[u]?.isServerMuted ?? false,
@@ -199,27 +206,27 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setMuted: (muted) => set({ isMuted: muted }),
   setDeafened: (deafened) =>
     set(deafened ? { isDeafened: true, isMuted: true } : { isDeafened: false }),
-  setSpeaking: (username, speaking) =>
+  setSpeaking: (uid, speaking) =>
     set((state) => {
-      const has = state.speakingUsers.has(username);
+      const has = state.speakingUsers.has(uid);
       // Bail early if the requested state matches what we have — keeps
       // the Set ref stable so per-row subscribers don't churn on a
       // no-op event (the wire fires speaking-stop/start frequently).
       if (has === speaking) return state;
       const next = new Set(state.speakingUsers);
-      if (speaking) next.add(username);
-      else next.delete(username);
+      if (speaking) next.add(uid);
+      else next.delete(uid);
       return { speakingUsers: next };
     }),
   setLatency: (ms) => set({ latencyMs: ms }),
   setError: (error) => set({ error }),
-  setChannelPresence: (serverId, channelId, users, userStates, userCapabilities) =>
+  setChannelPresence: (serverId, channelId, uids, userStates, userCapabilities) =>
     set((state) => {
       const key = voiceKey(serverId, channelId);
-      const stateMap: Record<string, VoiceUserState> = {};
+      const stateMap: Record<Uid, VoiceUserState> = {};
       if (userStates) {
         for (const s of userStates) {
-          stateMap[s.username] = {
+          stateMap[s.uid] = {
             isMuted: s.isMuted,
             isDeafened: s.isDeafened,
             isServerMuted: s.isServerMuted,
@@ -229,37 +236,37 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         }
       }
       const newCaps = { ...state.userCapabilities };
-      if (userCapabilities && userCapabilities.length === users.length) {
-        users.forEach((u, i) => {
+      if (userCapabilities && userCapabilities.length === uids.length) {
+        uids.forEach((u, i) => {
           newCaps[u] = userCapabilities[i];
         });
       }
       return {
-        channelPresence: { ...state.channelPresence, [key]: users },
+        channelPresence: { ...state.channelPresence, [key]: uids },
         channelUserStates: { ...state.channelUserStates, [key]: stateMap },
         userCapabilities: newCaps,
       };
     }),
   userCapabilities: {},
-  setUserState: (username, isMuted, isDeafened) =>
+  setUserState: (uid, isMuted, isDeafened) =>
     set((state) => ({
       participants: state.participants.map((p) =>
-        p.username === username ? { ...p, isMuted, isDeafened } : p,
+        p.uid === uid ? { ...p, isMuted, isDeafened } : p,
       ),
     })),
   streamThumbnails: {},
-  setStreamThumbnail: (username, url) =>
+  setStreamThumbnail: (uid, url) =>
     set((state) => {
       // Thumbnails are blob: URLs created from raw JPEG bytes pushed
       // by main. Revoke the previous URL before replacing so we don't
       // leak Chromium-side blob storage as fresh thumbnails arrive
       // every few seconds per active stream.
-      const prev = state.streamThumbnails[username];
+      const prev = state.streamThumbnails[uid];
       if (prev && prev.startsWith("blob:")) {
         try { URL.revokeObjectURL(prev); } catch { /* already revoked */ }
       }
       return {
-        streamThumbnails: { ...state.streamThumbnails, [username]: url },
+        streamThumbnails: { ...state.streamThumbnails, [uid]: url },
       };
     }),
   watchingStreams: [],
@@ -278,22 +285,21 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     enforcedCodec: 0 as VideoCodec,
     includeCursor: true,
   },
-  addWatching: (username) =>
+  addWatching: (uid) =>
     set((state) => ({
-      watchingStreams: state.watchingStreams.includes(username)
+      watchingStreams: state.watchingStreams.includes(uid)
         ? state.watchingStreams
-        : [...state.watchingStreams, username],
+        : [...state.watchingStreams, uid],
     })),
-  removeWatching: (username) =>
+  removeWatching: (uid) =>
     set((state) => ({
-      watchingStreams: state.watchingStreams.filter((u) => u !== username),
-      fullscreenStream:
-        state.fullscreenStream === username ? null : state.fullscreenStream,
-      pipStream: state.pipStream === username ? null : state.pipStream,
+      watchingStreams: state.watchingStreams.filter((u) => u !== uid),
+      fullscreenStream: state.fullscreenStream === uid ? null : state.fullscreenStream,
+      pipStream: state.pipStream === uid ? null : state.pipStream,
     })),
-  setPipStream: (username) => set({ pipStream: username }),
+  setPipStream: (uid) => set({ pipStream: uid }),
   isStreamFullscreen: false,
-  setFullscreenStream: (username) => set({ fullscreenStream: username }),
+  setFullscreenStream: (uid) => set({ fullscreenStream: uid }),
   setStreamFullscreen: (fs) => set({ isStreamFullscreen: fs }),
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setStreamSettings: (settings) => {
@@ -310,18 +316,18 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     );
   },
   userVolumes: {},
-  setUserVolume: (username, db) =>
+  setUserVolume: (uid, db) =>
     set((state) => ({
-      userVolumes: { ...state.userVolumes, [username]: db },
+      userVolumes: { ...state.userVolumes, [uid]: db },
     })),
   localMutedUsers: new Set(),
-  toggleLocalMute: (username) =>
+  toggleLocalMute: (uid) =>
     set((state) => {
       const next = new Set(state.localMutedUsers);
-      if (next.has(username)) {
-        next.delete(username);
+      if (next.has(uid)) {
+        next.delete(uid);
       } else {
-        next.add(username);
+        next.add(uid);
       }
       return { localMutedUsers: next };
     }),

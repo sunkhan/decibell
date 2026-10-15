@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { invoke } from "../../lib/ipc";
 import { useVoiceStore } from "../../stores/voiceStore";
-import { uidOf } from "../users/userDirectory";
 
 /**
  * Keeps `voiceStore.streamThumbnails` filled for the voice view's stream
@@ -31,16 +30,16 @@ export function useStreamThumbnails() {
   useEffect(() => {
     const unsubscribe = window.decibell.streamThumbnails.subscribe((thumb) => {
       const state = useVoiceStore.getState();
-      const { ownerUsername, data } = thumb;
+      const { ownerUid, data } = thumb;
       // Skip if the stream has already gone away in the time it took
       // the thumbnail to land (race vs. a stop_streaming presence
       // update). Avoids briefly stashing a blob URL that nothing
       // would ever revoke.
-      if (!state.activeStreams.some((s) => s.ownerUsername === ownerUsername)) {
+      if (!state.activeStreams.some((s) => s.ownerUid === ownerUid)) {
         return;
       }
       const blob = new Blob([data], { type: "image/jpeg" });
-      state.setStreamThumbnail(ownerUsername, URL.createObjectURL(blob));
+      state.setStreamThumbnail(ownerUid, URL.createObjectURL(blob));
     });
 
     // streamIds already fetched on demand during this channel visit.
@@ -50,10 +49,10 @@ export function useStreamThumbnails() {
       const serverId = s.connectedServerId;
       if (!serverId || !s.connectedChannelId) return;
       for (const stream of s.activeStreams) {
-        const owner = stream.ownerUsername;
+        const owner = stream.ownerUid;
         if (s.streamThumbnails[owner] || requested.has(stream.streamId)) continue;
         requested.add(stream.streamId);
-        invoke("fetch_stream_thumbnail", { serverId, username: owner, uid: stream.ownerUid || uidOf(owner) })
+        invoke("fetch_stream_thumbnail", { serverId, uid: owner, username: stream.ownerUsername })
           .then((res) => {
             const jpeg = (res as { jpeg?: Uint8Array } | null)?.jpeg;
             if (!jpeg || jpeg.byteLength === 0) return; // nothing cached yet — a push follows

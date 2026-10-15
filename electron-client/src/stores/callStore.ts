@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { CallCandidate } from "../types";
+import type { Uid } from "./usersStore";
 
 // Lifecycle state of the (at most one) P2P DM call. The media-session
 // state (mute / deafen / speaking / streams / ping) stays in voiceStore —
@@ -16,6 +17,9 @@ export type CallStatus = "idle" | "outgoing" | "incoming" | "connecting" | "acti
 
 export interface IncomingCall {
   callId: string;
+  /// The caller's account.
+  fromUid: Uid;
+  /// Their name as the signal carried it (drawn via the users store).
   from: string;
   pubKey: string;
   candidates: CallCandidate[];
@@ -28,7 +32,8 @@ export interface IncomingCall {
 interface CallState {
   status: CallStatus;
   callId: string | null;
-  peer: string | null;
+  /// The other side's account.
+  peer: Uid | null;
   isCaller: boolean;
   /// Caller side: the callee's client acked the INVITE (it is ringing
   /// there) — drives "Calling…" vs "Ringing…".
@@ -57,7 +62,7 @@ interface CallState {
   stunServers: string[];
 
   setCallConfig: (cfg: { callSignaling: boolean; stunServers: string[] }) => void;
-  startOutgoing: (callId: string, peer: string) => void;
+  startOutgoing: (callId: string, peer: Uid) => void;
   setIncoming: (call: IncomingCall) => void;
   setRingingAcked: () => void;
   setConnecting: () => void;
@@ -100,7 +105,7 @@ export const useCallStore = create<CallState>((set) => ({
     set({
       status: "incoming",
       callId: call.callId,
-      peer: call.from,
+      peer: call.fromUid,
       isCaller: false,
       ringingAcked: false,
       startedAt: null,

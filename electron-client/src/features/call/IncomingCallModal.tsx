@@ -2,7 +2,7 @@ import { useCallStore } from "../../stores/callStore";
 import { UserAvatar } from "../../components/UserAvatar";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { acceptCall, declineCall } from "./callActions";
-import { legacyUid } from "../users/userDirectory";
+import { useUserName } from "../../stores/usersStore";
 
 /// Incoming DM call prompt. Mounted once in MainLayout, driven by
 /// callStore.incoming (the CertMismatchModal nullable-field pattern).
@@ -11,6 +11,7 @@ import { legacyUid } from "../users/userDirectory";
 export default function IncomingCallModal() {
   const status = useCallStore((s) => s.status);
   const incoming = useCallStore((s) => s.incoming);
+  const callerName = useUserName(incoming?.fromUid, incoming?.from ?? "");
   const visible = status === "incoming" && incoming != null;
   useEscapeToClose(() => {
     void declineCall();
@@ -22,17 +23,17 @@ export default function IncomingCallModal() {
       <div
         className="pointer-events-auto flex w-full max-w-sm items-center gap-3.5 rounded-xl border border-border bg-bg-secondary px-4 py-3.5 shadow-modal"
         role="dialog"
-        aria-label={`Incoming call from ${incoming.from}`}
+        aria-label={`Incoming call from ${callerName}`}
       >
         <div className="relative shrink-0">
           <div className="absolute inset-0 animate-ping rounded-lg bg-success/30" />
           <div className="relative">
-            <UserAvatar uid={legacyUid(incoming.from)} name={incoming.from} size={44} />
+            <UserAvatar uid={incoming.fromUid} name={callerName} size={44} />
           </div>
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate font-display text-[14px] font-semibold text-text-bright">
-            {incoming.from}
+            {callerName}
           </div>
           <div className="text-[12px] text-text-muted">Incoming call…</div>
         </div>
