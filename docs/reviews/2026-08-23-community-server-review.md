@@ -2817,5 +2817,5 @@ Verified:
 - `cargo test --lib` 234 (key-based pin adoption); `napi build`; `tsc` 0 (web + node);
 - offscreen smoke captures through a live rename, no console errors.
 
-Open: central's `legacy_*` tables (pre-migration name-keyed copies, unused) await an owner decision to drop
-them. Ships with a community + central rebuild and a client release, together.
+Central's `legacy_*` tables (pre-migration name-keyed copies, unused) stay, by owner decision: central moves
+to a new machine eventually, without them. Ships with a community + central rebuild and a client release, together.

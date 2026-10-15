@@ -452,5 +452,5 @@ something. What it changed:
     uid).
   - Logout clears DMs, drafts and friends.
 - **Still name-keyed, deliberately:** central's `legacy_*` tables (pre-migration copies nothing reads)
-  stay until the owner decides to drop them; sent-under names (`sealed_*`, `messages.sender`); the
+  stay, by owner decision (2026-10-15: central moves to a new machine eventually, without them); sent-under names (`sealed_*`, `messages.sender`); the
   JWT `sub`; labels.
