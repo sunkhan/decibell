@@ -77,6 +77,14 @@ pub struct AppState {
     /// silently re-authenticate. Cleared on logout. Persisted (encrypted)
     /// to userData via config.rs so app restart auto-logs-in.
     pub credentials: Option<(String, String)>,
+    /// LoginResponse.resume_token: a dropped central connection signs back
+    /// in with it, costing central no password check (a restart brings
+    /// everyone back at once). Central-only: never sent to a community.
+    /// Cleared on logout, in memory only.
+    pub resume_token: Option<String>,
+    /// The last LOGIN_REQ was a resume: a refusal falls back to the
+    /// password instead of reporting a failed sign-in.
+    pub resume_pending: bool,
     /// In-flight `resolve_invite_code` calls keyed by (uppercased)
     /// invite code. The central router fulfils each waiter when the
     /// matching INVITE_RESOLVE_RES arrives; the caller drops its half
@@ -197,6 +205,8 @@ impl Default for AppState {
             uid: 0,
             token: None,
             credentials: None,
+            resume_token: None,
+            resume_pending: false,
             pending_invite_resolves: HashMap::new(),
             voice_engine: None,
             video_engine: None,

@@ -92,6 +92,7 @@ std::optional<TokenUser> verify_jwt(const std::string& token, const std::string&
             .allow_algorithm(jwt::algorithm::ed25519{public_pem, ""})
             .with_issuer("decibell_central_auth")
             .verify(decoded);
+        if (decoded.has_audience()) return std::nullopt;  // central's resume token, not a session
         TokenUser who;
         who.username = decoded.get_subject();
         if (decoded.has_payload_claim("uid")) {

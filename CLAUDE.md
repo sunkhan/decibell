@@ -52,6 +52,9 @@ cd src/server/tests && D=/tmp/decibell-central-deps && ./setup_deps.sh "$D" ../.
 # Central is multi-threaded: after touching src/server, also run the suite under ThreadSanitizer and
 # AddressSanitizer + UBSan (README §Sanitizers; both must report nothing)
 ```
+For a change that could move central's capacity (threads, locks, per-connection memory, the login
+path), rerun `src/server/tests/load.py` (see its README section) and compare with the numbers in the
+review log.
 The system has no libpqxx/boost/jwt-cpp, so IDE diagnostics on `src/server/*` are header
 noise; the central harness builds against its own copies (libpqxx 7 + pgserver's PostgreSQL
 16 / libpq). A central schema change bumps `central_schema` and gets a migration check: build
@@ -136,6 +139,16 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   posts) or the database while holding the directory's lock. Decided for later: DM attachments go to object storage as end-to-end encrypted
   blobs (central stores no file bytes), and message ids (DM and channel) promise only "64-bit and
   increasing over time" (room for Snowflake-style ids).
+- **Central hardening** (`docs/superpowers/specs/2026-10-15-central-hardening-design.md`): a dropped
+  connection signs back in with `LoginRequest.resume_token`, never the password (no bcrypt storm after a
+  restart). Resume tokens are central-only by audience (`decibell_central_resume`): communities hold every
+  member's session token, so a session token must never sign anyone into central, central refuses a token
+  with an audience per packet, and communities refuse any token with an audience. They last 30 days from
+  the password sign-in and a resume never extends them. Limits live in `abuse_limits.hpp`: per address
+  (connections, new connections, password sign-ins, sign-ups), per account (failed sign-ins), the
+  server-wide connection cap from the open-file limit; per connection, DMs / reads / writes / sign-in
+  attempts are **paced** (an over-rate request waits, never dropped). Tests bind a fresh loopback source
+  address per connection. `src/server/tests/load.py` is the load test (results in the review log).
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.

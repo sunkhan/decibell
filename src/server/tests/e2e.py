@@ -62,12 +62,21 @@ def ensure_tls():
                         "-out", os.path.join(RUN, "server.crt")], check=True, capture_output=True)
 
 
-def start_server(binary=None, log_name="central.log"):
+def start_server(binary=None, log_name="central.log", extra_env=None, nofile=None, cpus=None):
     ensure_tls()
     env = dict(os.environ, DECIBELL_COMMUNITY_SECRET=SECRET, DECIBELL_DB_CONN=libpq_conninfo(),
-               DECIBELL_JWT_KEY_FILE=os.path.join(RUN, "jwt_ed25519.pem"))
+               DECIBELL_JWT_KEY_FILE=os.path.join(RUN, "jwt_ed25519.pem"), **(extra_env or {}))
     log = open(os.path.join(RUN, log_name), "ab")
-    proc = subprocess.Popen([binary or SERVER_BIN], cwd=RUN, env=env, stdout=log, stderr=subprocess.STDOUT)
+
+    def limit_files():
+        if nofile:
+            import resource
+            resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
+        if cpus:
+            os.sched_setaffinity(0, cpus)  # every thread central starts inherits it
+
+    proc = subprocess.Popen([binary or SERVER_BIN], cwd=RUN, env=env, stdout=log, stderr=subprocess.STDOUT,
+                            preexec_fn=limit_files)
     end = time.time() + 15
     while time.time() < end:
         try:
@@ -91,14 +100,27 @@ def stop_server(proc):
 
 # --- Wire client ---------------------------------------------------------------
 
+_next_src = [0]
+
+
+def next_source():
+    """A fresh loopback source address per connection: central limits
+    connections, sign-ins and sign-ups per address, and the suite makes far
+    more of them than one person would."""
+    _next_src[0] += 1
+    n = _next_src[0]
+    return f"127.0.{1 + (n // 250) % 190}.{1 + n % 250}"
+
+
 class Conn:
     """One TLS connection to central. `token` goes into every packet."""
 
-    def __init__(self, timeout=3.0):
+    def __init__(self, timeout=3.0, src=None):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        self.s = ctx.wrap_socket(socket.create_connection((HOST, PORT), timeout=timeout))
+        raw = socket.create_connection((HOST, PORT), timeout=timeout, source_address=(src or next_source(), 0))
+        self.s = ctx.wrap_socket(raw)
         self.buf = b""
         self.inbox = []
         self.closed = False
@@ -171,8 +193,8 @@ class Conn:
             pass
 
 
-def register(username, password="password123", email=None):
-    c = Conn()
+def register(username, password="password123", email=None, src=None):
+    c = Conn(src=src)
     c.send(pb.Packet.REGISTER_REQ, register_req=pb.RegisterRequest(
         username=username, password=password, email=email or f"{username}@example.com"))
     r = c.wait(pb.Packet.REGISTER_RES)
@@ -183,10 +205,11 @@ def register(username, password="password123", email=None):
 class User(Conn):
     """A logged-in client session."""
 
-    def __init__(self, username, password="password123"):
-        super().__init__()
+    def __init__(self, username, password="password123", resume="", src=None):
+        super().__init__(src=src)
         self.username = username
-        self.send(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=username, password=password))
+        req = pb.LoginRequest(resume_token=resume) if resume else pb.LoginRequest(username=username, password=password)
+        self.send(pb.Packet.LOGIN_REQ, login_req=req)
         r = self.wait(pb.Packet.LOGIN_RES, timeout=15)
         self.login = r.login_res if r else None
         self.ok = bool(self.login and self.login.success)
@@ -233,6 +256,29 @@ class User(Conn):
         self.send(pb.Packet.DM_CONVERSATIONS_REQ, dm_conversations_req=pb.DmConversationsReq())
         r = self.wait(pb.Packet.DM_CONVERSATIONS_RES)
         return {c.peer: c for c in r.dm_conversations_res.conversations} if r else None
+
+
+def jwt_claims(token):
+    part = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def mint_jwt(claims):
+    """A token signed with central's own key (the harness can read it), for
+    shapes central never issues: expired, another audience."""
+    head = b64url(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
+    body = b64url(json.dumps(claims).encode())
+    # Ed25519 signs in one shot, which openssl only does from a file.
+    path = os.path.join(RUN, "jwt_signing_input")
+    with open(path, "wb") as f:
+        f.write(f"{head}.{body}".encode())
+    sig = subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", os.path.join(RUN, "jwt_ed25519.pem"),
+                          "-in", path], capture_output=True, check=True).stdout
+    return f"{head}.{body}.{b64url(sig)}"
 
 
 def community_send(ptype, **payload):
@@ -912,6 +958,210 @@ def test_token_refresh():
     c.close()
 
 
+def test_resume():
+    print("resume after a dropped connection")
+    register("rhea")
+    a = User("rhea")
+    rt = a.login.resume_token if a.ok else ""
+    claims = jwt_claims(rt) if rt else {}
+    check("a password sign-in hands out a resume token", rt and rt != a.token
+          and claims.get("aud") == "decibell_central_resume" and claims.get("exp", 0) - claims.get("iat", 0) == 30 * 86400,
+          claims)
+    check("the session token has no audience", "aud" not in a.claims())
+    b = User("", resume=rt)
+    check("resume signs the account in", b.ok and b.login.uid == a.login.uid and b.login.username == "rhea"
+          and jwt_claims(b.token).get("uid") == a.login.uid, b.login)
+    check("resume echoes its token (no extension)", b.ok and b.login.resume_token == rt)
+    check("the resumed session works", b.conversations() is not None)
+    a.drain(0.5)
+    check("it replaced the earlier connection", a.closed)
+    a.close()
+    check("a session token isn't a resume token", not User("", resume=b.token).ok)
+    check("nor is junk", not User("", resume="x.y.z").ok)
+    now = int(time.time())
+    expired = mint_jwt({"iss": "decibell_central_auth", "aud": "decibell_central_resume", "uid": b.login.uid,
+                        "iat": now - 31 * 86400, "exp": now - 86400})
+    check("an expired resume token is refused", not User("", resume=expired).ok)
+    other = mint_jwt({"iss": "decibell_central_auth", "aud": "somewhere_else", "uid": b.login.uid,
+                      "iat": now, "exp": now + 3600})
+    check("another audience is refused", not User("", resume=other).ok)
+    c = Conn()
+    c.token = rt
+    c.send(pb.Packet.DM_CONVERSATIONS_REQ, dm_conversations_req=pb.DmConversationsReq())
+    c.drain(0.5)
+    check("a resume token isn't a session token", c.closed or not any(
+        p.type == pb.Packet.DM_CONVERSATIONS_RES for p in c.inbox))
+    c.close()
+    # A resume follows a rename (the token names the uid only).
+    b.send(pb.Packet.RENAME_REQ, rename_req=pb.RenameRequest(new_username="rhea2", password="password123"))
+    r = b.wait(pb.Packet.RENAME_RES)
+    check("renamed", r and r.rename_res.success, r and r.rename_res.message)
+    b.close()
+    d = User("", resume=rt)
+    check("a resume signs in under the current name", d.ok and d.login.username == "rhea2"
+          and jwt_claims(d.token).get("sub") == "rhea2")
+    d.close()
+
+
+def test_dm_pacing():
+    print("DM pacing")
+    a, b = User("alice"), User("bob")
+    ub = uid_of("bob")
+    t0 = time.time()
+    for i in range(20):
+        a.send(pb.Packet.DIRECT_MSG, direct_msg=pb.DirectMessage(recipient_uid=ub, content=f"burst {i}", nonce=f"burst{i}"))
+    got = []
+    end = time.time() + 10
+    while len(got) < 20 and time.time() < end:
+        p = b.wait(pb.Packet.DIRECT_MSG, timeout=max(0.1, end - time.time()))
+        if p and p.direct_msg.content.startswith("burst "):
+            got.append(p.direct_msg.content)
+    elapsed = time.time() - t0
+    check("a burst of 20 DMs all arrives, in order", got == [f"burst {i}" for i in range(20)], got[-3:])
+    check(f"... paced to 10 at once, then 3 a second ({elapsed:.1f} s)", 2.5 <= elapsed <= 6)
+    a.close(); b.close()
+
+
+def test_abuse_limits():
+    print("abuse limits")
+    import threading
+    # Failed sign-ins per account (from many addresses): 10, then held even
+    # with the right password; its resume token still signs in.
+    register("lockme")
+    ok = User("lockme")
+    rt = ok.login.resume_token
+    ok.close()
+    for _ in range(10):
+        User("lockme", password="wrong-password").close()
+    t0 = time.time()
+    blocked = User("lockme")
+    took = time.time() - t0
+    check("an account with 10 failed sign-ins is held", not blocked.ok and blocked.login
+          and "failed sign-ins" in blocked.login.message, blocked.login and blocked.login.message)
+    check("... without a password check", took < 0.2, f"{took:.2f}s")
+    blocked.close()
+    r = User("", resume=rt)
+    check("... but its resume token still signs in", r.ok)
+    r.close()
+    # Password sign-ins per address: 30, then refused without hashing. All
+    # at once, so the allowance can't refill meanwhile (it would under a
+    # sanitizer, where each check is slow).
+    src = "127.0.250.1"
+    conns = [Conn(src=src) for _ in range(40)]
+    results = []
+
+    def attempt(i):
+        t0 = time.time()
+        conns[i].send(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=f"nosuch{i}", password="x"))
+        r = conns[i].wait(pb.Packet.LOGIN_RES, timeout=60)
+        results.append((r.login_res.message if r else "", time.time() - t0))
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(40)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    checked = [d for m, d in results if m == "Invalid username or password."]
+    refused = [d for m, d in results if "from your network" in m]
+    check("password sign-ins from one address stop at 30", 30 <= len(checked) <= 31 and len(checked) + len(refused) == 40,
+          f"{len(checked)} checked, {len(refused)} refused")
+    check("... refused without a password check", refused and min(refused) < min(checked),
+          f"refused in {min(refused or [0]):.2f}s, checked in {min(checked or [0]):.2f}s+")
+    for c in conns:
+        c.close()
+    check("another address still signs in", User("alice").ok)
+    # Sign-ups per address: 10, then refused.
+    src = "127.0.250.2"
+    outcomes = []
+
+    def signup(i):
+        res = register(f"signup{i}", src=src)
+        outcomes.append(bool(res and res.success))
+
+    threads = [threading.Thread(target=signup, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("10 sign-ups from one address", outcomes.count(True) == 10, outcomes)
+    r = register("signup10", src=src)
+    check("the 11th is refused", r and not r.success and "sign-ups" in r.message, r and r.message)
+    # New connections per address: 60 at once, then 10 a second.
+    socks = [socket.create_connection((HOST, PORT), timeout=2, source_address=("127.0.250.3", 0))
+             for _ in range(75)]
+    time.sleep(0.5)
+    refused = len(socks) - open_count(socks)
+    check("connecting too fast from one address is cut off", 10 <= refused <= 16, f"{refused} of 75 refused")
+    for s in socks:
+        s.close()
+
+
+def raw_connections(n, per_source=10, base=200):
+    return [socket.create_connection((HOST, PORT), timeout=2,
+                                     source_address=(f"127.0.{base + i // per_source}.1", 0))
+            for i in range(n)]
+
+
+def open_count(socks):
+    alive = 0
+    for s in socks:
+        s.settimeout(0.05)
+        try:
+            if s.recv(1) != b"":
+                alive += 1
+        except (socket.timeout, TimeoutError):
+            alive += 1
+        except OSError:
+            pass
+    return alive
+
+
+def cpu_seconds(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        fields = f.read().rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
+def test_connection_limits():
+    """Own server instances: the connection cap, and running out of file
+    descriptors (accept used to retry in a busy loop)."""
+    print("connection limits")
+    proc = start_server(log_name="central_cap.log", extra_env={"DECIBELL_MAX_CONNECTIONS": "40"})
+    try:
+        socks = raw_connections(40)
+        time.sleep(0.3)
+        extra = raw_connections(5, base=230)
+        time.sleep(0.5)
+        check("the server-wide cap holds", open_count(socks) == 40 and open_count(extra) == 0,
+              f"{open_count(socks)} + {open_count(extra)}")
+        for s in socks[:10] + extra:
+            s.close()
+        time.sleep(0.3)
+        check("a freed slot takes a new connection", User("alice").ok)
+        for s in socks[10:]:
+            s.close()
+    finally:
+        stop_server(proc)
+    proc = start_server(log_name="central_fd.log", nofile=128,
+                        extra_env={"DECIBELL_MAX_CONNECTIONS": "1000", "DECIBELL_IO_THREADS": "2",
+                                   "DECIBELL_CPU_THREADS": "1"})
+    try:
+        socks = raw_connections(160)
+        time.sleep(0.5)
+        before = cpu_seconds(proc.pid)
+        time.sleep(2.0)
+        used = cpu_seconds(proc.pid) - before
+        check("out of descriptors, accept doesn't spin", used < 0.3, f"{used:.2f}s of CPU in 2 s")
+        for s in socks:
+            s.close()
+        time.sleep(0.5)
+        check("... and it recovers once some close", User("alice").ok)
+        with open(os.path.join(RUN, "central_fd.log")) as f:
+            check("... and says so in the log", "accept failed" in f.read())
+    finally:
+        stop_server(proc)
+
+
 def seed_with_old_binary():
     """Data shapes as the pre-uid central writes them."""
     for n in ("alice", "bob", "carol", "dave"):
@@ -1043,8 +1293,12 @@ def main():
         test_rename_keeps_everything()
         test_rename()
         test_token_refresh()
+        test_resume()
+        test_dm_pacing()
+        test_abuse_limits()
     finally:
         stop_server(proc)
+    test_connection_limits()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:
         print("failed:", ", ".join(FAIL))

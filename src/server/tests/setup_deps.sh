@@ -22,6 +22,10 @@ if [ ! -x $D/pgvenv/bin/python ]; then
   uv venv -q --python 3.12 $D/pgvenv
   VIRTUAL_ENV=$D/pgvenv uv pip install -q pgserver 'psycopg[binary]' protobuf
 fi
+# load.py signs its clients' resume tokens with central's key.
+if ! $D/pgvenv/bin/python -c 'import cryptography' 2>/dev/null; then
+  VIRTUAL_ENV=$D/pgvenv uv pip install -q cryptography
+fi
 PG=$($D/pgvenv/bin/python -c "import pgserver, os; print(os.path.join(os.path.dirname(pgserver.__file__), 'pginstall'))")
 
 # libpqxx 7 (the project targets 7.x), static, against that libpq.

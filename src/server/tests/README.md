@@ -44,4 +44,29 @@ ASAN_OPTIONS=detect_leaks=1:detect_container_overflow=0 DECIBELL_E2E_SERVER="$D/
 grep -n "WARNING: ThreadSanitizer\|ERROR: AddressSanitizer\|runtime error\|SUMMARY" "$D/run/central.log"
 ```
 
+**Addresses.** Central limits connections, sign-ins and sign-ups per IP address
+(`docs/superpowers/specs/2026-10-15-central-hardening-design.md`), so every test connection binds a fresh
+loopback source address (`127.0.x.y`); the limit checks use fixed ones. The connection-cap and
+out-of-descriptors checks start their own central instances after the main suite.
+
+## Load test
+
+`load.py` measures central the way production runs it: central and its PostgreSQL pinned to a CPU set
+(default: one thread of each of six performance cores, `--server-cpus 0,2,4,6,8,10`, with 6 io and 3 CPU
+threads), accounts seeded straight into the database, and client worker processes on the other CPUs
+(`--worker-cpus`, `--workers`) holding real TLS connections from their own loopback ranges. Clients sign
+in with resume tokens minted with central's key, as after a restart.
+
+```sh
+DECIBELL_E2E_PB="$D/pb" DECIBELL_E2E_SERVER="$D/central_server" DECIBELL_E2E_RUN="$D/load" \
+  "$D/pgvenv/bin/python" -I load.py --steps 5000,10000,20000,30000,40000 --rates 250,500,1000,2000,4000
+```
+
+Phases: password sign-ins (bcrypt throughput); a ramp of connected clients, each subscribed to 50 others
+and pinging (central memory and CPU, presence and DM latency at each step); traffic at full population
+(DMs at rising rates, auto-away flips, re-subscriptions; delivery latency of every DM); and a restart of
+central with everyone connected (time until all have resumed). The report lands in
+`$RUN/load-report.md` and `.json`. It needs `cryptography` in the venv (`setup_deps.sh` installs it) and a
+few GB of memory for 40,000 clients.
+
 Requires `uv`, `protoc`, `g++`, `cmake`, `openssl` and `pkg-config` with protobuf.

@@ -4282,6 +4282,10 @@ private:
                 .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem_, ""})
                 .with_issuer("decibell_central_auth");
             verifier.verify(decoded);
+            // Central's resume tokens carry an audience; session tokens
+            // never do. A resume token is never sent here, but if one
+            // were, it must not pass as a session.
+            if (decoded.has_audience()) throw std::runtime_error("not a session token");
             TokenClaims c;
             c.username = decoded.get_subject();
             if (decoded.has_payload_claim("uid")) {

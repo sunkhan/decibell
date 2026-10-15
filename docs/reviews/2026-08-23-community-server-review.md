@@ -2911,3 +2911,69 @@ reloads, logout mid-fetch leaves nothing; smoke scenes clean.
 
 Ships with the Hetzner central rebuild: against a central without `avatars`, this client takes every
 covered user without a presence entry as having no picture, so offline friends would show a letter.
+
+### Central hardening + load test (2026-10-15)
+
+Owner asked whether central was ready for hundreds of thousands of users; the answer was "not yet" for
+four reasons, all fixed here (design: `docs/superpowers/specs/2026-10-15-central-hardening-design.md`):
+
+- **Reconnects no longer use the password.** A password sign-in returns a resume token; a dropped
+  connection signs back in with it (a signature check and three reads, no bcrypt). Resume tokens are
+  central-only by audience (`decibell_central_resume`): communities hold every member's session token, so
+  one must never sign anyone into central. Central refuses an audience token per packet, and communities
+  refuse any token with an audience. They last 30 days from the password sign-in; a resume echoes rather
+  than extends. The client falls back to the password silently when a resume is refused, stores the new
+  connection before sending its login (the LoginRes handler writes through it), and jitters its
+  reconnect delays (50–150%).
+- **Abuse limits** (`abuse_limits.hpp`): per address (256 open connections; 60 new then 10 a second;
+  30 password sign-ins then one every 2 s; 10 sign-ups then one every 2 minutes), per account (10 failed
+  sign-ins then one a minute, refused before hashing; its resume token still works), and a server-wide
+  connection cap. Per connection, DMs (10 / 3 a second), reads (60 / 20), writes (20 / 1) and sign-in
+  attempts (5 / 1 per 2 s) are paced: an over-rate request waits with reading paused, never dropped.
+- **Open files:** central raises its soft limit to the hard one and caps connections below it (a reserve
+  for the database pool); accept() out of descriptors waits 100 ms instead of spinning.
+- **Token checks:** keys parsed once (one signer, two verifiers shared by all threads); a session checks
+  only the expiry of a token it already verified.
+- A received buffer larger than 64 KB (an avatar upload, up to 2 MB) is freed after parsing instead of
+  staying allocated for the rest of the connection.
+
+**Load test** (`src/server/tests/load.py`): central and PostgreSQL pinned to one thread of six P-cores of
+an i7-12700K (6 io + 3 CPU threads; stands in for the 6-core E-2226G box), 8 Python client workers on the
+other cores, real TLS connections from many loopback addresses, clients signing in by resume token.
+
+| Connected (idle, each watching 50) | 10,000 | 20,000 | 40,000 |
+|---|---:|---:|---:|
+| central memory | 816 MB | 1.6 GB | 3.2 GB (82 KB each) |
+| central CPU, idle | 0.00 cores | 0.01 | 0.01 |
+| presence / DM latency p50 | 0.2 / 0.7 ms | 0.2 / 0.7 ms | 0.2 / 0.7 ms |
+
+| At 40,000 online, DMs/s delivered | 3,860 | 7,620 | 15,100 |
+|---|---:|---:|---:|
+| delivery p50 / p99 | 1.9 / 5.6 ms | 3.1 / 24 ms | 5.6 / 17 ms |
+| central / PostgreSQL CPU | 0.36 / 0.67 cores | 0.70 / 1.34 | 1.16 / 2.26 |
+
+Plus, during traffic, ~640 presence deltas and ~320 subscription answers a second (2% of users
+flipping away per minute, everyone switching view every 2 minutes); no drops at any step.
+
+- **Restart with 40,000 connected:** all back 19.7 s after central was listening again (50% in 7.4 s),
+  central using 57 CPU-s (~1.3 ms per resume, so 6 cores absorb ~4,600 a second); the Python clients
+  spent more CPU than central did and set the pace. By password the same storm is ~2,340 s of bcrypt
+  (17 sign-ins a second on 3 CPU threads).
+- **Memory floor:** ~82 KB per connection, almost all TLS buffers: Boost.Asio's SSL stream allocates two
+  17 KB record buffers and a 2 × 17 KB BIO pair per connection, whatever OpenSSL is told
+  (`SSL_MODE_RELEASE_BUFFERS` measured no difference and was left out). 100,000 connections ≈ 8 GB. Going
+  below needs TLS terminated elsewhere (a proxy) or a different TLS layer: later, if memory binds first.
+- **Certificate:** an ECDSA P-256 certificate instead of RSA-2048 cut central's CPU per resume by 30%
+  (9.0 vs 12.8 CPU-s for 10,000). Not changed: clients pin central's certificate on first use, so a new
+  one shows existing clients the certificate-changed prompt; worth doing together with a release that
+  ships the new fingerprint.
+
+Verified: central e2e 215 (incl. the migration check; new: resume, refused session / junk / expired /
+foreign-audience tokens, resume after a rename, account and address limits, DM pacing at 3.3 s for 20,
+the connection cap, out of descriptors without spinning and recovering), the same under ThreadSanitizer
+and ASan + UBSan + LeakSanitizer; community e2e (the audience check); `cargo test --lib` 234 (jittered
+backoff, resume field); `napi build`; `tsc` 0; warnings-enabled compile clean.
+
+Ships with the Hetzner central rebuild and the next client release (an older client keeps reconnecting by
+password, which still works; this client against an older central gets no resume token and does the same).
+The community rebuild adds the audience check.

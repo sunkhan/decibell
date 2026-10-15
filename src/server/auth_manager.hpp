@@ -18,6 +18,14 @@ public:
                 const std::string& jwt_private_pem, const std::string& jwt_public_pem)
         : secret_key_(community_secret), db_conn_str_(db_conn_str),
           jwt_private_pem_(jwt_private_pem), jwt_public_pem_(jwt_public_pem),
+          signer_(jwt_public_pem, jwt_private_pem),
+          session_verifier_(jwt::verify()
+              .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem, ""})
+              .with_issuer(TOKEN_ISSUER)),
+          resume_verifier_(jwt::verify()
+              .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem, ""})
+              .with_issuer(TOKEN_ISSUER)
+              .with_audience(RESUME_AUDIENCE)),
           pool_(db_conn_str, 4) {
         initializeDatabase();
     }
@@ -64,8 +72,28 @@ public:
     // Processes login. Returns the token and account, or std::nullopt if failed.
     std::optional<LoginResult> authenticateUser(const std::string& username, const std::string& password);
 
-    // Verifies an incoming JWT from a client or community server
-    bool validateToken(const std::string& token);
+    /// A session token's claims.
+    struct TokenClaims {
+        int64_t uid = 0;
+        int64_t expires_at = 0;  // unix seconds
+    };
+    /// A session token (the one every packet and every community sees):
+    /// signed here, not expired, no audience. nullopt otherwise. The keys
+    /// are parsed once, at startup.
+    std::optional<TokenClaims> verifyToken(const std::string& token);
+
+    /// Resume tokens (docs/superpowers/specs/2026-10-15-central-hardening-
+    /// design.md): a dropped connection signs back in with one instead of
+    /// the password. Central-only: their audience keeps communities, which
+    /// see every member's session token, from ever passing one as a session
+    /// token, and a session token is never accepted as one. Valid for
+    /// RESUME_LIFETIME from the password sign-in; resuming doesn't extend it.
+    static constexpr int64_t RESUME_LIFETIME_SECONDS = 30 * 24 * 3600;
+    std::optional<std::string> mintResumeToken(int64_t uid, int64_t signed_in_at);
+    /// Sign in with a resume token: the account (its current name) and a
+    /// fresh session token; nullopt when the token is invalid or expired or
+    /// the account is gone.
+    std::optional<LoginResult> resumeSession(const std::string& resume_token);
 
     // Constant-time comparison of the community↔central secret. (Length is
     // allowed to short-circuit; the length isn't the secret.)
@@ -397,6 +425,14 @@ private:
     std::string db_conn_str_;
     std::string jwt_private_pem_;
     std::string jwt_public_pem_;
+    static constexpr const char* TOKEN_ISSUER = "decibell_central_auth";
+    static constexpr const char* RESUME_AUDIENCE = "decibell_central_resume";
+    using JwtVerifier = decltype(jwt::verify());
+    // Built once: each holds the parsed key. Only const calls after
+    // construction, so every thread may use them at once.
+    const jwt::algorithm::ed25519 signer_;
+    const JwtVerifier session_verifier_;
+    const JwtVerifier resume_verifier_;
     PgPool pool_;
     struct StoredCredentials {
         int64_t uid = 0;

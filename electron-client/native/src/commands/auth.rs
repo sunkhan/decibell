@@ -35,6 +35,9 @@ pub async fn login(args: LoginArgs) -> napi::Result<()> {
     let old_central = {
         let mut s = state_arc.lock().await;
         s.credentials = Some((username.clone(), password.clone()));
+        // A new password sign-in hands out its own resume token.
+        s.resume_token = None;
+        s.resume_pending = false;
         s.central.take()
     };
     if let Some(mut old) = old_central {
@@ -245,6 +248,8 @@ pub async fn logout() -> napi::Result<()> {
         s.presence_watch.clear();
         s.token = None;
         s.credentials = None;
+        s.resume_token = None;
+        s.resume_pending = false;
         s.connected_voice_server = None;
         s.connected_voice_channel = None;
         s.voice_muted = false;

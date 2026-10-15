@@ -543,13 +543,13 @@ std::optional<std::string> AuthManager::mintToken(int64_t uid, const std::string
     auto now = std::chrono::system_clock::now();
     try {
         return jwt::create()
-            .set_issuer("decibell_central_auth")
+            .set_issuer(TOKEN_ISSUER)
             .set_type("JWS")
             .set_subject(username)
             .set_payload_claim("uid", jwt::claim(nlohmann::json(uid)))
             .set_issued_at(now)
             .set_expires_at(now + std::chrono::hours(24))
-            .sign(jwt::algorithm::ed25519{jwt_public_pem_, jwt_private_pem_});
+            .sign(signer_);
     } catch (const std::exception& e) {
         std::cerr << "[Auth] JWT signing failed: " << e.what() << "\n";
         return std::nullopt;
@@ -666,18 +666,73 @@ AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string
     return out;
 }
 
-bool AuthManager::validateToken(const std::string& token) {
-    try {
-        auto decoded = jwt::decode(token);
-        auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::ed25519{jwt_public_pem_, ""})
-            .with_issuer("decibell_central_auth");
+/// The uid claim (integer, or a number from an older encoder); 0 if absent.
+template <class Decoded>
+static int64_t uid_claim(const Decoded& decoded) {
+    if (!decoded.has_payload_claim("uid")) return 0;
+    const auto claim = decoded.get_payload_claim("uid");
+    if (claim.get_type() == jwt::json::type::integer) return claim.as_integer();
+    if (claim.get_type() == jwt::json::type::number) return static_cast<int64_t>(claim.as_number());
+    return 0;
+}
 
-        verifier.verify(decoded);
-        return true;
-    } catch (const std::exception& e) {
-        return false;
+std::optional<AuthManager::TokenClaims> AuthManager::verifyToken(const std::string& token) {
+    try {
+        const auto decoded = jwt::decode(token);
+        session_verifier_.verify(decoded);  // signature, issuer, expiry
+        if (decoded.has_audience()) return std::nullopt;  // a resume token
+        TokenClaims claims;
+        claims.uid = uid_claim(decoded);
+        claims.expires_at = std::chrono::duration_cast<std::chrono::seconds>(
+            decoded.get_expires_at().time_since_epoch()).count();
+        return claims;
+    } catch (const std::exception&) {
+        return std::nullopt;
     }
+}
+
+std::optional<std::string> AuthManager::mintResumeToken(int64_t uid, int64_t signed_in_at) {
+    using clock = std::chrono::system_clock;
+    try {
+        return jwt::create()
+            .set_issuer(TOKEN_ISSUER)
+            .set_audience(RESUME_AUDIENCE)
+            .set_type("JWS")
+            .set_payload_claim("uid", jwt::claim(nlohmann::json(uid)))
+            .set_issued_at(clock::time_point(std::chrono::seconds(signed_in_at)))
+            .set_expires_at(clock::time_point(std::chrono::seconds(signed_in_at + RESUME_LIFETIME_SECONDS)))
+            .sign(signer_);
+    } catch (const std::exception& e) {
+        std::cerr << "[Auth] Resume token signing failed: " << e.what() << "\n";
+        return std::nullopt;
+    }
+}
+
+std::optional<AuthManager::LoginResult> AuthManager::resumeSession(const std::string& resume_token) {
+    int64_t uid = 0;
+    try {
+        const auto decoded = jwt::decode(resume_token);
+        resume_verifier_.verify(decoded);  // signature, issuer, audience, expiry
+        uid = uid_claim(decoded);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    if (uid <= 0) return std::nullopt;
+    std::string username;
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::nontransaction txn(conn);
+        const pqxx::result rs = txn.exec_params("SELECT username FROM users WHERE uid = $1", uid);
+        if (rs.empty()) return std::nullopt;
+        username = rs[0][0].as<std::string>();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] resumeSession: " << e.what() << "\n";
+        return std::nullopt;
+    }
+    auto token = mintToken(uid, username);
+    if (!token) return std::nullopt;
+    return LoginResult{*token, uid, username};
 }
 
 AuthManager::UserRef AuthManager::resolveUser(int64_t uid, const std::string& username) {

@@ -99,6 +99,7 @@ impl CentralClient {
             packet::Payload::LoginReq(LoginRequest {
                 username: username.into(),
                 password: password.into(),
+                resume_token: String::new(),
             }),
             None,
         );
@@ -153,24 +154,34 @@ impl CentralClient {
                     Ok((connection, read_rx)) => {
                         log::info!("Reconnected to central server");
 
-                        // Re-authenticate with stored credentials.
-                        // Send BEFORE locking AppState — connection.send() writes
-                        // to a bounded channel that can block on a dead socket.
-                        {
-                            let s = state.lock().await;
-                            if let Some((ref user, ref pass)) = s.credentials {
-                                let login_data = build_packet(
-                                    packet::Type::LoginReq,
-                                    packet::Payload::LoginReq(LoginRequest {
-                                        username: user.clone(),
-                                        password: pass.clone(),
-                                    }),
-                                    None,
-                                );
-                                drop(s);
-                                let _ = connection.send(login_data).await;
-                            }
-                        }
+                        // Re-authenticate: with the resume token (no
+                        // password check for central), else with the stored
+                        // credentials. A refused resume falls back to the
+                        // password in the LoginRes handler. Send after
+                        // releasing AppState: connection.send() writes to a
+                        // bounded channel that can block on a dead socket.
+                        let login_data = {
+                            let mut s = state.lock().await;
+                            let request = if let Some(token) = s.resume_token.clone() {
+                                s.resume_pending = true;
+                                Some(LoginRequest {
+                                    username: String::new(),
+                                    password: String::new(),
+                                    resume_token: token,
+                                })
+                            } else {
+                                s.resume_pending = false;
+                                s.credentials.as_ref().map(|(user, pass)| LoginRequest {
+                                    username: user.clone(),
+                                    password: pass.clone(),
+                                    resume_token: String::new(),
+                                })
+                            };
+                            request.map(|req| {
+                                build_packet(packet::Type::LoginReq, packet::Payload::LoginReq(req), None)
+                            })
+                        };
+                        let login_tx = connection.clone_write_tx();
 
                         let router = tokio::spawn(Self::route_packets(read_rx, state.clone()));
 
@@ -211,6 +222,13 @@ impl CentralClient {
                         }
                         drop(s);
 
+                        // Only now: the LoginRes handler (re-subscribing, or
+                        // falling back to the password) writes through the
+                        // connection stored above.
+                        if let Some(login_data) = login_data {
+                            let _ = login_tx.send(login_data).await;
+                        }
+
                         events::emit_connection_restored("central", None);
                         return;
                     }
@@ -236,6 +254,10 @@ impl CentralClient {
                     if resp.success {
                         let mut s = state.lock().await;
                         s.token = Some(resp.jwt_token.clone());
+                        s.resume_pending = false;
+                        if !resp.resume_token.is_empty() {
+                            s.resume_token = Some(resp.resume_token.clone());
+                        }
                         // The name as central stores it, else the one we typed.
                         let username = if !resp.username.is_empty() {
                             resp.username.clone()
@@ -366,7 +388,37 @@ impl CentralClient {
                             });
                         }
                     } else {
-                        events::emit_login_failed(resp.message);
+                        // A refused resume (expired, or central restarted
+                        // with a new key) falls back to the password,
+                        // silently; only a refused password sign-in is a
+                        // failure to report.
+                        let fallback = {
+                            let mut s = state.lock().await;
+                            if std::mem::take(&mut s.resume_pending) {
+                                s.resume_token = None;
+                                let tx = s.central.as_ref().and_then(|c| c.connection_write_tx());
+                                s.credentials.clone().zip(tx)
+                            } else {
+                                None
+                            }
+                        };
+                        match fallback {
+                            Some(((user, pass), tx)) => {
+                                let data = build_packet(
+                                    packet::Type::LoginReq,
+                                    packet::Payload::LoginReq(LoginRequest {
+                                        username: user,
+                                        password: pass,
+                                        resume_token: String::new(),
+                                    }),
+                                    None,
+                                );
+                                tokio::spawn(async move {
+                                    let _ = tx.send(data).await;
+                                });
+                            }
+                            None => events::emit_login_failed(resp.message),
+                        }
                     }
                 }
                 Some(packet::Payload::RegisterRes(resp)) => {

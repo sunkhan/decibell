@@ -22,6 +22,8 @@
 #include <netinet/tcp.h>
 #endif
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <thread>
@@ -30,12 +32,16 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/thread_pool.hpp>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
 #include "auth_utils.hpp"
 #include "../common/ed25519_keys.hpp"
 #include "session_manager.hpp"
 #include "auth_manager.hpp"
+#include "abuse_limits.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -53,31 +59,6 @@ constexpr size_t MAX_DM_ENVELOPE = 64 * 1024 + 64;
 constexpr size_t E2EE_PUB_LEN = 32;
 constexpr size_t E2EE_SIG_LEN = 64;
 constexpr size_t MAX_E2EE_BACKUP = 8 * 1024;
-
-/// Minimal per-session token bucket (strand-only, like the session). Each
-/// throttled request costs a database round trip or a fan-out, so one
-/// client's storm must not tie up the io threads. Used for CALL_SIGNAL
-/// (20 burst / 5 per second: far above a real handshake, ~6 signals per
-/// call, and keeps the INVITE-only DB touch bounded), the E2EE key
-/// endpoints, status changes, renames, renewals and presence subscriptions.
-struct RateBucket {
-    RateBucket(double capacity, double per_second)
-        : capacity(capacity), per_second(per_second), tokens(capacity) {}
-    double capacity;
-    double per_second;
-    double tokens;
-    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
-    bool take() {
-        auto now = std::chrono::steady_clock::now();
-        double elapsed = std::chrono::duration<double>(now - last).count();
-        last = now;
-        tokens += elapsed * per_second;
-        if (tokens > capacity) tokens = capacity;
-        if (tokens < 1.0) return false;
-        tokens -= 1.0;
-        return true;
-    }
-};
 
 // --- Custom status messages (docs/superpowers/specs/2026-10-12-status-messages-design.md) ---
 constexpr size_t STATUS_TEXT_MAX_CHARS = 128;
@@ -126,12 +107,27 @@ static std::string normalize_status_line(const std::string& in, size_t max_chars
     return out;
 }
 
-/// What a login reads, gathered on the CPU pool.
+/// What a login reads (on the CPU pool for a password sign-in, inline for
+/// a resume).
 struct LoginOutcome {
     AuthManager::LoginResult login;
     AuthManager::PresenceProfile profile;
     std::vector<chatproj::CommunityServerInfo> memberships;
+    std::string resume_token;  // '' if signing one failed (the client then signs in by password)
 };
+
+/// Lowercased, for keying failed sign-ins (usernames are lowercase).
+static std::string account_key(const std::string& name) {
+    std::string key = name.substr(0, 64);
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return key;
+}
+
+static std::chrono::steady_clock::duration seconds_to_duration(double seconds) {
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(seconds));
+}
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
@@ -140,10 +136,13 @@ public:
     /// handler of this session runs there, one at a time, while other
     /// sessions run on the other io threads. Password hashing goes to
     /// `cpu_pool` (run_blocking).
+    ///
+    /// The acceptor admitted the connection against `limits` (one slot for
+    /// `ip`); the session gives the slot back when it is destroyed.
     Session(tcp::socket socket, SessionManager& manager, ssl::context& context, AuthManager& auth_manager,
-            boost::asio::thread_pool& cpu_pool)
+            boost::asio::thread_pool& cpu_pool, AbuseLimits& limits, std::string ip)
         : socket_(std::move(socket), context), manager_(manager), auth_manager_(auth_manager),
-          cpu_pool_(cpu_pool) {
+          cpu_pool_(cpu_pool), limits_(limits), ip_(std::move(ip)), pace_timer_(socket_.get_executor()) {
         touch();
         // Tighten TCP keepalive: 15s idle, 5s interval, 3 retries (~30s detection)
         boost::system::error_code ec;
@@ -156,6 +155,8 @@ public:
         setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
 #endif
     }
+
+    ~Session() { limits_.release_connection(ip_); }
 
     /// When the last packet arrived. Read by the stale sweep, any thread.
     std::chrono::steady_clock::time_point last_activity() const {
@@ -194,6 +195,7 @@ public:
             closed_ = true;
             // The write queue stays until the session is destroyed: an
             // in-flight write still references its front buffer.
+            pace_timer_.cancel();
             boost::system::error_code ec;
             socket_.lowest_layer().cancel(ec);
             socket_.lowest_layer().close(ec);
@@ -277,11 +279,68 @@ private:
                     return;
                 }
                 touch();  // for stale session detection
-                process_packet();
-                // A handler that went to the CPU pool resumes reading from
-                // its continuation, so this session's packets stay in order.
-                if (!read_paused_) do_read_header();
+                chatproj::Packet packet;
+                const bool parsed = packet.ParseFromArray(inbound_body_.data(), static_cast<int>(inbound_body_.size()));
+                // One avatar upload (up to 2 MB) must not stay allocated for
+                // the rest of the connection.
+                if (inbound_body_.capacity() > 64 * 1024) std::vector<uint8_t>().swap(inbound_body_);
+                if (!parsed) {
+                    do_read_header();
+                    return;
+                }
+                on_packet(std::move(packet));
             });
+    }
+
+    /// Requests that draw on a per-connection rate: over it, the request
+    /// waits (and reading pauses) until the bucket refills, so a burst is
+    /// delayed, never dropped, and a flooding client is slowed to the rate.
+    RateBucket* pace_bucket(chatproj::Packet::Type type) {
+        using P = chatproj::Packet;
+        switch (type) {
+            case P::DIRECT_MSG:
+            case P::DM_EDIT_REQ:
+            case P::DM_DELETE_REQ:
+                return &dm_bucket_;
+            case P::DM_HISTORY_REQ:
+            case P::DM_CONVERSATIONS_REQ:
+            case P::DM_MARK_READ_REQ:
+            case P::FETCH_AVATAR_REQ:
+            case P::FETCH_SERVER_PICTURE_REQ:
+            case P::FRIEND_LIST_REQ:
+            case P::SERVER_LIST_REQ:
+            case P::INVITE_RESOLVE_REQ:
+                return &read_bucket_;
+            case P::FRIEND_ACTION_REQ:
+            case P::UPDATE_AVATAR_REQ:
+                return &write_bucket_;
+            case P::LOGIN_REQ:
+            case P::REGISTER_REQ:
+                return &login_bucket_;
+            default:
+                return nullptr;
+        }
+    }
+
+    /// Handle `packet` now, or once its rate bucket has a token. Reading
+    /// stays paused while it waits, so this connection's packets keep their
+    /// order; a handler that went to the CPU pool resumes reading from its
+    /// continuation.
+    void on_packet(chatproj::Packet&& packet) {
+        if (RateBucket* bucket = pace_bucket(packet.type()); bucket && !bucket->take()) {
+            read_paused_ = true;
+            auto held = std::make_shared<chatproj::Packet>(std::move(packet));
+            auto self = shared_from_this();
+            pace_timer_.expires_after(seconds_to_duration(bucket->wait()));
+            pace_timer_.async_wait([this, self, held](const boost::system::error_code& ec) {
+                if (ec || closed_) return;
+                read_paused_ = false;
+                on_packet(std::move(*held));
+            });
+            return;
+        }
+        process_packet(packet);
+        if (!read_paused_) do_read_header();
     }
 
     /// Run `work` on the CPU pool (password hashing), then `then(result)`
@@ -309,12 +368,20 @@ private:
         });
     }
 
-    void process_packet() {
-        chatproj::Packet packet;
-        if (!packet.ParseFromArray(inbound_body_.data(), static_cast<int>(inbound_body_.size()))) {
-            return;
+    /// The token every packet carries, verified once per token: a match
+    /// with the last verified one only needs its expiry checked.
+    bool token_ok(const std::string& token) {
+        if (!verified_token_.empty() && token == verified_token_ && unix_now() < verified_token_expiry_) {
+            return true;
         }
+        const auto claims = auth_manager_.verifyToken(token);
+        if (!claims) return false;
+        verified_token_ = token;
+        verified_token_expiry_ = claims->expires_at;
+        return true;
+    }
 
+    void process_packet(const chatproj::Packet& packet) {
         // Client keepalive — no processing needed, touch() already updated timestamp
         if (packet.type() == chatproj::Packet::CLIENT_PING) {
             return;
@@ -340,7 +407,7 @@ private:
             packet.type() != chatproj::Packet::MEMBERSHIP_REVOKE_REQ &&
             packet.type() != chatproj::Packet::SYNC_SERVER_PICTURE_REQ) {
 
-            if (!auth_manager_.validateToken(packet.auth_token())) {
+            if (!token_ok(packet.auth_token())) {
                 std::cout << "[Security] Dropped packet - Missing or invalid JWT.\n";
                 manager_.leave(shared_from_this());
                 return;
@@ -351,6 +418,11 @@ private:
         // bcrypt (cost 12, ~0.25 s of CPU): on the CPU pool.
         if (packet.type() == chatproj::Packet::REGISTER_REQ) {
             const auto& req = packet.register_req();
+            if (!limits_.take_signup(ip_)) {
+                send_response(chatproj::Packet::REGISTER_RES, false,
+                              "Too many sign-ups from your network. Try again later.");
+                return;
+            }
             run_blocking(
                 [this, username = req.username(), email = req.email(), password = req.password()]() {
                     return std::optional<std::string>(auth_manager_.registerUser(username, email, password));
@@ -367,12 +439,38 @@ private:
         }
 
         // --- LOGIN ---
-        // The password check (bcrypt) and what a login reads (presence
-        // profile, memberships) run on the CPU pool; the session signs in
-        // on its strand.
+        // A resume token (a dropped connection coming back) costs a
+        // signature check and a few reads, done here. A password sign-in's
+        // bcrypt and reads run on the CPU pool; the session signs in on its
+        // strand (finish_login). Password sign-ins are limited per address
+        // and per account before any hashing.
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
             if (authenticated_) return;
             const auto& req = packet.login_req();
+            if (!req.resume_token().empty()) {
+                std::optional<LoginOutcome> outcome;
+                if (auto login = auth_manager_.resumeSession(req.resume_token())) {
+                    outcome.emplace();
+                    outcome->login = std::move(*login);
+                    outcome->profile = auth_manager_.getPresenceProfile(outcome->login.uid);
+                    outcome->memberships = auth_manager_.getUserCommunities(outcome->login.uid);
+                    // Still valid until the expiry its password sign-in set.
+                    outcome->resume_token = req.resume_token();
+                }
+                finish_login(std::move(outcome), "Your session has expired. Please sign in again.");
+                return;
+            }
+            const std::string account = account_key(req.username());
+            if (!limits_.take_password_attempt(ip_)) {
+                send_response(chatproj::Packet::LOGIN_RES, false,
+                              "Too many sign-in attempts from your network. Try again in a minute.");
+                return;
+            }
+            if (limits_.account_blocked(account)) {
+                send_response(chatproj::Packet::LOGIN_RES, false,
+                              "Too many failed sign-ins for this account. Try again in a few minutes.");
+                return;
+            }
             run_blocking(
                 [this, username = req.username(), password = req.password()]() -> std::optional<LoginOutcome> {
                     auto login = auth_manager_.authenticateUser(username, password);
@@ -381,38 +479,16 @@ private:
                     out.login = std::move(*login);
                     out.profile = auth_manager_.getPresenceProfile(out.login.uid);
                     out.memberships = auth_manager_.getUserCommunities(out.login.uid);
+                    out.resume_token = auth_manager_.mintResumeToken(out.login.uid, unix_now()).value_or("");
                     return out;
                 },
-                [this](std::optional<LoginOutcome> outcome) {
-                    if (!outcome) {
-                        send_response(chatproj::Packet::LOGIN_RES, false, "Invalid username or password.");
-                        return;
+                [this, account](std::optional<LoginOutcome> outcome) {
+                    if (outcome) {
+                        limits_.record_login(account);
+                    } else {
+                        limits_.record_failed_login(account);
                     }
-                    const auto& p = outcome->profile;
-                    Presence presence;
-                    presence.username = outcome->login.username;
-                    presence.avatar_version = p.avatar_version;
-                    presence.status = p.status;
-                    presence.status_text = p.status_text;
-                    presence.status_emoji = p.status_emoji;
-                    presence.status_expires_at = p.status_expires_at;
-                    presence.dm_friends_only = p.dm_friends_only;
-                    // Sign in only now that the password is verified, so an
-                    // unauthenticated client can't evict anyone: the
-                    // account's previous connection (a dead one, or another
-                    // device) is replaced. The saved status applies before
-                    // anyone hears of the login, so an invisible user never
-                    // flashes online.
-                    auto bound = manager_.bind(shared_from_this(), outcome->login.uid, std::move(presence));
-                    if (!bound.ok) return;  // the connection went away meanwhile
-                    authenticated_ = true;
-                    uid_ = outcome->login.uid;
-                    username_ = outcome->login.username;
-                    if (bound.replaced) {
-                        std::cout << "[Manager] Replacing the previous connection of uid " << uid_ << "\n";
-                        manager_.leave(bound.replaced);
-                    }
-                    send_login_success(*outcome);
+                    finish_login(std::move(outcome), "Invalid username or password.");
                 });
         }
 
@@ -1567,6 +1643,39 @@ private:
         deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
     }
 
+    /// Sign in with what a password check or a resume found, or refuse with
+    /// `refusal`.
+    void finish_login(std::optional<LoginOutcome> outcome, const char* refusal) {
+        if (!outcome) {
+            send_response(chatproj::Packet::LOGIN_RES, false, refusal);
+            return;
+        }
+        const auto& p = outcome->profile;
+        Presence presence;
+        presence.username = outcome->login.username;
+        presence.avatar_version = p.avatar_version;
+        presence.status = p.status;
+        presence.status_text = p.status_text;
+        presence.status_emoji = p.status_emoji;
+        presence.status_expires_at = p.status_expires_at;
+        presence.dm_friends_only = p.dm_friends_only;
+        // Sign in only once the account is proven, so an unauthenticated
+        // client can't evict anyone: the account's previous connection (a
+        // dead one, or another device) is replaced. The saved status applies
+        // before anyone hears of the login, so an invisible user never
+        // flashes online.
+        auto bound = manager_.bind(shared_from_this(), outcome->login.uid, std::move(presence));
+        if (!bound.ok) return;  // the connection went away meanwhile
+        authenticated_ = true;
+        uid_ = outcome->login.uid;
+        username_ = outcome->login.username;
+        if (bound.replaced) {
+            std::cout << "[Manager] Replacing the previous connection of uid " << uid_ << "\n";
+            manager_.leave(bound.replaced);
+        }
+        send_login_success(*outcome);
+    }
+
     /// REGISTER_RES, or a refused LOGIN_RES.
     void send_response(chatproj::Packet::Type type, bool success, const std::string& msg) {
         chatproj::Packet resp_packet;
@@ -1590,6 +1699,7 @@ private:
         resp->set_success(true);
         resp->set_message("Login successful!");
         resp->set_jwt_token(outcome.login.token);
+        resp->set_resume_token(outcome.resume_token);
         resp->set_uid(uid_);
         resp->set_username(username_);
         // Auto-rejoin: the user's community memberships inline, so the
@@ -1628,6 +1738,10 @@ private:
     SessionManager& manager_;
     AuthManager& auth_manager_;
     boost::asio::thread_pool& cpu_pool_;
+    AbuseLimits& limits_;
+    const std::string ip_;
+    /// Holds a request over its rate until the bucket refills (on_packet).
+    boost::asio::steady_timer pace_timer_;
     char inbound_header_[4];
     std::vector<uint8_t> inbound_body_;
 
@@ -1644,7 +1758,27 @@ private:
     std::deque<Frame> write_queue_;
     /// steady_clock ticks of the last packet (any thread reads it).
     std::atomic<std::chrono::steady_clock::rep> last_activity_{0};
+    /// The last token that verified, and when it expires (token_ok).
+    std::string verified_token_;
+    int64_t verified_token_expiry_ = 0;
 
+    // Per-connection buckets. Paced (on_packet: an over-rate request
+    // waits, never dropped): DMs and their edits / deletes at the
+    // community's message rate (10 burst / 3 per second); reads that each
+    // cost a database round trip (history, conversations, read cursors,
+    // avatars and server pictures, friend and server lists, invite lookups)
+    // at 60 / 20 per second, which a client loading a screenful never
+    // reaches; friend actions and avatar uploads at 20 / 1 per second; and
+    // sign-in / sign-up attempts at 5 / 1 per 2 s (address and account
+    // limits sit on top, AbuseLimits).
+    RateBucket dm_bucket_{10.0, 3.0};
+    RateBucket read_bucket_{60.0, 20.0};
+    RateBucket write_bucket_{20.0, 1.0};
+    RateBucket login_bucket_{5.0, 0.5};
+    // Refused over the rate instead (each is documented to never refuse a
+    // real client): CALL_SIGNAL (20 burst / 5 per second: far above a real
+    // handshake, ~6 signals per call, and keeps the INVITE-only DB touch
+    // bounded) and the rest below.
     RateBucket call_bucket_{20.0, 5.0};
     /// Same shape for the E2EE key endpoints (publish / fetch / backup):
     /// each is a database round-trip.
@@ -2104,13 +2238,15 @@ bool SessionManager::check_dm_allowed(int64_t sender, int64_t recipient, AuthMan
 class Server {
 public:
     Server(boost::asio::io_context& io_context, short port, SessionManager& manager, AuthManager& auth_manager,
-           boost::asio::thread_pool& cpu_pool)
+           boost::asio::thread_pool& cpu_pool, AbuseLimits& limits)
         : io_context_(io_context),
           acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
           ssl_context_(ssl::context::tlsv12),
           manager_(manager),
           auth_manager_(auth_manager),
-          cpu_pool_(cpu_pool) {
+          cpu_pool_(cpu_pool),
+          limits_(limits),
+          retry_timer_(io_context) {
 
         ssl_context_.set_options(
             ssl::context::default_workarounds |
@@ -2125,17 +2261,83 @@ public:
         do_accept();
     }
 private:
+    /// Out of file descriptors or memory: accept() fails again at once, so
+    /// retrying immediately spins a core while nothing changes.
+    static bool out_of_resources(const boost::system::error_code& ec) {
+        if (ec.category() != boost::system::system_category()) return false;
+        const int v = ec.value();
+        return v == EMFILE || v == ENFILE || v == ENOBUFS || v == ENOMEM;
+    }
+
+    /// At most one log line per kind every 10 s: a flood must not become a
+    /// flood of log lines too.
+    bool should_log(std::chrono::steady_clock::time_point& last) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::seconds(10)) return false;
+        last = now;
+        return true;
+    }
+
     void do_accept() {
         // Each connection gets its own strand: its handlers never run
         // concurrently, different connections run on different threads.
+        // One accept is outstanding at a time, so these handlers (and the
+        // members they touch) never run concurrently either.
         acceptor_.async_accept(boost::asio::make_strand(io_context_),
             [this](boost::system::error_code ec, tcp::socket socket) {
-                if (!ec) {
-                    auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_,
-                                                             auth_manager_, cpu_pool_);
-                    manager_.join(session);
-                    session->start();
+                if (ec == boost::asio::error::operation_aborted) return;  // shutting down
+                if (ec) {
+                    if (out_of_resources(ec)) {
+                        if (should_log(last_resource_log_)) {
+                            std::cerr << "[Server] accept failed (" << ec.message()
+                                      << "); pausing new connections briefly\n";
+                        }
+                        retry_timer_.expires_after(std::chrono::milliseconds(100));
+                        retry_timer_.async_wait([this](const boost::system::error_code& wait_ec) {
+                            if (!wait_ec) do_accept();
+                        });
+                        return;
+                    }
+                    do_accept();  // e.g. the client reset before we accepted
+                    return;
                 }
+                boost::system::error_code ep_ec;
+                const auto endpoint = socket.remote_endpoint(ep_ec);
+                if (ep_ec) {
+                    do_accept();  // gone already; `socket` closes here
+                    return;
+                }
+                std::string ip = endpoint.address().to_string();
+                const auto admit = limits_.admit_connection(ip);
+                if (admit != AbuseLimits::Admit::ok) {
+                    ++refused_;
+                    if (should_log(last_refusal_log_)) {
+                        const char* why = admit == AbuseLimits::Admit::server_full ? "server full"
+                                        : admit == AbuseLimits::Admit::address_full ? "too many from one address"
+                                        : admit == AbuseLimits::Admit::address_rate ? "connecting too fast"
+                                        : "address table full";
+                        std::cout << "[Server] Refused " << refused_ << " connection(s) in the last 10 s (latest: "
+                                  << ip << ", " << why << ")\n";
+                        refused_ = 0;
+                    }
+                    boost::system::error_code close_ec;
+                    socket.close(close_ec);
+                    do_accept();
+                    return;
+                }
+                std::shared_ptr<Session> session;
+                try {
+                    session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_,
+                                                        auth_manager_, cpu_pool_, limits_, ip);
+                } catch (const std::exception& e) {
+                    // Never constructed, so its destructor won't return the slot.
+                    limits_.release_connection(ip);
+                    std::cerr << "[Server] Couldn't set up a connection: " << e.what() << "\n";
+                    do_accept();
+                    return;
+                }
+                manager_.join(session);
+                session->start();
                 do_accept();
             });
     }
@@ -2145,7 +2347,32 @@ private:
     SessionManager& manager_;
     AuthManager& auth_manager_;
     boost::asio::thread_pool& cpu_pool_;
+    AbuseLimits& limits_;
+    boost::asio::steady_timer retry_timer_;
+    std::chrono::steady_clock::time_point last_resource_log_{};
+    std::chrono::steady_clock::time_point last_refusal_log_{};
+    std::size_t refused_ = 0;
 };
+
+/// Raise the open-file soft limit to the hard one (every connection is a
+/// descriptor; shells and systemd start services at a soft limit of 1024,
+/// and systemd's LimitNOFILE= sets the hard one). Returns the limit now in
+/// force.
+static std::size_t raise_open_file_limit() {
+#ifndef _WIN32
+    rlimit rl{};
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return 1024;
+    if (rl.rlim_cur != RLIM_INFINITY && (rl.rlim_max == RLIM_INFINITY || rl.rlim_cur < rl.rlim_max)) {
+        rlimit want = rl;
+        // Linux refuses RLIM_INFINITY for this resource: cap at nr_open's default.
+        want.rlim_cur = rl.rlim_max == RLIM_INFINITY ? 1048576 : rl.rlim_max;
+        if (setrlimit(RLIMIT_NOFILE, &want) == 0) rl = want;
+    }
+    return rl.rlim_cur == RLIM_INFINITY ? 1048576 : static_cast<std::size_t>(rl.rlim_cur);
+#else
+    return 8192;
+#endif
+}
 
 /// A thread count from the environment: `fallback` when unset or invalid.
 static unsigned env_threads(const char* name, unsigned fallback) {
@@ -2234,11 +2461,34 @@ int main() {
         auth_manager.set_pool_idle(io_threads + cpu_threads + 2);
         std::cout << "[Server] " << io_threads << " io threads, " << cpu_threads << " CPU threads\n";
 
+        // Connections stop short of the open-file limit, leaving room for
+        // the database pool (a connection per thread), the log and the
+        // listener: a server out of descriptors fails its queries too.
+        const std::size_t fd_limit = raise_open_file_limit();
+        const std::size_t reserve = io_threads + cpu_threads + 2 + 64;
+        std::size_t max_connections = fd_limit > reserve + 16 ? fd_limit - reserve : 16;
+        if (const char* v = std::getenv("DECIBELL_MAX_CONNECTIONS")) {
+            try {
+                const long long n = std::stoll(v);
+                if (n > 0) {
+                    if (static_cast<std::size_t>(n) > max_connections) {
+                        std::cerr << "[Server] DECIBELL_MAX_CONNECTIONS=" << n << " is above what the open-file limit ("
+                                  << fd_limit << ") leaves room for (" << max_connections << ")\n";
+                    }
+                    max_connections = static_cast<std::size_t>(n);
+                }
+            } catch (...) {
+                std::cerr << "[Server] Ignoring DECIBELL_MAX_CONNECTIONS=" << v << "\n";
+            }
+        }
+        std::cout << "[Server] Open-file limit " << fd_limit << ": up to " << max_connections << " connections\n";
+        AbuseLimits limits(max_connections);
+
         boost::asio::io_context io_context(static_cast<int>(io_threads));
         boost::asio::thread_pool cpu_pool(cpu_threads);
 
         SessionManager manager;
-        Server s(io_context, 8080, manager, auth_manager, cpu_pool);
+        Server s(io_context, 8080, manager, auth_manager, cpu_pool, limits);
 
         // Periodic sweep of stale sessions (no activity for 60s).
         // Catches dead connections where TCP FIN was never sent (e.g. client crash).
@@ -2250,6 +2500,7 @@ int main() {
             if (ec) return;
             manager.sweep_stale(std::chrono::seconds(60));
             manager.expire_status_messages(auth_manager);
+            limits.sweep();
             if (sweeps_until_prune-- == 0) {
                 auth_manager.pruneNameChanges();
                 sweeps_until_prune = 120;

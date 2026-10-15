@@ -252,7 +252,7 @@ pub fn build_packet(
 
 /// Exponential backoff delays for reconnection: 1, 2, 4, 8, 16, 30 (capped).
 pub fn backoff_duration(attempt: u32) -> Duration {
-    let secs = match attempt {
+    let secs: u64 = match attempt {
         0 => 1,
         1 => 2,
         2 => 4,
@@ -260,7 +260,20 @@ pub fn backoff_duration(attempt: u32) -> Duration {
         4 => 16,
         _ => 30,
     };
-    Duration::from_secs(secs)
+    // Spread over 50–150% of the step: after a server restart every client
+    // retries, and without jitter they would all arrive in the same instant
+    // on every step.
+    Duration::from_millis(secs * 500 + jitter_millis(secs * 1000))
+}
+
+/// Uniform in [0, max).
+fn jitter_millis(max: u64) -> u64 {
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 8];
+    if ring::rand::SystemRandom::new().fill(&mut bytes).is_err() || max == 0 {
+        return max / 2;
+    }
+    u64::from_le_bytes(bytes) % max
 }
 
 #[cfg(test)]
@@ -269,13 +282,16 @@ mod tests {
 
     #[test]
     fn test_backoff_duration() {
-        assert_eq!(backoff_duration(0), Duration::from_secs(1));
-        assert_eq!(backoff_duration(1), Duration::from_secs(2));
-        assert_eq!(backoff_duration(2), Duration::from_secs(4));
-        assert_eq!(backoff_duration(3), Duration::from_secs(8));
-        assert_eq!(backoff_duration(4), Duration::from_secs(16));
-        assert_eq!(backoff_duration(5), Duration::from_secs(30));
-        assert_eq!(backoff_duration(100), Duration::from_secs(30));
+        for (attempt, step) in [(0, 1), (1, 2), (2, 4), (3, 8), (4, 16), (5, 30), (100, 30)] {
+            for _ in 0..50 {
+                let d = backoff_duration(attempt);
+                assert!(d >= Duration::from_millis(step * 500), "{attempt}: {d:?}");
+                assert!(d < Duration::from_millis(step * 1500), "{attempt}: {d:?}");
+            }
+        }
+        // Not all the same: the point is to spread the clients.
+        let samples: std::collections::HashSet<_> = (0..20).map(|_| backoff_duration(3)).collect();
+        assert!(samples.len() > 1);
     }
 
     #[test]
@@ -287,6 +303,7 @@ mod tests {
             packet::Payload::LoginReq(LoginRequest {
                 username: "test".into(),
                 password: "pass".into(),
+                resume_token: String::new(),
             }),
             Some("my_token"),
         );

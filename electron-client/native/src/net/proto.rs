@@ -10,6 +10,7 @@ mod tests {
         let req = LoginRequest {
             username: "alice".into(),
             password: "secret123".into(),
+            resume_token: String::new(),
         };
         let bytes = req.encode_to_vec();
         let decoded = LoginRequest::decode(&bytes[..]).unwrap();
@@ -24,6 +25,7 @@ mod tests {
             timestamp: 1234567890,
             auth_token: String::new(),
             payload: Some(packet::Payload::LoginReq(LoginRequest {
+                resume_token: String::new(),
                 username: "bob".into(),
                 password: "pass".into(),
             })),
@@ -60,10 +62,12 @@ mod tests {
             username: "ivy".into(),
             e2ee_uid_binding: true,
             renames: true,
+            resume_token: "resume.me".into(),
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();
         assert!(decoded.success);
+        assert_eq!(decoded.resume_token, "resume.me");
         assert_eq!(decoded.jwt_token, "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test");
         assert!(decoded.presence_statuses);
         assert_eq!(decoded.status, PresenceStatus::PresenceInvisible as i32);
