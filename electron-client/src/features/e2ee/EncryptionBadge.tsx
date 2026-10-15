@@ -1,13 +1,15 @@
 import { useE2eeStore } from "../../stores/e2eeStore";
 import { LockGlyph } from "../chat/MessageBubble";
 import { usePeerE2ee } from "./usePeerE2ee";
+import { useUserName, type Uid } from "../../stores/usersStore";
 
 /// DM-header pill next to the Online/Offline badge: whether messages in
 /// this conversation are sealed right now, and why not when they aren't.
 /// Renders nothing on a central without the key endpoints, and nothing
 /// while the peer's state is still being looked up (no "Unencrypted"
 /// flash on open).
-export default function EncryptionBadge({ peer }: { peer: string }) {
+export default function EncryptionBadge({ peer }: { peer: Uid }) {
+  const peerName = useUserName(peer);
   const status = useE2eeStore((s) => s.status);
   const info = usePeerE2ee(peer);
   if (status === "unavailable") return null;
@@ -20,7 +22,7 @@ export default function EncryptionBadge({ peer }: { peer: string }) {
       ? "Encryption is locked on this device. Enter your passphrase in Settings → Privacy"
       : status === "not_set_up"
         ? "Set up end-to-end encryption in Settings → Privacy"
-        : `${peer} hasn't set up encryption yet, messages are not encrypted`;
+        : `${peerName} hasn't set up encryption yet, messages are not encrypted`;
 
   return (
     <div

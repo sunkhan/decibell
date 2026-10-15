@@ -1,7 +1,7 @@
 import { invoke, listen } from "../../lib/ipc";
 import type { ServerInvite } from "../../types";
 import { buildInviteLink } from "./inviteLink";
-import { uidOf } from "../users/userDirectory";
+import type { Uid } from "../../stores/usersStore";
 
 interface InviteCreateRespondedPayload {
   serverId: string;
@@ -24,10 +24,10 @@ export class AlreadyMemberError extends Error {}
 let nextRequestId = 1;
 const NO_ANSWER_MS = 8000;
 
-/// A personal invite: single-use, never expires, only `username` can
+/// A personal invite: single-use, never expires, only account `uid` can
 /// redeem it. The server hands back their live one when it exists, so
 /// inviting the same friend twice doesn't pile up invites.
-export function createPersonalInvite(serverId: string, username: string): Promise<ServerInvite> {
+export function createPersonalInvite(serverId: string, uid: Uid, username: string): Promise<ServerInvite> {
   const requestId = nextRequestId++;
   return new Promise<ServerInvite>((resolve, reject) => {
     let settled = false;
@@ -67,7 +67,7 @@ export function createPersonalInvite(serverId: string, username: string): Promis
           expiresAt: 0,
           maxUses: 1,
           forUser: username,
-          forUid: uidOf(username),
+          forUid: uid,
           requestId,
         });
       })
@@ -77,11 +77,11 @@ export function createPersonalInvite(serverId: string, username: string): Promis
 
 /// Invite a friend: their personal invite, sent to them as a DM. The link
 /// renders as an invite card on their side.
-export async function inviteFriend(serverId: string, username: string): Promise<void> {
-  const invite = await createPersonalInvite(serverId, username);
+export async function inviteFriend(serverId: string, uid: Uid, username: string): Promise<void> {
+  const invite = await createPersonalInvite(serverId, uid, username);
   await invoke("send_private_message", {
     recipient: username,
-    recipientUid: uidOf(username),
+    recipientUid: uid,
     message: buildInviteLink(invite.code),
   });
 }

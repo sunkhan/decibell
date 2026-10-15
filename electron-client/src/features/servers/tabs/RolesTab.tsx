@@ -835,7 +835,7 @@ function MembersSection({
               <div className="relative shrink-0">
                 <UserAvatar uid={m.uid ?? 0} name={m.username} size={28} />
                 <PresenceDot
-                  username={m.username}
+                  uid={m.uid ?? 0}
                   communityOnline={m.isOnline}
                   ring="var(--color-bg-dark)"
                   className="avatar-dot absolute -bottom-px -right-px"

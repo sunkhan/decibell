@@ -102,7 +102,7 @@ export function watchEcho(serverId: string, channelId: string, nonce: string): v
 /// The DM twin: central echoes our DIRECT_MSG (nonce included) or
 /// answers with an error reply carrying the nonce; neither within the
 /// timeout → withdraw the pending bubble.
-export function watchDmEcho(peer: string, nonce: string): void {
+export function watchDmEcho(peer: number, nonce: string): void {
   window.setTimeout(() => {
     const dm = useDmStore.getState();
     const list = dm.conversations[peer]?.messages;

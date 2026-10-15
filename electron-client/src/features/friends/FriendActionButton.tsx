@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "../../lib/ipc";
-import { uidOf } from "../users/userDirectory";
+import type { Uid } from "../../stores/usersStore";
 
 // Maps to protobuf FriendActionType enum
 const FRIEND_ACTIONS = {
@@ -13,6 +13,7 @@ const FRIEND_ACTIONS = {
 
 interface Props {
   action: keyof typeof FRIEND_ACTIONS;
+  targetUid: Uid;
   targetUsername: string;
   label: string;
   variant?: "accent" | "success" | "error" | "muted";
@@ -20,6 +21,7 @@ interface Props {
 
 export default function FriendActionButton({
   action,
+  targetUid,
   targetUsername,
   label,
   variant = "accent",
@@ -34,7 +36,7 @@ export default function FriendActionButton({
       await invoke("send_friend_action", {
         action: FRIEND_ACTIONS[action],
         targetUsername,
-        targetUid: uidOf(targetUsername),
+        targetUid,
       });
     } catch (err) {
       setError(String(err));

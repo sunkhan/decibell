@@ -4,7 +4,7 @@ import { useE2eeStore } from "../../stores/e2eeStore";
 import { useDmStore } from "../../stores/dmStore";
 import { toast } from "../../stores/toastStore";
 import type { E2eePeerChangedPayload, E2eeStatusPayload } from "../../types";
-import { uidOf } from "../users/userDirectory";
+import { nameOf, toUid } from "../../stores/usersStore";
 
 // Native decides the E2EE status for this account on this device (after
 // every LoginRes, and on setup / unlock / reset / a remote rotation of our
@@ -37,7 +37,7 @@ function reloadDms() {
   invoke("request_dm_conversations").catch(() => {});
   const peer = dm.activeDmUser;
   if (peer) {
-    invoke("request_dm_history", { peer, peerUid: uidOf(peer), beforeId: 0, limit: 50 }).catch(() => {});
+    invoke("request_dm_history", { peer: nameOf(peer), peerUid: peer, beforeId: 0, limit: 50 }).catch(() => {});
   }
 }
 
@@ -56,7 +56,8 @@ export function useE2eeEvents() {
 
     const unPeer = listen<E2eePeerChangedPayload>("e2ee_peer_changed", (event) => {
       const { username } = event.payload;
-      useE2eeStore.getState().markPeerChanged(username, Math.floor(Date.now() / 1000));
+      const uid = toUid(event.payload.uid);
+      if (uid > 0) useE2eeStore.getState().markPeerChanged(uid, Math.floor(Date.now() / 1000));
       toast.warning(
         "Encryption keys changed",
         `${username}'s encryption keys changed. If that's unexpected, compare safety numbers in their profile.`,

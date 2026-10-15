@@ -18,7 +18,7 @@ import { StatusDot } from "../../components/StatusDot";
 import { STATUS_LABEL as PRESENCE_LABEL, usePresence, useStatusMessage } from "../../stores/presenceStore";
 import { StatusMessageText } from "../../components/StatusMessageText";
 import type { FriendInfo } from "../../types";
-import { legacyUid, uidOf } from "../users/userDirectory";
+import { useUserName, useUsersStore } from "../../stores/usersStore";
 
 // Mirrors FriendActionType in proto/messages.proto.
 const ACTION = { ADD: 0, REMOVE: 1, BLOCK: 2, ACCEPT: 3, REJECT: 4 } as const;
@@ -148,18 +148,19 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
   const openContextMenu = useUiStore((s) => s.openContextMenu);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
-  const { username, status } = friend;
-  const presence = usePresence(username);
-  const message = useStatusMessage(username);
+  const { uid, status } = friend;
+  const username = useUserName(uid, friend.username);
+  const presence = usePresence(uid);
+  const message = useStatusMessage(uid);
 
   const act = (action: number) => {
-    invoke("send_friend_action", { action, targetUsername: username, targetUid: uidOf(username) }).catch(
+    invoke("send_friend_action", { action, targetUsername: username, targetUid: uid }).catch(
       (e) => useFriendsStore.getState().setLastActionError(String(e)),
     );
   };
 
   const openMessage = () => {
-    setActiveDmUser(username);
+    setActiveDmUser(uid);
     setActiveView("dm");
   };
 
@@ -167,7 +168,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
   // keep it on screen on a narrow window.
   const openMenuFromButton = (e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    openContextMenu(username, { x: Math.max(8, r.right - 220), y: r.bottom + 6 });
+    openContextMenu(uid, { x: Math.max(8, r.right - 220), y: r.bottom + 6 });
   };
 
   // Only an accepted friend has a conversation to open.
@@ -217,15 +218,15 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
           return;
         }
         const r = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(username, { x: r.left + 40, y: r.top });
+        openProfilePopup(uid, { x: r.left + 40, y: r.top });
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY });
+        openContextMenu(uid, { x: e.clientX, y: e.clientY });
       }}
     >
       <div className="relative shrink-0">
-        <UserAvatar uid={legacyUid(username)} name={username} size={36} />
+        <UserAvatar uid={uid} name={username} size={36} />
         {(status === "online" || status === "offline") && (
           <StatusDot
             status={presence}
@@ -337,6 +338,8 @@ export default function FriendsPage() {
     };
   }, [friends]);
 
+  // Current names, so a renamed friend is found by the name we show.
+  const names = useUsersStore((st) => st.names);
   const sections = useMemo(() => {
     const needle = search.trim().toLowerCase();
     const allowed = FILTER_STATUSES[filter];
@@ -346,10 +349,10 @@ export default function FriendsPage() {
         (f) =>
           s.statuses.includes(f.status) &&
           (allowed === null || allowed.includes(f.status)) &&
-          f.username.toLowerCase().includes(needle),
+          (names.get(f.uid) ?? f.username).toLowerCase().includes(needle),
       ),
     })).filter((s) => s.items.length > 0);
-  }, [friends, search, filter]);
+  }, [friends, search, filter, names]);
 
   const shown = sections.reduce((n, s) => n + s.items.length, 0);
 
@@ -486,7 +489,7 @@ export default function FriendsPage() {
               </h3>
             )}
             {section.items.map((f) => (
-              <FriendRow key={f.username} friend={f} />
+              <FriendRow key={f.uid} friend={f} />
             ))}
           </div>
         ))}

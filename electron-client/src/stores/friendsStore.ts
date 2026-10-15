@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FriendInfo } from "../types";
+import type { Uid } from "./usersStore";
 
 interface FriendsState {
   friends: FriendInfo[];
@@ -8,8 +9,8 @@ interface FriendsState {
   setFriends: (friends: FriendInfo[]) => void;
   setLoading: (v: boolean) => void;
   setLastActionError: (msg: string | null) => void;
-  updateFriend: (username: string, updates: Partial<FriendInfo>) => void;
-  removeFriend: (username: string) => void;
+  updateFriend: (uid: Uid, updates: Partial<FriendInfo>) => void;
+  removeFriend: (uid: Uid) => void;
 }
 
 export const useFriendsStore = create<FriendsState>((set) => ({
@@ -19,12 +20,10 @@ export const useFriendsStore = create<FriendsState>((set) => ({
   setFriends: (friends) => set({ friends }),
   setLoading: (v) => set({ isLoading: v }),
   setLastActionError: (msg) => set({ lastActionError: msg }),
-  updateFriend: (username, updates) =>
+  updateFriend: (uid, updates) =>
     set((state) => ({
-      friends: state.friends.map((f) =>
-        f.username === username ? { ...f, ...updates } : f,
-      ),
+      friends: state.friends.map((f) => (f.uid === uid ? { ...f, ...updates } : f)),
     })),
-  removeFriend: (username) =>
-    set((state) => ({ friends: state.friends.filter((f) => f.username !== username) })),
+  removeFriend: (uid) =>
+    set((state) => ({ friends: state.friends.filter((f) => f.uid !== uid) })),
 }));

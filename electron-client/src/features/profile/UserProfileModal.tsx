@@ -25,11 +25,12 @@ import { StatusMessageText } from "../../components/StatusMessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
-import { legacyUid, uidOf } from "../users/userDirectory";
+import { useUserName, type Uid } from "../../stores/usersStore";
+import { findMember } from "../../hooks/useDisplayName";
 
 // The full profile screen: a centred modal reached by clicking the avatar
 // in the anchored popup (UserProfilePopup), the way Discord's popout opens
-// its full profile. Opened via useUiStore.openUserProfile(username,
+// its full profile. Opened via useUiStore.openUserProfile(uid,
 // serverId?) and rides `activeModal === "user-profile"`.
 //
 // Two tabs. Profile: identity, friendship, membership and roles on the
@@ -50,12 +51,12 @@ const FRIEND_ACTION = { ADD: 0, REMOVE: 1, ACCEPT: 3, REJECT: 4 } as const;
 
 export default function UserProfileModal() {
   const activeModal = useUiStore((s) => s.activeModal);
-  const username = useUiStore((s) => s.userProfileUser);
+  const uid = useUiStore((s) => s.userProfileUser);
   const serverId = useUiStore((s) => s.userProfileServerId);
   const closeModal = useUiStore((s) => s.closeModal);
-  const open = activeModal === "user-profile" && username !== null;
+  const open = activeModal === "user-profile" && uid !== null;
   useEscapeToClose(closeModal, open);
-  if (!open || !username) return null;
+  if (!open || !uid) return null;
 
   return createPortal(
     <div
@@ -63,39 +64,40 @@ export default function UserProfileModal() {
       onClick={closeModal}
     >
       {/* Keyed by user so a different profile starts on the Profile tab. */}
-      <ProfileScreen key={username} username={username} serverId={serverId} onClose={closeModal} />
+      <ProfileScreen key={uid} uid={uid} serverId={serverId} onClose={closeModal} />
     </div>,
     document.body,
   );
 }
 
 function ProfileScreen({
-  username,
+  uid,
   serverId,
   onClose,
 }: {
-  username: string;
+  uid: Uid;
   serverId: string | null;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("profile");
-  const currentUsername = useAuthStore((s) => s.username);
-  const isSelf = username === currentUsername;
-  const displayName = useDisplayName(serverId, legacyUid(username), username);
+  const ownUid = useAuthStore((s) => s.uid);
+  const isSelf = uid === ownUid;
   // `find` returns the stored object (or undefined) — a stable ref.
-  const friend = useFriendsStore((s) => s.friends.find((f) => f.username === username));
+  const friend = useFriendsStore((s) => s.friends.find((f) => f.uid === uid));
   const memberEntry = useChatStore((s) =>
-    serverId ? s.membersByServer[serverId]?.find((m) => m.username === username) : undefined,
+    serverId ? findMember(s.membersByServer, serverId, uid) : undefined,
   );
-  const presence = usePresence(username, memberEntry?.isOnline);
-  const statusMessage = useStatusMessage(username);
+  const username = useUserName(uid, memberEntry?.username || friend?.username || "Unknown user");
+  const displayName = useDisplayName(serverId, uid, username);
+  const presence = usePresence(uid, memberEntry?.isOnline);
+  const statusMessage = useStatusMessage(uid);
   const serverRoles = useChatStore((s) => (serverId ? s.rolesByServer[serverId] : undefined));
   const serverName = useChatStore((s) =>
     serverId ? s.servers.find((sv) => sv.id === serverId)?.name : undefined,
   );
 
   const openMessage = () => {
-    useDmStore.getState().setActiveDmUser(username);
+    useDmStore.getState().setActiveDmUser(uid);
     useUiStore.getState().setActiveView("dm");
     onClose();
   };
@@ -118,7 +120,7 @@ function ProfileScreen({
       aria-label={`${displayName}'s profile`}
     >
       {/* Banner */}
-      <div className="relative h-[120px] shrink-0" style={{ background: userGradient(legacyUid(username), username) }}>
+      <div className="relative h-[120px] shrink-0" style={{ background: userGradient(uid, username) }}>
         <button
           onClick={onClose}
           aria-label="Close"
@@ -134,7 +136,7 @@ function ProfileScreen({
       {/* Identity row: avatar overlapping the banner, actions on the right */}
       <div className="relative shrink-0 px-6">
         <div className="absolute -top-12 left-6 rounded-2xl border-[6px] border-bg-dark bg-bg-dark">
-          <UserAvatar uid={legacyUid(username)} name={username} size={96} />
+          <UserAvatar uid={uid} name={username} size={96} />
           <StatusDot
             status={presence}
             ring="var(--color-bg-dark)"
@@ -147,7 +149,7 @@ function ProfileScreen({
             <SecondaryButton onClick={() => openSettings("account")}>Edit profile</SecondaryButton>
           ) : (
             <>
-              <FriendActions username={username} friend={friend} />
+              <FriendActions uid={uid} username={username} friend={friend} />
               {canMessage && <PrimaryButton onClick={openMessage}>Message</PrimaryButton>}
             </>
           )}
@@ -205,7 +207,7 @@ function ProfileScreen({
         ) : isSelf ? (
           <OwnEncryptionCard onOpenSettings={() => openSettings("privacy")} />
         ) : (
-          <PeerEncryption peer={username} onOpenSettings={() => openSettings("privacy")} />
+          <PeerEncryption peer={uid} peerName={username} onOpenSettings={() => openSettings("privacy")} />
         )}
       </div>
     </div>
@@ -281,12 +283,12 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function FriendActions({ username, friend }: { username: string; friend: FriendInfo | undefined }) {
+function FriendActions({ uid, username, friend }: { uid: Uid; username: string; friend: FriendInfo | undefined }) {
   const [busy, setBusy] = useState(false);
   const act = async (action: number) => {
     setBusy(true);
     try {
-      await invoke("send_friend_action", { action, targetUsername: username, targetUid: uidOf(username) });
+      await invoke("send_friend_action", { action, targetUsername: username, targetUid: uid });
     } catch (err) {
       toast.error("Friend request failed", String(err));
     } finally {
@@ -373,7 +375,15 @@ function OwnEncryptionCard({ onOpenSettings }: { onOpenSettings: () => void }) {
   );
 }
 
-function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings: () => void }) {
+function PeerEncryption({
+  peer,
+  peerName,
+  onOpenSettings,
+}: {
+  peer: Uid;
+  peerName: string;
+  onOpenSettings: () => void;
+}) {
   const supported = useE2eeStore((s) => s.supported);
   const status = useE2eeStore((s) => s.status);
   // The safety number needs both identities: only asked for once ours is
@@ -400,8 +410,8 @@ function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings
       >
         <p className="text-[12px] leading-[1.55] text-text-muted">
           {locked
-            ? `Unlock your keys on this device to see the safety number you share with ${peer}.`
-            : `Set up encryption to seal your messages with ${peer} and get a safety number you can compare.`}
+            ? `Unlock your keys on this device to see the safety number you share with ${peerName}.`
+            : `Set up encryption to seal your messages with ${peerName} and get a safety number you can compare.`}
         </p>
         <div className="mt-3 flex justify-end">
           <SecondaryButton onClick={onOpenSettings}>
@@ -414,7 +424,7 @@ function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings
   if (!info) {
     return (
       <Card title="End-to-end encryption" icon={<LockGlyph size={14} />}>
-        <p className="text-[12px] text-text-muted">Checking {peer}'s keys…</p>
+        <p className="text-[12px] text-text-muted">Checking {peerName}'s keys…</p>
       </Card>
     );
   }
@@ -422,7 +432,7 @@ function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings
     return (
       <Card title="End-to-end encryption" badge={{ text: "Off", on: false }} icon={<LockGlyph size={14} />}>
         <p className="text-[12px] leading-[1.55] text-text-muted">
-          {peer} hasn't set up encryption. Messages between you are sent in plaintext, and the
+          {peerName} hasn't set up encryption. Messages between you are sent in plaintext, and the
           conversation says so.
         </p>
       </Card>
@@ -440,19 +450,19 @@ function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings
     <div className="flex flex-col gap-3">
       <Card title="End-to-end encryption" badge={{ text: "On", on: true }} icon={<LockGlyph size={14} />}>
         <p className="text-[12px] leading-[1.55] text-text-muted">
-          Messages between you and {peer} are sealed on your devices; the server only ever stores
+          Messages between you and {peerName} are sealed on your devices; the server only ever stores
           encrypted data.
         </p>
         {info.changedAt > 0 && (
           <div className="mt-2.5 rounded-sm border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] leading-[1.5] text-warning">
-            Keys changed {new Date(info.changedAt * 1000).toLocaleString()}. {peer} reset their
+            Keys changed {new Date(info.changedAt * 1000).toLocaleString()}. {peerName} reset their
             encryption or signed in from a new device. Compare the safety number again before you
             trust what they send.
           </div>
         )}
         <p className="mt-2.5 text-[12px] leading-[1.55] text-text-muted">
           {info.pinned
-            ? `Identity pinned on this device: messages to ${peer} are never sent unencrypted, and a different key is flagged.`
+            ? `Identity pinned on this device: messages to ${peerName} are never sent unencrypted, and a different key is flagged.`
             : `Not pinned yet: the identity is pinned the first time an encrypted message passes between you.`}
         </p>
       </Card>
@@ -469,7 +479,7 @@ function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings
         }
       >
         <p className="text-[12px] leading-[1.55] text-text-muted">
-          Identical on both your screens. Compare it with {peer} in person or on a call; a match
+          Identical on both your screens. Compare it with {peerName} in person or on a call; a match
           means nobody is sitting between you.
         </p>
         <div className="mt-2.5 grid select-text grid-cols-4 gap-x-4 gap-y-1.5 rounded-sm bg-bg-dark px-4 py-3 text-center font-mono text-[14px] tracking-[0.08em] text-text-primary">
@@ -481,10 +491,10 @@ function PeerEncryption({ peer, onOpenSettings }: { peer: string; onOpenSettings
 
       <Card title="Fingerprint">
         <p className="text-[12px] leading-[1.55] text-text-muted">
-          What {peer}'s own app shows under Settings → Privacy. Comparing fingerprints is the same
+          What {peerName}'s own app shows under Settings → Privacy. Comparing fingerprints is the same
           check as the safety number, one identity at a time.
         </p>
-        <Mono label={`${peer}'s fingerprint`} value={info.fingerprint} />
+        <Mono label={`${peerName}'s fingerprint`} value={info.fingerprint} />
       </Card>
     </div>
   );

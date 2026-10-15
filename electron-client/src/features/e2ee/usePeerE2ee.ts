@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useE2eeStore } from "../../stores/e2eeStore";
 import type { E2eePeerInfo } from "../../types";
-import { uidOf } from "../users/userDirectory";
+import { nameOf, type Uid } from "../../stores/usersStore";
 
 // A peer's encryption state as native sees it (keys published? their
 // fingerprint, the conversation's safety number). Re-fetched when our own
 // status changes (locked → ready pairs a local identity with theirs) and
 // when native reports the peer's identity changed. Native caches the
 // bundle per session, so repeated calls are cheap.
-export function usePeerE2ee(peer: string | null | undefined): E2eePeerInfo | null {
+export function usePeerE2ee(peer: Uid | null | undefined): E2eePeerInfo | null {
   const status = useE2eeStore((s) => s.status);
   const changedAt = useE2eeStore((s) => (peer ? s.changedPeers[peer] ?? 0 : 0));
   const [info, setInfo] = useState<E2eePeerInfo | null>(null);
@@ -18,7 +18,7 @@ export function usePeerE2ee(peer: string | null | undefined): E2eePeerInfo | nul
     setInfo(null);
     if (!peer || status === "unavailable") return;
     let cancelled = false;
-    invoke<E2eePeerInfo>("e2ee_peer_info", { username: peer, uid: uidOf(peer) })
+    invoke<E2eePeerInfo>("e2ee_peer_info", { username: nameOf(peer), uid: peer })
       .then((i) => {
         if (!cancelled) setInfo(i);
       })

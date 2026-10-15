@@ -31,9 +31,10 @@ export interface CommunityServer {
 export type ServerInfo = ServerInfoPayload;
 
 export interface FriendInfo {
+  /// Their name as the list carried it; drawn via the users store.
   username: string;
-  /// The account (users by uid); 0/absent from servers that predate it.
-  uid?: number;
+  /// The account (the friend list keys on it).
+  uid: number;
   status: "online" | "offline" | "pending_incoming" | "pending_outgoing" | "blocked";
   /// sha256-hex of this friend's current avatar bytes. '' when no
   /// avatar set. avatarStore consumes this for cache invalidation
@@ -57,8 +58,10 @@ export interface UserPresence {
 }
 
 export interface DmMessage {
+  /// The name the payload carried; draw `nameOf(senderUid, sender)`.
   sender: string;
-  senderUid?: number;
+  /// The sender's account (0 = unknown).
+  senderUid: number;
   content: string;
   timestamp: string;
   /// Unix seconds of the last edit; 0/absent = never edited. Drives "(edited)".
@@ -392,8 +395,11 @@ export interface Message {
   /// 0 means optimistic / unsent. Real messages have a server-assigned id.
   id: number;
   channelId: string;
+  /// The name the payload carried; draw `nameOf(senderUid, sender)`.
   sender: string;
-  senderUid?: number;
+  /// The sender's account (0 = unknown; negative = a community's
+  /// placeholder for a legacy name).
+  senderUid: number;
   content: string;
   /// String rather than number to round-trip Rust's `i64` (timestamps
   /// can exceed 2^53 in theory, even if not in practice — the existing

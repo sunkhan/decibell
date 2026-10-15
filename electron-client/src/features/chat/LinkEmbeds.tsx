@@ -56,11 +56,11 @@ function isGifUrl(url: string): boolean {
 
 function LinkEmbeds({
   content,
-  sender,
+  senderUid,
   suppressed,
 }: {
   content: string;
-  sender: string;
+  senderUid: number;
   /// The sender lacked EMBED_LINKS in this channel (server-marked).
   suppressed?: boolean;
 }) {
@@ -74,7 +74,7 @@ function LinkEmbeds({
     <>
       {urls.map((url) =>
         isInviteLink(url) ? (
-          <InviteEmbed key={url} href={url} sender={sender} />
+          <InviteEmbed key={url} href={url} senderUid={senderUid} />
         ) : enabled ? (
           <LinkEmbed key={url} url={url} />
         ) : null,

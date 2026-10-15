@@ -10,26 +10,28 @@ import { StatusDot } from "../../components/StatusDot";
 import { EMPTY_LIST } from "../../lib/empty";
 import { AlreadyMemberError, inviteFriend } from "./personalInvite";
 import type { ServerMember } from "../../types";
-import { legacyUid } from "../users/userDirectory";
+import { useUsersStore, type Uid } from "../../stores/usersStore";
 
 /// "member": the server refused the invite because they're already in —
 /// an offline member the loaded roster didn't include.
 type RowState = "sending" | "sent" | "member";
 
 function FriendRow({
+  uid,
   username,
   state,
   onInvite,
 }: {
+  uid: Uid;
   username: string;
   state: RowState | undefined;
-  onInvite: (username: string) => void;
+  onInvite: (uid: Uid, username: string) => void;
 }) {
-  const status = usePresence(username);
+  const status = usePresence(uid);
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-1.5">
       <div className="relative shrink-0">
-        <UserAvatar uid={legacyUid(username)} name={username} size={32} />
+        <UserAvatar uid={uid} name={username} size={32} />
         <StatusDot
           status={status}
           ring="var(--color-bg-dark)"
@@ -50,7 +52,7 @@ function FriendRow({
         </span>
       ) : (
         <button
-          onClick={() => onInvite(username)}
+          onClick={() => onInvite(uid, username)}
           disabled={state === "sending"}
           className="shrink-0 rounded-sm border border-accent px-3 py-1.5 text-[12px] font-semibold text-accent-bright transition-colors hover:bg-accent hover:text-on-accent disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-accent-bright"
         >
@@ -86,7 +88,8 @@ export default function InviteFriendsModal() {
   const [mounted, setMounted] = useState(false);
   const [visible, setVisible] = useState(false);
   const [search, setSearch] = useState("");
-  const [rows, setRows] = useState<Record<string, RowState>>({});
+  const [rows, setRows] = useState<Record<Uid, RowState>>({});
+  const names = useUsersStore((s) => s.names);
 
   useEffect(() => {
     if (open) {
@@ -104,34 +107,34 @@ export default function InviteFriendsModal() {
     () =>
       friends
         .filter((f) => f.status === "online" || f.status === "offline")
-        .map((f) => f.username)
-        .sort((a, b) => a.localeCompare(b)),
-    [friends],
+        .map((f) => ({ uid: f.uid, name: names.get(f.uid) ?? f.username }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [friends, names],
   );
   const notMembers = useMemo(() => {
-    const inRoster = new Set(roster.map((m) => m.username));
+    const inRoster = new Set(roster.map((m) => m.uid));
     // A row with an outcome stays put (a friend who joins after their
     // invite keeps showing "Sent").
-    return candidates.filter((u) => rows[u] !== undefined || !inRoster.has(u));
+    return candidates.filter((c) => rows[c.uid] !== undefined || !inRoster.has(c.uid));
   }, [candidates, roster, rows]);
   const query = search.trim().toLowerCase();
-  const shown = query ? notMembers.filter((u) => u.toLowerCase().includes(query)) : notMembers;
+  const shown = query ? notMembers.filter((c) => c.name.toLowerCase().includes(query)) : notMembers;
 
   const handleInvite = useCallback(
-    async (username: string) => {
+    async (uid: Uid, username: string) => {
       if (!serverId) return;
-      setRows((r) => ({ ...r, [username]: "sending" }));
+      setRows((r) => ({ ...r, [uid]: "sending" }));
       try {
-        await inviteFriend(serverId, username);
-        setRows((r) => ({ ...r, [username]: "sent" }));
+        await inviteFriend(serverId, uid, username);
+        setRows((r) => ({ ...r, [uid]: "sent" }));
       } catch (err) {
         if (err instanceof AlreadyMemberError) {
-          setRows((r) => ({ ...r, [username]: "member" }));
+          setRows((r) => ({ ...r, [uid]: "member" }));
           return;
         }
         setRows((r) => {
           const next = { ...r };
-          delete next[username];
+          delete next[uid];
           return next;
         });
         toast.error(`Couldn't invite ${username}`, err instanceof Error ? err.message : String(err));
@@ -202,8 +205,8 @@ export default function InviteFriendsModal() {
               {empty}
             </div>
           ) : (
-            shown.map((u) => (
-              <FriendRow key={u} username={u} state={rows[u]} onInvite={handleInvite} />
+            shown.map((c) => (
+              <FriendRow key={c.uid} uid={c.uid} username={c.name} state={rows[c.uid]} onInvite={handleInvite} />
             ))
           )}
         </div>

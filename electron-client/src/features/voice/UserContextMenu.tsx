@@ -3,7 +3,7 @@ import { EMPTY_LIST } from "../../lib/empty";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
-import { useDisplayName } from "../../hooks/useDisplayName";
+import { findMember, useDisplayName } from "../../hooks/useDisplayName";
 import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { useVoiceStore, voiceKey } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -21,20 +21,25 @@ import {
   formatDb,
   mediaSessionActive,
 } from "./userGain";
-import { legacyUid } from "../users/userDirectory";
+import { useUserName } from "../../stores/usersStore";
 
 export default function UserContextMenu() {
-  const username = useUiStore((s) => s.contextMenuUser);
-  const uid = legacyUid(username);
+  const uid = useUiStore((s) => s.contextMenuUser) ?? 0;
   const anchor = useUiStore((s) => s.contextMenuAnchor);
   const contextServerId = useUiStore((s) => s.contextMenuServerId);
   const closeContextMenu = useUiStore((s) => s.closeContextMenu);
-  const displayName = useDisplayName(contextServerId, uid, username ?? "");
+  // A community placeholder (no account) has its name only on the member.
+  const memberName = useChatStore((s) =>
+    contextServerId && uid ? findMember(s.membersByServer, contextServerId, uid)?.username : undefined,
+  );
+  const username = useUserName(uid, memberName ?? "Unknown user");
+  const open = uid !== 0;
+  const displayName = useDisplayName(contextServerId, uid, username);
   const userVolumes = useVoiceStore((s) => s.userVolumes);
   const setUserVolume = useVoiceStore((s) => s.setUserVolume);
   const localMutedUsers = useVoiceStore((s) => s.localMutedUsers);
   const toggleLocalMute = useVoiceStore((s) => s.toggleLocalMute);
-  const currentUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   // Voice moderation, only when the target is currently in a voice channel
   // on the context server. Permissions v3: MUTE / DEAFEN / MOVE_MEMBERS are
   // resolved in the TARGET's channel (our myPermissions there), and the
@@ -55,12 +60,12 @@ export default function UserContextMenu() {
   // Only this server's channels: presence covers every community, and the
   // same channel slug (or the same user) can be in voice on another one.
   const targetVoiceChannel =
-    username && contextServerId
+    open && contextServerId
       ? voiceChannels.find((c) =>
           channelPresence[voiceKey(contextServerId, c.id)]?.includes(uid),
         )?.id ?? null
       : null;
-  const targetVoiceState = username && contextServerId && targetVoiceChannel
+  const targetVoiceState = open && contextServerId && targetVoiceChannel
     ? channelUserStates[voiceKey(contextServerId, targetVoiceChannel)]?.[uid]
     : undefined;
   const targetChannelPerms = targetVoiceChannel
@@ -77,22 +82,22 @@ export default function UserContextMenu() {
     [voiceChannels, targetVoiceChannel],
   );
   const showVoiceMod =
-    !!username &&
+    open &&
     !!contextServerId &&
-    username !== currentUsername &&
+    uid !== ownUid &&
     username !== serverOwner &&
     !!targetVoiceChannel &&
     canManage(username) &&
     (canMute || canDeafen || canMove);
   const runVoiceMod = useCallback(
     (action: string, channelId?: string) => {
-      if (!username || !contextServerId) return;
+      if (!open || !contextServerId) return;
       invoke("voice_mod", { serverId: contextServerId, username, uid, action, channelId }).catch((err) =>
         toast.error("Voice moderation failed", String(err)),
       );
       closeContextMenu();
     },
-    [username, uid, contextServerId, closeContextMenu],
+    [open, username, uid, contextServerId, closeContextMenu],
   );
   // Measured placement: the menu grows a moderation section for some
   // targets, so a fixed "approximate height" clamp left it clipped at the
@@ -152,7 +157,7 @@ export default function UserContextMenu() {
   }, [uid, localMutedUsers, toggleLocalMute, userVolumes, sendGainToNative]);
 
   useEffect(() => {
-    if (!username) return;
+    if (!open) return;
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         closeContextMenu();
@@ -170,9 +175,9 @@ export default function UserContextMenu() {
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [username, closeContextMenu]);
+  }, [open, closeContextMenu]);
 
-  if (!username || !anchor) return null;
+  if (!open || !anchor) return null;
 
   const sliderValue = ((currentDb - MIN_DB) / (MAX_DB - MIN_DB)) * 100;
   const handleSlider = (val: number) => {
@@ -195,7 +200,7 @@ export default function UserContextMenu() {
         </span>
       </div>
 
-      {username !== currentUsername && (
+      {uid !== ownUid && (
         <>
           {/* Mute button */}
           <div className="px-[5px] py-1">

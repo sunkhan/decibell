@@ -62,11 +62,11 @@ export function StatusDot({ status, ring, className = "", ringWidth = 2.5 }: Sta
 /// StatusDot for one user, subscribed to their presence — for lists that
 /// render rows inline (a hook can't run per row there).
 export function PresenceDot({
-  username,
+  uid,
   communityOnline,
   ...dot
-}: Omit<StatusDotProps, "status"> & { username: string; communityOnline?: boolean }) {
-  return <StatusDot status={usePresence(username, communityOnline)} {...dot} />;
+}: Omit<StatusDotProps, "status"> & { uid: number; communityOnline?: boolean }) {
+  return <StatusDot status={usePresence(uid, communityOnline)} {...dot} />;
 }
 
 const PILL_TONE: Record<DisplayStatus, string> = {

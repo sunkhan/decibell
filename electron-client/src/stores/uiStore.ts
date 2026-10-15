@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Uid } from "./usersStore";
 
 /// The seven selectable palettes. `nocturne` (dark, the default) and
 /// `matinee` (its light twin) are the flagship pair; `console-split`
@@ -209,9 +210,10 @@ interface UiState {
   /// The full profile screen (features/profile/UserProfileModal): who it
   /// shows and the server it was opened from (nickname + roles). Rides
   /// `activeModal === "user-profile"`; opened from the popup's avatar.
-  userProfileUser: string | null;
+  /// The profile modal's person.
+  userProfileUser: Uid | null;
   userProfileServerId: string | null;
-  openUserProfile: (username: string, serverId?: string | null) => void;
+  openUserProfile: (uid: Uid, serverId?: string | null) => void;
   connectionStatus: "connected" | "reconnecting" | "disconnected";
   activeView: "home" | "server" | "browse" | "voice" | "dm";
   /// Which corner the floating pop-out stream player snaps to. Remembered
@@ -248,10 +250,10 @@ interface UiState {
   setCertMismatch: (n: CertMismatchNotice | null) => void;
   membershipRevocationNotice: MembershipRevocationNotice | null;
   setMembershipRevocationNotice: (notice: MembershipRevocationNotice | null) => void;
-  profilePopupUser: string | null;
+  profilePopupUser: Uid | null;
   profilePopupAnchor: { x: number; y: number } | null;
   profilePopupServerId: string | null;
-  contextMenuUser: string | null;
+  contextMenuUser: Uid | null;
   contextMenuAnchor: { x: number; y: number } | null;
   /// Server the context menu was opened in, so it can resolve the nickname.
   contextMenuServerId: string | null;
@@ -307,10 +309,10 @@ interface UiState {
   closeModal: () => void;
   setConnectionStatus: (status: "connected" | "reconnecting" | "disconnected") => void;
   setActiveView: (view: "home" | "server" | "browse" | "voice" | "dm") => void;
-  openProfilePopup: (username: string, anchor: { x: number; y: number }, serverId?: string | null) => void;
+  openProfilePopup: (uid: Uid, anchor: { x: number; y: number }, serverId?: string | null) => void;
   closeProfilePopup: () => void;
   openContextMenu: (
-    username: string,
+    uid: Uid,
     anchor: { x: number; y: number },
     serverId?: string | null,
   ) => void;
@@ -472,10 +474,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   closeModal: () => set({ activeModal: null }),
   openChannelSettings: (channelId) =>
     set({ activeModal: "channel-settings", channelSettingsChannelId: channelId }),
-  openUserProfile: (username, serverId = null) =>
+  openUserProfile: (uid, serverId = null) =>
     set({
       activeModal: "user-profile",
-      userProfileUser: username,
+      userProfileUser: uid,
       userProfileServerId: serverId,
       // The anchored popup is what opened us; it has no place under a modal.
       profilePopupUser: null,
@@ -484,13 +486,13 @@ export const useUiStore = create<UiState>((set, get) => ({
     }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setActiveView: (view) => set({ activeView: view }),
-  openProfilePopup: (username, anchor, serverId = null) =>
-    set({ profilePopupUser: username, profilePopupAnchor: anchor, profilePopupServerId: serverId }),
+  openProfilePopup: (uid, anchor, serverId = null) =>
+    set({ profilePopupUser: uid, profilePopupAnchor: anchor, profilePopupServerId: serverId }),
   closeProfilePopup: () =>
     set({ profilePopupUser: null, profilePopupAnchor: null, profilePopupServerId: null }),
-  openContextMenu: (username, anchor, serverId = null) =>
+  openContextMenu: (uid, anchor, serverId = null) =>
     set({
-      contextMenuUser: username,
+      contextMenuUser: uid,
       contextMenuAnchor: anchor,
       contextMenuServerId: serverId,
     }),

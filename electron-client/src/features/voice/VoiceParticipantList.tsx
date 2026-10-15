@@ -6,7 +6,7 @@ import { useDisplayName } from "../../hooks/useDisplayName";
 import { UserAvatar } from "../../components/UserAvatar";
 import { PERM, useChannelPermission } from "../servers/permissions";
 import { onMemberDragEnd, onMemberDragStart } from "./memberDrag";
-import { nameOf, type Uid } from "../../stores/usersStore";
+import { useUserName, type Uid } from "../../stores/usersStore";
 
 /// `uids` (+ the channel's `serverId` / `channelId`) renders another
 /// channel's roster from presence; without it, the connected channel's
@@ -108,7 +108,7 @@ const PresenceRow = memo(function PresenceRow({
   const userState = useVoiceStore((s) => s.channelUserStates[voiceKey(serverId, channelId)]?.[uid]);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const username = nameOf(uid);
+  const username = useUserName(uid, "Unknown user");
   const displayName = useDisplayName(serverId, uid, username);
 
   return (
@@ -117,14 +117,14 @@ const PresenceRow = memo(function PresenceRow({
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
-          username,
+          uid,
           { x: rect.right + 8, y: rect.top },
           serverId,
         );
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, serverId);
+        openContextMenu(uid, { x: e.clientX, y: e.clientY }, serverId);
       }}
       draggable={draggable}
       onDragStart={draggable ? (e) => onMemberDragStart(e, serverId, channelId, uid) : undefined}
@@ -170,7 +170,7 @@ interface ActiveRowProps {
 
 const ActiveRow = memo(function ActiveRow({
   uid,
-  username,
+  username: rosterName,
   isLocal,
   rosterMuted,
   rosterDeafened,
@@ -192,6 +192,7 @@ const ActiveRow = memo(function ActiveRow({
   const selfDeafened = useVoiceStore((s) => s.isDeafened);
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
+  const username = useUserName(uid, rosterName);
   const displayName = useDisplayName(connectedServerId, uid, username);
 
   const userMuted = isLocal ? selfMuted : rosterMuted;
@@ -203,14 +204,14 @@ const ActiveRow = memo(function ActiveRow({
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         openProfilePopup(
-          username,
+          uid,
           { x: rect.right + 8, y: rect.top },
           connectedServerId,
         );
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, connectedServerId);
+        openContextMenu(uid, { x: e.clientX, y: e.clientY }, connectedServerId);
       }}
       draggable={draggable}
       onDragStart={

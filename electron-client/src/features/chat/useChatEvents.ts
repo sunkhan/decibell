@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
 import { useAuthStore } from "../../stores/authStore";
+import { toUid } from "../../stores/usersStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
 import { channelKey } from "../../lib/channelKey";
@@ -113,6 +114,7 @@ export function mapStoredMessage(serverId: string, m: StoredMessagePayload): Mes
   return {
     id: Number(m.id),
     sender: m.sender,
+    senderUid: toUid(m.senderUid),
     content: m.content,
     timestamp: String(m.timestamp),
     channelId: m.channelId,
@@ -121,6 +123,7 @@ export function mapStoredMessage(serverId: string, m: StoredMessagePayload): Mes
     editedAt: m.editedAt || undefined,
     replyTo: m.replyTo || undefined,
     replyToSender: m.replyToSender || undefined,
+    replyToSenderUid: toUid(m.replyToSenderUid) || undefined,
     replyToContent: m.replyToContent || undefined,
     replyToAttachmentKinds: mapReplyKinds(m.replyToAttachmentKinds),
     encrypted: m.encrypted || undefined,
@@ -144,6 +147,7 @@ export function useChatEvents() {
       useChatStore.getState().addMessage(p.serverId, {
         id: p.id,
         sender: p.sender,
+        senderUid: toUid(p.senderUid),
         content: p.content,
         timestamp: p.timestamp,
         channelId: p.context,
@@ -152,6 +156,7 @@ export function useChatEvents() {
         editedAt: p.editedAt || undefined,
         replyTo: p.replyTo || undefined,
         replyToSender: p.replyToSender || undefined,
+        replyToSenderUid: toUid(p.replyToSenderUid) || undefined,
         replyToContent: p.replyToContent || undefined,
         replyToAttachmentKinds: mapReplyKinds(p.replyToAttachmentKinds),
         encrypted: p.encrypted || undefined,
@@ -159,7 +164,7 @@ export function useChatEvents() {
         suppressEmbeds: p.suppressEmbeds || undefined,
       });
       // One of ours, from this device or another: a slowmode window starts.
-      if (p.sender === useAuthStore.getState().username) noteOwnMessage(p.serverId, p.context);
+      if (toUid(p.senderUid) === useAuthStore.getState().uid) noteOwnMessage(p.serverId, p.context);
     });
 
     const unlistenHistory = listen<ChannelHistoryReceivedPayload>(

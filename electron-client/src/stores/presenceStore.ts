@@ -8,6 +8,7 @@
 
 import { create } from "zustand";
 import { useAuthStore } from "./authStore";
+import type { Uid } from "./usersStore";
 
 /// What others can be seen as.
 export type PresenceStatus = "online" | "away" | "dnd";
@@ -72,8 +73,8 @@ const sameMessage = (a: StatusMessage | null, b: StatusMessage | null) =>
 let ownClearTimer: ReturnType<typeof setTimeout> | null = null;
 
 interface PresenceState {
-  /// Visible online users → their effective status.
-  statuses: Record<string, PresenceStatus>;
+  /// Visible online users (by uid) → their effective status.
+  statuses: Record<Uid, PresenceStatus>;
   /// A central snapshot arrived since login.
   loaded: boolean;
   /// This central understands statuses (LoginResponse.presence_statuses);
@@ -85,16 +86,16 @@ interface PresenceState {
   idle: boolean;
   /// Visible online users' custom status messages (absent = none). Kept
   /// apart from `statuses` so a message edit doesn't regroup member lists.
-  messages: Record<string, StatusMessage>;
+  messages: Record<Uid, StatusMessage>;
   /// The local user's own message (saved on central).
   ownMessage: StatusMessage | null;
   /// When central clears it (local ms epoch); null = never.
   ownMessageClearsAt: number | null;
   applySnapshot: (
-    users: { username: string; status: string; statusText?: string; statusEmoji?: string }[],
+    users: { uid: Uid; status: string; statusText?: string; statusEmoji?: string }[],
   ) => void;
   applyDelta: (
-    username: string,
+    uid: Uid,
     online: boolean,
     status: string,
     statusText?: string,
@@ -127,24 +128,25 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
   ownMessageClearsAt: null,
   applySnapshot: (users) =>
     set(() => {
-      const statuses: Record<string, PresenceStatus> = {};
-      const messages: Record<string, StatusMessage> = {};
+      const statuses: Record<Uid, PresenceStatus> = {};
+      const messages: Record<Uid, StatusMessage> = {};
       for (const u of users) {
-        statuses[u.username] = isPresenceStatus(u.status) ? u.status : "online";
+        if (!(u.uid > 0)) continue;
+        statuses[u.uid] = isPresenceStatus(u.status) ? u.status : "online";
         const message = toMessage(u.statusText, u.statusEmoji);
-        if (message) messages[u.username] = message;
+        if (message) messages[u.uid] = message;
       }
       return { statuses, messages, loaded: true };
     }),
-  applyDelta: (username, online, status, statusText, statusEmoji) =>
+  applyDelta: (uid, online, status, statusText, statusEmoji) =>
     set((state) => {
-      const cur = state.statuses[username];
+      const cur = state.statuses[uid];
       const next: PresenceStatus | undefined = online
         ? isPresenceStatus(status)
           ? status
           : "online"
         : undefined;
-      const curMessage = state.messages[username] ?? null;
+      const curMessage = state.messages[uid] ?? null;
       const nextMessage = online ? toMessage(statusText, statusEmoji) : null;
       const statusSame = cur === next;
       const messageSame = sameMessage(curMessage, nextMessage);
@@ -153,14 +155,14 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       const patch: Partial<PresenceState> = {};
       if (!statusSame) {
         const statuses = { ...state.statuses };
-        if (next) statuses[username] = next;
-        else delete statuses[username];
+        if (next) statuses[uid] = next;
+        else delete statuses[uid];
         patch.statuses = statuses;
       }
       if (!messageSame) {
         const messages = { ...state.messages };
-        if (nextMessage) messages[username] = nextMessage;
-        else delete messages[username];
+        if (nextMessage) messages[uid] = nextMessage;
+        else delete messages[uid];
         patch.messages = messages;
       }
       return patch;
@@ -216,24 +218,24 @@ export function useOwnDisplayStatus(): DisplayStatus {
 
 /// One user's status for display. `communityOnline` is the community
 /// roster's own flag, used only until central's first snapshot arrives.
-export function usePresence(username: string, communityOnline?: boolean): DisplayStatus {
-  const me = useAuthStore((s) => s.username);
+export function usePresence(uid: Uid, communityOnline?: boolean): DisplayStatus {
+  const me = useAuthStore((s) => s.uid);
   const own = useOwnDisplayStatus();
   const other = usePresenceStore((s): DisplayStatus => {
-    const st = s.statuses[username];
+    const st = s.statuses[uid];
     if (st) return st;
     return !s.loaded && communityOnline ? "online" : "offline";
   });
-  return username === me ? own : other;
+  return uid > 0 && uid === me ? own : other;
 }
 
 /// One user's custom status message, or null. Others' ride their presence,
 /// so only a visible user has one; our own shows to us even while invisible.
-export function useStatusMessage(username: string): StatusMessage | null {
-  const me = useAuthStore((s) => s.username);
+export function useStatusMessage(uid: Uid): StatusMessage | null {
+  const me = useAuthStore((s) => s.uid);
   const own = usePresenceStore((s) => s.ownMessage);
-  const other = usePresenceStore((s) => s.messages[username] ?? null);
-  return username === me ? own : other;
+  const other = usePresenceStore((s) => s.messages[uid] ?? null);
+  return uid > 0 && uid === me ? own : other;
 }
 
 /// Online in the "can be reached right now" sense (calls, grouping).
@@ -243,12 +245,12 @@ export const isOnlineStatus = (s: DisplayStatus) =>
 /// Non-hook resolver for list splitting (MembersList groups).
 export function resolvePresence(
   state: Pick<PresenceState, "statuses" | "loaded" | "ownStatus" | "idle">,
-  me: string | null,
-  username: string,
+  me: Uid,
+  uid: Uid,
   communityOnline?: boolean,
 ): DisplayStatus {
-  if (username === me) return state.ownStatus === "online" && state.idle ? "away" : state.ownStatus;
-  const st = state.statuses[username];
+  if (uid > 0 && uid === me) return state.ownStatus === "online" && state.idle ? "away" : state.ownStatus;
+  const st = state.statuses[uid];
   if (st) return st;
   return !state.loaded && communityOnline ? "online" : "offline";
 }

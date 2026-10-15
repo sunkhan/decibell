@@ -12,7 +12,7 @@ import LinkEmbeds from "./LinkEmbeds";
 import BubbleInflightAttachments from "./BubbleInflightAttachments";
 import { useRowHeightAudit } from "./devRowHeightAudit";
 import { ReplyHeader } from "./ReplyPreview";
-import { legacyUid } from "../users/userDirectory";
+import { useUserName } from "../../stores/usersStore";
 
 // Inline edit box shown in place of a message's content. Plain textarea over
 // the raw wire string (MessageText re-renders it on save). Enter submits,
@@ -165,7 +165,9 @@ function decryptErrorHint(code: string): string {
 }
 
 export function shouldGroup(prev: Message | undefined, curr: Message): boolean {
-  if (!prev || prev.sender !== curr.sender) return false;
+  if (!prev || prev.senderUid !== curr.senderUid) return false;
+  // No account on either side (system rows, deleted senders): the names decide.
+  if (curr.senderUid === 0 && prev.sender !== curr.sender) return false;
   const prevEpoch = messageEpoch(prev);
   const currEpoch = messageEpoch(curr);
   if (isNaN(prevEpoch) || isNaN(currEpoch)) return false;
@@ -270,6 +272,7 @@ interface Props {
   /// one-line content snippet. Undefined when the parent isn't loaded /
   /// was deleted → a generic fallback is shown.
   replyToSender?: string;
+  replyToSenderUid?: number;
   replyToContent?: string;
   /// Kinds of the parent's attachments — labels an attachment-only parent
   /// ("Image", "2 Videos", "3 Attachments") when it has no text snippet.
@@ -301,6 +304,7 @@ function MessageBubble({
   canReply = false,
   onReply,
   replyToSender,
+  replyToSenderUid = 0,
   replyToContent,
   replyToAttachmentKinds,
   onJumpToReply,
@@ -310,14 +314,15 @@ function MessageBubble({
 }: Props) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  // Server nickname (or the username when none / in DMs). Identity visuals
-  // (avatar, name color) stay keyed on message.sender.
+  // Server nickname (or the current name when none / in DMs). Identity
+  // visuals (avatar, name color) key on the sender's uid.
   // Grouped rows never show the name, so they skip the roster lookup.
   const displayName = useDisplayName(
     grouped ? null : serverId,
-    message.senderUid || legacyUid(message.sender),
+    message.senderUid,
     message.sender,
   );
+  const senderName = useUserName(message.senderUid, message.sender);
   // Dev-only: log any post-mount height settle (a settle above the
   // viewport shifts content unless anchored — candidate glitch causes).
   const auditRef = useRowHeightAudit(message.id > 0 ? message.id : message.nonce ?? "?");
@@ -341,15 +346,17 @@ function MessageBubble({
   // element's right edge; right-click opens the context menu.
   const handleSenderClick = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
+    if (!message.senderUid) return;
     openProfilePopup(
-      message.sender,
+      message.senderUid,
       { x: rect.right + 8, y: rect.top },
       serverId,
     );
   };
   const handleSenderContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    openContextMenu(message.sender, { x: e.clientX, y: e.clientY }, serverId);
+    if (!message.senderUid) return;
+    openContextMenu(message.senderUid, { x: e.clientX, y: e.clientY }, serverId);
   };
 
   // Content = inline editor when editing this message, else the rendered text
@@ -472,7 +479,7 @@ function MessageBubble({
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
-          {!editing && <LinkEmbeds content={message.content} sender={message.sender} suppressed={message.suppressEmbeds} />}
+          {!editing && <LinkEmbeds content={message.content} senderUid={message.senderUid} suppressed={message.suppressEmbeds} />}
         </div>
         {renderActions("top-0")}
       </div>
@@ -492,6 +499,7 @@ function MessageBubble({
           serverId={serverId}
           parentId={message.replyTo}
           sender={replyToSender}
+          senderUid={replyToSenderUid}
           content={replyToContent}
           attachmentKinds={replyToAttachmentKinds}
           onJump={onJumpToReply}
@@ -503,14 +511,14 @@ function MessageBubble({
           onClick={handleSenderClick}
           onContextMenu={handleSenderContextMenu}
         >
-          <UserAvatar uid={message.senderUid || legacyUid(message.sender)} name={message.sender} size={38} />
+          <UserAvatar uid={message.senderUid} name={senderName} size={38} />
         </div>
 
         <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
           <div className="flex items-baseline gap-2">
             <span
               className="cursor-pointer font-channel text-sender font-emphasis hover:underline"
-              style={{ color: userColor(message.senderUid || legacyUid(message.sender), message.sender) }}
+              style={{ color: userColor(message.senderUid, senderName) }}
               onClick={handleSenderClick}
               onContextMenu={handleSenderContextMenu}
             >
@@ -526,7 +534,7 @@ function MessageBubble({
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
-          {!editing && <LinkEmbeds content={message.content} sender={message.sender} suppressed={message.suppressEmbeds} />}
+          {!editing && <LinkEmbeds content={message.content} senderUid={message.senderUid} suppressed={message.suppressEmbeds} />}
         </div>
       </div>
       {renderActions("top-1")}

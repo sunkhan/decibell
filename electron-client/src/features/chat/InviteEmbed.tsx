@@ -32,7 +32,7 @@ const BANNER_HEIGHT_PX = 112;
 /// Give up on "Joining…" if neither an auth response nor an error lands.
 const JOIN_TIMEOUT_MS = 15_000;
 
-export default function InviteEmbed({ href, sender }: { href: string; sender: string }) {
+export default function InviteEmbed({ href, senderUid }: { href: string; senderUid: number }) {
   const parsed = useMemo(() => parseInviteLink(href), [href]);
   const code = parsed ? parsed.code.toUpperCase() : "";
 
@@ -60,7 +60,7 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
   const pictureDataUrl = useChatStore((s) => (serverId ? s.serverPictures[serverId] : undefined));
   useFetchServerPictureIfMissing(serverId, pictureVersion, pictureDataUrl);
 
-  const me = useAuthStore((s) => s.username);
+  const me = useAuthStore((s) => s.uid);
   const connectedServers = useChatStore((s) => s.connectedServers);
   const pendingIds = useChatStore((s) => s.pendingMembershipServerIds);
   const authError = useUiStore((s) => s.authError);
@@ -128,7 +128,7 @@ export default function InviteEmbed({ href, sender }: { href: string; sender: st
   const description = invalid ? "This invite is unknown, expired, or used up." : resolved?.serverDescription ?? "";
   const members = resolved && resolved.memberCount > 0 ? resolved.memberCount : null;
   const label =
-    me && sender === me
+    me && senderUid === me
       ? "You sent an invite to join a server"
       : "You've been invited to join a server";
   const busy = joining || rejoining;

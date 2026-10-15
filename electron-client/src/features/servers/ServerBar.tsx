@@ -9,7 +9,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import { TILE_WIDTH, TILE_HEIGHT } from "./serverTileDimensions";
 import type { CommunityServer } from "../../types";
-import { legacyUid } from "../users/userDirectory";
+import { useUserName, type Uid } from "../../stores/usersStore";
 
 // Tiny 1×1 transparent PNG. Used as the <img> placeholder while the
 // picture bytes are in-flight so we don't flash a broken-image icon.
@@ -184,30 +184,50 @@ function UnreadDmTiles() {
 
   return (
     <>
-      {unread.map((conv) => {
-        const count = conv.unreadCount > 99 ? "99+" : String(conv.unreadCount);
-        // Radius matches the avatar inside so the badge cutout stays
-        // concentric with it (see LetterAvatar).
-        return (
-          <button
-            key={conv.username}
-            onClick={() => {
-              setActiveDmUser(conv.username);
-              setActiveView("dm");
-            }}
-            title={`${conv.username} — ${count} unread`}
-            className="relative shrink-0 cursor-pointer animate-[dropIn_150ms_ease-out]"
-            style={{ borderRadius: AVATAR_RADIUS }}
-          >
-            <UserAvatar uid={legacyUid(conv.username)} name={conv.username} size={TILE_HEIGHT} />
-            <div className="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-[2px] border-bg-darkest bg-error px-1 text-[10px] font-semibold leading-none text-white">
-              {count}
-            </div>
-          </button>
-        );
-      })}
+      {unread.map((conv) => (
+        <UnreadDmTile
+          key={conv.peerUid}
+          uid={conv.peerUid}
+          payloadName={conv.username}
+          unreadCount={conv.unreadCount}
+          onOpen={() => {
+            setActiveDmUser(conv.peerUid);
+            setActiveView("dm");
+          }}
+        />
+      ))}
       <div className="mx-1 h-6 w-px shrink-0 bg-border-divider" />
     </>
+  );
+}
+
+function UnreadDmTile({
+  uid,
+  payloadName,
+  unreadCount,
+  onOpen,
+}: {
+  uid: Uid;
+  payloadName: string;
+  unreadCount: number;
+  onOpen: () => void;
+}) {
+  const name = useUserName(uid, payloadName);
+  const count = unreadCount > 99 ? "99+" : String(unreadCount);
+  // Radius matches the avatar inside so the badge cutout stays
+  // concentric with it (see LetterAvatar).
+  return (
+    <button
+      onClick={onOpen}
+      title={`${name} — ${count} unread`}
+      className="relative shrink-0 cursor-pointer animate-[dropIn_150ms_ease-out]"
+      style={{ borderRadius: AVATAR_RADIUS }}
+    >
+      <UserAvatar uid={uid} name={name} size={TILE_HEIGHT} />
+      <div className="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-[2px] border-bg-darkest bg-error px-1 text-[10px] font-semibold leading-none text-white">
+        {count}
+      </div>
+    </button>
   );
 }
 

@@ -85,6 +85,7 @@ function generatePendingId(): string {
 
 export default function ChatPanel() {
   const username = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const activeServerId = useChatStore((s) => s.activeServerId);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   // Composite cache key — per-channel maps are namespaced by server
@@ -122,7 +123,6 @@ export default function ChatPanel() {
   const canManageChannel = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_CHANNELS);
   const canManageChannelRoles = useChannelPermission(activeServerId, activeChannelId, PERM.MANAGE_ROLES);
   // Timed out (MODERATE_MEMBERS): the server rejects sends; show why.
-  const ownUid = useAuthStore((s) => s.uid);
   const timedOutUntil = useChatStore((s) =>
     activeServerId && ownUid
       ? findMember(s.membersByServer, activeServerId, ownUid)?.timedOutUntil ?? 0
@@ -499,6 +499,7 @@ export default function ChatPanel() {
       id: 0,
       channelId,
       sender: username,
+      senderUid: ownUid,
       content,
       timestamp: String(Math.floor(Date.now() / 1000)),
       attachments: [],
@@ -644,6 +645,7 @@ export default function ChatPanel() {
       id: 0,
       channelId,
       sender: username,
+      senderUid: ownUid,
       content,
       timestamp: String(Math.floor(Date.now() / 1000)),
       attachments: [],
@@ -783,12 +785,12 @@ export default function ChatPanel() {
       .getState()
       .channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId)?.encrypted;
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].sender === username && list[i].id > 0 && (channelEncrypted || !list[i].encrypted)) {
+      if (list[i].senderUid === ownUid && list[i].id > 0 && (channelEncrypted || !list[i].encrypted)) {
         setEditingMessageId(list[i].id);
         return;
       }
     }
-  }, [username]);
+  }, [username, ownUid]);
 
   // Type anywhere in the channel to start composing; ArrowUp edits the latest.
   useTypeToFocusComposer(editorRef, editLatestOwn);
@@ -942,6 +944,9 @@ export default function ChatPanel() {
     const replySender = message.replyTo
       ? parent?.sender ?? (message.replyToSender || undefined)
       : undefined;
+    const replySenderUid = message.replyTo
+      ? parent?.senderUid ?? (message.replyToSenderUid || 0)
+      : 0;
     return (
       <>
         {startsNewDay(prev, message) && <DayDivider timestamp={message.timestamp} />}
@@ -952,7 +957,7 @@ export default function ChatPanel() {
           // The last row fades in — but not our own echo: it replaces the
           // optimistic bubble under a new key (nonce → id), so it remounts, and
           // replaying the fade blinked a message that was already on screen.
-          isLast={i === messages.length - 1 && !(message.id > 0 && message.sender === username)}
+          isLast={i === messages.length - 1 && !(message.id > 0 && message.senderUid === ownUid)}
           // Align avatar's left edge with the input bar card's
           // left edge: outer wrapper `px-3` = 12px from chat
           // panel's left. The card's rounded border starts there.
@@ -960,13 +965,13 @@ export default function ChatPanel() {
           canDelete={
             typeof message.id === "number" &&
             message.id > 0 &&
-            (message.sender === username || canDeleteOthers)
+            (message.senderUid === ownUid || canDeleteOthers)
           }
           onDelete={requestDeleteChannelMessage}
           canEdit={
             typeof message.id === "number" &&
             message.id > 0 &&
-            message.sender === username &&
+            message.senderUid === ownUid &&
             // A sealed message in a channel whose encryption was switched
             // off (before it became fixed at creation) can't be edited: the
             // server refuses to turn it into plaintext.
@@ -979,6 +984,7 @@ export default function ChatPanel() {
           canReply={typeof message.id === "number" && message.id > 0}
           onReply={startReply}
           replyToSender={replySender}
+          replyToSenderUid={replySenderUid}
           replyToContent={
             message.replyTo
               ? parent?.content ?? (message.replyToContent || undefined)
@@ -994,7 +1000,7 @@ export default function ChatPanel() {
           onJumpToReply={jumpToMessage}
           highlighted={highlightId === message.id && message.id > 0}
           // Someone else answering you — a follow-up to your own message isn't.
-          repliesToMe={!!replySender && replySender === username && message.sender !== username}
+          repliesToMe={!!replySenderUid && replySenderUid === ownUid && message.senderUid !== ownUid}
           replyTarget={!!replyingTo && replyingTo.id === message.id}
         />
       </>
@@ -1134,6 +1140,7 @@ export default function ChatPanel() {
           {replyParent && (
             <ReplyComposerBar
               serverId={activeServerId}
+              senderUid={replyParent.senderUid}
               sender={replyParent.sender}
               content={replyParent.content}
               attachmentKinds={attachmentKindsOf(replyParent)}

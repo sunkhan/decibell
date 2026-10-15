@@ -4,25 +4,27 @@ import { useDmStore } from "../../stores/dmStore";
 import { useAuthStore } from "../../stores/authStore";
 import { toast } from "../../stores/toastStore";
 import type { MessageReceivedPayload } from "../../types";
+import { toUid } from "../../stores/usersStore";
 
 // Pulls DMs out of the unified `message_received` bus event (the
 // channel-message side is handled by useChatEvents). The native
 // router emits the same event for both contexts; we filter by
 // context === "dm" here. The "other user" in a conversation is the
 // non-self side of the (sender, recipient) pair — useful when the
-// message is the echo of one we sent ourselves.
+// message is the echo of one we sent ourselves. Conversations key on the
+// other side's uid.
 export function useDmEvents() {
   useEffect(() => {
     const unlisten = listen<MessageReceivedPayload>("message_received", (event) => {
       const p = event.payload;
       if (p.context !== "dm") return;
 
-      const localUsername = useAuthStore.getState().username;
-      const otherUser =
-        p.sender === localUsername ? p.recipient : p.sender;
-      if (!otherUser) return;
-
-      const isFromSelf = p.sender === localUsername;
+      const me = useAuthStore.getState().uid;
+      const senderUid = toUid(p.senderUid);
+      const isFromSelf = senderUid === me;
+      const otherUser = isFromSelf ? toUid(p.recipientUid) : senderUid;
+      const otherName = isFromSelf ? p.recipient : p.sender;
+      if (!(otherUser > 0)) return;
 
       // Central's error replies (friends-only recipient, persist failure)
       // come back as a self-DM with no id and our nonce: withdraw the
@@ -46,6 +48,7 @@ export function useDmEvents() {
         otherUser,
         {
           sender: p.sender,
+          senderUid,
           content: p.content,
           timestamp: p.timestamp,
           nonce: p.nonce || undefined,
@@ -56,11 +59,13 @@ export function useDmEvents() {
           editedAt: p.editedAt || undefined,
           replyTo: p.replyTo || undefined,
           replyToSender: p.replyToSender || undefined,
+          replyToSenderUid: toUid(p.replyToSenderUid) || undefined,
           replyToContent: p.replyToContent || undefined,
           encrypted: p.encrypted || undefined,
           decryptError: p.decryptError || undefined,
         },
         isFromSelf,
+        otherName ?? undefined,
       );
     });
 
@@ -69,8 +74,10 @@ export function useDmEvents() {
     const unlistenConv = listen<{
       conversations: {
         peer: string;
+        peerUid: number | bigint;
         lastMessageContent: string;
         lastMessageSender: string;
+        lastMessageSenderUid?: number | bigint;
         lastMessageId: number;
         lastTimestamp: number;
         unreadCount: number;
@@ -78,21 +85,32 @@ export function useDmEvents() {
         decryptError: string;
       }[];
     }>("dm_conversations_received", (event) => {
-      useDmStore.getState().hydrateConversations(event.payload.conversations);
+      useDmStore.getState().hydrateConversations(
+        event.payload.conversations
+          .map((c) => ({
+            ...c,
+            peerUid: toUid(c.peerUid),
+            lastMessageSenderUid: toUid(c.lastMessageSenderUid) || undefined,
+          }))
+          .filter((c) => c.peerUid > 0),
+      );
     });
 
     // One page of messages for a specific peer — fired by
     // `request_dm_history` (DmChatPanel on mount + scroll-up).
     const unlistenHist = listen<{
       peer: string;
+      peerUid: number | bigint;
       messages: {
         id: number;
         sender: string;
+        senderUid?: number | bigint;
         content: string;
         timestamp: number;
         editedAt: number;
         replyTo: number;
         replyToSender: string;
+        replyToSenderUid?: number | bigint;
         replyToContent: string;
         encrypted: boolean;
         decryptError: string;
@@ -102,7 +120,14 @@ export function useDmEvents() {
       aroundId: number;
       afterId: number;
     }>("dm_history_received", (event) => {
-      const { peer, messages, hasMore, hasMoreAfter, aroundId, afterId } = event.payload;
+      const { hasMore, hasMoreAfter, aroundId, afterId } = event.payload;
+      const peer = toUid(event.payload.peerUid);
+      if (!(peer > 0)) return;
+      const messages = event.payload.messages.map((m) => ({
+        ...m,
+        senderUid: toUid(m.senderUid) || undefined,
+        replyToSenderUid: toUid(m.replyToSenderUid) || undefined,
+      }));
       const dm = useDmStore.getState();
       // Route by the request mode the server echoed (mirrors useChatEvents):
       //  aroundId>0 → jump context window → replace the loaded slice.
@@ -121,27 +146,31 @@ export function useDmEvents() {
       success: boolean;
       message: string;
       peer: string;
+      peerUid: number | bigint;
       messageId: number;
     }>("dm_message_delete_responded", (event) => {
       const p = event.payload;
+      const peer = toUid(p.peerUid);
       const dm = useDmStore.getState();
       if (!p.success) {
-        dm.restorePendingDmDeletion(p.peer, p.messageId);
+        dm.restorePendingDmDeletion(peer, p.messageId);
         toast.error(
           "Couldn't delete message",
           p.message || "Server rejected the request.",
         );
         return;
       }
-      dm.clearPendingDmDeletion(p.peer, p.messageId);
+      dm.clearPendingDmDeletion(peer, p.messageId);
     });
 
     const unlistenDmDeleted = listen<{
       peer: string;
+      peerUid: number | bigint;
       messageId: number;
       deletedAt: number;
     }>("dm_message_deleted", (event) => {
-      const { peer, messageId } = event.payload;
+      const { messageId } = event.payload;
+      const peer = toUid(event.payload.peerUid);
       const dm = useDmStore.getState();
       dm.removeDmMessage(peer, messageId);
       dm.clearPendingDmDeletion(peer, messageId);
@@ -163,13 +192,15 @@ export function useDmEvents() {
 
     const unlistenDmEdited = listen<{
       peer: string;
+      peerUid: number | bigint;
       messageId: number;
       content: string;
       editedAt: number;
       encrypted: boolean;
       decryptError: string;
     }>("dm_message_edited", (event) => {
-      const { peer, messageId, content, editedAt, encrypted, decryptError } = event.payload;
+      const { messageId, content, editedAt, encrypted, decryptError } = event.payload;
+      const peer = toUid(event.payload.peerUid);
       useDmStore
         .getState()
         .applyDmEdit(peer, messageId, content, editedAt, encrypted, decryptError);

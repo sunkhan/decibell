@@ -15,13 +15,11 @@ import { StatusDot } from "../../components/StatusDot";
 import { StatusMessageText } from "../../components/StatusMessageText";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
+import { useUserName, useUsersStore, type Uid } from "../../stores/usersStore";
 
 // One collator for every sort: localeCompare without one rebuilds the ICU
 // collator per comparison.
 const collator = new Intl.Collator();
-const displayNameOf = (m: ServerMember) => m.nickname || m.username;
-const byName = (a: ServerMember, b: ServerMember) =>
-  collator.compare(displayNameOf(a), displayNameOf(b));
 
 export default function MembersList() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -68,28 +66,32 @@ export default function MembersList() {
   // Status comes from central (presenceStore); the community's own
   // isOnline only stands in until central's first snapshot. Away and Do
   // Not Disturb are online.
-  const me = useAuthStore((s) => s.username);
+  const me = useAuthStore((s) => s.uid);
+  // Current names (nickname first), so a rename re-sorts the list.
+  const names = useUsersStore((s) => s.names);
   const statuses = usePresenceStore((s) => s.statuses);
   const loaded = usePresenceStore((s) => s.loaded);
   const ownStatus = usePresenceStore((s) => s.ownStatus);
   const idle = usePresenceStore((s) => s.idle);
   const { online, offline, statusOf } = useMemo(() => {
     const presence = { statuses, loaded, ownStatus, idle };
-    const statusOf = new Map<string, DisplayStatus>();
-    for (const m of roster) statusOf.set(m.username, resolvePresence(presence, me, m.username, m.isOnline));
-    const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.username)!));
-    const offlineList = roster.filter((m) => !isOnlineStatus(statusOf.get(m.username)!));
+    const statusOf = new Map<Uid, DisplayStatus>();
+    for (const m of roster) statusOf.set(m.uid ?? 0, resolvePresence(presence, me, m.uid ?? 0, m.isOnline));
+    const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.uid ?? 0)!));
+    const offlineList = roster.filter((m) => !isOnlineStatus(statusOf.get(m.uid ?? 0)!));
+    const shown = (m: ServerMember) => m.nickname || (m.uid ? names.get(m.uid) : undefined) || m.username;
+    const byName = (a: ServerMember, b: ServerMember) => collator.compare(shown(a), shown(b));
     // Sort by display name (nickname when set), matching how the list reads.
     onlineList.sort(byName);
     offlineList.sort(byName);
     return { online: onlineList, offline: offlineList, statusOf };
-  }, [roster, statuses, loaded, ownStatus, idle, me]);
+  }, [roster, statuses, loaded, ownStatus, idle, me, names]);
 
   const renderRow = (m: ServerMember) => (
     <MemberRow
-      key={m.username}
+      key={m.uid ?? m.username}
       member={m}
-      status={statusOf.get(m.username) ?? "offline"}
+      status={statusOf.get(m.uid ?? 0) ?? "offline"}
       serverId={activeServerId}
     />
   );
@@ -152,7 +154,9 @@ const MemberRow = memo(function MemberRow({
   serverId: string | null;
 }) {
   const isOnline = isOnlineStatus(status);
-  const message = useStatusMessage(m.username);
+  const uid = m.uid ?? 0;
+  const name = useUserName(uid, m.username);
+  const message = useStatusMessage(uid);
   return (
     <div
       className="list-row group flex cursor-pointer items-center rounded-sm transition-colors hover:bg-surface-hover"
@@ -160,17 +164,17 @@ const MemberRow = memo(function MemberRow({
         const rect = e.currentTarget.getBoundingClientRect();
         useUiStore
           .getState()
-          .openProfilePopup(m.username, { x: rect.right + 8, y: rect.top }, serverId);
+          .openProfilePopup(uid, { x: rect.right + 8, y: rect.top }, serverId);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
         useUiStore
           .getState()
-          .openContextMenu(m.username, { x: e.clientX, y: e.clientY }, serverId);
+          .openContextMenu(uid, { x: e.clientX, y: e.clientY }, serverId);
       }}
     >
       <div className={`relative shrink-0 ${isOnline ? "" : "opacity-[0.62]"}`}>
-        <UserAvatar uid={m.uid ?? 0} name={m.username} size={34} />
+        <UserAvatar uid={uid} name={name} size={34} />
         <StatusDot
           status={status}
           ring="var(--color-bg-tertiary)"
@@ -185,7 +189,7 @@ const MemberRow = memo(function MemberRow({
               : "font-normal text-text-muted group-hover:text-text-primary"
           }`}
         >
-          {m.nickname || m.username}
+          {m.nickname || name}
         </div>
         {message && (
           <StatusMessageText message={message} emojiSize={13} className="font-meta text-micro leading-4 text-text-muted" />

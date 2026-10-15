@@ -1,14 +1,15 @@
 import { create } from "zustand";
 import { channelKey, type ChannelKey } from "../lib/channelKey";
+import type { Uid } from "./usersStore";
 
 // In-memory drafts for unsent messages so the composer survives a channel or
 // DM switch. Keys: ChannelKey (serverId + channelId — bare channel ids
-// collide across servers) for channel drafts, recipient username for DM
+// collide across servers) for channel drafts, the recipient's uid for DM
 // drafts. Empty strings are deleted so the map doesn't grow forever.
 
 interface DraftsState {
   channelDrafts: Record<ChannelKey, string>;
-  dmDrafts: Record<string, string>;
+  dmDrafts: Record<Uid, string>;
   /// The last draft put back from outside the composer (a refused send),
   /// so the open composer can show it. `n` changes on every restore.
   restored: { key: ChannelKey; n: number } | null;
@@ -17,9 +18,9 @@ interface DraftsState {
   /// Put the text of a refused message back, unless something new has
   /// been typed since. True when it was put back.
   restoreChannelDraft: (serverId: string, channelId: string, value: string) => boolean;
-  setDmDraft: (username: string, value: string) => void;
+  setDmDraft: (peer: Uid, value: string) => void;
   clearChannelDraft: (serverId: string, channelId: string) => void;
-  clearDmDraft: (username: string) => void;
+  clearDmDraft: (peer: Uid) => void;
 }
 
 export const useDraftsStore = create<DraftsState>((set, get) => ({
@@ -45,11 +46,11 @@ export const useDraftsStore = create<DraftsState>((set, get) => ({
     }));
     return true;
   },
-  setDmDraft: (username, value) =>
+  setDmDraft: (peer, value) =>
     set((s) => {
       const next = { ...s.dmDrafts };
-      if (value) next[username] = value;
-      else delete next[username];
+      if (value) next[peer] = value;
+      else delete next[peer];
       return { dmDrafts: next };
     }),
   clearChannelDraft: (serverId, channelId) =>
@@ -60,11 +61,11 @@ export const useDraftsStore = create<DraftsState>((set, get) => ({
       delete next[key];
       return { channelDrafts: next };
     }),
-  clearDmDraft: (username) =>
+  clearDmDraft: (peer) =>
     set((s) => {
-      if (!(username in s.dmDrafts)) return s;
+      if (!(peer in s.dmDrafts)) return s;
       const next = { ...s.dmDrafts };
-      delete next[username];
+      delete next[peer];
       return { dmDrafts: next };
     }),
 }));

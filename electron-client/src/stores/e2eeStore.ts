@@ -16,17 +16,17 @@ interface E2eeState {
   /// True once native has reported a status for the current login. The
   /// first "locked" report opens the unlock prompt exactly once.
   reported: boolean;
-  /// Peers whose pinned identity changed this session → when (unix s).
+  /// Peers (by uid) whose pinned identity changed this session → when (unix s).
   /// Cleared per peer by dismissPeerChange.
-  changedPeers: Record<string, number>;
+  changedPeers: Record<number, number>;
   /// The "set up encryption" nudge in the DM panel, dismissed for this
   /// session.
   setupNudgeDismissed: boolean;
   passphraseModal: PassphraseMode | null;
 
   setStatus: (p: E2eeStatusPayload) => void;
-  markPeerChanged: (username: string, at: number) => void;
-  dismissPeerChange: (username: string) => void;
+  markPeerChanged: (uid: number, at: number) => void;
+  dismissPeerChange: (uid: number) => void;
   dismissSetupNudge: () => void;
   openPassphraseModal: (mode: PassphraseMode) => void;
   closePassphraseModal: () => void;
@@ -55,13 +55,13 @@ export const useE2eeStore = create<E2eeState>((set) => ({
       setupNudgeDismissed: p.status === "unavailable" ? false : state.setupNudgeDismissed,
       passphraseModal: p.status === "unavailable" ? null : state.passphraseModal,
     })),
-  markPeerChanged: (username, at) =>
-    set((state) => ({ changedPeers: { ...state.changedPeers, [username]: at } })),
-  dismissPeerChange: (username) =>
+  markPeerChanged: (uid, at) =>
+    set((state) => ({ changedPeers: { ...state.changedPeers, [uid]: at } })),
+  dismissPeerChange: (uid) =>
     set((state) => {
-      if (!(username in state.changedPeers)) return state;
+      if (!(uid in state.changedPeers)) return state;
       const next = { ...state.changedPeers };
-      delete next[username];
+      delete next[uid];
       return { changedPeers: next };
     }),
   dismissSetupNudge: () => set({ setupNudgeDismissed: true }),

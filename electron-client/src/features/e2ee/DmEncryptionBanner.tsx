@@ -1,13 +1,15 @@
 import { useE2eeStore } from "../../stores/e2eeStore";
 import { LockGlyph } from "../chat/MessageBubble";
 import { usePeerE2ee } from "./usePeerE2ee";
+import { useUserName, type Uid } from "../../stores/usersStore";
 
 /// One slim strip under the DM header, for the states that need the
 /// user's attention (in priority order): this device is locked; the peer's
 /// keys changed; encryption isn't set up yet (dismissable nudge); the peer
 /// has no keys. Nothing when everything is sealed or the central can't do
 /// encryption.
-export default function DmEncryptionBanner({ peer }: { peer: string }) {
+export default function DmEncryptionBanner({ peer }: { peer: Uid }) {
+  const peerName = useUserName(peer);
   const status = useE2eeStore((s) => s.status);
   const nudgeDismissed = useE2eeStore((s) => s.setupNudgeDismissed);
   const changedAt = useE2eeStore((s) => s.changedPeers[peer] ?? 0);
@@ -32,11 +34,11 @@ export default function DmEncryptionBanner({ peer }: { peer: string }) {
     );
   } else if (changedAt > 0) {
     tone = "warning";
-    body = `${peer}'s encryption keys changed. If that's unexpected, compare safety numbers in their profile before trusting new messages.`;
+    body = `${peerName}'s encryption keys changed. If that's unexpected, compare safety numbers in their profile before trusting new messages.`;
     action = <ActionButton onClick={() => dismissChange(peer)}>Dismiss</ActionButton>;
   } else if (status === "not_set_up") {
     if (nudgeDismissed) return null;
-    body = `Set up end-to-end encryption so only you and ${peer} can read your messages, not even the server.`;
+    body = `Set up end-to-end encryption so only you and ${peerName} can read your messages, not even the server.`;
     action = (
       <>
         <ActionButton onClick={dismissNudge}>Not now</ActionButton>
@@ -47,7 +49,7 @@ export default function DmEncryptionBanner({ peer }: { peer: string }) {
     );
   } else if (status === "ready" && info && !info.hasKeys) {
     tone = "muted";
-    body = `Messages with ${peer} aren't encrypted yet, they haven't set up encryption.`;
+    body = `Messages with ${peerName} aren't encrypted yet, they haven't set up encryption.`;
   } else {
     return null;
   }

@@ -109,7 +109,7 @@ function expandToStream() {
   const v = useVoiceStore.getState();
   if (v.pipStream) v.setFullscreenStream(v.pipStream);
   if (v.callPeer) {
-    useDmStore.getState().setActiveDmUser(nameOf(v.callPeer));
+    useDmStore.getState().setActiveDmUser(v.callPeer);
     useUiStore.getState().setActiveView("dm");
   } else {
     // The channel sidebar renders the *active* server, which Home / a DM
@@ -159,7 +159,7 @@ export default function MiniStreamPlayer() {
   const dmShowsFullView =
     callPeer != null &&
     activeView === "dm" &&
-    activeDmUser === nameOf(callPeer) &&
+    activeDmUser === callPeer &&
     fullscreenStream === pipStream;
   const visible = streamLive && activeView !== "voice" && !dmShowsFullView;
 

@@ -1,8 +1,12 @@
 import { create } from "zustand";
 import type { DmMessage } from "../types";
 import { useUiStore } from "./uiStore";
+import { nameOf, toUid, type Uid } from "./usersStore";
 
 interface DmConversation {
+  /// The other person's account (the conversation's key).
+  peerUid: Uid;
+  /// Their name as last delivered; drawn via the users store.
   username: string;
   messages: DmMessage[];
   lastMessageTime: number;
@@ -72,9 +76,11 @@ export function conversationActivityTime(c: {
 }
 
 interface ConversationPreviewInput {
+  peerUid: Uid;
   peer: string;
   lastMessageContent: string;
   lastMessageSender: string;
+  lastMessageSenderUid?: Uid;
   lastMessageId: number;
   lastTimestamp: number;
   unreadCount: number;
@@ -85,26 +91,30 @@ interface ConversationPreviewInput {
 interface HistoryMessageInput {
   id: number;
   sender: string;
+  senderUid?: Uid;
   content: string;
   timestamp: number;
   editedAt?: number;
   replyTo?: number;
   replyToSender?: string;
+  replyToSenderUid?: Uid;
   replyToContent?: string;
   encrypted?: boolean;
   decryptError?: string;
 }
 
 interface DmState {
-  conversations: Record<string, DmConversation>;
-  activeDmUser: string | null;
+  /// By peer uid.
+  conversations: Record<Uid, DmConversation>;
+  /// The open conversation's peer.
+  activeDmUser: Uid | null;
   friendsOnlyDms: boolean;
   /// Per-peer snapshot of optimistically-removed DM messages awaiting
   /// the server ack. Mirror of chatStore.pendingDeletions for DMs.
-  pendingDmDeletions: Record<string, Map<number, DmMessage>>;
+  pendingDmDeletions: Record<Uid, Map<number, DmMessage>>;
 
-  setActiveDmUser: (username: string | null) => void;
-  addDmMessage: (otherUser: string, message: DmMessage, isFromSelf: boolean) => void;
+  setActiveDmUser: (uid: Uid | null) => void;
+  addDmMessage: (otherUser: Uid, message: DmMessage, isFromSelf: boolean, otherName?: string) => void;
   setFriendsOnlyDms: (value: boolean) => void;
   /// Replace conversation previews with the server-truth list from
   /// DmConversationsRes. Per peer: keep the existing `messages` array
@@ -117,7 +127,7 @@ interface DmState {
   /// oldest→newest in memory. Dedupes by id against existing
   /// messages. Sets hasMoreHistory + flips historyLoaded to true.
   appendHistory: (
-    peer: string,
+    peer: Uid,
     messages: HistoryMessageInput[],
     hasMore: boolean,
   ) => void;
@@ -125,7 +135,7 @@ interface DmState {
   /// (drops the preview placeholder / stale live tail), setting both the
   /// older and newer "has more" flags. Input may be any order — sorted by id.
   setDmWindow: (
-    peer: string,
+    peer: Uid,
     messages: HistoryMessageInput[],
     hasMoreOlder: boolean,
     hasMoreNewer: boolean,
@@ -133,33 +143,33 @@ interface DmState {
   /// Downward pagination: append a newer page (oldest→newest), updating
   /// hasMoreAfter. Dedupes by id.
   appendNewerDm: (
-    peer: string,
+    peer: Uid,
     messages: HistoryMessageInput[],
     hasMoreNewer: boolean,
   ) => void;
   /// Jump-to-present: clear the loaded slice so the caller can reload the
   /// newest page from scratch (hasMoreAfter → false, historyLoaded → false).
-  resetDmForJump: (peer: string) => void;
+  resetDmForJump: (peer: Uid) => void;
   /// Sliding-window trims (RealMessageList) — mirror of chatStore's
   /// trimTail/trimHead on the per-conversation flags. trimDmTail keeps the
   /// oldest `keep` rows and flips hasMoreAfter → true (the dropped tail is
   /// re-fetchable via after_id; live DMs are dropped past the gap and the
   /// "jump to present" pill shows). No-op while a row lacks a real id and
   /// when nothing would drop.
-  trimDmTail: (peer: string, keep: number) => void;
+  trimDmTail: (peer: Uid, keep: number) => void;
   /// Keeps the newest `keep` rows and flips hasMoreHistory → true.
-  trimDmHead: (peer: string, keep: number) => void;
+  trimDmHead: (peer: Uid, keep: number) => void;
   /// Optimistically zero the unread count and bump lastReadId.
   /// Called from DmChatPanel when the conversation becomes visible.
-  markRead: (peer: string, upToId: number) => void;
+  markRead: (peer: Uid, upToId: number) => void;
   /// Remove a DM from a peer's visible message list. Idempotent.
-  removeDmMessage: (peer: string, messageId: number) => void;
+  removeDmMessage: (peer: Uid, messageId: number) => void;
   /// Drop an optimistic (id-less) DM by its nonce — the send failed or
   /// was never confirmed.
-  removeDmMessageByNonce: (peer: string, nonce: string) => void;
+  removeDmMessageByNonce: (peer: Uid, nonce: string) => void;
   /// Apply a DM edit broadcast: replace content + set editedAt on the match.
   applyDmEdit: (
-    peer: string,
+    peer: Uid,
     messageId: number,
     content: string,
     editedAt: number,
@@ -171,15 +181,16 @@ interface DmState {
   /// caller re-requests conversations + the active peer's page).
   invalidateAllHistory: () => void;
   /// Snapshot + remove for optimistic delete; returns the snapshot.
-  snapshotAndRemoveDm: (peer: string, messageId: number) => DmMessage | undefined;
+  snapshotAndRemoveDm: (peer: Uid, messageId: number) => DmMessage | undefined;
   /// Re-insert a snapshotted DM (rejection path). Sorted by id.
-  restorePendingDmDeletion: (peer: string, messageId: number) => void;
+  restorePendingDmDeletion: (peer: Uid, messageId: number) => void;
   /// Drop the pending snapshot (success-ack or matching broadcast).
-  clearPendingDmDeletion: (peer: string, messageId: number) => void;
+  clearPendingDmDeletion: (peer: Uid, messageId: number) => void;
 }
 
-function emptyConversation(username: string): DmConversation {
+function emptyConversation(peerUid: Uid, username = nameOf(peerUid)): DmConversation {
   return {
+    peerUid,
     username,
     messages: [],
     lastMessageTime: 0,
@@ -199,9 +210,9 @@ export const useDmStore = create<DmState>((set, get) => ({
   friendsOnlyDms: false,
   pendingDmDeletions: {},
 
-  setActiveDmUser: (username) => set({ activeDmUser: username }),
+  setActiveDmUser: (uid) => set({ activeDmUser: uid }),
 
-  addDmMessage: (otherUser, message, isFromSelf) =>
+  addDmMessage: (otherUser, message, isFromSelf, otherName) =>
     set((state) => {
       const existing = state.conversations[otherUser];
       // Dedup replayed live messages (reconnect / at-least-once delivery):
@@ -272,7 +283,7 @@ export const useDmStore = create<DmState>((set, get) => ({
             unreadCount: newUnread,
           }
         : {
-            ...emptyConversation(otherUser),
+            ...emptyConversation(otherUser, otherName),
             messages: [message],
             lastMessageTime: time,
             lastMessage: message,
@@ -293,7 +304,7 @@ export const useDmStore = create<DmState>((set, get) => ({
     set((state) => {
       const next = { ...state.conversations };
       for (const p of previews) {
-        const existing = next[p.peer];
+        const existing = next[p.peerUid];
         // Server's last_timestamp is Unix seconds; the sidebar's
         // formatRelativeTime + the rest of the store work in ms.
         const lastMessageTimeMs = p.lastTimestamp * 1000;
@@ -308,13 +319,15 @@ export const useDmStore = create<DmState>((set, get) => ({
         const previewMessage: DmMessage = {
           id: p.lastMessageId,
           sender: p.lastMessageSender,
+          senderUid: toUid(p.lastMessageSenderUid),
           content: p.lastMessageContent,
           timestamp: String(p.lastTimestamp),
           encrypted: p.encrypted || undefined,
           decryptError: p.decryptError || undefined,
         };
         const hasInMemoryMessages = (existing?.messages.length ?? 0) > 0;
-        next[p.peer] = {
+        next[p.peerUid] = {
+          peerUid: p.peerUid,
           username: p.peer,
           messages: hasInMemoryMessages
             ? existing!.messages
@@ -353,6 +366,7 @@ export const useDmStore = create<DmState>((set, get) => ({
         .filter((m) => !existingIds.has(m.id))
         .map((m) => ({
           sender: m.sender,
+          senderUid: toUid(m.senderUid),
           content: m.content,
           // DmMessage.timestamp is a string in the renderer's wire
           // shape (matches DIRECT_MSG event payload). Convert here.
@@ -361,6 +375,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
+          replyToSenderUid: m.replyToSenderUid,
           replyToContent: m.replyToContent || undefined,
           encrypted: m.encrypted || undefined,
           decryptError: m.decryptError || undefined,
@@ -381,7 +396,6 @@ export const useDmStore = create<DmState>((set, get) => ({
           [peer]: {
             ...emptyConversation(peer),
             ...conv,
-            username: peer,
             messages: merged,
             lastMessageTime,
             lastMessage: newerOf(conv?.lastMessage ?? null, newestOf(incoming)),
@@ -398,12 +412,14 @@ export const useDmStore = create<DmState>((set, get) => ({
       const list: DmMessage[] = messages
         .map((m) => ({
           sender: m.sender,
+          senderUid: toUid(m.senderUid),
           content: m.content,
           timestamp: String(m.timestamp),
           id: m.id,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
+          replyToSenderUid: m.replyToSenderUid,
           replyToContent: m.replyToContent || undefined,
           encrypted: m.encrypted || undefined,
           decryptError: m.decryptError || undefined,
@@ -415,7 +431,6 @@ export const useDmStore = create<DmState>((set, get) => ({
           [peer]: {
             ...emptyConversation(peer),
             ...conv,
-            username: peer,
             // Replace wholesale — a jump window is a fresh, discontinuous
             // slice. lastMessageTime is left as-is (the window may not include
             // the newest message; don't reorder the sidebar downward).
@@ -441,12 +456,14 @@ export const useDmStore = create<DmState>((set, get) => ({
         .filter((m) => !existingIds.has(m.id))
         .map((m) => ({
           sender: m.sender,
+          senderUid: toUid(m.senderUid),
           content: m.content,
           timestamp: String(m.timestamp),
           id: m.id,
           editedAt: m.editedAt || undefined,
           replyTo: m.replyTo || undefined,
           replyToSender: m.replyToSender || undefined,
+          replyToSenderUid: m.replyToSenderUid,
           replyToContent: m.replyToContent || undefined,
           encrypted: m.encrypted || undefined,
           decryptError: m.decryptError || undefined,
@@ -477,7 +494,6 @@ export const useDmStore = create<DmState>((set, get) => ({
           [peer]: {
             ...emptyConversation(peer),
             ...conv,
-            username: peer,
             messages: [],
             hasMoreHistory: true,
             hasMoreAfter: false,

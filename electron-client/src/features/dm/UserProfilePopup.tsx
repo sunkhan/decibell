@@ -18,11 +18,12 @@ import { CodecBadge } from "../voice/CodecBadge";
 import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { RoleChips } from "../profile/RoleChips";
-import { legacyUid, uidOf } from "../users/userDirectory";
+import { useUserName } from "../../stores/usersStore";
+import { findMember } from "../../hooks/useDisplayName";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
-// useUiStore.openProfilePopup(username, {x, y}, serverId?). serverId
+// useUiStore.openProfilePopup(uid, {x, y}, serverId?). serverId
 // is optional — present in server-context invocations so the popup can
 // render role chips; null in pure DM/friends contexts.
 //
@@ -35,32 +36,31 @@ import { legacyUid, uidOf } from "../users/userDirectory";
 // y-position post-measurement so the full card stays inside the
 // viewport even when the trigger is near the bottom of the screen.
 export default function UserProfilePopup() {
-  const username = useUiStore((s) => s.profilePopupUser);
+  const uid = useUiStore((s) => s.profilePopupUser);
   const anchor = useUiStore((s) => s.profilePopupAnchor);
   const serverId = useUiStore((s) => s.profilePopupServerId);
   const closePopup = useUiStore((s) => s.closeProfilePopup);
   const openUserProfile = useUiStore((s) => s.openUserProfile);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const setActiveDmUser = useDmStore((s) => s.setActiveDmUser);
-  const currentUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   // Server roles for the Roles row: resolve the member's role_ids
   // against the server's role list. Both empty on legacy servers.
   const serverRoles = useChatStore((s) =>
     serverId ? s.rolesByServer[serverId] : undefined,
   );
   const memberEntry = useChatStore((s) =>
-    serverId && username
-      ? s.membersByServer[serverId]?.find((m) => m.username === username)
-      : undefined,
+    serverId && uid ? findMember(s.membersByServer, serverId, uid) : undefined,
   );
-  const presence = usePresence(username ?? "", memberEntry?.isOnline);
-  const statusMessage = useStatusMessage(username ?? "");
+  const username = useUserName(uid, memberEntry?.username ?? "");
+  const presence = usePresence(uid ?? 0, memberEntry?.isOnline);
+  const statusMessage = useStatusMessage(uid ?? 0);
 
   // Live-stream popup integration: read the stream's location (if
   // any), pull the decode caps for the codec gate, and look up the
   // stream's channel name from the chat store.
   const streamEntry = useVoiceStore((s) =>
-    username ? s.streamsByUser.get(legacyUid(username)) : undefined,
+    uid ? s.streamsByUser.get(uid) : undefined,
   );
   const decodeCaps = useCodecSettingsStore((s) => s.decodeCaps);
   const streamChannelName = useChatStore((s) => {
@@ -82,7 +82,7 @@ export default function UserProfilePopup() {
   useEffect(() => {
     setInput("");
     setSending(false);
-  }, [username]);
+  }, [uid]);
 
   // Thumbnail fetch + refresh (the streamer's cadence) while the popup is open for a
   // streaming user. The community server caches the last received
@@ -90,7 +90,7 @@ export default function UserProfilePopup() {
   // frame on demand instead of subscribing to a server-wide push (see
   // spec §2 for the bandwidth rationale).
   useEffect(() => {
-    if (!streamEntry || !username) {
+    if (!streamEntry || !uid) {
       setThumbnailUrl(null);
       return;
     }
@@ -102,9 +102,8 @@ export default function UserProfilePopup() {
       try {
         const result = (await invoke("fetch_stream_thumbnail", {
           serverId: serverIdForFetch,
-          username,
-          uid: uidOf(username),
-        })) as { username: string; jpeg: Uint8Array };
+          uid,
+        })) as { jpeg: Uint8Array };
         if (cancelled) return;
         if (result.jpeg && result.jpeg.byteLength > 0) {
           const blob = new Blob([result.jpeg as BlobPart], { type: "image/jpeg" });
@@ -131,13 +130,13 @@ export default function UserProfilePopup() {
       window.clearInterval(interval);
       if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
-  }, [streamEntry, username]);
+  }, [streamEntry, uid]);
 
   // Auto-join + auto-watch when the live thumbnail is clicked.
   // Codec mismatch short-circuits; the thumbnail button is also marked
   // disabled in JSX so most users never reach this guard.
   const handleJoinAndWatch = async () => {
-    if (!streamEntry || !username) return;
+    if (!streamEntry || !uid) return;
     const { serverId: targetServerId, channelId: targetChannelId } = streamEntry;
     const { canWatch } = canWatchStream(streamEntry.streamInfo, decodeCaps);
     if (!canWatch) return;
@@ -163,10 +162,10 @@ export default function UserProfilePopup() {
         serverId: targetServerId,
         channelId: targetChannelId,
         targetUsername: username,
-        targetUid: legacyUid(username),
+        targetUid: uid,
       });
-      useVoiceStore.getState().addWatching(legacyUid(username));
-      useVoiceStore.getState().setFullscreenStream(legacyUid(username));
+      useVoiceStore.getState().addWatching(uid);
+      useVoiceStore.getState().setFullscreenStream(uid);
     } catch (err) {
       console.error("Join + watch failed:", err);
     }
@@ -177,14 +176,14 @@ export default function UserProfilePopup() {
   // re-measures cleanly (otherwise the popup briefly renders at the
   // previous instance's position).
   useLayoutEffect(() => {
-    if (!username || !anchor || !popupRef.current) {
+    if (!uid || !anchor || !popupRef.current) {
       setClampedY(null);
       return;
     }
     const height = popupRef.current.getBoundingClientRect().height;
     const next = Math.max(16, Math.min(anchor.y, window.innerHeight - height - 16));
     setClampedY(next);
-  }, [username, anchor, serverId]);
+  }, [uid, anchor, serverId]);
 
   // Focus the quick-DM input as soon as the popup measures and
   // becomes interactive (clampedY transitions from null to a number).
@@ -194,7 +193,7 @@ export default function UserProfilePopup() {
   }, [clampedY]);
 
   useEffect(() => {
-    if (!username) return;
+    if (!uid) return;
     const handler = (e: MouseEvent) => {
       if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
         closePopup();
@@ -202,18 +201,18 @@ export default function UserProfilePopup() {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [username, closePopup]);
+  }, [uid, closePopup]);
 
   useEffect(() => {
-    if (!username) return;
+    if (!uid) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") closePopup();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [username, closePopup]);
+  }, [uid, closePopup]);
 
-  if (!username || !anchor) return null;
+  if (!uid || !anchor) return null;
 
 
   const popupWidth = 300;
@@ -226,12 +225,12 @@ export default function UserProfilePopup() {
     try {
       await invoke("send_private_message", {
         recipient: username,
-        recipientUid: uidOf(username),
+        recipientUid: uid,
         message: input.trim(),
       });
       setInput("");
       closePopup();
-      setActiveDmUser(username);
+      setActiveDmUser(uid);
       setActiveView("dm");
     } catch (err) {
       console.error("DM send failed:", err);
@@ -246,7 +245,7 @@ export default function UserProfilePopup() {
     }
   };
 
-  const gradient = userGradient(legacyUid(username), username);
+  const gradient = userGradient(uid, username);
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] isolate">
@@ -278,11 +277,11 @@ export default function UserProfilePopup() {
               suggests it is a button. */}
           <button
             type="button"
-            onClick={() => openUserProfile(username, serverId)}
+            onClick={() => openUserProfile(uid, serverId)}
             title="View full profile"
             className="group absolute -top-9 left-0 cursor-pointer rounded-xl border-[4px] border-bg-light"
           >
-            <UserAvatar uid={legacyUid(username)} name={username} size={64} />
+            <UserAvatar uid={uid} name={username} size={64} />
             <span
               className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 text-center text-[9px] font-semibold uppercase leading-tight tracking-[0.06em] text-white opacity-0 transition-opacity group-hover:opacity-100"
               style={{ borderRadius: "var(--radius-avatar)" }}
@@ -325,7 +324,7 @@ export default function UserProfilePopup() {
             docs/superpowers/specs/2026-05-14-live-stream-indicators-design.md.
             Placed directly under the username/online block so it's
             the first thing the viewer notices. */}
-        {streamEntry && username && (() => {
+        {streamEntry && (() => {
           const { canWatch, reason } = canWatchStream(
             streamEntry.streamInfo,
             decodeCaps,
@@ -357,7 +356,7 @@ export default function UserProfilePopup() {
                       refreshes doesn't flash empty. */}
                   <div
                     className="absolute inset-0 animate-pulse"
-                    style={{ background: userGradient(legacyUid(username), username) }}
+                    style={{ background: userGradient(uid, username) }}
                   />
                   {thumbnailUrl && (
                     <img
@@ -397,7 +396,7 @@ export default function UserProfilePopup() {
         {serverId && (
           <>
             <div className="mx-4 my-3 h-px bg-border-divider" />
-            <div className={`px-4 ${username === currentUsername ? "pb-4" : ""}`}>
+            <div className={`px-4 ${uid === ownUid ? "pb-4" : ""}`}>
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
                 Roles
               </div>
@@ -411,7 +410,7 @@ export default function UserProfilePopup() {
         )}
 
         {/* Quick-DM input — hidden when looking at our own profile. */}
-        {username !== currentUsername && (
+        {uid !== ownUid && (
           <>
             <div className="mx-4 my-3 h-px bg-border-divider" />
             <div className="px-4 pb-4">

@@ -26,7 +26,7 @@ import {
   PlusIcon,
   SpeakerIcon,
 } from "./icons";
-import { nameOf, type Uid } from "../../../stores/usersStore";
+import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
 
 // The voice stage's tiles. Every tile is 16:9 at a width the stage computes;
 // each subscribes to its own slices (speaking, thumbnail, …) so an event for
@@ -65,14 +65,14 @@ function avatarFor(height: number): number {
   return Math.min(96, Math.max(32, Math.round((height * 0.38) / 8) * 8));
 }
 
-function openProfile(e: React.SyntheticEvent<HTMLElement>, uid: Uid, name: string, serverId: string | null) {
+function openProfile(e: React.SyntheticEvent<HTMLElement>, uid: Uid, serverId: string | null) {
   const rect = e.currentTarget.getBoundingClientRect();
-  useUiStore.getState().openProfilePopup(nameOf(uid, name), { x: rect.right + 8, y: rect.top }, serverId);
+  useUiStore.getState().openProfilePopup(uid, { x: rect.right + 8, y: rect.top }, serverId);
 }
 
-function openMenu(e: React.MouseEvent, uid: Uid, name: string, serverId: string | null) {
+function openMenu(e: React.MouseEvent, uid: Uid, serverId: string | null) {
   e.preventDefault();
-  useUiStore.getState().openContextMenu(nameOf(uid, name), { x: e.clientX, y: e.clientY }, serverId);
+  useUiStore.getState().openContextMenu(uid, { x: e.clientX, y: e.clientY }, serverId);
 }
 
 /// Enter / Space activate a div-with-role=button like a real button.
@@ -160,7 +160,7 @@ interface ParticipantTileProps {
 
 export const ParticipantTile = memo(function ParticipantTile({
   uid,
-  username,
+  username: rosterName,
   isLocal,
   rosterMuted,
   rosterDeafened,
@@ -176,6 +176,7 @@ export const ParticipantTile = memo(function ParticipantTile({
   const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
   const selfMuted = useVoiceStore((s) => isLocal && s.isMuted);
   const selfDeafened = useVoiceStore((s) => isLocal && s.isDeafened);
+  const username = useUserName(uid, rosterName);
   const displayName = useDisplayName(connectedServerId, uid, username);
 
   const muted = isLocal ? selfMuted : rosterMuted;
@@ -190,9 +191,9 @@ export const ParticipantTile = memo(function ParticipantTile({
       role="button"
       tabIndex={0}
       title={displayName}
-      onClick={(e) => openProfile(e, uid, username, connectedServerId)}
-      onContextMenu={(e) => openMenu(e, uid, username, connectedServerId)}
-      onKeyDown={(e) => onActivateKey(e, () => openProfile(e, uid, username, connectedServerId))}
+      onClick={(e) => openProfile(e, uid, connectedServerId)}
+      onContextMenu={(e) => openMenu(e, uid, connectedServerId)}
+      onKeyDown={(e) => onActivateKey(e, () => openProfile(e, uid, connectedServerId))}
       // Speaking flips the outline instantly (no transition): a fading
       // ring repaints for its whole duration on every VAD flip.
       className={`group relative flex aspect-video shrink-0 items-center justify-center overflow-hidden border border-border shadow-raised ${
@@ -470,6 +471,7 @@ export const OverflowTile = memo(function OverflowTile({
 }: OverflowTileProps) {
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   const anySpeaking = useVoiceStore((s) => hidden.some((u) => s.speakingUsers.has(u)));
+  const names = useUsersStore((s) => s.names);
   const tileRef = useRef<HTMLDivElement>(null);
   const toggle = () => {
     const el = tileRef.current;
@@ -506,7 +508,7 @@ export const OverflowTile = memo(function OverflowTile({
               className={`ring-2 ring-bg-light ${i > 0 ? "-ml-2" : ""}`}
               style={{ borderRadius: AVATAR_RADIUS }}
             >
-              <UserAvatar uid={u} name={nameOf(u)} size={stackSize} />
+              <UserAvatar uid={u} name={names.get(u) ?? ""} size={stackSize} />
             </div>
           ))}
         </div>
@@ -595,7 +597,7 @@ const HiddenRow = memo(function HiddenRow({
 }) {
   const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
   const p = useVoiceStore((s) => s.participants.find((x) => x.uid === uid));
-  const username = p?.username ?? nameOf(uid);
+  const username = useUserName(uid, p?.username ?? "Unknown user");
   const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
   const displayName = useDisplayName(connectedServerId, uid, username);
   return (
@@ -603,13 +605,13 @@ const HiddenRow = memo(function HiddenRow({
       role="button"
       tabIndex={0}
       onClick={(e) => {
-        openProfile(e, uid, username, connectedServerId);
+        openProfile(e, uid, connectedServerId);
         onPick();
       }}
-      onContextMenu={(e) => openMenu(e, uid, username, connectedServerId)}
+      onContextMenu={(e) => openMenu(e, uid, connectedServerId)}
       onKeyDown={(e) =>
         onActivateKey(e, () => {
-          openProfile(e, uid, username, connectedServerId);
+          openProfile(e, uid, connectedServerId);
           onPick();
         })
       }

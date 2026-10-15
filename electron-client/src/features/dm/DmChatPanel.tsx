@@ -31,7 +31,7 @@ import DeleteMessageConfirmModal from "../../components/DeleteMessageConfirmModa
 import EncryptionBadge from "../e2ee/EncryptionBadge";
 import DmEncryptionBanner from "../e2ee/DmEncryptionBanner";
 import type { Attachment, DmMessage, GifResult, Message } from "../../types";
-import { legacyUid, uidOf } from "../users/userDirectory";
+import { nameOf, useUserName } from "../../stores/usersStore";
 
 // Canonical reject strings the central server echoes back as a DM
 // from us-to-us. Pattern-matched here so we can render them as a
@@ -99,10 +99,12 @@ export default function DmChatPanel() {
   );
   // The peer's status alone (a string), so a presence change about
   // someone else doesn't re-render the panel.
-  const peerPresence = usePresence(activeDmUser ?? "");
-  const peerMessage = useStatusMessage(activeDmUser ?? "");
+  const peerPresence = usePresence(activeDmUser ?? 0);
+  const peerMessage = useStatusMessage(activeDmUser ?? 0);
+  const peerName = useUserName(activeDmUser, conversation?.username ?? "");
 
   const localUsername = useAuthStore((s) => s.username);
+  const ownUid = useAuthStore((s) => s.uid);
   const dmFriendsPanelVisible = useUiStore((s) => s.dmFriendsPanelVisible);
   const toggleDmFriendsPanel = useUiStore((s) => s.toggleDmFriendsPanel);
   const activeModal = useUiStore((s) => s.activeModal);
@@ -184,7 +186,7 @@ export default function DmChatPanel() {
 
     useDmStore.getState().snapshotAndRemoveDm(peer, messageId);
 
-    invoke("delete_dm_message", { peer, peerUid: uidOf(peer), messageId }).catch((err) => {
+    invoke("delete_dm_message", { peer: nameOf(peer), peerUid: peer, messageId }).catch((err) => {
       console.error("delete_dm_message:", err);
       useDmStore.getState().restorePendingDmDeletion(peer, messageId);
       toast.error("Failed to delete message", "Please try again.");
@@ -233,23 +235,23 @@ export default function DmChatPanel() {
     setEditingMessageId(null);
     if (!peer || typeof message.id !== "number" || message.id <= 0) return;
     if (content === message.content) return; // no change → skip
-    invoke("edit_dm_message", { peer, peerUid: uidOf(peer), messageId: message.id, content }).catch((err) =>
+    invoke("edit_dm_message", { peer: nameOf(peer), peerUid: peer, messageId: message.id, content }).catch((err) =>
       console.error("edit_dm_message:", err),
     );
   }, []);
   // ArrowUp on an empty composer → edit the latest own message.
   const editLatestOwn = useCallback(() => {
     const peer = useDmStore.getState().activeDmUser;
-    if (!peer || !localUsername) return;
+    if (!peer || !ownUid) return;
     const list = useDmStore.getState().conversations[peer]?.messages ?? [];
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
-      if (m.sender === localUsername && typeof m.id === "number" && m.id > 0) {
+      if (m.senderUid === ownUid && typeof m.id === "number" && m.id > 0) {
         setEditingMessageId(m.id);
         return;
       }
     }
-  }, [localUsername]);
+  }, [ownUid]);
 
   // Type anywhere in the conversation to start composing; ArrowUp edits latest.
   useTypeToFocusComposer(editorRef, editLatestOwn);
@@ -331,8 +333,8 @@ export default function DmChatPanel() {
     const conv = useDmStore.getState().conversations[activeDmUser];
     if (conv?.historyLoaded) return;
     invoke("request_dm_history", {
-      peer: activeDmUser,
-      peerUid: uidOf(activeDmUser),
+      peer: nameOf(activeDmUser),
+      peerUid: activeDmUser,
       beforeId: 0,
       limit: 50,
     }).catch(console.error);
@@ -356,8 +358,8 @@ export default function DmChatPanel() {
     loadMoreInFlightRef.current = true;
     lastRequestedBeforeIdRef.current = beforeId;
     invoke("request_dm_history", {
-      peer: activeDmUser,
-      peerUid: uidOf(activeDmUser),
+      peer: nameOf(activeDmUser),
+      peerUid: activeDmUser,
       beforeId,
       limit: 50,
     })
@@ -391,8 +393,8 @@ export default function DmChatPanel() {
     loadNewerInFlightRef.current = true;
     lastRequestedAfterIdRef.current = afterId;
     invoke("request_dm_history", {
-      peer: activeDmUser,
-      peerUid: uidOf(activeDmUser),
+      peer: nameOf(activeDmUser),
+      peerUid: activeDmUser,
       beforeId: 0,
       afterId,
       limit: 50,
@@ -424,7 +426,7 @@ export default function DmChatPanel() {
     lastRequestedAfterIdRef.current = 0;
     setPresentLoading(true);
     useDmStore.getState().resetDmForJump(peer);
-    invoke("request_dm_history", { peer, peerUid: uidOf(peer), beforeId: 0, limit: 50 }).catch((err) => {
+    invoke("request_dm_history", { peer: nameOf(peer), peerUid: peer, beforeId: 0, limit: 50 }).catch((err) => {
       console.error(err);
       setPresentLoading(false);
     });
@@ -478,7 +480,7 @@ export default function DmChatPanel() {
     // they read those messages, mark them read. Server's GREATEST
     // upsert dedupes any extra fires in a burst.
     window.setTimeout(() => {
-      invoke("mark_dm_read", { peer, peerUid: uidOf(peer), upToId }).catch(console.error);
+      invoke("mark_dm_read", { peer: nameOf(peer), peerUid: peer, upToId }).catch(console.error);
     }, 250);
   }, [activeDmUser, messagesLenForMarkRead]);
 
@@ -521,6 +523,7 @@ export default function DmChatPanel() {
         peer,
         {
           sender: localUsername,
+          senderUid: ownUid,
           content,
           timestamp: String(Math.floor(Date.now() / 1000)),
           replyTo: replyToId,
@@ -540,8 +543,8 @@ export default function DmChatPanel() {
     setReplyingTo(null);
     const run = sendChainRef.current.then(() =>
       invoke("send_private_message", {
-        recipient: peer,
-        recipientUid: uidOf(peer),
+        recipient: nameOf(peer),
+        recipientUid: peer,
         message: content,
         replyTo: replyToId,
         nonce,
@@ -593,6 +596,7 @@ export default function DmChatPanel() {
         peer,
         {
           sender: localUsername,
+          senderUid: ownUid,
           content: gif.url,
           timestamp: String(Math.floor(Date.now() / 1000)),
           replyTo: replyToId,
@@ -604,8 +608,8 @@ export default function DmChatPanel() {
     }
     const run = sendChainRef.current.then(() =>
       invoke("send_private_message", {
-        recipient: peer,
-        recipientUid: uidOf(peer),
+        recipient: nameOf(peer),
+        recipientUid: peer,
         message: gif.url,
         replyTo: replyToId,
         nonce,
@@ -680,7 +684,7 @@ export default function DmChatPanel() {
       lastRequestedAfterIdRef.current = 0;
       invoke("request_dm_history", {
         peer,
-        peerUid: uidOf(peer),
+        peerUid: peer,
         beforeId: 0,
         aroundId: id,
         limit: 25,
@@ -727,7 +731,7 @@ export default function DmChatPanel() {
     prev: (typeof bubbleMessages)[number] | undefined,
   ) => {
     const isError =
-      msg.sender === localUsername &&
+      msg.senderUid === ownUid &&
       ERROR_MESSAGES.includes(msg.content);
     if (isError) {
       return (
@@ -736,7 +740,7 @@ export default function DmChatPanel() {
             {msg.content === ERROR_MESSAGES[0] ? (
               <>
                 <span className="font-medium text-warning">User is offline.</span>{" "}
-                Your message could not be delivered. It will be sent when {activeDmUser} comes back online.
+                Your message could not be delivered. It will be sent when {peerName} comes back online.
               </>
             ) : (
               <>
@@ -756,13 +760,13 @@ export default function DmChatPanel() {
         canDelete={
           typeof msg.id === "number" &&
           msg.id > 0 &&
-          msg.sender === localUsername
+          msg.senderUid === ownUid
         }
         onDelete={requestDeleteDmMessage}
         canEdit={
           typeof msg.id === "number" &&
           msg.id > 0 &&
-          msg.sender === localUsername &&
+          msg.senderUid === ownUid &&
           // Can't edit a body this device couldn't open.
           !msg.decryptError
         }
@@ -777,6 +781,11 @@ export default function DmChatPanel() {
             ? messagesById.get(msg.replyTo)?.sender ??
               (msg.replyToSender || undefined)
             : undefined
+        }
+        replyToSenderUid={
+          msg.replyTo
+            ? messagesById.get(msg.replyTo)?.senderUid ?? (msg.replyToSenderUid || 0)
+            : 0
         }
         replyToContent={
           msg.replyTo
@@ -807,7 +816,7 @@ export default function DmChatPanel() {
       {/* DM header */}
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <div className="relative">
-          <UserAvatar uid={legacyUid(activeDmUser)} name={activeDmUser} size={26} />
+          <UserAvatar uid={activeDmUser} name={peerName} size={26} />
           <StatusDot
             status={peerPresence}
             ring="var(--color-bg-tertiary)"
@@ -816,7 +825,7 @@ export default function DmChatPanel() {
           />
         </div>
         <span className="font-display text-title font-emphasis tracking-title text-text-bright">
-          {activeDmUser}
+          {peerName}
         </span>
         <StatusPill status={peerPresence} className="shrink-0 font-channel" />
         {peerMessage && (
@@ -830,13 +839,13 @@ export default function DmChatPanel() {
         <div className="flex-1" />
         <div className="flex gap-1">
           <button
-            onClick={() => void startCall(legacyUid(activeDmUser))}
+            onClick={() => void startCall(activeDmUser)}
             disabled={!isOnline || !callSignaling || callStatus !== "idle"}
             title={
               !callSignaling
                 ? "Calls aren't available on this server yet"
                 : !isOnline
-                  ? `${activeDmUser} is offline`
+                  ? `${peerName} is offline`
                   : callStatus !== "idle"
                     ? "Already in a call"
                     : "Start a voice call"
@@ -908,7 +917,7 @@ export default function DmChatPanel() {
 
       {/* P2P call with this user: the stage (tiles, focused stream, dock).
           In theater it fills the panel and the conversation below is hidden. */}
-      <CallStage peer={legacyUid(activeDmUser)} />
+      <CallStage peer={activeDmUser} />
 
       {!theaterActive && (
       <>
@@ -922,17 +931,17 @@ export default function DmChatPanel() {
         <div className="flex-1 overflow-y-auto pr-4 py-4">
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
             <div className="border-b border-border pb-5 mb-5">
-              <UserAvatar uid={legacyUid(activeDmUser)} name={activeDmUser} size={60} className="mb-3" />
+              <UserAvatar uid={activeDmUser} name={peerName} size={60} className="mb-3" />
               <h1 className="mb-1.5 text-[26px] font-semibold tracking-tight text-text-bright">
-                {activeDmUser}
+                {peerName}
               </h1>
               <p className="text-sm text-text-secondary leading-[1.55]">
                 This is the beginning of your conversation with{" "}
                 <span
                   className="font-semibold"
-                  style={{ color: userColor(legacyUid(activeDmUser), activeDmUser) }}
+                  style={{ color: userColor(activeDmUser, peerName) }}
                 >
-                  {activeDmUser}
+                  {peerName}
                 </span>
                 .
               </p>
@@ -1007,6 +1016,7 @@ export default function DmChatPanel() {
         <div className="relative flex min-h-[54px] flex-col gap-2.5 rounded-lg border border-border bg-bg-light px-3.5 py-2.5 transition-all focus-within:border-accent focus-within:shadow-ring">
           {replyParent && (
             <ReplyComposerBar
+              senderUid={replyParent.senderUid}
               sender={replyParent.sender}
               content={replyParent.content}
               onCancel={cancelReply}
@@ -1020,7 +1030,7 @@ export default function DmChatPanel() {
             onEnter={handleSend}
             onArrowUpEmpty={editLatestOwn}
             onEscape={escapeReply}
-            placeholder={`Message @${activeDmUser}`}
+            placeholder={`Message @${peerName}`}
             className="flex-1 bg-transparent text-sm leading-snug text-text-primary"
             maxHeight={160}
           />
@@ -1081,7 +1091,7 @@ export default function DmChatPanel() {
 
 // Draft-driven leaves: they subscribe to the drafts store themselves so a
 // keystroke re-renders them, not the panel and its message list.
-function DmDraftPreview({ peer }: { peer: string }) {
+function DmDraftPreview({ peer }: { peer: number }) {
   const draft = useDraftsStore((s) => s.dmDrafts[peer] ?? "");
   return <MessagePreview draft={draft} />;
 }
@@ -1091,7 +1101,7 @@ function DmSendButton({
   sending,
   onSend,
 }: {
-  peer: string;
+  peer: number;
   sending: boolean;
   onSend: () => void;
 }) {

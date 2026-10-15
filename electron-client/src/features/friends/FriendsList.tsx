@@ -8,12 +8,14 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
 import { usePresence, useStatusMessage } from "../../stores/presenceStore";
 import { StatusMessageText } from "../../components/StatusMessageText";
+import { useUserName, useUsersStore } from "../../stores/usersStore";
 
 function FriendRow({ friend }: { friend: FriendInfo }) {
   const openProfilePopup = useUiStore((s) => s.openProfilePopup);
   const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const status = usePresence(friend.username);
-  const message = useStatusMessage(friend.username);
+  const name = useUserName(friend.uid, friend.username);
+  const status = usePresence(friend.uid);
+  const message = useStatusMessage(friend.uid);
   const isPendingIn = friend.status === "pending_incoming";
   const isPendingOut = friend.status === "pending_outgoing";
 
@@ -22,15 +24,15 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       className="group flex cursor-pointer items-center gap-2.5 rounded-sm px-2 py-1.5 transition-colors hover:bg-surface-hover"
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(friend.username, { x: rect.right + 8, y: rect.top });
+        openProfilePopup(friend.uid, { x: rect.right + 8, y: rect.top });
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(friend.username, { x: e.clientX, y: e.clientY });
+        openContextMenu(friend.uid, { x: e.clientX, y: e.clientY });
       }}
     >
       <div className="relative shrink-0">
-        <UserAvatar uid={friend.uid ?? 0} name={friend.username} size={32} />
+        <UserAvatar uid={friend.uid} name={name} size={32} />
         {(friend.status === "online" || friend.status === "offline") && (
           <StatusDot
             status={status}
@@ -41,7 +43,7 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate font-channel text-[14px] font-normal leading-4.5 text-text-secondary transition-colors group-hover:text-text-primary">
-          {friend.username}
+          {name}
         </div>
         {message && (friend.status === "online" || friend.status === "offline") && (
           <StatusMessageText message={message} emojiSize={13} className="font-meta text-micro leading-3.5 text-text-muted" />
@@ -49,8 +51,8 @@ function FriendRow({ friend }: { friend: FriendInfo }) {
       </div>
       {isPendingIn && (
         <div className="flex gap-1">
-          <FriendActionButton action="ACCEPT" targetUsername={friend.username} label="Accept" variant="success" />
-          <FriendActionButton action="REJECT" targetUsername={friend.username} label="Reject" variant="error" />
+          <FriendActionButton action="ACCEPT" targetUid={friend.uid} targetUsername={name} label="Accept" variant="success" />
+          <FriendActionButton action="REJECT" targetUid={friend.uid} targetUsername={name} label="Reject" variant="error" />
         </div>
       )}
       {isPendingOut && (
@@ -80,8 +82,9 @@ export default function FriendsList() {
     return () => clearTimeout(t);
   }, [lastActionError]);
 
+  const names = useUsersStore((st) => st.names);
   const filtered = friends.filter((f) =>
-    f.username.toLowerCase().includes(search.toLowerCase()),
+    (names.get(f.uid) ?? f.username).toLowerCase().includes(search.toLowerCase()),
   );
 
   const sections: { label: string; items: FriendInfo[] }[] = [
@@ -174,7 +177,7 @@ export default function FriendsList() {
                   {section.label} — {section.items.length}
                 </h3>
                 {section.items.map((friend) => (
-                  <FriendRow key={friend.username} friend={friend} />
+                  <FriendRow key={friend.uid} friend={friend} />
                 ))}
               </div>
             ),

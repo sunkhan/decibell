@@ -125,7 +125,7 @@ function Stage({ peer }: { peer: Uid }) {
   const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const isStreamFullscreen = useVoiceStore((s) => s.isStreamFullscreen);
   const setStreamFullscreen = useVoiceStore((s) => s.setStreamFullscreen);
-  const msgCount = useDmStore((s) => s.conversations[nameOf(peer)]?.messages.length ?? 0);
+  const msgCount = useDmStore((s) => s.conversations[peer]?.messages.length ?? 0);
   const voiceHeight = useUiStore((s) => s.callStageVoiceHeight);
   const streamHeight = useUiStore((s) => s.callStageStreamHeight);
   const setCallStageHeight = useUiStore((s) => s.setCallStageHeight);
@@ -609,12 +609,12 @@ const CallTile = memo(function CallTile({ uid, muted, dim, pulse }: CallTileProp
       }`}
       onClick={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(username, { x: rect.right + 8, y: rect.top }, null);
+        openProfilePopup(uid, { x: rect.right + 8, y: rect.top }, null);
       }}
       onContextMenu={(e) => {
         // Same menu as a voice-channel tile: local mute + user volume.
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, null);
+        openContextMenu(uid, { x: e.clientX, y: e.clientY }, null);
       }}
     >
       <div className="relative">
@@ -726,7 +726,7 @@ const PeerChip = memo(function PeerChip({ uid, muted }: { uid: Uid; muted?: bool
       className="flex h-8 items-center gap-2 rounded-md border border-white/10 bg-black/70 pl-1 pr-2.5 text-[12px] font-medium text-text-primary"
       onContextMenu={(e) => {
         e.preventDefault();
-        openContextMenu(username, { x: e.clientX, y: e.clientY }, null);
+        openContextMenu(uid, { x: e.clientX, y: e.clientY }, null);
       }}
     >
       <div

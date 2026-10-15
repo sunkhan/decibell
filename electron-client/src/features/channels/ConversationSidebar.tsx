@@ -6,7 +6,7 @@ import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
 import MessageText from "../chat/MessageText";
 import { useSidebarResize } from "./useSidebarResize";
-import { legacyUid } from "../users/userDirectory";
+import { useUserName, type Uid } from "../../stores/usersStore";
 
 function formatRelativeTime(epochMs: number, nowMs: number): string {
   const diff = nowMs - epochMs;
@@ -54,8 +54,8 @@ export default function ConversationSidebar() {
 
   // Stable (setters are stable) so memo(ConversationRow) holds.
   const handleClick = useMemo(
-    () => (username: string) => {
-      setActiveDmUser(username);
+    () => (uid: Uid) => {
+      setActiveDmUser(uid);
       setActiveView("dm");
     },
     [setActiveDmUser, setActiveView],
@@ -87,13 +87,14 @@ export default function ConversationSidebar() {
             const lastMsg = conv.lastMessage ?? conv.messages[conv.messages.length - 1];
             return (
               <ConversationRow
-                key={conv.username}
+                key={conv.peerUid}
+                uid={conv.peerUid}
                 username={conv.username}
                 // activeDmUser is sticky across views (same pattern as
                 // activeServerId) so the conversation survives a trip to
                 // home — but on home the user is looking at the friends
                 // page, not at it, so only highlight it in the dm view.
-                isActive={activeView === "dm" && activeDmUser === conv.username}
+                isActive={activeView === "dm" && activeDmUser === conv.peerUid}
                 unreadCount={conv.unreadCount}
                 lastContent={lastMsg?.content}
                 lastMessageTime={conv.lastMessageTime}
@@ -116,7 +117,8 @@ export default function ConversationSidebar() {
 // replace `conversations` while a DM is being scrolled, and re-rendering
 // every row (avatar + rich-text preview) landed on those scroll frames.
 const ConversationRow = memo(function ConversationRow({
-  username,
+  uid,
+  username: payloadName,
   isActive,
   unreadCount,
   lastContent,
@@ -124,20 +126,22 @@ const ConversationRow = memo(function ConversationRow({
   now,
   onOpen,
 }: {
+  uid: Uid;
   username: string;
   isActive: boolean;
   unreadCount: number;
   lastContent: string | undefined;
   lastMessageTime: number;
   now: number;
-  onOpen: (username: string) => void;
+  onOpen: (uid: Uid) => void;
 }) {
-  // Each row subscribes to its own user, so a status change re-renders
-  // that row only.
-  const status = usePresence(username);
+  // Each row subscribes to its own user, so a status change (or a rename)
+  // re-renders that row only.
+  const status = usePresence(uid);
+  const username = useUserName(uid, payloadName);
   return (
     <button
-      onClick={() => onOpen(username)}
+      onClick={() => onOpen(uid)}
       className={`list-row flex w-full cursor-pointer items-center rounded-md transition-colors ${
         isActive
           ? "bg-accent-soft text-text-bright"
@@ -145,7 +149,7 @@ const ConversationRow = memo(function ConversationRow({
       }`}
     >
       <div className="relative shrink-0">
-        <UserAvatar uid={legacyUid(username)} name={username} size={34} />
+        <UserAvatar uid={uid} name={username} size={34} />
         <StatusDot
           status={status}
           ring="var(--color-bg-dmbar)"

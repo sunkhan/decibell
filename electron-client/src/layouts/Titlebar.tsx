@@ -3,6 +3,7 @@ import { getCurrentWindow } from "../lib/window";
 import { useUiStore } from "../stores/uiStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDmStore } from "../stores/dmStore";
+import { useUserName } from "../stores/usersStore";
 import TransfersButton from "../features/transfers/TransfersButton";
 
 const win = getCurrentWindow();
@@ -13,10 +14,12 @@ function Titlebar() {
   const activeServerId = useChatStore((s) => s.activeServerId);
   const servers = useChatStore((s) => s.servers);
   const activeDmUser = useDmStore((s) => s.activeDmUser);
+  const dmPayloadName = useDmStore((s) => (activeDmUser ? s.conversations[activeDmUser]?.username : undefined));
+  const dmName = useUserName(activeDmUser, dmPayloadName ?? "");
 
   let title = "Decibell";
   if (activeView === "dm" && activeDmUser) {
-    title = activeDmUser;
+    title = dmName || "Decibell";
   } else if ((activeView === "server" || activeView === "voice") && activeServerId) {
     title = servers.find((s) => s.id === activeServerId)?.name ?? "Decibell";
   }

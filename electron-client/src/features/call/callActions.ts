@@ -160,7 +160,7 @@ export async function acceptCall(): Promise<void> {
   call.setConnecting();
 
   // Land on the caller's DM so the call panel is where the user looks.
-  useDmStore.getState().setActiveDmUser(nameOf(inc.fromUid, inc.from));
+  useDmStore.getState().setActiveDmUser(inc.fromUid);
   useUiStore.getState().setActiveView("dm");
 
   try {
