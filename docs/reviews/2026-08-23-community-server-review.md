@@ -3274,3 +3274,32 @@ cleanup, the owed rotation), and the same under ASan + UBSan with no reports. Na
 pre-change community binary, 15 of the new checks fail before the paging seed stops the run (no
 `key_check` column).
 
+### Fix: channel crypto worker per community, remembered key loads, no epochs minted from the open path (2026-10-17, review A4)
+
+- **One worker for every community.** Incoming channel messages, history pages, edits and sealed search
+  pages, plaintext included, all went through one ordered worker (queue of 512), and the routers awaited
+  room in it. A message under an epoch we don't hold made the worker wait on a key load, up to 6 s per
+  page. Meanwhile the router that carries the key reply could be blocked on the full queue, and every other
+  community's chat waited behind it. Now each community has its own worker on an unbounded queue (the
+  router never waits). One community's key trouble stays in that community.
+- **One load per page, not per message.** `open_message` refreshed the keyring for every message whose
+  epoch key was missing, with no dedupe and no memory. A history page under an epoch we don't hold, or a
+  server naming epochs that don't exist, cost a full round trip per row, and the community silently drops
+  CHANNEL_KEYS_REQ past its 20 / 5 per s bucket. Now loads run one at a time per channel, and a caller that
+  waited out another's load reuses its result. The open path loads at most once per channel per 10 s,
+  whether the load worked or not, and CHANNEL_KEYS_CHANGED (a new epoch, or a fill on its way) resets that.
+  The renderer never re-opens a row that showed `no_key`, so the window costs nothing on screen.
+- **No epochs minted while opening.** A reply with `current_epoch == 0` (or, since S14, an orphaned
+  epoch) made the open path create an epoch inside the worker, sealing to every listed viewer at 250 ms
+  each. Only a send, a named filler or a rotation mints now. Epoch creation also sleeps only for members
+  whose keys need a lookup from central, instead of 250 ms for everyone.
+- **Paced key requests.** A long load (pages past the 8th) and a fill's publishes (one per epoch: a
+  newcomer in a channel with dozens of epochs) are spaced 250 ms apart past a burst of 8, inside the
+  community's per-session bucket. Past the burst they used to be dropped and time out.
+- Also fixed: two native tests saved key stores under the same uid in the same temp dir and failed when
+  they ran at the same moment.
+
+Verified: native `cargo test` 266 (+2: the open path's load memory and its reset; `needs_lookup`), stable
+over three runs; napi build clean, `index.js` / `index.d.ts` unchanged. Not live-tested: a slow or hostile
+community holding up only its own chat.
+

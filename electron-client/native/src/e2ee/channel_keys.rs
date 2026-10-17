@@ -13,16 +13,17 @@
 //!   - `rotate`: mint the next epoch for the current viewers (after a
 //!     removal, when the server names us as filler);
 //!   - `seal` / `open` for message bodies;
-//!   - the ordered worker that opens incoming channel packets (a missing
-//!     epoch key means a fetch, whose reply arrives on the router loop —
-//!     same reason the DM worker exists).
+//!   - the ordered workers, one per community, that open incoming channel
+//!     packets (a missing epoch key means a fetch, whose reply arrives on
+//!     the router loop — same reason the DM worker exists).
 //!
 //! Fills are paced to central's key-lookup bucket: sealing to N members
 //! needs N identity bundles.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -57,7 +58,26 @@ pub struct ChannelKeyring {
     /// page; `more_needs` says the filler has more to walk.
     pub needs: Vec<(String, i64, Vec<u32>)>,
     pub more_needs: bool,
+    /// Nobody holds the current epoch any more: the next send mints one.
+    pub orphaned: bool,
 }
+
+/// One channel's loads (review A4): one at a time, reused by whoever waited
+/// for it, and remembered briefly so a page of messages under an epoch we
+/// don't hold costs one round trip rather than one per message.
+#[derive(Default)]
+pub struct LoadSlot {
+    lock: Mutex<()>,
+    /// Loads that succeeded so far.
+    done: AtomicU64,
+    /// When the last load from the open path finished, successful or not.
+    /// CHANNEL_KEYS_CHANGED clears it: a new epoch is worth a fresh look.
+    tried: std::sync::Mutex<Option<Instant>>,
+}
+
+/// Within this long of the last load, a message under an epoch we don't hold
+/// opens as `no_key` without another one.
+const RECENT_LOAD: Duration = Duration::from_secs(10);
 
 fn needs_of(res: &ChannelKeysRes) -> Vec<(String, i64, Vec<u32>)> {
     res.needs.iter().map(|n| (n.username.clone(), n.uid, n.epochs.clone())).collect()
@@ -84,6 +104,24 @@ pub type FetchId = (String, String, u32, i64);
 
 /// Page walks stop here (64 × 256 blobs; 64 × ≤ 200 viewers).
 const MAX_PAGES: usize = 64;
+
+/// Spaces out the key requests of one long operation (a load's pages, a
+/// fill's publishes). The community takes CHANNEL_KEYS_* (and MLS) requests
+/// at 20 burst / 5 per s per session and drops the rest without a word, so
+/// a request past the burst would only time out.
+struct Pacer(usize);
+
+impl Pacer {
+    const BURST: usize = 8;
+    const GAP: Duration = Duration::from_millis(250);
+
+    async fn tick(&mut self) {
+        if self.0 >= Self::BURST {
+            tokio::time::sleep(Self::GAP).await;
+        }
+        self.0 += 1;
+    }
+}
 /// The server takes at most this many epochs per CHANNEL_KEYS_REJECT.
 const MAX_REJECT: usize = 512;
 
@@ -335,7 +373,7 @@ pub async fn ensure(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &
 /// Every page of our blobs plus the first of viewers and needs: opens the
 /// blobs we lack keys for and drops the ones we can't use. Also returns
 /// whether nobody holds the current epoch any more.
-async fn load(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<(ChannelKeyring, bool), String> {
+async fn load(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
     let first = fetch(state, server_id, channel_id, 0, 0).await?;
     let mut ring = {
         let s = state.lock().await;
@@ -346,10 +384,11 @@ async fn load(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -
     ring.members = members_of(&first);
     ring.needs = needs_of(&first);
     ring.more_needs = first.more_needs;
-    let orphaned = first.current_orphaned;
+    ring.orphaned = first.current_orphaned;
     let (mut stale, mut bad) = (Vec::new(), Vec::new());
     let mut page = first;
     let mut failed = None;
+    let mut pace = Pacer(1);
     for n in 1.. {
         for b in &page.blobs {
             if ring.keys.contains_key(&b.epoch) {
@@ -373,6 +412,7 @@ async fn load(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -
             Some(b) if page.more_blobs && n < MAX_PAGES => b.epoch,
             _ => break,
         };
+        pace.tick().await;
         match fetch(state, server_id, channel_id, after, 0).await {
             Ok(next) => page = next,
             Err(e) => {
@@ -386,28 +426,71 @@ async fn load(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -
     reject(state, server_id, channel_id, &bad, true).await;
     match failed {
         Some(e) => Err(e),
-        None => Ok((ring, orphaned)),
+        None => Ok(ring),
     }
+}
+
+fn load_slot(s: &mut AppState, server_id: &str, channel_id: &str) -> Arc<LoadSlot> {
+    s.channel_key_loads.entry(key_id(server_id, channel_id)).or_default().clone()
+}
+
+/// `load`, one at a time per channel: a caller that waited out someone
+/// else's load takes its result instead of fetching again.
+async fn load_shared(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
+    let slot = load_slot(&mut *state.lock().await, server_id, channel_id);
+    let seen = slot.done.load(Ordering::Acquire);
+    let _running = slot.lock.lock().await;
+    if slot.done.load(Ordering::Acquire) != seen {
+        if let Some(ring) = state.lock().await.channel_keys.get(&key_id(server_id, channel_id)) {
+            return Ok(ring.clone());
+        }
+    }
+    let ring = load(state, server_id, channel_id).await?;
+    slot.done.fetch_add(1, Ordering::Release);
+    Ok(ring)
+}
+
+/// When we hold the current key and the server lists viewers without
+/// blobs, seal for them in the background.
+fn spawn_fill(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str, ring: &ChannelKeyring) {
+    if !ring.encrypted || ring.needs.is_empty() || !ring.keys.contains_key(&ring.current_epoch) {
+        return;
+    }
+    let st = state.clone();
+    let (sid, cid) = (server_id.to_string(), channel_id.to_string());
+    tokio::spawn(async move {
+        if let Err(e) = fill_gaps(&st, &sid, &cid).await {
+            log::warn!("[chkeys] #{cid}: fill failed: {e}");
+        }
+    });
+}
+
+/// The open path's load (review A4): never mints an epoch, and runs at most
+/// once per channel within `RECENT_LOAD`, so a history page under an epoch
+/// we don't hold, or a server naming epochs that don't exist, costs one
+/// round trip and holds up only that community's worker.
+async fn load_for_open(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) {
+    let slot = load_slot(&mut *state.lock().await, server_id, channel_id);
+    if slot.tried.lock().unwrap().is_some_and(|at| at.elapsed() < RECENT_LOAD) {
+        return;
+    }
+    match load_shared(state, server_id, channel_id).await {
+        Ok(ring) => spawn_fill(state, server_id, channel_id, &ring),
+        Err(e) => log::debug!("[chkeys] #{channel_id}: load for a missing epoch failed: {e}"),
+    }
+    *slot.tried.lock().unwrap() = Some(Instant::now());
 }
 
 /// Always talk to the server: our blobs, the current epoch, who lacks keys.
 pub async fn refresh(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
-    let (ring, orphaned) = load(state, server_id, channel_id).await?;
-    if ring.encrypted && (ring.current_epoch == 0 || orphaned) {
+    let ring = load_shared(state, server_id, channel_id).await?;
+    if ring.encrypted && (ring.current_epoch == 0 || ring.orphaned) {
         // Nobody has minted a key for this channel yet, or nobody holds the
         // current one any more (so nobody can share it) — we mint the next,
         // for every viewer (ourselves included so our other devices can read).
         return create_epoch(state, server_id, channel_id, ring.current_epoch + 1, &ring.members).await;
     }
-    if ring.encrypted && !ring.needs.is_empty() && ring.keys.contains_key(&ring.current_epoch) {
-        let st = state.clone();
-        let (sid, cid) = (server_id.to_string(), channel_id.to_string());
-        tokio::spawn(async move {
-            if let Err(e) = fill_gaps(&st, &sid, &cid).await {
-                log::warn!("[chkeys] #{cid}: fill failed: {e}");
-            }
-        });
-    }
+    spawn_fill(state, server_id, channel_id, &ring);
     Ok(ring)
 }
 
@@ -423,12 +506,16 @@ async fn create_epoch(
     let key: [u8; KEY_LEN] = random_bytes()?;
     let mut blobs = Vec::new();
     let mut skipped = Vec::new();
-    for (i, (name, uid)) in members.iter().enumerate() {
+    for (name, uid) in members {
+        // Only a lookup costs central's key bucket; members whose keys this
+        // session already has seal at once (a channel's first send used to
+        // wait 250 ms per member).
+        let lookup = e2ee::needs_lookup(state, *uid).await;
         match seal_blobs_for(state, channel_id, (name, *uid), &[(epoch, key)]).await? {
             Some(b) => blobs.extend(b),
             None => skipped.push(name.clone()),
         }
-        if i + 1 < members.len() {
+        if lookup {
             tokio::time::sleep(FILL_PACE).await;
         }
     }
@@ -459,7 +546,7 @@ async fn create_epoch(
 
 /// `refresh` without the bootstrap branch (used after losing a race).
 async fn refresh_no_create(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
-    load(state, server_id, channel_id).await.map(|(ring, _)| ring)
+    load_shared(state, server_id, channel_id).await
 }
 
 /// Seal every epoch key we hold for each viewer the server says lacks it,
@@ -470,12 +557,14 @@ pub async fn fill_gaps(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id
         s.channel_keys.get(&key_id(server_id, channel_id)).cloned().unwrap_or_default()
     };
     let (mut needs, mut more) = (ring.needs.clone(), ring.more_needs);
+    let mut pace = Pacer(0);
     for n in 1.. {
-        fill_page(state, server_id, channel_id, &ring.keys, &needs).await?;
+        fill_page(state, server_id, channel_id, &ring.keys, &needs, &mut pace).await?;
         let after = match needs.last() {
             Some((_, uid, _)) if more && n < MAX_PAGES => *uid,
             _ => break,
         };
+        pace.tick().await;
         let page = fetch(state, server_id, channel_id, 0, after).await?;
         needs = needs_of(&page);
         more = page.more_needs;
@@ -493,6 +582,7 @@ async fn fill_page(
     channel_id: &str,
     keys: &HashMap<u32, [u8; KEY_LEN]>,
     needs: &[(String, i64, Vec<u32>)],
+    pace: &mut Pacer,
 ) -> Result<(), String> {
     let mut by_epoch: HashMap<u32, Vec<ChannelKeyBlob>> = HashMap::new();
     for (user, uid, epochs) in needs {
@@ -518,6 +608,7 @@ async fn fill_page(
     }
     for (epoch, blobs) in by_epoch {
         for chunk in blobs.chunks(400) {
+            pace.tick().await;
             let r = publish(state, server_id, channel_id, epoch, chunk.to_vec(), Vec::new()).await?;
             if !r.success {
                 log::warn!("[chkeys] #{channel_id}: fill for epoch {epoch} refused: {}", r.message);
@@ -539,6 +630,9 @@ pub async fn rotate(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &
 /// Forget everything cached for a community (disconnect / logout).
 pub fn forget_server(s: &mut AppState, server_id: &str) {
     s.channel_keys.retain(|(sid, _), _| sid != server_id);
+    s.channel_key_loads.retain(|(sid, _), _| sid != server_id);
+    // Its worker finishes what's queued and ends.
+    s.channel_crypto_tx.remove(server_id);
     s.pending_channel_keys.retain(|(sid, ..), _| sid != server_id);
     s.pending_channel_keys_publish.retain(|(sid, _), _| sid != server_id);
 }
@@ -655,9 +749,7 @@ pub async fn open_message(
     let key = match key {
         Some(k) => k,
         None => {
-            if let Err(e) = refresh(state, server_id, channel_id).await {
-                log::debug!("[chkeys] #{channel_id}: refresh for epoch {epoch} failed: {e}");
-            }
+            load_for_open(state, server_id, channel_id).await;
             let s = state.lock().await;
             lookup(&s).ok_or(DecryptError::NoKey)?
         }
@@ -720,6 +812,11 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, server_id: &str, b: C
                 r.current_epoch = b.current_epoch;
             }
         }
+        // A new epoch (or a fill on its way): the next message under an
+        // epoch we don't hold loads again, however recent the last load.
+        if let Some(slot) = s.channel_key_loads.get(&key_id(server_id, &b.channel_id)) {
+            *slot.tried.lock().unwrap() = None;
+        }
         (s.uid, s.username.clone().unwrap_or_default())
     };
     let is_me = if b.filler_uid > 0 { b.filler_uid == me.0 } else { b.filler == me.1 };
@@ -742,6 +839,7 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, server_id: &str, b: C
 
 // ── The channel crypto worker ───────────────────────────────────────
 
+/// Each job carries the community it came from.
 pub enum ChannelJob {
     Msg(String, ChannelMessage),
     History(String, ChannelHistoryResponse),
@@ -750,25 +848,40 @@ pub enum ChannelJob {
     Search(String, MessageSearchResponse),
 }
 
-pub async fn enqueue(state: &Arc<Mutex<AppState>>, job: ChannelJob) {
-    let tx = {
-        let mut s = state.lock().await;
-        match s.channel_crypto_tx.clone() {
-            Some(tx) => tx,
-            None => {
-                let (tx, rx) = mpsc::channel(512);
-                s.channel_crypto_tx = Some(tx.clone());
-                tokio::spawn(run_worker(rx, state.clone()));
-                tx
-            }
+impl ChannelJob {
+    fn server_id(&self) -> &str {
+        match self {
+            ChannelJob::Msg(sid, _) | ChannelJob::History(sid, _) | ChannelJob::Edited(sid, _) | ChannelJob::Search(sid, _) => sid,
         }
-    };
-    if tx.send(job).await.is_err() {
-        log::warn!("[chkeys] worker gone; dropping packet");
     }
 }
 
-async fn run_worker(mut rx: mpsc::Receiver<ChannelJob>, state: Arc<Mutex<AppState>>) {
+/// Queue a packet on its community's worker, starting one on first use.
+///
+/// One worker per community (review A4): a single global one let a key
+/// fetch for one community — or a server naming epochs that don't exist —
+/// hold up chat on all of them. The queue is unbounded so the router never
+/// waits on it: the router also carries the key replies the worker may be
+/// waiting for, and a full queue deadlocked the two until the fetch timed
+/// out. It drains at the rate packets arrive: a job waits for at most one
+/// load per channel per `RECENT_LOAD`.
+pub async fn enqueue(state: &Arc<Mutex<AppState>>, job: ChannelJob) {
+    let mut s = state.lock().await;
+    let sid = job.server_id().to_string();
+    let job = match s.channel_crypto_tx.get(&sid) {
+        Some(tx) => match tx.send(job) {
+            Ok(()) => return,
+            Err(mpsc::error::SendError(job)) => job, // the worker died; start another
+        },
+        None => job,
+    };
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(run_worker(rx, state.clone()));
+    let _ = tx.send(job);
+    s.channel_crypto_tx.insert(sid, tx);
+}
+
+async fn run_worker(mut rx: mpsc::UnboundedReceiver<ChannelJob>, state: Arc<Mutex<AppState>>) {
     while let Some(job) = rx.recv().await {
         match job {
             ChannelJob::Msg(sid, m) => handle_msg(&state, &sid, m).await,
@@ -1072,5 +1185,41 @@ mod tests {
         // Locked: nothing to say about the blob.
         state.lock().await.e2ee.status = Status::Locked;
         assert_eq!(unseal_blob(&state, CH, &good).await, Err(BlobFault::Retry));
+    }
+
+    /// Review A4: a message under an epoch we don't hold loads at most once
+    /// per `RECENT_LOAD` (here the load fails at once: no community is
+    /// connected), until CHANNEL_KEYS_CHANGED says there's something new.
+    #[tokio::test]
+    async fn the_open_path_remembers_its_last_load() {
+        let state = session(&identity(5), &identity(4));
+        let tried = |state: &Arc<Mutex<AppState>>| {
+            let state = state.clone();
+            async move {
+                let s = state.lock().await;
+                s.channel_key_loads.get(&key_id("srv", CH)).and_then(|slot| *slot.tried.lock().unwrap())
+            }
+        };
+        load_for_open(&state, "srv", CH).await;
+        let first = tried(&state).await.expect("the attempt is remembered");
+        load_for_open(&state, "srv", CH).await;
+        assert_eq!(tried(&state).await, Some(first), "no second load within the window");
+        // Another community's channel of the same name is its own.
+        load_for_open(&state, "other", CH).await;
+        assert_eq!(tried(&state).await, Some(first));
+        let changed = ChannelKeysChanged {
+            channel_id: CH.into(),
+            current_epoch: 3,
+            filler: "someone".into(),
+            rotate: false,
+            filler_uid: ALICE,
+        };
+        on_keys_changed(&state, "srv", changed).await;
+        assert_eq!(tried(&state).await, None, "a new epoch clears it");
+        load_for_open(&state, "srv", CH).await;
+        assert!(tried(&state).await.is_some_and(|t| t > first));
+        // Forgetting the community drops its bookkeeping.
+        forget_server(&mut *state.lock().await, "srv");
+        assert!(tried(&state).await.is_none());
     }
 }

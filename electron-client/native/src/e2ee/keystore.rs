@@ -467,7 +467,7 @@ mod tests {
     fn derived_store_opens_and_moves_to_safe_storage() {
         use base64::Engine as _;
         let _g = boot_tmp();
-        let uid = 9301;
+        let uid = 9002; // every test that saves a store has its own uid (same temp dir)
         let store = KeyStore::new(1, vec![IdentityKeys::generate(1).unwrap()]);
         let plain = serde_json::to_vec(&store).unwrap();
         let nonce = [4u8; 12];

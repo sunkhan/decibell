@@ -196,7 +196,9 @@ pub struct AppState {
     pub channel_keys: HashMap<crate::e2ee::channel_keys::KeyId, crate::e2ee::channel_keys::ChannelKeyring>,
     pub pending_channel_keys: HashMap<crate::e2ee::channel_keys::FetchId, Vec<oneshot::Sender<ChannelKeysRes>>>,
     pub pending_channel_keys_publish: HashMap<crate::e2ee::channel_keys::KeyId, oneshot::Sender<ChannelKeysPublishRes>>,
-    pub channel_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::channel_keys::ChannelJob>>,
+    /// One ordered worker per community (review A4).
+    pub channel_crypto_tx: HashMap<String, tokio::sync::mpsc::UnboundedSender<crate::e2ee::channel_keys::ChannelJob>>,
+    pub channel_key_loads: HashMap<crate::e2ee::channel_keys::KeyId, Arc<crate::e2ee::channel_keys::LoadSlot>>,
 }
 
 impl Default for AppState {
@@ -244,7 +246,8 @@ impl Default for AppState {
             channel_keys: HashMap::new(),
             pending_channel_keys: HashMap::new(),
             pending_channel_keys_publish: HashMap::new(),
-            channel_crypto_tx: None,
+            channel_crypto_tx: HashMap::new(),
+            channel_key_loads: HashMap::new(),
         }
     }
 }

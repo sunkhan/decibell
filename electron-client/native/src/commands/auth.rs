@@ -279,6 +279,8 @@ pub async fn logout() -> napi::Result<()> {
         // stays (it's per account) and reloads on the next login.
         s.voice_mls = None;
         s.channel_keys.clear();
+        s.channel_key_loads.clear();
+        s.channel_crypto_tx.clear();
         s.pending_channel_keys.clear();
         s.pending_channel_keys_publish.clear();
         s.e2ee.reset();

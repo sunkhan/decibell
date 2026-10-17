@@ -589,11 +589,21 @@ pub async fn seal_outbound_raw(
 /// E2EE_KEYS_CHANGED only tells their watchers. True when sealing to them
 /// will take a lookup (someone known to have no keys stays cached).
 pub async fn recheck_current(state: &Arc<Mutex<AppState>>, uid: i64) -> bool {
-    let mut s = state.lock().await;
-    if s.e2ee.current_ids.remove(&uid).is_some() {
-        s.e2ee.fresh.remove(&uid);
+    {
+        let mut s = state.lock().await;
+        if s.e2ee.current_ids.remove(&uid).is_some() {
+            s.e2ee.fresh.remove(&uid);
+        }
     }
-    !s.e2ee.fresh.contains(&uid)
+    needs_lookup(state, uid).await
+}
+
+/// Whether sealing to `uid` now would ask central for their keys (what
+/// central's key bucket counts), rather than use this session's.
+pub async fn needs_lookup(state: &Arc<Mutex<AppState>>, uid: i64) -> bool {
+    let s = state.lock().await;
+    let e = &s.e2ee;
+    !e.fresh.contains(&uid) && !e.current_ids.get(&uid).is_some_and(|kid| e.cache.contains_key(&(uid, *kid)))
 }
 
 /// `open_inbound` for tagged content (returns the raw inner bytes).
@@ -1624,6 +1634,27 @@ mod tests {
         // A signature with no identity behind it stays a refusal either way.
         let signed = verify_peer_call_key(&state, CAROL, "carol", "call-3", &pub_key, &[9u8; 64], 4).await;
         assert!(matches!(signed, CallKeyAuth::Rejected(_)));
+    }
+
+    /// Sealing paces only real lookups (review A4): a peer whose current
+    /// keys this session holds, or whom central said has none, costs nothing.
+    #[tokio::test]
+    async fn needs_lookup_counts_only_what_central_would_be_asked() {
+        let (a, b) = (identity(3), identity(7));
+        let (state, store) = session(ALICE, "alice", &a);
+        install(&state, store).await;
+        assert!(needs_lookup(&state, BOB).await, "never seen");
+        {
+            let mut s = state.lock().await;
+            s.e2ee.current_ids.insert(BOB, 7);
+            s.e2ee.cache.insert((BOB, 7), b.public_bundle(BOB, "bob").unwrap());
+        }
+        assert!(!needs_lookup(&state, BOB).await, "current keys cached");
+        assert!(recheck_current(&state, BOB).await, "forgotten, so the next seal asks again");
+        assert!(needs_lookup(&state, BOB).await);
+        state.lock().await.e2ee.fresh.insert(BOB);
+        assert!(!needs_lookup(&state, BOB).await, "central said: no keys");
+        assert!(!recheck_current(&state, BOB).await, "and that stays cached");
     }
 
     /// What central's E2EE_FETCH_KEYS_RES carries for `b`.
