@@ -98,7 +98,7 @@ pub async fn set_status(args: SetStatusArgs) -> napi::Result<()> {
                         let data = build_packet(
                             packet::Type::PresenceVisibility,
                             packet::Payload::PresenceVisibility(PresenceVisibility { hidden }),
-                            Some(&c.jwt),
+                            None,
                         );
                         (tx, data)
                     })

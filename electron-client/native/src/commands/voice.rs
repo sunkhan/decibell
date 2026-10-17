@@ -88,7 +88,7 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
                     let data = build_packet(
                         packet::Type::LeaveVoiceReq,
                         packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
-                        Some(&client.jwt),
+                        None,
                     );
                     leave_sends.push((tx, data));
                 }
@@ -135,11 +135,10 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
                 channel_id: channel_id.clone(),
                 capabilities: Some(capabilities),
             }),
-            Some(&client.jwt),
+            None,
         );
         let host = client.host.clone();
         let port = client.port;
-        let jwt = client.jwt.clone();
         // The UDP key is the tail of the token this connection authenticated
         // with, not of a later refresh.
         let udp_jwt = client.auth_jwt.clone();
@@ -203,7 +202,6 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             channel_id.clone(),
             uid,
             &identity,
-            jwt.clone(),
             mls_write_tx,
             ring,
         )
@@ -241,7 +239,7 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
                             is_muted,
                             is_deafened,
                         }),
-                        Some(&client_val.jwt),
+                        None,
                     );
                     state_sends.push((tx, data));
                 }
@@ -289,7 +287,7 @@ pub async fn leave_voice_channel() -> napi::Result<()> {
                 let data = build_packet(
                     packet::Type::LeaveVoiceReq,
                     packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
-                    Some(&client.jwt),
+                    None,
                 );
                 leave_sends.push((tx, data));
             }
@@ -373,14 +371,12 @@ pub(crate) fn rebind_voice_group(
         .get(server_id)
         .ok_or_else(|| format!("Not connected to community {server_id}"))?;
     let write_tx = client.connection_write_tx().ok_or("Community connection lost")?;
-    let jwt = client.jwt.clone();
     let handle = crate::e2ee::group::start(
         state_arc,
         server_id.to_string(),
         channel_id.to_string(),
         s.uid,
         &identity,
-        jwt,
         write_tx,
         ring,
     )?;
@@ -421,7 +417,7 @@ pub async fn set_voice_mute(args: SetVoiceMuteArgs) -> napi::Result<()> {
                     is_muted,
                     is_deafened,
                 }),
-                Some(&client.jwt),
+                None,
             );
             notify_sends.push((tx, data));
         }
@@ -469,7 +465,7 @@ pub async fn set_voice_deafen(args: SetVoiceDeafenArgs) -> napi::Result<()> {
                     is_muted,
                     is_deafened,
                 }),
-                Some(&client.jwt),
+                None,
             );
             notify_sends.push((tx, data));
         }

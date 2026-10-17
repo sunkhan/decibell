@@ -231,6 +231,12 @@ impl Drop for Connection {
 }
 
 /// Build a serialized Packet ready to send over the wire.
+///
+/// `auth_token` is for central, which checks it on every packet. Packets
+/// to a community pass `None`: the community authenticates the session
+/// once (COMMUNITY_AUTH_REQ) and never reads the per-packet token, so
+/// sending it only puts the session JWT in every packet a server might
+/// relay or log.
 pub fn build_packet(
     msg_type: super::proto::packet::Type,
     payload: super::proto::packet::Payload,

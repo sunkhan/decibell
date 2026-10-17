@@ -97,7 +97,10 @@ pub struct CommunityClient {
     pub server_id: String,
     pub host: String,
     pub port: u16,
-    /// The newest token: sent on every packet and used by a reconnect.
+    /// The newest token (refreshes replace it). Only ever sent inside a
+    /// COMMUNITY_AUTH_REQ / SESSION_TOKEN_UPDATE payload: community packets
+    /// carry no per-packet `auth_token` (the server never reads it, and a
+    /// relayed copy of a packet must not hand the token on).
     pub jwt: String,
     /// The token this connection authenticated with. The server derives
     /// the session's UDP key from it (its tail), so media engines must use
@@ -144,7 +147,7 @@ impl CommunityClient {
                 invite_code: invite_code.unwrap_or_default(),
                 presence_hidden: crate::presence::hidden(),
             }),
-            Some(&jwt),
+            None,
         );
         connection.send(auth_data).await?;
 
@@ -159,7 +162,6 @@ impl CommunityClient {
 
         // Keepalive ping every 30s. Same lock-free pattern as central.
         let ping_write_tx = connection.clone_write_tx();
-        let ping_jwt = jwt.clone();
         let ping_task = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -169,7 +171,7 @@ impl CommunityClient {
                         protocol_version: 0,
                         client_id: String::new(),
                     }),
-                    Some(&ping_jwt),
+                    None,
                 );
                 let send_result = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
@@ -238,7 +240,7 @@ impl CommunityClient {
                 chosen_codec,
                 enforced_codec,
             }),
-            Some(&self.jwt),
+            None,
         );
         self.send(data).await
     }
@@ -249,7 +251,7 @@ impl CommunityClient {
             packet::Payload::StopStreamReq(StopStreamRequest {
                 channel_id: channel_id.into(),
             }),
-            Some(&self.jwt),
+            None,
         );
         self.send(data).await
     }
@@ -274,7 +276,7 @@ impl CommunityClient {
                 thumbnail_data: jpeg_data.to_vec(),
                 owner_uid: 0,
             }),
-            Some(&self.jwt),
+            None,
         );
         Some((tx, data))
     }
@@ -338,7 +340,7 @@ impl CommunityClient {
                                 invite_code: String::new(),
                                 presence_hidden: crate::presence::hidden(),
                             }),
-                            Some(&jwt),
+                            None,
                         );
                         let _ = connection.send(auth_data).await;
 
@@ -352,7 +354,6 @@ impl CommunityClient {
 
                         // Restart keepalive ping task
                         let ping_write_tx = connection.clone_write_tx();
-                        let ping_jwt = jwt.clone();
                         let ping_task = tokio::spawn(async move {
                             loop {
                                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -362,7 +363,7 @@ impl CommunityClient {
                                         protocol_version: 0,
                                         client_id: String::new(),
                                     }),
-                                    Some(&ping_jwt),
+                                    None,
                                 );
                                 let send_result = tokio::time::timeout(
                                     std::time::Duration::from_secs(5),

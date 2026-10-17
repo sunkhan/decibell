@@ -102,7 +102,7 @@ async fn send_community(
         let s = state.lock().await;
         let client = s.communities.get(server_id).ok_or("Not connected to that community")?;
         let tx = client.connection_write_tx().ok_or("Community connection lost")?;
-        (tx, build_packet(ty, payload, Some(&client.jwt)))
+        (tx, build_packet(ty, payload, None))
     };
     match tokio::time::timeout(FETCH_TIMEOUT, tx.send(data)).await {
         Ok(Ok(())) => Ok(()),

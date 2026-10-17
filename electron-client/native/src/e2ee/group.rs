@@ -100,7 +100,6 @@ struct Driver {
     server_id: String,
     channel_id: String,
     uid: i64,
-    jwt: String,
     write_tx: mpsc::Sender<Vec<u8>>,
     ring: SharedKeyRing,
     provider: OpenMlsRustCrypto,
@@ -129,7 +128,6 @@ pub fn start(
     channel_id: String,
     uid: i64,
     identity: &IdentityKeys,
-    jwt: String,
     write_tx: mpsc::Sender<Vec<u8>>,
     ring: SharedKeyRing,
 ) -> Result<GroupHandle, String> {
@@ -150,7 +148,6 @@ pub fn start(
         server_id: server_id.clone(),
         channel_id: channel_id.clone(),
         uid,
-        jwt,
         write_tx,
         ring: ring.clone(),
         provider,
@@ -259,7 +256,7 @@ impl Driver {
     // ── Outbound ────────────────────────────────────────────────
 
     async fn send(&self, ty: packet::Type, payload: packet::Payload) {
-        let data = build_packet(ty, payload, Some(&self.jwt));
+        let data = build_packet(ty, payload, None);
         if tokio::time::timeout(Duration::from_secs(5), self.write_tx.send(data)).await.is_err() {
             log::warn!("[mls] {} send timed out", self.channel_id);
         }

@@ -24,7 +24,7 @@ async fn send_for_server(
         let tx = client
             .connection_write_tx()
             .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
-        let pkt = build_packet(pkt_type, payload, Some(&client.jwt));
+        let pkt = build_packet(pkt_type, payload, None);
         (tx, pkt)
     };
 

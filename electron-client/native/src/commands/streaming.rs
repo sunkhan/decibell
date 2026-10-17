@@ -153,7 +153,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     chosen_codec: args.initial_codec as i32,
                     enforced_codec: args.enforced_codec as i32,
                 }),
-                Some(&client.jwt),
+                None,
             );
             Some((tx, pkt))
         };
@@ -462,7 +462,7 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
                         let pkt = build_packet(
                             packet::Type::StopStreamReq,
                             packet::Payload::StopStreamReq(StopStreamRequest { channel_id }),
-                            Some(&client.jwt),
+                            None,
                         );
                         (tx, pkt)
                     })
@@ -567,7 +567,7 @@ pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Resu
                         chosen_codec: args.initial_codec as i32,
                         enforced_codec: args.enforced_codec as i32,
                     }),
-                    Some(&client.jwt),
+                    None,
                 );
                 (tx, pkt)
             })
@@ -722,7 +722,7 @@ pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
                 target_username: args.target_username.unwrap_or_default(),
                 target_uid: args.target_uid,
             }),
-            Some(&client.jwt),
+            None,
         );
         (tx, pkt)
     };
@@ -765,7 +765,7 @@ pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
                 target_username: args.target_username.unwrap_or_default(),
                 target_uid: args.target_uid,
             }),
-            Some(&client.jwt),
+            None,
         );
         (tx, pkt)
     };
@@ -825,7 +825,7 @@ pub async fn fetch_stream_thumbnail(
                 owner_username: String::new(),
                 owner_uid: uid,
             }),
-            Some(&client.jwt),
+            None,
         );
         let (otx, orx) = oneshot::channel();
         // Last-request-wins per streamer — supersedes any earlier

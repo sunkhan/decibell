@@ -25,7 +25,7 @@ async fn send_for_server(
         let tx = client
             .connection_write_tx()
             .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
-        let pkt = build_packet(pkt_type, payload, Some(&client.jwt));
+        let pkt = build_packet(pkt_type, payload, None);
         (tx, pkt)
     };
 
@@ -373,7 +373,7 @@ pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<
                 sealed_sender: String::new(),
                 reply_to_sealed_sender: String::new(),
             }),
-            Some(&client.jwt),
+            None,
         );
         (tx, pkt)
     };

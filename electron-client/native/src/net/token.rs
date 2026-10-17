@@ -37,7 +37,7 @@ pub async fn adopt(state: &Arc<Mutex<AppState>>, jwt: String) {
                 let data = build_packet(
                     packet::Type::SessionTokenUpdate,
                     packet::Payload::SessionTokenUpdate(SessionTokenUpdate { jwt_token: jwt.clone() }),
-                    Some(&jwt),
+                    None,
                 );
                 Some((tx, data))
             })

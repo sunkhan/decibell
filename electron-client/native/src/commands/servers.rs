@@ -479,7 +479,7 @@ pub async fn update_server_picture(args: UpdateServerPictureArgs) -> napi::Resul
             packet::Payload::UpdateServerPictureReq(UpdateServerPictureReq {
                 data: args.data.to_vec(),
             }),
-            Some(&community.jwt),
+            None,
         );
         (tx, pkt)
     };
