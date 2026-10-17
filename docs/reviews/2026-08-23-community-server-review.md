@@ -3050,3 +3050,36 @@ protection flushes far faster; run `pg_test_fsync` on the production box to know
 
 Verified: central e2e 221 (with the migration check), the same under ThreadSanitizer and ASan + UBSan +
 LeakSanitizer.
+
+### Fix: central relayed the sender's session token, and other central security items (2026-10-17)
+
+From the pre-1.0 review (`docs/reviews/2026-10-17-pre-1.0-review.md`, items S1, S12, S13, S17).
+
+- **S1 (critical).** DIRECT_MSG and CALL_SIGNAL forwarded a copy of the client's whole Packet, including
+  `auth_token` — the sender's 24 h session token, which every community accepts. Zero-click: a call INVITE
+  makes the callee's client answer RINGING on its own, and central relayed that back with the callee's
+  token. Both relays now build the outbound message field by field (client fields: recipient, content,
+  reply_to, nonce, envelope / call_id, keys, candidates, stream meta; the rest central-stamped), and
+  `deliver_to_user` strips any `auth_token` as a backstop. Client-set reply previews and `edited_at` no
+  longer cross. DMs also gain the edit's 64 KiB plaintext cap, a 64-byte nonce cap and nonce'd refusals for
+  "too long" and self-DMs (they used to hang until the 30 s watchdog). **Tokens issued before this deploy
+  should be considered exposed** (rotating central's signing key invalidates them all).
+- **S13.** Non-INVITE call signals answered PEER_OFFLINE on failed delivery, so a CANCEL with a made-up
+  call_id told offline (PEER_OFFLINE) from invisible (silence); and they skipped the block check. Now only an
+  INVITE is answered, every other kind is refused when the pair is blocked (friends-only still governs only
+  the INVITE: the rest of a handshake goes both ways), clients can't send central's own kinds, and candidate
+  addresses are capped at 45 bytes.
+- **S12.** REJECT / REMOVE deleted the pair's row whatever its status, so a blocked user could lift the
+  block themselves; BLOCK's upsert handed the row to whoever blocked last. A block now belongs to whoever
+  placed it: the other side's REMOVE / REJECT is a quiet no-op, blocking back makes the row `BLOCKED_BOTH`
+  (both list it; each lifts only their own side), and the row is read `FOR UPDATE`. No schema change
+  (`status` is free text). Unknown actions are refused instead of "Action successful".
+- **S17 (central half).** The write queue was capped at 1024 frames; a client that stops reading while
+  asking for 1 MiB avatars pinned ~1 GiB. It is now also capped at 16 MiB, and the overflow disconnect
+  happens once.
+
+Verified: central e2e 220 (new checks: relayed DM / invite / ringing carry no token, forged reply preview
+dropped, oversized and self DMs refused with the nonce, non-INVITE probe unanswered, central-only kinds
+refused, oversized candidate dropped, the block lifecycle); the same suite against the previous binary
+fails the token, preview, size and block checks; ThreadSanitizer and ASan + UBSan + LeakSanitizer: 220 each,
+no reports.

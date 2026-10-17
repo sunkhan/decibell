@@ -345,6 +345,9 @@ def test_dms():
     check("echo carries id", m and m.id > 0 and m.sender == "alice")
     got = b.wait(pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.content == "hello bob")
     check("bob receives live", got is not None and got.direct_msg.id == (m.id if m else -1))
+    # S1 (review 2026-10-17): a relayed DM is built fresh — never a copy of
+    # the sender's packet, whose auth_token is their session token.
+    check("relayed DM carries no token", got is not None and got.auth_token == "")
     m2 = b.dm("alice", "reply", nonce="n2", reply_to=m.id if m else 0)
     check("reply embeds parent", m2 and m2.reply_to == m.id and m2.reply_to_sender == "alice"
           and m2.reply_to_content == "hello bob")
@@ -379,6 +382,16 @@ def test_dms():
     check("nothing stored for unknown name", sql("SELECT count(*) FROM dm_messages WHERE recipient = 'ghostname'")[0][0] == 0)
     a.send(pb.Packet.DM_MARK_READ_REQ, dm_mark_read_req=pb.DmMarkReadReq(peer="ghostname", up_to_id=99))
     time.sleep(0.2)
+    a.send(pb.Packet.DIRECT_MSG, direct_msg=pb.DirectMessage(
+        recipient_uid=uid_of("bob"), content="no parent", nonce="n1b", reply_to=0,
+        reply_to_sender="mallory", reply_to_content="forged quote", edited_at=12345))
+    got = b.wait(pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.content == "no parent")
+    check("client-set reply preview / edited_at dropped", got and got.direct_msg.reply_to_sender == ""
+          and got.direct_msg.reply_to_content == "" and got.direct_msg.edited_at == 0)
+    r = a.dm("bob", "x" * (64 * 1024 + 1), nonce="n1c")
+    check("oversized DM refused with the nonce", r and r.id == 0 and r.content == "Message too long.", r and r.content)
+    r = a.dm("alice", "me", nonce="n1d")
+    check("self-DM refused with the nonce", r and r.id == 0 and r.nonce == "n1d")
     a.close(); b.close()
 
 
@@ -562,10 +575,52 @@ def test_calls():
     a.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=pb.CallSignal.INVITE, call_id="c2", to="bob"))
     r = b.wait(pb.Packet.CALL_SIGNAL)
     check("invite delivered, from stamped", r and getattr(r.call_signal, "from") == "alice" and r.call_signal.call_id == "c2")
+    # S1: the callee's client answers an INVITE on its own (RINGING), so a
+    # relayed signal carrying the sender's token would leak it zero-click.
+    check("relayed invite carries no token", r and r.auth_token == "")
+    b.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=pb.CallSignal.RINGING, call_id="c2", to_uid=uid_of("alice")))
+    r = a.wait(pb.Packet.CALL_SIGNAL, pred=lambda p: p.call_signal.kind == pb.CallSignal.RINGING)
+    check("relayed ringing carries no token", r and r.auth_token == "" and r.call_signal.from_uid == uid_of("bob"))
+    a.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(
+        kind=pb.CallSignal.INVITE, call_id="c2b", to_uid=uid_of("bob"),
+        candidates=[pb.CallCandidate(ip="1" * 46, port=1)]))
+    check("oversized candidate address dropped", b.wait(pb.Packet.CALL_SIGNAL, timeout=0.8) is None)
     a.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=pb.CallSignal.INVITE, call_id="c3", to="nosuchuser"))
     r = a.wait(pb.Packet.CALL_SIGNAL)
     check("unknown peer answers PEER_OFFLINE", r and r.call_signal.kind == pb.CallSignal.PEER_OFFLINE)
+    # S13: only an INVITE is answered. A made-up CANCEL to someone offline
+    # gets the same silence as one to someone invisible, so it can't probe.
+    uc = uid_of("carol")
+    a.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=pb.CallSignal.CANCEL, call_id="probe", to_uid=uc))
+    check("non-invite to an offline user gets no answer", a.wait(pb.Packet.CALL_SIGNAL, timeout=0.8) is None)
+    a.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=pb.CallSignal.PEER_OFFLINE, call_id="c2", to_uid=uid_of("bob")))
+    check("clients can't send central's own kinds", b.wait(pb.Packet.CALL_SIGNAL, timeout=0.8) is None)
     a.close(); b.close()
+
+
+def test_blocks():
+    """S12 (review 2026-10-17): a block belongs to whoever placed it."""
+    print("blocks")
+    ua, uc = uid_of("alice"), uid_of("carol")
+    a, c = User("alice"), User("carol")
+    check("carol blocks alice", c.friend(pb.BLOCK, target_uid=ua).success)
+    r = a.friend(pb.REMOVE, target_uid=uc)
+    check("the blocked side's REMOVE is a quiet no-op", r and r.success)
+    check("still blocked after it", a.dm(recipient_uid=uc, content="unblocked?", nonce="b1").id == 0)
+    a.friend(pb.REJECT, target_uid=uc)
+    check("REJECT can't lift it either", a.dm(recipient_uid=uc, content="unblocked?", nonce="b2").id == 0)
+    c.clear()
+    a.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=pb.CallSignal.HANGUP, call_id="x", to_uid=uc))
+    check("a blocked user's non-invite signals are dropped", c.wait(pb.Packet.CALL_SIGNAL, timeout=0.8) is None)
+    check("blocking back succeeds", a.friend(pb.BLOCK, target_uid=uc).success)
+    check("blocking back keeps carol's block listed", c.friends()["alice"].status == pb.FriendInfo.BLOCKED)
+    check("and lists alice's own", a.friends()["carol"].status == pb.FriendInfo.BLOCKED)
+    c.friend(pb.REMOVE, target_uid=ua)
+    check("carol lifting hers leaves alice's", c.dm(recipient_uid=ua, content="hi?", nonce="b3").id == 0)
+    check("carol no longer lists one", "alice" not in c.friends())
+    a.friend(pb.REMOVE, target_uid=uc)
+    check("both lifted: DMs flow again", a.dm(recipient_uid=uc, content="hello again", nonce="b4").id > 0)
+    a.close(); c.close()
 
 
 def bundle(seed):
@@ -1319,6 +1374,7 @@ def main():
         test_friends()
         test_dms()
         test_dm_gates()
+        test_blocks()
         test_presence_and_avatars()
         test_watch_cleanup()
         test_login_storm()

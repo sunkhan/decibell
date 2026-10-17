@@ -54,6 +54,11 @@ static std::vector<std::string> g_stun_servers;
 /// E2EE DM envelope cap: the edit-body cap (64 KiB) plus the sealed
 /// header + tag. A client never produces more; anything bigger is junk.
 constexpr size_t MAX_DM_ENVELOPE = 64 * 1024 + 64;
+/// Plaintext DM body cap — the edit cap; and the client nonce (a UUID).
+constexpr size_t MAX_DM_CONTENT = 64 * 1024;
+constexpr size_t MAX_DM_NONCE = 64;
+/// A call candidate's address: the longest IPv6 literal is 45 bytes.
+constexpr size_t MAX_CALL_CANDIDATE_IP = 45;
 /// Identity-bundle field sizes (X25519 / Ed25519 public keys, Ed25519
 /// signature) and the passphrase-wrapped backup blob cap.
 constexpr size_t E2EE_PUB_LEN = 32;
@@ -215,16 +220,22 @@ private:
     // --- Strand only below ---
 
     void enqueue(Frame frame) {
-        if (closed_) return;
-        // Cap the per-session backlog. A client that stops reading (or reads
-        // slowly) would otherwise let fan-out pile up in memory without
-        // bound. Over the cap, drop the connection.
+        if (closed_ || backlog_full_) return;
+        // Cap the per-session backlog, in frames and in bytes. A client that
+        // stops reading (or reads slowly) would otherwise let fan-out pile
+        // up in memory without bound — and a few large replies (an avatar is
+        // up to 1 MiB) reach gigabytes long before 1024 frames. Over either
+        // cap, drop the connection (once: leave() closes it asynchronously).
         constexpr size_t MAX_QUEUED_MESSAGES = 1024;
-        if (write_queue_.size() >= MAX_QUEUED_MESSAGES) {
+        constexpr size_t MAX_QUEUED_BYTES = 16 * 1024 * 1024;
+        if (write_queue_.size() >= MAX_QUEUED_MESSAGES ||
+            queued_bytes_ + frame->size() > MAX_QUEUED_BYTES) {
+            backlog_full_ = true;
             std::cout << "[Session] Write backlog full; closing connection.\n";
             manager_.leave(shared_from_this());
             return;
         }
+        queued_bytes_ += frame->size();
         write_queue_.push_back(std::move(frame));
         if (write_queue_.size() == 1) do_write();
     }
@@ -238,6 +249,7 @@ private:
                     return;
                 }
                 if (closed_) return;
+                queued_bytes_ -= write_queue_.front()->size();
                 write_queue_.pop_front();
                 if (!write_queue_.empty()) do_write();
             });
@@ -549,22 +561,34 @@ private:
             auto now = std::chrono::system_clock::now();
             int64_t current_time = std::chrono::system_clock::to_time_t(now);
 
-            chatproj::Packet routed_packet = packet;
+            // Built field by field, never copied from the request: the
+            // client's Packet carries its session token in auth_token (and
+            // could carry anything else), and this one goes to the
+            // recipient. Only what a sender may choose crosses over;
+            // central stamps the rest (the reply preview below included).
+            const auto& req = packet.direct_msg();
+            if (req.nonce().size() > MAX_DM_NONCE) return;
+            chatproj::Packet routed_packet;
+            routed_packet.set_type(chatproj::Packet::DIRECT_MSG);
             auto* dmsg = routed_packet.mutable_direct_msg();
-            dmsg->set_sender(username_); // Enforce sender identity
+            dmsg->set_recipient(req.recipient());
+            dmsg->set_recipient_uid(req.recipient_uid());
+            dmsg->set_content(req.content());
+            dmsg->set_reply_to(req.reply_to());
+            dmsg->set_nonce(req.nonce());
+            dmsg->set_envelope(req.envelope());
+            dmsg->set_sender(username_);
             dmsg->set_sender_uid(uid_);
             dmsg->set_timestamp(current_time);
 
             // E2EE: the sealed body rides `envelope`; central only caps
-            // its size and stores/relays it opaquely. reply_to_envelope
-            // is server-populated below — never trust a client's.
-            if (dmsg->envelope().size() > MAX_DM_ENVELOPE) {
+            // its size and stores/relays it opaquely. Plaintext gets the
+            // same 64 KiB as an edit.
+            if (dmsg->content().empty() && dmsg->envelope().empty()) return;
+            if (dmsg->content().size() > MAX_DM_CONTENT || dmsg->envelope().size() > MAX_DM_ENVELOPE) {
+                send_dm_refusal(*dmsg, "Message too long.");
                 return;
             }
-            dmsg->clear_reply_to_envelope();
-            dmsg->clear_reply_to_sender_uid();
-            dmsg->clear_reply_to_sealed_sender();
-            dmsg->clear_reply_to_sealed_recipient();
 
             // The recipient must be an account: by recipient_uid, or by the
             // typed name. Otherwise a message would be stored for a name
@@ -581,6 +605,7 @@ private:
             // UX doesn't make sense; reject explicitly so persistence
             // doesn't silently accumulate them.
             if (recipient.uid == uid_) {
+                send_dm_refusal(*dmsg, "You can't message yourself.");
                 return;
             }
             dmsg->set_recipient(recipient.username);
@@ -644,11 +669,12 @@ private:
         // Ephemeral relay for the DM-call handshake: INVITE / RINGING /
         // ACCEPT / REJECT / BUSY / CANCEL / HANGUP / STREAM_START /
         // STREAM_STOP. Nothing is persisted; the DB is touched only to
-        // resolve a peer named by name (older clients) and for
-        // check_dm_allowed on INVITE (same policy as a DM: blocked → no,
-        // friends-only recipient → friends only). Central stamps `from`
-        // so the peer never trusts a client-supplied sender, and answers
-        // PEER_OFFLINE / NOT_ALLOWED itself from the recipient's POV.
+        // resolve a peer named by name and for the policy checks: an
+        // INVITE takes check_dm_allowed (same policy as a DM: blocked → no,
+        // friends-only recipient → friends only), every other kind only
+        // the block. Central stamps `from` so the peer never trusts a
+        // client-supplied sender, and answers PEER_OFFLINE / NOT_ALLOWED
+        // itself from the recipient's POV — to an INVITE only.
         else if (packet.type() == chatproj::Packet::CALL_SIGNAL) {
             if (!authenticated_ || !packet.has_call_signal()) return;
             if (!call_bucket_.take()) {
@@ -656,24 +682,81 @@ private:
                 return;
             }
 
-            chatproj::Packet routed = packet;
-            auto* sig = routed.mutable_call_signal();
-            // The peer by uid; only an INVITE may name someone typed.
-            const bool invite = sig->kind() == chatproj::CallSignal::INVITE;
-            if (sig->to_uid() <= 0 && (!invite || sig->to().empty())) return;
-            if (sig->to().size() > 64 || sig->call_id().size() > 64 ||
-                sig->pub_key().size() > 64 || sig->pub_key_sig().size() > 64 ||
-                sig->candidates_size() > 16) {
+            const auto& req = packet.call_signal();
+            // PEER_OFFLINE / NOT_ALLOWED are central's own answers.
+            if (!chatproj::CallSignal::Kind_IsValid(req.kind()) ||
+                req.kind() == chatproj::CallSignal::PEER_OFFLINE ||
+                req.kind() == chatproj::CallSignal::NOT_ALLOWED) {
                 return;
             }
-            const auto peer = auth_manager_.resolveUser(sig->to_uid(), invite ? sig->to() : std::string());
+            // The peer by uid; only an INVITE may name someone typed.
+            const bool invite = req.kind() == chatproj::CallSignal::INVITE;
+            if (req.to_uid() <= 0 && (!invite || req.to().empty())) return;
+            if (req.to().size() > 64 || req.call_id().size() > 64 ||
+                req.pub_key().size() > 64 || req.pub_key_sig().size() > 64 ||
+                req.candidates_size() > 16) {
+                return;
+            }
+            for (const auto& c : req.candidates()) {
+                if (c.ip().size() > MAX_CALL_CANDIDATE_IP) return;
+            }
+            const auto peer = auth_manager_.resolveUser(req.to_uid(), invite ? req.to() : std::string());
             if (!peer.found()) {
                 // No such account: offline to the caller, as before.
-                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(),
-                                sig->to(), sig->to_uid() > 0 ? sig->to_uid() : 0);
+                if (invite) {
+                    send_call_reply(chatproj::CallSignal::PEER_OFFLINE, req.call_id(),
+                                    req.to(), req.to_uid() > 0 ? req.to_uid() : 0);
+                }
                 return;
             }
             if (peer.uid == uid_) return;
+
+            if (invite) {
+                if (!manager_.check_dm_allowed(uid_, peer.uid, auth_manager_)) {
+                    send_call_reply(chatproj::CallSignal::NOT_ALLOWED, req.call_id(), peer.username, peer.uid);
+                    return;
+                }
+                // An invisible user looks offline to callers too (owner
+                // decision). Only the INVITE: an invisible user can still
+                // place calls, and the rest of that handshake must reach them.
+                if (!manager_.is_user_visible(peer.uid)) {
+                    send_call_reply(chatproj::CallSignal::PEER_OFFLINE, req.call_id(), peer.username, peer.uid);
+                    return;
+                }
+            } else if (auth_manager_.isBlocked(uid_, peer.uid)) {
+                // A block stops the whole handshake, not just the INVITE
+                // (HANGUPs or stream notices at someone who blocked you).
+                // Friends-only governs who may start a call; the rest goes
+                // both ways, so it doesn't apply here.
+                return;
+            }
+
+            // Built field by field, never copied from the request: the
+            // client's Packet carries its session token in auth_token (and
+            // could carry anything else), and this one goes to the peer.
+            chatproj::Packet routed;
+            routed.set_type(chatproj::Packet::CALL_SIGNAL);
+            auto* sig = routed.mutable_call_signal();
+            sig->set_kind(req.kind());
+            sig->set_call_id(req.call_id());
+            sig->set_pub_key(req.pub_key());
+            sig->set_pub_key_sig(req.pub_key_sig());
+            sig->set_key_id(req.key_id());
+            for (const auto& c : req.candidates()) {
+                auto* out = sig->add_candidates();
+                out->set_socket(c.socket());
+                out->set_kind(c.kind());
+                out->set_ip(c.ip());
+                out->set_port(c.port());
+            }
+            if (req.has_stream()) {
+                auto* stream = sig->mutable_stream();
+                stream->set_codec(req.stream().codec());
+                stream->set_width(req.stream().width());
+                stream->set_height(req.stream().height());
+                stream->set_fps(req.stream().fps());
+                stream->set_has_audio(req.stream().has_audio());
+            }
             sig->set_to(peer.username);
             sig->set_to_uid(peer.uid);
             sig->set_from(username_);
@@ -681,22 +764,13 @@ private:
             sig->set_timestamp(std::chrono::system_clock::to_time_t(
                 std::chrono::system_clock::now()));
 
-            if (sig->kind() == chatproj::CallSignal::INVITE &&
-                !manager_.check_dm_allowed(uid_, peer.uid, auth_manager_)) {
-                send_call_reply(chatproj::CallSignal::NOT_ALLOWED, sig->call_id(), peer.username, peer.uid);
-                return;
-            }
-            // An invisible user looks offline to callers too (owner
-            // decision). Only the INVITE: an invisible user can still place
-            // calls, and the rest of that handshake must reach them.
-            if (sig->kind() == chatproj::CallSignal::INVITE &&
-                !manager_.is_user_visible(peer.uid)) {
-                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), peer.username, peer.uid);
-                return;
-            }
-
-            if (!manager_.deliver_to_user(peer.uid, routed)) {
-                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, sig->call_id(), peer.username, peer.uid);
+            // Only an undeliverable INVITE is answered. Answering the rest
+            // would let anyone probe with a made-up call_id: an offline
+            // user would answer PEER_OFFLINE, an invisible one silence. A
+            // peer that drops mid-handshake is caught by the call's own
+            // timeouts instead.
+            if (!manager_.deliver_to_user(peer.uid, routed) && invite) {
+                send_call_reply(chatproj::CallSignal::PEER_OFFLINE, req.call_id(), peer.username, peer.uid);
             }
         }
 
@@ -921,7 +995,7 @@ private:
             // the real body sealed in `envelope`; a plaintext edit has
             // no envelope. Either way something must be there.
             if (content.empty() && envelope.empty()) { build_res(false, "Message can't be empty."); return; }
-            if (content.size() > 64 * 1024) { build_res(false, "Message too long."); return; }
+            if (content.size() > MAX_DM_CONTENT) { build_res(false, "Message too long."); return; }
             if (envelope.size() > MAX_DM_ENVELOPE) { build_res(false, "Message too long."); return; }
 
             const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
@@ -1801,6 +1875,9 @@ private:
     /// close() ran: no more writes or reads.
     bool closed_ = false;
     std::deque<Frame> write_queue_;
+    /// Bytes in write_queue_, and whether it overflowed (enqueue).
+    size_t queued_bytes_ = 0;
+    bool backlog_full_ = false;
     /// steady_clock ticks of the last packet (any thread reads it).
     std::atomic<std::chrono::steady_clock::rep> last_activity_{0};
     /// The last token that verified, and when it expires (token_ok).
@@ -2022,6 +2099,15 @@ bool SessionManager::deliver_to_user(int64_t uid, const Frame& frame) {
 }
 
 bool SessionManager::deliver_to_user(int64_t uid, const chatproj::Packet& packet) {
+    // A packet bound for another account never carries credentials. The
+    // relays build theirs fresh; this is the backstop should one ever copy
+    // a client's request again (DMs and call signals once leaked the
+    // sender's session token this way).
+    if (!packet.auth_token().empty()) {
+        chatproj::Packet clean = packet;
+        clean.clear_auth_token();
+        return deliver_to_user(uid, make_frame(clean));
+    }
     return deliver_to_user(uid, make_frame(packet));
 }
 

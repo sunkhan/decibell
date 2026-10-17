@@ -1038,11 +1038,22 @@ std::string AuthManager::handleFriendAction(int64_t requester, chatproj::FriendA
         const int64_t u1 = (std::min)(requester, target);
         const int64_t u2 = (std::max)(requester, target);
 
+        // The pair's row, locked so two actions on one pair can't interleave.
+        pqxx::result rel = txn.exec_params(
+            "SELECT status, action_uid FROM friendships WHERE uid1 = $1 AND uid2 = $2 FOR UPDATE", u1, u2);
+        const std::string status = rel.empty() ? std::string() : rel[0][0].as<std::string>();
+        const int64_t action_uid = rel.empty() ? 0 : rel[0][1].as<int64_t>();
+        // A block belongs to whoever placed it: only they can lift it. The
+        // other side blocking back makes it two-sided (BLOCKED_BOTH) rather
+        // than taking it over, and their REMOVE / REJECT is a no-op — the
+        // blocked side never sees the row (getFriends) or learns of it here.
+        const bool both = status == "BLOCKED_BOTH";
+        const bool blocked_by_them = status == "BLOCKED" && action_uid != requester;
+        const bool blocked_by_me = status == "BLOCKED" && action_uid == requester;
+
         if (action == chatproj::FriendActionType::ADD) {
-            pqxx::result rel = txn.exec_params("SELECT status FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
             if (!rel.empty()) {
-                std::string status = rel[0][0].as<std::string>();
-                if (status == "BLOCKED") return "Cannot add user.";
+                if (both || blocked_by_them || blocked_by_me) return "Cannot add user.";
                 if (status == "ACCEPTED") return "Already friends.";
                 return "Friend request already exists.";
             }
@@ -1051,19 +1062,32 @@ std::string AuthManager::handleFriendAction(int64_t requester, chatproj::FriendA
                 u1, u2, requester
             );
         } else if (action == chatproj::FriendActionType::ACCEPT) {
-            pqxx::result rel = txn.exec_params("SELECT status, action_uid FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
-            if (rel.empty() || rel[0][0].as<std::string>() != "PENDING" || rel[0][1].as<int64_t>() == requester) {
+            if (rel.empty() || status != "PENDING" || action_uid == requester) {
                 return "No pending friend request to accept.";
             }
             txn.exec_params("UPDATE friendships SET status = 'ACCEPTED' WHERE uid1 = $1 AND uid2 = $2", u1, u2);
         } else if (action == chatproj::FriendActionType::REJECT || action == chatproj::FriendActionType::REMOVE) {
-            txn.exec_params("DELETE FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
+            if (both) {
+                // Lift only my side; theirs stays.
+                txn.exec_params(
+                    "UPDATE friendships SET status = 'BLOCKED', action_uid = $3 WHERE uid1 = $1 AND uid2 = $2",
+                    u1, u2, target);
+            } else if (!blocked_by_them) {
+                txn.exec_params("DELETE FROM friendships WHERE uid1 = $1 AND uid2 = $2", u1, u2);
+            }
         } else if (action == chatproj::FriendActionType::BLOCK) {
-            txn.exec_params(
-                "INSERT INTO friendships (uid1, uid2, status, action_uid) VALUES ($1, $2, 'BLOCKED', $3) "
-                "ON CONFLICT (uid1, uid2) DO UPDATE SET status = 'BLOCKED', action_uid = EXCLUDED.action_uid",
-                u1, u2, requester
-            );
+            if (blocked_by_them) {
+                txn.exec_params(
+                    "UPDATE friendships SET status = 'BLOCKED_BOTH' WHERE uid1 = $1 AND uid2 = $2", u1, u2);
+            } else if (!blocked_by_me && !both) {
+                txn.exec_params(
+                    "INSERT INTO friendships (uid1, uid2, status, action_uid) VALUES ($1, $2, 'BLOCKED', $3) "
+                    "ON CONFLICT (uid1, uid2) DO UPDATE SET status = 'BLOCKED', action_uid = EXCLUDED.action_uid",
+                    u1, u2, requester
+                );
+            }
+        } else {
+            return "Unknown action.";
         }
 
         txn.commit();
@@ -1080,7 +1104,7 @@ bool AuthManager::isBlocked(int64_t a, int64_t b) {
         pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result res = txn.exec_params(
-            "SELECT 1 FROM friendships WHERE uid1 = $1 AND uid2 = $2 AND status = 'BLOCKED'",
+            "SELECT 1 FROM friendships WHERE uid1 = $1 AND uid2 = $2 AND status IN ('BLOCKED', 'BLOCKED_BOTH')",
             (std::min)(a, b), (std::max)(a, b)
         );
         return !res.empty();
@@ -1147,8 +1171,8 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(int64_t uid) {
                 } else {
                     info.set_status(chatproj::FriendInfo::PENDING_INCOMING);
                 }
-            } else if (status == "BLOCKED") {
-                if (action_uid == uid) {
+            } else if (status == "BLOCKED" || status == "BLOCKED_BOTH") {
+                if (status == "BLOCKED_BOTH" || action_uid == uid) {
                     info.set_status(chatproj::FriendInfo::BLOCKED);
                 } else {
                     continue; // Do not show to the blocked user
