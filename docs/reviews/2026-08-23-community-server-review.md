@@ -3303,3 +3303,50 @@ Verified: native `cargo test` 266 (+2: the open path's load memory and its reset
 over three runs; napi build clean, `index.js` / `index.d.ts` unchanged. Not live-tested: a slow or hostile
 community holding up only its own chat.
 
+### Fix: native — UDP receive loops survive every error, oversized TCP frames are skipped (2026-10-17, review A1 client half, A2)
+
+- **A2: receive loops.** The voice and video receive threads, the STUN query and the hole punch ended on
+  any receive error outside a short allowlist, so incoming voice or video died while TCP and the UI stayed
+  connected. On Windows a datagram bigger than the buffer fails the read with WSAEMSGSIZE. The relay
+  forwards audio up to 1245 B into a 1237 B buffer, so any member could silence every Windows client in the
+  channel, and any host that knows a P2P socket's address could end call media or fail a punch. On Linux an
+  ICMP unreachable on the connected voice socket (relay restart, Wi-Fi roam) reads back as ECONNREFUSED.
+  New `media/udp_recv.rs`: every error is transient. Errors are logged at most every 5 s, with a count of
+  the ones not logged. After 8 errors in a row the loop backs off 1, 2, 4 … 64 ms, so a socket that fails
+  instantly can't spin a core. A datagram or an idle timeout ends the streak. The loops exit only on their
+  stop flag. The voice loop also exits when the audio thread drops its receiver, and that thread reports
+  its own crash. Receive buffers are 2 KiB, and a read that fills one is dropped as junk: nothing we send is
+  that big, and Linux truncates silently where Windows fails the read.
+- **Exits are reported.** The voice receive thread wasn't guarded. It now runs under `catch_unwind`, like
+  the audio and video threads, and reports a panic as `voice_error`. A failed `set_read_timeout` is reported
+  by both threads; the video thread used to ignore it and could block past its stop flag. A guard sets the
+  voice receive thread's stop flag when the audio pipeline unwinds; before, the thread polled a silent
+  socket forever. No new event: `voice_error` already shows in the user panel and the call stage.
+- **Sealed receives return to the caller** after 64 datagrams in a row that they didn't surface (junk, or
+  reflected peer PINGs): `recv` with an empty read, `recv_probe` with WouldBlock. Before, a junk flood kept
+  `recv` looping internally, so a hang-up's join waited behind it.
+- **Send paths** already ignore or count errors (`let _ = socket.send(..)`, the video sender's error
+  count), so they needed no change. The TCP write task still ends on a write error, which is correct.
+- **A1, client half: oversized frames.** The client treated any frame over 2 MiB as a fatal read error. It
+  then reconnected, asked for the same reply and failed again, in a loop. The codec now reads such a frame
+  and drops it as it arrives, so it never sits in memory, and the connection stays up. It logs a warning
+  that names the frame's packet type (peeked from the leading `type` varint). A length over 64 MiB still
+  ends the connection, so a hostile length can't make the client read gigabytes. A skipped reply's waiter
+  times out. The native oneshot waiters (key / backup fetches, invite resolve, thumbnails) already time out
+  and clean up. The renderer-side waits don't: a skipped history page leaves "Loading history…" until the
+  B4 guard reset lands, and after a skipped DM_CONVERSATIONS_RES the DM list isn't loaded (it's requested
+  once at login, by event). Both beat a reconnect loop. The server-side budgets are the real fix.
+- Not verified live: the Windows WSAEMSGSIZE path (Linux truncates instead, so the tests can't produce it;
+  it goes through the same "every error" branch) and a real Wi-Fi roam. No `cfg(windows)` code was added.
+  The old Windows allowlist entry ERROR_IO_PENDING (997) is still treated as an idle read, so it never
+  triggers the back-off.
+
+Verified: `cargo test --lib` 280 on the branch, 282 on main with A4 (+16: the codec skips an oversized frame between two normal ones across
+reads of 1 B to the whole stream, skips back-to-back ones, accepts a frame at the limit, refuses lengths
+over the ceiling even after a skip, waits for the type peek; error classification, back-off and its reset,
+a hot error loop sleeps, rate-limited logging; the voice and video loops survive ECONNREFUSED from a
+"restarted relay" on loopback and deliver its next datagram; an oversized datagram is dropped; stop flag
+and dropped-receiver exits; sealed junk and oversized datagrams are skipped and a flood returns to the
+caller; STUN finds its answer behind junk bigger than the old buffer). With the loops' error branch made to
+panic on ECONNREFUSED, both survival tests fail, so the loops do see the error the old allowlist broke on.
+napi build clean with `index.js` / `index.d.ts` unchanged. No renderer files changed.
