@@ -642,7 +642,8 @@ message DirectMessage {
   // Id of the DM this one replies to; 0 = not a reply.
   int64 reply_to = 7;
   // Embedded parent preview — see ChannelMessage.reply_to_sender/-content.
-  // Empty sender with reply_to>0 = parent was deleted.
+  // Empty sender with reply_to>0 = parent was deleted. Central cuts
+  // reply_to_content to 512 bytes, ending in "…" when cut.
   string reply_to_sender = 8;
   string reply_to_content = 9;
   // Client-generated per send, echoed back unchanged (central copies
@@ -2110,10 +2111,21 @@ message FetchStreamThumbnailRes {
 // --- Persistent DMs ---
 // (see docs/superpowers/specs/2026-05-14-persistent-dms-design.md)
 
-message DmConversationsReq {}
+// Pages (review A1): central answers at most 200 conversations and 1.5 MiB
+// per page, newest first; the client asks for the next page with the
+// previous page's oldest last_message_id until has_more is false.
+message DmConversationsReq {
+  // 0 = the newest conversations; else those whose last message id is
+  // below this.
+  int64 before_id = 1;
+}
 
 message DmConversationPreview {
   string peer = 1;
+  // A preview: at most 512 bytes, ending in "…" when cut. An encrypted last
+  // message rides whole in last_message_envelope instead (it can't be cut,
+  // and the client opens it for the preview line); it counts toward the
+  // page's byte budget.
   string last_message_content = 2;
   string last_message_sender = 3;  // either the local user or the peer
   int64  last_message_id = 4;
@@ -2130,12 +2142,14 @@ message DmConversationPreview {
 }
 message DmConversationsRes {
   repeated DmConversationPreview conversations = 1;
+  bool  has_more = 2;    // older conversations follow this page
+  int64 before_id = 3;   // echoes the request
 }
 
 message DmHistoryReq {
   string peer = 1;
   int64  before_id = 2;   // 0 = latest
-  int32  limit = 3;       // server clamps to 200
+  int32  limit = 3;       // server clamps to 200 (100 per side with around_id)
   int64  around_id = 4;   // >0: context window centered on this DM id
   int64  after_id  = 5;   // >0: page newer than this DM id
   int64  peer_uid = 6;   // preferred over peer
@@ -2148,7 +2162,8 @@ message DmHistoryMessage {
   int64  edited_at = 5;   // unix seconds; 0 = never edited
   int64  reply_to = 6;    // id of the DM this replies to; 0 = not a reply
   // Embedded parent preview — see ChannelMessage.reply_to_sender/-content.
-  // Empty sender with reply_to>0 = parent was deleted.
+  // Empty sender with reply_to>0 = parent was deleted. Cut to 512 bytes, as
+  // in DirectMessage.
   string reply_to_sender = 7;
   string reply_to_content = 8;
   // E2EE — see DirectMessage.envelope / reply_to_envelope.
@@ -2163,6 +2178,10 @@ message DmHistoryMessage {
   string reply_to_sealed_sender = 15;
   string reply_to_sealed_recipient = 16;
 }
+// A page holds the rows asked for, cut short where they would pass 1.5 MiB
+// (review A1); has_more / has_more_after then stand for the rows left out,
+// so a page shorter than `limit` need not be the end. A message stored before
+// the 64 KiB cap comes cut to 64 KiB, ending in "…".
 message DmHistoryRes {
   string peer = 1;
   repeated DmHistoryMessage messages = 2;  // newest first (older/present); oldest→newest for around/after windows

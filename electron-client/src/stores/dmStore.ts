@@ -311,11 +311,11 @@ export const useDmStore = create<DmState>((set, get) => ({
         // Synthesize a single placeholder message from the preview
         // so the sidebar can render last-message content + timestamp
         // immediately, before the user clicks into the conversation
-        // and triggers request_dm_history. When the full history
-        // page arrives, appendHistory's id-based dedup removes this
-        // entry (the server's message with the same id replaces it).
-        // Skip synthesis if the conversation already has messages
-        // in-memory from this session.
+        // and triggers request_dm_history. The preview text may be cut
+        // (central sends 512 bytes, review A1) and carries no reply or
+        // edit marks, so the first history page replaces this entry
+        // (appendHistory drops `preview` rows). Skip synthesis if the
+        // conversation already has messages in-memory from this session.
         const previewMessage: DmMessage = {
           id: p.lastMessageId,
           sender: p.lastMessageSender,
@@ -324,6 +324,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           timestamp: String(p.lastTimestamp),
           encrypted: p.encrypted || undefined,
           decryptError: p.decryptError || undefined,
+          preview: true,
         };
         const hasInMemoryMessages = (existing?.messages.length ?? 0) > 0;
         next[p.peerUid] = {
@@ -354,7 +355,9 @@ export const useDmStore = create<DmState>((set, get) => ({
   appendHistory: (peer, messages, hasMore) =>
     set((state) => {
       const conv = state.conversations[peer];
-      const existing = conv?.messages ?? [];
+      // A row synthesized from the conversation preview gives way to the
+      // server's: the first page (before_id 0) holds the newest message.
+      const existing = (conv?.messages ?? []).filter((m) => !m.preview);
       const existingIds = new Set<number>();
       for (const m of existing) {
         if (typeof m.id === "number" && m.id > 0) existingIds.add(m.id);

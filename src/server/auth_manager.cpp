@@ -1472,16 +1472,33 @@ int64_t AuthManager::insertDm(int64_t sender_uid, const std::string& sender,
     }
 }
 
+/// A stored DM body as read: at most `max_bytes`, ending in "…" when cut.
+/// Queries read the column through leftSql, so a body stored before the
+/// content cap isn't even fetched whole; this makes the cut exact.
+static std::string dmText(const pqxx::field& f, size_t max_bytes) {
+    return chatproj::utf8_preview(f.as<std::string>(), max_bytes);
+}
+
+/// LEFT(<column>, max_bytes + 1), for dmText. LEFT counts characters, so
+/// what it keeps is never shorter than the cap in bytes, and the extra one
+/// makes anything it cut longer than the cap: dmText then marks it.
+static std::string leftSql(const char* column, size_t max_bytes) {
+    return std::string("LEFT(") + column + ", " + std::to_string(max_bytes + 1) + ")";
+}
+
 // What every DM history read selects (dmRowFrom parses it): the row with
 // its sender's current name and the names it was sent under, and the reply
 // parent the same way — joined only within the same conversation, so a
 // forged reply_to can't pull in another conversation's content. $1 / $2
-// are the two users' uids.
+// are the two users' uids. The body comes cut to MAX_DM_CONTENT and the
+// parent's to a preview (review A1).
 static const std::string DM_ROW_SELECT =
-    "SELECT m.id, m.sender_uid, su.username, m.sender, m.recipient, m.content, "
+    "SELECT m.id, m.sender_uid, su.username, m.sender, m.recipient, " +
+    leftSql("m.content", chatproj::MAX_DM_CONTENT) + ", "
     "m.sent_at, m.edited_at, m.reply_to, "
     "COALESCE(p.sender_uid, 0), COALESCE(pu.username, ''), COALESCE(p.sender, ''), "
-    "COALESCE(p.recipient, ''), COALESCE(p.content, ''), m.envelope, p.envelope "
+    "COALESCE(p.recipient, ''), COALESCE(" + leftSql("p.content", chatproj::DM_PREVIEW_MAX_BYTES) + ", ''), "
+    "m.envelope, p.envelope "
     "FROM dm_messages m "
     "JOIN users su ON su.uid = m.sender_uid "
     "LEFT JOIN dm_messages p ON p.id = m.reply_to "
@@ -1498,7 +1515,7 @@ static AuthManager::DmHistoryRow dmRowFrom(const pqxx::row& row) {
     r.sender = row[2].as<std::string>();
     r.sent_sender = row[3].as<std::string>();
     r.sent_recipient = row[4].as<std::string>();
-    r.content = row[5].as<std::string>();
+    r.content = dmText(row[5], chatproj::MAX_DM_CONTENT);
     r.timestamp = row[6].as<int64_t>();
     r.edited_at = row[7].as<int64_t>();
     r.reply_to = row[8].as<int64_t>();
@@ -1506,7 +1523,7 @@ static AuthManager::DmHistoryRow dmRowFrom(const pqxx::row& row) {
     r.reply_to_sender = row[10].as<std::string>();
     r.reply_to_sent_sender = row[11].as<std::string>();
     r.reply_to_sent_recipient = row[12].as<std::string>();
-    r.reply_to_content = row[13].as<std::string>();
+    r.reply_to_content = dmText(row[13], chatproj::DM_PREVIEW_MAX_BYTES);
     r.envelope = byteaOrEmpty(row[14]);
     r.reply_to_envelope = byteaOrEmpty(row[15]);
     return r;
@@ -1636,7 +1653,8 @@ std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
         pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         pqxx::result rs = txn.exec_params(
-            "SELECT m.sender_uid, su.username, m.sender, m.recipient, m.content, m.envelope "
+            "SELECT m.sender_uid, su.username, m.sender, m.recipient, " +
+            leftSql("m.content", chatproj::DM_PREVIEW_MAX_BYTES) + ", m.envelope "
             "FROM dm_messages m JOIN users su ON su.uid = m.sender_uid "
             "WHERE m.id = $3 "
             "  AND LEAST(m.sender_uid, m.recipient_uid) = LEAST($1::bigint, $2::bigint) "
@@ -1649,7 +1667,7 @@ std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
         out.sender = rs[0][1].as<std::string>();
         out.sent_sender = rs[0][2].as<std::string>();
         out.sent_recipient = rs[0][3].as<std::string>();
-        out.content = rs[0][4].as<std::string>();
+        out.content = dmText(rs[0][4], chatproj::DM_PREVIEW_MAX_BYTES);
         out.envelope = byteaOrEmpty(rs[0][5]);
         return out;
     } catch (const std::exception& e) {
@@ -1659,19 +1677,21 @@ std::optional<AuthManager::DmPreviewRow> AuthManager::fetchDmPreview(
 }
 
 std::vector<AuthManager::DmConversationPreviewRow>
-AuthManager::fetchDmConversations(int64_t uid) {
+AuthManager::fetchDmConversations(int64_t uid, int64_t before_id, bool& has_more) {
+    has_more = false;
     std::vector<DmConversationPreviewRow> out;
     try {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
         // Picks the latest message id per conversation (pair grouped
-        // by LEAST/GREATEST), then joins back to dm_messages for the
-        // preview content and to users for the current names, and to
+        // by LEAST/GREATEST) — one page of them, below the cursor, plus one
+        // to tell whether more follow — then joins back to dm_messages for
+        // the preview content and to users for the current names, and to
         // dm_read_cursors via a correlated subquery to derive the unread
         // count: messages from the peer with id > last_read_id (i.e.
         // messages the local user received, not their own outgoing).
-        const char* sql =
+        const std::string sql =
             "WITH latest AS ( "
             "  SELECT LEAST(sender_uid, recipient_uid) AS a, "
             "         GREATEST(sender_uid, recipient_uid) AS b, "
@@ -1679,8 +1699,12 @@ AuthManager::fetchDmConversations(int64_t uid) {
             "  FROM dm_messages "
             "  WHERE sender_uid = $1 OR recipient_uid = $1 "
             "  GROUP BY 1, 2 "
+            "  HAVING $2::bigint = 0 OR MAX(id) < $2::bigint "
+            "  ORDER BY max_id DESC "
+            "  LIMIT $3 "
             ") "
-            "SELECT pu.uid, pu.username, m.content, m.sender_uid, su.username, "
+            "SELECT pu.uid, pu.username, " + leftSql("m.content", chatproj::DM_PREVIEW_MAX_BYTES) + ", "
+            "  m.sender_uid, su.username, "
             "  m.sender, m.recipient, m.id, m.sent_at, "
             "  COALESCE(( "
             "    SELECT COUNT(*) FROM dm_messages d "
@@ -1698,15 +1722,19 @@ AuthManager::fetchDmConversations(int64_t uid) {
             "  CASE WHEN m.sender_uid = $1 THEN m.recipient_uid ELSE m.sender_uid END "
             "JOIN users su ON su.uid = m.sender_uid "
             "ORDER BY m.id DESC";
-        pqxx::result rs = txn.exec_params(sql, uid);
+        pqxx::result rs = txn.exec_params(sql, uid, before_id, DM_CONVERSATIONS_PAGE + 1);
         txn.commit();
 
         out.reserve(rs.size());
         for (const auto& row : rs) {
+            if (static_cast<int>(out.size()) == DM_CONVERSATIONS_PAGE) {
+                has_more = true;
+                break;
+            }
             DmConversationPreviewRow p;
             p.peer_uid = row[0].as<int64_t>();
             p.peer = row[1].as<std::string>();
-            p.last_message_content = row[2].as<std::string>();
+            p.last_message_content = dmText(row[2], chatproj::DM_PREVIEW_MAX_BYTES);
             p.last_message_sender_uid = row[3].as<int64_t>();
             p.last_message_sender = row[4].as<std::string>();
             p.last_sent_sender = row[5].as<std::string>();

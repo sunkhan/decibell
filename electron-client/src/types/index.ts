@@ -90,6 +90,9 @@ export interface DmMessage {
   /// "peer_key" | "bad"). See docs/superpowers/specs/2026-09-03-e2ee-dms-design.md.
   encrypted?: boolean;
   decryptError?: string;
+  /// Renderer-only: synthesized from a DM_CONVERSATIONS preview (its text
+  /// may be cut to 512 bytes); the first history page replaces it.
+  preview?: boolean;
 }
 
 export interface ServerMember {

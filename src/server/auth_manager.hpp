@@ -7,6 +7,7 @@
 #include <pqxx/pqxx>
 #include "messages.pb.h"
 #include "pg_pool.hpp"
+#include "wire_limits.hpp"
 
 class AuthManager {
 public:
@@ -225,6 +226,10 @@ public:
     // (see docs/superpowers/specs/2026-05-14-persistent-dms-design.md)
     /// Each row keeps the names it was sent under (`sent_*`, what a v1
     /// envelope binds) next to the sender's uid and current name.
+    /// What a read returns is bounded (review A1): `content` at
+    /// MAX_DM_CONTENT (rows stored before that cap come cut, ending in "…"),
+    /// reply previews and conversation previews at DM_PREVIEW_MAX_BYTES.
+    /// Envelopes were capped since they exist.
     struct DmHistoryRow {
         int64_t id = 0;
         int64_t sender_uid = 0;
@@ -265,7 +270,7 @@ public:
         std::string sender;          // current name
         std::string sent_sender;
         std::string sent_recipient;
-        std::string content;
+        std::string content;         // a preview, at most DM_PREVIEW_MAX_BYTES
         std::string envelope;
     };
 
@@ -318,10 +323,15 @@ public:
     /// Used to validate + embed the reply parent preview on send.
     std::optional<DmPreviewRow> fetchDmPreview(int64_t user_a, int64_t user_b, int64_t message_id);
 
-    /// One row per conversation the user is part of, with the most
-    /// recent message preview + unread count (messages from peer
-    /// with id > dm_read_state.last_read_id).
-    std::vector<DmConversationPreviewRow> fetchDmConversations(int64_t uid);
+    /// Conversations per DM_CONVERSATIONS page (the byte budget may cut a
+    /// page shorter; main.cpp).
+    static constexpr int DM_CONVERSATIONS_PAGE = 200;
+    /// One row per conversation the user is part of, with the most recent
+    /// message preview + unread count (messages from peer with id >
+    /// dm_read_cursors.last_read_id); newest first, those whose last message
+    /// id is below `before_id` (0 = from the newest), at most
+    /// DM_CONVERSATIONS_PAGE. Sets has_more if more conversations follow.
+    std::vector<DmConversationPreviewRow> fetchDmConversations(int64_t uid, int64_t before_id, bool& has_more);
 
     /// Upsert dm_read_state, setting last_read_id =
     /// GREATEST(existing, up_to_id). Idempotent and race-safe.

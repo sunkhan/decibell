@@ -51,11 +51,13 @@ using boost::asio::ip::tcp;
 /// means "use the client's built-in default list".
 static std::vector<std::string> g_stun_servers;
 
+using chatproj::MAX_DM_CONTENT;  // the plaintext body cap (wire_limits.hpp)
+using chatproj::MAX_RESPONSE_BYTES;
+
 /// E2EE DM envelope cap: the edit-body cap (64 KiB) plus the sealed
 /// header + tag. A client never produces more; anything bigger is junk.
 constexpr size_t MAX_DM_ENVELOPE = 64 * 1024 + 64;
-/// Plaintext DM body cap — the edit cap; and the client nonce (a UUID).
-constexpr size_t MAX_DM_CONTENT = 64 * 1024;
+/// The client nonce (a UUID).
 constexpr size_t MAX_DM_NONCE = 64;
 /// A call candidate's address: the longest IPv6 literal is 45 bytes.
 constexpr size_t MAX_CALL_CANDIDATE_IP = 45;
@@ -127,6 +129,49 @@ static std::string account_key(const std::string& name) {
     std::transform(key.begin(), key.end(), key.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return key;
+}
+
+/// What a DM history request asks for (DM_HISTORY_REQ): an older page or
+/// the latest (rows newest first), a newer page (oldest first), or a window
+/// around one message (oldest first).
+enum class DmPage { Older, Newer, Around };
+
+/// Which rows of a DM history page go out, as [first, last) (review A1):
+/// those the request asked for, cut where they would pass
+/// MAX_RESPONSE_BYTES. `sizes` are the rows' encoded sizes in page order;
+/// `anchor` is the target row of an Around window. A page keeps its first
+/// row (the target) even alone, which always fits: the caps bound a row to
+/// ~200 KiB (a 64 KiB body, two envelopes, a preview). Rows cut away set
+/// has_more (older ones) or has_more_after (newer ones), so the client
+/// pages on from the edge it got.
+static std::pair<size_t, size_t> dm_page_slice(const std::vector<size_t>& sizes, DmPage mode, size_t anchor,
+                                               bool& has_more, bool& has_more_after) {
+    const size_t n = sizes.size();
+    if (n == 0) return {0, 0};
+    if (mode != DmPage::Around) {
+        // The newest rows of an older page, the oldest of a newer one.
+        size_t bytes = sizes[0], last = 1;
+        while (last < n && bytes + sizes[last] <= MAX_RESPONSE_BYTES) bytes += sizes[last++];
+        if (last < n) (mode == DmPage::Older ? has_more : has_more_after) = true;
+        return {0, last};
+    }
+    // A window: from the target outwards, a row newer then a row older,
+    // while they fit. A side stops at its first row that doesn't.
+    size_t first = anchor, last = anchor + 1, bytes = sizes[anchor];
+    bool newer = true, older = true;
+    while (newer || older) {
+        if (newer) {
+            newer = last < n && bytes + sizes[last] <= MAX_RESPONSE_BYTES;
+            if (newer) bytes += sizes[last++];
+        }
+        if (older) {
+            older = first > 0 && bytes + sizes[first - 1] <= MAX_RESPONSE_BYTES;
+            if (older) bytes += sizes[--first];
+        }
+    }
+    if (first > 0) has_more = true;
+    if (last < n) has_more_after = true;
+    return {first, last};
 }
 
 static std::chrono::steady_clock::duration seconds_to_duration(double seconds) {
@@ -783,33 +828,54 @@ private:
         }
 
         // --- DM CONVERSATIONS REQ ---
-        // One-shot pull of all conversation previews + unread counts
-        // for the local user. Fired on login from the renderer to
+        // Conversation previews + unread counts for the local user, one
+        // page at a time (newest first; the client asks for the next page
+        // with the last one's oldest last_message_id). Fired on login to
         // populate the DmSidebar cards.
+        //
+        // A page is at most DM_CONVERSATIONS_PAGE conversations and
+        // MAX_RESPONSE_BYTES (review A1). A plaintext preview is cut to
+        // DM_PREVIEW_MAX_BYTES; an encrypted last message's envelope can't
+        // be cut (the client opens it for the preview line), so it goes
+        // whole and counts toward the budget: a page of large encrypted
+        // previews just holds fewer conversations. The caps bound one
+        // preview to ~65 KiB, so a page always holds at least one.
         else if (packet.type() == chatproj::Packet::DM_CONVERSATIONS_REQ) {
             if (!authenticated_) return;
+            const int64_t before_id = std::max<int64_t>(0, packet.dm_conversations_req().before_id());
 
-            auto convs = auth_manager_.fetchDmConversations(uid_);
+            bool has_more = false;
+            auto convs = auth_manager_.fetchDmConversations(uid_, before_id, has_more);
 
             chatproj::Packet response;
             response.set_type(chatproj::Packet::DM_CONVERSATIONS_RES);
             auto* res = response.mutable_dm_conversations_res();
+            res->set_before_id(before_id);
+            size_t bytes = 0;
             for (const auto& c : convs) {
-                auto* preview = res->add_conversations();
-                preview->set_peer(c.peer);
-                preview->set_peer_uid(c.peer_uid);
-                preview->set_last_message_content(c.last_message_content);
-                preview->set_last_message_sender(c.last_message_sender);
-                preview->set_last_message_sender_uid(c.last_message_sender_uid);
-                preview->set_last_message_id(c.last_message_id);
-                preview->set_last_timestamp(c.last_timestamp);
-                preview->set_unread_count(c.unread_count);
+                chatproj::DmConversationPreview preview;
+                preview.set_peer(c.peer);
+                preview.set_peer_uid(c.peer_uid);
+                preview.set_last_message_content(c.last_message_content);
+                preview.set_last_message_sender(c.last_message_sender);
+                preview.set_last_message_sender_uid(c.last_message_sender_uid);
+                preview.set_last_message_id(c.last_message_id);
+                preview.set_last_timestamp(c.last_timestamp);
+                preview.set_unread_count(c.unread_count);
                 if (!c.last_message_envelope.empty()) {
-                    preview->set_last_message_envelope(c.last_message_envelope);
-                    preview->set_sealed_sender(c.last_sent_sender);
-                    preview->set_sealed_recipient(c.last_sent_recipient);
+                    preview.set_last_message_envelope(c.last_message_envelope);
+                    preview.set_sealed_sender(c.last_sent_sender);
+                    preview.set_sealed_recipient(c.last_sent_recipient);
                 }
+                const size_t size = preview.ByteSizeLong() + 4;  // + the field's tag and length
+                if (res->conversations_size() > 0 && bytes + size > MAX_RESPONSE_BYTES) {
+                    has_more = true;
+                    break;
+                }
+                bytes += size;
+                *res->add_conversations() = std::move(preview);
             }
+            res->set_has_more(has_more);
 
             std::string s;
             response.SerializeToString(&s);
@@ -851,17 +917,10 @@ private:
                     uid_, peer.uid, req.before_id(), limit, has_more);
             }
 
-            chatproj::Packet response;
-            response.set_type(chatproj::Packet::DM_HISTORY_RES);
-            auto* res = response.mutable_dm_history_res();
-            res->set_peer(peer.found() ? peer.username : req.peer());
-            res->set_peer_uid(peer.found() ? peer.uid : req.peer_uid());
-            res->set_has_more(has_more);
-            res->set_has_more_after(has_more_after);
-            res->set_around_id(req.around_id());
-            res->set_after_id(req.after_id());
+            std::vector<chatproj::DmHistoryMessage> messages;
+            messages.reserve(rows.size());
             for (const auto& r : rows) {
-                auto* msg = res->add_messages();
+                auto* msg = &messages.emplace_back();
                 msg->set_id(r.id);
                 msg->set_sender(r.sender);
                 msg->set_sender_uid(r.sender_uid);
@@ -883,6 +942,30 @@ private:
                     msg->set_reply_to_sealed_recipient(r.reply_to_sent_recipient);
                 }
             }
+
+            // The page within its byte budget (dm_page_slice).
+            const DmPage mode = req.around_id() > 0 ? DmPage::Around
+                              : req.after_id() > 0  ? DmPage::Newer
+                                                    : DmPage::Older;
+            std::vector<size_t> sizes;
+            sizes.reserve(messages.size());
+            size_t anchor = 0;
+            for (size_t i = 0; i < messages.size(); ++i) {
+                sizes.push_back(messages[i].ByteSizeLong() + 4);  // + the field's tag and length
+                if (mode == DmPage::Around && messages[i].id() <= req.around_id()) anchor = i;
+            }
+            const auto [first, last] = dm_page_slice(sizes, mode, anchor, has_more, has_more_after);
+
+            chatproj::Packet response;
+            response.set_type(chatproj::Packet::DM_HISTORY_RES);
+            auto* res = response.mutable_dm_history_res();
+            res->set_peer(peer.found() ? peer.username : req.peer());
+            res->set_peer_uid(peer.found() ? peer.uid : req.peer_uid());
+            res->set_has_more(has_more);
+            res->set_has_more_after(has_more_after);
+            res->set_around_id(req.around_id());
+            res->set_after_id(req.after_id());
+            for (size_t i = first; i < last; ++i) *res->add_messages() = std::move(messages[i]);
 
             std::string s;
             response.SerializeToString(&s);

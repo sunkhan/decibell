@@ -1438,6 +1438,10 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, res: DmHistoryRes) {
 
 async fn handle_conversations(state: &Arc<Mutex<AppState>>, res: DmConversationsRes) {
     let (me_uid, me_name) = me(state).await;
+    // Central sends the list in pages (review A1): the next one starts
+    // below this page's oldest conversation.
+    let (has_more, before_id) = (res.has_more, res.before_id);
+    let next = res.conversations.iter().map(|c| c.last_message_id).filter(|&id| id > 0).min();
     let mut conversations = Vec::with_capacity(res.conversations.len());
     for c in res.conversations {
         let (to_uid, to_name) = if c.last_message_sender_uid == me_uid {
@@ -1467,6 +1471,19 @@ async fn handle_conversations(state: &Arc<Mutex<AppState>>, res: DmConversations
         });
     }
     events::emit_dm_conversations_received(events::DmConversationsReceivedPayload { conversations });
+    // Each page merges into the renderer's list; ask for the next until
+    // central says that was all. The cursor has to move down, so a server
+    // answering the same page again can't keep us asking.
+    if let Some(next) = next.filter(|&id| has_more && (before_id == 0 || id < before_id)) {
+        let state = state.clone();
+        // Spawned: the worker doesn't wait on the central write queue.
+        tokio::spawn(async move {
+            let payload = packet::Payload::DmConversationsReq(DmConversationsReq { before_id: next });
+            if let Err(e) = send_central(&state, packet::Type::DmConversationsReq, payload).await {
+                log::warn!("[dm] next conversations page not requested: {e}");
+            }
+        });
+    }
 }
 
 async fn handle_edited(state: &Arc<Mutex<AppState>>, b: DmMessageEdited) {

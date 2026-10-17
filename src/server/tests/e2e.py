@@ -125,6 +125,7 @@ class Conn:
         self.inbox = []
         self.closed = False
         self.token = ""
+        self.sizes = {}  # packet type -> body size of the last such frame
 
     def send(self, ptype, token=None, **payload):
         p = pb.Packet(type=ptype, auth_token=self.token if token is None else token, **payload)
@@ -155,6 +156,7 @@ class Conn:
         body, self.buf = self.buf[4:4 + n], self.buf[4 + n:]
         p = pb.Packet()
         p.ParseFromString(body)
+        self.sizes[p.type] = n
         return p
 
     def wait(self, ptype, timeout=3.0, pred=lambda p: True):
@@ -1097,6 +1099,151 @@ def test_dm_pacing():
     a.close(); b.close()
 
 
+# --- Response sizes (review A1) -----------------------------------------------
+# The native client drops its connection over any frame past 2 MiB and asks
+# again after reconnecting, so a response that big locks a user out. Big or
+# old rows are seeded straight into the database: the wire caps them now.
+
+CLIENT_FRAME = 2 * 1024 * 1024  # native net/framing.rs MAX_FRAME_SIZE
+
+
+def seed_users(prefix, n):
+    """`n` accounts named prefix1..prefixN, straight into the database (no
+    bcrypt; they can't sign in by password). Returns their uids in order."""
+    sql("INSERT INTO users (username, email, password_hash) "
+        "SELECT %s::text || g, %s::text || g || '@example.com', 'x' FROM generate_series(1, %s) g",
+        prefix, prefix, n)
+    return [r[0] for r in sql("SELECT uid FROM users WHERE username LIKE %s ORDER BY uid", prefix + "%")]
+
+
+def drop_users(uids):
+    """Seeded accounts and everything that names them."""
+    u = list(uids)
+    sql("DELETE FROM friendships WHERE uid1 = ANY(%s) OR uid2 = ANY(%s)", u, u)
+    sql("DELETE FROM dm_read_cursors WHERE reader_uid = ANY(%s) OR peer_uid = ANY(%s)", u, u)
+    sql("DELETE FROM dm_messages WHERE sender_uid = ANY(%s) OR recipient_uid = ANY(%s)", u, u)
+    sql("DELETE FROM community_memberships WHERE uid = ANY(%s)", u)
+    sql("DELETE FROM users WHERE uid = ANY(%s)", u)
+
+
+def seed_dms(sender_uid, sender, recipient_uid, recipient, content_sql, n=1, envelope=None):
+    """`n` DMs from sender to recipient with the body `content_sql` (an SQL
+    expression in g, 1..n); returns their ids, oldest first."""
+    rows = sql("INSERT INTO dm_messages (sender_uid, sender, recipient_uid, recipient, content, sent_at, envelope) "
+               f"SELECT %s::bigint, %s::text, %s::bigint, %s::text, {content_sql}, 1700000000 + g, %s::bytea "
+               "FROM generate_series(1, %s) g RETURNING id",
+               sender_uid, sender, recipient_uid, recipient, envelope, n)
+    return sorted(r[0] for r in rows)
+
+
+def utf8_len(s):
+    return len(s.encode())
+
+
+def test_dm_page_budget():
+    print("DM history pages within the frame cap (review A1)")
+    [up] = seed_users("pagepeer", 1)
+    ua = uid_of("alice")
+    # 40 messages of 60 KiB: 2.4 MB, all inside the default page's 50 rows.
+    ids = seed_dms(up, "pagepeer1", ua, "alice", "repeat(chr(96 + g), 61440)", n=40)
+    a = User("alice")
+    h = a.history(peer_uid=up, limit=50)
+    size = a.sizes.get(pb.Packet.DM_HISTORY_RES, 0)
+    check("a history page stays under the client's frame cap", h is not None and size <= CLIENT_FRAME, size)
+    check("... cut by bytes, and says older rows follow", h is not None and 0 < len(h.messages) < 40 and h.has_more,
+          h and (len(h.messages), h.has_more))
+    got, pages = [m.id for m in h.messages] if h else [], 1
+    while h is not None and h.has_more and pages < 10:
+        h = a.history(peer_uid=up, before_id=min(got), limit=50)
+        pages += 1
+        if h is not None:
+            got += [m.id for m in h.messages]
+    check(f"paging on from the oldest row collects every row once ({pages} pages)",
+          sorted(got) == ids and len(set(got)) == len(got))
+    # A window around a message keeps the target and marks both edges.
+    mid = ids[20]
+    w = a.history(peer_uid=up, around_id=mid, limit=100)
+    wids = [m.id for m in w.messages] if w else []
+    check("a window around a message: under the cap, target kept, both edges marked",
+          w is not None and a.sizes.get(pb.Packet.DM_HISTORY_RES, 0) <= CLIENT_FRAME and mid in wids
+          and w.has_more and w.has_more_after and len(wids) < 40
+          and wids == ids[ids.index(wids[0]):ids.index(wids[0]) + len(wids)], wids)
+    n = a.history(peer_uid=up, after_id=ids[0], limit=100)
+    nids = [m.id for m in n.messages] if n else []
+    check("a newer page: under the cap, oldest first, newer rows marked",
+          n is not None and a.sizes.get(pb.Packet.DM_HISTORY_RES, 0) <= CLIENT_FRAME and n.has_more_after
+          and 0 < len(nids) < 39 and nids == ids[1:1 + len(nids)], nids)
+    # A message stored before the 64 KiB cap (2.1 MB of 3-byte characters)
+    # comes cut on a character boundary, and so does a reply's quote of it.
+    [huge] = seed_dms(up, "pagepeer1", ua, "alice", "repeat('€', 700000)")
+    h = a.history(peer_uid=up, limit=1)
+    m = h.messages[0] if h and h.messages else None
+    check("a pre-cap 2.1 MB message comes cut to 64 KiB, marked",
+          m is not None and m.id == huge and utf8_len(m.content) <= 64 * 1024 and m.content.endswith("…")
+          and m.content.startswith("€€€") and a.sizes.get(pb.Packet.DM_HISTORY_RES, 0) <= CLIENT_FRAME,
+          m and utf8_len(m.content))
+    r = a.dm(recipient_uid=up, content="about that", nonce="a1-reply", reply_to=huge)
+    check("a reply quotes at most 512 bytes of it", r is not None and r.reply_to == huge
+          and 0 < utf8_len(r.reply_to_content) <= 512 and r.reply_to_content.endswith("…"),
+          r and utf8_len(r.reply_to_content))
+    h = a.history(peer_uid=up, limit=1)
+    m = h.messages[0] if h and h.messages else None
+    check("... in history too", m is not None and m.reply_to == huge and utf8_len(m.reply_to_content) <= 512
+          and m.reply_to_content.endswith("…"))
+    a.close()
+    drop_users([up])
+
+
+def test_dm_conversation_pages():
+    print("DM conversation pages (review A1)")
+    peers = seed_users("convpeer", 450)
+    names = dict(sql("SELECT uid, username FROM users WHERE uid = ANY(%s)", peers))
+    register("convme")
+    me = uid_of("convme")
+    sql("INSERT INTO dm_messages (sender_uid, sender, recipient_uid, recipient, content, sent_at) "
+        "SELECT uid, username, %s::bigint, 'convme', 'hello from ' || username, 1700000000 FROM users "
+        "WHERE uid = ANY(%s) ORDER BY uid", me, peers)
+    # The newest 40 conversations end in a 60 KiB envelope (it can't be cut),
+    # the newest two in a 1.2 MB plaintext message stored before the cap.
+    for u in peers[2:42]:
+        seed_dms(u, names[u], me, "convme", "'[encrypted]'", envelope=b"\x03" + b"e" * 61440)
+    for u in peers[:2]:
+        seed_dms(u, names[u], me, "convme", "repeat('x', 1258291)")
+    c = User("convme")
+    seen, sizes, pages, before, last = {}, [], [], 0, None
+    while len(pages) < 10:
+        c.send(pb.Packet.DM_CONVERSATIONS_REQ, dm_conversations_req=pb.DmConversationsReq(before_id=before))
+        r = c.wait(pb.Packet.DM_CONVERSATIONS_RES, timeout=5)
+        if r is None:
+            break
+        last = r.dm_conversations_res
+        sizes.append(c.sizes.get(pb.Packet.DM_CONVERSATIONS_RES, 0))
+        pages.append((len(last.conversations), last.has_more, last.before_id == before))
+        for conv in last.conversations:
+            seen.setdefault(conv.peer_uid, []).append(conv)
+        if not last.has_more or not last.conversations:
+            break
+        before = min(conv.last_message_id for conv in last.conversations)
+    check("every conversation page stays under the client's frame cap", sizes and max(sizes) <= CLIENT_FRAME, sizes)
+    check("pages hold at most 200 and echo their cursor", pages and all(n <= 200 and echo for n, _, echo in pages), pages)
+    check("the envelope-heavy page is cut by bytes and says more follow", pages and pages[0][0] < 200 and pages[0][1],
+          pages)
+    check("paging on lists every conversation once, then stops", set(seen) == set(peers)
+          and all(len(v) == 1 for v in seen.values()) and last is not None and not last.has_more, (len(seen), pages))
+    big = seen.get(peers[0], [None])[0]
+    check("a pre-cap 1.2 MB last message previews as 512 bytes, marked",
+          big is not None and utf8_len(big.last_message_content) <= 512 and big.last_message_content.endswith("…")
+          and big.unread_count == 2, big and (utf8_len(big.last_message_content), big.unread_count))
+    sealed = seen.get(peers[2], [None])[0]
+    check("an encrypted last message keeps its whole envelope",
+          sealed is not None and len(sealed.last_message_envelope) == 61441)
+    plain = seen.get(peers[-1], [None])[0]
+    check("an untouched conversation: its preview and one unread",
+          plain is not None and plain.last_message_content == f"hello from {names[peers[-1]]}" and plain.unread_count == 1)
+    c.close()
+    drop_users(peers)
+
+
 def test_abuse_limits():
     print("abuse limits")
     # Failed sign-ins per account and address: 10 from one address hold
@@ -1400,6 +1547,8 @@ def main():
         test_token_refresh()
         test_resume()
         test_dm_pacing()
+        test_dm_page_budget()
+        test_dm_conversation_pages()
         test_abuse_limits()
     finally:
         stop_server(proc)

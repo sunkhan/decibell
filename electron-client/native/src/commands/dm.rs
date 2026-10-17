@@ -32,7 +32,9 @@ pub async fn request_dm_conversations() -> napi::Result<()> {
         let token = s.token.clone();
         let pkt = build_packet(
             packet::Type::DmConversationsReq,
-            packet::Payload::DmConversationsReq(DmConversationsReq {}),
+            // The newest page; the DM worker asks for the rest
+            // (e2ee/session.rs handle_conversations).
+            packet::Payload::DmConversationsReq(DmConversationsReq { before_id: 0 }),
             token.as_deref(),
         );
         (tx, pkt)
