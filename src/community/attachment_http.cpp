@@ -24,6 +24,7 @@
 #include "db.hpp"
 #include "authz.hpp"
 #include "rate_limit.hpp"
+#include "connection_limits.hpp"
 
 namespace ssl = boost::asio::ssl;
 using boost::asio::ip::tcp;
@@ -250,8 +251,11 @@ public:
                          const chatproj::Authorizer* authz,
                          const std::string& jwt_secret,
                          const std::string& storage_root,
-                         int64_t max_attachment_bytes)
-        : socket_(std::move(socket), ssl_ctx),
+                         int64_t max_attachment_bytes,
+                         chatproj::ConnectionLimits* limits,
+                         std::string ip)
+        : slot_(limits, std::move(ip)),
+          socket_(std::move(socket), ssl_ctx),
           shutdown_timer_(socket_.lowest_layer().get_executor()),
           deadline_timer_(socket_.lowest_layer().get_executor()),
           db_(db),
@@ -265,7 +269,7 @@ public:
         arm_deadline();
         socket_.async_handshake(ssl::stream_base::server,
             [this, self](const boost::system::error_code& ec) {
-                if (ec) return;
+                if (ec) { close_now(); return; }
                 read_head();
             });
     }
@@ -286,10 +290,23 @@ private:
         deadline_timer_.expires_after(kInactivity);
         deadline_timer_.async_wait([this, self, gen](const boost::system::error_code& ec) {
             if (ec || gen != deadline_gen_) return;
-            if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
-            boost::system::error_code ignore;
-            socket_.lowest_layer().close(ignore);
+            close_now();
         });
+    }
+
+    // The connection is over (I/O error, failed handshake, deadline):
+    // close the upload file and the socket and cancel both timers, so
+    // nothing keeps this object — or its descriptor — alive. Every error
+    // path ends here; they used to just return, which left a reset
+    // peer's socket in CLOSE_WAIT until the 30 s deadline (whose timer
+    // held the connection) closed it. Idempotent.
+    void close_now() {
+        if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
+        ++deadline_gen_;   // a deadline completion already queued is stale now
+        deadline_timer_.cancel();
+        shutdown_timer_.cancel();
+        boost::system::error_code ignore;
+        socket_.lowest_layer().close(ignore);
     }
 
     // ---- reading request head ----
@@ -299,7 +316,7 @@ private:
         // Read until CRLFCRLF. Bounded: we allow up to 16KB of headers.
         boost::asio::async_read_until(socket_, head_buf_, "\r\n\r\n",
             [this, self](const boost::system::error_code& ec, std::size_t n) {
-                if (ec) return;
+                if (ec) { close_now(); return; }
                 arm_deadline();
                 if (n > 16 * 1024) { send_error(431, "Request Header Fields Too Large"); return; }
                 std::string head{
@@ -395,7 +412,7 @@ private:
         boost::asio::async_read(socket_,
             boost::asio::buffer(body_.data() + already, body_.size() - already),
             [this, self](const boost::system::error_code& ec, std::size_t) {
-                if (ec) return;
+                if (ec) { close_now(); return; }
                 do_init_with_body();
             });
     }
@@ -624,10 +641,7 @@ private:
         patch_chunk_.resize(want);
         boost::asio::async_read(socket_, boost::asio::buffer(patch_chunk_),
             [this, self](const boost::system::error_code& ec, std::size_t n) {
-                if (ec) {
-                    if (patch_fp_ && *patch_fp_) { std::fclose(*patch_fp_); *patch_fp_ = nullptr; }
-                    return;
-                }
+                if (ec) { close_now(); return; }   // closes the upload file too
                 // The inactivity deadline can fire and close us (nulling the
                 // FILE*) between this read being queued and running — the
                 // timer handler and this completion may sit in the same
@@ -859,7 +873,7 @@ private:
             boost::asio::async_write(socket_, boost::asio::buffer(*hdr_t),
                 [this, self_t, hdr_t, thumb_fp, thumb_total](
                     const boost::system::error_code& ec, std::size_t) {
-                    if (ec) { std::fclose(*thumb_fp); return; }
+                    if (ec) { std::fclose(*thumb_fp); *thumb_fp = nullptr; close_now(); return; }
                     send_file_body(thumb_fp, thumb_total);
                 });
             return;
@@ -920,7 +934,7 @@ private:
         auto hdr = std::make_shared<std::string>(std::move(headers));
         boost::asio::async_write(socket_, boost::asio::buffer(*hdr),
             [this, self, hdr, fp, body_len](const boost::system::error_code& ec, std::size_t) {
-                if (ec) { std::fclose(*fp); return; }
+                if (ec) { std::fclose(*fp); *fp = nullptr; close_now(); return; }
                 send_file_body(fp, body_len);
             });
     }
@@ -988,7 +1002,7 @@ private:
         boost::asio::async_read(socket_,
             boost::asio::buffer(thumb_buf_.data() + base, want),
             [this, self](const boost::system::error_code& ec, std::size_t n) {
-                if (ec) return;
+                if (ec) { close_now(); return; }
                 arm_deadline();
                 thumb_remain_ -= static_cast<int64_t>(n);
                 if (thumb_remain_ == 0) return finish_thumbnail();
@@ -1057,7 +1071,7 @@ private:
         auto self = shared_from_this();
         boost::asio::async_write(socket_, boost::asio::buffer(*buf),
             [this, self, fp, buf, remaining, got](const boost::system::error_code& ec, std::size_t) {
-                if (ec) { std::fclose(*fp); *fp = nullptr; return; }
+                if (ec) { std::fclose(*fp); *fp = nullptr; close_now(); return; }
                 arm_deadline();
                 send_file_body(fp, remaining - static_cast<int64_t>(got));
             });
@@ -1114,7 +1128,7 @@ private:
         auto buf = std::make_shared<std::string>(std::move(data));
         boost::asio::async_write(socket_, boost::asio::buffer(*buf),
             [this, self, buf](const boost::system::error_code& ec, std::size_t) {
-                if (ec) { graceful_close(); return; }
+                if (ec) { close_now(); return; }   // the peer is gone: no close_notify to send
                 finish_request();
             });
     }
@@ -1163,6 +1177,9 @@ private:
     static constexpr int64_t PATCH_BUF_SIZE = 256 * 1024;  // 256 KB
     static constexpr int64_t GET_BUF_SIZE   = 256 * 1024;
 
+    // This connection's place under the listener's connection caps;
+    // returned on destruction (declared first: after the socket closes).
+    chatproj::ConnectionSlot slot_;
     ssl::stream<tcp::socket> socket_;
     boost::asio::steady_timer shutdown_timer_;
     boost::asio::steady_timer deadline_timer_;
@@ -1209,7 +1226,8 @@ AttachmentHttpServer::AttachmentHttpServer(boost::asio::io_context& ioc,
                                            chatproj::CommunityDb& db,
                                            const std::string& jwt_secret,
                                            const std::string& storage_root,
-                                           int64_t max_attachment_bytes)
+                                           int64_t max_attachment_bytes,
+                                           chatproj::ConnectionLimits& limits)
     : ioc_(ioc),
       ssl_ctx_(ssl::context::tlsv12),
       acceptor_(ioc, tcp::endpoint(tcp::v4(), port)),
@@ -1218,7 +1236,8 @@ AttachmentHttpServer::AttachmentHttpServer(boost::asio::io_context& ioc,
       jwt_secret_(jwt_secret),
       storage_root_(storage_root),
       max_attachment_bytes_(max_attachment_bytes),
-      port_(port) {
+      port_(port),
+      limits_(limits) {
     ssl_ctx_.set_options(
         ssl::context::default_workarounds |
         ssl::context::no_sslv2 |
@@ -1244,10 +1263,29 @@ void AttachmentHttpServer::do_accept() {
     acceptor_.async_accept(
         [this](const boost::system::error_code& ec, tcp::socket socket) {
             if (!ec) {
-                auto conn = std::make_shared<AttachmentConnection>(
-                    std::move(socket), ssl_ctx_, db_, authz_, jwt_secret_,
-                    storage_root_, max_attachment_bytes_);
-                conn->start();
+                // A throw while standing up the connection must not skip
+                // the re-arm below, or the accept chain dies silently.
+                try {
+                    boost::system::error_code ep_ec;
+                    const auto endpoint = socket.remote_endpoint(ep_ec);
+                    const std::string ip = ep_ec ? std::string() : endpoint.address().to_string();
+                    // Gone already (`socket` closes here), or over a
+                    // connection cap: refused before the TLS handshake.
+                    if (!ep_ec && admit(ip)) {
+                        std::shared_ptr<AttachmentConnection> conn;
+                        try {
+                            conn = std::make_shared<AttachmentConnection>(
+                                std::move(socket), ssl_ctx_, db_, authz_, jwt_secret_,
+                                storage_root_, max_attachment_bytes_, &limits_, ip);
+                        } catch (...) {
+                            limits_.release(ip);   // never constructed: its slot isn't held
+                            throw;
+                        }
+                        conn->start();
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[AttachmentHttp] accept handler threw: " << e.what() << " — continuing\n";
+                }
                 do_accept();
                 return;
             }
@@ -1261,4 +1299,18 @@ void AttachmentHttpServer::do_accept() {
                 if (!tec) do_accept();
             });
         });
+}
+
+bool AttachmentHttpServer::admit(const std::string& ip) {
+    const auto a = limits_.admit(ip);
+    if (a == chatproj::ConnectionLimits::Admit::ok) return true;
+    ++refused_;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_refusal_log_ >= std::chrono::seconds(10)) {
+        std::cout << "[AttachmentHttp] Refused " << refused_ << " connection(s) in the last 10 s (latest: "
+                  << ip << ", " << chatproj::ConnectionLimits::describe(a) << ")\n";
+        refused_ = 0;
+        last_refusal_log_ = now;
+    }
+    return false;
 }

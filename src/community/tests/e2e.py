@@ -71,12 +71,29 @@ def ed25519_sign(key_pem, data):
         os.unlink(path)
 
 
+_next_src = [0]
+
+
+def next_source():
+    """A fresh loopback source address per connection: the server caps
+    connections per address (and new connections per second), which one
+    test run from 127.0.0.1 would otherwise run into. 127.0.250.x is left
+    for the tests of those caps."""
+    _next_src[0] += 1
+    n = _next_src[0]
+    return f"127.0.{1 + (n // 250) % 190}.{1 + n % 250}"
+
+
+def connect(port, timeout=3.0, src=None):
+    return socket.create_connection((HOST, port), timeout=timeout, source_address=(src or next_source(), 0))
+
+
 class Client:
-    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False, iat=None):
+    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False, iat=None, src=None):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        raw = socket.create_connection((HOST, 8082), timeout=timeout)
+        raw = connect(8082, timeout, src)
         self.s = ctx.wrap_socket(raw)
         self.username = username
         self.jwt = jwt(username, nonce, uid, iat)
@@ -256,7 +273,7 @@ def test_b1_seed_resurrection():
 def test_b2_sync_shutdown():
     print("[B2] silent HTTPS peer after 401 must not freeze the io thread")
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
-    raw = socket.create_connection((HOST, 8085), timeout=3)
+    raw = connect(8085)
     s = ctx.wrap_socket(raw)
     s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
     s.settimeout(3)
@@ -476,9 +493,9 @@ def test_no_ghost_after_leave_or_ban():
     kim.close(); owner.close()
 
 
-def raw_tls(port=8082):
+def raw_tls(port=8082, src=None):
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
-    return ctx.wrap_socket(socket.create_connection((HOST, port), timeout=3))
+    return ctx.wrap_socket(connect(port, 3, src))
 
 
 def socket_closed(sock, wait):
@@ -2476,7 +2493,7 @@ def test_theme_a_tokens_and_uid():
     forged = f"{h}.{p}.{b64(ed25519_sign(other, f'{h}.{p}'.encode()))}"
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
     c = Client.__new__(Client)
-    c.s = ctx.wrap_socket(socket.create_connection((HOST, 8082), timeout=3)); c.username = "alice"; c.jwt = forged; c.buf = b""; c.inbox = []; c.closed = False
+    c.s = ctx.wrap_socket(connect(8082)); c.username = "alice"; c.jwt = forged; c.buf = b""; c.inbox = []; c.closed = False
     c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=forged))
     ok, r = auth_ok(c)
     check("token signed by another key rejected", not ok and r is not None and r.community_auth_res.error_code == "auth"); c.close()
@@ -2485,7 +2502,7 @@ def test_theme_a_tokens_and_uid():
     sig2 = hmac.new(SECRET.encode(), f"{h2}.{p}".encode(), hashlib.sha256).digest()
     hs = f"{h2}.{p}.{b64(sig2)}"
     c = Client.__new__(Client)
-    c.s = ctx.wrap_socket(socket.create_connection((HOST, 8082), timeout=3)); c.username = "alice"; c.jwt = hs; c.buf = b""; c.inbox = []; c.closed = False
+    c.s = ctx.wrap_socket(connect(8082)); c.username = "alice"; c.jwt = hs; c.buf = b""; c.inbox = []; c.closed = False
     c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=hs))
     ok, r = auth_ok(c)
     check("HS256 token rejected (no symmetric fallback)", not ok); c.close()
@@ -2643,7 +2660,7 @@ def test_uid_wire():
     nouid = f"{h}.{p}.{b64(ed25519_sign(KEY_PEM, f'{h}.{p}'.encode()))}"
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
     c = Client.__new__(Client)
-    c.s = ctx.wrap_socket(socket.create_connection((HOST, 8082), timeout=3)); c.username = "uidw1"; c.jwt = nouid; c.buf = b""; c.inbox = []; c.closed = False
+    c.s = ctx.wrap_socket(connect(8082)); c.username = "uidw1"; c.jwt = nouid; c.buf = b""; c.inbox = []; c.closed = False
     c.send(pb.Packet.COMMUNITY_AUTH_REQ, community_auth_req=pb.CommunityAuthRequest(jwt_token=nouid))
     ok, r = auth_ok(c)
     check("a token without a uid is refused", not ok and r is not None and r.community_auth_res.error_code == "auth"); c.close()
@@ -3848,6 +3865,129 @@ def test_s15_channel_id_cap():
     owner.close()
 
 
+def test_s17_write_backlog_bytes():
+    print("[S17] a session that stops reading is dropped once ~16 MB is queued, not 1024 frames")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    slow = join("slowr", owner)
+    room = create_channel(owner, "s17-room", pb.ChannelInfo.TEXT).id
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    for i in range(30):   # 100 KB rows (seeded past the 64 KB send cap): a ~3 MB history page
+        c.execute("insert into messages(channel_id, sender, content, timestamp) values(?, 'alice', ?, ?)",
+                  (room, f"{i:03d}" + "z" * 100000, now))
+    c.commit(); c.close()
+    slow.flush(0.5)
+    for _ in range(20):   # ~60 MB of answers; the client reads none of it
+        slow.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=room, limit=50))
+    time.sleep(2.0)
+    check("the non-reading session is closed", slow.is_closed(10.0))
+    owner.flush(0.3)
+    owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest())
+    check("everyone else is unaffected", owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2) is not None)
+    delete_channel(owner, room)
+    slow.close(); owner.close()
+
+
+def peer_closed(sock, wait):
+    """True if the peer closes `sock` within `wait` seconds, False if it is
+    still open then (socket_closed() can't tell: on Python 3.10+ its
+    OSError clause also catches the timeout)."""
+    sock.settimeout(wait)
+    try:
+        return sock.recv(16) == b""
+    except (socket.timeout, TimeoutError):
+        return False
+    except OSError:
+        return True
+
+
+def fd_count(proc):
+    return len(os.listdir(f"/proc/{proc.pid}/fd"))
+
+
+def settle_fds(proc, want, wait=2.0):
+    """The server's descriptor count once it drops to `want` (or after `wait`)."""
+    end = time.time() + wait
+    n = fd_count(proc)
+    while n > want and time.time() < end:
+        time.sleep(0.1)
+        n = fd_count(proc)
+    return n
+
+
+def test_s16_connection_caps():
+    print("[S16] connection caps (server-wide, per address, per second); every error path closes at once")
+    proc = start_server(extra_env={"DECIBELL_MAX_CONNECTIONS": "40", "DECIBELL_AUTH_TIMEOUT_SECONDS": "30"})
+    try:
+        time.sleep(0.5)
+        base = fd_count(proc)
+        # Server-wide: 40 chat connections (each from its own address), the 41st refused.
+        held = [connect(8082) for _ in range(40)]
+        extra = connect(8082)
+        check("chat: the connection over the server-wide cap is refused", peer_closed(extra, 1.0))
+        check("chat: the admitted ones stay open", not any(peer_closed(s, 0.05) for s in held[:5]))
+        extra.close()
+        # A peer that hangs up mid-handshake frees its slot (and descriptor) at
+        # once, not at the 30 s auth deadline.
+        held.pop().close()
+        time.sleep(0.3)
+        again = connect(8082)
+        check("chat: a closed connection's slot is free again at once", not peer_closed(again, 0.5))
+        held.append(again)
+        for s in held: s.close()
+        check("chat: hung-up pre-auth connections release their descriptors at once", settle_fds(proc, base) <= base,
+              f"{fd_count(proc)} > {base}")
+        # Signed-in sessions whose peer goes away: the socket closes at once
+        # (it used to sit in CLOSE_WAIT until the 90 s idle deadline).
+        cs = [Client("alice") for _ in range(3)]
+        check("chat: sessions sign in", all(auth_ok(c)[0] for c in cs))
+        for c in cs: c.close()
+        check("chat: dropped sessions release their descriptors at once", settle_fds(proc, base) <= base,
+              f"{fd_count(proc)} > {base}")
+        # Attachments: 20 connections (half the chat cap).
+        att = [connect(8085) for _ in range(20)]
+        extra = connect(8085)
+        check("attachments: the connection over the cap is refused", peer_closed(extra, 1.0))
+        extra.close()
+        for s in att: s.close()
+        settle_fds(proc, base)
+        # A connection that hangs up idle after the handshake, and one that
+        # hangs up mid-head: both close at once (not at the 30 s deadline).
+        k = raw_tls(8085)
+        h = raw_tls(8085)
+        h.sendall(b"GET /attachments/1 HTTP/1.1\r\nHost: x\r\n")
+        time.sleep(0.2)
+        k.close(); h.close()
+        check("attachments: hung-up connections release their descriptors at once", settle_fds(proc, base) <= base,
+              f"{fd_count(proc)} > {base}")
+    finally:
+        stop_server(proc)
+    # Per address (default server-wide cap).
+    proc = start_server(extra_env={"DECIBELL_AUTH_TIMEOUT_SECONDS": "30"})
+    try:
+        # New connections: 60 at once, then 10 a second.
+        burst = [connect(8082, src="127.0.250.1") for _ in range(100)]
+        time.sleep(0.5)
+        refused = sum(1 for s in burst if peer_closed(s, 0.02))
+        check("chat: a burst from one address is cut after ~60", refused >= 20 and len(burst) - refused >= 60,
+              f"refused={refused}")
+        for s in burst: s.close()
+        # Per address, open: 128 at a time (paced under the rate).
+        src = "127.0.250.2"
+        opened = [connect(8082, src=src) for _ in range(60)]
+        while len(opened) < 128:
+            time.sleep(0.11)
+            opened.append(connect(8082, src=src))
+        time.sleep(0.2)
+        over = connect(8082, src=src)
+        check("chat: the 129th open connection from one address is refused", peer_closed(over, 1.0)
+              and not peer_closed(opened[-1], 0.05))
+        over.close()
+        for s in opened: s.close()
+    finally:
+        stop_server(proc)
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -3920,11 +4060,13 @@ if __name__ == "__main__":
         test_live_rename()
         test_s2_channel_msg_whitelist()
         test_s15_channel_id_cap()
+        test_s17_write_backlog_bytes()
     finally:
         stop_server(proc)
     test_b9_timeouts()
     test_b12_b27_retention_sweep()
     test_upload_sweep_goes_by_idle_time()
+    test_s16_connection_caps()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:
         print("FAILED:", FAIL)

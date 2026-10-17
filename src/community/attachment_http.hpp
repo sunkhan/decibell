@@ -7,12 +7,15 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace chatproj {
 class CommunityDb;
 class Authorizer;
+class ConnectionLimits;
 }
 
 // HTTP/TLS endpoint for resumable attachment upload/download. Runs alongside
@@ -39,7 +42,8 @@ public:
                          chatproj::CommunityDb& db,
                          const std::string& jwt_secret,
                          const std::string& storage_root,
-                         int64_t max_attachment_bytes);
+                         int64_t max_attachment_bytes,
+                         chatproj::ConnectionLimits& limits);
 
     // So callers (e.g. SessionManager::broadcast_to_members on
     // CommunityAuthResponse) can report the right attachment port to clients.
@@ -53,6 +57,9 @@ public:
 
 private:
     void do_accept();
+    // Takes a connection slot for `ip`; false (logged at most every 10 s)
+    // when a cap refuses it.
+    bool admit(const std::string& ip);
 
     boost::asio::io_context& ioc_;
     boost::asio::ssl::context ssl_ctx_;
@@ -64,4 +71,7 @@ private:
     std::string storage_root_;
     int64_t max_attachment_bytes_;
     unsigned short port_;
+    chatproj::ConnectionLimits& limits_;
+    std::size_t refused_ = 0;
+    std::chrono::steady_clock::time_point last_refusal_log_{};
 };

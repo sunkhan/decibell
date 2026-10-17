@@ -42,6 +42,7 @@
 #include "db.hpp"
 #include "attachment_http.hpp"
 #include "rate_limit.hpp"
+#include "connection_limits.hpp"
 #include "central_sync.hpp"
 #include "authz.hpp"
 #include "search.hpp"
@@ -53,6 +54,9 @@ using boost::asio::ip::tcp;
 #include <deque>
 #ifdef __linux__
 #include <netinet/tcp.h>
+#endif
+#ifndef _WIN32
+#include <sys/resource.h>
 #endif
 
 namespace {
@@ -799,8 +803,10 @@ private:
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_public_pem)
-        : socket_(std::move(socket), context),
+    Session(tcp::socket socket, SessionManager& manager, ssl::context& context, const std::string& jwt_public_pem,
+            chatproj::ConnectionLimits* limits, std::string ip)
+        : slot_(limits, std::move(ip)),
+          socket_(std::move(socket), context),
           close_timer_(socket_.lowest_layer().get_executor()),
           deadline_timer_(socket_.lowest_layer().get_executor()),
           manager_(manager), jwt_public_pem_(jwt_public_pem) {
@@ -827,7 +833,7 @@ public:
                 if (!error) {
                     do_read_header();
                 } else {
-                    manager_.leave(shared_from_this());
+                    drop_connection();
                 }
             });
     }
@@ -837,6 +843,10 @@ public:
     // idle deadline, re-armed on every frame incl. CLIENT_PING.
     void arm_deadline(int seconds) {
         if (seconds <= 0) return;
+        {
+            std::lock_guard<std::mutex> lock(write_mutex_);
+            if (dropped_) return;   // a timer would only keep the session alive
+        }
         auto self(shared_from_this());
         deadline_timer_.expires_after(std::chrono::seconds(seconds));
         deadline_timer_.async_wait([this, self](const boost::system::error_code& ec) {
@@ -846,24 +856,31 @@ public:
                       << (authenticated_ ? ("idle session of " + username_)
                                          : std::string("unauthenticated session"))
                       << " (deadline)\n";
-            manager_.leave(shared_from_this());
-            close_connection();
+            drop_connection();
         });
     }
 
     void deliver(std::shared_ptr<std::vector<uint8_t>> framed_data) {
-        // Cap the per-session backlog. A client that stops reading (or reads
-        // slowly) would otherwise let broadcasts / presence / channel
-        // messages pile up in memory without bound.
+        // Cap the per-session backlog, in frames and in bytes. A client
+        // that stops reading (or reads slowly) would otherwise let
+        // broadcasts / presence / channel messages pile up in memory
+        // without bound — and with a frame cap alone, 1024 queued 256 KB
+        // thumbnails or 1.5 MB history pages still pinned 256 MB-1.5 GB.
         constexpr size_t MAX_QUEUED_MESSAGES = 1024;
+        constexpr size_t MAX_QUEUED_BYTES = 16 * 1024 * 1024;
         bool write_in_progress = false;
         bool overflow = false;
         {
             std::lock_guard<std::mutex> lock(write_mutex_);
-            if (write_queue_.size() >= MAX_QUEUED_MESSAGES) {
+            // Already overflowed (disconnect posted) or gone: drop quietly.
+            if (overflowed_ || dropped_) return;
+            if (write_queue_.size() >= MAX_QUEUED_MESSAGES ||
+                queued_bytes_ + framed_data->size() > MAX_QUEUED_BYTES) {
                 overflow = true;
+                overflowed_ = true;
             } else {
                 write_in_progress = !write_queue_.empty();
+                queued_bytes_ += framed_data->size();
                 write_queue_.push_back(framed_data);
             }
         }
@@ -875,13 +892,14 @@ public:
             // socket too — leave() only detaches the session from the
             // manager, and without the close the slow reader stays
             // connected as a zombie whose messages still get broadcast
-            // while its 1024-frame backlog stays pinned in memory.
+            // while its backlog stays pinned in memory. Posted once:
+            // `overflowed_` turns every later deliver into a no-op.
+            std::cout << "[Community] Write backlog full for "
+                      << (authenticated_ ? username_ : std::string("unauthenticated session"))
+                      << "; closing connection\n";
             auto self = shared_from_this();
             boost::asio::post(socket_.lowest_layer().get_executor(),
-                              [this, self]() {
-                                  manager_.leave(self);
-                                  close_connection();
-                              });
+                              [this, self]() { drop_connection(); });
             return;
         }
 
@@ -952,13 +970,27 @@ public:
 
     // Detach from the manager, then close. Needed because a closing
     // session no longer re-arms its read loop, so the usual
-    // "socket close → read error → manager_.leave()" path never runs
+    // "socket close → read error → drop_connection()" path never runs
     // for it; without this a kicked/left user stayed in sessions_ and
-    // the voice/stream maps as a ghost. leave() is idempotent.
-    void finish_close() {
-        close_timer_.cancel();
+    // the voice/stream maps as a ghost.
+    void finish_close() { drop_connection(); }
+
+    // The connection is over (I/O error, deadline, backlog overflow, end
+    // of a flush): detach from the manager, close the socket, cancel both
+    // timers and free the backlog. Every error path ends here. Closing
+    // only on the deadline used to leave a reset peer's socket in
+    // CLOSE_WAIT — its descriptor held — for up to 90 s, with the timer
+    // keeping the session alive. io thread only; idempotent (leave() is).
+    void drop_connection() {
         manager_.leave(shared_from_this());
         close_connection();
+        close_timer_.cancel();
+        deadline_timer_.cancel();
+        std::lock_guard<std::mutex> lock(write_mutex_);
+        dropped_ = true;
+        // An in-flight write holds its own reference to its buffer.
+        write_queue_.clear();
+        queued_bytes_ = 0;
     }
 
     // Send a pre-built packet. Public so SessionManager can push notifications
@@ -998,12 +1030,16 @@ private:
             data_to_write = write_queue_.front();
         }
 
+        // The handler keeps `data_to_write` alive: drop_connection() may
+        // clear the queue while this write is in flight.
         boost::asio::async_write(socket_, boost::asio::buffer(*data_to_write),
-            [this, self](boost::system::error_code ec, std::size_t) {
+            [this, self, data_to_write](boost::system::error_code ec, std::size_t) {
                 if (!ec) {
                     bool more_to_write = false;
                     {
                         std::lock_guard<std::mutex> lock(write_mutex_);
+                        if (dropped_ || write_queue_.empty()) return;
+                        queued_bytes_ -= write_queue_.front()->size();
                         write_queue_.pop_front();
                         more_to_write = !write_queue_.empty();
                     }
@@ -1013,7 +1049,7 @@ private:
                         finish_close();
                     }
                 } else {
-                    manager_.leave(shared_from_this());
+                    drop_connection();
                 }
             });
     }
@@ -1040,14 +1076,13 @@ private:
                         // broadcasts) until the stale sweep. Close
                         // explicitly — queued writes to a non-reading
                         // peer would otherwise keep the session alive.
-                        manager_.leave(shared_from_this());
-                        close_connection();
+                        drop_connection();
                         return;
                     }
                     inbound_body_.resize(length);
                     do_read_body(length);
                 } else {
-                    manager_.leave(shared_from_this());
+                    drop_connection();
                 }
             });
     }
@@ -1071,7 +1106,7 @@ private:
                     }
                     if (!closing_) do_read_header();
                 } else {
-                    manager_.leave(shared_from_this());
+                    drop_connection();
                 }
             });
     }
@@ -4348,6 +4383,9 @@ private:
         deliver(framed);
     }
 
+    // This connection's place under the listener's connection caps;
+    // returned on destruction (declared first: after the socket closes).
+    chatproj::ConnectionSlot slot_;
     ssl::stream<tcp::socket> socket_;
     boost::asio::steady_timer close_timer_;
     boost::asio::steady_timer deadline_timer_;
@@ -4442,6 +4480,11 @@ private:
     bool can_speak_ = true;
     bool server_deafened_ = false;
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
+    // Under write_mutex_: bytes in write_queue_; the backlog overflowed
+    // (its disconnect is posted, once); the connection was dropped.
+    size_t queued_bytes_ = 0;
+    bool overflowed_ = false;
+    bool dropped_ = false;
     std::mutex write_mutex_;
     chatproj::ClientCapabilities capabilities_;
     mutable std::mutex capabilities_mutex_;
@@ -6453,14 +6496,16 @@ void SessionManager::sync_invite_unregister(const std::string& code) {
 
 class CommunityServer {
 public:
-    CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_public_pem)
+    CommunityServer(boost::asio::io_context& io_context, short port, SessionManager& manager, const std::string& jwt_public_pem,
+                    chatproj::ConnectionLimits& limits)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
           accept_backoff_(io_context),
           udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 1)),
           media_udp_socket_(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), port + 2)),
           ssl_context_(ssl::context::tlsv12),
           manager_(manager),
-          jwt_secret_(jwt_public_pem) {
+          jwt_secret_(jwt_public_pem),
+          limits_(limits) {
 
         ssl_context_.set_options(
             ssl::context::default_workarounds |
@@ -6505,9 +6550,23 @@ private:
                     // A throw while standing up the session must not skip the
                     // re-arm below, or the accept chain dies silently (R1).
                     try {
-                        auto session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_, jwt_secret_);
-                        manager_.join(session);
-                        session->start();
+                        boost::system::error_code ep_ec;
+                        const auto endpoint = socket.remote_endpoint(ep_ec);
+                        // Gone already (`socket` closes here), or over a
+                        // connection cap: refused before the TLS handshake.
+                        const std::string ip = ep_ec ? std::string() : endpoint.address().to_string();
+                        if (!ep_ec && admit(ip)) {
+                            std::shared_ptr<Session> session;
+                            try {
+                                session = std::make_shared<Session>(std::move(socket), manager_, ssl_context_,
+                                                                    jwt_secret_, &limits_, ip);
+                            } catch (...) {
+                                limits_.release(ip);   // never constructed: its slot isn't held
+                                throw;
+                            }
+                            manager_.join(session);
+                            session->start();
+                        }
                     } catch (const std::exception& e) {
                         std::cerr << "[Community] accept handler threw: " << e.what() << " — continuing\n";
                     } catch (...) {
@@ -6527,6 +6586,22 @@ private:
                     if (!tec) do_accept();
                 });
             });
+    }
+
+    // Takes a connection slot for `ip`; false (logged at most every 10 s)
+    // when a cap refuses it. A Session built after a true owns the slot.
+    bool admit(const std::string& ip) {
+        const auto a = limits_.admit(ip);
+        if (a == chatproj::ConnectionLimits::Admit::ok) return true;
+        ++refused_;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_refusal_log_ >= std::chrono::seconds(10)) {
+            std::cout << "[Community] Refused " << refused_ << " connection(s) in the last 10 s (latest: "
+                      << ip << ", " << chatproj::ConnectionLimits::describe(a) << ")\n";
+            refused_ = 0;
+            last_refusal_log_ = now;
+        }
+        return false;
     }
 
     // ── Voice UDP receive chain (AUDIO, STREAM_AUDIO, PING) ──────────────────
@@ -6882,6 +6957,9 @@ private:
     ssl::context ssl_context_;
     SessionManager& manager_;
     std::string jwt_secret_;
+    chatproj::ConnectionLimits& limits_;
+    size_t refused_ = 0;
+    std::chrono::steady_clock::time_point last_refusal_log_{};
 };
 
 void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_timer& timer,
@@ -6962,6 +7040,26 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
     });
 }
 
+/// Raise the open-file soft limit to the hard one (every connection, upload
+/// and download is a descriptor; shells and systemd start services at a
+/// soft limit of 1024, and systemd's LimitNOFILE= sets the hard one).
+/// Returns the limit now in force. Same as central's.
+static std::size_t raise_open_file_limit() {
+#ifndef _WIN32
+    rlimit rl{};
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return 1024;
+    if (rl.rlim_cur != RLIM_INFINITY && (rl.rlim_max == RLIM_INFINITY || rl.rlim_cur < rl.rlim_max)) {
+        rlimit want = rl;
+        // Linux refuses RLIM_INFINITY for this resource: cap at nr_open's default.
+        want.rlim_cur = rl.rlim_max == RLIM_INFINITY ? 1048576 : rl.rlim_max;
+        if (setrlimit(RLIMIT_NOFILE, &want) == 0) rl = want;
+    }
+    return rl.rlim_cur == RLIM_INFINITY ? 1048576 : static_cast<std::size_t>(rl.rlim_cur);
+#else
+    return 8192;
+#endif
+}
+
 int main() {
     try {
         const char* jwt_pub_env = std::getenv("DECIBELL_JWT_PUBLIC_KEY_FILE");
@@ -7027,6 +7125,38 @@ int main() {
         const int idle_timeout_s = env_seconds(idle_timeout_env, 90);
         const int retention_interval_s = env_seconds(retention_interval_env, 600);
 
+        // Connections stop short of the open-file limit, leaving room for
+        // SQLite (the database, its WAL and the search worker's read-only
+        // connection), the listeners, the UDP sockets, central sync and
+        // the log. Half of the rest goes to chat connections, a quarter to
+        // attachment connections — each of those can hold an open file too.
+        // DECIBELL_MAX_CONNECTIONS sets the chat cap (attachments get half).
+        const std::size_t fd_limit = raise_open_file_limit();
+        constexpr std::size_t kReservedFds = 256;
+        const std::size_t usable_fds = fd_limit > kReservedFds + 64 ? fd_limit - kReservedFds : 64;
+        std::size_t max_chat_connections = usable_fds / 2;
+        if (const char* v = std::getenv("DECIBELL_MAX_CONNECTIONS")) {
+            try {
+                const long long n = std::stoll(v);
+                if (n > 0) {
+                    if (static_cast<std::size_t>(n) > max_chat_connections) {
+                        std::cerr << "[Community] DECIBELL_MAX_CONNECTIONS=" << n << " is above what the open-file limit ("
+                                  << fd_limit << ") leaves room for (" << max_chat_connections << ")\n";
+                    }
+                    max_chat_connections = static_cast<std::size_t>(n);
+                }
+            } catch (...) {
+                std::cerr << "[Community] Ignoring DECIBELL_MAX_CONNECTIONS=" << v << "\n";
+            }
+        }
+        const std::size_t max_attachment_connections = std::max<std::size_t>(1, max_chat_connections / 2);
+        std::cout << "[Community] Open-file limit " << fd_limit << ": up to " << max_chat_connections
+                  << " chat and " << max_attachment_connections << " attachment connections\n";
+        // Declared before the io_context: connections still queued in it
+        // when it is destroyed return their slots on the way out.
+        chatproj::ConnectionLimits chat_limits(max_chat_connections);
+        chatproj::ConnectionLimits attachment_limits(max_attachment_connections);
+
         // Open (or create) the persistent DB. If the file doesn't exist yet
         // we require DECIBELL_OWNER_USERNAME so we know who to seed as owner.
         chatproj::CommunityDb db;
@@ -7082,11 +7212,11 @@ int main() {
                 try { db.set_min_free_bytes(std::stoll(mf)); } catch (...) {}
             }
         }
-        CommunityServer s(io_context, 8082, manager, jwt_public_pem);
+        CommunityServer s(io_context, 8082, manager, jwt_public_pem, chat_limits);
         AttachmentHttpServer attachment_server(io_context,
                                                static_cast<unsigned short>(attachment_port),
                                                db, jwt_public_pem, attachments_root,
-                                               max_attachment_bytes);
+                                               max_attachment_bytes, attachment_limits);
         attachment_server.set_authz(&authz);
         std::cout << "Decibell Community Server running on port 8082...\n";
         std::cout << "[Community] Owner uid: " << db.owner_uid()

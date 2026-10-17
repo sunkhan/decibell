@@ -21,17 +21,27 @@ public:
     // Consume one token if available. Returns false (and consumes
     // nothing) when the caller should drop the action.
     bool try_take() {
-        const auto now = std::chrono::steady_clock::now();
-        const double elapsed =
-            std::chrono::duration<double>(now - last_).count();
-        last_ = now;
-        tokens_ = std::min(capacity_, tokens_ + elapsed * refill_);
+        refill();
         if (tokens_ < 1.0) return false;
         tokens_ -= 1.0;
         return true;
     }
 
+    // Back at capacity: nothing taken recently (an idle entry can go).
+    bool full() {
+        refill();
+        return tokens_ >= capacity_;
+    }
+
 private:
+    void refill() {
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed =
+            std::chrono::duration<double>(now - last_).count();
+        last_ = now;
+        tokens_ = std::min(capacity_, tokens_ + elapsed * refill_);
+    }
+
     double capacity_;
     double refill_;
     double tokens_;
