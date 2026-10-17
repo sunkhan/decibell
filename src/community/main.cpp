@@ -100,6 +100,10 @@ void strip_client_envelope(chatproj::Packet& p) {
     p.clear_timestamp();
 }
 
+/// ChannelMessage.nonce cap. Clients make ~20-character (`n-<ms>-<rand>`)
+/// or 36-character (UUID) nonces; the echo rides every viewer's broadcast.
+constexpr size_t kMaxMessageNonceBytes = 64;
+
 /// True when every channel id a request names fits kMaxChannelIdBytes.
 /// Checked once for every packet instead of in each handler: a request's
 /// channel ids are the payload's `channel_id` / `category_id` /
@@ -1826,14 +1830,24 @@ private:
 
         // --- CHANNEL MESSAGE ROUTING ---
         else if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
-            chatproj::Packet routed = packet;
-            strip_client_envelope(routed);
+            // The broadcast is built from a whitelist, never a copy of the
+            // request: a copy relayed whatever the client set (an
+            // unbounded nonce, edited_at, reply previews, appended
+            // reply_to_attachment_kinds, unknown fields) to every viewer.
+            // From the client: channel, text, envelope, reply target,
+            // nonce, and the ids of its uploads; everything else below is
+            // stamped by the server.
+            const auto& in = packet.channel_msg();
+            chatproj::Packet routed;
+            routed.set_type(chatproj::Packet::CHANNEL_MSG);
             auto* msg = routed.mutable_channel_msg();
+            msg->set_channel_id(in.channel_id());
+            msg->set_content(in.content());
+            msg->set_envelope(in.envelope());
+            msg->set_reply_to(in.reply_to());
+            msg->set_nonce(in.nonce());
             msg->set_sender(username_); // Enforce identity
             msg->set_sender_uid(uid_);
-            msg->clear_reply_to_sender_uid();
-            msg->clear_sealed_sender();
-            msg->clear_reply_to_sealed_sender();
 
             // The channel must exist and not be a category header.
             // Otherwise any member can persist rows under arbitrary (or
@@ -1843,12 +1857,30 @@ private:
                 std::optional<chatproj::DbChannel> ch;
                 if (auto* db = manager_.db()) ch = db->get_channel(msg->channel_id());
                 if (!ch || ch->type == 2) {
-                    std::cout << "[Community] Dropped CHANNEL_MSG from " << username_
+                    std::cout << "[Community] Refused CHANNEL_MSG from " << username_
                               << " to unknown/category channel '"
                               << msg->channel_id() << "'\n";
+                    reject_channel_msg(*msg, "That channel doesn't exist.");
                     return;
                 }
             }
+            // The nonce only matches the echo to the sender's optimistic
+            // bubble (clients send ~20-36 characters), yet it rides the
+            // broadcast to every viewer.
+            if (in.nonce().size() > kMaxMessageNonceBytes) {
+                reject_channel_msg(*msg, "Message refused.");
+                return;
+            }
+            // The client caps a message at 10 attachments; enforce it
+            // here too so bind_attachments' IN-list stays bounded. Only
+            // the ids are taken: the rows are rebuilt from the database
+            // below.
+            constexpr int MAX_ATTACHMENTS_PER_MESSAGE = 10;
+            if (in.attachments_size() > MAX_ATTACHMENTS_PER_MESSAGE) {
+                reject_channel_msg(*msg, "Too many attachments on one message.");
+                return;
+            }
+            for (const auto& a : in.attachments()) msg->add_attachments()->set_id(a.id());
             // Set once the message passes slowmode and is about to be
             // accepted — the window is stamped only AFTER a successful
             // persist (below), so an oversized / empty / unsaved message
@@ -1892,16 +1924,16 @@ private:
             // are dropped too.
             constexpr size_t MAX_CHANNEL_MSG_BYTES = 64 * 1024;
             if (msg->content().size() > MAX_CHANNEL_MSG_BYTES) {
-                std::cout << "[Community] Dropped oversized CHANNEL_MSG from "
+                std::cout << "[Community] Refused oversized CHANNEL_MSG from "
                           << username_ << " (" << msg->content().size() << " bytes)\n";
+                reject_channel_msg(*msg, "Message too long.");
                 return;
             }
             // Encrypted channels (spec 2026-09-04): the wire format follows
             // the channel flag both ways, so a member can neither leak
             // plaintext into an encrypted channel nor hide ciphertext in a
             // searchable one. Attachments are refused in encrypted channels
-            // until they are encrypted too. reply_to_envelope is server-set.
-            msg->clear_reply_to_envelope();
+            // until they are encrypted too.
             {
                 std::optional<chatproj::DbChannel> ech;
                 if (auto* db = manager_.db()) ech = db->get_channel(msg->channel_id());
@@ -1922,13 +1954,7 @@ private:
                 }
             }
             if (msg->content().empty() && msg->attachments_size() == 0 && msg->envelope().empty()) {
-                return;
-            }
-            // The client caps a message at 10 attachments; enforce it
-            // here too so bind_attachments' IN-list stays bounded.
-            constexpr int MAX_ATTACHMENTS_PER_MESSAGE = 10;
-            if (msg->attachments_size() > MAX_ATTACHMENTS_PER_MESSAGE) {
-                reject_channel_msg(*msg, "Too many attachments on one message.");
+                reject_channel_msg(*msg, "Message is empty.");
                 return;
             }
 
@@ -4139,7 +4165,8 @@ private:
         p.set_type(chatproj::Packet::CHANNEL_MSG_REJECTED);
         auto* r = p.mutable_channel_msg_rejected();
         r->set_channel_id(msg.channel_id());
-        r->set_nonce(msg.nonce());
+        // An over-long nonce is refused, not echoed (no real client sends one).
+        if (msg.nonce().size() <= kMaxMessageNonceBytes) r->set_nonce(msg.nonce());
         r->set_reason(reason);
         r->set_retry_after_seconds(static_cast<int32_t>(retry_after));
         send_packet(p);

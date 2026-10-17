@@ -3141,6 +3141,8 @@ def test_m3_slowmode_per_user():
 
     # An oversized message is rejected before it can stamp the window...
     nate.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="x" * (64 * 1024 + 1)))
+    r = nate.wait(pb.Packet.MOD_ACTION_RES, timeout=2, pred=lambda p: p.mod_action_res.action == "message")
+    check("an oversized message is refused, not dropped silently", r is not None and "too long" in r.mod_action_res.message)
     # ...so the next valid message must still go through.
     nate.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="valid1"))
     got = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "valid1" and p.channel_msg.sender == "nate")
@@ -3722,6 +3724,63 @@ def delete_channel(owner, channel_id):
     owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
 
 
+def test_s2_channel_msg_whitelist():
+    print("[S2] the CHANNEL_MSG broadcast is built from a whitelist; refusals answer the nonce")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    wl = join("wlist", owner)
+    room = create_channel(owner, "wl-room", pb.ChannelInfo.TEXT).id
+    cat = create_channel(owner, "wl-cat", pb.ChannelInfo.CATEGORY).id
+    owner.flush(0.5); wl.flush(0.5)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=room, content="wl-parent", nonce="wl-p"))
+    parent = wl.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "wl-p")
+    pid = parent.channel_msg.id if parent else 0
+    sql("insert into attachments(message_id, kind, filename, created_at) values(?, 1, 'clip.mp4', ?)", pid, int(time.time()))
+    owner.flush(0.3); wl.flush(0.3)
+    # Every server-owned field forged, a stub attachment that isn't an
+    # upload, and a field number this server has never heard of.
+    cm = pb.ChannelMessage(channel_id=room, content="wl-forged", nonce="wl-1", reply_to=pid,
+                           sender="mallory", sender_uid=1, id=777, timestamp=1, edited_at=12345,
+                           reply_to_sender="mallory", reply_to_sender_uid=1, reply_to_content="forged quote",
+                           reply_to_attachment_kinds=[3, 3], reply_to_envelope=b"x", sealed_sender="mallory",
+                           reply_to_sealed_sender="m",
+                           attachments=[pb.Attachment(id=999999, filename="evil.exe", url="https://evil")])
+    cm.MergeFromString(b"\xc2\x3e\x08FORGEDXX")   # field 1000, length-delimited
+    check("whitelist: the forged request carries the unknown field",
+          b"FORGEDXX" in pb.Packet(type=pb.Packet.CHANNEL_MSG, channel_msg=cm).SerializeToString())
+    wl.send(pb.Packet.CHANNEL_MSG, channel_msg=cm)
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "wl-forged")
+    m = bc.channel_msg if bc else None
+    check("whitelist: sender, id and time are the server's", m is not None and m.sender == "wlist"
+          and m.sender_uid == uid_of("wlist") and m.id > 0 and m.id != 777 and m.timestamp > 1)
+    check("whitelist: client edited_at / sealed names / reply envelope dropped", m is not None and m.edited_at == 0
+          and m.sealed_sender == "" and m.reply_to_sealed_sender == "" and m.reply_to_envelope == b"")
+    check("whitelist: the quote is the parent's, kinds not appended", m is not None and m.reply_to == pid
+          and m.reply_to_sender == "alice" and m.reply_to_sender_uid == uid_of("alice")
+          and m.reply_to_content == "wl-parent" and list(m.reply_to_attachment_kinds) == [1])
+    check("whitelist: a stub that isn't an upload doesn't ride along", m is not None and len(m.attachments) == 0)
+    check("whitelist: no unknown field and no token relayed", bc is not None
+          and b"FORGEDXX" not in bc.SerializeToString() and bc.auth_token == "")
+    check("whitelist: the nonce is echoed", m is not None and m.nonce == "wl-1")
+    # Refusals name the nonce so exactly that optimistic bubble goes.
+    def rejected(nonce, **kw):
+        wl.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(nonce=nonce, **kw))
+        return wl.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: p.channel_msg_rejected.nonce == nonce)
+    wl.flush(0.3)
+    wl.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=room, content="wl-long-nonce", nonce="n" * 65))
+    rj = wl.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=2, pred=lambda p: p.channel_msg_rejected.channel_id == room)
+    check("a nonce over 64 bytes is refused, not echoed", rj is not None and rj.channel_msg_rejected.nonce == ""
+          and sql("select count(*) from messages where content='wl-long-nonce'") == [(0,)])
+    wl.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=room, content="wl-64", nonce="n" * 64))
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.content == "wl-64")
+    check("a 64-byte nonce still goes through", bc is not None and bc.channel_msg.nonce == "n" * 64)
+    check("oversized text is refused with its nonce", rejected("wl-big", channel_id=room, content="x" * (64 * 1024 + 1)) is not None)
+    check("an unknown channel is refused with its nonce", rejected("wl-nochan", channel_id="no-such-channel", content="hi") is not None)
+    check("a category is refused with its nonce", rejected("wl-cat", channel_id=cat, content="hi") is not None)
+    check("an empty message is refused with its nonce", rejected("wl-empty", channel_id=room) is not None)
+    delete_channel(owner, room); delete_channel(owner, cat)
+    wl.close(); owner.close()
+
+
 def test_s15_channel_id_cap():
     print("[S15] over-long channel ids are dropped at the edge; the longest real ids still work")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -3823,6 +3882,7 @@ if __name__ == "__main__":
         test_theme_a_tokens_and_uid()
         test_uid_wire()
         test_live_rename()
+        test_s2_channel_msg_whitelist()
         test_s15_channel_id_cap()
     finally:
         stop_server(proc)
