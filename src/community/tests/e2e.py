@@ -3136,6 +3136,43 @@ def test_history_around_and_after():
     owner.close()
 
 
+def test_b4_history_nonce():
+    print("[B4] history hands a sender back the nonce of a recent send, nobody else")
+    owner = Client("alice"); assert auth_ok(owner)[0]; owner.flush(0.5)
+    nia = join("nia", owner, nonce="d1"); nia.flush(0.5); owner.flush(0.5)
+    nia.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="b4 lost echo", nonce="b4-n1"))
+    echo = nia.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "b4-n1")
+    check("the send is echoed with its nonce", echo is not None and echo.channel_msg.id > 0)
+    mid = echo.channel_msg.id if echo else 0
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="b4 other", nonce="b4-owner"))
+    oecho = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "b4-owner")
+    oid = oecho.channel_msg.id if oecho else 0
+
+    def row(c, after, want):
+        c.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", after_id=after, limit=50))
+        r = c.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.after_id == after)
+        return next((m for m in r.channel_history_res.messages if m.id == want), None) if r else None
+
+    mine = row(nia, mid - 1, mid)
+    check("the sender's history row carries its nonce", mine is not None and mine.nonce == "b4-n1",
+          f"nonce={mine.nonce if mine else None!r}")
+    theirs = row(owner, mid - 1, mid)
+    check("another member's history row has no nonce", theirs is not None and theirs.nonce == "")
+    others = row(nia, mid - 1, oid)
+    check("someone else's row has no nonce for the sender either", others is not None and others.nonce == "")
+    # The latest page (before_id 0) carries it too: that is the re-sync page.
+    nia.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=50))
+    r = nia.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2,
+                 pred=lambda p: p.channel_history_res.after_id == 0 and p.channel_history_res.around_id == 0)
+    latest = next((m for m in r.channel_history_res.messages if m.id == mid), None) if r else None
+    check("the latest page carries the nonce", latest is not None and latest.nonce == "b4-n1")
+    # The sender's other device (same account, another session) reconciles too.
+    nia2 = Client("nia", nonce="d2"); assert auth_ok(nia2)[0]; nia2.flush(0.5)
+    other_device = row(nia2, mid - 1, mid)
+    check("the sender's other session gets it as well", other_device is not None and other_device.nonce == "b4-n1")
+    nia2.close(); nia.close(); owner.close()
+
+
 def test_message_reply():
     print("[reply] reply_to persists + echoes on broadcast/history; invalid dropped")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -4656,6 +4693,7 @@ if __name__ == "__main__":
         test_message_edit()
         test_message_reply()
         test_history_around_and_after()
+        test_b4_history_nonce()
         test_storage()
         test_x3_upload_membership_recheck()
         test_theme_a_tokens_and_uid()

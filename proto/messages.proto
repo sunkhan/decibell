@@ -929,10 +929,11 @@ message ChannelMessage {
   // Attachments associated with this message. Ordered by position ASC.
   repeated Attachment attachments = 6;
   // Client-generated UUID for optimistic-bubble dedup. Server echoes
-  // this back unchanged in the broadcast — never persisted, just round-
-  // tripped within the broadcast that fires within milliseconds of
-  // CHANNEL_MSG arrival. Empty for messages re-fetched from history
-  // (the originating client is long gone, no optimistic to dedup).
+  // this back unchanged in the broadcast — never persisted. History pages
+  // carry it on the requester's own messages from the last 30 minutes
+  // (kept in the server's memory), so a client whose echo a reconnect
+  // swallowed still matches the refetched row to its pending bubble;
+  // empty on everything else.
   string nonce = 7;
   // Unix seconds of the last edit; 0 = never edited. Drives the "(edited)"
   // indicator. Set on history fetch and on CHANNEL_MESSAGE_EDITED.

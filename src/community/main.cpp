@@ -15,6 +15,7 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <deque>
 #include <set>
 #include <limits>
 #include <tuple>
@@ -452,6 +453,14 @@ public:
     int64_t slowmode_remaining(int64_t uid, const std::string& channel_id,
                                int32_t slowmode_seconds);
     void slowmode_record(int64_t uid, const std::string& channel_id);
+    // Recent message nonces (review B4). A sender whose echo a reconnect
+    // swallowed refetches the message from history, where only the nonce
+    // ties it to the optimistic bubble still on screen. The nonce is never
+    // stored on disk: the last kRecentNonceSeconds of accepted messages are
+    // kept here, and a history page hands each row's nonce back to its
+    // sender only. remember_nonce runs in id order (one io thread).
+    void remember_nonce(int64_t message_id, int64_t uid, const std::string& nonce);
+    std::string recent_nonce(int64_t message_id, int64_t uid);
     // Roster deltas (see "Roster protocol" in messages.proto). The full
     // roster used to be re-pushed to every session on every change —
     // O(members × online) per event. Now one MemberInfo goes out per
@@ -794,6 +803,20 @@ private:
     std::mutex slowmode_mutex_;
     std::unordered_map<int64_t,
         std::unordered_map<std::string, std::chrono::steady_clock::time_point>> slowmode_last_;
+
+    // remember_nonce / recent_nonce: ascending message id, oldest first.
+    // Half an hour covers a reconnect after a long outage; the count cap
+    // bounds memory on a busy server (an entry is ~100 bytes).
+    struct RecentNonce {
+        int64_t message_id;
+        int64_t uid;
+        std::string nonce;
+        std::chrono::steady_clock::time_point at;
+    };
+    static constexpr int kRecentNonceSeconds = 30 * 60;
+    static constexpr size_t kMaxRecentNonces = 20000;
+    std::mutex nonces_mutex_;
+    std::deque<RecentNonce> recent_nonces_;
 
     chatproj::CommunityDb* db_ = nullptr;
     const chatproj::Authorizer* authz_ = nullptr;
@@ -2233,6 +2256,7 @@ private:
             }
             // Message accepted — now stamp the slowmode window (M3).
             if (record_slowmode) manager_.slowmode_record(uid_, msg->channel_id());
+            manager_.remember_nonce(new_id, uid_, msg->nonce());
 
             // Bind any pre-uploaded attachments the client referenced. Only
             // the client's own ready uploads for this channel bind; anything
@@ -2363,6 +2387,9 @@ private:
                 auto atts_it = by_msg.find(msgs[i].id);
                 fill_channel_message(&built[i], msgs[i],
                                      atts_it != by_msg.end() ? &atts_it->second : nullptr);
+                // Our own recent sends carry their nonce again (see
+                // remember_nonce), so a bubble whose echo was lost settles.
+                if (msgs[i].sender_uid == uid_) built[i].set_nonce(manager_.recent_nonce(msgs[i].id, uid_));
                 sizes[i] = built[i].ByteSizeLong();
             }
             size_t lo = 0, hi = 0;   // the rows sent: [lo, hi)
@@ -5602,6 +5629,27 @@ void SessionManager::slowmode_record(int64_t uid, const std::string& channel_id)
     // clear just grants one free message, never a correctness problem.
     if (slowmode_last_.size() > 8192) slowmode_last_.clear();
     slowmode_last_[uid][channel_id] = std::chrono::steady_clock::now();
+}
+
+void SessionManager::remember_nonce(int64_t message_id, int64_t uid, const std::string& nonce) {
+    if (nonce.empty() || message_id <= 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto cutoff = now - std::chrono::seconds(kRecentNonceSeconds);
+    std::lock_guard<std::mutex> lock(nonces_mutex_);
+    while (!recent_nonces_.empty() &&
+           (recent_nonces_.front().at < cutoff || recent_nonces_.size() >= kMaxRecentNonces)) {
+        recent_nonces_.pop_front();
+    }
+    recent_nonces_.push_back({message_id, uid, nonce, now});
+}
+
+std::string SessionManager::recent_nonce(int64_t message_id, int64_t uid) {
+    std::lock_guard<std::mutex> lock(nonces_mutex_);
+    auto it = std::lower_bound(recent_nonces_.begin(), recent_nonces_.end(), message_id,
+                               [](const RecentNonce& r, int64_t id) { return r.message_id < id; });
+    if (it == recent_nonces_.end() || it->message_id != message_id || it->uid != uid) return {};
+    if (it->at < std::chrono::steady_clock::now() - std::chrono::seconds(kRecentNonceSeconds)) return {};
+    return it->nonce;
 }
 
 void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id) {
