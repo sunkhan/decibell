@@ -753,6 +753,7 @@ impl CommunityClient {
                         success: resp.success,
                         message: resp.message,
                         invites,
+                        truncated: resp.truncated,
                     });
                 }
                 Some(packet::Payload::InviteRevokeRes(resp)) => {
@@ -828,6 +829,7 @@ impl CommunityClient {
                         message: resp.message,
                         entries,
                         revision: resp.revision,
+                        truncated: resp.truncated,
                     });
                 }
                 Some(packet::Payload::ServerMetaUpdate(m)) => {

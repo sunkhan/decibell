@@ -1643,14 +1643,16 @@ int64_t CommunityDb::count_members() const {
 namespace {
 constexpr const char* kBanCols =
     "uid, username, banned_at, banned_by_uid, banned_by, reason, expires_at";
+// Names and the reason are clamped as read: rows stored before the input
+// caps (review A1) went out to every ban viewer at full size.
 DbBan ban_from_row(const Stmt& q) {
     DbBan b;
     b.uid = q.col_int64(0);
-    b.username = q.col_text(1);
+    b.username = clamp_utf8(q.col_text(1), kMaxUsernameBytes);
     b.banned_at = q.col_int64(2);
     b.banned_by_uid = q.col_int64(3);
-    b.banned_by = q.col_text(4);
-    b.reason = q.col_text(5);
+    b.banned_by = clamp_utf8(q.col_text(4), kMaxUsernameBytes);
+    b.reason = clamp_utf8(q.col_text(5), kMaxReasonBytes);
     b.expires_at = q.col_int64(6);
     return b;
 }
@@ -1725,11 +1727,11 @@ bool CommunityDb::add_ban(int64_t uid, const std::string& username,
             "  expires_at=excluded.expires_at;");
         if (ins.s) {
             ins.bind_int64(1, uid);
-            ins.bind_text(2, username);
+            ins.bind_text(2, clamp_utf8(username, kMaxUsernameBytes));
             ins.bind_int64(3, now_seconds());
             ins.bind_int64(4, banned_by_uid);
-            ins.bind_text(5, banned_by);
-            ins.bind_text(6, reason);
+            ins.bind_text(5, clamp_utf8(banned_by, kMaxUsernameBytes));
+            ins.bind_text(6, clamp_utf8(reason, kMaxReasonBytes));
             ins.bind_int64(7, expires_at < 0 ? 0 : expires_at);
             ok = (ins.step() == SQLITE_DONE);
         }
@@ -1746,7 +1748,8 @@ bool CommunityDb::remove_ban(int64_t uid) {
     return q.step() == SQLITE_DONE;
 }
 
-std::vector<DbBan> CommunityDb::list_bans() const {
+std::vector<DbBan> CommunityDb::list_bans(size_t limit, bool* more) const {
+    if (more) *more = false;
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbBan> out;
     const int64_t now = now_seconds();
@@ -1755,10 +1758,16 @@ std::vector<DbBan> CommunityDb::list_bans() const {
         Stmt del(db_, "DELETE FROM bans WHERE expires_at != 0 AND expires_at <= ?;");
         if (del.s) { del.bind_int64(1, now); del.step(); }
     }
-    const std::string sql = std::string("SELECT ") + kBanCols + " FROM bans ORDER BY banned_at DESC;";
+    const std::string sql = std::string("SELECT ") + kBanCols +
+                            " FROM bans ORDER BY banned_at DESC, uid DESC LIMIT ?;";
     Stmt q(db_, sql.c_str());
     if (!q.s) return out;
+    q.bind_int64(1, static_cast<int64_t>(std::min<size_t>(limit, INT32_MAX)) + 1);
     while (q.step() == SQLITE_ROW) out.push_back(ban_from_row(q));
+    if (out.size() > limit) {
+        out.pop_back();
+        if (more) *more = true;
+    }
     return out;
 }
 
@@ -2502,7 +2511,7 @@ DbInvite invite_from_row(const Stmt& q) {
     inv.max_uses = q.col_int(5);
     inv.uses = q.col_int(6);
     inv.for_uid = q.col_int64(7);
-    inv.for_user = q.col_text(8);
+    inv.for_user = clamp_utf8(q.col_text(8), kMaxUsernameBytes);
     return inv;
 }
 } // namespace
@@ -2580,6 +2589,25 @@ std::vector<DbInvite> CommunityDb::list_invites() const {
     Stmt q(db_, sql.c_str());
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) out.push_back(invite_from_row(q));
+    return out;
+}
+
+std::vector<DbInvite> CommunityDb::list_invites(int64_t created_by_uid, size_t limit, bool* more) const {
+    if (more) *more = false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<DbInvite> out;
+    const std::string sql = std::string(kInviteSelect) +
+        (created_by_uid != 0 ? "WHERE i.created_by_uid = ?2 " : "") +
+        "ORDER BY i.created_at DESC, i.code LIMIT ?1;";
+    Stmt q(db_, sql.c_str());
+    if (!q.s) return out;
+    q.bind_int64(1, static_cast<int64_t>(std::min<size_t>(limit, INT32_MAX)) + 1);
+    if (created_by_uid != 0) q.bind_int64(2, created_by_uid);
+    while (q.step() == SQLITE_ROW) out.push_back(invite_from_row(q));
+    if (out.size() > limit) {
+        out.pop_back();
+        if (more) *more = true;
+    }
     return out;
 }
 
@@ -3470,8 +3498,8 @@ std::vector<DbAttachment> CommunityDb::fetch_attachments_for_messages(
         a.id = q.col_int64(0);
         a.message_id = q.col_int64(1);
         a.kind = q.col_int(2);
-        a.filename = q.col_text(3);
-        a.mime = q.col_text(4);
+        a.filename = clamp_utf8(q.col_text(3), kMaxFilenameBytes);
+        a.mime = safe_mime(q.col_text(4));
         a.size_bytes = q.col_int64(5);
         a.storage_path = q.col_text(6);
         a.position = q.col_int(7);
@@ -3565,8 +3593,8 @@ std::optional<DbAttachment> CommunityDb::get_attachment(int64_t attachment_id) c
     a.id = q.col_int64(0);
     a.message_id = q.col_int64(1);
     a.kind = q.col_int(2);
-    a.filename = q.col_text(3);
-    a.mime = q.col_text(4);
+    a.filename = clamp_utf8(q.col_text(3), kMaxFilenameBytes);
+    a.mime = safe_mime(q.col_text(4));
     a.size_bytes = q.col_int64(5);
     a.storage_path = q.col_text(6);
     a.position = q.col_int(7);
@@ -3753,8 +3781,8 @@ std::vector<DbAttachment> CommunityDb::list_stale_pending_attachments(
         a.id = q.col_int64(0);
         a.message_id = q.col_int64(1);
         a.kind = q.col_int(2);
-        a.filename = q.col_text(3);
-        a.mime = q.col_text(4);
+        a.filename = clamp_utf8(q.col_text(3), kMaxFilenameBytes);
+        a.mime = safe_mime(q.col_text(4));
         a.size_bytes = q.col_int64(5);
         a.storage_path = q.col_text(6);
         a.position = q.col_int(7);
@@ -4015,9 +4043,12 @@ std::vector<DbChannelKeyBlob> CommunityDb::channel_key_blobs_for(const std::stri
         DbChannelKeyBlob b;
         b.epoch = static_cast<uint32_t>(q.col_int64(0));
         b.sender_uid = q.col_int64(1);
-        b.sender = q.col_text(2);
+        // Names are bounded as read: a recipient name stored before the
+        // publish check (review A1) could outgrow a whole page. A blob
+        // whose name had to be cut won't open, and its recipient drops it.
+        b.sender = utf8_prefix(q.col_text(2), kMaxUsernameBytes);
         b.recipient_uid = recipient_uid;
-        b.recipient = q.col_text(3);
+        b.recipient = utf8_prefix(q.col_text(3), kMaxUsernameBytes);
         b.blob = q.col_blob(4);
         b.key_check = q.col_blob(5);
         out.push_back(std::move(b));
@@ -4340,7 +4371,7 @@ StorageUsage CommunityDb::storage_usage(int max_channels, int max_largest) const
             while (q.step() == SQLITE_ROW) {
                 StorageUsage::Largest l;
                 l.id = q.col_int64(0);
-                l.filename = q.col_text(1);
+                l.filename = clamp_utf8(q.col_text(1), kMaxFilenameBytes);
                 l.size_bytes = q.col_int64(2);
                 l.channel_id = q.col_text(3);
                 l.kind = q.col_int(4);
@@ -4379,9 +4410,9 @@ void CommunityDb::add_audit(int64_t actor_uid, const std::string& actor, const s
     q.bind_text(3, actor);
     q.bind_text(4, action);
     q.bind_int64(5, target_uid);
-    q.bind_text(6, target);
+    q.bind_text(6, clamp_utf8(target, kMaxAuditTargetBytes));
     q.bind_text(7, channel_id);
-    q.bind_text(8, clamp_utf8(details, 512));
+    q.bind_text(8, clamp_utf8(details, kMaxAuditDetailsBytes));
     q.step();
 }
 
@@ -4439,12 +4470,13 @@ std::vector<DbAuditEntry> CommunityDb::list_audit(int64_t before_id, int32_t lim
         e.id = q.col_int64(0);
         e.timestamp = q.col_int64(1);
         e.actor_uid = q.col_int64(2);
-        e.actor = q.col_text(3);
+        e.actor = clamp_utf8(q.col_text(3), kMaxUsernameBytes);
         e.action = q.col_text(4);
         e.target_uid = q.col_int64(5);
-        e.target = q.col_text(6);
+        // Clamped as read too: rows stored before the caps (review A1).
+        e.target = clamp_utf8(q.col_text(6), kMaxAuditTargetBytes);
         e.channel_id = q.col_text(7);
-        e.details = q.col_text(8);
+        e.details = clamp_utf8(q.col_text(8), kMaxAuditDetailsBytes);
         out.push_back(std::move(e));
     }
     if (static_cast<int32_t>(out.size()) > limit) {

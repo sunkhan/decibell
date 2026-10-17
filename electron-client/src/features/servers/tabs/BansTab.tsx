@@ -12,6 +12,7 @@ import { useUsersStore, type Uid } from "../../../stores/usersStore";
 /// after a successful unban arrives via the pushed ban_list_received.
 export default function BansTab({ serverId }: { serverId: string }) {
   const bans = useChatStore((s) => s.bansByServer[serverId] ?? EMPTY_LIST);
+  const truncated = useChatStore((s) => s.bansTruncated[serverId] === true);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -32,6 +33,11 @@ export default function BansTab({ serverId }: { serverId: string }) {
   return (
     <div className="flex flex-col">
       {error && <p className="mb-3 text-[12px] text-error">{error}</p>}
+      {truncated && (
+        <p className="mb-3 text-[12px] text-text-muted">
+          Showing the most recent {bans.length.toLocaleString()} bans.
+        </p>
+      )}
 
       {bans.length === 0 ? (
         <div className="flex flex-col items-center gap-2.5 py-8 text-text-muted">

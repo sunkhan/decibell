@@ -544,8 +544,11 @@ export interface BanListReceivedPayload {
   serverId: string;
   success: boolean;
   message: string;
+  /// Newest first.
   entries: BanInfo[];
   revision: number;
+  /// Only the newest bans fit the server's reply; older ones exist.
+  truncated: boolean;
 }
 
 export interface ServerMetaUpdatedPayload {

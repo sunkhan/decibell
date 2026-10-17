@@ -303,8 +303,8 @@ export function useServerEvents() {
     const unlistenBans = listen<BanListReceivedPayload>(
       "ban_list_received",
       (event) => {
-        const { serverId, success, entries } = event.payload;
-        if (success) useChatStore.getState().setBansForServer(serverId, entries);
+        const { serverId, success, entries, truncated } = event.payload;
+        if (success) useChatStore.getState().setBansForServer(serverId, entries, !!truncated);
       },
     );
 
@@ -527,10 +527,12 @@ export function useServerEvents() {
       success: boolean;
       message: string;
       invites: import("../../types").ServerInvite[];
+      /// Only the newest invites fit the server's reply; older ones exist.
+      truncated: boolean;
     }>("invite_list_received", (event) => {
-      const { serverId, success, invites } = event.payload;
+      const { serverId, success, invites, truncated } = event.payload;
       if (success) {
-        useChatStore.getState().setInvitesForServer(serverId, invites);
+        useChatStore.getState().setInvitesForServer(serverId, invites, !!truncated);
       }
     });
 

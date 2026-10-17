@@ -34,6 +34,9 @@ export default function InviteModal() {
   useEscapeToClose(closeModal, activeModal === "invite-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const invitesByServer = useChatStore((s) => s.invitesByServer);
+  const invitesTruncated = useChatStore((s) =>
+    s.activeServerId ? s.invitesTruncated[s.activeServerId] === true : false,
+  );
   const names = useUsersStore((s) => s.names);
 
   const [expirySec, setExpirySec] = useState(604800);
@@ -309,6 +312,11 @@ export default function InviteModal() {
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
             {canSeeAll ? "Active invites" : "Your invites"} ({invites.length})
           </div>
+          {invitesTruncated && (
+            <p className="mb-3 text-[12px] text-text-muted">
+              Showing the most recent {invites.length.toLocaleString()} invites.
+            </p>
+          )}
 
           {invites.length === 0 ? (
             <div className="flex flex-col items-center gap-2.5 py-5">

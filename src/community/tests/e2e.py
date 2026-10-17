@@ -89,6 +89,8 @@ def connect(port, timeout=3.0, src=None):
 
 
 class Client:
+    max_frame = 0   # largest frame received (the client drops any over 2 MiB)
+
     def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False, iat=None, src=None):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -118,6 +120,7 @@ class Client:
                     return None
                 self.buf += chunk
             n = struct.unpack(">I", self.buf[:4])[0]
+            self.max_frame = max(self.max_frame, n)
             while len(self.buf) < 4 + n:
                 chunk = self.s.recv(65536)
                 if not chunk:
@@ -4138,6 +4141,315 @@ def test_s16_connection_caps():
         stop_server(proc)
 
 
+# ---------------------------------------------------------------- pre-1.0 review: availability (A1-A3)
+
+FRAME_CAP = 2 * 1024 * 1024   # the client drops the connection on a bigger frame
+
+
+def history_page(c, channel_id, **kw):
+    c.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=channel_id, **kw))
+    r = c.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=5, pred=lambda p: p.channel_history_res.channel_id == channel_id
+               and p.channel_history_res.around_id == kw.get("around_id", 0)
+               and p.channel_history_res.after_id == kw.get("after_id", 0))
+    return r.channel_history_res if r else None
+
+
+def seed_rows(channel_id, rows, sender="alice"):
+    """(content, reply_to, envelope) rows straight into the DB, past the
+    send rate limit and the 64 KB check; their ids, in order."""
+    c = sqlite3.connect(DB)
+    now = int(time.time())
+    ids = [c.execute("insert into messages(channel_id, sender, sender_uid, content, timestamp, reply_to, envelope) "
+                     "values(?,?,?,?,?,?,?)", (channel_id, sender, uid_of(sender), content, now, reply_to, envelope)).lastrowid
+           for content, reply_to, envelope in rows]
+    c.commit(); c.close()
+    return ids
+
+
+def unknown_field(payload):
+    """Field 1000, length-delimited: a field this build has never heard of."""
+    n, out = len(payload), b"\xc2\x3e"
+    while True:
+        b, n = n & 0x7f, n >> 7
+        out += bytes([b | (0x80 if n else 0)])
+        if not n:
+            return out + payload
+
+
+def send_raw(c, packet):
+    packet.auth_token = c.jwt
+    data = packet.SerializeToString()
+    c.s.sendall(struct.pack(">I", len(data)) + data)
+
+
+def test_a1_history_budget():
+    print("[A1] history pages fit the client's frame cap and page on without gaps; reply quotes are one line")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    room = create_channel(owner, "a1-history", pb.ChannelInfo.TEXT).id
+    big = "€" * 21800   # 65,400 bytes, under the 64 KB send cap
+    parent = seed_rows(room, [(big, 0, None)])[0]
+    replies = seed_rows(room, [(f"{i:03d}" + "r" * 65000, parent, None) for i in range(30)])
+    everything = [parent] + replies
+    owner.flush(0.3)
+    # Each reply used to carry its own 64 KB and its parent's: ~3.9 MB a page.
+    owner.max_frame = 0
+    page = history_page(owner, room, limit=50)
+    got = [m.id for m in page.messages] if page else []
+    check("history: the latest page fits the frame cap", page is not None and owner.max_frame <= FRAME_CAP, owner.max_frame)
+    check("history: it keeps the newest rows and says older ones exist", bool(got) and got == everything[-len(got):]
+          and len(got) < len(everything) and page.has_more and not page.has_more_after, f"{len(got)} rows")
+    q = page.messages[-1] if got else None
+    check("history: a reply quotes 512 bytes of its parent, cut on a character", q is not None and q.reply_to == parent
+          and q.reply_to_content == "€" * 170, len(q.reply_to_content.encode()) if q else None)
+    seen = list(got)
+    for _ in range(10):
+        if not page or not page.has_more:
+            break
+        page = history_page(owner, room, before_id=seen[0], limit=50)
+        seen = ([m.id for m in page.messages] if page else []) + seen
+    check("history: older pages walk the whole channel without a gap", seen == everything and owner.max_frame <= FRAME_CAP,
+          f"{len(seen)} of {len(everything)}")
+    page = history_page(owner, room, after_id=parent, limit=50)
+    seen = [m.id for m in page.messages] if page else []
+    check("history: a newer page keeps the oldest rows and says newer ones exist", bool(seen)
+          and seen == replies[:len(seen)] and len(seen) < len(replies) and page.has_more_after)
+    for _ in range(10):
+        if not page or not page.has_more_after:
+            break
+        page = history_page(owner, room, after_id=seen[-1], limit=50)
+        seen += [m.id for m in page.messages] if page else []
+    check("history: newer pages walk to the end without a gap", seen == replies and owner.max_frame <= FRAME_CAP,
+          f"{len(seen)} of {len(replies)}")
+    target = replies[15]
+    page = history_page(owner, room, around_id=target, limit=100)
+    ids = [m.id for m in page.messages] if page else []
+    start = everything.index(ids[0]) if ids else 0
+    check("history: a jump keeps the target and the rows around it, both ends flagged", target in ids
+          and ids == everything[start:start + len(ids)] and len(ids) < len(everything)
+          and page.has_more and page.has_more_after and owner.max_frame <= FRAME_CAP, f"{len(ids)} rows")
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id=room, content="a1-live", reply_to=parent, nonce="a1-live"))
+    bc = owner.wait(pb.Packet.CHANNEL_MSG, timeout=2, pred=lambda p: p.channel_msg.nonce == "a1-live")
+    check("history: a live reply's quote is cut the same way", bc is not None and bc.channel_msg.reply_to_content == "€" * 170)
+    # A sealed parent's quote is its whole envelope (a prefix wouldn't
+    # open): kept, and counted by the budget.
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+        name="a1-sealed", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    sealed = cr.channel_action_res.channel.id
+    env = b"\x04" + b"E" * 65000
+    sp = seed_rows(sealed, [("", 0, env)])[0]
+    sr = seed_rows(sealed, [("", sp, b"\x04" + bytes([65 + i]) * 65000) for i in range(20)])
+    owner.max_frame = 0
+    page = history_page(owner, sealed, limit=50)
+    ids = [m.id for m in page.messages] if page else []
+    check("history: sealed replies fit the cap, newest kept, older flagged", page is not None and owner.max_frame <= FRAME_CAP
+          and bool(ids) and ids == sr[-len(ids):] and len(ids) < len(sr) and page.has_more, f"{len(ids)} rows, {owner.max_frame} B")
+    check("history: sealed replies carry the parent's whole envelope", bool(ids)
+          and all(m.reply_to_envelope == env for m in page.messages))
+    delete_channel(owner, room); delete_channel(owner, sealed)
+    owner.close()
+
+
+def test_a1_ban_and_invite_lists():
+    print("[A1] reasons and labels clamped; ban / invite lists fit the frame cap and flag truncation; ban pushes coalesce")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    viewer = Client("alice"); assert auth_ok(viewer)[0]   # another ban viewer
+    kicked = join("a1kick", owner)
+    owner.flush(0.5); viewer.flush(1.2)
+    now = int(time.time())
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(
+        username="a1kick", uid=uid_of("a1kick"), reason="k" * 1100000))
+    rev = kicked.wait(pb.Packet.MEMBERSHIP_REVOKED, timeout=3)
+    check("kick: the target sees the reason cut to 512 bytes", rev is not None and rev.membership_revoked.reason == "k" * 512)
+    mod_res(owner, "kick")
+    # A 1.1 MB reason and a 1,000-byte label for someone who isn't a member.
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username="L" * 1000, uid=990001, reason="é" * 550000))
+    r = mod_res(owner, "ban")
+    row = sql("select length(username), length(cast(reason as blob)) from bans where uid=990001")
+    check("ban: a 1.1 MB reason is stored as 512 bytes, the label as 64", mod_ok(r) and row == [(64, 512)], str(row))
+    bl = viewer.wait(pb.Packet.BAN_LIST_RES, timeout=3, pred=lambda p: any(e.uid == 990001 for e in p.ban_list_res.entries))
+    e = next((e for e in bl.ban_list_res.entries if e.uid == 990001), None) if bl else None
+    check("ban: the pushed list carries them clamped", e is not None and e.reason == "é" * 256 and e.username == "L" * 64)
+    # Rows stored before the caps: two 1.1 MB reasons cut every ban viewer off.
+    for uid in (990002, 990003):
+        sql("insert into bans(uid, username, banned_at, banned_by_uid, banned_by, reason) values(?, 'old', ?, 0, 'alice', ?)",
+            uid, now, "x" * 1100000)
+    owner.flush(1.2)   # pushed lists (and the coalescing timer's)
+    owner.max_frame = 0
+    owner.send(pb.Packet.BAN_LIST_REQ, ban_list_req=pb.BanListRequest())
+    bl = owner.wait(pb.Packet.BAN_LIST_RES, timeout=3, pred=lambda p: p.ban_list_res.success)
+    olds = [e for e in bl.ban_list_res.entries if e.uid in (990002, 990003)] if bl else []
+    check("ban list: stored 1.1 MB reasons go out as 512 bytes", len(olds) == 2 and owner.max_frame <= FRAME_CAP
+          and all(e.reason == "x" * 512 for e in olds), owner.max_frame)
+    c = sqlite3.connect(DB)
+    c.executemany("insert into bans(uid, username, banned_at, banned_by_uid, banned_by, reason) values(?,?,?,0,'alice',?)",
+                  ((991000 + i, f"raider{i}", now - 100 - i, "r" * 300) for i in range(12000)))
+    c.commit(); c.close()
+    owner.flush(0.3)
+    owner.max_frame = 0
+    owner.send(pb.Packet.BAN_LIST_REQ, ban_list_req=pb.BanListRequest())
+    bl = owner.wait(pb.Packet.BAN_LIST_RES, timeout=5, pred=lambda p: p.ban_list_res.success)
+    ents = list(bl.ban_list_res.entries) if bl else []
+    check("ban list: 12,000 bans stop at the byte budget, newest first, flagged truncated", bl is not None
+          and bl.ban_list_res.truncated and 1000 < len(ents) < 12000 and owner.max_frame <= FRAME_CAP
+          and all(a.banned_at >= b.banned_at for a, b in zip(ents, ents[1:])), f"{len(ents)} entries, {owner.max_frame} B")
+    sql("delete from bans where uid >= 990000")
+    # A burst of bans: one list at once, the rest together a second later.
+    viewer.flush(1.5)
+    for i in range(15):
+        owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(username=f"raid{i}", uid=996000 + i, reason="raid"))
+    for i in range(15):
+        mod_res(owner, "ban")
+    viewer.drain(2.5)
+    lists = [p.ban_list_res for p in viewer.inbox if p.type == pb.Packet.BAN_LIST_RES]
+    last = {e.uid for e in lists[-1].entries} if lists else set()
+    check("ban list: 15 bans in a burst push at most 3 lists to a viewer, the last one complete",
+          1 <= len(lists) <= 3 and {996000 + i for i in range(15)} <= last, f"{len(lists)} lists")
+    sql("delete from bans where uid >= 990000")
+    c = sqlite3.connect(DB)
+    c.executemany("insert into invites(code, created_by, created_at, created_by_uid) values(?, 'alice', ?, ?)",
+                  ((f"A1INV{i:05d}", now - 1000 - i, uid_of("alice")) for i in range(10050)))
+    c.commit(); c.close()
+    owner.flush(0.3)
+    owner.max_frame = 0
+    owner.send(pb.Packet.INVITE_LIST_REQ, invite_list_req=pb.InviteListRequest())
+    r = owner.wait(pb.Packet.INVITE_LIST_RES, timeout=5)
+    inv = r.invite_list_res if r else None
+    check("invite list: at most 10,000 rows, newest first, flagged truncated", inv is not None and inv.success
+          and inv.truncated and len(inv.invites) == 10000 and owner.max_frame <= FRAME_CAP
+          and all(a.created_at >= b.created_at for a, b in zip(inv.invites, inv.invites[1:])),
+          f"{len(inv.invites) if inv else None} invites")
+    sql("delete from invites where code like 'A1INV%'")
+    owner.send(pb.Packet.INVITE_LIST_REQ, invite_list_req=pb.InviteListRequest())
+    r = owner.wait(pb.Packet.INVITE_LIST_RES, timeout=3)
+    check("invite list: a short list isn't flagged", r is not None and r.invite_list_res.success and not r.invite_list_res.truncated)
+    kicked.close(); viewer.close(); owner.close()
+
+
+def test_a1_attachment_metadata():
+    print("[A1] upload names capped at 255 bytes and types normalised; stored oversized ones are cut on the way out")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    room = create_channel(owner, "a1-files", pb.ChannelInfo.TEXT).id
+    init = {"channelId": room, "filename": "ü" * 400 + ".png", "mime": "image/png\r\nX-Evil: 1", "size": 2}
+    head, body = attachment_http("alice", "POST", "/attachments/init", "Content-Type: application/json\r\n",
+                                 json.dumps(init).encode())
+    aid = json.loads(body.decode() or "{}").get("id") if head.startswith(b"HTTP/1.1 201") else None
+    row = sql("select filename, mime from attachments where id=?", aid) if aid else []
+    check("upload: an 804-byte name is stored as 254 bytes, cut on a character", row != [] and row[0][0] == "ü" * 127,
+          len(row[0][0].encode()) if row else head[:40])
+    check("upload: a malformed type is stored as application/octet-stream", row != [] and row[0][1] == "application/octet-stream")
+    mid = seed_rows(room, [("with a file", 0, None)])[0]
+    sql("update attachments set message_id=?, upload_status='ready', filename=?, mime=? where id=?",
+        mid, "f" * 100000, "text/html\r\nSet-Cookie: x", aid)
+    owner.flush(0.3)
+    page = history_page(owner, room, limit=10)
+    m = next((m for m in page.messages if m.id == mid), None) if page else None
+    a = m.attachments[0] if m and m.attachments else None
+    check("history: a stored 100 KB name goes out as 255 bytes, the bad type as octet-stream",
+          a is not None and a.filename == "f" * 255 and a.mime == "application/octet-stream")
+    delete_channel(owner, room)
+    owner.close()
+
+
+def test_a1_strings_and_forwarded_packets():
+    print("[A1] role overwrite ids parsed whole; caps / thumbnails / codec notices carry no unknown fields; key blob names bounded")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    role = create_role(owner, "a1-target", 0)
+    room = create_channel(owner, "a1-ow", pb.ChannelInfo.TEXT).id
+    owner.flush(0.3)
+    r = set_overwrite(owner, room, pb.ChannelOverwrite.ROLE, str(role.id) + "j" * 100000, deny=pb.PERM_ATTACH_FILES)
+    check("overwrite: a role id with trailing junk is refused, nothing stored", r is not None and not r.channel_action_res.success
+          and sql("select count(*) from channel_overwrites where channel_id=?", room) == [(0,)])
+    r = set_overwrite(owner, room, pb.ChannelOverwrite.ROLE, "00" + str(role.id), deny=pb.PERM_ATTACH_FILES)
+    check("overwrite: a padded role id is stored as the id", r is not None and r.channel_action_res.success
+          and sql("select target_id from channel_overwrites where channel_id=?", room) == [(str(role.id),)])
+    delete_channel(owner, room)
+    delete_role(owner, role.id)
+    # Voice: capabilities, thumbnails and codec notices used to keep unknown
+    # fields (up to a whole frame) and pass them to everyone in the channel.
+    st = join("a1strm", owner); vw = join("a1view", owner)
+    junk = unknown_field(b"JUNK" * 25000)
+    cap = pb.CodecCapability(codec=1, max_width=1920, max_height=1080, max_fps=60)
+    cap.MergeFromString(junk)
+    vw.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    st.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(
+        channel_id="voice-lounge", capabilities=pb.ClientCapabilities(encode=[cap], decode=[cap])))
+    vp = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=3, pred=lambda p: "a1strm" in p.voice_presence_update.active_users)
+    check("voice presence: capabilities without unknown fields", vp is not None and b"JUNK" not in vp.SerializeToString()
+          and any(c.codec == 1 for caps in vp.voice_presence_update.user_capabilities for c in caps.encode))
+    st.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
+    time.sleep(0.5); vw.flush(0.5)
+    upd = pb.StreamThumbnailUpdate(channel_id="voice-lounge", thumbnail_data=b"T" * 1000)
+    upd.MergeFromString(junk)
+    p = pb.Packet(type=pb.Packet.STREAM_THUMBNAIL_UPDATE, stream_thumbnail_update=upd)
+    p.MergeFromString(unknown_field(b"PKTJUNK" * 1000))
+    send_raw(st, p)
+    t = vw.wait(pb.Packet.STREAM_THUMBNAIL_UPDATE, timeout=3)
+    check("thumbnail: relayed rebuilt (image and owner only, no token)", t is not None
+          and t.stream_thumbnail_update.thumbnail_data == b"T" * 1000 and t.stream_thumbnail_update.owner_uid == uid_of("a1strm")
+          and t.auth_token == "" and b"JUNK" not in t.SerializeToString())
+    note = pb.StreamCodecChangedNotify(channel_id="voice-lounge", new_codec=1, new_width=1280, new_height=720,
+                                       new_fps=30, reason=pb.StreamCodecChangedNotify.STREAMER_INITIATED,
+                                       streamer_uid=uid_of("a1strm"))
+    note.MergeFromString(junk)
+    send_raw(st, pb.Packet(type=pb.Packet.STREAM_CODEC_CHANGED_NOTIFY, stream_codec_changed_notify=note))
+    n = vw.wait(pb.Packet.STREAM_CODEC_CHANGED_NOTIFY, timeout=3)
+    check("codec notice: passed on rebuilt", n is not None and n.stream_codec_changed_notify.new_width == 1280
+          and n.stream_codec_changed_notify.reason == pb.StreamCodecChangedNotify.STREAMER_INITIATED
+          and n.stream_codec_changed_notify.streamer_username == "a1strm" and n.auth_token == ""
+          and b"JUNK" not in n.SerializeToString())
+    st.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    vw.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    # Key escrow: a recipient name longer than any name is refused with its blob.
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+        name="a1-keys", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    enc = cr.channel_action_res.channel.id
+    owner.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(
+        channel_id=enc, epoch=1, key_check=b"K" * 32, blobs=[
+            pb.ChannelKeyBlob(recipient="alice", recipient_uid=uid_of("alice"), blob=b"E1-alice"),
+            pb.ChannelKeyBlob(recipient="N" * 1000, recipient_uid=uid_of("a1view"), blob=b"E1-view")]))
+    r = owner.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
+    check("keys: a blob with a 1,000-byte recipient name is dropped, the rest stored", r is not None
+          and r.channel_keys_publish_res.success
+          and sql("select count(*) from channel_key_blobs where channel_id=? and recipient_uid=?", enc, uid_of("a1view")) == [(0,)]
+          and sql("select count(*) from channel_key_blobs where channel_id=? and recipient_uid=?", enc, uid_of("alice")) == [(1,)])
+    delete_channel(owner, enc)
+    st.close(); vw.close(); owner.close()
+
+
+def test_a1_role_and_channel_caps():
+    print("[A1] at most 250 roles and 500 channels (both lists go out whole)")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    have = sql("select count(*), coalesce(max(position), 0) from roles")[0]
+    c = sqlite3.connect(DB)
+    c.executemany("insert into roles(name, position) values(?, ?)",
+                  ((f"a1r{i}", have[1] + 1 + i) for i in range(249 - have[0])))
+    c.commit(); c.close()
+    owner.flush(0.3)
+    last = create_role(owner, "a1-250th", 0)
+    owner.send(pb.Packet.ROLE_CREATE_REQ, role_create_req=pb.RoleCreateRequest(name="a1-251st", color=0, permissions=0))
+    r = owner.wait(pb.Packet.ROLE_ACTION_RES, pred=lambda p: p.role_action_res.action == "create")
+    check("roles: the 251st is refused", r is not None and not r.role_action_res.success
+          and sql("select count(*) from roles") == [(250,)], r.role_action_res.message if r else None)
+    delete_role(owner, last.id)
+    sql("delete from roles where name like 'a1r%'")
+    have = sql("select count(*), coalesce(max(position), 0) from channels")[0]
+    c = sqlite3.connect(DB)
+    c.executemany("insert into channels(id, name, type, position) values(?, ?, 0, ?)",
+                  ((f"a1c{i}", f"a1c{i}", have[1] + 1 + i) for i in range(499 - have[0])))
+    c.commit(); c.close()
+    owner.flush(0.3)
+    lastc = create_channel(owner, "a1-500th", pb.ChannelInfo.TEXT).id
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="a1-501st", type=pb.ChannelInfo.TEXT))
+    r = owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "create")
+    check("channels: the 501st is refused", r is not None and not r.channel_action_res.success
+          and sql("select count(*) from channels") == [(500,)], r.channel_action_res.message if r else None)
+    sql("delete from channels where id like 'a1c%'")
+    delete_channel(owner, lastc)
+    owner.close()
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -4211,6 +4523,11 @@ if __name__ == "__main__":
         test_s2_channel_msg_whitelist()
         test_s15_channel_id_cap()
         test_s17_write_backlog_bytes()
+        test_a1_history_budget()
+        test_a1_ban_and_invite_lists()
+        test_a1_attachment_metadata()
+        test_a1_strings_and_forwarded_packets()
+        test_a1_role_and_channel_caps()
     finally:
         stop_server(proc)
     test_b9_timeouts()

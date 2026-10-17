@@ -1083,8 +1083,11 @@ pub struct BanListReceivedPayload {
     pub server_id: String,
     pub success: bool,
     pub message: String,
+    /// Newest first.
     pub entries: Vec<BanInfoPayload>,
     pub revision: u64,
+    /// Only the newest bans fit the server's reply; older ones exist.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1413,7 +1416,10 @@ pub struct InviteListReceivedPayload {
     pub server_id: String,
     pub success: bool,
     pub message: String,
+    /// Newest first.
     pub invites: Vec<InviteInfoPayload>,
+    /// Only the newest invites fit the server's reply; older ones exist.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

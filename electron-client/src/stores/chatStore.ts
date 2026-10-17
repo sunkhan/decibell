@@ -71,6 +71,8 @@ interface ChatState {
   serverPublicListing: Record<string, boolean>;
   membersByServer: Record<string, ServerMember[]>;
   bansByServer: Record<string, BanInfo[]>;
+  /// The server sent only the newest bans (the list hit its byte budget).
+  bansTruncated: Record<string, boolean>;
   /// Paging / revision state for membersByServer (roster protocol).
   memberRosterMeta: Record<string, MemberRosterMeta>;
   /// Per-server role list, most-senior-first, `everyone` last. Absent /
@@ -83,6 +85,8 @@ interface ChatState {
   /// push after any change.
   overwritesByChannel: Record<string, ChannelOverwrite[]>;
   invitesByServer: Record<string, ServerInvite[]>;
+  /// The server sent only the newest invites (the list hit its byte budget).
+  invitesTruncated: Record<string, boolean>;
   pendingInvite: PendingInvite | null;
   /// Attachment HTTP endpoint advertised by each connected server.
   /// `port: 0` means the server didn't advertise one (HTTP disabled
@@ -176,14 +180,14 @@ interface ChatState {
   upsertMember: (serverId: string, member: ServerMember, revision: number) => boolean;
   removeMember: (serverId: string, uid: Uid, revision: number) => boolean;
   setMembersLoadingMore: (serverId: string, loading: boolean) => void;
-  setBansForServer: (serverId: string, bans: BanInfo[]) => void;
+  setBansForServer: (serverId: string, bans: BanInfo[], truncated?: boolean) => void;
   setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
   setOverwritesForChannel: (
     serverId: string,
     channelId: string,
     overwrites: ChannelOverwrite[],
   ) => void;
-  setInvitesForServer: (serverId: string, invites: ServerInvite[]) => void;
+  setInvitesForServer: (serverId: string, invites: ServerInvite[], truncated?: boolean) => void;
   upsertInvite: (serverId: string, invite: ServerInvite) => void;
   removeInvite: (serverId: string, code: string) => void;
   setPendingInvite: (invite: PendingInvite | null) => void;
@@ -407,10 +411,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   serverPublicListing: {},
   membersByServer: {},
   bansByServer: {},
+  bansTruncated: {},
   memberRosterMeta: {},
   rolesByServer: {},
   overwritesByChannel: {},
   invitesByServer: {},
+  invitesTruncated: {},
   pendingInvite: null,
   serverAttachmentConfig: {},
   channelsByServer: {},
@@ -625,9 +631,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { memberRosterMeta: { ...state.memberRosterMeta, [serverId]: { ...meta, loadingMore: loading } } };
     }),
 
-  setBansForServer: (serverId, bans) =>
+  setBansForServer: (serverId, bans, truncated = false) =>
     set((state) => ({
       bansByServer: { ...state.bansByServer, [serverId]: bans },
+      bansTruncated: { ...state.bansTruncated, [serverId]: truncated },
     })),
 
   setRolesForServer: (serverId, roles) =>
@@ -643,9 +650,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     })),
 
-  setInvitesForServer: (serverId, invites) =>
+  setInvitesForServer: (serverId, invites, truncated = false) =>
     set((state) => ({
       invitesByServer: { ...state.invitesByServer, [serverId]: invites },
+      invitesTruncated: { ...state.invitesTruncated, [serverId]: truncated },
     })),
 
   upsertInvite: (serverId, invite) =>
@@ -1011,6 +1019,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       serverPublicListing: {},
       membersByServer: {},
       bansByServer: {},
+      bansTruncated: {},
       memberRosterMeta: {},
       rolesByServer: {},
       serverAttachmentConfig: {},
@@ -1025,6 +1034,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       channelAccessOrder: [],
       overwritesByChannel: {},
       invitesByServer: {},
+      invitesTruncated: {},
       pendingInvite: null,
     }),
 

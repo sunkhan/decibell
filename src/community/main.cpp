@@ -92,21 +92,32 @@ std::string sha256_hex(const std::string& data) {
     return out;
 }
 
-/// Strips the client-only envelope fields before a packet received from
-/// one member is forwarded to others. The Electron client puts its bearer
-/// JWT in Packet.auth_token on EVERY packet it sends (the central server
-/// requires that; community handlers never read it) — so forwarding a
-/// client packet verbatim broadcast the sender's JWT to every member with
-/// every CHANNEL_MSG / thumbnail / codec-change notify. Anyone in the
-/// server could have impersonated the sender for the token's lifetime.
-void strip_client_envelope(chatproj::Packet& p) {
-    p.clear_auth_token();
-    p.clear_timestamp();
-}
-
 /// ChannelMessage.nonce cap. Clients make ~20-character (`n-<ms>-<rand>`)
 /// or 36-character (UUID) nonces; the echo rides every viewer's broadcast.
 constexpr size_t kMaxMessageNonceBytes = 64;
+
+/// Message text and sealed bodies (CHANNEL_MSG / MESSAGE_EDIT_REQ caps).
+constexpr size_t kMaxChannelMsgBytes = 64 * 1024;
+constexpr size_t kMaxEnvelopeBytes = kMaxChannelMsgBytes + 64;
+
+/// Byte budget for a list or page response (review A1). The client drops
+/// the connection on any frame over 2 MiB and reconnects, and a reply that
+/// is too big comes back the same way after the reconnect — a channel, ban
+/// list or invite list that outgrew the cap stayed unreadable for everyone
+/// who opened it. History pages, search pages and the ban / invite lists
+/// stop adding rows here and say so (has_more / truncated).
+constexpr size_t kMaxResponseBytes = 1536 * 1024;
+
+/// Roles and channels per server (Discord's caps). Both lists go out
+/// whole: every role in each ROLE_LIST_RES, every visible channel in the
+/// sign-in reply and each channel list.
+constexpr size_t kMaxRoles = 250;      // `everyone` included
+constexpr size_t kMaxChannels = 500;   // categories included
+
+/// A reply's quote of its parent's text. The client shows one line of it;
+/// the whole parent (up to 64 KB) used to ride every reply in every
+/// history page and broadcast.
+constexpr size_t kMaxReplyPreviewBytes = 512;
 
 /// True when every channel id a request names fits kMaxChannelIdBytes.
 /// Checked once for every packet instead of in each handler: a request's
@@ -232,21 +243,28 @@ void fill_channel_message(chatproj::ChannelMessage* cm, const chatproj::DbMessag
     cm->set_sender(m.sender);
     cm->set_sender_uid(m.sender_uid);
     cm->set_channel_id(m.channel_id);
-    cm->set_content(m.content);
+    // Rows stored before the 64 KB send cap are cut to it, so no single
+    // row can outgrow a page on its own.
+    cm->set_content(m.content.size() > kMaxChannelMsgBytes
+                        ? chatproj::utf8_prefix(m.content, kMaxChannelMsgBytes) : m.content);
     cm->set_timestamp(m.timestamp);
     cm->set_edited_at(m.edited_at);
     cm->set_suppress_embeds(m.suppress_embeds);
     cm->set_reply_to(m.reply_to);
     cm->set_reply_to_sender(m.reply_to_sender);
     cm->set_reply_to_sender_uid(m.reply_to_sender_uid);
-    cm->set_reply_to_content(m.reply_to_content);
+    cm->set_reply_to_content(chatproj::utf8_prefix(m.reply_to_content, kMaxReplyPreviewBytes));
     // A sealed row also names who it was sealed under (rule 4 of the uid
     // design): a v1 envelope binds that name, which can predate a rename.
     if (!m.envelope.empty()) {
         cm->set_envelope(m.envelope);
         cm->set_sealed_sender(m.sent_sender);
     }
-    if (!m.reply_to_envelope.empty()) {
+    // A sealed parent's preview is its whole envelope: a prefix of it
+    // wouldn't open. It is kept (the reply then quotes long parents too);
+    // it costs at most one more message cap per row, which the page budget
+    // counts like everything else. One stored over the cap goes.
+    if (!m.reply_to_envelope.empty() && m.reply_to_envelope.size() <= kMaxEnvelopeBytes) {
         cm->set_reply_to_envelope(m.reply_to_envelope);
         cm->set_reply_to_sealed_sender(m.reply_to_sent_sender);
     }
@@ -312,20 +330,34 @@ void fill_overwrite(chatproj::ChannelOverwrite* out, const chatproj::DbOverwrite
     out->set_deny(ow.deny);
 }
 
+/// Row cap for the ban and invite lists, on top of the byte budget: the
+/// newest this many are read, never the whole table.
+constexpr size_t kMaxListRows = 10000;
+
+/// Newest first, within kMaxResponseBytes (review A1). Two 1.1 MB ban
+/// reasons used to make this list — pushed to every ban viewer at sign-in
+/// and on every ban — too big for the client, for good.
 void fill_ban_list(chatproj::BanListResponse* res, chatproj::CommunityDb* db, uint64_t revision) {
     res->set_success(db != nullptr);
     res->set_revision(revision);
     if (!db) return;
-    for (const auto& b : db->list_bans()) {
-        auto* e = res->add_entries();
-        e->set_username(b.username);
-        e->set_uid(b.uid);
-        e->set_banned_by(b.banned_by);
-        e->set_banned_by_uid(b.banned_by_uid);
-        e->set_reason(b.reason);
-        e->set_banned_at(b.banned_at);
-        e->set_expires_at(b.expires_at);
+    bool more = false;
+    size_t bytes = 0;
+    for (const auto& b : db->list_bans(kMaxListRows, &more)) {
+        chatproj::BanInfo e;
+        e.set_username(b.username);
+        e.set_uid(b.uid);
+        e.set_banned_by(b.banned_by);
+        e.set_banned_by_uid(b.banned_by_uid);
+        e.set_reason(b.reason);
+        e.set_banned_at(b.banned_at);
+        e.set_expires_at(b.expires_at);
+        const size_t size = e.ByteSizeLong();
+        if (bytes + size > kMaxResponseBytes) { more = true; break; }
+        bytes += size;
+        *res->add_entries() = std::move(e);
     }
+    res->set_truncated(more);
 }
 
 std::string format_utc(int64_t ts) {
@@ -657,7 +689,7 @@ public:
     int auth_timeout_seconds() const { return auth_timeout_seconds_; }
     int idle_timeout_seconds() const { return idle_timeout_seconds_; }
 
-    // Executor for manager-owned timers (roster coalescing). Must be set
+    // Executor for manager-owned timers (ban-list coalescing). Must be set
     // before any timer-backed manager operation.
     void set_io_context(boost::asio::io_context& io);
 
@@ -782,6 +814,11 @@ private:
 
     boost::asio::io_context* io_ = nullptr;
     uint64_t roster_revision_ = 0;
+    // broadcast_bans() coalescing (io thread only): while the timer runs,
+    // a change only marks the list dirty; the timer sends it once.
+    std::unique_ptr<boost::asio::steady_timer> bans_timer_;
+    bool bans_timer_armed_ = false;
+    bool bans_dirty_ = false;
 
 
     // Auto-rejoin: central-assigned community_servers.id. 0 means
@@ -927,6 +964,10 @@ public:
     void set_capabilities(const chatproj::ClientCapabilities& caps) {
         std::lock_guard<std::mutex> lock(capabilities_mutex_);
         capabilities_ = caps;
+        // Re-sent in every VOICE_PRESENCE_UPDATE for the channel, to every
+        // viewer: fields this build doesn't know (protobuf keeps them, up
+        // to a whole frame) must not ride along.
+        capabilities_.DiscardUnknownFields();
     }
     chatproj::ClientCapabilities get_capabilities() const {
         std::lock_guard<std::mutex> lock(capabilities_mutex_);
@@ -1735,6 +1776,12 @@ private:
             accepted.reserve(req.blobs_size());
             for (const auto& b : req.blobs()) {
                 if (b.blob().empty() || b.blob().size() > kMaxBlobBytes) continue;
+                // The recipient name is stored with the blob and returned
+                // with it in every CHANNEL_KEYS_RES page (256 blobs): one
+                // longer than any name would make the recipient's pages too
+                // big for their client (review A1). Not cut, since a v1
+                // envelope binds it; such a blob can't be real anyway.
+                if (b.recipient().size() > chatproj::kMaxUsernameBytes) continue;
                 // The recipient by uid. Only *members* who can VIEW the
                 // channel get keys (the permission resolver answers for
                 // anyone with the default role's rights, so membership is
@@ -1926,8 +1973,7 @@ private:
 
         // --- STREAM THUMBNAIL UPDATE ---
         else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
-            strip_client_envelope(packet);
-            auto* update = packet.mutable_stream_thumbnail_update();
+            const auto& in = packet.stream_thumbnail_update();
             // Cap thumbnail size — these are JPEG posters (960 px long edge
             // since 2026-10-04; clients step quality down to fit). Without a
             // cap any member could repeatedly push ~2 MB blobs (up to the
@@ -1935,17 +1981,25 @@ private:
             // updates are dropped silently. Keep in step with the clients'
             // THUMBNAIL_MAX_BYTES / MAX_THUMBNAIL_BYTES.
             constexpr size_t MAX_STREAM_THUMB_BYTES = 256 * 1024;
-            if (update->thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES &&
-                manager_.has_active_stream(update->channel_id(), uid_)) {
+            if (in.thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES &&
+                manager_.has_active_stream(in.channel_id(), uid_)) {
+                // Rebuilt from its fields, never forwarded: the client's
+                // packet carries its JWT, and fields this build doesn't
+                // know (up to a whole frame past the 256 KB image) would
+                // have gone to everyone in the channel.
+                chatproj::Packet out;
+                out.set_type(chatproj::Packet::STREAM_THUMBNAIL_UPDATE);
+                auto* update = out.mutable_stream_thumbnail_update();
+                update->set_channel_id(in.channel_id());
+                update->set_thumbnail_data(in.thumbnail_data());
                 update->set_owner_username(username_); // Enforce identity
                 update->set_owner_uid(uid_);
-                std::string channel_id = update->channel_id();
                 // Stash a copy for on-demand popup fetches before the
                 // broadcast — bytes are owned by the protobuf so the
                 // helper copies them.
-                manager_.update_thumbnail_cache(uid_, update->thumbnail_data());
+                manager_.update_thumbnail_cache(uid_, in.thumbnail_data());
                 // Broadcast to all voice channel participants (not just watchers)
-                manager_.broadcast_to_voice_channel_tcp(packet, channel_id);
+                manager_.broadcast_to_voice_channel_tcp(out, in.channel_id());
             }
         }
 
@@ -2144,8 +2198,11 @@ private:
                         } else {
                             msg->set_reply_to_sender(parent->sender);
                             msg->set_reply_to_sender_uid(parent->sender_uid);
-                            msg->set_reply_to_content(parent->content);
-                            if (!parent->envelope.empty()) {
+                            // A one-line quote, as in history pages
+                            // (fill_channel_message).
+                            msg->set_reply_to_content(
+                                chatproj::utf8_prefix(parent->content, kMaxReplyPreviewBytes));
+                            if (!parent->envelope.empty() && parent->envelope.size() <= kMaxEnvelopeBytes) {
                                 msg->set_reply_to_envelope(parent->envelope);
                                 msg->set_reply_to_sealed_sender(parent->sent_sender);
                             }
@@ -2278,11 +2335,59 @@ private:
 
             // msgs is already oldest→newest (the fetch branches normalize it),
             // matching the order the client renders.
-            for (const auto& m : msgs) {
-                auto atts_it = by_msg.find(m.id);
-                fill_channel_message(res->add_messages(), m,
+            //
+            // Byte budget (review A1): a page is up to 200 rows of up to
+            // 64 KB text or envelope each, plus a sealed parent's envelope
+            // per reply — far past the client's 2 MiB frame cap, after which
+            // the channel couldn't be opened by anyone. The page keeps the
+            // rows nearest where the client is reading and drops the far
+            // end, flagged as has_more / has_more_after, so the next request
+            // (before the oldest / after the newest row it got) continues
+            // without a gap: newest rows for a latest / older page, oldest
+            // for a newer page, the rows around around_id for a jump. It
+            // always holds at least one row (every row fits on its own:
+            // text and envelopes are capped).
+            const size_t n = msgs.size();
+            std::vector<chatproj::ChannelMessage> built(n);
+            std::vector<size_t> sizes(n);
+            for (size_t i = 0; i < n; ++i) {
+                auto atts_it = by_msg.find(msgs[i].id);
+                fill_channel_message(&built[i], msgs[i],
                                      atts_it != by_msg.end() ? &atts_it->second : nullptr);
+                sizes[i] = built[i].ByteSizeLong();
             }
+            size_t lo = 0, hi = 0;   // the rows sent: [lo, hi)
+            size_t bytes = 0;
+            if (n == 0) {
+                // nothing to cut
+            } else if (req.around_id() > 0) {
+                // Grow outwards from the target (the newest row at or
+                // before around_id), a row on each side in turn.
+                size_t anchor = 0;
+                for (size_t i = 0; i < n && msgs[i].id <= req.around_id(); ++i) anchor = i;
+                lo = anchor;
+                hi = anchor + 1;
+                bytes = sizes[anchor];
+                bool newer = hi < n, older = lo > 0;
+                while (newer || older) {
+                    if (newer) {
+                        if (bytes + sizes[hi] <= kMaxResponseBytes) { bytes += sizes[hi++]; newer = hi < n; }
+                        else newer = false;
+                    }
+                    if (older) {
+                        if (bytes + sizes[lo - 1] <= kMaxResponseBytes) { bytes += sizes[--lo]; older = lo > 0; }
+                        else older = false;
+                    }
+                }
+            } else if (req.after_id() > 0) {
+                while (hi < n && (hi == 0 || bytes + sizes[hi] <= kMaxResponseBytes)) bytes += sizes[hi++];
+            } else {
+                lo = hi = n;
+                while (lo > 0 && (lo == n || bytes + sizes[lo - 1] <= kMaxResponseBytes)) bytes += sizes[--lo];
+            }
+            if (lo > 0) has_more = true;
+            if (hi < n) has_more_after = true;
+            for (size_t i = lo; i < hi; ++i) *res->add_messages() = std::move(built[i]);
             res->set_has_more(has_more);
             res->set_has_more_after(has_more_after);
             res->set_around_id(req.around_id());
@@ -2779,19 +2884,27 @@ private:
                 }
             }
             res->set_success(true);
-            for (const auto& inv : db->list_invites()) {
-                if (!see_all && inv.created_by_uid != uid_) continue;
-                auto* info = res->add_invites();
-                info->set_code(inv.code);
-                info->set_created_by(inv.created_by);
-                info->set_created_by_uid(inv.created_by_uid);
-                info->set_created_at(inv.created_at);
-                info->set_expires_at(inv.expires_at);
-                info->set_max_uses(inv.max_uses);
-                info->set_uses(inv.uses);
-                info->set_for_user(inv.for_user);
-                info->set_for_uid(inv.for_uid);
+            // Newest first, within the byte budget (review A1): every
+            // invite used to come back at once, however many there were.
+            bool more = false;
+            size_t bytes = 0;
+            for (const auto& inv : db->list_invites(see_all ? 0 : uid_, kMaxListRows, &more)) {
+                chatproj::InviteInfo info;
+                info.set_code(inv.code);
+                info.set_created_by(inv.created_by);
+                info.set_created_by_uid(inv.created_by_uid);
+                info.set_created_at(inv.created_at);
+                info.set_expires_at(inv.expires_at);
+                info.set_max_uses(inv.max_uses);
+                info.set_uses(inv.uses);
+                info.set_for_user(inv.for_user);
+                info.set_for_uid(inv.for_uid);
+                const size_t size = info.ByteSizeLong();
+                if (bytes + size > kMaxResponseBytes) { more = true; break; }
+                bytes += size;
+                *res->add_invites() = std::move(info);
             }
+            res->set_truncated(more);
             send_packet(p);
         }
 
@@ -2878,10 +2991,11 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.kick_member_req();
-            const std::string& reason = req.reason();
+            // Shown to the target and kept in the audit log (review A1).
+            const std::string reason = chatproj::clamp_utf8(req.reason(), chatproj::kMaxReasonBytes);
             auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
-            const std::string target = member ? member->username : req.username();
+            const std::string target = member ? member->username : request_label(req.username());
             // Permission + owner/self guards + hierarchy all live in authz.
             if (auto a = manager_.authz().check(chatproj::Action::KickMember,
                                                 {uid_, "", target_uid}); !a) {
@@ -2915,7 +3029,9 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.ban_member_req();
-            const std::string& reason = req.reason();
+            // Stored, and re-sent to every ban viewer with each ban list
+            // (review A1: two 1.1 MB reasons cut every one of them off).
+            const std::string reason = chatproj::clamp_utf8(req.reason(), chatproj::kMaxReasonBytes);
             // The target by uid: a member, or an account that left (their
             // name from the request only labels the ban row). A placeholder
             // (negative uid) only as a member: a made-up one would ban
@@ -2924,10 +3040,11 @@ private:
             if (target_uid == 0) return;
             auto member = resolve_member(target_uid);
             if (target_uid < 0 && !member) {
-                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Not a member.", req.username(), "ban", target_uid);
+                send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, "Not a member.", request_label(req.username()), "ban", target_uid);
                 return;
             }
-            const std::string target = member ? member->username : req.username();
+            // The label a non-member's ban row keeps comes from the request.
+            const std::string target = member ? member->username : request_label(req.username());
             if (auto a = manager_.authz().check(chatproj::Action::BanMember,
                                                 {uid_, "", target_uid}); !a) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "ban", target_uid);
@@ -3075,6 +3192,14 @@ private:
             if (name.empty()) {
                 res->set_success(false);
                 res->set_message("Role name can't be empty.");
+                send_packet(p);
+                return;
+            }
+            // Every role rides every ROLE_LIST_RES, and a member's role ids
+            // ride every roster packet about them: bounded like Discord's.
+            if (db->list_roles().size() >= kMaxRoles) {
+                res->set_success(false);
+                res->set_message("A server can have at most " + std::to_string(kMaxRoles) + " roles.");
                 send_packet(p);
                 return;
             }
@@ -3320,6 +3445,13 @@ private:
             }
             std::string name = chatproj::clamp_utf8(req.name(), chatproj::kMaxChannelNameBytes);
             if (name.empty()) { fail("Channel name can't be empty."); return; }
+            // Every channel (with its topic of up to 1 KB) rides the sign-in
+            // reply and every channel list: bounded like Discord's, which
+            // keeps both far under the client's 2 MiB frame cap.
+            if (db->list_channels().size() >= kMaxChannels) {
+                fail("A server can have at most 500 channels.");
+                return;
+            }
             int32_t type = 0;
             if (req.type() == chatproj::ChannelInfo::VOICE) type = 1;
             else if (req.type() == chatproj::ChannelInfo::CATEGORY) type = 2;
@@ -3453,7 +3585,7 @@ private:
             const auto& req = packet.set_nickname_req();
             auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
-            const std::string target = member ? member->username : req.username();
+            const std::string target = member ? member->username : request_label(req.username());
             std::string nickname = chatproj::clamp_utf8(req.nickname(), chatproj::kMaxNicknameBytes);
 
             // Self: CHANGE_NICKNAME; others: MANAGE_NICKNAMES + hierarchy or peer.
@@ -3558,6 +3690,16 @@ private:
                 member_target = resolve_member(ow.target_uid());
                 if (!member_target) { fail("Not a member."); return; }
                 row.target_id = std::to_string(member_target->uid);
+            } else {
+                // A role row names the role id in decimal, rewritten from
+                // what was parsed: stoll read 5 out of "5<anything>", and
+                // the rest (up to a whole frame) was stored as the row's
+                // target, re-sent with every overwrite list and audit row.
+                size_t used = 0;
+                int64_t rid = 0;
+                try { rid = std::stoll(row.target_id, &used); } catch (...) { used = 0; }
+                if (used == 0 || used != row.target_id.size()) { fail("Unknown role."); return; }
+                row.target_id = std::to_string(rid);
             }
             row.deny = ow.deny() & chatproj::perms::kKnownMask;
             row.allow = (ow.allow() & chatproj::perms::kKnownMask) & ~row.deny;
@@ -3800,9 +3942,10 @@ private:
             auto* db = manager_.db();
             if (!db) return;
             const auto& req = packet.timeout_member_req();
+            const std::string reason = chatproj::clamp_utf8(req.reason(), chatproj::kMaxReasonBytes);
             auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
-            const std::string target = member ? member->username : req.username();
+            const std::string target = member ? member->username : request_label(req.username());
             if (auto a = manager_.authz().check(chatproj::Action::TimeoutMember, {uid_, "", target_uid}); !a) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, target, "timeout", target_uid);
                 return;
@@ -3823,7 +3966,7 @@ private:
             // (M1). Only on an actual timeout, not when clearing one.
             if (until > now_ts) manager_.disconnect_from_voice(target_uid, uid_, username_);
             db->add_audit(uid_, username_, until ? "timeout" : "timeout_clear", target_uid, target, "",
-                          until ? "until " + format_utc(until) + (req.reason().empty() ? "" : "; reason: " + req.reason())
+                          until ? "until " + format_utc(until) + (reason.empty() ? "" : "; reason: " + reason)
                                 : "");
             std::cout << "[Community] " << target << (until ? " timed out by " : " timeout cleared by ")
                       << username_ << "\n";
@@ -3841,7 +3984,7 @@ private:
             const auto& req = packet.voice_mod_req();
             auto member = resolve_member(req.uid());
             const int64_t target_uid = member ? member->uid : req.uid();
-            const std::string target = member ? member->username : req.username();
+            const std::string target = member ? member->username : request_label(req.username());
             auto fail = [&](const std::string& msg) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, msg, target, "voice_mod", target_uid);
             };
@@ -3932,7 +4075,7 @@ private:
             const auto& req = packet.transfer_ownership_req();
             auto member = resolve_member(req.new_owner_uid());
             const int64_t new_owner_uid = member ? member->uid : req.new_owner_uid();
-            const std::string new_owner = member ? member->username : req.new_owner();
+            const std::string new_owner = member ? member->username : request_label(req.new_owner());
             if (auto a = manager_.authz().check(chatproj::Action::TransferOwnership, {uid_, "", new_owner_uid}); !a) {
                 send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, a.reason, new_owner, "transfer", new_owner_uid);
                 return;
@@ -4016,6 +4159,12 @@ private:
         auto* db = manager_.db();
         if (!db || uid == 0) return std::nullopt;
         return db->get_member(uid);
+    }
+
+    /// A name a request gives for its target, as a label (the target isn't
+    /// a member, so there is no row to take it from). Clamped like a name.
+    static std::string request_label(const std::string& name) {
+        return chatproj::clamp_utf8(name, chatproj::kMaxUsernameBytes);
     }
 
     void send_simple_mod_res(chatproj::Packet::Type type, bool success,
@@ -4284,9 +4433,8 @@ private:
         std::unordered_map<int64_t, std::vector<const chatproj::DbAttachment*>> atts_by_msg;
         for (const auto& a : attachments) atts_by_msg[a.message_id].push_back(&a);
 
-        // A message can be 64 KB: cut the page at 1.5 MB (frames cap at
-        // 2 MB) and let the next page pick up from there.
-        constexpr size_t kMaxPageBytes = 1536 * 1024;
+        // A message can be 64 KB: cut the page at kMaxResponseBytes (frames
+        // cap at 2 MB) and let the next page pick up from there.
         size_t bytes = 0;
         size_t consumed = 0;   // ids of the walk this page covers
         bool cut = false;
@@ -4297,7 +4445,7 @@ private:
             auto at = atts_by_msg.find(it->first);
             fill_channel_message(&cm, *it->second, at != atts_by_msg.end() ? &at->second : nullptr);
             const size_t size = cm.ByteSizeLong();
-            if (res->messages_size() > 0 && bytes + size > kMaxPageBytes) {
+            if (res->messages_size() > 0 && bytes + size > kMaxResponseBytes) {
                 cut = true;
                 break;
             }
@@ -4965,6 +5113,7 @@ void SessionManager::broadcast_to_members(const chatproj::Packet& packet) {
 
 void SessionManager::set_io_context(boost::asio::io_context& io) {
     io_ = &io;
+    bans_timer_ = std::make_unique<boost::asio::steady_timer>(io);
 }
 
 std::optional<chatproj::MemberInfo> SessionManager::build_member_info(int64_t uid) {
@@ -5182,6 +5331,23 @@ void SessionManager::fill_member_search(const chatproj::MemberSearchRequest& req
 
 void SessionManager::broadcast_bans() {
     if (!db_ || !authz_) return;
+    // At most one list per viewer per second (review A1). Each ban or unban
+    // used to send the whole list to every ban viewer at once, so a raid
+    // answered with 100 bans queued 100 full lists for each of them —
+    // past the write queue's cap, which disconnects. The first change goes
+    // out at once; changes while the timer runs go out together when it
+    // fires.
+    constexpr auto kBanListInterval = std::chrono::seconds(1);
+    if (bans_timer_) {
+        if (bans_timer_armed_) { bans_dirty_ = true; return; }
+        bans_timer_armed_ = true;
+        bans_dirty_ = false;
+        bans_timer_->expires_after(kBanListInterval);
+        bans_timer_->async_wait([this](const boost::system::error_code& ec) {
+            bans_timer_armed_ = false;
+            if (!ec && bans_dirty_) broadcast_bans();
+        });
+    }
     chatproj::Packet p;
     p.set_type(chatproj::Packet::BAN_LIST_RES);
     fill_ban_list(p.mutable_ban_list_res(), db_, roster_revision_);
@@ -5966,13 +6132,21 @@ void SessionManager::handle_stream_codec_changed(
     }
     // Rebroadcast presence so all viewers' badges update.
     broadcast_stream_presence(notify.channel_id());
-    // Forward the notify so viewers get the toast text + reason — minus
-    // the sender's envelope (auth_token carries their JWT), stamped with
-    // the streamer's identity.
-    chatproj::Packet forwarded = packet;
-    strip_client_envelope(forwarded);
-    forwarded.mutable_stream_codec_changed_notify()->set_streamer_username(sender->get_username());
-    forwarded.mutable_stream_codec_changed_notify()->set_streamer_uid(sender->get_uid());
+    // Pass the notify on so viewers get the toast text + reason, rebuilt
+    // from its fields and stamped with the streamer's identity: the
+    // client's packet carries its JWT, and fields this build doesn't know
+    // (up to a whole frame) went to everyone in the channel with it.
+    chatproj::Packet forwarded;
+    forwarded.set_type(chatproj::Packet::STREAM_CODEC_CHANGED_NOTIFY);
+    auto* out = forwarded.mutable_stream_codec_changed_notify();
+    out->set_channel_id(notify.channel_id());
+    out->set_streamer_username(sender->get_username());
+    out->set_streamer_uid(sender->get_uid());
+    out->set_new_codec(notify.new_codec());
+    out->set_new_width(notify.new_width());
+    out->set_new_height(notify.new_height());
+    out->set_new_fps(notify.new_fps());
+    out->set_reason(notify.reason());
     broadcast_to_voice_channel_tcp(forwarded, notify.channel_id());
 }
 

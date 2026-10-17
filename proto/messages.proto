@@ -1442,7 +1442,11 @@ message InviteListRequest {}
 message InviteListResponse {
   bool success = 1;
   string message = 2;
+  // Newest first.
   repeated InviteInfo invites = 3;
+  // Only the newest invites fit the reply (a byte budget under the
+  // client's frame cap); older ones exist but aren't listed.
+  bool truncated = 4;
 }
 
 message InviteRevokeRequest {
@@ -1640,7 +1644,11 @@ message BanListResponse {
   reserved 3;
   reserved "bans";
   uint64 revision = 4;
+  // Newest first.
   repeated BanInfo entries = 5;
+  // Only the newest bans fit the reply (a byte budget under the client's
+  // frame cap); older ones exist but aren't listed.
+  bool truncated = 6;
 }
 
 // --- Roles + permissions ---

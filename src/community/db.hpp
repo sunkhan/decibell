@@ -299,10 +299,53 @@ inline std::string clamp_utf8(const std::string& in, size_t max_bytes) {
     return out;
 }
 
+// The longest prefix of `in` that fits `max_bytes` without cutting through a
+// UTF-8 sequence. Unlike clamp_utf8 it keeps every character (message text
+// keeps its line breaks).
+inline std::string utf8_prefix(const std::string& in, size_t max_bytes) {
+    if (in.size() <= max_bytes) return in;
+    size_t cut = max_bytes;
+    while (cut > 0 && (static_cast<unsigned char>(in[cut]) & 0xC0) == 0x80) --cut;
+    return in.substr(0, cut);
+}
+
+// A client-declared MIME type as stored and served: a well-formed
+// `type/subtype` over a safe charset of at most 128 bytes, else
+// application/octet-stream. A stored value is reflected into the download's
+// Content-Type header (CR/LF would split the response) and re-sent with
+// every history page.
+inline std::string safe_mime(const std::string& mime) {
+    static const std::string kFallback = "application/octet-stream";
+    if (mime.empty() || mime.size() > 128) return kFallback;
+    int slashes = 0;
+    for (char c : mime) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '/' || c == '.' ||
+                        c == '+' || c == '-';
+        if (!ok) return kFallback;
+        if (c == '/') ++slashes;
+    }
+    if (slashes != 1 || mime.front() == '/' || mime.back() == '/') return kFallback;
+    return mime;
+}
+
 // Byte caps shared by the wire handlers and the DB layer.
 constexpr size_t kMaxRoleNameBytes    = 64;
 constexpr size_t kMaxChannelNameBytes = 64;
 constexpr size_t kMaxNicknameBytes    = 32;
+// Kick / ban / timeout reasons (review A1: a ban reason was stored and
+// re-sent to every ban viewer unbounded).
+constexpr size_t kMaxReasonBytes      = 512;
+// A name taken from a request rather than a token (the label on a ban of
+// someone who isn't a member). Central registers names of at most 32 bytes
+// and refuses renames over 64.
+constexpr size_t kMaxUsernameBytes    = 64;
+// Attachment file names, as stored and re-sent with every history page.
+constexpr size_t kMaxFilenameBytes    = 255;
+// Audit rows: the target label ("member:<name>", a role or channel name,
+// an invite code) and the details line.
+constexpr size_t kMaxAuditTargetBytes  = 128;
+constexpr size_t kMaxAuditDetailsBytes = 512;
 // Channel ids are server-made slugs: up to kMaxChannelSlugBytes, plus a
 // "-2".."-999" collision suffix. Requests naming a longer id are refused
 // at the edge (they can only name a channel that doesn't exist).
@@ -488,7 +531,10 @@ public:
                  const std::string& reason,
                  int64_t expires_at = 0);
     bool remove_ban(int64_t uid);
-    std::vector<DbBan> list_bans() const;
+    // Newest first, at most `limit` rows; `more` = older bans exist. Names
+    // and reasons are clamped as read, so rows stored before the caps
+    // (review A1) can't outgrow a ban list either.
+    std::vector<DbBan> list_bans(size_t limit, bool* more) const;
 
     // --- invites ---
     // Generates a code and inserts a new invite. Returns the created invite on
@@ -503,6 +549,9 @@ public:
     // up more.
     std::optional<DbInvite> find_personal_invite(int64_t created_by_uid, int64_t for_uid) const;
     std::vector<DbInvite> list_invites() const;
+    // Newest first, at most `limit` rows, only `created_by_uid`'s (0 =
+    // everyone's); `more` = older ones exist.
+    std::vector<DbInvite> list_invites(int64_t created_by_uid, size_t limit, bool* more) const;
     bool revoke_invite(const std::string& code);
 
     // Atomically validates and consumes an invite (increments uses, deletes if

@@ -193,28 +193,17 @@ bool HttpRequest::parse_head(const std::string& head) {
 }
 
 // Validate a stored MIME type before reflecting it into a response header.
-// `mime` is client-controlled at upload time and stored verbatim, so a
-// value containing CR/LF would split the HTTP response (header injection),
-// and a `text/html`/`image/svg+xml` value would let an uploaded blob run
-// script in the community server's own TLS origin. Reject anything that
-// isn't a well-formed `type/subtype` over a safe charset, falling back to
-// a benign default. Paired with X-Content-Type-Options: nosniff and
-// Content-Disposition: attachment on the serve path.
+// `mime` is client-controlled at upload time, so a value containing CR/LF
+// would split the HTTP response (header injection), and a `text/html` /
+// `image/svg+xml` value would let an uploaded blob run script in the
+// community server's own TLS origin. chatproj::safe_mime rejects anything
+// that isn't a well-formed `type/subtype` over a safe charset, falling back
+// to a benign default. Init normalises it the same way before storing it;
+// this still guards rows stored before that. Paired with
+// X-Content-Type-Options: nosniff and Content-Disposition: attachment on
+// the serve path.
 static std::string safe_content_type(const std::string& mime) {
-    if (mime.empty() || mime.size() > 128) return "application/octet-stream";
-    auto ok = [](char c) {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-               (c >= '0' && c <= '9') || c == '/' || c == '.' ||
-               c == '+' || c == '-';
-    };
-    int slashes = 0;
-    for (char c : mime) {
-        if (!ok(c)) return "application/octet-stream";
-        if (c == '/') slashes++;
-    }
-    if (slashes != 1 || mime.front() == '/' || mime.back() == '/')
-        return "application/octet-stream";
-    return mime;
+    return chatproj::safe_mime(mime);
 }
 
 // -------- connection handler --------
@@ -459,6 +448,11 @@ private:
             mime = "application/octet-stream";
         }
 
+        // Stored as given and re-sent with every history page that shows
+        // the message (review A1): the name is capped at 255 bytes on a
+        // UTF-8 boundary, the type normalised as it is when served.
+        filename = chatproj::clamp_utf8(filename, chatproj::kMaxFilenameBytes);
+        mime = chatproj::safe_mime(mime);
         if (channel_id.empty() || filename.empty() || size <= 0) {
             send_error(400, "Bad Request"); return;
         }
