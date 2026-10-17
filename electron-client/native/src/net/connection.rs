@@ -62,7 +62,9 @@ impl Connection {
         })?;
         let fingerprint = seen_fp.lock().unwrap().clone().unwrap_or_default();
 
-        let framed = Framed::new(tls_stream, LengthPrefixCodec);
+        // A reply over the 2 MiB frame cap is skipped inside the codec (its
+        // waiter times out); only a length over 64 MiB ends the read loop.
+        let framed = Framed::new(tls_stream, LengthPrefixCodec::new());
         let (mut sink, mut stream) = framed.split();
 
         // Write channel: commands send packets here, write loop sends them over the wire
