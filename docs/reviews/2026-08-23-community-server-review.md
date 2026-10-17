@@ -3435,3 +3435,85 @@ entry while building a subscription answer.
 Left open: B11 (the conversations query still scans all of the user's DMs, now once per page); having native
 skip an oversized frame instead of reconnecting (theme 2) is not done here. Older clients read only the first
 conversation page (the newest 200); pre-1.0, client and central ship together.
+
+### Fix: community responses fit the client's frame cap, client strings are capped, bulk changes fan out once (2026-10-17, review A1 / A2 / A3)
+
+The community half of A1, the relay half of A2, and A3. The client dropped the connection on any frame over
+2 MiB and reconnected (it now skips such a frame; see the native entry above), and a reply that was too big came back the same way after every reconnect, so one
+oversized row could make a channel, the ban list or the invite list unreadable for everyone, with DB surgery
+the only way out. One constant, `kMaxResponseBytes` = 1.5 MiB (search's old `kMaxPageBytes`), is now the
+budget of every list and page response.
+
+- **History pages (A1).** A page was up to 200 rows of up to 64 KB each, and every reply also carried its
+  parent's whole text (another 64 KB) and, in an encrypted channel, the parent's whole envelope: ~16 replies
+  to long messages and the channel couldn't be opened. Pages now stop at the budget and drop the far end,
+  flagged so paging stays continuous: a latest / older page keeps the newest rows (`has_more`), a newer page
+  the oldest (`has_more_after`), a jump grows outwards from the target a row per side (both flags). The
+  client pages from the oldest / newest row it got, and only stops on a false flag, so a short page never
+  reads as the end. A page always holds at least one row; rows stored before the 64 KB send cap are cut to
+  it as sent.
+- **Reply quotes.** `reply_to_content` is the first 512 bytes of the parent, cut on a UTF-8 boundary, in
+  history, search and live broadcasts (the client shows one line of it). A sealed parent's
+  `reply_to_envelope` can't be cut, so it is kept whole: replies to long encrypted messages keep their
+  quote, it costs at most one more message cap per row, and the page budget counts it like everything else
+  (a page of replies to 64 KB sealed messages holds ~12 rows instead of 50). One stored over the envelope cap
+  is dropped.
+- **Moderation strings.** Kick / ban / timeout reasons are clamped to 512 bytes (UTF-8 safe, control
+  characters out) as received, and a ban's label for a non-member (from the request) to 64 bytes; central
+  registers names of at most 32. `add_ban` clamps too, and ban rows, audit rows (target 128, details 512),
+  invite labels and attachment names / types are clamped as read, so rows stored before the caps stop
+  hurting. Other request strings were already capped (role / channel names, nicknames, topics, server
+  name / description, invite `for_user`, message text, nonces, MLS blobs, thumbnails, search queries) or
+  only echoed to the requester.
+- **Ban and invite lists.** Both loaded every row. Now newest first, at most 10,000 rows read, cut at the
+  byte budget, with a new `truncated` flag (`BanListResponse.truncated = 6`, `InviteListResponse.truncated
+  = 4`). The Bans tab and the invite list say "Showing the most recent N bans / invites." when it's set
+  (native passes the flag through). `broadcast_bans()` sent the whole list to every ban viewer on every ban
+  or unban, so a raid answered with 100 bans queued 100 lists each; it is now throttled on the io thread:
+  the first change goes out at once, changes in the next second go out together when the timer fires.
+- **Attachments.** Upload init stored the filename and type as given, re-sent in every history page. The
+  name is now capped at 255 bytes on a UTF-8 boundary and the type normalised with the serve path's rule
+  (now `chatproj::safe_mime`, shared); a malformed one becomes `application/octet-stream`. Existing rows are
+  clamped as read.
+- **Other client strings found on the way.** A role overwrite's `target_id` was parsed with `stoll`, which
+  read 5 out of `"5<anything>"` and stored the rest (up to a frame) as the row's target, re-sent in every
+  overwrite list and audit row: it must now parse whole and is stored as the canonical id. Capabilities,
+  stream thumbnails and codec-change notices kept fields this build doesn't know and passed them to everyone
+  in the voice channel (a codec notice could carry ~2 MB at 10 burst, past a member's write queue): the
+  stored capabilities drop unknown fields, and thumbnails and codec notices are rebuilt from their fields
+  (`strip_client_envelope` is gone with its last callers). A key blob whose recipient name is longer than
+  any name is refused (a v1 envelope binds the name, so it isn't cut), and names are bounded as read.
+  Roles are capped at 250 and channels at 500 (Discord's numbers): both lists go out whole, and 1 KB topics
+  on unbounded channels could have outgrown the sign-in reply.
+- **Relay (A2).** The receive buffers are sized for the video struct (1,245 bytes), so audio up to 1,245
+  bytes was relayed, past the client's audio-sized voice buffer (1,237): on Windows that is a receive error,
+  which stopped incoming voice for everyone in the channel. Audio and stream audio (plain and sealed) larger
+  than `sizeof(UdpAudioPacket)` are dropped, FEC larger than `sizeof(UdpFecPacket)` and NACKs larger than
+  `sizeof(UdpNackPacket)` too; video can't exceed its struct. Keyframe requests are rebuilt by the relay.
+- **Role delete (A3).** It sent one `MEMBER_UPSERT` per holder from one handler, and no write completes
+  inside a handler, so a role with ~1,020 holders overflowed every session's 1,024-frame queue. The role list
+  that follows is now the whole delta: clients drop role ids it no longer names from every member they hold
+  (`chatStore.setRolesForServer`, and the settings member search, which restarts a "no role" search). No
+  roster revision is used, so the delta chain is unchanged.
+- **Other bulk fan-outs (A3 audit).** A ban's message purge sent one `CHANNEL_MESSAGE_DELETED` per message to
+  every viewer (over the frame cap from ~1,000 purged messages): it now sends `CHANNEL_PRUNED` per channel,
+  which clients already apply. Retention sweeps batched 2,000 ids per packet (hundreds of frames for a big
+  first sweep): `broadcast_pruned` now packs 100,000 ids and 20,000 tombstones per packet (≤ ~1.5 MB). Left
+  as they are, each bounded by the channel count (now ≤ 500) rather than by members or items: a category
+  sync's overwrite lists (one per synced child), key-rotation notices on removal (one per encrypted channel),
+  and the voice presences `broadcast_channels` re-sends (one per occupied voice channel). Member role
+  assignment was already one upsert + one role list per request.
+- Not done: the first `MEMBER_LIST_RES` page still carries every online member (~20,000 at typical sizes
+  fit the budget); paging online members is a protocol change. Invite creation has no per-member cap.
+
+Verified (commits 256cfb7, a1023a3, d5ecdb8): community e2e 699/0 (+44: page budgets and continuity in all
+three modes, one-line and sealed reply quotes, reason / label / stored-row clamps, ban and invite truncation,
+ban-push coalescing, attachment name / type caps, overwrite ids, unknown fields on caps / thumbnails / codec
+notices, key blob names, role and channel caps, oversized audio / FEC / NACK, role delete and ban purge with
+1,100 holders / messages, the 100,000-id prune batch), and 699/0 under ASan + UBSan with no reports. Each
+commit builds; the A1 and A2 states pass their own checks. Against the pre-change binary 38 of the 45 new or
+changed checks fail (the rest are controls: exact-size datagrams still relay, a short list isn't flagged, ...);
+before the fix the role delete and the purge also cut off the requesting owner. Renderer typecheck 0 errors;
+napi build clean with `index.js` / `index.d.ts` unchanged; native `cargo test --lib` 264/0. On main with
+the native and central A fixes: community 725/0 (with the v14 → v17 migration check) in both builds, no
+sanitizer reports; central 250/0; native 282; tsc web / node 0 / 0.
