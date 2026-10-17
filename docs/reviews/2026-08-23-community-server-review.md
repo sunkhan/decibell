@@ -3135,3 +3135,52 @@ Verified: community e2e 587/0 (+20: no relay before the echo; wrong / stale / ot
 nothing; another session's key from a new socket doesn't move it; an echo from a new address moves it;
 pacing, the 41-byte floor, unknown keys, the media path), `cargo test --lib` 247 on main with the E2EE
 fixes, napi build.
+
+### Fix: client security items — tokens, community ids, loopback server, link previews, saved sign-in (2026-10-17)
+
+From the pre-1.0 review (S1 native half, S3, S4, S5, S10).
+
+- **S1, native half.** Native put the 24 h session JWT in `Packet.auth_token` on every packet to a
+  community (channel, voice, stream, MLS and key requests, the keepalive's captured copy). The community
+  never reads it; it only spread a live credential into packets a server might relay or log. All 27
+  community sends now pass none (COMMUNITY_AUTH_REQ / SESSION_TOKEN_UPDATE keep the token in their payload,
+  where it's read). Central packets, which central checks, are unchanged.
+- **S3.** `COMMUNITY_AUTH_RES.server_id` re-keyed a connection onto whatever id the server named and
+  disconnected the real holder, so a hostile community could take another's messages, attachment target and
+  channel keys. Native keeps central's id → host:port record (`net/directory.rs`, from memberships, the
+  server list and invite resolution) and re-keys only a synthetic "host:port" connection whose address
+  central confirms for that id, never displacing a client connected elsewhere.
+- **S4.** The 127.0.0.1 media proxy attached the JWT and decrypted E2EE attachments for anyone (local port
+  scan, DNS rebinding). URLs now start with a per-launch 128-bit token (constant-time compare), `Host` must
+  be `127.0.0.1:<port>`, ids are digits only, GET only. Preload gets port + token over a sync IPC — not argv,
+  which every local user can read.
+- **S5.** The link-preview guard missed IPv4-mapped IPv6 in WHATWG form (`::ffff:7f00:1`), `::7f00:1`,
+  `::ffff:a9fe:a9fe`, and checked before connecting (DNS rebinding). `electron/main/publicNet.ts` classifies
+  with `net.BlockList` (mapped spellings, NAT64, 6to4, Teredo, site-local, documentation, reserved), and every
+  hop (page, redirects, og:image probe, oEmbed) connects through a `lookup` that refuses non-public answers,
+  so the address checked is the address connected. Caps, timeouts and cache unchanged.
+- **S10 (owner decision: keep the stored password, locked down).** The saved password was sealed with a key
+  any local process can derive (hostname + user), written 0644, with a home-made nonce, saved *before*
+  central accepted it, and handed to the renderer on every boot. Now: sealed under a subkey of the
+  keychain-wrapped local key (derived-key fallback when there's no keychain or Linux's `basic_text`, logged),
+  random nonce, 0600 atomic write; native signs in itself (`auto_login`), the renderer only learns the
+  saved username; credentials are saved only after central accepts a typed password and forgotten when it
+  refuses that pair as "Invalid username or password." (rate limits / network errors keep them); old files
+  migrate silently. Central now answers a database error at sign-in with its own message and doesn't count
+  it (it used to say "wrong password", which would now have cleared everyone's saved sign-in during an
+  outage). Also fixed: napi exported the init field as `e2EeLocalKey`, so main's `e2eeLocalKey` was never
+  read and **every E2EE key store since 2026-09-03 was sealed with the derived key**; stores now open with
+  the key their `protector` names and are re-sealed under the keychain key on load. If the keychain can't be
+  opened at a launch, the store shows locked and the passphrase restores it (local.key is never regenerated
+  on a read failure). Not done: a distinct "revoked" refusal for "log out other devices" (feature doesn't
+  exist yet — until it does, a refused resume still falls back to the saved password).
+
+Verified on main: renderer + main `tsc` 0, napi build (index.d.ts gains `autoLogin`), `cargo test --lib`
+262 (re-key decisions, saved sign-in sealing / migration / forgetting, refusal matching, derived-store
+re-seal), central e2e 221 (+ database error isn't "wrong password") under the normal build, ThreadSanitizer
+and ASan + UBSan, no reports. Scripted Electron checks: the media server refuses rebound / localhost /
+portless Host (403) and missing / wrong / truncated tokens, non-digit and traversal ids (404); link
+previews refused 127.0.0.1, `[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`, `[::7f00:1]`, `[::1]`, `0x7f000001`,
+`2130706433`, `localhost.` and /etc/hosts names with zero connections reaching the listener, while public
+pages, oEmbed, image probes and http→https redirects still unfurl. Needs an app restart to try live (main
+and preload changed).
