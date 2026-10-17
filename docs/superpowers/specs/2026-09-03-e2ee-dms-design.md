@@ -46,7 +46,7 @@ Does **not** protect against:
 | Where the crypto runs | **Native (Rust).** The renderer never sees a key or a ciphertext: DM events arrive already decrypted with an `encrypted` flag and a `decryptError` string; sends are sealed inside `send_private_message` / `edit_dm_message`. |
 | Rollout policy | **Encrypt whenever both sides have keys; plaintext otherwise, visibly.** A peer that has never set up encryption gets plaintext with an open-lock indicator. A peer whose identity we have pinned can *never* be downgraded. |
 | Old clients | The sender puts a fixed placeholder in `content` next to the envelope, so a pre-E2EE client shows "🔒 This message is end-to-end encrypted. Update Decibell to read it." A new client ignores `content` when an envelope is present. |
-| Old centrals | `LoginResponse.e2ee_keys` gates the whole feature. On a central without the key endpoints the client behaves exactly as before and the Privacy tab says so. |
+| Old centrals | ~~`LoginResponse.e2ee_keys` gates the whole feature.~~ **Removed 2026-10-17 (review S8):** a central answering `false` left the key store, and every pin in it, unloaded, so DMs to pinned peers went out in plaintext. Every central serves the key endpoints; the client ignores the flag and always loads the store. |
 | History | Server-side history stays the source of truth (there is no local message store). Old envelopes are decryptable forever because the identity keys are static and every old key is kept (locally and in the backup) after a rotation; the envelope names the `key_id`s it was sealed under. |
 
 ### Why not a ratchet (Signal / Olm / Megolm)
@@ -186,8 +186,8 @@ generalised). Publishing validates sizes (32/32/64 bytes) and broadcasts
 
 ```
 login_succeeded
-  └─ native: LoginRes.e2ee_keys?  no → status "unavailable" (plaintext, no prompts)
-       yes → local store for <username> opens?  yes → "ready"
+  └─ native (no e2ee_keys gate since 2026-10-17)
+       → local store for <username> opens?  yes → "ready"
              no → E2EE_FETCH_BACKUP_REQ → found → "locked"   (renderer: unlock prompt)
                                         → none  → "not_set_up" (renderer: set-up nudge)
 send_private_message / edit_dm_message

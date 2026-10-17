@@ -42,7 +42,8 @@ export async function joinVoiceChannel(
   const e2ee = useE2eeStore.getState();
   if (e2ee.status !== "ready") {
     if (e2ee.status === "unavailable") {
-      toast.warning("Voice unavailable", "Your central server doesn't support encryption, which voice channels require.");
+      // Signed out, or native is still loading the keys after sign-in.
+      toast.warning("Voice unavailable", "Your encryption keys are still loading. Try again in a moment.");
     } else {
       toast.info(
         e2ee.status === "locked" ? "Unlock encryption to join voice" : "Set up encryption to join voice",

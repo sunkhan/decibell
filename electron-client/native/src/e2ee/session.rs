@@ -33,7 +33,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// The central we're on has no key endpoints (or we're logged out).
+    /// Logged out, or signed in and the bootstrap hasn't decided yet.
     Unavailable,
     /// Central supports it; this account has never published keys.
     NotSetUp,
@@ -57,7 +57,6 @@ impl Status {
 /// Lives in `AppState.e2ee`. Reset on logout. Peers are keyed by account
 /// uid (uid design, stage 4), so a rename never splits a pin or a cache.
 pub struct E2ee {
-    pub supported: bool,
     /// Central stores bundle bindings and accepts rebinds
     /// (`LoginResponse.e2ee_uid_binding`). Without it we publish name-bound
     /// bundles and never rebind.
@@ -86,7 +85,6 @@ pub struct E2ee {
 impl Default for E2ee {
     fn default() -> Self {
         E2ee {
-            supported: false,
             uid_binding: false,
             status: Status::Unavailable,
             store: None,
@@ -113,7 +111,9 @@ impl E2ee {
             _ => (0, String::new()),
         };
         events::E2eeStatusPayload {
-            supported: self.supported,
+            // Every central serves the key endpoints; the feature is there
+            // whenever we're signed in and the bootstrap has run.
+            supported: self.status != Status::Unavailable,
             status: self.status.as_str().to_string(),
             key_id,
             fingerprint: fp,
@@ -138,7 +138,20 @@ fn arr32(v: &[u8]) -> Option<[u8; KEY_LEN]> {
 }
 
 pub fn emit_status(s: &AppState) {
+    // Unit tests can't link the napi event bus (Node-only symbols), so the
+    // flows they drive emit nothing there.
+    #[cfg(not(test))]
     events::emit_e2ee_status_changed(s.e2ee.status_payload(s.uid));
+    #[cfg(test)]
+    let _ = s;
+}
+
+/// `e2ee_peer_changed`, behind the same test seam as `emit_status`.
+fn emit_peer_changed(payload: events::E2eePeerChangedPayload) {
+    #[cfg(not(test))]
+    events::emit_e2ee_peer_changed(payload);
+    #[cfg(test)]
+    let _ = payload;
 }
 
 /// Persist the store under our uid (logged, never fatal: it's a cache of
@@ -392,7 +405,7 @@ pub async fn resolve_peer_current(
     }
     drop(s);
     if changed {
-        events::emit_e2ee_peer_changed(events::E2eePeerChangedPayload {
+        emit_peer_changed(events::E2eePeerChangedPayload {
             username: bundle.username.clone(),
             uid,
             key_id: bundle.key_id,
@@ -665,21 +678,25 @@ async fn publish(
 /// Runs after every successful LoginRes (spawned, never awaited by the
 /// router). Decides the status for this account on this device.
 pub async fn bootstrap(state: Arc<Mutex<AppState>>) {
-    let (uid, username, supported) = {
+    let (uid, username) = {
         let mut s = state.lock().await;
         // A reconnect re-runs this: forget per-session freshness so a peer
         // who rotated while we were away is re-fetched.
         s.e2ee.fresh.clear();
         s.e2ee.current_ids.clear();
         s.e2ee.cache.clear();
-        (s.uid, s.username.clone().unwrap_or_default(), s.e2ee.supported)
+        (s.uid, s.username.clone().unwrap_or_default())
     };
     if username.is_empty() {
         return;
     }
-    // Everything binds the account uid; a central that doesn't send ours
-    // predates users by uid.
-    if !supported || uid <= 0 {
+    // Nothing central says turns this off (review S8): `LoginResponse.
+    // e2ee_keys` used to gate it, and a central answering false left the
+    // store — and with it every pin — unloaded, so DMs to pinned peers went
+    // out in plaintext. Every central serves the key endpoints, so the store
+    // always loads. Everything binds the account uid; a central that doesn't
+    // send ours predates users by uid.
+    if uid <= 0 {
         let mut s = state.lock().await;
         s.e2ee.status = Status::Unavailable;
         s.e2ee.store = None;
@@ -830,8 +847,8 @@ fn backup_payload(store: &KeyStore) -> backup::BackupPayload {
 pub async fn setup(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(), String> {
     let username = {
         let s = state.lock().await;
-        if !s.e2ee.supported || s.uid <= 0 {
-            return Err("This server doesn't support encrypted DMs.".into());
+        if s.uid <= 0 {
+            return Err("Not signed in".into());
         }
         if s.e2ee.status == Status::Ready {
             return Err("Encryption is already set up on this device.".into());
@@ -877,8 +894,8 @@ pub async fn setup(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(
 pub async fn unlock(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(), String> {
     let pending = {
         let s = state.lock().await;
-        if !s.e2ee.supported || s.uid <= 0 {
-            return Err("This server doesn't support encrypted DMs.".into());
+        if s.uid <= 0 {
+            return Err("Not signed in".into());
         }
         s.username.as_ref().ok_or("Not signed in")?;
         s.e2ee.pending_backup.clone()
@@ -956,8 +973,8 @@ pub async fn change_passphrase(state: &Arc<Mutex<AppState>>, passphrase: String)
 pub async fn reset(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(), String> {
     let (mut keys, peers, legacy_peers, bundle_for) = {
         let s = state.lock().await;
-        if !s.e2ee.supported || s.uid <= 0 {
-            return Err("This server doesn't support encrypted DMs.".into());
+        if s.uid <= 0 {
+            return Err("Not signed in".into());
         }
         let username = s.username.clone().ok_or("Not signed in")?;
         let (keys, peers, legacy) = match s.e2ee.store.as_ref() {
@@ -1075,12 +1092,9 @@ pub async fn verify_peer_call_key(
     sig: &[u8],
     key_id: u32,
 ) -> CallKeyAuth {
-    let (me, supported) = {
-        let s = state.lock().await;
-        (s.uid, s.e2ee.supported)
-    };
-    if !supported || me <= 0 {
-        // Old central: no key endpoints at all, nobody can be verified.
+    let me = state.lock().await.uid;
+    if me <= 0 {
+        // Not signed in: there is no call to verify.
         return CallKeyAuth::Unverified;
     }
     let peer_uid = match resolve_uid(state, peer_uid, peer).await {
@@ -1409,7 +1423,6 @@ mod tests {
         let mut s = AppState::default();
         s.uid = uid;
         s.username = Some(name.to_string());
-        s.e2ee.supported = true;
         s.e2ee.status = Status::Ready;
         let store = KeyStore::new(mine.key_id, vec![mine.clone()]);
         (Arc::new(Mutex::new(s)), store)
@@ -1417,6 +1430,48 @@ mod tests {
 
     async fn install(state: &Arc<Mutex<AppState>>, store: KeyStore) {
         state.lock().await.e2ee.store = Some(store);
+    }
+
+    /// `state::boot()` for flows that save the key store: the per-process
+    /// temp dir keystore.rs's tests install too (a OnceLock: the first call
+    /// wins, and both install the same config). Tests that save use their
+    /// own uid so the files never collide.
+    fn boot_tmp() {
+        let dir = std::env::temp_dir().join(format!("decibell-e2ee-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        crate::state::set_boot(crate::state::BootConfig {
+            user_data_dir: dir,
+            app_version: "test".into(),
+            e2ee_local_key: Some([7u8; 32]),
+        });
+    }
+
+    /// Review S8: no flag from central keeps the store — and the pins in
+    /// it — from loading (the `e2ee_keys` gate is gone), and a pinned peer
+    /// whose keys central then withholds is refused, never sent plaintext.
+    #[tokio::test]
+    async fn bootstrap_always_loads_the_pins() {
+        boot_tmp();
+        const ME: i64 = 9301;
+        let (mine, bob) = (identity(3), identity(7));
+        let mut store = KeyStore::new(3, vec![mine]);
+        store.peers.insert(BOB, pin(&bob));
+        keystore::save(ME, &store).unwrap();
+        let mut s = AppState::default();
+        s.uid = ME;
+        s.username = Some("me".into());
+        let state = Arc::new(Mutex::new(s));
+        bootstrap(state.clone()).await;
+        {
+            let s = state.lock().await;
+            assert_eq!(s.e2ee.status, Status::Ready);
+            assert!(s.e2ee.status_payload(ME).supported);
+            assert!(s.e2ee.store.as_ref().unwrap().is_pinned(BOB));
+        }
+        // Central answers "no keys" for the pinned peer (fresh, nothing cached).
+        state.lock().await.e2ee.fresh.insert(BOB);
+        assert!(seal_outbound(&state, BOB, "bob", "hi").await.is_err());
+        keystore::delete(ME);
     }
 
     #[tokio::test]

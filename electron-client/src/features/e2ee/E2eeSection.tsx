@@ -1,9 +1,11 @@
 import { useE2eeStore } from "../../stores/e2eeStore";
 import { LockGlyph } from "../chat/MessageBubble";
 
-/// Privacy-tab card for end-to-end encrypted DMs. State-driven: the
-/// central's support, then whether this account has keys and whether this
-/// device holds them. All actions go through PassphraseModal.
+/// Privacy-tab card for end-to-end encrypted DMs. State-driven: whether
+/// this account has keys and whether this device holds them. All actions go
+/// through PassphraseModal. "unavailable" only means native hasn't decided
+/// yet (signed out, or the keys are still loading after sign-in): no
+/// central can switch the feature off.
 export default function E2eeSection() {
   const supported = useE2eeStore((s) => s.supported);
   const status = useE2eeStore((s) => s.status);
@@ -16,7 +18,7 @@ export default function E2eeSection() {
 
   if (!supported || status === "unavailable") {
     description =
-      "Encrypts your direct messages on your device so only you and the person you're talking to can read them. Your central server doesn't offer this yet.";
+      "Encrypts your direct messages on your device so only you and the person you're talking to can read them. Checking this device's encryption keys…";
   } else if (status === "not_set_up") {
     description =
       "Encrypt your direct messages so only you and the person you're talking to can read them. The server only ever stores encrypted data. Protected by a passphrase you choose; you'll need it on other devices.";

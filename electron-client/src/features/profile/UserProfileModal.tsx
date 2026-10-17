@@ -345,7 +345,8 @@ function OwnEncryptionCard({ onOpenSettings }: { onOpenSettings: () => void }) {
   let badge: Badge = null;
   let description: string;
   if (!supported || status === "unavailable") {
-    description = "Your central server doesn't offer end-to-end encrypted direct messages yet.";
+    // Native hasn't decided yet (keys still loading after sign-in).
+    description = "Checking this device's encryption keys…";
   } else if (status === "not_set_up") {
     badge = { text: "Off", on: false };
     description =
@@ -394,8 +395,8 @@ function PeerEncryption({
     return (
       <Card title="End-to-end encryption" icon={<LockGlyph size={14} />}>
         <p className="text-[12px] leading-[1.55] text-text-muted">
-          Your central server doesn't offer end-to-end encrypted direct messages yet, so there is
-          no safety number to compare.
+          This device is still loading its encryption keys, so there is no safety number to
+          compare yet.
         </p>
       </Card>
     );

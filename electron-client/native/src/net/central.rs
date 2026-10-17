@@ -291,11 +291,11 @@ impl CentralClient {
                         // get_call_config read on that event is race-free.
                         s.stun_servers = resp.stun_servers.clone();
                         s.call_signaling = resp.call_signaling;
-                        // E2EE DMs: does this central serve the key
-                        // endpoints? The bootstrap below (store load /
-                        // backup lookup) runs off the router so the
-                        // E2EE_FETCH_BACKUP_RES it waits for can be routed.
-                        s.e2ee.supported = resp.e2ee_keys;
+                        // E2EE DMs: `e2ee_keys` is deliberately ignored —
+                        // a central must not be able to switch encryption
+                        // (and the pins) off (review S8). The bootstrap below
+                        // (store load / backup lookup) runs off the router so
+                        // the E2EE_FETCH_BACKUP_RES it waits for can be routed.
                         s.e2ee.uid_binding = resp.e2ee_uid_binding;
                         // User statuses: Invisible must be known before the
                         // auto-rejoin below connects to any community (each
