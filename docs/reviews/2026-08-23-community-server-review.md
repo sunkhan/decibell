@@ -3083,3 +3083,36 @@ dropped, oversized and self DMs refused with the nonce, non-INVITE probe unanswe
 refused, oversized candidate dropped, the block lifecycle); the same suite against the previous binary
 fails the token, preview, size and block checks; ThreadSanitizer and ASan + UBSan + LeakSanitizer: 220 each,
 no reports.
+
+### Fix: E2EE downgrade and nonce-reuse holes (2026-10-17)
+
+From the pre-1.0 review (items S6–S9); client-only, no wire change.
+
+- **S9 — AES-GCM nonce reuse on MLS media.** Sealed audio used a counter from 1 per sealer: restarting a
+  screen share inside an epoch built a new stream-audio sealer under the same K(epoch, uid, kind) and
+  replayed nonces 1, 2, 3…, and two sessions of one account in a channel (allowed; they derive the same
+  uid-named keys) collided from the first packet — the relay could recover the GCM key and forge audio.
+  Audio nonces now come from one process-wide counter with a random 64-bit start; video `stream_salt` from a
+  process-wide counter with a random 32-bit start (it was random per stream, 2^-32 collisions).
+- **S8 — a central could switch E2EE and the pins off.** `LoginResponse.e2ee_keys=false` left the key store
+  unloaded, so pins were never read and DMs to pinned contacts went plaintext. Native ignores the flag and
+  always loads the store; the status payload's `supported` now means "signed in and bootstrapped"; renderer
+  copy that blamed the central now says the keys are still loading.
+- **S7 — pinned peer's call verified as "not verified".** With central reporting no identity and an
+  unsigned call, `verify_peer_call_key` allowed the call even for a pinned peer (MITM by stripping
+  signatures and swapping ephemerals). Now Rejected, as `seal_outbound` refuses plaintext. The
+  `seal_outbound_raw` doc now says why escrow skips rather than errors.
+- **S6 — historical generations weren't pin-checked.** A fetched `(uid, key_id)` bundle was only
+  self-signature checked, then kept: central could forge a pinned contact's side of DMs or channel key
+  blobs under a key_id nobody pinned. For a pinned peer a generation now opens only if its identity is the
+  pin or one pinned before it (new `PeerRecord.previous`, filled on a key change, additive storage); an
+  unknown identity is accepted only as their new current identity, which surfaces the change and re-pins.
+  Otherwise the message shows `peer_key` and nothing is stored. Known limits: entries injected before this
+  fix stay (history entries carry no identity); on a fresh store, history sealed under a peer's identity
+  from before their last reset no longer opens once they're pinned (indistinguishable from a forgery
+  without a signed key history).
+
+Verified: `cargo test --lib` 241 (new: restarted sealers never repeat a nonce, distinct stream salts,
+pins load with no central flag, pinned-without-keys call refused, a pinned peer's unpinned identity never
+opens a DM or channel blob and is never stored, a key change first seen in history is surfaced and still
+opens, the retired-identity list survives save/load), napi build, renderer `tsc` 0.
