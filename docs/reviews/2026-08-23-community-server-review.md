@@ -3350,3 +3350,88 @@ and dropped-receiver exits; sealed junk and oversized datagrams are skipped and 
 caller; STUN finds its answer behind junk bigger than the old buffer). With the loops' error branch made to
 panic on ECONNREFUSED, both survival tests fail, so the loops do see the error the old allowlist broke on.
 napi build clean with `index.js` / `index.d.ts` unchanged. No renderer files changed.
+
+### Fix: central responses fit the client's frame cap (2026-10-17, review A1)
+
+The central half of A1. The native client treated any frame over 2 MiB as a dead connection and asked again
+after reconnecting (`native/src/net/framing.rs`; it now skips such a frame, see the native entry above), and no central response had a byte budget, so one big row
+could lock a user out until someone edited the database. The limits live in the new
+`src/server/wire_limits.hpp`: a list or page response holds at most 1.5 MiB of rows (`MAX_RESPONSE_BYTES`,
+the community search figure), and every stored string a response repeats is capped when written and again
+when read, for rows stored before the cap.
+
+- **DM history.** `DM_HISTORY_RES` had a 200-row limit and no byte budget: 200 rows of 64 KiB bodies, or of
+  body + envelope + quoted envelope (~200 KiB each), is far past the cap. A page is now cut where it would
+  pass 1.5 MiB, and the cut side sets `has_more` / `has_more_after`, which the client already pages on, so a
+  short page is no longer the end. An older or latest page keeps its newest rows, a newer page its oldest,
+  and a window around a message grows outwards from the target, one row on each side in turn. A page always
+  holds its first row (the target): the caps bound a row to ~200 KiB.
+- **Old oversized messages.** DIRECT_MSG capped `content` at 64 KiB only since the S1 fixes, so rows of up to
+  ~2 MiB exist. Every read now cuts a body to 64 KiB, ending in "…": SQL reads `LEFT(content, cap + 1)`, so
+  such a row isn't even fetched whole, then a byte cut on a character boundary (a split character makes
+  prost reject the whole packet). Reply quotes (`reply_to_content`, live and in history) are cut to 512 bytes
+  the same way, so a reply to an old 1.9 MB message no longer makes a ~2 MB DIRECT_MSG for both people.
+  Envelopes have been capped since they exist.
+- **DM conversations.** `DM_CONVERSATIONS_RES`, sent at every login, carried every conversation with its
+  whole last body: the review's 1.9 MB DM dropped its recipient at every login. It now comes in pages, newest
+  first, at most 200 conversations and 1.5 MiB each: `DmConversationsReq.before_id` (the previous page's
+  oldest `last_message_id`), `DmConversationsRes.has_more` and `before_id` (an echo). A plaintext preview is
+  cut to 512 bytes. An encrypted last message can't be cut, and the client opens it for the preview line, so
+  its envelope goes whole and counts toward the page's budget: a page of big encrypted previews holds fewer
+  conversations (each ≤ ~65 KiB, so at least one). Native's DM worker asks for the next page after emitting
+  one, until `has_more` is false and only while the cursor moves down; each page merges into the renderer's
+  list as before. The renderer's preview row, synthesized into `messages` at hydrate, used to win over the
+  server's copy in the history dedup (the newest message showed no reply quote or "(edited)" for the rest of
+  the session); it is now flagged `preview` and replaced by the first history page, which matters now that its
+  text can be cut.
+- **Friend lists.** `FRIEND_LIST_RES` listed every friendship, and anyone can send a request: ~19k requests put
+  a victim's list (fetched at every login, pushed on every friend action) past the cap. It now holds at most
+  5000 rows (≤ ~1 MiB): accepted friends first, then the user's blocks, requests sent, requests received. A
+  block placed on the user takes no row. An ADD is refused once 1000 requests wait for the target ("This user
+  can't take more friend requests right now.").
+- **Logins, the directory, invite previews.** `LOGIN_RES` listed every membership with its community's
+  description, which central never capped (a heartbeat could carry ~2 MiB, from anyone holding the shared
+  community secret): one community could lock every member out at every login, and the directory and its
+  invite previews out for everyone. The heartbeat now clamps the name to 64 bytes and the description to
+  512, the community's own caps (a name over the column's 64 characters used to fail the whole heartbeat),
+  reads cut old descriptions, and a login lists at most 200 memberships, the oldest.
+- **Server pictures.** Central took any size from `SYNC_SERVER_PICTURE_REQ` and broadcast its `version` to
+  every member. A picture over 1 MiB (the community's upload cap) or a version over 64 bytes is now dropped,
+  and a stored picture over 1 MiB is served as none.
+- **Presence answers.** A `PRESENCE_UPDATE` for 5000 newly watched visible accounts with long status messages
+  is over 3 MB. It now goes in parts of ≤ 1.5 MiB, each a whole answer for the accounts it covers; clients already
+  apply each one on its own.
+- **Backstop.** `Session::enqueue` no longer sends a frame over the client's cap (it logs one): one unanswered
+  request beats a reconnect loop. Nothing reaches it now; a response that echoes a request's field back is
+  smaller than the request, which central caps at 2 MiB.
+- Smaller: an email over the column's 128 characters is refused as invalid instead of failing the insert as
+  "Registration failed"; an invite code over 32 bytes skips the lookup.
+
+Checked and already bounded: the fixed-text or one-name replies (`REGISTER_RES`, `LOGIN_RES` refusals,
+`RENAME_RES`, `TOKEN_REFRESH_RES`, `FRIEND_ACTION_RES`, `SERVER_HEARTBEAT_RES`, `E2EE_PUBLISH_KEYS_RES`);
+`SERVER_LIST_RES` (50 rows); `INVITE_RESOLVE_RES` (one row); the `DIRECT_MSG` relay and echo and
+`DM_MESSAGE_EDITED` (64 KiB body, envelopes ≤ 64 KiB + 64 since they exist, now a 512-byte quote);
+`DM_EDIT_RES`, `DM_DELETE_RES`, `DM_MESSAGE_DELETED`; `CALL_SIGNAL` (the S13 caps); `E2EE_FETCH_KEYS_RES`
+(fixed-size keys, a name of ≤ 32 characters) and `E2EE_FETCH_BACKUP_RES` (8 KiB since the feature);
+`FETCH_AVATAR_RES` (1 MiB: the cap went from 200 KB to 1 MiB and was never higher); one-account pushes
+(`PRESENCE_DELTA`, `USER_RENAMED`, `AVATAR_CHANGED`, `E2EE_KEYS_CHANGED`, `SERVER_PICTURE_CHANGED`; status
+text has been normalized to 128 characters and the emoji to 32 bytes since status messages exist). A reply
+that echoes an unknown name or code goes to its requester only and is smaller than the request. Client
+strings that reach the database: usernames (3–32 ASCII), status messages, DM bodies, envelopes and nonces,
+key bundles and backups, avatars and call-signal fields were already capped; invite codes and hosts and a
+community's host and fingerprint are bounded by their columns (an oversized one fails its own insert).
+
+Verified: central e2e 250/0 (+29: history pages cut by bytes in all three modes and paged to the end, a
+pre-cap 2.1 MB message and a reply's quote of it, conversation pages by rows and by bytes with envelopes kept
+whole, the 5000-row friend list and the request cap, clamped heartbeats and old descriptions in logins, the
+directory and invite previews, 200 memberships, picture caps, a 3000-account presence answer in parts), and
+250/0 under ThreadSanitizer and under ASan + UBSan with no reports. 21 of the 29 new checks fail against the
+pre-change binary, which sends 3.0 MB history, 5.0 MB conversation and 2.2 MB presence frames. Native
+`cargo test --lib` 264/0, napi build clean with `index.js` / `index.d.ts` unchanged, renderer tsc 0 errors.
+`load.py` not rerun: nothing here changes threads, locks or per-connection memory, and the login path only
+gains a LIMIT on the memberships query; the one new per-request cost on a hot path is a size computation per
+entry while building a subscription answer.
+
+Left open: B11 (the conversations query still scans all of the user's DMs, now once per page); having native
+skip an oversized frame instead of reconnecting (theme 2) is not done here. Older clients read only the first
+conversation page (the newest 200); pre-1.0, client and central ship together.
