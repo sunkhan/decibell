@@ -8,6 +8,13 @@ export interface LoginArgs {
   password: string
 }
 export declare function login(args: LoginArgs): Promise<void>
+/**
+ * Sign in with the saved credentials, if there are any (the renderer
+ * asks at boot when `load_config` reported a `saved_username`). The
+ * password stays in native. Ok(false) = nothing saved (or it doesn't
+ * open on this machine any more): show the sign-in page.
+ */
+export declare function autoLogin(): Promise<boolean>
 export interface RenameAccountArgs {
   newUsername: string
   password: string
@@ -999,10 +1006,12 @@ export interface FetchServerPictureArgs {
 export declare function fetchServerPicture(args: FetchServerPictureArgs): Promise<void>
 /**
  * Read the persisted config blob from disk. Returns
- * `{ credentials, settings }` as a JSON value so the renderer can
+ * `{ saved_username, settings }` as a JSON value so the renderer can
  * hydrate its zustand stores without us having to re-declare the
  * whole AppSettings shape as a #[napi(object)] mirror (it has a
  * HashMap field which napi(object) doesn't support natively).
+ * The saved password never leaves native: `saved_username` set means
+ * "call `auto_login`".
  */
 export declare function loadConfig(): Promise<any>
 /**
@@ -1425,9 +1434,18 @@ export interface InitOptions {
    * base64 of a random 32-byte key that Electron main keeps wrapped by
    * `safeStorage` — the at-rest key for the E2EE key store. Absent when
    * safeStorage isn't available on this machine (config.rs derivation
-   * is used instead).
+   * is used instead). Named explicitly: napi's camel-casing splits on
+   * the digit (`e2EeLocalKey`), so main's `e2eeLocalKey` was never read
+   * and every store fell back to the derived key.
    */
-  e2EeLocalKey?: string
+  e2eeLocalKey?: string
+  /**
+   * True when that key is wrapped by a real OS keychain — false (or
+   * absent) for Linux's `basic_text` safeStorage backend, which wraps
+   * with a hard-coded password. The saved sign-in uses the key only
+   * when it is (config.rs).
+   */
+  localKeyProtected?: boolean
 }
 /**
  * Called once from Electron main after `app.whenReady()` and the

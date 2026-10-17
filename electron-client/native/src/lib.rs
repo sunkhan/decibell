@@ -52,8 +52,16 @@ pub struct InitOptions {
     /// base64 of a random 32-byte key that Electron main keeps wrapped by
     /// `safeStorage` — the at-rest key for the E2EE key store. Absent when
     /// safeStorage isn't available on this machine (config.rs derivation
-    /// is used instead).
+    /// is used instead). Named explicitly: napi's camel-casing splits on
+    /// the digit (`e2EeLocalKey`), so main's `e2eeLocalKey` was never read
+    /// and every store fell back to the derived key.
+    #[napi(js_name = "e2eeLocalKey")]
     pub e2ee_local_key: Option<String>,
+    /// True when that key is wrapped by a real OS keychain — false (or
+    /// absent) for Linux's `basic_text` safeStorage backend, which wraps
+    /// with a hard-coded password. The saved sign-in uses the key only
+    /// when it is (config.rs).
+    pub local_key_protected: Option<bool>,
 }
 
 /// Called once from Electron main after `app.whenReady()` and the
@@ -90,6 +98,9 @@ pub fn init(
         k.copy_from_slice(&bytes);
         Some(k)
     });
+    config::set_local_key_protected(
+        e2ee_local_key.is_some() && opts.local_key_protected.unwrap_or(false),
+    );
     state::set_boot(state::BootConfig {
         user_data_dir: opts.user_data_dir.into(),
         app_version: opts.app_version,

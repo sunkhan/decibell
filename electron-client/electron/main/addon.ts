@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as os from "os";
 import { app, BrowserWindow } from "electron";
-import { loadOrCreateE2eeLocalKey } from "./e2eeLocalKey";
+import { loadOrCreateE2eeLocalKey, localKeyProtected } from "./e2eeLocalKey";
 
 type EventEnvelope = { name: string; payload: unknown };
 type StreamFrame = {
@@ -25,6 +25,9 @@ type InitOptions = {
   /// base64 32-byte at-rest key for the E2EE key store (safeStorage-
   /// wrapped on disk); null when no keychain backend is available.
   e2eeLocalKey: string | null;
+  /// That key is wrapped by a real OS keychain (not Linux basic_text):
+  /// only then does the saved sign-in use it.
+  localKeyProtected: boolean;
 };
 type AddonInit = (
   opts: InitOptions,
@@ -147,11 +150,13 @@ export function callCommand(method: string, args: unknown): unknown {
 ///   carries one fanout per active watcher.
 export function initAddon(): void {
   const init = addon.init as AddonInit;
+  const e2eeLocalKey = loadOrCreateE2eeLocalKey();
   init(
     {
       userDataDir: app.getPath("userData"),
       appVersion: app.getVersion(),
-      e2eeLocalKey: loadOrCreateE2eeLocalKey(),
+      e2eeLocalKey,
+      localKeyProtected: e2eeLocalKey !== null && localKeyProtected(),
     },
     (env) => {
       for (const w of BrowserWindow.getAllWindows()) {

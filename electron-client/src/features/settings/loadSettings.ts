@@ -29,7 +29,9 @@ import { normalizeAppId } from "../voice/streamAudioFilter";
 import { restoreSavedUserGains } from "../voice/userGain";
 
 interface LoadedConfigShape {
-  credentials: { username: string; password: string } | null;
+  /// The account a saved sign-in is for (the password never leaves
+  /// native); null when nothing is saved.
+  saved_username: string | null;
   settings: {
     friends_only_dms: boolean;
     voice_threshold_db: number | null;
@@ -263,16 +265,15 @@ export async function loadSettings(): Promise<void> {
   // entries move to their uid as the servers name them).
   restoreSavedUserGains(settings.user_volumes_by_uid ?? {}, settings.local_muted_uids ?? []);
 
-  // Auto-login. If the user has saved credentials we attempt them
-  // silently; failure (wrong password / server gone / no internet)
-  // just lands them on the login screen with no error toast.
-  if (config.credentials) {
+  // Auto-login. If a sign-in is saved, native signs in with it (the
+  // password stays there); failure (server gone / no internet) just lands
+  // the user on the login screen with no error toast. A password central
+  // refuses is forgotten natively, so it isn't retried every launch.
+  if (config.saved_username) {
     useAuthStore.getState().setLoggingIn(true);
     try {
-      await invoke("login", {
-        username: config.credentials.username,
-        password: config.credentials.password,
-      });
+      const started = await invoke<boolean>("auto_login");
+      if (!started) useAuthStore.getState().setLoggingIn(false);
     } catch {
       useAuthStore.getState().setLoginError(null);
     }

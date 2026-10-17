@@ -225,8 +225,8 @@ fn record_dh_pub(p: &PeerRecord, key_id: u32) -> Option<Vec<u8>> {
 #[derive(Serialize, Deserialize)]
 struct StoreFile {
     v: u32,
-    /// "safe_storage" | "derived" — which at-rest key wrote it (for
-    /// diagnostics; the AEAD decides whether it opens).
+    /// "safe_storage" | "derived" — which at-rest key wrote it; opened
+    /// with that key (`key_for`).
     protector: String,
     nonce: String,
     ct: String,
@@ -261,13 +261,28 @@ fn at_rest_key() -> ([u8; 32], &'static str) {
     }
 }
 
+/// The key a store file names. Until the addon's `e2eeLocalKey` option
+/// was named so napi actually reads it (review S10), the safeStorage key
+/// never arrived and every store was sealed "derived": those keep opening
+/// with the derived key, and `load` re-seals them under safeStorage.
+fn key_for(protector: &str) -> Result<[u8; 32], String> {
+    match protector {
+        "derived" => Ok(crate::config::derive_key()),
+        "safe_storage" => crate::state::boot()
+            .e2ee_local_key
+            .ok_or_else(|| "key store is sealed under the safeStorage key, which isn't available".to_string()),
+        _ => Ok(at_rest_key().0),
+    }
+}
+
 /// A store exists for this account (either file).
 pub fn exists(uid: i64, username: &str) -> bool {
     path_for(uid).is_file() || (!username.is_empty() && legacy_path_for(username).is_file())
 }
 
-/// Decrypt one store file. `Ok(None)` = no file.
-fn open_file(path: &PathBuf, version: u32, aad: &[u8]) -> Result<Option<Vec<u8>>, String> {
+/// Decrypt one store file: (plaintext, the protector that sealed it).
+/// `Ok(None)` = no file.
+fn open_file(path: &PathBuf, version: u32, aad: &[u8]) -> Result<Option<(Vec<u8>, String)>, String> {
     use base64::Engine as _;
     let raw = match std::fs::read(path) {
         Ok(r) => r,
@@ -284,24 +299,33 @@ fn open_file(path: &PathBuf, version: u32, aad: &[u8]) -> Result<Option<Vec<u8>>
     if nonce.len() != 12 {
         return Err("bad store nonce".into());
     }
-    let (mut key, _) = at_rest_key();
+    let mut key = key_for(&file.protector)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
     let plain = cipher
         .decrypt(Nonce::from_slice(&nonce), Payload { msg: &ct, aad })
         .map_err(|_| "key store does not open with this machine's at-rest key".to_string());
     key.zeroize();
-    plain.map(Some)
+    plain.map(|p| Some((p, file.protector)))
 }
 
 /// `Ok(None)` = no store for this account. `Err` = present but unreadable
 /// (different at-rest key, corruption) — the caller treats that as locked.
 pub fn load(uid: i64) -> Result<Option<KeyStore>, String> {
-    let Some(mut plain) = open_file(&path_for(uid), FILE_VERSION_UID, &uid_aad(uid))? else {
+    let Some((mut plain, protector)) = open_file(&path_for(uid), FILE_VERSION_UID, &uid_aad(uid))? else {
         return Ok(None);
     };
     let store = serde_json::from_slice::<KeyStore>(&plain).map_err(|e| format!("decode store: {e}"));
     plain.zeroize();
-    store.map(Some)
+    let store = store?;
+    // Sealed under the derived key while the keychain one is here now:
+    // move it over (once).
+    if protector != at_rest_key().1 {
+        match save(uid, &store) {
+            Ok(()) => log::info!("[e2ee] key store re-sealed under the {} key", at_rest_key().1),
+            Err(e) => log::warn!("[e2ee] couldn't re-seal the key store: {e}"),
+        }
+    }
+    Ok(Some(store))
 }
 
 /// A pre-uid store filed under `username`, unsaved: the caller checks its
@@ -311,7 +335,7 @@ pub fn load_legacy(username: &str) -> Result<Option<KeyStore>, String> {
     if username.is_empty() {
         return Ok(None);
     }
-    let Some(mut plain) = open_file(&legacy_path_for(username), FILE_VERSION_NAME, username.as_bytes())? else {
+    let Some((mut plain, _)) = open_file(&legacy_path_for(username), FILE_VERSION_NAME, username.as_bytes())? else {
         return Ok(None);
     };
     let old = serde_json::from_slice::<KeyStoreV1>(&plain).map_err(|e| format!("decode store: {e}"));
@@ -435,6 +459,31 @@ mod tests {
         delete(uid);
         assert!(load(uid).unwrap().is_none());
         assert!(save(0, &store).is_err());
+    }
+
+    /// A store sealed "derived" (every store written before the addon got
+    /// the safeStorage key) still opens, and is re-sealed under it.
+    #[test]
+    fn derived_store_opens_and_moves_to_safe_storage() {
+        use base64::Engine as _;
+        let _g = boot_tmp();
+        let uid = 9301;
+        let store = KeyStore::new(1, vec![IdentityKeys::generate(1).unwrap()]);
+        let plain = serde_json::to_vec(&store).unwrap();
+        let nonce = [4u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&crate::config::derive_key()).unwrap();
+        let ct = cipher.encrypt(Nonce::from_slice(&nonce), Payload { msg: &plain, aad: &uid_aad(uid) }).unwrap();
+        let b = base64::engine::general_purpose::STANDARD;
+        let file = StoreFile { v: FILE_VERSION_UID, protector: "derived".into(), nonce: b.encode(nonce), ct: b.encode(ct) };
+        std::fs::create_dir_all(path_for(uid).parent().unwrap()).unwrap();
+        std::fs::write(path_for(uid), serde_json::to_vec(&file).unwrap()).unwrap();
+
+        let loaded = load(uid).unwrap().unwrap();
+        assert_eq!(loaded.current_key_id, 1);
+        let after: StoreFile = serde_json::from_slice(&std::fs::read(path_for(uid)).unwrap()).unwrap();
+        assert_eq!(after.protector, "safe_storage");
+        assert_eq!(load(uid).unwrap().unwrap().current_key_id, 1);
+        delete(uid);
     }
 
     #[test]

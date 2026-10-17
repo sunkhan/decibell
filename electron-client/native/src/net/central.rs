@@ -254,7 +254,10 @@ impl CentralClient {
                     if resp.success {
                         let mut s = state.lock().await;
                         s.token = Some(resp.jwt_token.clone());
-                        s.resume_pending = false;
+                        // Typed credentials are saved now that central took
+                        // them; a resume never saves (nothing was typed).
+                        let was_resume = std::mem::take(&mut s.resume_pending);
+                        let save_typed = std::mem::take(&mut s.save_credentials_on_login) && !was_resume;
                         if !resp.resume_token.is_empty() {
                             s.resume_token = Some(resp.resume_token.clone());
                         }
@@ -268,20 +271,21 @@ impl CentralClient {
                                 .unwrap_or_else(|| "unknown".to_string())
                         };
                         // Signed in with a name the account renamed away
-                        // from (still reserved for it): the saved
-                        // credentials follow the current name.
+                        // from (still reserved for it): the credentials
+                        // follow the current name, saved ones included.
+                        let mut persist: Option<(crate::config::Credentials, bool)> = None;
                         if let Some((typed, pass)) = s.credentials.clone() {
-                            if !resp.username.is_empty() && typed != resp.username {
-                                s.credentials = Some((resp.username.clone(), pass.clone()));
-                                if let Ok(cfg) = crate::config::load() {
-                                    if cfg.credentials.is_some() {
-                                        let creds = crate::config::Credentials {
-                                            username: resp.username.clone(),
-                                            password: pass,
-                                        };
-                                        let _ = crate::config::save(Some(&creds), &cfg.settings);
-                                    }
-                                }
+                            let renamed = !resp.username.is_empty() && typed != resp.username;
+                            let current = if renamed { resp.username.clone() } else { typed };
+                            if renamed {
+                                s.credentials = Some((current.clone(), pass.clone()));
+                            }
+                            if save_typed || renamed {
+                                // (creds, only if a sign-in is saved already)
+                                persist = Some((
+                                    crate::config::Credentials { username: current, password: pass },
+                                    !save_typed,
+                                ));
                             }
                         }
                         s.username = Some(username.clone());
@@ -327,6 +331,9 @@ impl CentralClient {
                             ));
                         }
                         drop(s);
+                        if let Some((creds, only_if_saved)) = persist {
+                            persist_credentials(creds, only_if_saved).await;
+                        }
                         if let (Some(tx), false) = (central_tx, resend.is_empty()) {
                             tokio::spawn(async move {
                                 for pkt in resend {
@@ -393,6 +400,7 @@ impl CentralClient {
                         // with a new key) falls back to the password,
                         // silently; only a refused password sign-in is a
                         // failure to report.
+                        let mut refused = None;
                         let fallback = {
                             let mut s = state.lock().await;
                             if std::mem::take(&mut s.resume_pending) {
@@ -400,9 +408,22 @@ impl CentralClient {
                                 let tx = s.central.as_ref().and_then(|c| c.connection_write_tx());
                                 s.credentials.clone().zip(tx)
                             } else {
+                                s.save_credentials_on_login = false;
+                                // Wrong password / no such account: these
+                                // credentials will never work again. Drop
+                                // them (no retry on every reconnect) and the
+                                // saved copy if it's this pair (no failed
+                                // sign-in on every launch). Rate limits and
+                                // network trouble keep them.
+                                if is_definitive_refusal(&resp.message) {
+                                    refused = s.credentials.take();
+                                }
                                 None
                             }
                         };
+                        if let Some((user, pass)) = refused {
+                            forget_saved_credentials(user, pass).await;
+                        }
                         match fallback {
                             Some(((user, pass), tx)) => {
                                 let data = build_packet(
@@ -759,6 +780,44 @@ impl CentralClient {
     }
 }
 
+/// Central refused this password sign-in for good: wrong password or no
+/// such account (it doesn't say which, on purpose). LoginResponse has no
+/// error code, so this matches central's message (src/server/main.cpp
+/// LOGIN_REQ); every other refusal ("Too many …" rate limits, an expired
+/// resume) is temporary or isn't about the password.
+fn is_definitive_refusal(message: &str) -> bool {
+    message.trim_start().starts_with("Invalid username or password")
+}
+
+/// Save credentials central just accepted. `only_if_saved`: just keep an
+/// existing saved sign-in current (a rename), don't create one.
+async fn persist_credentials(creds: crate::config::Credentials, only_if_saved: bool) {
+    let result = tokio::task::spawn_blocking(move || {
+        let cfg = crate::config::load()?;
+        if only_if_saved && cfg.credentials.is_none() {
+            return Ok(());
+        }
+        crate::config::save(Some(&creds), &cfg.settings)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => log::warn!("[auth] couldn't save the sign-in: {}", e),
+        Err(e) => log::warn!("[auth] couldn't save the sign-in: {}", e),
+    }
+}
+
+async fn forget_saved_credentials(username: String, password: String) {
+    let result =
+        tokio::task::spawn_blocking(move || crate::config::forget_credentials_if(&username, &password)).await;
+    match result {
+        Ok(Ok(true)) => log::info!("[auth] central refused the saved password; saved sign-in forgotten"),
+        Ok(Ok(false)) => {}
+        Ok(Err(e)) => log::warn!("[auth] couldn't forget the saved sign-in: {}", e),
+        Err(e) => log::warn!("[auth] couldn't forget the saved sign-in: {}", e),
+    }
+}
+
 /// Abort every spawned tokio task when the client drops. Without this,
 /// dropping CentralClient (e.g. during app shutdown via `state.central
 /// = None`) leaks the router / ping / reconnect tasks — they keep
@@ -779,5 +838,19 @@ impl Drop for CentralClient {
         if let Some(t) = self.refresh_task.take() {
             t.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_definitive_refusal;
+
+    #[test]
+    fn only_a_wrong_password_is_a_definitive_refusal() {
+        assert!(is_definitive_refusal("Invalid username or password."));
+        assert!(!is_definitive_refusal("Too many sign-in attempts from your network. Try again in a minute."));
+        assert!(!is_definitive_refusal("Too many failed sign-ins for this account. Try again in a few minutes."));
+        assert!(!is_definitive_refusal("Your session has expired. Please sign in again."));
+        assert!(!is_definitive_refusal(""));
     }
 }

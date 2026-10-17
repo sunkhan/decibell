@@ -1,10 +1,13 @@
 //! Login / register / logout. The flow:
 //!
 //!   1. login(args) opens a TLS connection to the central server (if
-//!      one isn't already up), sends LoginReq, persists credentials,
-//!      and returns Ok. The actual `login_succeeded` event fires
-//!      asynchronously when central's LoginRes arrives — see
-//!      net/central.rs::route_packets.
+//!      one isn't already up), sends LoginReq and returns Ok. The actual
+//!      `login_succeeded` event fires asynchronously when central's
+//!      LoginRes arrives — see net/central.rs::route_packets, which is
+//!      also where the typed credentials are saved (only once central
+//!      accepts them) or forgotten (when it refuses the password).
+//!      auto_login() does the same with the saved sign-in, which never
+//!      leaves native.
 //!   2. register(args) reuses the central connection and sends a
 //!      RegisterReq. Response goes through `register_responded`.
 //!   3. logout(args) tears down all connections, clears in-memory and
@@ -26,15 +29,36 @@ pub struct LoginArgs {
 
 #[napi]
 pub async fn login(args: LoginArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-
     let LoginArgs { username, password } = args;
+    password_login(username, password, true).await
+}
+
+/// Sign in with the saved credentials, if there are any (the renderer
+/// asks at boot when `load_config` reported a `saved_username`). The
+/// password stays in native. Ok(false) = nothing saved (or it doesn't
+/// open on this machine any more): show the sign-in page.
+#[napi]
+pub async fn auto_login() -> napi::Result<bool> {
+    let saved = config::load().ok().and_then(|c| c.credentials);
+    match saved {
+        Some(c) => {
+            password_login(c.username, c.password, false).await?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// `save`: the user typed these; persist them once central accepts them.
+async fn password_login(username: String, password: String, save: bool) -> napi::Result<()> {
+    let state_arc = state::shared();
 
     // Disconnect any existing central client first. Stash credentials
     // for reconnect-time re-authentication.
     let old_central = {
         let mut s = state_arc.lock().await;
         s.credentials = Some((username.clone(), password.clone()));
+        s.save_credentials_on_login = save;
         // A new password sign-in hands out its own resume token.
         s.resume_token = None;
         s.resume_pending = false;
@@ -55,15 +79,6 @@ pub async fn login(args: LoginArgs) -> napi::Result<()> {
     let mut s = state_arc.lock().await;
     s.central = Some(client);
     drop(s);
-
-    // Persist credentials so a restart auto-logs-in. If save fails we
-    // still proceed — the user is logged in for this session.
-    let creds = config::Credentials {
-        username: username.clone(),
-        password: password.clone(),
-    };
-    let settings = config::load().map(|c| c.settings).unwrap_or_default();
-    let _ = config::save(Some(&creds), &settings);
 
     Ok(())
 }
@@ -248,6 +263,7 @@ pub async fn logout() -> napi::Result<()> {
         s.presence_watch.clear();
         s.token = None;
         s.credentials = None;
+        s.save_credentials_on_login = false;
         s.resume_token = None;
         s.resume_pending = false;
         s.connected_voice_server = None;

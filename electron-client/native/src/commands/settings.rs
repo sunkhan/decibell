@@ -3,14 +3,16 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 
 /// Read the persisted config blob from disk. Returns
-/// `{ credentials, settings }` as a JSON value so the renderer can
+/// `{ saved_username, settings }` as a JSON value so the renderer can
 /// hydrate its zustand stores without us having to re-declare the
 /// whole AppSettings shape as a #[napi(object)] mirror (it has a
 /// HashMap field which napi(object) doesn't support natively).
+/// The saved password never leaves native: `saved_username` set means
+/// "call `auto_login`".
 #[napi]
 pub async fn load_config() -> napi::Result<serde_json::Value> {
     let loaded = crate::config::load().map_err(napi::Error::from_reason)?;
-    serde_json::to_value(loaded)
+    serde_json::to_value(loaded.public())
         .map_err(|e| napi::Error::from_reason(format!("Serialize config: {}", e)))
 }
 
