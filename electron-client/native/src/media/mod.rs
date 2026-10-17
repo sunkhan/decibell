@@ -614,13 +614,18 @@ fn run_video_recv_thread(
     let mut video_frames_received: u64 = 0;
     let mut last_maintenance = Instant::now();
 
-    // Periodic media-socket PING — registers + refreshes this client's
-    // media UDP endpoint on the server. Without this, pure watchers
-    // (who never send video) stay unregistered on the server's media
-    // side and receive no relayed frames. Fire one immediately, then
-    // every 3s matching the voice PING cadence.
-    let mut last_media_ping = Instant::now() - Duration::from_secs(10);
+    // Periodic media-socket PING — binds + keeps this client's media UDP
+    // endpoint on the server. Without this, pure watchers (who never send
+    // video) stay unbound on the server's media side and receive no relayed
+    // frames. The relay answers a PING from an unbound address with a bind
+    // challenge (review S11), which MediaSocket::recv echoes; once bound, it
+    // echoes the PING itself. Fire one immediately, then every 500 ms until
+    // the first echo (so a lost challenge costs half a second), then every
+    // 3s matching the voice PING cadence.
+    let mut last_media_ping: Option<Instant> = None;
+    let mut media_ping_answered = false;
     let media_ping_interval = Duration::from_secs(3);
+    const MEDIA_PING_INTERVAL_UNANSWERED: Duration = Duration::from_millis(500);
 
     // For HEVC/AV1 keyframes the sender prepends a magic-tagged
     // length-prefixed hvcC / av1C blob:
@@ -763,6 +768,12 @@ fn run_video_recv_thread(
                 {
                     log::debug!("[video-recv] Keyframe request received, signaling encoder");
                     let _ = event_tx.send(pipeline::VoiceEvent::KeyframeRequested);
+                } else if packet_type == packet::PACKET_TYPE_PING {
+                    // Our PING's echo: the relay only echoes to a bound
+                    // endpoint, so from here on the 3 s cadence will do.
+                    // (Bind challenges are answered inside MediaSocket::recv,
+                    // which hands this loop an empty read for them.)
+                    media_ping_answered = true;
                 }
             }
             Ok(_) => {}
@@ -778,14 +789,25 @@ fn run_video_recv_thread(
             }
         }
 
-        if last_media_ping.elapsed() >= media_ping_interval {
+        let media_ping_due = match last_media_ping {
+            None => true,
+            Some(t) => {
+                let every = if media_ping_answered {
+                    media_ping_interval
+                } else {
+                    MEDIA_PING_INTERVAL_UNANSWERED
+                };
+                t.elapsed() >= every
+            }
+        };
+        if media_ping_due {
             let ts_ns = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
             let ping = packet::UdpAudioPacket::new_ping(&sender_id, ts_ns);
             let _ = socket.send(&ping.to_bytes());
-            last_media_ping = Instant::now();
+            last_media_ping = Some(Instant::now());
         }
 
         // 25ms cadence (was 100ms): with a 50ms NACK timeout, a 100ms

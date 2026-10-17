@@ -278,6 +278,11 @@ All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: 
 | 2 | KEYFRAME_REQUEST | Viewer requests I-frame from streamer (PLI) |
 | 3 | NACK | Report missing video packets for retransmission |
 | 4 | FEC | Forward error correction data |
+| 5 | PING | RTT probe; echoed by the relay to a bound endpoint only |
+| 6 | STREAM_AUDIO | Stream audio (voice socket) |
+| 7–9 | AUDIO_SEALED / STREAM_AUDIO_SEALED / VIDEO_SEALED | MLS-sealed twins of 0 / 6 / 1 |
+| 10 | BIND_CHALLENGE | Relay → client: prove you receive at this address (41 B: type, 32 zero bytes, 8-byte cookie) |
+| 11 | BIND_ECHO | Client → relay: the challenge with type 11 and the UDP key in bytes 1–32 |
 
 ### VideoCodec Enum (`VideoCodec : uint8_t`)
 | Value | Name | Description |
@@ -354,6 +359,22 @@ frames carry `FLAG_SILENCE`.
 
 ### UDP Identity Matching
 The community server uses `find_session_by_token(udp_id)`: it checks whether the session's full JWT token **ends with** the `sender_id` string from the UDP packet. On broadcast, `sender_id` is overwritten with the authenticated username before forwarding to other clients.
+
+### Endpoint binding (return-routability, 2026-10-17, review S11)
+The key names the sender; it never decides where the relay *sends*. Each
+session has one bound endpoint per socket (voice, media), set only by a
+challenge round trip (`src/community/udp_path.hpp`): a keyed datagram (PING,
+AUDIO, VIDEO, …) from an address that isn't the bound one gets a
+`BIND_CHALLENGE` with a random 8-byte cookie sent there (at most one per
+session per socket per 250 ms, only in reply to a datagram ≥ 41 B, a new
+address draws a fresh cookie, which lives 10 s and is single-use), and only a
+`BIND_ECHO` of that cookie from the same address binds it. Until then the
+relay sends that session nothing on that socket (its own upstream packets
+still relay). PINGs are echoed only to the bound endpoint; a PING without a
+live key gets nothing. Native answers challenges inside `MediaSocket::recv`
+(Plain mode only) and pings at once on joining, then every 500 ms until the
+first echo, so joining binds in one round trip and a NAT rebinding re-binds
+on the next datagram from the new address.
 
 ---
 

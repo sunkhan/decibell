@@ -36,6 +36,7 @@
 #include "messages.pb.h"
 #include "../common/net_utils.hpp"
 #include "../common/udp_packet.hpp"
+#include "udp_path.hpp"
 #include "db.hpp"
 #include "attachment_http.hpp"
 #include "rate_limit.hpp"
@@ -907,10 +908,13 @@ public:
     // Send a pre-built packet. Public so SessionManager can push notifications
     // (MEMBERSHIP_REVOKED, SERVER_META_UPDATE, etc.) directly.
     void send_packet_external(const chatproj::Packet& packet) { send_packet(packet); }
-    void set_udp_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_endpoint_ = ep; }
-    boost::asio::ip::udp::endpoint get_udp_endpoint() const { return udp_endpoint_; }
-    void set_udp_media_endpoint(const boost::asio::ip::udp::endpoint& ep) { udp_media_endpoint_ = ep; }
-    boost::asio::ip::udp::endpoint get_udp_media_endpoint() const { return udp_media_endpoint_; }
+    // Relay endpoints (voice socket, media socket). Bound and moved only by
+    // the challenge / echo handshake in udp_path.hpp (review S11); port 0
+    // until then, and the relay sends nothing to an unbound session.
+    chatproj::UdpPath& voice_path() { return voice_path_; }
+    chatproj::UdpPath& media_path() { return media_path_; }
+    boost::asio::ip::udp::endpoint get_udp_endpoint() const { return voice_path_.bound(); }
+    boost::asio::ip::udp::endpoint get_udp_media_endpoint() const { return media_path_.bound(); }
     std::string get_current_voice_channel() const { return current_voice_channel_; }
     void set_current_voice_channel(const std::string& ch) { current_voice_channel_ = ch; }
     // Moderator-applied voice flags (VOICE_MOD_REQ), loaded from the
@@ -4306,8 +4310,8 @@ private:
         }
     }
     std::string current_voice_channel_;
-    boost::asio::ip::udp::endpoint udp_endpoint_;
-    boost::asio::ip::udp::endpoint udp_media_endpoint_;
+    chatproj::UdpPath voice_path_;
+    chatproj::UdpPath media_path_;
     bool is_muted_ = false;
     bool is_deafened_ = false;
     bool server_muted_ = false;
@@ -6421,17 +6425,34 @@ private:
     void handle_voice_datagram(std::size_t bytes_recvd) {
                 if (bytes_recvd >= 1) {
                     uint8_t packet_type = static_cast<uint8_t>(udp_buffer_[0]);
+                    constexpr int SID = chatproj::SENDER_ID_SIZE;
 
-                    // PING: echo back immediately
+                    // PING: echoed for RTT, but only to the session's bound
+                    // voice endpoint. A keyed PING from anywhere else gets a
+                    // bind challenge instead (that's how a client binds on
+                    // joining and re-binds after a roam); one without a live
+                    // key is dropped, so the port reflects nothing at strangers.
                     if (packet_type == chatproj::UdpPacketType::PING) {
+                        if (bytes_recvd < 1 + SID + 4) return;
+                        auto session = keyed_session(udp_buffer_ + 1);
+                        if (!session) return;
+                        if (!session->voice_path().is_bound_to(udp_sender_endpoint_)) {
+                            challenge_unbound(session->voice_path(), bytes_recvd, udp_socket_,
+                                              udp_sender_endpoint_);
+                            return;
+                        }
                         boost::system::error_code sec;
                         udp_socket_.send_to(boost::asio::buffer(udp_buffer_, bytes_recvd),
                                             udp_sender_endpoint_, 0, sec);
                         return;
                     }
 
+                    if (packet_type == chatproj::UdpPacketType::BIND_ECHO) {
+                        accept_bind_echo(udp_buffer_, bytes_recvd, /*media=*/false, udp_sender_endpoint_);
+                        return;
+                    }
+
                     // AUDIO or STREAM_AUDIO
-                    constexpr int SID = chatproj::SENDER_ID_SIZE;
                     // Sealed twins (MLS-encrypted channels) relay exactly like the
                     // plain types — same header, opaque payload.
                     const bool is_audio = packet_type == chatproj::UdpPacketType::AUDIO ||
@@ -6458,8 +6479,13 @@ private:
                         if (!token_str.empty()) {
                             auto session = manager_.find_session_by_token(token_str, jwt_secret_);
                             if (session) {
-                                if (session->get_udp_endpoint() != udp_sender_endpoint_) {
-                                    session->set_udp_endpoint(udp_sender_endpoint_);
+                                // Never bind or move the endpoint on a
+                                // datagram's say-so (S11): an unproven source
+                                // is challenged. The audio itself still relays
+                                // — the key, not the address, names the sender.
+                                if (!session->voice_path().is_bound_to(udp_sender_endpoint_)) {
+                                    challenge_unbound(session->voice_path(), bytes_recvd, udp_socket_,
+                                                      udp_sender_endpoint_);
                                 }
                                 std::string channel = session->get_current_voice_channel();
                                 if (!channel.empty()) {
@@ -6528,28 +6554,28 @@ private:
                     uint8_t packet_type = static_cast<uint8_t>(media_udp_buffer_[0]);
                     constexpr int SID = chatproj::SENDER_ID_SIZE;
 
-                    // PING: authenticate, register/refresh the sender's media
-                    // endpoint so broadcast_to_watchers can reach them, then
-                    // echo back for RTT measurement. Pure watchers (who never
-                    // send VIDEO themselves) rely on this to receive relay.
-                    if (packet_type == chatproj::UdpPacketType::PING &&
-                        bytes_recvd >= 1 + SID + 4) {
-                        std::string token_str;
-                        chatproj::UdpAudioPacket* packet =
-                            reinterpret_cast<chatproj::UdpAudioPacket*>(media_udp_buffer_);
-                        for (int i = 0; i < SID; ++i) {
-                            if (packet->sender_id[i] == '\0') break;
-                            token_str.push_back(packet->sender_id[i]);
-                        }
-                        if (!token_str.empty()) {
-                            auto session = manager_.find_session_by_token(token_str, jwt_secret_);
-                            if (session && session->get_udp_media_endpoint() != media_udp_sender_endpoint_) {
-                                session->set_udp_media_endpoint(media_udp_sender_endpoint_);
-                            }
+                    // PING: authenticate, then echo for RTT to the bound
+                    // media endpoint, or challenge any other source (see the
+                    // voice PING). Pure watchers (who never send VIDEO
+                    // themselves) bind their media endpoint this way.
+                    if (packet_type == chatproj::UdpPacketType::PING) {
+                        if (bytes_recvd < 1 + SID + 4) return;
+                        auto session = keyed_session(media_udp_buffer_ + 1);
+                        if (!session) return;
+                        if (!session->media_path().is_bound_to(media_udp_sender_endpoint_)) {
+                            challenge_unbound(session->media_path(), bytes_recvd, media_udp_socket_,
+                                              media_udp_sender_endpoint_);
+                            return;
                         }
                         boost::system::error_code sec;
                         media_udp_socket_.send_to(boost::asio::buffer(media_udp_buffer_, bytes_recvd),
                                                   media_udp_sender_endpoint_, 0, sec);
+                        return;
+                    }
+
+                    if (packet_type == chatproj::UdpPacketType::BIND_ECHO) {
+                        accept_bind_echo(media_udp_buffer_, bytes_recvd, /*media=*/true,
+                                         media_udp_sender_endpoint_);
                         return;
                     }
 
@@ -6643,8 +6669,11 @@ private:
                         if (!token_str.empty()) {
                             auto session = manager_.find_session_by_token(token_str, jwt_secret_);
                             if (session) {
-                                if (session->get_udp_media_endpoint() != media_udp_sender_endpoint_) {
-                                    session->set_udp_media_endpoint(media_udp_sender_endpoint_);
+                                // Challenge an unproven source, never move to
+                                // it (S11); the video still relays by key.
+                                if (!session->media_path().is_bound_to(media_udp_sender_endpoint_)) {
+                                    challenge_unbound(session->media_path(), bytes_recvd, media_udp_socket_,
+                                                      media_udp_sender_endpoint_);
                                 }
                                 std::string channel = session->get_current_voice_channel();
                                 if (!channel.empty()) {
@@ -6660,6 +6689,45 @@ private:
                         }
                     }
                 }
+    }
+
+    // The session a datagram's 32-byte sender_id field names (its UDP key,
+    // NUL-padded), or null.
+    std::shared_ptr<Session> keyed_session(const char* sender_id) {
+        std::string key;
+        for (int i = 0; i < chatproj::SENDER_ID_SIZE && sender_id[i] != '\0'; ++i) {
+            key.push_back(sender_id[i]);
+        }
+        if (key.empty()) return nullptr;
+        return manager_.find_session_by_token(key, jwt_secret_);
+    }
+
+    // Return-routability (udp_path.hpp, review S11): a keyed datagram from
+    // `src`, which isn't the session's bound endpoint on `sock`, earns `src`
+    // a challenge — at most one per session per socket per 250 ms, and only
+    // in reply to a datagram at least as big, so it amplifies nothing.
+    static void challenge_unbound(chatproj::UdpPath& path, std::size_t trigger_bytes,
+                                  boost::asio::ip::udp::socket& sock,
+                                  const boost::asio::ip::udp::endpoint& src) {
+        if (trigger_bytes < sizeof(chatproj::UdpBindChallenge)) return;
+        chatproj::UdpBindChallenge challenge;
+        if (!path.make_challenge(src, std::chrono::steady_clock::now(), challenge)) return;
+        boost::system::error_code ec;
+        sock.send_to(boost::asio::buffer(&challenge, sizeof(challenge)), src, 0, ec);
+    }
+
+    // BIND_ECHO: binds `src` as the session's voice / media endpoint when it
+    // answers the live challenge that session sent to exactly `src`. The key
+    // names the session, so a client tricked into echoing someone else's
+    // challenge (sent to it by a spoofer) only ever answers for its own.
+    void accept_bind_echo(const char* buf, std::size_t n, bool media,
+                          const boost::asio::ip::udp::endpoint& src) {
+        if (n != sizeof(chatproj::UdpBindEcho)) return;
+        const auto* echo = reinterpret_cast<const chatproj::UdpBindEcho*>(buf);
+        auto session = keyed_session(echo->sender_id);
+        if (!session) return;
+        auto& path = media ? session->media_path() : session->voice_path();
+        path.accept_echo(src, echo->cookie, std::chrono::steady_clock::now());
     }
 
     static constexpr int kMaxDrainPerWakeup = 256;

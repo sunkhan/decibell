@@ -39,8 +39,22 @@ enum UdpPacketType : uint8_t {
     // (unknown type) rather than feeding ciphertext to a decoder.
     AUDIO_SEALED = 7,
     STREAM_AUDIO_SEALED = 8,
-    VIDEO_SEALED = 9
+    VIDEO_SEALED = 9,
+    // Return-routability (review S11). The relay never binds or moves a
+    // session's endpoint because a keyed datagram came from somewhere new
+    // — the source address is unauthenticated, so that let a member point
+    // the whole channel's audio and every watched stream at any victim.
+    // A keyed datagram from an address that isn't the bound one gets a
+    // BIND_CHALLENGE sent there instead; only a BIND_ECHO from that same
+    // address carrying the cookie binds it (QUIC's PATH_CHALLENGE idea).
+    BIND_CHALLENGE = 10,
+    BIND_ECHO = 11
 };
+
+// Random cookie: 8 bytes, as QUIC's PATH_CHALLENGE. An off-path guesser
+// gets one 2^-64 try per datagram. Each new candidate address draws a fresh
+// one, lives 10 s and is single-use (src/community/udp_path.hpp).
+constexpr uint16_t UDP_BIND_COOKIE_SIZE = 8;
 
 // Max missing packet indices per NACK — keeps packet under MTU
 constexpr uint16_t NACK_MAX_ENTRIES = 64;
@@ -105,7 +119,31 @@ struct UdpVideoPacket {
     uint8_t codec;                      // VideoCodec: see enum above
     uint8_t payload[UDP_MAX_PAYLOAD];
 };
+
+// Relay → client, to a source that sent a keyed datagram but isn't the
+// session's bound endpoint on that socket. Same size as the echo, so a
+// client never answers with more bytes than it was sent (and the relay
+// only challenges in reply to a datagram at least this big).
+struct UdpBindChallenge {
+    uint8_t packet_type;                    // BIND_CHALLENGE
+    char sender_id[SENDER_ID_SIZE];         // all zero; the client writes its UDP key here
+    uint8_t cookie[UDP_BIND_COOKIE_SIZE];   // random, per candidate address
+};
+
+// Client → relay, from the same socket: the challenge with the type
+// flipped and the session's UDP key in sender_id. Binds that endpoint
+// when it comes from the challenged address with the live cookie.
+struct UdpBindEcho {
+    uint8_t packet_type;                    // BIND_ECHO
+    char sender_id[SENDER_ID_SIZE];         // UDP key of the session
+    uint8_t cookie[UDP_BIND_COOKIE_SIZE];   // copied from the challenge
+};
 #pragma pack(pop)
+
+static_assert(sizeof(UdpBindChallenge) == 1 + SENDER_ID_SIZE + UDP_BIND_COOKIE_SIZE,
+              "41-byte bind challenge (native/src/media/packet.rs BIND_PACKET_SIZE)");
+static_assert(sizeof(UdpBindEcho) == sizeof(UdpBindChallenge),
+              "the echo must never be bigger than the challenge");
 
 // Largest datagram any client can send (the video struct: its header is
 // the biggest) — sizes the relay's receive buffers so no packet type is

@@ -325,8 +325,15 @@ pub fn run_audio_pipeline(
     // Accumulator for resampled 48kHz capture PCM — persists across loop iterations
     let mut capture_48k_buf: Vec<i16> = Vec::with_capacity(FRAME_SIZE * 4);
 
-    let mut last_ping_time = Instant::now();
+    // The first PING goes out at once: on the community relay it is what
+    // binds our voice endpoint (the relay answers an unbound source with a
+    // bind challenge that MediaSocket echoes — review S11), so a listener
+    // starts hearing the channel one round trip after joining. Until the
+    // first echo comes back (proof we're bound) it repeats every 500 ms, so
+    // a lost challenge costs half a second rather than a full interval.
+    let mut last_ping_time: Option<Instant> = None;
     let ping_interval = Duration::from_secs(3);
+    const PING_INTERVAL_UNANSWERED: Duration = Duration::from_millis(500);
 
     // Connection-stats emission (powers the user-panel telemetry popover).
     // Sampled every 2s so the graph has reasonable temporal resolution
@@ -1021,14 +1028,21 @@ pub fn run_audio_pipeline(
         }
 
         // 3. Send ping every 3s ────────────────────────────────────────────────
-        if last_ping_time.elapsed() >= ping_interval {
+        let ping_due = match last_ping_time {
+            None => true,
+            Some(t) => {
+                let every = if last_latency_ms.is_some() { ping_interval } else { PING_INTERVAL_UNANSWERED };
+                t.elapsed() >= every
+            }
+        };
+        if ping_due {
             let ts_ns = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64;
             let ping_pkt = UdpAudioPacket::new_ping(&sender_id, ts_ns);
             let _ = socket.send(&ping_pkt.to_bytes());
-            last_ping_time = Instant::now();
+            last_ping_time = Some(Instant::now());
         }
 
         // 4. Drain audio packets from recv thread ─────────────────────────────
@@ -1645,6 +1659,8 @@ fn voice_recv_thread(
         if stop.load(Ordering::Relaxed) {
             break;
         }
+        // The relay's bind challenges (review S11) are answered inside
+        // MediaSocket::recv, which hands this loop an empty read for them.
         match socket.recv(&mut buf) {
             Ok(n) if n >= 1 => {
                 recv_count += 1;

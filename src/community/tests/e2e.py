@@ -1824,9 +1824,58 @@ def test_voice_moderation():
     dee.close(); owner.close()
 
 
+def udp_key(jwt_token):
+    """A session's UDP key as datagrams carry it: the token's last 31 chars, NUL-padded."""
+    return jwt_token[-31:].encode().ljust(32, b"\0")
+
+
 def udp_audio_packet(jwt_token, seq, payload):
-    sid = jwt_token[-31:].encode().ljust(32, b"\0")
-    return bytes([0]) + sid + struct.pack("<HH", seq, len(payload)) + payload
+    return bytes([0]) + udp_key(jwt_token) + struct.pack("<HH", seq, len(payload)) + payload
+
+
+def udp_ping(jwt_token, ts=1):
+    """A PING as native sends it (45 bytes: audio header + 8-byte timestamp)."""
+    return bytes([5]) + udp_key(jwt_token) + struct.pack("<HHQ", 0, 8, ts)
+
+
+BIND_CHALLENGE, BIND_ECHO = 10, 11
+
+
+def bind_echo(jwt_token, challenge):
+    """The client's answer (review S11): the challenge, type flipped, key in the id field."""
+    return bytes([BIND_ECHO]) + udp_key(jwt_token) + challenge[33:41]
+
+
+def udp_bind(sock, jwt_token, port):
+    """Bind `sock` as the session's endpoint on `port` the way native does
+    (review S11): PING -> BIND_CHALLENGE -> BIND_ECHO. True once a PING is
+    then echoed (the relay echoes only to a bound endpoint)."""
+    sock.sendto(udp_ping(jwt_token, 1), (HOST, port))
+    try:
+        ch = sock.recv(2048)
+    except socket.timeout:
+        return False
+    if len(ch) != 41 or ch[0] != BIND_CHALLENGE:
+        return False
+    sock.sendto(bind_echo(jwt_token, ch), (HOST, port))
+    ping = udp_ping(jwt_token, 2)
+    sock.sendto(ping, (HOST, port))
+    try:
+        return sock.recv(2048) == ping
+    except socket.timeout:
+        return False
+
+
+def udp_quiet(sock, timeout=0.6):
+    """True when nothing arrives on `sock` within `timeout`."""
+    sock.settimeout(timeout)
+    try:
+        sock.recv(2048)
+        return False
+    except socket.timeout:
+        return True
+    finally:
+        sock.settimeout(2)
 
 
 def test_udp_relay():
@@ -1838,12 +1887,12 @@ def test_udp_relay():
     owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "bobby" in p.voice_presence_update.active_users)
     ua = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ua.bind((HOST, 0)); ua.settimeout(2)
     ub = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ub.bind((HOST, 0)); ub.settimeout(2)
-    # PING echo on the voice socket
-    ping = bytes([5]) + b"\0" * 32 + struct.pack("<I", 1234)
-    ua.sendto(ping, (HOST, 8083))
-    check("voice PING echoed", ua.recv(2048) == ping)
-    # register endpoints: each sends one AUDIO packet (relayed to the other)
-    ub.sendto(udp_audio_packet(bob.jwt, 1, b"b0"), (HOST, 8083))
+    # A PING without a live key is not echoed: the relay is no reflector.
+    ua.sendto(bytes([5]) + b"\0" * 32 + struct.pack("<HHQ", 0, 8, 1234), (HOST, 8083))
+    check("unkeyed voice PING is not echoed", udp_quiet(ua))
+    # register endpoints the way the client does: PING, challenge, echo
+    check("voice endpoints bind through the challenge, then PINGs echo",
+          udp_bind(ub, bob.jwt, 8083) and udp_bind(ua, ann.jwt, 8083))
     ua.sendto(udp_audio_packet(ann.jwt, 1, b"a0"), (HOST, 8083))
     try:
         got = ub.recv(2048)
@@ -1876,17 +1925,14 @@ def test_udp_relay():
     check("server-muted member's audio dropped by the relay", dropped)
     owner.send(pb.Packet.VOICE_MOD_REQ, voice_mod_req=pb.VoiceModRequest(username="ann", uid=uid_of("ann"), action=pb.VoiceModRequest.SERVER_UNMUTE))
     owner.wait(pb.Packet.MOD_ACTION_RES, pred=lambda p: p.mod_action_res.action == "voice_mod")
-    # media socket PING echo (also registers the media endpoint)
+    # media socket: the same handshake binds the media endpoint, then PINGs echo
     um = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); um.bind((HOST, 0)); um.settimeout(2)
-    mping = bytes([5]) + ann.jwt[-31:].encode().ljust(32, b"\0") + struct.pack("<I", 7)
-    um.sendto(mping, (HOST, 8084))
-    check("media PING echoed", um.recv(2048) == mping)
+    check("media endpoint binds through the challenge, then PINGs echo", udp_bind(um, ann.jwt, 8084))
     # Keyframe requests and NACKs name the streamer by uid. A relayed NACK
     # never carries the requester's UDP key (a session secret).
     ub_media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ub_media.bind((HOST, 0)); ub_media.settimeout(2)
-    ub_media.sendto(bytes([5]) + bob.jwt[-31:].encode().ljust(32, b"\0") + struct.pack("<I", 8), (HOST, 8084))
-    ub_media.recv(2048)
-    bob_key = bob.jwt[-31:].encode().ljust(32, b"\0")
+    udp_bind(ub_media, bob.jwt, 8084)
+    bob_key = udp_key(bob.jwt)
     ub_media.sendto(bytes([2]) + bob_key + ann_mid.ljust(32, b"\0"), (HOST, 8084))
     try:
         kf = um.recv(2048)
@@ -1928,6 +1974,118 @@ def test_udp_relay():
     back = Client("ann", uid=uid_for("ann")); auth_ok(back); back.close()   # the name back, for later tests
     for sk in (ua, ub, um, ub_media): sk.close()
     ann.close(); bob.close(); owner.close()
+
+
+def test_udp_return_routability():
+    """Review S11: a keyed datagram never binds or moves a session's UDP
+    endpoint; only an echo of the relay's challenge from that address does."""
+    print("[udp] return-routability: endpoints bind only through an echoed challenge (S11)")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    rip = join("ripley", owner); ty = join("tycho", owner)
+    for c in (rip, ty):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "ripley" in p.voice_presence_update.active_users
+               and "tycho" in p.voice_presence_update.active_users)
+
+    def sock():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((HOST, 0)); s.settimeout(2); return s
+
+    def recv(s):
+        try:
+            return s.recv(2048)
+        except socket.timeout:
+            return b""
+
+    ty_mid = str(uid_for("tycho")).encode()
+    ut = sock(); ur = sock(); ux = sock()
+    check("normal join: PING, challenge, echo binds; PINGs then echo", udp_bind(ut, ty.jwt, 8083))
+
+    # ripley's first keyed datagram comes from ur, which isn't bound yet
+    ur.sendto(udp_audio_packet(rip.jwt, 1, b"hello from ripley"), (HOST, 8083))
+    ch = recv(ur)
+    check("keyed AUDIO from an unbound endpoint earns a 41-byte challenge carrying no key",
+          len(ch) == 41 and ch[0] == BIND_CHALLENGE and ch[1:33] == b"\0" * 32, ch[:1])
+    got = recv(ut)
+    check("...while the audio itself still relays by key", got[-17:] == b"hello from ripley")
+    ut.sendto(udp_audio_packet(ty.jwt, 1, b"t1"), (HOST, 8083))
+    check("nothing is relayed to an endpoint that hasn't echoed", udp_quiet(ur))
+    ur.sendto(bytes([BIND_ECHO]) + udp_key(rip.jwt) + bytes(8), (HOST, 8083))
+    ut.sendto(udp_audio_packet(ty.jwt, 2, b"t2"), (HOST, 8083))
+    check("an echo with the wrong cookie binds nothing", udp_quiet(ur))
+    ux.sendto(bind_echo(rip.jwt, ch), (HOST, 8083))
+    ut.sendto(udp_audio_packet(ty.jwt, 3, b"t3"), (HOST, 8083))
+    check("the right cookie from another address binds nothing", udp_quiet(ur, 0.4) and udp_quiet(ux, 0.4))
+    ur.sendto(bind_echo(rip.jwt, ch), (HOST, 8083))
+    time.sleep(0.05)
+    ut.sendto(udp_audio_packet(ty.jwt, 4, b"t4"), (HOST, 8083))
+    got = recv(ur)
+    check("the echo from the challenged address binds it: relay flows",
+          got[1:33].rstrip(b"\0") == ty_mid and got[-2:] == b"t4")
+    ur.sendto(bind_echo(rip.jwt, ch), (HOST, 8083))   # a replayed echo is harmless
+
+    # Spoofed-source rebind: socket B (ux) sends with A's (ripley's) key.
+    time.sleep(0.3)   # past the per-session challenge interval
+    ux.sendto(udp_ping(rip.jwt, 5), (HOST, 8083))
+    ch2 = recv(ux)
+    check("a keyed PING from another address gets a challenge, not an echo",
+          len(ch2) == 41 and ch2[0] == BIND_CHALLENGE and ch2[33:41] != ch[33:41])
+    ux.sendto(udp_audio_packet(rip.jwt, 6, b"spoofed source"), (HOST, 8083))
+    recv(ut)   # relayed by key, as before
+    ut.sendto(udp_audio_packet(ty.jwt, 5, b"t5"), (HOST, 8083))
+    got = recv(ur)
+    check("keyed datagrams from another address don't move the endpoint",
+          got[-2:] == b"t5" and udp_quiet(ux, 0.4))
+    # ...a stale cookie (the first challenge's) doesn't move it either
+    ux.sendto(bind_echo(rip.jwt, ch), (HOST, 8083))
+    ut.sendto(udp_audio_packet(ty.jwt, 6, b"t6"), (HOST, 8083))
+    check("a stale cookie doesn't move it", recv(ur)[-2:] == b"t6" and udp_quiet(ux, 0.4))
+
+    # Roam / NAT rebinding: the new address echoes its challenge -> moved.
+    ux.sendto(bind_echo(rip.jwt, ch2), (HOST, 8083))
+    time.sleep(0.05)
+    ut.sendto(udp_audio_packet(ty.jwt, 7, b"t7"), (HOST, 8083))
+    check("echoing from the new address moves the endpoint (roam)",
+          recv(ux)[-2:] == b"t7" and udp_quiet(ur, 0.4))
+
+    # Challenges are paced per session per socket, and never outgrow their trigger.
+    time.sleep(0.3)
+    uy = sock()
+    for i in range(20):
+        uy.sendto(udp_ping(rip.jwt, 100 + i), (HOST, 8083))
+    n = 0
+    uy.settimeout(0.2)
+    try:
+        while True:
+            uy.recv(2048); n += 1
+    except socket.timeout:
+        pass
+    check("a burst from a new address earns one challenge (250 ms pacing)", n == 1, f"got {n}")
+    time.sleep(0.3)
+    uy.sendto(udp_audio_packet(rip.jwt, 7, b"abc"), (HOST, 8083))   # 37 + 3 = 40 bytes < 41
+    check("a datagram smaller than a challenge earns none", udp_quiet(uy, 0.4))
+    uy.sendto(udp_ping(jwt("nobody-here"), 1), (HOST, 8083))
+    check("a PING with an unknown key gets nothing back", udp_quiet(uy, 0.4))
+
+    # Media socket: same rule. tycho's media endpoint isn't bound, so a
+    # keyframe request for him goes nowhere until he echoes his challenge.
+    umt = sock(); umr = sock()
+    check("ripley's media endpoint binds through the challenge", udp_bind(umr, rip.jwt, 8084))
+    umt.sendto(udp_ping(ty.jwt, 1), (HOST, 8084))
+    mch = recv(umt)
+    check("media PING from an unbound endpoint gets a challenge", len(mch) == 41 and mch[0] == BIND_CHALLENGE)
+    kf = bytes([2]) + udp_key(rip.jwt) + ty_mid.ljust(32, b"\0")
+    umr.sendto(kf, (HOST, 8084))
+    check("nothing is relayed to an unbound media endpoint", udp_quiet(umt))
+    umt.sendto(udp_ping(ty.jwt, 2), (HOST, 8084))
+    mch2 = recv(umt)
+    check("the same address is re-sent the same cookie (a slow path's echo stays good)",
+          len(mch2) == 41 and mch2[33:41] == mch[33:41])
+    umt.sendto(bind_echo(ty.jwt, mch), (HOST, 8084))
+    time.sleep(0.3)   # keyframe relays are paced per streamer
+    umr.sendto(kf, (HOST, 8084))
+    check("after the echo the keyframe request reaches tycho", recv(umt)[:1] == b"\x02")
+    for s in (ut, ur, ux, uy, umt, umr): s.close()
+    rip.close(); ty.close(); owner.close()
 
 
 def test_mls_delivery_service():
@@ -1984,9 +2142,8 @@ def test_mls_delivery_service():
     ua = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ua.bind((HOST, 0)); ua.settimeout(2)
     ub = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ub.bind((HOST, 0)); ub.settimeout(2)
     def sealed_audio(jwt_token, seq, payload, ptype=7):
-        sid = jwt_token[-31:].encode().ljust(32, b"\0")
-        return bytes([ptype]) + sid + struct.pack("<HH", seq, len(payload)) + payload
-    ub.sendto(sealed_audio(bob.jwt, 1, b"b0"), (HOST, 8083))
+        return bytes([ptype]) + udp_key(jwt_token) + struct.pack("<HH", seq, len(payload)) + payload
+    udp_bind(ub, bob.jwt, 8083); udp_bind(ua, ann.jwt, 8083)
     ua.sendto(sealed_audio(ann.jwt, 1, b"sealed-a"), (HOST, 8083))
     try:
         got = ub.recv(2048)
@@ -3321,7 +3478,7 @@ def test_v3_speak():
     owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "pia" in p.voice_presence_update.active_users and "orr" in p.voice_presence_update.active_users)
     uo = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); uo.bind((HOST, 0)); uo.settimeout(2)
     up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); up.bind((HOST, 0)); up.settimeout(2)
-    up.sendto(udp_audio_packet(pia.jwt, 1, b"p0"), (HOST, 8083))
+    udp_bind(up, pia.jwt, 8083); udp_bind(uo, orr.jwt, 8083)
     uo.sendto(udp_audio_packet(orr.jwt, 1, b"o0"), (HOST, 8083))
 
     def heard(timeout=1.0):
@@ -3609,6 +3766,7 @@ if __name__ == "__main__":
         test_voice_moderation()
         test_presence_follows_visibility()
         test_udp_relay()
+        test_udp_return_routability()
         test_mls_delivery_service()
         test_v3_invites_and_nicknames()
         test_v3_peer_management()

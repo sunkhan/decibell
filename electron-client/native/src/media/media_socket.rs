@@ -33,6 +33,16 @@
 //! while our own echo is returned to the caller — so the pipeline's RTT
 //! logic and 3 s keepalives work unchanged, and the reflection doubles as
 //! the hole-punch responder.
+//!
+//! Relay bind challenges (Plain only, review S11): the community relay binds
+//! our endpoint on each socket only after it proves it can receive. A keyed
+//! datagram from an address the relay hasn't bound (our first PING on
+//! joining, anything after a NAT rebinding) is answered with a
+//! BIND_CHALLENGE; Plain `recv` echoes it at once from the same socket (our
+//! UDP key + the cookie, never more bytes than the challenge) and hands the
+//! caller an empty read instead, so both receive loops handle it without
+//! knowing. A Plain socket is `connect()`ed, so only the relay's address can
+//! reach it; a sealed socket never answers (a raw challenge doesn't open).
 
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -43,7 +53,9 @@ use std::time::{Duration, Instant};
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce, Tag};
 
-use super::packet::{PACKET_TOTAL_SIZE, PACKET_TYPE_PING, SENDER_ID_SIZE};
+use super::packet::{
+    bind_echo_for, PACKET_TOTAL_SIZE, PACKET_TYPE_BIND_CHALLENGE, PACKET_TYPE_PING, SENDER_ID_SIZE,
+};
 use super::video_packet::UDP_MAX_PAYLOAD;
 
 pub const OUTER_TYPE_SEALED: u8 = 0xE5;
@@ -224,7 +236,8 @@ pub struct MediaSocket {
     inner: UdpSocket,
     mode: Mode,
     /// Our `sender_id` as it appears on the wire (NUL-padded to 32 bytes),
-    /// used to tell our own PING echo from a peer's PING.
+    /// used to tell our own PING echo from a peer's PING — and, on the
+    /// relay path, the UDP key a bind echo carries.
     self_id: [u8; SENDER_ID_SIZE],
     epoch: Instant,
     /// Millis since `epoch` of the last authenticated datagram (Sealed) or
@@ -364,7 +377,9 @@ impl MediaSocket {
         }
     }
 
-    /// Receive one inner datagram from the peer. In Sealed mode this loops
+    /// Receive one inner datagram from the peer. In Plain mode this answers
+    /// the relay's bind challenges and returns `Ok(0)` for them (never their
+    /// bytes); in Sealed mode it loops
     /// past anything that fails to authenticate, reflects peer PINGs, and
     /// learns/migrates the peer address (see module docs). Timeouts and
     /// WouldBlock propagate exactly like `UdpSocket::recv`.
@@ -373,6 +388,14 @@ impl MediaSocket {
             Mode::Plain => {
                 let n = self.inner.recv(buf)?;
                 self.touch_rx();
+                if n >= 1 && buf[0] == PACKET_TYPE_BIND_CHALLENGE {
+                    self.answer_bind_challenge(&buf[..n]);
+                    // Nothing for the caller: an empty read, which both
+                    // receive loops already skip. Returning (not looping)
+                    // keeps a flood of challenges from pinning a loop past
+                    // its stop flag.
+                    return Ok(0);
+                }
                 return Ok(n);
             }
             Mode::Sealed(st) => st,
@@ -398,6 +421,19 @@ impl MediaSocket {
             let len = len.min(buf.len());
             buf[..len].copy_from_slice(&outer[OUTER_HEADER..OUTER_HEADER + len]);
             return Ok(len);
+        }
+    }
+
+    /// Relay path: echo a bind challenge straight back from this socket so
+    /// the relay binds (or, after a NAT rebinding, moves) our endpoint here.
+    /// Stack only — it runs on the receive loops.
+    fn answer_bind_challenge(&self, challenge: &[u8]) {
+        match bind_echo_for(challenge, &self.self_id) {
+            Some(echo) => match self.inner.send(&echo) {
+                Ok(_) => log::debug!("[media-socket] answered the relay's bind challenge"),
+                Err(e) => log::debug!("[media-socket] bind echo send failed: {}", e),
+            },
+            None => log::debug!("[media-socket] malformed bind challenge ({} B) dropped", challenge.len()),
         }
     }
 
@@ -570,5 +606,96 @@ mod tests {
         rogue.send_to(b"garbage garbage garbage garbage garbage", b.local_addr().unwrap()).unwrap();
         assert!(b.recv(&mut buf).is_err()); // dropped, then timeout
         assert_eq!(b.peer(), Some(a.local_addr().unwrap()));
+    }
+
+    use super::super::packet::{BIND_PACKET_SIZE, PACKET_TYPE_BIND_ECHO};
+
+    const KEY: &str = "abcdefghijklmnopqrstuvwxyz01234"; // 31 chars, like a JWT tail
+
+    fn bind_challenge(cookie: [u8; 8]) -> [u8; BIND_PACKET_SIZE] {
+        let mut c = [0u8; BIND_PACKET_SIZE];
+        c[0] = PACKET_TYPE_BIND_CHALLENGE;
+        c[1 + SENDER_ID_SIZE..].copy_from_slice(&cookie);
+        c
+    }
+
+    /// A fake relay plus a Plain client socket `connect()`ed to it, the way
+    /// `VoiceEngine::start` builds the community sockets.
+    fn relay_and_client() -> (UdpSocket, MediaSocket, SocketAddr) {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(relay.local_addr().unwrap()).unwrap();
+        let client_addr = sock.local_addr().unwrap();
+        let client = MediaSocket::plain(sock, KEY);
+        client.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        (relay, client, client_addr)
+    }
+
+    #[test]
+    fn plain_echoes_relay_bind_challenge_and_hides_it() {
+        let (relay, client, client_addr) = relay_and_client();
+        let challenge = bind_challenge([0xC0, 0x0C, 0x1E, 1, 2, 3, 4, 5]);
+        relay.send_to(&challenge, client_addr).unwrap();
+        let audio = UdpAudioPacket::new_audio("42", 1, b"after").unwrap().to_bytes();
+        relay.send_to(&audio, client_addr).unwrap();
+
+        // The receive loop sees an empty read for the challenge, then the audio...
+        let mut buf = [0u8; 1500];
+        assert_eq!(client.recv(&mut buf).unwrap(), 0);
+        let n = client.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], &audio[..]);
+
+        // ...and the relay got the echo, from that same socket: our key in
+        // the id field, the cookie unchanged, no bigger than the challenge.
+        let mut got = [0u8; 64];
+        let (m, from) = relay.recv_from(&mut got).unwrap();
+        assert_eq!(from, client_addr);
+        assert_eq!(m, challenge.len());
+        assert_eq!(got[0], PACKET_TYPE_BIND_ECHO);
+        assert_eq!(&got[1..32], KEY.as_bytes());
+        assert_eq!(got[32], 0);
+        assert_eq!(&got[33..41], &challenge[33..]);
+    }
+
+    #[test]
+    fn plain_answers_every_challenge_for_a_rebind() {
+        // A NAT rebinding mid-session: the relay challenges again with a new
+        // cookie and the client answers that one too.
+        let (relay, client, client_addr) = relay_and_client();
+        let mut buf = [0u8; 1500];
+        let mut got = [0u8; 64];
+        for cookie in [[1u8; 8], [2u8; 8]] {
+            relay.send_to(&bind_challenge(cookie), client_addr).unwrap();
+            assert_eq!(client.recv(&mut buf).unwrap(), 0); // answered, not surfaced
+            let (m, _) = relay.recv_from(&mut got).unwrap();
+            assert_eq!(m, BIND_PACKET_SIZE);
+            assert_eq!(&got[33..41], &cookie[..]);
+        }
+    }
+
+    #[test]
+    fn plain_drops_malformed_challenge_unanswered() {
+        let (relay, client, client_addr) = relay_and_client();
+        let challenge = bind_challenge([7; 8]);
+        relay.send_to(&challenge[..BIND_PACKET_SIZE - 1], client_addr).unwrap();
+        let mut buf = [0u8; 1500];
+        assert_eq!(client.recv(&mut buf).unwrap(), 0); // not surfaced either
+        let mut got = [0u8; 64];
+        assert!(relay.recv_from(&mut got).is_err());
+    }
+
+    #[test]
+    fn sealed_never_answers_bind_challenge() {
+        // P2P sockets have no relay: a raw challenge (from the peer's address
+        // or anyone else) fails to open and is dropped without a reply.
+        let (_a, b) = pair();
+        let raw = UdpSocket::bind("127.0.0.1:0").unwrap();
+        raw.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        raw.send_to(&bind_challenge([3; 8]), b.local_addr().unwrap()).unwrap();
+        let mut buf = [0u8; 1500];
+        assert!(b.recv(&mut buf).is_err());
+        let mut got = [0u8; 64];
+        assert!(raw.recv_from(&mut got).is_err());
     }
 }
