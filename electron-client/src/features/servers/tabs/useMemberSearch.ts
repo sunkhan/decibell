@@ -5,6 +5,7 @@ import type {
   MemberSearchReceivedPayload,
   MemberUpsertPayload,
   ServerMember,
+  ServerRole,
 } from "../../../types";
 import { toUid } from "../../../stores/usersStore";
 
@@ -69,6 +70,9 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
   const answeredRef = useRef(0);
   const filterRef = useRef({ query: applied, roleId });
   filterRef.current = { query: applied, roleId };
+  const sendRef = useRef<(after: string) => void>(() => {});
+  /// Role ids in the last role list seen (null = none yet).
+  const knownRolesRef = useRef<Set<number> | null>(null);
 
   // Debounce the text; a role change applies at once.
   useEffect(() => {
@@ -79,6 +83,7 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
   }, [query, applied]);
 
   useEffect(() => {
+    knownRolesRef.current = null;
     const un = listen<MemberSearchReceivedPayload>("member_search_received", (event) => {
       const p = event.payload;
       if (p.serverId !== serverId || p.seq !== seqRef.current) return;
@@ -131,10 +136,34 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
         return { ...s, members: s.members.filter((m) => m.uid !== uid), total: Math.max(0, s.total - 1) };
       });
     });
+    // A deleted role is announced only by the role list (no upsert per
+    // holder): drop its id from the loaded rows. Under "no role" a member
+    // who just lost their last one now matches but isn't loaded, so that
+    // search starts over.
+    const unRoles = listen<{ serverId: string; success: boolean; roles: ServerRole[] }>(
+      "role_list_received",
+      (event) => {
+        const { serverId: sid, success, roles } = event.payload;
+        if (sid !== serverId || !success || roles.length === 0) return;
+        const known = new Set(roles.map((r) => r.id));
+        const before = knownRolesRef.current;
+        knownRolesRef.current = known;
+        setState((s) => {
+          if (!s.members.some((m) => m.roleIds.some((id) => !known.has(id)))) return s;
+          const members = s.members.map((m) =>
+            m.roleIds.every((id) => known.has(id)) ? m : { ...m, roleIds: m.roleIds.filter((id) => known.has(id)) },
+          );
+          return { ...s, members };
+        });
+        const deleted = before !== null && [...before].some((id) => !known.has(id));
+        if (deleted && filterRef.current.roleId === -1) sendRef.current("");
+      },
+    );
     return () => {
       un.then((fn) => fn());
       unUp.then((fn) => fn());
       unRm.then((fn) => fn());
+      unRoles.then((fn) => fn());
     };
   }, [serverId]);
 
@@ -153,6 +182,7 @@ export function useMemberSearch(serverId: string, query: string, roleId: RoleFil
     },
     [serverId, applied, roleId],
   );
+  sendRef.current = send;
 
   // A new search keeps the old rows on screen until its answer lands.
   useEffect(() => {

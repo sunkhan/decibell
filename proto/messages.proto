@@ -1235,7 +1235,8 @@ message AttachmentTombstone {
 
 message ChannelPruned {
   string channel_id = 1;
-  // Message rows fully removed by text retention.
+  // Message rows fully removed by text retention or a ban's message purge
+  // (one packet per batch of ids, never one per message).
   repeated int64 deleted_message_ids = 2;
   // Attachments soft-deleted into tombstones (blob gone, metadata retained).
   repeated AttachmentTombstone purged_attachments = 3;
@@ -1467,7 +1468,10 @@ message MemberInfo {
   bool is_online = 5;
   // Ids of the roles assigned to this member (the default `everyone`
   // role is implicit and never listed). Clients resolve them against
-  // RoleListResponse to compute display color and permissions.
+  // RoleListResponse to compute display color and permissions. Deleting a
+  // role sends no MEMBER_UPSERT for its holders: the ROLE_LIST_RES that
+  // follows no longer names it, and clients drop its id from every member
+  // they hold.
   repeated int64 role_ids = 6;
   // Unix seconds until which the member is timed out (can't send, join
   // voice or stream). 0 = not timed out.

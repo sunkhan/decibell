@@ -181,6 +181,8 @@ interface ChatState {
   removeMember: (serverId: string, uid: Uid, revision: number) => boolean;
   setMembersLoadingMore: (serverId: string, loading: boolean) => void;
   setBansForServer: (serverId: string, bans: BanInfo[], truncated?: boolean) => void;
+  /// Also drops role ids the list no longer names from every member held
+  /// for the server: a deleted role's holders get no MEMBER_UPSERT.
   setRolesForServer: (serverId: string, roles: ServerRole[]) => void;
   setOverwritesForChannel: (
     serverId: string,
@@ -638,9 +640,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })),
 
   setRolesForServer: (serverId, roles) =>
-    set((state) => ({
-      rolesByServer: { ...state.rolesByServer, [serverId]: roles },
-    })),
+    set((state) => {
+      const next: Partial<ChatState> = {
+        rolesByServer: { ...state.rolesByServer, [serverId]: roles },
+      };
+      // A deleted role is announced only by this list (review A3: one
+      // MEMBER_UPSERT per holder overflowed every session once a role
+      // had ~1000 holders). Members keep the same object unless they
+      // held a role that's gone, so unchanged rows don't re-render.
+      const members = state.membersByServer[serverId];
+      if (members && roles.length > 0) {
+        const known = new Set(roles.map((r) => r.id));
+        let changed = false;
+        const pruned = members.map((m) => {
+          if (m.roleIds.every((id) => known.has(id))) return m;
+          changed = true;
+          return { ...m, roleIds: m.roleIds.filter((id) => known.has(id)) };
+        });
+        if (changed) next.membersByServer = { ...state.membersByServer, [serverId]: pruned };
+      }
+      return next;
+    }),
 
   setOverwritesForChannel: (serverId, channelId, overwrites) =>
     set((state) => ({

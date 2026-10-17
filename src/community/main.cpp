@@ -411,14 +411,16 @@ public:
     // through this so a private channel's traffic never reaches members
     // who can't see it.
     void broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id);
-    // Batched CHANNEL_MESSAGE_DELETED fan-out for a bulk purge (ban-with-
-    // purge, future bulk delete). Frames each tombstone once, snapshots the
-    // session list once and resolves each viewer's channel access once —
-    // instead of a full sessions_ scan + permission resolve per message,
-    // which stalled the single io thread when purging a prolific spammer (A2).
-    void broadcast_message_deletions(
-        int64_t deleted_by_uid, const std::string& deleted_by, int64_t deleted_at,
-        const std::vector<std::pair<std::string, int64_t>>& messages);
+    // Fan-out for a bulk purge (ban-with-purge, future bulk delete): one
+    // CHANNEL_PRUNED per channel per batch of ids. It used to be one
+    // CHANNEL_MESSAGE_DELETED per message to every viewer, past the write
+    // queue's 1024-frame cap (which disconnects) once a purged spammer had
+    // posted ~1000 messages (review A3).
+    void broadcast_message_deletions(const std::vector<std::pair<std::string, int64_t>>& messages);
+    // CHANNEL_PRUNED for one channel's removed messages and tombstoned
+    // attachments, split into packets well under the client's frame cap.
+    void broadcast_pruned(const std::string& channel_id, const std::vector<int64_t>& message_ids,
+                          const std::vector<chatproj::PurgedAttachmentInfo>& attachments);
     // Push CHANNEL_OVERWRITES_RES for a channel to every session allowed
     // to view them (MANAGE_ROLES / MANAGE_CHANNELS there).
     void broadcast_overwrites(const std::string& channel_id);
@@ -3086,11 +3088,9 @@ private:
                         std::filesystem::remove(path + ".thumb-640px.jpg", ec);
                         std::filesystem::remove(path + ".thumb-1280px.jpg", ec);
                     }
-                    // One batched fan-out for the whole purge — a per-message
-                    // broadcast_to_channel re-scanned every session and
-                    // re-resolved permissions per message, stalling the io
-                    // thread when purging a prolific spammer (A2).
-                    manager_.broadcast_message_deletions(uid_, username_, now_ts, purged.messages);
+                    // One batched fan-out for the whole purge: a packet per
+                    // channel, not per message (A2, review A3).
+                    manager_.broadcast_message_deletions(purged.messages);
                     details += (details.empty() ? "" : "; ") + std::to_string(purged.messages.size()) + " messages purged";
                 }
                 db->add_audit(uid_, username_, "ban", target_uid, target, "", details);
@@ -3314,12 +3314,6 @@ private:
                 fail("You can't delete a role at or above your highest role.");
                 return;
             }
-            // Holders lose the role (cascade) — collect them first so each
-            // gets a MEMBER_UPSERT afterwards.
-            std::vector<int64_t> holders;
-            for (const auto& [user, rid] : db->list_all_member_roles()) {
-                if (rid == req.role_id()) holders.push_back(user);
-            }
             if (!db->delete_role(req.role_id())) {
                 fail("Failed to delete role.");
                 return;
@@ -3329,8 +3323,12 @@ private:
             std::cout << "[Community] Role '" << role->name
                       << "' deleted by " << username_ << "\n";
             db->add_audit(uid_, username_, "role_delete", 0, role->name, "", "");
+            // Holders lost the role (cascade). The role list is the whole
+            // delta: clients drop role ids it no longer names from the
+            // members they hold (review A3). One MEMBER_UPSERT per holder,
+            // sent in this one handler, overflowed every session's write
+            // queue once a role had ~1000 holders.
             manager_.broadcast_roles();
-            for (const auto& u : holders) manager_.emit_member_upsert(u);
             manager_.broadcast_channels();
         }
 
@@ -5617,39 +5615,39 @@ void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const 
 }
 
 void SessionManager::broadcast_message_deletions(
-    int64_t deleted_by_uid, const std::string& deleted_by, int64_t deleted_at,
     const std::vector<std::pair<std::string, int64_t>>& messages) {
-    if (messages.empty() || !authz_) return;
-    // Frame each tombstone once, grouped by channel.
-    std::unordered_map<std::string,
-        std::vector<std::shared_ptr<std::vector<uint8_t>>>> by_channel;
-    for (const auto& [ch, mid] : messages) {
-        chatproj::Packet bcast;
-        bcast.set_type(chatproj::Packet::CHANNEL_MESSAGE_DELETED);
-        auto* bw = bcast.mutable_channel_message_deleted();
-        bw->set_channel_id(ch);
-        bw->set_message_id(mid);
-        bw->set_deleted_at(deleted_at);
-        bw->set_deleted_by(deleted_by);
-        bw->set_deleted_by_uid(deleted_by_uid);
-        by_channel[ch].push_back(frame_packet(bcast));
-    }
-    std::vector<std::pair<std::shared_ptr<Session>, int64_t>> targets;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& s : sessions_) {
-            if (s->is_authenticated()) targets.emplace_back(s, s->get_uid());
+    std::map<std::string, std::vector<int64_t>> by_channel;
+    for (const auto& [ch, mid] : messages) by_channel[ch].push_back(mid);
+    for (const auto& [ch, ids] : by_channel) broadcast_pruned(ch, ids, {});
+}
+
+void SessionManager::broadcast_pruned(const std::string& channel_id,
+                                      const std::vector<int64_t>& message_ids,
+                                      const std::vector<chatproj::PurgedAttachmentInfo>& attachments) {
+    // A packet holds at most 100,000 ids (≤ 10 bytes each, packed) and
+    // 20,000 tombstones (≤ 24 bytes each): under kMaxResponseBytes. The
+    // first sweep after retention is switched on for an old channel can
+    // remove millions of rows; at 2,000 ids a packet that was hundreds of
+    // frames per viewer, past the write queue's frame cap. Clients apply
+    // each CHANNEL_PRUNED on its own, so the split is transparent.
+    constexpr size_t kIdsPerPacket = 100000;
+    constexpr size_t kTombstonesPerPacket = 20000;
+    size_t mi = 0, ai = 0;
+    do {
+        chatproj::Packet p;
+        p.set_type(chatproj::Packet::CHANNEL_PRUNED);
+        auto* msg = p.mutable_channel_pruned();
+        msg->set_channel_id(channel_id);
+        for (size_t n = 0; mi < message_ids.size() && n < kIdsPerPacket; ++mi, ++n) {
+            msg->add_deleted_message_ids(message_ids[mi]);
         }
-    }
-    // One cached channel-permission lookup per (viewer, channel), then deliver
-    // all of that channel's tombstones to the viewer.
-    for (const auto& [session, user] : targets) {
-        for (const auto& [ch, frames] : by_channel) {
-            if (authz_->channel_permissions(user, ch) & chatproj::perms::kViewChannel) {
-                for (const auto& f : frames) session->deliver(f);
-            }
+        for (size_t n = 0; ai < attachments.size() && n < kTombstonesPerPacket; ++ai, ++n) {
+            auto* t = msg->add_purged_attachments();
+            t->set_attachment_id(attachments[ai].attachment_id);
+            t->set_purged_at(attachments[ai].purged_at);
         }
-    }
+        broadcast_to_channel(p, channel_id);
+    } while (mi < message_ids.size() || ai < attachments.size());
 }
 
 void SessionManager::broadcast_overwrites(const std::string& channel_id) {
@@ -5776,30 +5774,10 @@ void SessionManager::run_retention_sweep() {
 
     if (sweeps.empty()) return;
 
-    // Fan CHANNEL_PRUNED out to every authenticated session so their
-    // local state stays in sync without reload. Batched: the first sweep
-    // after enabling retention on an old channel can prune hundreds of
-    // thousands of rows, and one packet carrying every id would be
-    // multi-MB (the server's own frame cap is 2 MiB). Clients treat each
-    // CHANNEL_PRUNED independently, so splitting is transparent.
-    constexpr size_t kPrunedBatch = 2000;
+    // Fan CHANNEL_PRUNED out to every viewer so their local state stays in
+    // sync without reload (batched: see broadcast_pruned).
     for (const auto& cp : sweeps) {
-        size_t mi = 0, ai = 0;
-        do {
-            chatproj::Packet p;
-            p.set_type(chatproj::Packet::CHANNEL_PRUNED);
-            auto* msg = p.mutable_channel_pruned();
-            msg->set_channel_id(cp.channel_id);
-            for (size_t n = 0; mi < cp.deleted_message_ids.size() && n < kPrunedBatch; ++mi, ++n) {
-                msg->add_deleted_message_ids(cp.deleted_message_ids[mi]);
-            }
-            for (size_t n = 0; ai < cp.purged_attachments.size() && n < kPrunedBatch; ++ai, ++n) {
-                auto* t = msg->add_purged_attachments();
-                t->set_attachment_id(cp.purged_attachments[ai].attachment_id);
-                t->set_purged_at(cp.purged_attachments[ai].purged_at);
-            }
-            broadcast_to_channel(p, cp.channel_id);
-        } while (mi < cp.deleted_message_ids.size() || ai < cp.purged_attachments.size());
+        broadcast_pruned(cp.channel_id, cp.deleted_message_ids, cp.purged_attachments);
         std::cout << "[Community] Retention sweep on #" << cp.channel_id
                   << ": " << cp.deleted_message_ids.size() << " messages, "
                   << cp.purged_attachments.size() << " attachments\n";

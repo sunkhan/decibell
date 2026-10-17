@@ -718,7 +718,7 @@ def test_b20_attachment_url():
 
 
 def test_b12_b27_retention_sweep():
-    print("[B12/B27] retention sweep: >999 attachments tombstoned once; CHANNEL_PRUNED batched")
+    print("[B12/B27] retention sweep: >999 attachments tombstoned once; CHANNEL_PRUNED batched (100,000 ids)")
     old = int(time.time()) - 10 * 86400
     att_dir = os.path.join(RUN, "att", "general"); os.makedirs(att_dir, exist_ok=True)
     c = sqlite3.connect(DB)
@@ -730,23 +730,26 @@ def test_b12_b27_retention_sweep():
                   "values(?,0,'r.png','image/png',1,?,0,?,'ready','alice','general')", (mid, path, old))
     # (announcements was deleted by the B1 test — and stays deleted — so use a channel of our own.)
     c.execute("insert or ignore into channels(id, name, type, position) values('archive','archive',0,99)")
-    for i in range(2500):
-        c.execute("insert into messages(channel_id, sender, content, timestamp) values('archive','alice',?,?)", (f"old {i}", old))
+    # Past one packet's 100,000 ids (review A3: 2,000 a packet was hundreds
+    # of frames per viewer for a big first sweep).
+    c.executemany("insert into messages(channel_id, sender, content, timestamp) values('archive','alice',?,?)",
+                  ((f"old {i}", old) for i in range(100500)))
     c.execute("update channels set retention_days_image=1 where id='general'")
     c.execute("update channels set retention_days_text=1 where id='archive'")
     c.commit(); c.close()
     proc = start_server(extra_env={"DECIBELL_RETENTION_INTERVAL_SECONDS": "2"})
     try:
         owner = Client("alice"); assert auth_ok(owner)[0]
-        owner.drain(6.0)   # ≥2 sweeps
+        owner.drain(8.0)   # ≥2 sweeps
         pruned = [p.channel_pruned for p in owner.inbox if p.type == pb.Packet.CHANNEL_PRUNED]
         gen = [cp for cp in pruned if cp.channel_id == "general"]
         ann = [cp for cp in pruned if cp.channel_id == "archive"]
         purged = sum(len(cp.purged_attachments) for cp in gen)
         check("1200 attachments tombstoned in exactly one sweep", purged == 1200 and len(gen) == 1, f"purged={purged} packets={len(gen)}")
         deleted = sum(len(cp.deleted_message_ids) for cp in ann)
-        check("2500 messages pruned, batched <=2000 per packet", deleted == 2500 and len(ann) == 2 and all(len(cp.deleted_message_ids) <= 2000 for cp in ann),
-              f"deleted={deleted} packets={len(ann)}")
+        check("100,500 messages pruned in two packets of <= 100,000", deleted == 100500 and len(ann) == 2
+              and all(len(cp.deleted_message_ids) <= 100000 for cp in ann), f"deleted={deleted} packets={len(ann)}")
+        check("each CHANNEL_PRUNED fits the client's frame cap", owner.max_frame <= 2 * 1024 * 1024, owner.max_frame)
         check("blobs unlinked", not any(os.path.exists(p) for p in paths))
         rows = sql("select count(*) from attachments where channel_id='general' and purged_at=0 and created_at<?", old + 1)
         check("no un-tombstoned old rows left (no re-purge loop)", rows == [(0,)], str(rows))
@@ -1291,8 +1294,9 @@ def test_ban_expiry_and_purge():
     rev = ben.wait(pb.Packet.MEMBERSHIP_REVOKED, timeout=2)
     check("target sees reason + expiry", rev is not None and rev.membership_revoked.reason == "spam" and rev.membership_revoked.expires_at > 0)
     owner.drain(1.5)
-    deleted = sorted(p.channel_message_deleted.message_id for p in owner.inbox if p.type == pb.Packet.CHANNEL_MESSAGE_DELETED)
-    check("CHANNEL_MESSAGE_DELETED for each purged message", deleted == sorted(ids), f"{deleted} vs {sorted(ids)}")
+    pruned = [p.channel_pruned for p in owner.inbox if p.type == pb.Packet.CHANNEL_PRUNED and p.channel_pruned.channel_id == "general"]
+    deleted = sorted(i for cp in pruned for i in cp.deleted_message_ids)
+    check("one CHANNEL_PRUNED names every purged message", len(pruned) == 1 and deleted == sorted(ids), f"{deleted} vs {sorted(ids)}")
     check("rows gone", sql("select count(*) from messages where sender='ben'") == [(0,)])
     bl = next((p for p in owner.inbox if p.type == pb.Packet.BAN_LIST_RES), None)
     e = next((e for e in bl.ban_list_res.entries if e.username == "ben"), None) if bl else None
@@ -4499,6 +4503,54 @@ def test_a2_relay_drops_oversized_datagrams():
     sa.close(); sb.close(); owner.close()
 
 
+def test_a3_bulk_fanout():
+    print("[A3] deleting a role held by 1,100 members, or purging 1,100 messages, is O(1) frames per viewer")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    viewer = join("a3view", owner)
+    role = create_role(owner, "a3-crowd", 0)
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    c.executemany("insert into members(uid, username, joined_at) values(?,?,?)",
+                  ((800000 + i, f"a3m{i:04d}", now) for i in range(1100)))
+    c.executemany("insert into member_roles(uid, role_id) values(?,?)", ((800000 + i, role.id) for i in range(1100)))
+    c.commit(); c.close()
+    owner.flush(0.5); viewer.flush(0.5)
+    delete_role(owner, role.id)
+    rl = viewer.wait(pb.Packet.ROLE_LIST_RES, timeout=3, pred=lambda p: all(r.id != role.id for r in p.role_list_res.roles))
+    viewer.drain(1.0)
+    upserts = sum(1 for p in viewer.inbox if p.type == pb.Packet.MEMBER_UPSERT)
+    check("role delete: the role list is the whole delta, no upsert per holder", rl is not None and upserts == 0, f"{upserts} upserts")
+    check("role delete: the viewer stays connected", not viewer.is_closed(0.3))
+    check("role delete: the holders' rows are gone", sql("select count(*) from member_roles where role_id=?", role.id) == [(0,)])
+    sql("delete from members where uid between 800000 and 801099")
+    # Ban with purge: one CHANNEL_PRUNED per channel, not a delete per message.
+    # (Fresh sessions: before the fix the role delete cut the owner's off too.)
+    owner.close()
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    other = Client("alice"); assert auth_ok(other)[0]
+    spam = join("a3spam", owner)
+    room = create_channel(owner, "a3-purge", pb.ChannelInfo.TEXT).id
+    c = sqlite3.connect(DB)
+    c.executemany("insert into messages(channel_id, sender, sender_uid, content, timestamp) values(?,?,?,?,?)",
+                  ((room, "a3spam", uid_of("a3spam"), f"spam {i}", now) for i in range(1100)))
+    c.commit(); c.close()
+    owner.flush(0.5); other.flush(0.5)
+    owner.send(pb.Packet.BAN_MEMBER_REQ, ban_member_req=pb.BanMemberRequest(
+        username="a3spam", uid=uid_of("a3spam"), reason="spam", delete_message_seconds=3600))
+    r = mod_res(owner, "ban")
+    other.drain(1.5)
+    pruned = [p.channel_pruned for p in other.inbox if p.type == pb.Packet.CHANNEL_PRUNED and p.channel_pruned.channel_id == room]
+    deletes = sum(1 for p in other.inbox if p.type == pb.Packet.CHANNEL_MESSAGE_DELETED)
+    check("ban purge: one CHANNEL_PRUNED names all 1,100 messages", mod_ok(r) and len(pruned) == 1
+          and len(pruned[0].deleted_message_ids) == 1100 and deletes == 0, f"{len(pruned)} pruned, {deletes} deletes")
+    check("ban purge: the viewer stays connected", not other.is_closed(0.3))
+    sql("delete from bans where uid=?", uid_of("a3spam"))
+    spam.close(); other.close(); viewer.close(); owner.close()
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    delete_channel(owner, room)
+    owner.close()
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -4578,6 +4630,7 @@ if __name__ == "__main__":
         test_a1_strings_and_forwarded_packets()
         test_a1_role_and_channel_caps()
         test_a2_relay_drops_oversized_datagrams()
+        test_a3_bulk_fanout()
     finally:
         stop_server(proc)
     test_b9_timeouts()
