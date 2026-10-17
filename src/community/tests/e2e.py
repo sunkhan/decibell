@@ -3972,15 +3972,15 @@ def test_s16_connection_caps():
         check("chat: a burst from one address is cut after ~60", refused >= 20 and len(burst) - refused >= 60,
               f"refused={refused}")
         for s in burst: s.close()
-        # Per address, open: 128 at a time (paced under the rate).
+        # Per address, open: 256 at a time (paced under the rate).
         src = "127.0.250.2"
         opened = [connect(8082, src=src) for _ in range(60)]
-        while len(opened) < 128:
+        while len(opened) < 256:
             time.sleep(0.11)
             opened.append(connect(8082, src=src))
         time.sleep(0.2)
         over = connect(8082, src=src)
-        check("chat: the 129th open connection from one address is refused", peer_closed(over, 1.0)
+        check("chat: the 257th open connection from one address is refused", peer_closed(over, 1.0)
               and not peer_closed(opened[-1], 0.05))
         over.close()
         for s in opened: s.close()

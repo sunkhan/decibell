@@ -2877,9 +2877,6 @@ private:
                 manager_.sync_membership_revoke(target_uid, target);
                 manager_.force_disconnect(target_uid, "ban", reason, uid_, username_, expires_at);
             }
-            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
-                                ok ? "Member banned." : "Ban failed.",
-                                target, "ban", target_uid);
             if (ok) {
                 if (member) manager_.emit_member_remove(target_uid, target);
                 manager_.channel_keys_on_removal(target_uid);
@@ -2906,6 +2903,11 @@ private:
                 }
                 db->add_audit(uid_, username_, "ban", target_uid, target, "", details);
             }
+            // Answered last, so "banned" means the purge is done too (a reply
+            // sent before it raced anything that checked right after).
+            send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, ok,
+                                ok ? "Member banned." : "Ban failed.",
+                                target, "ban", target_uid);
         }
 
         // --- LEAVE SERVER ---

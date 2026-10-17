@@ -20,11 +20,11 @@ namespace chatproj {
 
 class ConnectionLimits {
 public:
-    /// Concurrent connections from one address: room for a household or an
-    /// office behind one NAT (a member holds one chat connection per signed-
-    /// in device and up to ~6 attachment connections), not for one machine
-    /// holding hundreds.
-    static constexpr std::size_t MAX_CONNECTIONS_PER_IP = 128;
+    /// Concurrent connections from one address: room for an office, campus
+    /// or carrier-grade NAT behind one address (a member holds one chat
+    /// connection per signed-in device and up to ~6 attachment connections),
+    /// not for one machine holding thousands. Central's number.
+    static constexpr std::size_t MAX_CONNECTIONS_PER_IP = 256;
     /// Addresses tracked. Past it (after a sweep), new addresses are
     /// refused until entries age out.
     static constexpr std::size_t MAX_TRACKED = 100000;
