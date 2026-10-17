@@ -12,6 +12,8 @@ import type {
   ServerRole,
 } from "../types";
 import { channelKey, type ChannelKey } from "../lib/channelKey";
+import { mergeStoredPage } from "../lib/historyMerge";
+import { useAuthStore } from "./authStore";
 import type { Uid } from "./usersStore";
 
 // PR4 chatStore — text channels, messages, history paging, optimistic
@@ -133,6 +135,15 @@ interface ChatState {
   /// ChatPanel runs it once that channel is active and its first page is
   /// in, then clears it; `at` lets a request nobody consumed go stale.
   jumpRequest: { serverId: string; channelId: string; messageId: number; at: number } | null;
+  /// Per server, bumped every time its connection authenticates
+  /// (markServerStale). ChatPanel brings the channel on screen up to date
+  /// when the active server's count moves (review B4).
+  resyncEpoch: Record<string, number>;
+  /// Channels whose re-sync (ChatPanel's newest-page load after a
+  /// reconnect) is in flight: windowed meanwhile, so live arrivals wait,
+  /// but shown as caught up — no jump-to-present pill, bottom-follow on,
+  /// sends go through.
+  resyncing: Record<ChannelKey, boolean>;
 
   // Mutators
   requestJump: (serverId: string, channelId: string, messageId: number) => void;
@@ -215,17 +226,37 @@ interface ChatState {
     hasMoreOlder: boolean,
     hasMoreNewer: boolean,
   ) => void;
-  /// Downward pagination: append a newer page, updating hasMoreAfter.
+  /// Downward pagination (and re-sync / echo checks): merge the page of
+  /// rows above `afterId`. A windowed slice reaches the present when the
+  /// page says nothing newer is left; a page that doesn't connect to the
+  /// slice only settles the bubbles it confirms (see mergeStoredPage).
   appendNewer: (
     serverId: string,
     channelId: string,
     messages: Message[],
     hasMoreNewer: boolean,
+    afterId: number,
   ) => void;
   /// Jump-to-present: clear the loaded slice so the caller can reload the
   /// newest page from scratch. Resets hasMoreAfter → false (we'll be at the
   /// live bottom) and historyFetched → false (a fresh fetch is coming).
+  /// Unconfirmed sends stay: the page settles them, or the echo watchdog.
   resetChannelForJump: (serverId: string, channelId: string) => void;
+  /// The server's connection authenticated again (review B4): nothing
+  /// posted, edited or deleted while it was down reached its cached slices.
+  /// Slices of channels gone from `channelIds` are dropped. A slice the
+  /// user left caught up is dropped too (the next visit loads the newest
+  /// page); one left scrolled up, or holding an unconfirmed send, goes
+  /// windowed, so it keeps its place and pages down to the present. The
+  /// displayed channel is left to ChatPanel, which knows whether the user
+  /// is at the bottom. Bumps resyncEpoch.
+  markServerStale: (serverId: string, channelIds: string[]) => void;
+  /// Newer messages may exist below the slice: live arrivals wait (they'd
+  /// land past a gap) and downward paging fills it.
+  markWindowed: (serverId: string, channelId: string) => void;
+  /// Start (windowed in the same update, so nothing renders in between)
+  /// or end a channel's re-sync — see `resyncing`.
+  setResyncing: (serverId: string, channelId: string, on: boolean) => void;
   /// Sliding-window trims (RealMessageList): keep the DOM bounded by dropping
   /// the end of the slice FAR from the viewport when a page-in grows it past
   /// the cap. trimTail keeps the oldest `keep` rows and flips hasMoreAfter →
@@ -319,6 +350,13 @@ const BACKGROUND_SLICE_CAP = 150;
 /// 150 messages, so this costs little memory. Was a Network setting until
 /// 2026-10-10; it changed so little that it went.
 const CHANNEL_CACHE_SIZE = 10;
+
+/// Ids removed optimistically whose delete the server hasn't answered: a
+/// page that still holds them must not put them back.
+function deletingIds(state: ChatState, key: ChannelKey): Set<number> | undefined {
+  const pending = state.pendingDeletions[key];
+  return pending && pending.size > 0 ? new Set(pending.keys()) : undefined;
+}
 
 // Merge a new message into a channel's list, sorted by id ascending
 // and deduped by id. id=0 entries (optimistic bubbles) sit at the tail
@@ -432,6 +470,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   chatViewSize: null,
   channelAccessOrder: [],
   jumpRequest: null,
+  resyncEpoch: {},
+  resyncing: {},
   setActiveServer: (serverId) => set({ activeServerId: serverId }),
   requestJump: (serverId, channelId, messageId) =>
     set({ jumpRequest: { serverId, channelId, messageId, at: Date.now() } }),
@@ -758,24 +798,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
+  // A newest or older page. It may overlap loaded live messages (merged by
+  // id), confirm sends whose echo was lost (review B4), or lie entirely
+  // above the slice after a reconnect, where it replaces it: there may be
+  // a gap in between. See mergeStoredPage.
   prependHistory: (serverId, channelId, messages, hasMore) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
       const existing = state.messagesByChannel[key] ?? [];
-      // History batch may overlap with already-loaded live messages —
-      // dedup by real id (id=0 entries are optimistic, not in history).
-      const existingIds = new Set(existing.filter((m) => m.id !== 0).map((m) => m.id));
-      const fresh = messages.filter((m) => m.id !== 0 && !existingIds.has(m.id));
-      const withId = [...fresh, ...existing.filter((m) => m.id !== 0)].sort(
-        (a, b) => a.id - b.id,
-      );
-      const ephemeral = existing.filter((m) => m.id === 0);
+      const r = mergeStoredPage(existing, messages, useAuthStore.getState().uid, 0, deletingIds(state, key));
       return {
-        messagesByChannel: {
-          ...state.messagesByChannel,
-          [key]: [...withId, ...ephemeral],
-        },
-        hasMoreHistory: { ...state.hasMoreHistory, [key]: hasMore },
+        messagesByChannel: { ...state.messagesByChannel, [key]: r.list },
+        hasMoreHistory: r.headExtended ? { ...state.hasMoreHistory, [key]: hasMore } : state.hasMoreHistory,
+        // The newest page: the slice is at the present now.
+        hasMoreAfter: r.reachedNewest ? { ...state.hasMoreAfter, [key]: false } : state.hasMoreAfter,
       };
     }),
 
@@ -794,31 +830,95 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  appendNewer: (serverId, channelId, messages, hasMoreNewer) =>
+  appendNewer: (serverId, channelId, messages, hasMoreNewer, afterId) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
       const existing = state.messagesByChannel[key] ?? [];
-      const existingIds = new Set(existing.filter((m) => m.id !== 0).map((m) => m.id));
-      const fresh = messages.filter((m) => m.id !== 0 && !existingIds.has(m.id));
-      const withId = [...existing.filter((m) => m.id !== 0), ...fresh].sort(
-        (a, b) => a.id - b.id,
-      );
-      const ephemeral = existing.filter((m) => m.id === 0);
+      const r = mergeStoredPage(existing, messages, useAuthStore.getState().uid, afterId, deletingIds(state, key));
+      if (r.list === existing && !r.applied) return state;
       return {
-        messagesByChannel: { ...state.messagesByChannel, [key]: [...withId, ...ephemeral] },
-        hasMoreAfter: { ...state.hasMoreAfter, [key]: hasMoreNewer },
+        messagesByChannel:
+          r.list === existing ? state.messagesByChannel : { ...state.messagesByChannel, [key]: r.list },
+        // Only a windowed slice can reach the present: one already there
+        // stays there whatever lies beyond the page (an echo check asks
+        // from where the send was made, not from the newest row).
+        hasMoreAfter: r.applied
+          ? { ...state.hasMoreAfter, [key]: state.hasMoreAfter[key] === true && hasMoreNewer }
+          : state.hasMoreAfter,
       };
     }),
 
   resetChannelForJump: (serverId, channelId) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
+      const unconfirmed = (state.messagesByChannel[key] ?? []).filter((m) => m.id === 0 && !!m.nonce);
       return {
-        messagesByChannel: { ...state.messagesByChannel, [key]: [] },
+        messagesByChannel: { ...state.messagesByChannel, [key]: unconfirmed },
         hasMoreHistory: { ...state.hasMoreHistory, [key]: true },
         hasMoreAfter: { ...state.hasMoreAfter, [key]: false },
         historyFetched: { ...state.historyFetched, [key]: false },
       };
+    }),
+
+  markServerStale: (serverId, channelIds) =>
+    set((state) => {
+      const live = new Set(channelIds);
+      const known = new Set([...(state.channelsByServer[serverId] ?? []).map((c) => c.id), ...channelIds]);
+      const drop = new Set<string>();
+      const windowed: Record<ChannelKey, boolean> = {};
+      for (const id of known) {
+        const key = channelKey(serverId, id);
+        const list = state.messagesByChannel[key];
+        if (!list && !(key in state.historyLoading) && !(key in state.historyFetched)) continue;
+        if (!live.has(id)) {
+          drop.add(key);
+          continue;
+        }
+        if (key === displayedChannelKey) continue;
+        const unconfirmed = list?.some((m) => m.id === 0 && !!m.nonce) ?? false;
+        const stored = list?.some((m) => m.id > 0) ?? false;
+        const pos = state.scrollPositionsByChannel[key];
+        if (unconfirmed || (stored && pos && !pos.atBottom)) windowed[key] = true;
+        else drop.add(key);
+      }
+      const prune = <T,>(rec: Record<ChannelKey, T>): Record<ChannelKey, T> =>
+        drop.size === 0
+          ? rec
+          : (Object.fromEntries(Object.entries(rec).filter(([k]) => !drop.has(k))) as Record<ChannelKey, T>);
+      // A request made on the dropped connection is never answered.
+      const historyLoading = { ...prune(state.historyLoading) };
+      for (const key of Object.keys(windowed) as ChannelKey[]) delete historyLoading[key];
+      return {
+        messagesByChannel: prune(state.messagesByChannel),
+        hasMoreHistory: prune(state.hasMoreHistory),
+        hasMoreAfter: { ...prune(state.hasMoreAfter), ...windowed },
+        historyLoading,
+        historyFetched: prune(state.historyFetched),
+        scrollPositionsByChannel: prune(state.scrollPositionsByChannel),
+        resyncEpoch: { ...state.resyncEpoch, [serverId]: (state.resyncEpoch[serverId] ?? 0) + 1 },
+      };
+    }),
+
+  markWindowed: (serverId, channelId) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      if (state.hasMoreAfter[key]) return state;
+      return { hasMoreAfter: { ...state.hasMoreAfter, [key]: true } };
+    }),
+
+  setResyncing: (serverId, channelId, on) =>
+    set((state) => {
+      const key = channelKey(serverId, channelId);
+      if (on) {
+        return {
+          resyncing: { ...state.resyncing, [key]: true },
+          hasMoreAfter: { ...state.hasMoreAfter, [key]: true },
+        };
+      }
+      if (!state.resyncing[key]) return state;
+      const resyncing = { ...state.resyncing };
+      delete resyncing[key];
+      return { resyncing };
     }),
 
   trimTail: (serverId, channelId, keep) =>
@@ -1056,6 +1156,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       invitesByServer: {},
       invitesTruncated: {},
       pendingInvite: null,
+      resyncEpoch: {},
+      resyncing: {},
     }),
 
   setScrollPosition: (serverId, channelId, position) =>

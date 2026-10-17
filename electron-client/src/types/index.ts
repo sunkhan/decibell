@@ -85,6 +85,8 @@ export interface DmMessage {
   nonce?: string;
   /// Optimistic, not yet echoed by central — rendered faded.
   pending?: boolean;
+  /// Optimistic sends: see Message.sentAfterId.
+  sentAfterId?: number;
   /// E2EE: the body arrived sealed and `content` is the opened text — or
   /// a placeholder when `decryptError` is set ("locked" | "no_key" |
   /// "peer_key" | "bad"). See docs/superpowers/specs/2026-09-03-e2ee-dms-design.md.
@@ -433,6 +435,10 @@ export interface Message {
   /// Optimistic send the server hasn't echoed yet — rendered faded
   /// (Discord's "sending" look); the echo replaces the object.
   pending?: boolean;
+  /// Optimistic sends: the newest stored id in the slice when it was sent.
+  /// Its row, if stored, has a higher id — where the echo watchdog looks
+  /// for it, and what lib/historyMerge matches a refetched row against.
+  sentAfterId?: number;
   /// E2EE (DMs only) — see DmMessage.encrypted / decryptError.
   encrypted?: boolean;
   decryptError?: string;

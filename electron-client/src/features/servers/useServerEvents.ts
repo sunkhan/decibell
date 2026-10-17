@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { legacyRejectionSuppressed, resetSendPacing } from "../chat/sendPacing";
+import { abandonChannelRequests } from "../chat/historyRequests";
 import { parseInviteLink } from "./inviteLink";
 import { invoke, listen } from "../../lib/ipc";
 import { applySavedUserGains } from "../voice/userGain";
@@ -197,6 +198,12 @@ export function useServerEvents() {
         // (next paint of ServerBar will pick up the connectedServers
         // entry below and render the real tile state).
         useChatStore.getState().removePendingMembership(p.serverId);
+        // Nothing posted, edited or deleted while we were away reached the
+        // cached channels (review B4): requests made on the old connection
+        // are never answered, cached slices refetch or go windowed, and the
+        // channel on screen catches up (ChatPanel follows resyncEpoch).
+        abandonChannelRequests(p.serverId);
+        useChatStore.getState().markServerStale(p.serverId, p.channels.map((c) => c.id));
         useChatStore.getState().setChannelsForServer(p.serverId, p.channels);
         useChatStore.getState().setServerMeta(p.serverId, {
           name: p.serverName,
@@ -589,6 +596,8 @@ export function useServerEvents() {
         const { serverType, serverId } = event.payload;
         if (serverType === "community" && serverId) {
           useChatStore.getState().removeConnectedServer(serverId);
+          // Their replies went down with the connection.
+          abandonChannelRequests(serverId);
           // No updates arrive while we're cut off; show nothing rather
           // than a roster that silently goes stale.
           useVoiceStore.getState().clearServerPresence(serverId);

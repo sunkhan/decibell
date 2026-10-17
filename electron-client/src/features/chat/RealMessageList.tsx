@@ -97,6 +97,10 @@ export interface ScrollState extends ListPosition {
 
 export interface RealMessageListHandle {
   scrollToBottom: (smooth: boolean) => void;
+  /// Fire onNearTop / onNearBottom now if an edge is near — for a parent
+  /// whose page request failed and that would otherwise wait for the next
+  /// scroll or commit to ask again.
+  recheckEdges: () => void;
 }
 
 export interface RealMessageListProps<T> {
@@ -207,7 +211,10 @@ function RealMessageListInner<T>(
         if (!el) return;
         el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
       },
+      recheckEdges: () => checkEdges(),
     }),
+    // checkEdges reads only refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 

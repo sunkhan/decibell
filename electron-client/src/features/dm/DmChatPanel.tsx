@@ -5,7 +5,9 @@ import RealMessageList, {
   type ScrollState,
 } from "../chat/RealMessageList";
 import { invoke } from "../../lib/ipc";
-import { useDmStore } from "../../stores/dmStore";
+import { newestStoredId } from "../../lib/historyMerge";
+import { setDisplayedDmPeer, useDmStore } from "../../stores/dmStore";
+import { centralSignedIn, loadLatestDmPage, requestDmHistory, RETRY_DELAY_MS } from "../chat/historyRequests";
 import { useAuthStore } from "../../stores/authStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDraftsStore } from "../../stores/draftsStore";
@@ -146,17 +148,14 @@ export default function DmChatPanel() {
   const savedPositionsRef = useRef<
     Record<string, { atBottom: boolean; anchorId?: number; offset?: number }>
   >({});
-  // Single-flight guard for the scroll-up paginator so rapid scroll
-  // doesn't fire parallel page loads.
-  const loadMoreInFlightRef = useRef(false);
   // Boundary dedup for the eager pagination trigger — the history
-  // response arrives via event, not the invoke promise, so the
-  // in-flight guard alone can't stop a re-request of the same page.
+  // response arrives via event, not the invoke promise. Cleared when a
+  // request gets no answer, so a lost page is asked for again (B4).
   const lastRequestedBeforeIdRef = useRef(0);
-  // Downward-pagination twins of the older-history guards, for fetching
-  // NEWER messages (after_id) around a jump target.
-  const loadNewerInFlightRef = useRef(false);
+  // The downward twin, for fetching NEWER messages (after_id).
   const lastRequestedAfterIdRef = useRef(0);
+  // See ChatPanel's failedKey.
+  const [failedPeer, setFailedPeer] = useState<number | null>(null);
   // When a jump target isn't loaded, we request an around-window and stash the
   // target here; the landing effect lands on it once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
@@ -261,6 +260,8 @@ export default function DmChatPanel() {
   // live bottom). Drives the jump-to-present pill, followOutput gating, and
   // downward pagination.
   const windowed = conversation?.hasMoreAfter === true;
+  // What the list and the pill see: a re-sync is windowed in the store only.
+  const listWindowed = windowed && !conversation?.resyncing;
 
   // --- Replies ---
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -294,8 +295,22 @@ export default function DmChatPanel() {
     setPresentLoading(false);
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
-    loadNewerInFlightRef.current = false;
   }, [activeDmUser]);
+
+  // Re-sync handover: markHistoriesStale leaves this conversation to us.
+  useEffect(() => {
+    if (!activeDmUser) return;
+    setDisplayedDmPeer(activeDmUser);
+    return () => setDisplayedDmPeer(null);
+  }, [activeDmUser]);
+
+  // A send the echo watchdog withdrew put its text back (draftsStore);
+  // show it if that conversation is open.
+  const restoredDm = useDraftsStore((s) => s.restoredDm);
+  useEffect(() => {
+    if (!restoredDm || restoredDm.peer !== activeDmUser) return;
+    editorRef.current?.setValue(useDraftsStore.getState().dmDrafts[restoredDm.peer] ?? "");
+  }, [restoredDm, activeDmUser]);
 
   // Clear the jump-to-present loading placeholder once the reloaded page lands.
   useEffect(() => {
@@ -328,17 +343,55 @@ export default function DmChatPanel() {
   // haven't already loaded server history for this conversation in
   // this session. Live in-memory messages aren't enough to know we've
   // "seen" the full history; the server's view is authoritative.
+  // (The newest-page load retries a lost reply; see ChatPanel's loadLatest.)
+  const loadLatestDm = useCallback((peer: number) => {
+    setFailedPeer((p) => (p === peer ? null : p));
+    return loadLatestDmPage(peer).then((ok) => {
+      if (!ok) setFailedPeer(peer);
+      return ok;
+    });
+  }, []);
   useEffect(() => {
     if (!activeDmUser) return;
-    const conv = useDmStore.getState().conversations[activeDmUser];
-    if (conv?.historyLoaded) return;
-    invoke("request_dm_history", {
-      peer: nameOf(activeDmUser),
-      peerUid: activeDmUser,
-      beforeId: 0,
-      limit: 50,
-    }).catch(console.error);
-  }, [activeDmUser]);
+    if (useDmStore.getState().conversations[activeDmUser]?.historyLoaded) return;
+    void loadLatestDm(activeDmUser);
+  }, [activeDmUser, loadLatestDm]);
+
+  // Re-sync after central signs us in again (review B4) — see ChatPanel's.
+  // markHistoriesStale dealt with every other conversation.
+  const dmResyncEpoch = useDmStore((s) => s.resyncEpoch);
+  const seenDmResyncRef = useRef(dmResyncEpoch);
+  useEffect(() => {
+    const seen = seenDmResyncRef.current;
+    seenDmResyncRef.current = dmResyncEpoch;
+    if (!activeDmUser || dmResyncEpoch <= seen) return;
+    const peer = activeDmUser;
+    lastRequestedBeforeIdRef.current = 0;
+    lastRequestedAfterIdRef.current = 0;
+    pendingJumpIdRef.current = null;
+    setJumpTarget(null);
+    const dm = useDmStore.getState();
+    const conv = dm.conversations[peer];
+    const stored = newestStoredId((conv?.messages ?? []).filter((m) => !m.preview)) > 0;
+    const atBottom = positionsRef.current[peer]?.atBottom ?? true;
+    if (stored && conv?.historyLoaded && (conv.hasMoreAfter || !atBottom)) {
+      dm.markDmWindowed(peer);
+      requestAnimationFrame(() => listRef.current?.recheckEdges());
+      return;
+    }
+    if (stored) dm.setDmResyncing(peer, true);
+    void loadLatestDm(peer).finally(() => {
+      if (stored) useDmStore.getState().setDmResyncing(peer, false);
+    });
+    // activeDmUser is read as rendered: a re-sync is about the sign-in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dmResyncEpoch, loadLatestDm]);
+
+  // A page request that got no answer — see ChatPanel's retryPagingLater.
+  const retryPagingLater = () => {
+    if (!centralSignedIn()) return;
+    window.setTimeout(() => listRef.current?.recheckEdges(), RETRY_DELAY_MS);
+  };
 
   // Scroll-up paginator — same shape as ChatPanel's maybeLoadOlderHistory
   // (see the comment there): driven by RealMessageList's onNearTop, deduped
@@ -347,65 +400,35 @@ export default function DmChatPanel() {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
     if (!conv?.hasMoreHistory) return;
-    if (loadMoreInFlightRef.current) return;
     const oldest = conv.messages.find(
       (m): m is typeof m & { id: number } => typeof m.id === "number" && m.id > 0,
     );
-    const beforeId = oldest?.id ?? 0;
-    if (beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
-      return;
-    }
-    loadMoreInFlightRef.current = true;
+    if (!oldest || oldest.id === lastRequestedBeforeIdRef.current) return;
+    const beforeId = oldest.id;
     lastRequestedBeforeIdRef.current = beforeId;
-    invoke("request_dm_history", {
-      peer: nameOf(activeDmUser),
-      peerUid: activeDmUser,
-      beforeId,
-      limit: 50,
-    })
-      .catch((err) => {
-        console.error(err);
-        // Allow the eager path to retry this boundary after a failure.
-        lastRequestedBeforeIdRef.current = 0;
-      })
-      .finally(() => {
-        loadMoreInFlightRef.current = false;
-      });
+    void requestDmHistory(activeDmUser, { beforeId, limit: 50 }).then((reply) => {
+      if (reply || lastRequestedBeforeIdRef.current !== beforeId) return;
+      lastRequestedBeforeIdRef.current = 0;
+      retryPagingLater();
+    });
   };
 
   // Downward paginator — mirror of maybeLoadOlderHistory, active only while
-  // windowed (newer messages exist below the jump slice). RealMessageList's
-  // onNearBottom fires it; it no-ops at present (hasMoreAfter false).
+  // windowed (newer messages exist below the slice). RealMessageList's
+  // onNearBottom fires it; it no-ops at present (hasMoreAfter false) and
+  // during a re-sync.
   const maybeLoadNewerHistory = () => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
-    if (!conv?.hasMoreAfter) return;
-    if (loadNewerInFlightRef.current) return;
-    let afterId = 0;
-    for (let i = conv.messages.length - 1; i >= 0; i--) {
-      const m = conv.messages[i];
-      if (typeof m.id === "number" && m.id > 0) {
-        afterId = m.id;
-        break;
-      }
-    }
+    if (!conv?.hasMoreAfter || conv.resyncing) return;
+    const afterId = newestStoredId(conv.messages);
     if (afterId === 0 || afterId === lastRequestedAfterIdRef.current) return;
-    loadNewerInFlightRef.current = true;
     lastRequestedAfterIdRef.current = afterId;
-    invoke("request_dm_history", {
-      peer: nameOf(activeDmUser),
-      peerUid: activeDmUser,
-      beforeId: 0,
-      afterId,
-      limit: 50,
-    })
-      .catch((err) => {
-        console.error(err);
-        lastRequestedAfterIdRef.current = 0;
-      })
-      .finally(() => {
-        loadNewerInFlightRef.current = false;
-      });
+    void requestDmHistory(activeDmUser, { beforeId: 0, afterId, limit: 50 }).then((reply) => {
+      if (reply || lastRequestedAfterIdRef.current !== afterId) return;
+      lastRequestedAfterIdRef.current = 0;
+      retryPagingLater();
+    });
   };
 
   // "Jump to present": drop the windowed slice and reload the newest page,
@@ -420,15 +443,12 @@ export default function DmChatPanel() {
     positionsRef.current[peer] = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     savedPositionsRef.current[peer] = { atBottom: true };
     pendingJumpIdRef.current = null;
-    loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
-    loadNewerInFlightRef.current = false;
     lastRequestedAfterIdRef.current = 0;
     setPresentLoading(true);
     useDmStore.getState().resetDmForJump(peer);
-    invoke("request_dm_history", { peer: nameOf(peer), peerUid: peer, beforeId: 0, limit: 50 }).catch((err) => {
-      console.error(err);
-      setPresentLoading(false);
+    void loadLatestDm(peer).then((ok) => {
+      if (!ok) setPresentLoading(false);
     });
   };
 
@@ -455,7 +475,11 @@ export default function DmChatPanel() {
   // the panel for a peer and there are unread messages with a real
   // id. Optimistically zeroes the unread count locally; server call
   // is fire-and-forget.
+  // Also fires when central reports unread DMs for the open conversation
+  // that we already read here (a mark-read lost to a drop, review B4):
+  // the server is told again, else its count never clears.
   const messagesLenForMarkRead = conversation?.messages.length ?? 0;
+  const unreadForMarkRead = conversation?.unreadCount ?? 0;
   useEffect(() => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
@@ -464,7 +488,7 @@ export default function DmChatPanel() {
     for (const m of conv.messages) {
       if (typeof m.id === "number" && m.id > latestId) latestId = m.id;
     }
-    if (latestId === 0 || latestId <= conv.lastReadId) return;
+    if (latestId === 0 || (latestId <= conv.lastReadId && conv.unreadCount === 0)) return;
     // Optimistic local clear; server sync follows after a small
     // coalesce window so a burst of new messages results in a
     // single mark-read RPC. Capture peer + upToId into closure consts
@@ -482,7 +506,7 @@ export default function DmChatPanel() {
     window.setTimeout(() => {
       invoke("mark_dm_read", { peer: nameOf(peer), peerUid: peer, upToId }).catch(console.error);
     }, 250);
-  }, [activeDmUser, messagesLenForMarkRead]);
+  }, [activeDmUser, messagesLenForMarkRead, unreadForMarkRead]);
 
   // Auto-focus the editor when the user starts typing anywhere — same
   // ergonomics as the channel chat panel.
@@ -505,8 +529,10 @@ export default function DmChatPanel() {
     if (!value.trim() || !activeDmUser) return;
     // Sending while viewing a jumped slice would drop the new message past a
     // hidden gap (addDmMessage guards against it). Snap to present first and
-    // keep the draft — the next Enter sends normally at the bottom.
-    if (useDmStore.getState().conversations[activeDmUser]?.hasMoreAfter) {
+    // keep the draft — the next Enter sends normally at the bottom. (A
+    // re-sync's newest page is already coming, and settles the send.)
+    const sendConv = useDmStore.getState().conversations[activeDmUser];
+    if (sendConv?.hasMoreAfter && !sendConv.resyncing) {
       jumpToPresent();
       return;
     }
@@ -529,6 +555,7 @@ export default function DmChatPanel() {
           replyTo: replyToId,
           nonce,
           pending: true,
+          sentAfterId: newestStoredId(useDmStore.getState().conversations[peer]?.messages ?? []),
         },
         true,
       );
@@ -583,7 +610,8 @@ export default function DmChatPanel() {
   // the typed draft stays, a pending reply target is consumed by it.
   const sendGif = async (gif: GifResult) => {
     if (!activeDmUser) return;
-    if (useDmStore.getState().conversations[activeDmUser]?.hasMoreAfter) {
+    const sendConv = useDmStore.getState().conversations[activeDmUser];
+    if (sendConv?.hasMoreAfter && !sendConv.resyncing) {
       jumpToPresent();
       return;
     }
@@ -602,6 +630,7 @@ export default function DmChatPanel() {
           replyTo: replyToId,
           nonce,
           pending: true,
+          sentAfterId: newestStoredId(useDmStore.getState().conversations[peer]?.messages ?? []),
         },
         true,
       );
@@ -678,19 +707,21 @@ export default function DmChatPanel() {
       // exact target? Wait for the landing effect.
       if (pendingJumpIdRef.current === id) return;
       pendingJumpIdRef.current = id;
-      loadMoreInFlightRef.current = false;
       lastRequestedBeforeIdRef.current = 0;
-      loadNewerInFlightRef.current = false;
       lastRequestedAfterIdRef.current = 0;
-      invoke("request_dm_history", {
-        peer: nameOf(peer),
-        peerUid: peer,
-        beforeId: 0,
-        aroundId: id,
-        limit: 25,
-      }).catch((err) => {
-        console.error("request_dm_history (around):", err);
+      void requestDmHistory(peer, { beforeId: 0, aroundId: id, limit: 25 }).then((reply) => {
+        // See ChatPanel's jumpToMessage: stop waiting on no answer or a
+        // window without the message.
+        if (pendingJumpIdRef.current !== id) return;
+        const st = useDmStore.getState();
+        const here = st.activeDmUser === peer;
+        const loaded = (st.conversations[peer]?.messages ?? []).some((m) => m.id === id);
+        if (reply && here && loaded) return;
         pendingJumpIdRef.current = null;
+        if (!here) return;
+        setJumpTarget((prev) => (prev && prev.id === id ? null : prev));
+        if (reply) toast.error("Couldn't find that message", "It may have been deleted.");
+        else toast.error("Couldn't load that message", "The server didn't answer. Try again.");
       });
     },
     [],
@@ -927,6 +958,16 @@ export default function DmChatPanel() {
         <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
           Loading…
         </div>
+      ) : messages.length === 0 && failedPeer === activeDmUser ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-text-muted">
+          Couldn't load messages.
+          <button
+            onClick={() => void loadLatestDm(activeDmUser)}
+            className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover"
+          >
+            Retry
+          </button>
+        </div>
       ) : messages.length === 0 ? (
         <div className="flex-1 overflow-y-auto pr-4 py-4">
           <div className="animate-[fadeUp_0.4s_ease_both] pl-4">
@@ -956,7 +997,7 @@ export default function DmChatPanel() {
           items={bubbleMessages}
           keyOf={messageKey}
           renderItem={renderRow}
-          windowed={windowed}
+          windowed={listWindowed}
           jumpTarget={jumpTarget}
           initialPosition={initialPosition}
           onScrollState={handleScrollState}
@@ -976,10 +1017,10 @@ export default function DmChatPanel() {
           messages hidden below → reloads the newest page) and while merely
           scrolled well above the live bottom (→ scrolls back down). Accent
           button styling; rounded-md tracks the theme's radius scale. */}
-      {(windowed || scrolledUp) && (
+      {(listWindowed || scrolledUp) && (
         <button
           onClick={() => {
-            if (windowed) {
+            if (listWindowed) {
               jumpToPresent();
               return;
             }

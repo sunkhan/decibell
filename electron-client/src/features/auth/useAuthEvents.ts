@@ -11,6 +11,8 @@ import { useDraftsStore } from "../../stores/draftsStore";
 import { useFriendsStore } from "../../stores/friendsStore";
 import type { ServerInfoPayload } from "../../types";
 import { clearRetainedImages } from "../chat/imageRetention";
+import { abandonDmRequests } from "../chat/historyRequests";
+import { requestFriendList } from "../friends/friendList";
 
 export function useAuthEvents() {
   const navigate = useNavigate();
@@ -20,7 +22,12 @@ export function useAuthEvents() {
       "login_succeeded",
       (event) => {
         const uid = Number(event.payload.uid ?? 0) || 0;
-        useAuthStore.getState().login(event.payload.username, !!event.payload.renames, uid);
+        // Central signed the same account in again on its own: a resume, or
+        // the password after a refused resume, following a dropped
+        // connection.
+        const auth = useAuthStore.getState();
+        const again = auth.isAuthenticated && uid > 0 && auth.uid === uid;
+        auth.login(event.payload.username, !!event.payload.renames, uid);
         // Others' pictures come with their presence; nothing sends our own.
         useAvatarStore.getState().seed(uid);
         // Replace, never push: a history entry is something back/forward
@@ -36,6 +43,16 @@ export function useAuthEvents() {
         // Response arrives via `dm_conversations_received` (handled
         // in useDmEvents). Failure is silent — same as server list.
         invoke("request_dm_conversations").catch(() => {});
+        // What happened while we were away never reached the renderer
+        // (review B4). The conversation list is refetched above, as on
+        // every sign-in, which resets the unread counts; the loaded
+        // conversations reload (the open one catches up in DmChatPanel)
+        // and the friend list is asked for again.
+        if (again) {
+          abandonDmRequests();
+          useDmStore.getState().markHistoriesStale();
+          requestFriendList();
+        }
       },
     );
 
@@ -89,8 +106,8 @@ export function useAuthEvents() {
       usePresenceStore.getState().reset();
       // The next account on this device sees none of this one's DMs,
       // drafts or friends.
-      useDmStore.setState({ conversations: {}, activeDmUser: null, pendingDmDeletions: {} });
-      useDraftsStore.setState({ channelDrafts: {}, dmDrafts: {}, restored: null });
+      useDmStore.setState({ conversations: {}, activeDmUser: null, pendingDmDeletions: {}, resyncEpoch: 0 });
+      useDraftsStore.setState({ channelDrafts: {}, dmDrafts: {}, restored: null, restoredDm: null });
       useFriendsStore.setState({ friends: [], lastActionError: null });
       useUiStore.getState().setActiveView("home");
       useAvatarStore.getState().clearAll();

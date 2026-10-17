@@ -10,8 +10,10 @@ import { setDisplayedChannelKey, useChatStore } from "../../stores/chatStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { useDraftsStore } from "../../stores/draftsStore";
-import { channelKey } from "../../lib/channelKey";
+import { channelKey, type ChannelKey } from "../../lib/channelKey";
 import { EMPTY_LIST } from "../../lib/empty";
+import { newestStoredId } from "../../lib/historyMerge";
+import { loadLatestChannelPage, requestChannelHistory, RETRY_DELAY_MS } from "./historyRequests";
 import { findMember } from "../../hooks/useDisplayName";
 import { toast } from "../../stores/toastStore";
 import MessageBubble, { DayDivider, shouldGroup, startsNewDay } from "./MessageBubble";
@@ -155,18 +157,17 @@ export default function ChatPanel() {
   // pressed while uploads are still running can't re-send the same
   // attachments as a duplicate message.
   const claimedPendingsRef = useRef<Set<string>>(new Set());
-  // Single-flight guard for scroll-up history pagination.
-  const loadMoreInFlightRef = useRef(false);
-  // The beforeId of the last eager page request. The response arrives
-  // via the channel_history_received event, not the invoke promise, so
-  // the in-flight guard alone can't stop the threshold trigger from
-  // re-requesting the same page in the window between invoke resolving
-  // and the data landing.
+  // The beforeId of the last scroll-up page request. The threshold trigger
+  // fires on every scroll and commit, so this stops it asking for the same
+  // page again; a request that gets no answer clears it (historyRequests),
+  // so a lost page is asked for again rather than never (review B4).
   const lastRequestedBeforeIdRef = useRef(0);
-  // Downward-pagination twins of the older-history guards above, for
-  // fetching NEWER messages (after_id) around a jump target.
-  const loadNewerInFlightRef = useRef(false);
+  // The downward twin, for fetching NEWER messages (after_id) below a
+  // windowed slice.
   const lastRequestedAfterIdRef = useRef(0);
+  // The channel whose newest page couldn't be loaded: shows a retry
+  // instead of "Loading history…" forever or the empty-channel welcome.
+  const [failedKey, setFailedKey] = useState<ChannelKey | null>(null);
   // When a jump target isn't in the loaded slice, we request an around-window
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
@@ -230,6 +231,10 @@ export default function ChatPanel() {
   // live bottom). Drives the jump-to-present pill, disables followOutput's
   // auto-scroll, and enables downward pagination via endReached.
   const windowed = useChatStore((s) => (activeKey ? s.hasMoreAfter[activeKey] === true : false));
+  // What the list and the pill see: a re-sync is windowed in the store
+  // only (chatStore.resyncing).
+  const resyncing = useChatStore((s) => (activeKey ? s.resyncing[activeKey] === true : false));
+  const listWindowed = windowed && !resyncing;
   const dropHoveredHere = dragHoveredKey === "active-input";
 
   // The displayed channel keeps its own slice bounded (the list trims by
@@ -261,35 +266,69 @@ export default function ChatPanel() {
     };
   }, [activeServerId, activeChannelId]);
 
+  // The newest-page load retries a lost reply and always ends its loading
+  // state; one that gets no answer at all leaves a retry on screen (B4).
+  const loadLatest = useCallback((serverId: string, channelId: string) => {
+    const key = channelKey(serverId, channelId);
+    setFailedKey((k) => (k === key ? null : k));
+    return loadLatestChannelPage(serverId, channelId).then((ok) => {
+      if (!ok) setFailedKey(key);
+      return ok;
+    });
+  }, []);
+
   // Fetch channel history the first time we land on a channel — covers
   // every entry path (sidebar click, server-tab auto-select, browse-view
   // join, deep link). The previous codepath only fetched on explicit
   // sidebar click, so landing on the auto-selected first text channel
   // when entering a server left the chat empty until the user clicked
   // away and back. Read state via getState() to avoid pulling
-  // historyFetched/historyLoading into the subscription set — they
-  // change on every history page response and we only need them at
-  // effect-fire time.
+  // historyFetched into the subscription set — it changes on every
+  // history page response and we only need it at effect-fire time.
   useEffect(() => {
     if (!activeServerId || !activeChannelId) return;
+    if (useChatStore.getState().historyFetched[channelKey(activeServerId, activeChannelId)]) return;
+    void loadLatest(activeServerId, activeChannelId);
+  }, [activeServerId, activeChannelId, loadLatest]);
+
+  // Re-sync after a reconnect (review B4). markServerStale already dealt
+  // with the cached channels; this is the one on screen, when the active
+  // server's connection authenticates again (a server switch is not one).
+  // Every paging guard waits on a reply the old connection won't bring.
+  const resyncEpoch = useChatStore((s) => (activeServerId ? s.resyncEpoch[activeServerId] ?? 0 : 0));
+  const seenResyncRef = useRef<{ serverId: string | null; epoch: number }>({ serverId: null, epoch: 0 });
+  useEffect(() => {
+    const seen = seenResyncRef.current;
+    seenResyncRef.current = { serverId: activeServerId, epoch: resyncEpoch };
+    if (!activeServerId || !activeChannelId) return;
+    if (seen.serverId !== activeServerId || resyncEpoch <= seen.epoch) return;
     const serverId = activeServerId;
-    const chId = activeChannelId;
-    const key = channelKey(serverId, chId);
+    const channelId = activeChannelId;
+    const key = channelKey(serverId, channelId);
+    lastRequestedBeforeIdRef.current = 0;
+    lastRequestedAfterIdRef.current = 0;
+    pendingJumpIdRef.current = null;
+    setJumpTarget(null);
     const chat = useChatStore.getState();
-    if (chat.historyFetched[key] || chat.historyLoading[key]) {
+    const stored = newestStoredId(chat.messagesByChannel[key] ?? []) > 0;
+    const atBottom = positionsRef.current[key]?.atBottom ?? true;
+    if (stored && chat.historyFetched[key] && (chat.hasMoreAfter[key] || !atBottom)) {
+      // Scrolled up (or windowed already): keep the place; the slice
+      // pages down to the present as the user nears the bottom.
+      chat.markWindowed(serverId, channelId);
+      requestAnimationFrame(() => listRef.current?.recheckEdges());
       return;
     }
-    chat.setHistoryLoading(serverId, chId, true);
-    invoke("request_channel_history", {
-      serverId,
-      channelId: chId,
-      beforeId: 0,
-      limit: 50,
-    }).catch((err) => {
-      console.error("request_channel_history:", err);
-      useChatStore.getState().setHistoryLoading(serverId, chId, false);
+    // Caught up: the newest page merges in, or replaces the slice when
+    // more was posted than it holds. Until it lands the slice is windowed,
+    // so a live message can't settle in past a gap.
+    if (stored) chat.setResyncing(serverId, channelId, true);
+    void loadLatest(serverId, channelId).finally(() => {
+      if (stored) useChatStore.getState().setResyncing(serverId, channelId, false);
     });
-  }, [activeServerId, activeChannelId]);
+    // activeChannelId is read as rendered: a re-sync is about the server.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServerId, resyncEpoch, loadLatest]);
 
   // Restore the per-channel draft on channel switch (mirror the DM
   // pattern). The editor is uncontrolled, so without this it keeps the
@@ -312,79 +351,57 @@ export default function ChatPanel() {
     editorRef.current?.setValue(useDraftsStore.getState().getChannelDraft(activeServerId, activeChannelId));
   }, [restoredDraft, activeServerId, activeChannelId]);
 
+  // A page request that got no answer: let the same boundary be asked for
+  // again, and look at the edges once more shortly (while connected; after
+  // a reconnect the re-sync does it) so a user sitting at the edge isn't
+  // left waiting for a scroll.
+  const retryPagingLater = (serverId: string) => {
+    if (!useChatStore.getState().connectedServers.has(serverId)) return;
+    window.setTimeout(() => listRef.current?.recheckEdges(), RETRY_DELAY_MS);
+  };
+
   // Scroll-up paginator, driven by RealMessageList's onNearTop — fired while
   // the top edge is within NEAR_PX, on scroll and after every commit, so a
-  // page that doesn't fill the zone pulls the next one and a lost response
-  // is retried on the next scroll. The response arrives via the
-  // channel_history_received event, not the invoke promise, so the in-flight
-  // guard alone can't stop a re-request of the same page: dedup per page
-  // boundary via lastRequestedBeforeIdRef.
+  // page that doesn't fill the zone pulls the next one. The response arrives
+  // via the channel_history_received event, not the invoke promise: dedup
+  // per page boundary via lastRequestedBeforeIdRef until it lands or the
+  // wait ends without it.
   const maybeLoadOlderHistory = () => {
     if (!activeServerId || !activeChannelId || !activeKey) return;
     const chat = useChatStore.getState();
     if (!chat.hasMoreHistory[activeKey]) return;
-    if (loadMoreInFlightRef.current) return;
     // messages are sorted by id ascending, so the first real-id entry is
-    // the oldest loaded message.
-    const list = chat.messagesByChannel[activeKey] ?? [];
-    const oldest = list.find((m: { id: number }) => m.id > 0);
-    const beforeId = oldest?.id ?? 0;
-    if (beforeId !== 0 && beforeId === lastRequestedBeforeIdRef.current) {
-      return;
-    }
-    loadMoreInFlightRef.current = true;
+    // the oldest loaded message. None yet: the newest-page load's job.
+    const oldest = (chat.messagesByChannel[activeKey] ?? []).find((m) => m.id > 0);
+    if (!oldest || oldest.id === lastRequestedBeforeIdRef.current) return;
+    const serverId = activeServerId;
+    const beforeId = oldest.id;
     lastRequestedBeforeIdRef.current = beforeId;
-    invoke("request_channel_history", {
-      serverId: activeServerId,
-      channelId: activeChannelId,
-      beforeId,
-      limit: 50,
-    })
-      .catch((err) => {
-        console.error("request_channel_history (more):", err);
-        // Allow the eager path to retry this boundary after a failure.
-        lastRequestedBeforeIdRef.current = 0;
-      })
-      .finally(() => {
-        loadMoreInFlightRef.current = false;
-      });
+    void requestChannelHistory(serverId, activeChannelId, { beforeId, limit: 50 }).then((reply) => {
+      if (reply || lastRequestedBeforeIdRef.current !== beforeId) return;
+      lastRequestedBeforeIdRef.current = 0;
+      retryPagingLater(serverId);
+    });
   };
 
   // Downward paginator — the mirror of maybeLoadOlderHistory, active only
-  // while windowed (newer messages exist below the jump slice).
-  // RealMessageList's onNearBottom fires it; it no-ops at present
-  // (hasMoreAfter false), so it's harmless to leave wired in the non-jumped
-  // case.
+  // while windowed (newer messages exist below the slice: a jump, a trim,
+  // a reconnect). RealMessageList's onNearBottom fires it; it no-ops at
+  // present (hasMoreAfter false), and during a re-sync (its newest page
+  // is on the way).
   const maybeLoadNewerHistory = () => {
     if (!activeServerId || !activeChannelId || !activeKey) return;
     const chat = useChatStore.getState();
-    if (!chat.hasMoreAfter[activeKey]) return;
-    if (loadNewerInFlightRef.current) return;
-    const list = chat.messagesByChannel[activeKey] ?? [];
-    let afterId = 0;
-    for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].id > 0) {
-        afterId = list[i].id;
-        break;
-      }
-    }
+    if (!chat.hasMoreAfter[activeKey] || chat.resyncing[activeKey]) return;
+    const afterId = newestStoredId(chat.messagesByChannel[activeKey] ?? []);
     if (afterId === 0 || afterId === lastRequestedAfterIdRef.current) return;
-    loadNewerInFlightRef.current = true;
+    const serverId = activeServerId;
     lastRequestedAfterIdRef.current = afterId;
-    invoke("request_channel_history", {
-      serverId: activeServerId,
-      channelId: activeChannelId,
-      beforeId: 0,
-      afterId,
-      limit: 50,
-    })
-      .catch((err) => {
-        console.error("request_channel_history (newer):", err);
-        lastRequestedAfterIdRef.current = 0;
-      })
-      .finally(() => {
-        loadNewerInFlightRef.current = false;
-      });
+    void requestChannelHistory(serverId, activeChannelId, { beforeId: 0, afterId, limit: 50 }).then((reply) => {
+      if (reply || lastRequestedAfterIdRef.current !== afterId) return;
+      lastRequestedAfterIdRef.current = 0;
+      retryPagingLater(serverId);
+    });
   };
 
   // "Jump to present": drop the windowed slice and reload the newest page,
@@ -400,23 +417,12 @@ export default function ChatPanel() {
     // not on a position saved from an earlier visit.
     positionsRef.current[channelKey(serverId, channelId)] = { anchorId: 0, offset: 0, atBottom: true, firstVisible: 0, lastVisible: -1 };
     pendingJumpIdRef.current = null;
-    loadMoreInFlightRef.current = false;
     lastRequestedBeforeIdRef.current = 0;
-    loadNewerInFlightRef.current = false;
     lastRequestedAfterIdRef.current = 0;
     const chat = useChatStore.getState();
     chat.resetChannelForJump(serverId, channelId);
     chat.setScrollPosition(serverId, channelId, { atBottom: true });
-    chat.setHistoryLoading(serverId, channelId, true);
-    invoke("request_channel_history", {
-      serverId,
-      channelId,
-      beforeId: 0,
-      limit: 50,
-    }).catch((err) => {
-      console.error("request_channel_history (present):", err);
-      useChatStore.getState().setHistoryLoading(serverId, channelId, false);
-    });
+    void loadLatest(serverId, channelId);
   };
 
 
@@ -456,8 +462,9 @@ export default function ChatPanel() {
 
     // Sending while viewing a jumped slice would drop the new message past a
     // hidden gap (addMessage guards against it). Snap to present first and
-    // keep the draft — the next Enter sends normally at the bottom.
-    if (activeKey && useChatStore.getState().hasMoreAfter[activeKey]) {
+    // keep the draft — the next Enter sends normally at the bottom. (A
+    // re-sync's newest page is already coming, and settles the send.)
+    if (activeKey && useChatStore.getState().hasMoreAfter[activeKey] && !useChatStore.getState().resyncing[activeKey]) {
       jumpToPresent();
       return;
     }
@@ -507,6 +514,7 @@ export default function ChatPanel() {
       pendingAttachmentIds: pendingIds.length > 0 ? pendingIds : undefined,
       replyTo: replyToId,
       pending: true,
+      sentAfterId: newestStoredId(useChatStore.getState().messagesByChannel[channelKey(serverId, channelId)] ?? []),
     });
     editorRef.current?.clear();
     setReplyingTo(null);
@@ -628,7 +636,7 @@ export default function ChatPanel() {
   // reply target applies to the GIF and is consumed by it.
   const sendGif = async (gif: GifResult) => {
     if (!activeServerId || !activeChannelId || !username) return;
-    if (activeKey && useChatStore.getState().hasMoreAfter[activeKey]) {
+    if (activeKey && useChatStore.getState().hasMoreAfter[activeKey] && !useChatStore.getState().resyncing[activeKey]) {
       jumpToPresent();
       return;
     }
@@ -652,6 +660,7 @@ export default function ChatPanel() {
       nonce,
       replyTo: replyToId,
       pending: true,
+      sentAfterId: newestStoredId(useChatStore.getState().messagesByChannel[channelKey(serverId, channelId)] ?? []),
     });
     setReplyingTo(null);
     try {
@@ -827,7 +836,6 @@ export default function ChatPanel() {
     setScrolledUp(false);
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
-    loadNewerInFlightRef.current = false;
   }, [activeKey]);
 
   // Jump to a replied-to message + flash it. If the parent is in the loaded
@@ -870,21 +878,25 @@ export default function ChatPanel() {
       // exact target? Wait for the landing effect.
       if (pendingJumpIdRef.current === id) return;
       pendingJumpIdRef.current = id;
-      loadMoreInFlightRef.current = false;
       lastRequestedBeforeIdRef.current = 0;
-      loadNewerInFlightRef.current = false;
       lastRequestedAfterIdRef.current = 0;
       chat.setHistoryLoading(serverId, channelId, true);
-      invoke("request_channel_history", {
-        serverId,
-        channelId,
-        beforeId: 0,
-        aroundId: id,
-        limit: 25,
-      }).catch((err) => {
-        console.error("request_channel_history (around):", err);
+      void requestChannelHistory(serverId, channelId, { beforeId: 0, aroundId: id, limit: 25 }).then((reply) => {
+        // Landed already, or another jump took over.
+        if (pendingJumpIdRef.current !== id) return;
+        const st = useChatStore.getState();
+        const here = st.activeServerId === serverId && st.activeChannelId === channelId;
+        const loaded = (st.messagesByChannel[channelKey(serverId, channelId)] ?? []).some((m) => m.id === id);
+        // The window holds it: the list lands on its next commit.
+        if (reply && here && loaded) return;
+        // No answer (review B4), or the message is gone: stop waiting
+        // instead of leaving the target pending forever.
         pendingJumpIdRef.current = null;
-        useChatStore.getState().setHistoryLoading(serverId, channelId, false);
+        st.setHistoryLoading(serverId, channelId, false);
+        if (!here) return;
+        setJumpTarget((prev) => (prev && prev.id === id ? null : prev));
+        if (reply) toast.error("Couldn't find that message", "It may have been deleted.");
+        else toast.error("Couldn't load that message", "The server didn't answer. Try again.");
       });
     },
     [],
@@ -1042,6 +1054,16 @@ export default function ChatPanel() {
           <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
             Loading history…
           </div>
+        ) : messages.length === 0 && failedKey === activeKey ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-text-muted">
+            Couldn't load messages.
+            <button
+              onClick={() => void loadLatest(activeServerId, activeChannelId)}
+              className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover"
+            >
+              Retry
+            </button>
+          </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-1 items-center justify-center">
             <WelcomeState
@@ -1062,7 +1084,7 @@ export default function ChatPanel() {
             items={messages}
             keyOf={messageKey}
             renderItem={renderBubble}
-            windowed={windowed}
+            windowed={listWindowed}
             jumpTarget={jumpTarget}
             initialPosition={initialPosition}
             onScrollState={handleScrollState}
@@ -1082,10 +1104,10 @@ export default function ChatPanel() {
             scrolled well above the live bottom (→ scrolls back down). Styled
             like the client's accent buttons; rounded-md tracks the theme's
             radius scale (flat on console, soft on default). */}
-        {(windowed || scrolledUp) && (
+        {(listWindowed || scrolledUp) && (
           <button
             onClick={() => {
-              if (windowed) {
+              if (listWindowed) {
                 jumpToPresent();
                 return;
               }

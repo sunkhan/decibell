@@ -1,7 +1,9 @@
 import { useChatStore } from "../../stores/chatStore";
 import { useDmStore } from "../../stores/dmStore";
+import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
 import { channelKey } from "../../lib/channelKey";
+import { centralSignedIn, requestChannelHistory, requestDmHistory } from "./historyRequests";
 
 // Outbound message pacing + the two backstops for a send that never
 // echoes.
@@ -84,32 +86,113 @@ export function resetSendPacing(serverId: string): void {
 // ── Backstops ───────────────────────────────────────────────────────
 
 const ECHO_TIMEOUT_MS = 30_000;
+/// How far an echo check pages past the send (100 rows a page).
+const ECHO_CHECK_PAGES = 5;
 
-/// A sent message must come back as its own broadcast (same nonce).
-/// If it hasn't within the timeout — a response lost to a reconnect,
-/// an older server with no typed rejection — withdraw the bubble
-/// rather than leave a ghost row anchored at the tail forever.
+/// A sent message must come back as its own broadcast (same nonce). If it
+/// hasn't within the timeout, either it never reached the server or its
+/// echo was lost (a reconnect, review B4). Withdrawing it on a guess made
+/// people send stored messages twice, so the server is asked first: the
+/// rows posted since the send come back, ours carrying its nonce (or, from
+/// a server that forgot it, our text), and that settles the bubble in the
+/// store (lib/historyMerge). Only a send the server doesn't have is
+/// withdrawn, its text put back in the message box. While the community is
+/// unreachable the check waits for the reconnect, whose re-sync usually
+/// settles the bubble first.
 export function watchEcho(serverId: string, channelId: string, nonce: string): void {
-  window.setTimeout(() => {
-    const chat = useChatStore.getState();
-    const list = chat.messagesByChannel[channelKey(serverId, channelId)];
-    if (!list || !list.some((m) => m.id === 0 && m.nonce === nonce)) return;
-    chat.removeMessageByNonce(serverId, channelId, nonce);
-    toast.error("Message not sent", "The server didn't confirm it.");
-  }, ECHO_TIMEOUT_MS);
+  window.setTimeout(() => void checkEcho(serverId, channelId, nonce), ECHO_TIMEOUT_MS);
 }
 
-/// The DM twin: central echoes our DIRECT_MSG (nonce included) or
-/// answers with an error reply carrying the nonce; neither within the
-/// timeout → withdraw the pending bubble.
+function channelBubble(serverId: string, channelId: string, nonce: string) {
+  return useChatStore
+    .getState()
+    .messagesByChannel[channelKey(serverId, channelId)]?.find((m) => m.id === 0 && m.nonce === nonce);
+}
+
+/// Resolves once `epochOf` moves past its current value, or `gone` holds.
+function waitFor<S>(store: { getState: () => S; subscribe: (fn: (s: S) => void) => () => void }, epochOf: (s: S) => number, gone: () => boolean): Promise<void> {
+  const from = epochOf(store.getState());
+  return new Promise((resolve) => {
+    const unsubscribe = store.subscribe((s) => {
+      if (epochOf(s) > from || gone()) {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+}
+
+/// Page through what was stored after `sentAfterId` until the bubble is
+/// settled, the server has nothing newer, or no answer comes.
+async function askServer(
+  request: (afterId: number) => Promise<{ newestId: number; hasMoreAfter: boolean } | null>,
+  sentAfterId: number,
+  settled: () => boolean,
+): Promise<void> {
+  let after = sentAfterId;
+  for (let page = 0; page < ECHO_CHECK_PAGES; page++) {
+    const reply = await request(after);
+    if (settled() || !reply || after === 0 || !reply.hasMoreAfter || reply.newestId <= after) return;
+    after = reply.newestId;
+  }
+}
+
+async function checkEcho(serverId: string, channelId: string, nonce: string): Promise<void> {
+  const gone = () => !channelBubble(serverId, channelId, nonce);
+  while (!gone() && !useChatStore.getState().connectedServers.has(serverId)) {
+    await waitFor(useChatStore, (s) => s.resyncEpoch[serverId] ?? 0, gone);
+  }
+  const sent = channelBubble(serverId, channelId, nonce);
+  if (!sent) return;
+  await askServer(
+    (afterId) =>
+      requestChannelHistory(serverId, channelId, afterId > 0 ? { beforeId: 0, afterId, limit: 100 } : { beforeId: 0, limit: 100 }),
+    sent.sentAfterId ?? 0,
+    gone,
+  );
+  const bubble = channelBubble(serverId, channelId, nonce);
+  if (!bubble) return;
+  useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
+  const restored = useDraftsStore.getState().restoreChannelDraft(serverId, channelId, bubble.content);
+  toast.error(
+    "Message not sent",
+    restored ? "The server didn't confirm it. Your text is back in the message box." : "The server didn't confirm it.",
+  );
+}
+
+/// The DM twin: central echoes our DIRECT_MSG (nonce included) or answers
+/// with an error reply carrying the nonce. Neither within the timeout →
+/// the same check against the conversation's history (DM rows carry no
+/// nonce, so our text settles it), then withdraw.
 export function watchDmEcho(peer: number, nonce: string): void {
-  window.setTimeout(() => {
-    const dm = useDmStore.getState();
-    const list = dm.conversations[peer]?.messages;
-    if (!list || !list.some((m) => !m.id && m.nonce === nonce)) return;
-    dm.removeDmMessageByNonce(peer, nonce);
-    toast.error("Message not sent", "The server didn't confirm it.");
-  }, ECHO_TIMEOUT_MS);
+  window.setTimeout(() => void checkDmEcho(peer, nonce), ECHO_TIMEOUT_MS);
+}
+
+function dmBubble(peer: number, nonce: string) {
+  return useDmStore.getState().conversations[peer]?.messages.find((m) => !m.id && m.nonce === nonce);
+}
+
+async function checkDmEcho(peer: number, nonce: string): Promise<void> {
+  const gone = () => !dmBubble(peer, nonce);
+  while (!gone() && !centralSignedIn()) {
+    await waitFor(useDmStore, (s) => s.resyncEpoch, gone);
+  }
+  const sent = dmBubble(peer, nonce);
+  if (!sent) return;
+  await askServer(
+    (afterId) =>
+      requestDmHistory(peer, afterId > 0 ? { beforeId: 0, afterId, limit: 100 } : { beforeId: 0, limit: 100 }),
+    sent.sentAfterId ?? 0,
+    gone,
+  );
+  const bubble = dmBubble(peer, nonce);
+  if (!bubble) return;
+  useDmStore.getState().removeDmMessageByNonce(peer, nonce);
+  const restored = useDraftsStore.getState().restoreDmDraft(peer, bubble.content);
+  toast.error(
+    "Message not sent",
+    restored ? "The server didn't confirm it. Your text is back in the message box." : "The server didn't confirm it.",
+  );
 }
 
 /// Per-send nonce for optimistic bubbles.

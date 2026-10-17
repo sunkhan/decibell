@@ -5,6 +5,7 @@ import { useAuthStore } from "../../stores/authStore";
 import { toast } from "../../stores/toastStore";
 import type { MessageReceivedPayload } from "../../types";
 import { toUid } from "../../stores/usersStore";
+import { abandonDmRequests, noteDmHistoryReply } from "../chat/historyRequests";
 
 // Pulls DMs out of the unified `message_received` bus event (the
 // channel-message side is handled by useChatEvents). The native
@@ -136,10 +137,18 @@ export function useDmEvents() {
       if (aroundId > 0) {
         dm.setDmWindow(peer, messages, hasMore, hasMoreAfter);
       } else if (afterId > 0) {
-        dm.appendNewerDm(peer, messages, hasMoreAfter);
+        dm.appendNewerDm(peer, messages, hasMoreAfter, Number(afterId));
       } else {
         dm.appendHistory(peer, messages, hasMore);
       }
+      let newestId = 0;
+      for (const m of messages) if (Number(m.id) > newestId) newestId = Number(m.id);
+      noteDmHistoryReply(peer, Number(aroundId), Number(afterId), { newestId, hasMoreAfter: !!hasMoreAfter });
+    });
+
+    // Replies to DM requests went down with central's connection.
+    const unlistenLost = listen<{ serverType: string }>("connection_lost", (event) => {
+      if (event.payload.serverType === "central") abandonDmRequests();
     });
 
     const unlistenDmDeleteRes = listen<{
@@ -210,6 +219,7 @@ export function useDmEvents() {
       unlisten.then((fn) => fn());
       unlistenConv.then((fn) => fn());
       unlistenHist.then((fn) => fn());
+      unlistenLost.then((fn) => fn());
       unlistenDmDeleteRes.then((fn) => fn());
       unlistenDmDeleted.then((fn) => fn());
       unlistenDmEditRes.then((fn) => fn());

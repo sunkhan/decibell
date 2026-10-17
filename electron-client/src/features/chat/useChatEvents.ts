@@ -7,6 +7,7 @@ import { useDraftsStore } from "../../stores/draftsStore";
 import { toast } from "../../stores/toastStore";
 import { channelKey } from "../../lib/channelKey";
 import { noteTypedRejection } from "./sendPacing";
+import { noteChannelHistoryReply } from "./historyRequests";
 import { noteOwnMessage, noteSlowmodeRefusal } from "./slowmode";
 import type {
   Attachment,
@@ -181,12 +182,21 @@ export function useChatEvents() {
         if (aroundId > 0) {
           store.setChannelWindow(serverId, channelId, mapped, hasMore, hasMoreAfter);
         } else if (afterId > 0) {
-          store.appendNewer(serverId, channelId, mapped, hasMoreAfter);
+          store.appendNewer(serverId, channelId, mapped, hasMoreAfter, Number(afterId));
         } else {
           store.prependHistory(serverId, channelId, mapped, hasMore);
         }
         store.setHistoryLoading(serverId, channelId, false);
-        store.markHistoryFetched(serverId, channelId);
+        // A newer page only extends a slice already loaded; one landing on
+        // a slice dropped meanwhile (markServerStale) must not stand in for
+        // its first page.
+        if (!(afterId > 0)) store.markHistoryFetched(serverId, channelId);
+        let newestId = 0;
+        for (const m of mapped) if (m.id > newestId) newestId = m.id;
+        noteChannelHistoryReply(serverId, channelId, Number(aroundId), Number(afterId), {
+          newestId,
+          hasMoreAfter: !!hasMoreAfter,
+        });
       },
     );
 

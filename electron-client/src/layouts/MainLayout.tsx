@@ -10,6 +10,7 @@ import ChannelSidebar from "../features/channels/ChannelSidebar";
 import ChatPanel from "../features/chat/ChatPanel";
 import FriendsList from "../features/friends/FriendsList";
 import FriendsPage from "../features/friends/FriendsPage";
+import { requestFriendList } from "../features/friends/friendList";
 import MembersList from "../features/friends/MembersList";
 import VoicePanel from "../features/voice/VoicePanel";
 import MiniStreamPlayer from "../features/voice/MiniStreamPlayer";
@@ -95,7 +96,7 @@ export default function MainLayout() {
   useCentralConnectionStatus();
 
   useEffect(() => {
-    invoke("request_friend_list").catch(console.error);
+    requestFriendList();
     invoke("request_server_list").catch(console.error);
   }, []);
 

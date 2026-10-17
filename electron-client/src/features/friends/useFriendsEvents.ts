@@ -2,12 +2,14 @@ import { useEffect } from "react";
 import { listen } from "../../lib/ipc";
 import { useAvatarStore } from "../../stores/avatarStore";
 import { useFriendsStore } from "../../stores/friendsStore";
+import { noteFriendListReceived } from "./friendList";
 
 export function useFriendsEvents() {
   useEffect(() => {
     const unlistenList = listen<{
       friends: { username: string; uid?: number | bigint; status: string; avatarVersion: string }[];
     }>("friend_list_received", (event) => {
+      noteFriendListReceived();
       const friends = event.payload.friends.map((f) => ({
         username: f.username,
         uid: Number(f.uid ?? 0) || 0,
