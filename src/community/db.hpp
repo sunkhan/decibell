@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -104,6 +105,7 @@ struct DbChannelKeyBlob {
     int64_t recipient_uid = 0;
     std::string recipient;
     std::string blob;
+    std::string key_check;   // the epoch's (empty before v17)
 };
 
 struct DbAttachment {
@@ -416,25 +418,53 @@ public:
         std::string blob;
     };
     // Store one publish in a single transaction. With `create`, `epoch`
-    // must be current + 1 and is created first (by `sender_uid`); without,
-    // it must exist. Blobs that already exist for (epoch, recipient) are
-    // kept. Returns how many blobs landed, or -1 (nothing stored) when the
-    // epoch sequence is wrong or the write failed.
+    // must be current + 1 and is created first (by `sender_uid`, with its
+    // `key_check`); without, it must exist. Blobs that already exist for
+    // (epoch, recipient) are kept. Returns how many blobs landed, or -1
+    // (nothing stored) when the epoch sequence is wrong or the write failed.
     int channel_key_publish(const std::string& channel_id, uint32_t epoch, bool create,
                             int64_t sender_uid, const std::string& sender,
+                            const std::string& key_check,
                             const std::vector<KeyBlobIn>& blobs,
                             int64_t now);
     // Whether `uid` holds a blob for `epoch`.
     bool channel_key_holds(const std::string& channel_id, uint32_t epoch, int64_t uid) const;
-    // Every blob sealed to `recipient_uid` for the channel (all epochs).
+    // Whether anyone holds a blob for `epoch`.
+    bool channel_key_has_holder(const std::string& channel_id, uint32_t epoch) const;
+    // Blobs sealed to `recipient_uid` past `after_epoch`, in epoch order, at
+    // most `limit`, each with its epoch's key check.
     std::vector<DbChannelKeyBlob> channel_key_blobs_for(const std::string& channel_id,
-                                                        int64_t recipient_uid) const;
+                                                        int64_t recipient_uid,
+                                                        uint32_t after_epoch, size_t limit) const;
+    // How many epochs each recipient holds a blob for (absent = none).
+    std::unordered_map<int64_t, uint32_t> channel_key_held_counts(const std::string& channel_id) const;
     // Epochs (1..=current) `uid` has no blob for.
     std::vector<uint32_t> channel_key_missing_epochs(const std::string& channel_id,
                                                      int64_t uid) const;
     // Accounts holding a blob for `epoch`.
     std::vector<int64_t> channel_key_holders(const std::string& channel_id, uint32_t epoch) const;
-    // Drop every blob sealed to `recipient_uid` (member removed).
+    // Delete `recipient_uid`'s own blobs for `epochs` (they can't use them);
+    // with `bad`, also record each blob's sender (never themselves) as one
+    // whose blobs they refuse in this channel. One transaction; returns how
+    // many blobs were deleted, or -1.
+    int channel_key_reject(const std::string& channel_id, int64_t recipient_uid,
+                           const std::vector<uint32_t>& epochs, bool bad, int64_t now);
+    // Senders `recipient_uid` refused as bad in the channel.
+    std::unordered_set<int64_t> channel_key_refused_senders(const std::string& channel_id,
+                                                            int64_t recipient_uid) const;
+    // Members who refused `sender_uid`'s blobs as bad in the channel.
+    std::unordered_set<int64_t> channel_key_refusing_recipients(const std::string& channel_id,
+                                                                int64_t sender_uid) const;
+    // A rotation owed since a removal (CHANNEL_KEYS_CHANGED{rotate}), kept
+    // until a new epoch exists: stored, so neither a restart nor nobody
+    // being online to act on it loses it.
+    void channel_key_rotation_set(const std::string& channel_id, int64_t now);
+    bool channel_key_rotation_due(const std::string& channel_id) const;
+    void channel_key_rotation_clear(const std::string& channel_id);
+    std::unordered_set<std::string> channel_key_rotations_due() const;
+    // Drop every blob sealed to `recipient_uid`, and the senders they
+    // refused (member removed). Refusals *of* them stay: someone removed for
+    // escrowing garbage gets no fresh start by rejoining.
     void channel_key_delete_recipient(int64_t recipient_uid);
     // Text channels with a non-zero epoch (for removal-driven rotations).
     std::vector<std::string> channel_key_channels_with_epochs() const;
@@ -957,6 +987,7 @@ private:
     // Users by uid (2026-10-15-uid-identity-design.md).
     void migrate_to_v15_uid_keys_();
     void migrate_to_v16_name_iat_();
+    void migrate_to_v17_key_checks_();
     // Next free placeholder (negative) uid; mutex held.
     int64_t next_placeholder_unlocked_();
     // Creates messages_fts + its triggers and backfills it (once).

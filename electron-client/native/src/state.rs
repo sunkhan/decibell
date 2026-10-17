@@ -194,7 +194,7 @@ pub struct AppState {
     /// in-flight key fetch / publish waiters, and the ordered worker that
     /// opens incoming channel packets. See e2ee/channel_keys.rs.
     pub channel_keys: HashMap<crate::e2ee::channel_keys::KeyId, crate::e2ee::channel_keys::ChannelKeyring>,
-    pub pending_channel_keys: HashMap<crate::e2ee::channel_keys::KeyId, Vec<oneshot::Sender<ChannelKeysRes>>>,
+    pub pending_channel_keys: HashMap<crate::e2ee::channel_keys::FetchId, Vec<oneshot::Sender<ChannelKeysRes>>>,
     pub pending_channel_keys_publish: HashMap<crate::e2ee::channel_keys::KeyId, oneshot::Sender<ChannelKeysPublishRes>>,
     pub channel_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::channel_keys::ChannelJob>>,
 }

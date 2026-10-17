@@ -21,6 +21,11 @@
 //! envelope (`envelope::seal`, pairwise identity keys) around the inner
 //! content `0x02 ‖ epoch u32 LE ‖ key[32] ‖ channel_id`, so only the named
 //! recipient can open it and it can't be replayed into another channel.
+//!
+//! Key check (published once, with the epoch): HMAC-SHA256(key_e,
+//! "decibell-channel-key-check-v1" ‖ 0 ‖ channel_id ‖ 0 ‖ epoch u32 LE). Every
+//! blob's key must match it, so a member can tell a wrong key someone sealed
+//! to them from the epoch's key (review S14). It reveals nothing of the key.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -42,6 +47,8 @@ pub const CONTENT_CHANNEL_KEY: u8 = 2;
 /// encrypted attachment metadata).
 pub const CONTENT_BODY: u8 = 3;
 const INFO_DOMAIN_V1: &[u8] = b"decibell-channel-v1";
+const KEY_CHECK_DOMAIN: &[u8] = b"decibell-channel-key-check-v1";
+pub const KEY_CHECK_LEN: usize = 32;
 const INFO_DOMAIN_V2: &[u8] = b"decibell-channel-v2";
 const OKM_LEN: usize = 44;
 pub const MAX_TEXT_LEN: usize = 64 * 1024;
@@ -201,6 +208,20 @@ pub fn key_blob_content(channel_id: &str, epoch: u32, key: &[u8; 32]) -> Vec<u8>
     c
 }
 
+/// The epoch's key check (see the module docs).
+pub fn key_check(channel_id: &str, epoch: u32, key: &[u8; 32]) -> [u8; KEY_CHECK_LEN] {
+    let mut msg = Vec::with_capacity(KEY_CHECK_DOMAIN.len() + channel_id.len() + 6);
+    msg.extend_from_slice(KEY_CHECK_DOMAIN);
+    msg.push(0);
+    msg.extend_from_slice(channel_id.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(&epoch.to_le_bytes());
+    let tag = ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key), &msg);
+    let mut out = [0u8; KEY_CHECK_LEN];
+    out.copy_from_slice(tag.as_ref());
+    out
+}
+
 /// Parse a blob's inner content; `None` unless it names `channel_id`.
 pub fn parse_key_blob_content(content: &[u8], channel_id: &str) -> Option<(u32, [u8; 32])> {
     if content.len() != 1 + 4 + 32 + channel_id.len() || content[0] != CONTENT_CHANNEL_KEY {
@@ -282,5 +303,17 @@ mod tests {
         assert_eq!(parse_key_blob_content(&c, "dev-chat"), Some((4, key)));
         assert_eq!(parse_key_blob_content(&c, "other"), None);
         assert_eq!(parse_key_blob_content(&c[..10], "dev-chat"), None);
+    }
+
+    #[test]
+    fn key_check_binds_key_channel_and_epoch() {
+        let key = [9u8; 32];
+        let kc = key_check("dev-chat", 4, &key);
+        assert_eq!(kc, key_check("dev-chat", 4, &key));
+        assert_ne!(kc, key_check("dev-chat", 4, &[8u8; 32]));
+        assert_ne!(kc, key_check("dev-chat", 5, &key));
+        assert_ne!(kc, key_check("dev-chat2", 4, &key));
+        // The separators keep channel and epoch apart.
+        assert_ne!(key_check("a", 0x0000_0100, &key), key_check("a\0", 1, &key));
     }
 }

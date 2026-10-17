@@ -583,6 +583,19 @@ pub async fn seal_outbound_raw(
     envelope::seal_bytes(&my_priv, s.uid, mine.key_id, &peer_pub, bundle.uid, bundle.key_id, content).map(Some)
 }
 
+/// Forget this session's idea of `uid`'s current keys when it has one, so
+/// the next seal to them asks central again: a channel key blob they
+/// dropped may have been sealed to keys they've replaced since, which
+/// E2EE_KEYS_CHANGED only tells their watchers. True when sealing to them
+/// will take a lookup (someone known to have no keys stays cached).
+pub async fn recheck_current(state: &Arc<Mutex<AppState>>, uid: i64) -> bool {
+    let mut s = state.lock().await;
+    if s.e2ee.current_ids.remove(&uid).is_some() {
+        s.e2ee.fresh.remove(&uid);
+    }
+    !s.e2ee.fresh.contains(&uid)
+}
+
 /// `open_inbound` for tagged content (returns the raw inner bytes).
 pub async fn open_inbound_raw(
     state: &Arc<Mutex<AppState>>,

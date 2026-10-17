@@ -282,6 +282,43 @@ void CommunityDb::init_schema_() {
 
     // --- v16: the token that last named each member (renames) ---
     migrate_to_v16_name_iat_();
+
+    // --- v17: key checks + refused key senders (review S14) ---
+    migrate_to_v17_key_checks_();
+}
+
+void CommunityDb::migrate_to_v17_key_checks_() {
+    // Key escrow (review S14): each epoch's key check, which every blob's key
+    // must match (older epochs have none), the senders a member refused as
+    // having escrowed bad blobs to them, and the rotations owed after a
+    // removal (they used to live in memory, lost on a restart or when no
+    // holder was online to rotate).
+    if (!column_exists(db_, "channel_key_epochs", "key_check")) {
+        if (!exec_sql(db_, "ALTER TABLE channel_key_epochs ADD COLUMN key_check BLOB;")) {
+            std::cerr << "[DB] v17 (channel_key_epochs.key_check) migration failed\n";
+            return;
+        }
+    }
+    if (!exec_sql(db_,
+            "CREATE TABLE IF NOT EXISTS channel_key_refusals ("
+            "  channel_id TEXT NOT NULL,"
+            "  recipient_uid INTEGER NOT NULL,"
+            "  sender_uid INTEGER NOT NULL,"
+            "  created_at INTEGER NOT NULL,"
+            "  PRIMARY KEY (channel_id, recipient_uid, sender_uid)"
+            ");")) {
+        std::cerr << "[DB] v17 (channel_key_refusals) migration failed\n";
+        return;
+    }
+    if (!exec_sql(db_,
+            "CREATE TABLE IF NOT EXISTS channel_key_rotations ("
+            "  channel_id TEXT PRIMARY KEY,"
+            "  due_since INTEGER NOT NULL"
+            ");")) {
+        std::cerr << "[DB] v17 (channel_key_rotations) migration failed\n";
+        return;
+    }
+    set_meta_("schema_version", "17");
 }
 
 void CommunityDb::migrate_to_v16_name_iat_() {
@@ -1444,6 +1481,10 @@ bool CommunityDb::claim_legacy(int64_t uid, const std::string& username) {
         "UPDATE OR IGNORE channel_key_blobs SET recipient_uid=?1 WHERE recipient_uid=?2;",
         "DELETE FROM channel_key_blobs WHERE recipient_uid=?2;",
         "UPDATE channel_key_blobs SET sender_uid=?1 WHERE sender_uid=?2;",
+        "UPDATE OR IGNORE channel_key_refusals SET recipient_uid=?1 WHERE recipient_uid=?2;",
+        "DELETE FROM channel_key_refusals WHERE recipient_uid=?2;",
+        "UPDATE OR IGNORE channel_key_refusals SET sender_uid=?1 WHERE sender_uid=?2;",
+        "DELETE FROM channel_key_refusals WHERE sender_uid=?2;",
         "UPDATE messages SET sender_uid=?1 WHERE sender_uid=?2;",
         "UPDATE audit_log SET actor_uid=?1 WHERE actor_uid=?2;",
         "UPDATE audit_log SET target_uid=?1 WHERE target_uid=?2;",
@@ -3027,6 +3068,11 @@ std::optional<CommunityDb::WipeChannelResult> CommunityDb::delete_channel(
         Stmt del(db_, "DELETE FROM channel_key_epochs WHERE channel_id=?;");
         if (del.s) { del.bind_text(1, channel_id); del.step(); }
     }
+    for (const char* sql : {"DELETE FROM channel_key_refusals WHERE channel_id=?;",
+                            "DELETE FROM channel_key_rotations WHERE channel_id=?;"}) {
+        Stmt del(db_, sql);
+        if (del.s) { del.bind_text(1, channel_id); del.step(); }
+    }
     {
         Stmt del(db_, "DELETE FROM attachments WHERE channel_id=?;");
         ok = del.s != nullptr;
@@ -3875,6 +3921,7 @@ uint32_t CommunityDb::channel_key_current_epoch(const std::string& channel_id) c
 
 int CommunityDb::channel_key_publish(const std::string& channel_id, uint32_t epoch, bool create,
                                      int64_t sender_uid, const std::string& sender,
+                                     const std::string& key_check,
                                      const std::vector<KeyBlobIn>& blobs,
                                      int64_t now) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -3894,14 +3941,15 @@ int CommunityDb::channel_key_publish(const std::string& channel_id, uint32_t epo
     if (ok) ok = create ? epoch == current + 1 : (epoch >= 1 && epoch <= current);
     if (ok && create) {
         Stmt ins(db_,
-            "INSERT INTO channel_key_epochs(channel_id, epoch, created_by_uid, created_by, created_at) "
-            "VALUES(?1, ?2, ?3, COALESCE((SELECT username FROM members WHERE uid = ?3), ''), ?4);");
+            "INSERT INTO channel_key_epochs(channel_id, epoch, created_by_uid, created_by, created_at, key_check) "
+            "VALUES(?1, ?2, ?3, COALESCE((SELECT username FROM members WHERE uid = ?3), ''), ?4, ?5);");
         ok = ins.s != nullptr;
         if (ok) {
             ins.bind_text(1, channel_id);
             ins.bind_int64(2, epoch);
             ins.bind_int64(3, sender_uid);
             ins.bind_int64(4, now);
+            ins.bind_blob_or_null(5, key_check);
             ok = ins.step() == SQLITE_DONE;
         }
     }
@@ -3939,16 +3987,30 @@ bool CommunityDb::channel_key_holds(const std::string& channel_id, uint32_t epoc
     return q.step() == SQLITE_ROW;
 }
 
+bool CommunityDb::channel_key_has_holder(const std::string& channel_id, uint32_t epoch) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT 1 FROM channel_key_blobs WHERE channel_id=? AND epoch=? LIMIT 1;");
+    if (!q.s) return false;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, epoch);
+    return q.step() == SQLITE_ROW;
+}
+
 std::vector<DbChannelKeyBlob> CommunityDb::channel_key_blobs_for(const std::string& channel_id,
-                                                                 int64_t recipient_uid) const {
+                                                                 int64_t recipient_uid,
+                                                                 uint32_t after_epoch, size_t limit) const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DbChannelKeyBlob> out;
     Stmt q(db_,
-        "SELECT epoch, sender_uid, sender, recipient, blob FROM channel_key_blobs "
-        "WHERE channel_id=? AND recipient_uid=? ORDER BY epoch;");
+        "SELECT b.epoch, b.sender_uid, b.sender, b.recipient, b.blob, e.key_check "
+        "FROM channel_key_blobs b "
+        "LEFT JOIN channel_key_epochs e ON e.channel_id = b.channel_id AND e.epoch = b.epoch "
+        "WHERE b.channel_id=? AND b.recipient_uid=? AND b.epoch > ? ORDER BY b.epoch LIMIT ?;");
     if (!q.s) return out;
     q.bind_text(1, channel_id);
     q.bind_int64(2, recipient_uid);
+    q.bind_int64(3, after_epoch);
+    q.bind_int64(4, static_cast<int64_t>(limit));
     while (q.step() == SQLITE_ROW) {
         DbChannelKeyBlob b;
         b.epoch = static_cast<uint32_t>(q.col_int64(0));
@@ -3957,8 +4019,20 @@ std::vector<DbChannelKeyBlob> CommunityDb::channel_key_blobs_for(const std::stri
         b.recipient_uid = recipient_uid;
         b.recipient = q.col_text(3);
         b.blob = q.col_blob(4);
+        b.key_check = q.col_blob(5);
         out.push_back(std::move(b));
     }
+    return out;
+}
+
+std::unordered_map<int64_t, uint32_t> CommunityDb::channel_key_held_counts(const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<int64_t, uint32_t> out;
+    Stmt q(db_,
+        "SELECT recipient_uid, COUNT(*) FROM channel_key_blobs WHERE channel_id=? GROUP BY recipient_uid;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    while (q.step() == SQLITE_ROW) out[q.col_int64(0)] = static_cast<uint32_t>(q.col_int64(1));
     return out;
 }
 
@@ -3991,12 +4065,118 @@ std::vector<int64_t> CommunityDb::channel_key_holders(const std::string& channel
     return out;
 }
 
+int CommunityDb::channel_key_reject(const std::string& channel_id, int64_t recipient_uid,
+                                    const std::vector<uint32_t>& epochs, bool bad, int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return -1;   // DB1
+    bool ok = true;
+    int deleted = 0;
+    for (size_t i = 0; ok && i < epochs.size(); ++i) {
+        int64_t sender_uid = 0;
+        {
+            Stmt q(db_, "SELECT sender_uid FROM channel_key_blobs WHERE channel_id=? AND epoch=? AND recipient_uid=?;");
+            ok = q.s != nullptr;
+            if (!ok) break;
+            q.bind_text(1, channel_id);
+            q.bind_int64(2, epochs[i]);
+            q.bind_int64(3, recipient_uid);
+            if (q.step() != SQLITE_ROW) continue;   // nothing of theirs there
+            sender_uid = q.col_int64(0);
+        }
+        {
+            Stmt del(db_, "DELETE FROM channel_key_blobs WHERE channel_id=? AND epoch=? AND recipient_uid=?;");
+            ok = del.s != nullptr;
+            if (!ok) break;
+            del.bind_text(1, channel_id);
+            del.bind_int64(2, epochs[i]);
+            del.bind_int64(3, recipient_uid);
+            ok = del.step() == SQLITE_DONE;
+            if (ok) deleted += sqlite3_changes(db_);
+        }
+        if (ok && bad && sender_uid != recipient_uid && sender_uid != 0) {
+            Stmt ins(db_,
+                "INSERT OR IGNORE INTO channel_key_refusals(channel_id, recipient_uid, sender_uid, created_at) "
+                "VALUES(?, ?, ?, ?);");
+            ok = ins.s != nullptr;
+            if (!ok) break;
+            ins.bind_text(1, channel_id);
+            ins.bind_int64(2, recipient_uid);
+            ins.bind_int64(3, sender_uid);
+            ins.bind_int64(4, now);
+            ok = ins.step() == SQLITE_DONE;
+        }
+    }
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok ? deleted : -1;
+}
+
+std::unordered_set<int64_t> CommunityDb::channel_key_refused_senders(const std::string& channel_id,
+                                                                     int64_t recipient_uid) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_set<int64_t> out;
+    Stmt q(db_, "SELECT sender_uid FROM channel_key_refusals WHERE channel_id=? AND recipient_uid=?;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, recipient_uid);
+    while (q.step() == SQLITE_ROW) out.insert(q.col_int64(0));
+    return out;
+}
+
+std::unordered_set<int64_t> CommunityDb::channel_key_refusing_recipients(const std::string& channel_id,
+                                                                         int64_t sender_uid) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_set<int64_t> out;
+    Stmt q(db_, "SELECT recipient_uid FROM channel_key_refusals WHERE channel_id=? AND sender_uid=?;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, sender_uid);
+    while (q.step() == SQLITE_ROW) out.insert(q.col_int64(0));
+    return out;
+}
+
+void CommunityDb::channel_key_rotation_set(const std::string& channel_id, int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "INSERT OR IGNORE INTO channel_key_rotations(channel_id, due_since) VALUES(?, ?);");
+    if (!q.s) return;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, now);
+    q.step();
+}
+
+bool CommunityDb::channel_key_rotation_due(const std::string& channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT 1 FROM channel_key_rotations WHERE channel_id=?;");
+    if (!q.s) return false;
+    q.bind_text(1, channel_id);
+    return q.step() == SQLITE_ROW;
+}
+
+void CommunityDb::channel_key_rotation_clear(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "DELETE FROM channel_key_rotations WHERE channel_id=?;");
+    if (!q.s) return;
+    q.bind_text(1, channel_id);
+    q.step();
+}
+
+std::unordered_set<std::string> CommunityDb::channel_key_rotations_due() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_set<std::string> out;
+    Stmt q(db_, "SELECT channel_id FROM channel_key_rotations;");
+    if (!q.s) return out;
+    while (q.step() == SQLITE_ROW) out.insert(q.col_text(0));
+    return out;
+}
+
 void CommunityDb::channel_key_delete_recipient(int64_t recipient_uid) {
     std::lock_guard<std::mutex> lock(mutex_);
-    Stmt q(db_, "DELETE FROM channel_key_blobs WHERE recipient_uid=?;");
-    if (!q.s) return;
-    q.bind_int64(1, recipient_uid);
-    q.step();
+    for (const char* sql : {"DELETE FROM channel_key_blobs WHERE recipient_uid=?;",
+                            "DELETE FROM channel_key_refusals WHERE recipient_uid=?;"}) {
+        Stmt q(db_, sql);
+        if (!q.s) continue;
+        q.bind_int64(1, recipient_uid);
+        q.step();
+    }
 }
 
 std::vector<std::string> CommunityDb::channel_key_channels_with_epochs() const {

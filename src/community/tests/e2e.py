@@ -1660,7 +1660,7 @@ def test_v14_search_migration():
     check("... including bound file names", sql("select rowid from messages_fts where messages_fts match '\"okapi\"'") == [(plain,)])
     check("sender_uid back-filled from members by name", sql("select sender_uid from messages where id=?", plain) == [(4242,)])
     check("a name no member holds stays 0", sql("select sender_uid from messages where id=?", stranger) == [(0,)])
-    check("schema stamped 16", sql("select value from server_meta where key='schema_version'") == [("16",)])
+    check("schema stamped 17", sql("select value from server_meta where key='schema_version'") == [("17",)])
     check("index at version 2", sql("select value from server_meta where key='search_index_version'") == [("2",)])
     # Version 1 (ı kept as ı) is rebuilt once: a row added while the
     # triggers are gone shows up folded afterwards.
@@ -2332,7 +2332,8 @@ def test_encrypted_channels():
     r = ed.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("skipping an epoch is refused", r is not None and not r.channel_keys_publish_res.success and r.channel_keys_publish_res.message == "stale_epoch")
     # edith creates epoch 1 for herself + alice (not fay), plus a non-viewer that must be dropped
-    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, blobs=[
+    KC = b"K" * 32   # a key check (opaque to the server: 32 bytes)
+    ed.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, key_check=KC, blobs=[
         pb.ChannelKeyBlob(recipient="edith", recipient_uid=uid_of("edith"), blob=b"E1-edith"), pb.ChannelKeyBlob(recipient="alice", recipient_uid=uid_of("alice"), blob=b"E1-alice"), pb.ChannelKeyBlob(recipient="nobody", recipient_uid=uid_of("nobody"), blob=b"E1-x")]))
     r = ed.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     check("epoch 1 created", r is not None and r.channel_keys_publish_res.success and r.channel_keys_publish_res.current_epoch == 1)
@@ -2345,8 +2346,8 @@ def test_encrypted_channels():
     needs = {n.username: list(n.epochs) for n in k.channel_keys_res.needs} if k else {}
     check("owner gets her blob with the sealer stamped", mine == [(1, "edith", b"E1-alice")])
     check("needs lists fay for epoch 1", needs.get("fay") == [1] and "alice" not in needs)
-    def publish(c, channel, epoch, blobs):
-        c.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=channel, epoch=epoch, blobs=[
+    def publish(c, channel, epoch, blobs, key_check=KC):
+        c.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=channel, epoch=epoch, key_check=key_check, blobs=[
             pb.ChannelKeyBlob(recipient=u, recipient_uid=uid_of(u), blob=b) for u, b in blobs]))
         return c.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
     def refused(r, message):
@@ -2404,6 +2405,152 @@ def test_encrypted_channels():
     r = publish(ed, enc, 3, [("edith", b"E3-edith")])
     check("keys: a rotation is spent once done", refused(r, "no_rotation_due"))
     hal.close()
+
+    # --- review S14: key checks, members dropping blobs they can't use,
+    # refused senders, orphaned epochs, paged replies ---
+    def keys_res(c, channel, **cursors):
+        c.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id=channel, **cursors))
+        r = c.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=2, pred=lambda p: p.channel_keys_res.channel_id == channel
+                   and p.channel_keys_res.after_epoch == cursors.get("after_epoch", 0)
+                   and p.channel_keys_res.needs_after_uid == cursors.get("needs_after_uid", 0))
+        return r.channel_keys_res if r else None
+    def all_needs(c, channel):
+        # Walks the needs pages: {uid: epochs}, or None when a page is missing.
+        out, after = {}, 0
+        for _ in range(50):
+            r = keys_res(c, channel, **({"needs_after_uid": after} if after else {}))
+            if r is None:
+                return None
+            out.update({n.uid: list(n.epochs) for n in r.needs})
+            if not r.more_needs or not r.needs:
+                return out
+            after = r.needs[-1].uid
+        return None
+    def reject(c, channel, epochs, bad=False):
+        c.send(pb.Packet.CHANNEL_KEYS_REJECT, channel_keys_reject=pb.ChannelKeysReject(channel_id=channel, epochs=epochs, bad=bad))
+    def changed(channel, timeout=3):
+        p = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=timeout, pred=lambda p: p.channel_keys_changed.channel_id == channel)
+        return p.channel_keys_changed if p else None
+    def gus_blobs(epoch):
+        return sql("select blob from channel_key_blobs where channel_id=? and epoch=? and recipient_uid=?", enc, epoch, uid_of("gus"))
+    for c in (owner, ed, gus): c.flush(0.3)
+    k = keys_res(owner, enc)
+    check("keys: blobs carry their epoch's key check, cursors echoed", k is not None
+          and [(b.epoch, b.key_check) for b in k.blobs] == [(1, KC), (2, KC)]
+          and not k.more_blobs and not k.current_orphaned and set(k.members) >= {"alice", "edith", "gus"})
+    # a blob sealed to a key the member no longer has: dropped, no refusal
+    reject(gus, enc, [2])
+    ch = changed(enc)
+    check("keys: a dropped blob asks a filler, never the member who dropped it",
+          ch is not None and not ch.rotate and ch.filler_uid in (uid_of("alice"), uid_of("edith")))
+    check("...only that blob goes, and a stale one refuses nobody", gus_blobs(2) == [] and gus_blobs(1) == [(b"E1-gus",)]
+          and sql("select count(*) from channel_key_refusals where channel_id=?", enc) == [(0,)])
+    # a bad blob: its sender may not seal to that member again
+    r = publish(owner, enc, 2, [("gus", b"E2-GARBAGE")])
+    check("keys: a holder seals the dropped epoch again", r is not None and r.channel_keys_publish_res.success and gus_blobs(2) == [(b"E2-GARBAGE",)])
+    for c in (owner, ed, gus): c.flush(0.3)
+    reject(gus, enc, [2], bad=True)
+    ch = changed(enc)
+    check("keys: a bad blob's sender is refused and not named filler for them",
+          ch is not None and ch.filler_uid == uid_of("edith")
+          and sql("select sender_uid from channel_key_refusals where channel_id=? and recipient_uid=?", enc, uid_of("gus")) == [(uid_of("alice"),)])
+    r = publish(owner, enc, 2, [("gus", b"E2-AGAIN")])
+    check("...their blobs to that member are dropped", r is not None and r.channel_keys_publish_res.success and gus_blobs(2) == [])
+    n_owner = all_needs(owner, enc); n_ed = all_needs(ed, enc)
+    check("...and that member isn't one of their needs, but is another holder's",
+          n_owner is not None and uid_of("gus") not in n_owner and n_ed is not None and n_ed.get(uid_of("gus")) == [2])
+    check("needs never list the caller", n_owner is not None and uid_of("alice") not in n_owner)
+    r = publish(ed, enc, 2, [("gus", b"E2-gus")])
+    check("keys: another holder fills them", r is not None and r.channel_keys_publish_res.success and gus_blobs(2) == [(b"E2-gus",)])
+    for c in (owner, ed, gus): c.flush(0.3)
+    reject(ed, enc, [77])
+    check("keys: dropping a blob you don't have changes nothing", changed(enc, timeout=1) is None)
+
+    # orphaned epochs: when nobody holds the current one, any viewer mints the next
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="sealed-orphan", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    orph = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "sealed-orphan"
+    for c in (owner, ed, gus): c.flush(0.4)
+    r = publish(ed, orph, 1, [("edith", b"O1-edith")], key_check=b"")
+    check("keys: a new epoch needs its key check", refused(r, "A new epoch needs its key check."))
+    r = publish(ed, orph, 1, [("edith", b"O1-edith")], key_check=b"short")
+    check("...of 32 bytes", refused(r, "A new epoch needs its key check."))
+    r = publish(ed, orph, 1, [("edith", b"O1-edith")])
+    check("keys: the check is stored with the epoch", r is not None and r.channel_keys_publish_res.success
+          and sql("select key_check from channel_key_epochs where channel_id=? and epoch=1", orph) == [(KC,)])
+    r = publish(gus, orph, 2, [("gus", b"O2-gus")])
+    check("keys: a held epoch isn't replaced", refused(r, "no_rotation_due"))
+    reject(ed, orph, [1], bad=True)   # her own blob: refuses nobody
+    k = keys_res(ed, orph)
+    check("keys: the last holder dropping it orphans the epoch", k is not None and k.current_epoch == 1 and k.current_orphaned
+          and len(k.blobs) == 0 and sql("select count(*) from channel_key_refusals where channel_id=?", orph) == [(0,)])
+    r = publish(gus, orph, 2, [("gus", b"O2-gus"), ("edith", b"O2-edith")])
+    check("keys: then any viewer may mint the next one", r is not None and r.channel_keys_publish_res.success
+          and r.channel_keys_publish_res.current_epoch == 2)
+    r = publish(gus, orph, 3, [("gus", b"O3-gus")])
+    check("...once", refused(r, "no_rotation_due"))
+
+    # paging: 5000 epochs, alice holds every one
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="sealed-pages", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    pages = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "sealed-pages"
+    N = 5000
+    sql("with recursive n(i) as (select 1 union all select i + 1 from n where i < ?) "
+        "insert into channel_key_epochs(channel_id, epoch, created_by_uid, created_by, created_at, key_check) "
+        "select ?, i, ?, 'edith', 0, ? from n", N, pages, uid_of("edith"), KC)
+    sql("with recursive n(i) as (select 1 union all select i + 1 from n where i < ?) "
+        "insert into channel_key_blobs(channel_id, epoch, recipient_uid, recipient, sender_uid, sender, blob, created_at) "
+        "select ?, i, ?, 'alice', ?, 'edith', x'01', 0 from n", N, pages, uid_of("alice"), uid_of("edith"))
+    for c in (owner, ed, gus): c.flush(0.4)
+    p1 = keys_res(owner, pages)
+    check("keys: a first page holds 256 blobs, the viewers and one need capped at 4096 epochs",
+          p1 is not None and p1.current_epoch == N and [b.epoch for b in p1.blobs] == list(range(1, 257)) and p1.more_blobs
+          and len(p1.members) > 0 and len(p1.needs) == 1 and len(p1.needs[0].epochs) == 4096 and p1.more_needs,
+          (len(p1.blobs), len(p1.needs), p1.more_needs) if p1 else None)
+    p2 = keys_res(owner, pages, after_epoch=256)
+    check("keys: a blob page holds the next 256 and nothing else", p2 is not None and [b.epoch for b in p2.blobs] == list(range(257, 513))
+          and p2.more_blobs and not p2.members and not p2.needs)
+    p3 = keys_res(owner, pages, after_epoch=N - 10)
+    check("keys: the last blob page says so", p3 is not None and [b.epoch for b in p3.blobs] == list(range(N - 9, N + 1)) and not p3.more_blobs)
+    first = p1.needs[0].uid if p1 and p1.needs else 0
+    p4 = keys_res(owner, pages, needs_after_uid=first)
+    check("keys: a needs page holds the next viewer by uid and nothing else", p4 is not None and len(p4.needs) == 1
+          and p4.needs[0].uid > first and not p4.blobs and not p4.members)
+    check("keys: pages stay far below the 2 MiB frame cap",
+          all(p is not None and p.ByteSize() < 512 * 1024 for p in (p1, p2, p4)), [p.ByteSize() for p in (p1, p2, p4) if p])
+    # escrow goes with a deleted channel, refusals included
+    sql("insert into channel_key_refusals(channel_id, recipient_uid, sender_uid, created_at) values(?, ?, ?, 0)", pages, uid_of("gus"), uid_of("alice"))
+    for ch_id in (pages, orph):
+        owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=ch_id))
+        owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=3, pred=lambda p: p.channel_action_res.action == "delete")
+    check("keys: deleting a channel drops its epochs, blobs and refusals",
+          all(sql(f"select count(*) from {t} where channel_id in (?, ?)", pages, orph) == [(0,)]
+              for t in ("channel_key_epochs", "channel_key_blobs", "channel_key_refusals")))
+
+    # a rotation owed while no holder is online is asked for when one signs in
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="sealed-rot", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    rot = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "sealed-rot"
+    rhea = join("rhea", owner); rhea.flush(0.4)
+    r = publish(rhea, rot, 1, [("rhea", b"R1-rhea")])
+    check("keys: rhea alone holds the new channel's epoch", r is not None and r.channel_keys_publish_res.success)
+    rhea.close()
+    for c in (owner, ed, gus): c.flush(0.4)
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="hal", uid=uid_of("hal"), reason=""))
+    owner.wait(pb.Packet.MOD_ACTION_RES, timeout=3, pred=lambda p: p.mod_action_res.action == "kick")
+    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=1.5, pred=lambda p: p.channel_keys_changed.channel_id == rot)
+    check("keys: a removal with no holder online asks nobody, but the rotation is kept",
+          ch is None and sql("select count(*) from channel_key_rotations where channel_id=?", rot) == [(1,)])
+    rhea = Client("rhea"); check("rhea back", auth_ok(rhea)[0])
+    ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == rot and p.channel_keys_changed.rotate)
+    check("keys: the owed rotation goes to the holder who signs in", ch is not None and ch.channel_keys_changed.filler_uid == uid_of("rhea"))
+    rhea.flush(0.3)
+    r = publish(rhea, rot, 2, [("rhea", b"R2-rhea")])
+    check("keys: they rotate, and nothing is owed after", r is not None and r.channel_keys_publish_res.success
+          and sql("select count(*) from channel_key_rotations where channel_id=?", rot) == [(0,)])
+    rhea.close()
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=rot))
+    owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=3, pred=lambda p: p.channel_action_res.action == "delete")
     # A sender renamed since sending: a v1 edit (0x02 binds the name it was
     # sealed under) is refused; a v2 edit (0x04 binds the uid) is accepted.
     ed2 = Client("edith2", uid=uid_for("edith")); check("renamed sender admitted", auth_ok(ed2)[0])
@@ -2576,7 +2723,10 @@ def test_v15_uid_migration():
     stop_server(new)
     U = uid_for
     ph = dict(sql("select username, uid from legacy_claims"))
-    check("v15 then v16: schema stamped at the latest", sql("select value from server_meta where key='schema_version'") == [("16",)])
+    check("v15 to v17: schema stamped at the latest", sql("select value from server_meta where key='schema_version'") == [("17",)])
+    check("v17: epochs gain a key check (none for old ones), refusal and rotation tables",
+          sql("select key_check from channel_key_epochs where channel_id='general' and epoch=1") == [(None,)]
+          and sql("select count(*) from sqlite_master where name in ('channel_key_refusals', 'channel_key_rotations')") == [(2,)])
     check("v15: placeholders for names with no uid", set(ph) == {"lazy2", "eve", "dana"} and all(v < 0 for v in ph.values()), str(ph))
     check("v15: owner by uid", sql("select value from server_meta where key='owner_uid'") == [(str(U("alice")),)]
           and sql("select count(*) from server_meta where key='owner'") == [(0,)])
@@ -2641,7 +2791,7 @@ def test_v15_uid_migration():
     finally:
         stop_server(proc)
     proc = start_server(); stop_server(proc)
-    check("v15 and v16 don't run twice", sql("select value from server_meta where key='schema_version'") == [("16",)]
+    check("v15 to v17 don't run twice", sql("select value from server_meta where key='schema_version'") == [("17",)]
           and sql("select count(*) from members") == [(5,)])
 
 
@@ -3366,7 +3516,7 @@ def test_v11_migration():
     proc = start_server(); stop_server(proc)
     check("v10 → v12: a category with rows stays a plain group", sql("select category_sync from channels where id='old-cat'") == [(0,)])
     check("...and its channel follows nothing", perm_synced("old-child") == 0)
-    check("schema at the latest (v16)", sql("select value from server_meta where key='schema_version'") == [("16",)])
+    check("schema at the latest (v17)", sql("select value from server_meta where key='schema_version'") == [("17",)])
     # A DB that ran v11 live keeps the categories whose rows were applying.
     sql("update channels set perm_synced=1 where id='old-child'")
     sql("update server_meta set value='11' where key='schema_version'")

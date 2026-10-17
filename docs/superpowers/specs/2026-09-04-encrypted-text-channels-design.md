@@ -49,6 +49,52 @@ CHANNEL_KEYS_CHANGED = 146 {channel_id, current_epoch, filler, rotate}   (commun
   `channel_key_blobs (channel_id, epoch, recipient, sender, blob, created_at)`,
   `channels.encrypted`, `messages.envelope`.
 
+### Escrow hardening (review S14, 2026-10-17)
+
+The pre-1.0 review found the escrow open to any viewer: unlimited epochs, garbage
+blobs a newcomer could never replace, and a reply that grew past the client's
+2 MiB frame cap. The rules now:
+
+- **Who may mint an epoch**: the first one, the rotation the server asked for after a
+  removal (by a holder of the current epoch), or the next one when **nobody holds the
+  current epoch** any more (`ChannelKeysRes.current_orphaned`: its holders left or
+  dropped it, so nobody could share or rotate it), by any viewer. Encrypted channels
+  only; one transaction per publish. Fills come only from holders of that epoch.
+- **Key check**: a creation carries `key_check` = HMAC-SHA256(key_e,
+  `"decibell-channel-key-check-v1" ‖ 0 ‖ channel_id ‖ 0 ‖ epoch u32 LE`), 32 bytes,
+  stored on the epoch (`channel_key_epochs.key_check`, schema v17) and returned with
+  every blob. A blob whose key fails it is wrong, whoever sealed it; epochs minted
+  before it existed have none and open on the envelope alone.
+- **Dropping a blob** (`CHANNEL_KEYS_REJECT = 165 {channel_id, epochs[], bad}`, no
+  reply): the member's own rows go, they show up in `needs` again, and a filler is
+  named. The client sends it for a blob that is
+  - *stale*: sealed to a generation of their key older than their current one (they
+    reset), nobody's fault; or
+  - *bad*: it doesn't authenticate, binds another channel or epoch, or fails the key
+    check. The server then records the sender (`channel_key_refusals`): their blobs to
+    that member are dropped, they're never named filler on that member's behalf, and
+    that member is left out of their `needs`.
+
+  A blob that doesn't open for any other reason (locked, the sender's key couldn't be
+  fetched, a key generation newer than this device holds) is retried on the next fetch,
+  never dropped. A filler looks each recipient's current keys up again before sealing to
+  them, so a member who reset gets a blob for their new keys even from a filler that
+  cached the old ones (`E2EE_KEYS_CHANGED` reaches watchers only).
+- **Owed rotations are stored** (`channel_key_rotations`): a removal marks every channel
+  with an epoch, and the mark stays until a new epoch exists. When no holder was online
+  at the removal (or the named filler never rotated), the next holder to sign in is sent
+  `CHANNEL_KEYS_CHANGED{rotate}`. They used to live in memory, lost with a restart or
+  an offline filler.
+- **Paging**: `ChannelKeysReq.after_epoch` / `needs_after_uid`. The first page (both 0)
+  carries the viewers (≤ 1000), the needs in uid order (≤ 200 viewers, ≤ 4096 epochs)
+  and the caller's first 256 blobs; `more_blobs` / `more_needs` are continued by a
+  request with that cursor alone (the last blob's epoch / the last need's uid), whose
+  reply holds only that list. The reply echoes both cursors, which is how the client
+  routes it.
+- Residual: someone dropping a *stale* blob can be refilled with garbage by a holder
+  who races the named filler (stale refuses nobody); a bad blob after that refuses the
+  sender. Pinned identities and the key check mean a member never accepts a wrong key.
+
 ## Message envelope
 
 ```

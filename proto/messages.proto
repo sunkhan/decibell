@@ -300,6 +300,9 @@ message Packet {
     // scaling-design.md): the accounts a client shows; answered with a
     // PRESENCE_UPDATE for the newly watched.
     PRESENCE_SUBSCRIBE   = 164;   // client→central
+    // Key escrow (review S14): a member drops their own blobs that won't
+    // open, so a holder can seal them again.
+    CHANNEL_KEYS_REJECT  = 165;   // client→community (no reply)
   }
 
   Type type = 1;
@@ -507,6 +510,7 @@ message Packet {
     TokenRefreshResponse     token_refresh_res      = 164;
     SessionTokenUpdate       session_token_update   = 165;
     PresenceSubscribe        presence_subscribe     = 166;
+    ChannelKeysReject        channel_keys_reject    = 167;
   }
 }
 
@@ -2539,8 +2543,15 @@ message MlsCommitBroadcast {
 // A "blob" is a DM envelope (content tag 0x02) carrying one epoch key,
 // sealed by `sender`'s identity to `recipient`'s. Opaque to the server.
 
+// Paged (review S14). The first page (both cursors 0) carries the viewer
+// list, the first needs and the caller's first blobs; a reply with
+// `more_blobs` / `more_needs` set is continued by a request with that
+// cursor alone: `after_epoch` (the last blob's epoch) pages only the
+// caller's blobs, `needs_after_uid` (the last need's uid) only the needs.
 message ChannelKeysReq {
   string channel_id = 1;
+  uint32 after_epoch = 2;
+  int64 needs_after_uid = 3;
 }
 message ChannelKeyBlob {
   uint32 epoch = 1;
@@ -2550,6 +2561,9 @@ message ChannelKeyBlob {
   // The names stay the ones it was sealed under (a v1 envelope binds them).
   int64 sender_uid = 5;
   int64 recipient_uid = 6;   // preferred over recipient in publish requests
+  // Replies: the epoch's key check (ChannelKeysPublishReq.key_check), which
+  // the key inside must match; empty for epochs minted before it existed.
+  bytes key_check = 7;
 }
 message ChannelKeyNeed {
   string username = 1;
@@ -2564,13 +2578,26 @@ message ChannelKeysRes {
   repeated ChannelKeyNeed needs = 5;    // viewers missing blobs (capped)
   repeated string members = 6;          // everyone who can VIEW the channel (capped)
   repeated int64 member_uids = 7;   // parallel to members
+  bool more_blobs = 8;              // continue with after_epoch = the last blob's epoch
+  bool more_needs = 9;              // continue with needs_after_uid = the last need's uid
+  uint32 after_epoch = 10;          // the request's cursors, echoed
+  int64 needs_after_uid = 11;
+  // Nobody holds the current epoch any more (its holders left or dropped
+  // it): any viewer may mint the next one.
+  bool current_orphaned = 12;
 }
 // epoch == current + 1 creates the epoch (≥ 1 blob); epoch <= current fills
-// gaps (only missing recipients are inserted). Blobs for non-viewers drop.
+// gaps (only missing recipients are inserted). Blobs for non-viewers drop,
+// and so do blobs for members who rejected the publisher's blobs as bad.
 message ChannelKeysPublishReq {
   string channel_id = 1;
   uint32 epoch = 2;
   repeated ChannelKeyBlob blobs = 3;
+  // Creation only, required: HMAC-SHA256 of the new key over the channel and
+  // epoch (native e2ee/channel_envelope.rs `key_check`). Every blob of the
+  // epoch must carry a key that matches it, so a member can tell a wrong key
+  // from the right one.
+  bytes key_check = 4;
 }
 message ChannelKeysPublishRes {
   string channel_id = 1;
@@ -2587,6 +2614,16 @@ message ChannelKeysChanged {
   string filler = 3;
   bool   rotate = 4;
   int64 filler_uid = 5;   // users by uid (2026-10-15)
+}
+// The caller's own blobs for `epochs` can't be used: the server deletes them,
+// so the caller shows up in `needs` again, and asks a filler. `bad`: they
+// don't open, bind another channel or epoch, or fail the key check (rather
+// than being sealed to a key of ours we no longer have): their senders may
+// not seal to the caller in this channel again, nor fill for them.
+message ChannelKeysReject {
+  string channel_id = 1;
+  repeated uint32 epochs = 2;
+  bool bad = 3;
 }
 
 // --- Encrypted channel message body (client-only; opaque to every server) ---

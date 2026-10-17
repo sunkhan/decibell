@@ -3224,3 +3224,53 @@ Verified on main with the S11 relay change: community e2e 627/0 (+40: whitelist 
 and no cached misses, epoch and fill gating, the lost-race refusal, connection caps and immediate descriptor
 release, the byte-capped queue), and 627/0 under ASan + UBSan with no reports. 17 of the 31 targeted new
 checks fail against the pre-change binary.
+
+### Fix: key escrow — members drop blobs they can't use, key checks, paged replies, stored rotations (2026-10-17, review S14)
+
+The rest of S14 (the server-side gating shipped in 308b3d9). Design notes in
+`docs/superpowers/specs/2026-09-04-encrypted-text-channels-design.md` § Escrow hardening.
+
+- **Blobs a member can't use.** A stored blob was kept for good (`INSERT OR IGNORE`), so a holder escrowing
+  garbage, or a blob sealed to keys the member has since reset, left them unable to read the channel, with
+  nothing they could do. New `CHANNEL_KEYS_REJECT {channel_id, epochs, bad}` (no reply): the server deletes
+  the caller's own rows (encrypted channels only), so they show up in `needs` again, and names a filler.
+  Native drops a blob as *stale* when it's sealed to a generation of the member's key older than their
+  current one, and as *bad* when it doesn't authenticate, binds another channel or epoch, or fails the key
+  check below. Anything else (locked, the sender's key not fetchable, a generation newer than this device
+  holds) is retried, never dropped. A bad blob's sender goes into `channel_key_refusals`: their blobs to that
+  member are dropped, they're never named filler on that member's behalf, and that member is left out of
+  their `needs`.
+- **Key check.** A blob that opened could still carry the wrong key, and a member had no way to tell (every
+  message would then show as unreadable, and their sends too). A creation now carries
+  `key_check` = HMAC-SHA256(key, label ‖ channel ‖ epoch), stored on the epoch (schema v17) and returned with
+  every blob. A mismatch is a bad blob. Epochs minted before this have no check and open as before.
+- **Orphaned epochs.** If every holder of the current epoch left or dropped it, nobody could fill or rotate
+  it, and S14's gating refused everyone else a new one, so the channel was stuck for good. When nobody holds
+  the current epoch (`ChannelKeysRes.current_orphaned`), any viewer may mint the next one, and the client does.
+- **Paging.** `CHANNEL_KEYS_RES` carried every epoch's blob, plus up to 200 needs with unbounded epoch lists:
+  past the client's 2 MiB frame cap after about 1000 rotations, which meant a reconnect loop. Now
+  `ChannelKeysReq.after_epoch` / `needs_after_uid`. The first page has the viewers (≤ 1000), the needs by uid
+  (≤ 200 viewers, ≤ 4096 epochs) and the first 256 blobs. Later pages carry one list, picked by the cursor,
+  which the reply echoes for routing. Native walks the blob pages on every fetch, and the filler walks the
+  needs pages. A full page measured under 512 KiB. Needs skip viewers who already hold every epoch, using one
+  grouped count instead of a query per viewer.
+- **Stored rotations.** The "rotation due" mark was in memory, so it was lost on a restart, and also lost when
+  no holder was online at the removal: the client rotates only when told, and nobody ever told it. The mark
+  is now a row (`channel_key_rotations`), cleared by the next epoch, and the next holder to sign in is sent
+  `CHANNEL_KEYS_CHANGED{rotate}`.
+- **Fillers re-check keys.** `E2EE_KEYS_CHANGED` reaches watchers only, so a filler could keep sealing to a
+  member's pre-reset keys, and that member would keep dropping the result. A filler now looks each
+  recipient's current keys up again before sealing to them (people known to have no keys stay cached). Fills
+  are now paced at 250 ms per lookup, inside central's 5/s key bucket: the old pace was 4 seals per 250 ms
+  (16/s), which central drops.
+- Residual: someone dropping a *stale* blob can have garbage refilled by a holder who races the named
+  filler. Stale refuses nobody, but a bad blob after that refuses the sender.
+
+Verified: community e2e 681/0 with the v14 → v17 migration check (+29: key checks, stale / bad drops and
+refusals, refused fillers and needs, orphaned epochs, all four page kinds and their sizes, channel-delete
+cleanup, the owed rotation), and the same under ASan + UBSan with no reports. Native `cargo test` 264
+(+2: the key check binds key / channel / epoch; every blob classification), napi build clean with
+`index.js` / `index.d.ts` unchanged; central (proto only) builds and passes its e2e 221/0. Against the
+pre-change community binary, 15 of the new checks fail before the paging seed stops the run (no
+`key_check` column).
+

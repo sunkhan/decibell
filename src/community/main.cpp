@@ -485,7 +485,8 @@ public:
     // Members who can VIEW the channel (capped for the wire): (uid, name).
     std::vector<std::pair<int64_t, std::string>> channel_viewers(const std::string& channel_id, size_t cap);
     // Broadcast CHANNEL_KEYS_CHANGED naming the filler: the lowest online
-    // viewer holding a current-epoch blob (never `exclude`).
+    // viewer holding a current-epoch blob (never `exclude`, nor a sender
+    // `exclude` refused).
     void channel_keys_changed(const std::string& channel_id, bool rotate, int64_t exclude);
     // A member (re)joined / came online: for every encrypted channel they
     // can view where they lack blobs, ask a filler to seal for them.
@@ -495,8 +496,9 @@ public:
     void channel_keys_on_removal(int64_t uid);
     // A rotation is due: a member was removed since the channel's current
     // epoch was created (what CHANNEL_KEYS_CHANGED{rotate} asks a filler
-    // for). Only then may a channel that has an epoch get a new one.
-    // Kept in memory: a restart forgets it, as it forgets the prompt.
+    // for). Only then may a channel whose epoch has holders get a new one.
+    // Stored, and asked for again whenever a holder comes online, until
+    // someone rotates.
     bool key_rotation_due(const std::string& channel_id);
     // A new epoch was created: whatever was due is done.
     void key_rotation_done(const std::string& channel_id);
@@ -758,10 +760,6 @@ private:
     std::mutex slowmode_mutex_;
     std::unordered_map<int64_t,
         std::unordered_map<std::string, std::chrono::steady_clock::time_point>> slowmode_last_;
-
-    // Channels whose key escrow owes a rotation (key_rotation_due), under
-    // mutex_. Only channels with an epoch ever get in.
-    std::unordered_set<std::string> key_rotations_due_;
 
     chatproj::CommunityDb* db_ = nullptr;
     const chatproj::Authorizer* authz_ = nullptr;
@@ -1590,9 +1588,10 @@ private:
 
         // --- Encrypted text channels: key escrow (spec 2026-09-04) ---
         // Opaque blobs sealed member→member; the server checks VIEW on both
-        // ends, sequences epochs (a new one only when none exists or a
-        // rotation is due), takes fills only from holders, and points at a
-        // filler.
+        // ends, sequences epochs (a new one only when none exists, nobody
+        // holds the current one, or a rotation is due), takes fills only
+        // from holders, lets a member drop blobs they can't use, and points
+        // at a filler.
         else if (packet.type() == chatproj::Packet::CHANNEL_KEYS_REQ) {
             auto* db = manager_.db();
             const auto& req = packet.channel_keys_req();
@@ -1605,37 +1604,104 @@ private:
             auto* res = rsp.mutable_channel_keys_res();
             res->set_channel_id(req.channel_id());
             res->set_encrypted(ch->encrypted);
+            res->set_after_epoch(req.after_epoch());
+            res->set_needs_after_uid(req.needs_after_uid());
             const uint32_t current = db->channel_key_current_epoch(req.channel_id());
             res->set_current_epoch(current);
-            for (const auto& b : db->channel_key_blobs_for(req.channel_id(), uid_)) {
-                auto* pb = res->add_blobs();
-                pb->set_epoch(b.epoch);
-                pb->set_sender(b.sender);       // the names it was sealed under
-                pb->set_sender_uid(b.sender_uid);
-                pb->set_recipient(b.recipient);
-                pb->set_recipient_uid(b.recipient_uid);
-                pb->set_blob(b.blob);
-            }
+            res->set_current_orphaned(current > 0 && !db->channel_key_has_holder(req.channel_id(), current));
+            // Paged (review S14): every epoch used to come back at once, past
+            // the client's 2 MiB frame cap after ~1000 rotations. A page holds
+            // at most 256 blobs (≤ 2 KiB each), 1000 viewer names and 4096
+            // needed epochs.
+            constexpr size_t kBlobsPerPage = 256;
             constexpr size_t kMaxMembersOnWire = 1000;
             constexpr size_t kMaxNeeds = 200;
-            const auto viewers = manager_.channel_viewers(req.channel_id(), kMaxMembersOnWire);
-            for (const auto& [uid, name] : viewers) {
-                res->add_members(name);
-                res->add_member_uids(uid);
+            constexpr size_t kMaxNeededEpochs = 4096;
+            const bool first = req.after_epoch() == 0 && req.needs_after_uid() == 0;
+            if (first || req.after_epoch() > 0) {
+                auto blobs = db->channel_key_blobs_for(req.channel_id(), uid_, req.after_epoch(), kBlobsPerPage + 1);
+                if (blobs.size() > kBlobsPerPage) {
+                    blobs.pop_back();
+                    res->set_more_blobs(true);
+                }
+                for (const auto& b : blobs) {
+                    auto* pb = res->add_blobs();
+                    pb->set_epoch(b.epoch);
+                    pb->set_sender(b.sender);       // the names it was sealed under
+                    pb->set_sender_uid(b.sender_uid);
+                    pb->set_recipient(b.recipient);
+                    pb->set_recipient_uid(b.recipient_uid);
+                    pb->set_blob(b.blob);
+                    pb->set_key_check(b.key_check);
+                }
             }
-            if (current > 0) {
-                size_t needs = 0;
-                for (const auto& [uid, name] : viewers) {
-                    auto missing = db->channel_key_missing_epochs(req.channel_id(), uid);
-                    if (missing.empty()) continue;
-                    auto* n = res->add_needs();
-                    n->set_username(name);
-                    n->set_uid(uid);
-                    for (uint32_t e : missing) n->add_epochs(e);
-                    if (++needs >= kMaxNeeds) break;
+            const bool want_needs = current > 0 && (first || req.needs_after_uid() > 0);
+            if (first || want_needs) {
+                auto viewers = manager_.channel_viewers(req.channel_id(), SIZE_MAX);
+                if (first) {
+                    for (size_t i = 0; i < viewers.size() && i < kMaxMembersOnWire; ++i) {
+                        res->add_members(viewers[i].second);
+                        res->add_member_uids(viewers[i].first);
+                    }
+                }
+                if (want_needs) {
+                    // By uid, so the filler can walk them page by page.
+                    // Placeholders (negative uids) have no identity to seal
+                    // to, and the caller can't fill themselves or anyone who
+                    // refused their blobs.
+                    std::sort(viewers.begin(), viewers.end());
+                    const auto held = db->channel_key_held_counts(req.channel_id());
+                    const auto refusing = db->channel_key_refusing_recipients(req.channel_id(), uid_);
+                    size_t needs = 0, epochs = 0;
+                    for (const auto& [uid, name] : viewers) {
+                        if (uid <= 0 || uid <= req.needs_after_uid() || uid == uid_) continue;
+                        auto it = held.find(uid);
+                        if (it != held.end() && it->second >= current) continue;
+                        if (refusing.count(uid)) continue;
+                        auto missing = db->channel_key_missing_epochs(req.channel_id(), uid);
+                        if (missing.empty()) continue;
+                        if (needs >= kMaxNeeds || (needs > 0 && epochs + missing.size() > kMaxNeededEpochs)) {
+                            res->set_more_needs(true);
+                            break;
+                        }
+                        // One viewer missing more than a page's worth gets the
+                        // rest on a later pass.
+                        if (missing.size() > kMaxNeededEpochs) missing.resize(kMaxNeededEpochs);
+                        auto* n = res->add_needs();
+                        n->set_username(name);
+                        n->set_uid(uid);
+                        for (uint32_t e : missing) n->add_epochs(e);
+                        epochs += missing.size();
+                        ++needs;
+                    }
                 }
             }
             send_packet(rsp);
+        }
+        else if (packet.type() == chatproj::Packet::CHANNEL_KEYS_REJECT) {
+            // The caller's own blobs that won't open for them (review S14). A
+            // stored blob was kept for good, so a garbage one — or one sealed
+            // to a key they've since replaced — left them unable to read the
+            // channel. Only their own rows go; a filler is asked to seal again.
+            auto* db = manager_.db();
+            const auto& req = packet.channel_keys_reject();
+            if (!db) return;
+            if (!manager_.authz().check(chatproj::Action::ViewChannel, {uid_, req.channel_id(), 0})) return;
+            auto ch = db->get_channel(req.channel_id());
+            // Outside an encrypted channel nobody may seal again, so a blob
+            // dropped there would be gone for good.
+            if (!ch || ch->type != 0 || !ch->encrypted) return;
+            constexpr int kMaxRejected = 512;
+            if (req.epochs_size() == 0 || req.epochs_size() > kMaxRejected) return;
+            std::vector<uint32_t> epochs(req.epochs().begin(), req.epochs().end());
+            std::sort(epochs.begin(), epochs.end());
+            epochs.erase(std::unique(epochs.begin(), epochs.end()), epochs.end());
+            const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
+            const int dropped = db->channel_key_reject(req.channel_id(), uid_, epochs, req.bad(), now_ts);
+            if (dropped <= 0) return;
+            std::cout << "[Keys] #" << req.channel_id() << ": " << username_ << " dropped " << dropped
+                      << " blob(s)" << (req.bad() ? " as bad" : "") << "\n";
+            manager_.channel_keys_changed(req.channel_id(), false, uid_);
         }
         else if (packet.type() == chatproj::Packet::CHANNEL_KEYS_PUBLISH_REQ) {
             auto* db = manager_.db();
@@ -1659,9 +1725,12 @@ private:
             if (!ch->encrypted) { fail("This channel isn't encrypted.", 0); return; }
             constexpr int kMaxBlobsPerPublish = 500;
             constexpr size_t kMaxBlobBytes = 2 * 1024;
+            constexpr size_t kKeyCheckBytes = 32;
             if (req.blobs_size() == 0 || req.blobs_size() > kMaxBlobsPerPublish) {
                 fail("Bad blob count.", db->channel_key_current_epoch(req.channel_id())); return;
             }
+            // Members who refused this publisher's blobs as bad get none.
+            const auto refusing = db->channel_key_refusing_recipients(req.channel_id(), uid_);
             std::vector<chatproj::CommunityDb::KeyBlobIn> accepted;
             accepted.reserve(req.blobs_size());
             for (const auto& b : req.blobs()) {
@@ -1670,7 +1739,7 @@ private:
                 // channel get keys (the permission resolver answers for
                 // anyone with the default role's rights, so membership is
                 // checked explicitly).
-                if (b.recipient_uid() == 0) continue;
+                if (b.recipient_uid() == 0 || refusing.count(b.recipient_uid())) continue;
                 auto m = db->get_member(b.recipient_uid());
                 if (!m) continue;
                 if (!(manager_.authz().channel_permissions(m->uid, req.channel_id()) & chatproj::perms::kViewChannel)) continue;
@@ -1684,16 +1753,22 @@ private:
             const bool created = req.epoch() == current + 1;
             if (created) {
                 if (accepted.empty()) { fail("A new epoch needs at least one blob.", current); return; }
-                // A new epoch is the first one, or the rotation the server
-                // asked for after a removal, by someone holding the current
-                // one (the filler is picked among them). Any viewer used to
-                // mint epochs without end, each one growing every
+                if (req.key_check().size() != kKeyCheckBytes) { fail("A new epoch needs its key check.", current); return; }
+                // A new epoch is the first one, the rotation the server asked
+                // for after a removal (by someone holding the current one —
+                // the filler is picked among them), or the next one when
+                // nobody holds the current one any more (its holders left or
+                // dropped it), which no one could fill or rotate. Any viewer
+                // used to mint epochs without end, each one growing every
                 // CHANNEL_KEYS_RES for good.
-                if (current > 0 && !manager_.key_rotation_due(req.channel_id())) {
-                    fail("no_rotation_due", current); return;
-                }
-                if (current > 0 && !db->channel_key_holds(req.channel_id(), current, uid_)) {
-                    fail("not_a_holder", current); return;
+                const bool orphaned = current > 0 && !db->channel_key_has_holder(req.channel_id(), current);
+                if (current > 0 && !orphaned) {
+                    if (!manager_.key_rotation_due(req.channel_id())) {
+                        fail("no_rotation_due", current); return;
+                    }
+                    if (!db->channel_key_holds(req.channel_id(), current, uid_)) {
+                        fail("not_a_holder", current); return;
+                    }
                 }
             } else {
                 // Filling gaps in an existing epoch takes holding it: a blob
@@ -1713,7 +1788,7 @@ private:
                 }
             }
             if (db->channel_key_publish(req.channel_id(), req.epoch(), created, uid_, username_,
-                                        accepted, now_ts) < 0) {
+                                        created ? req.key_check() : std::string(), accepted, now_ts) < 0) {
                 fail("stale_epoch", db->channel_key_current_epoch(req.channel_id())); return;
             }
             if (created) {
@@ -4282,6 +4357,7 @@ private:
             case T::MLS_COMMIT_REQ:
             case T::CHANNEL_KEYS_REQ:
             case T::CHANNEL_KEYS_PUBLISH_REQ:
+            case T::CHANNEL_KEYS_REJECT:
                 return mls_bucket_.try_take();
             case T::MESSAGE_SEARCH_REQ:
                 return search_bucket_.try_take();
@@ -5619,12 +5695,15 @@ void SessionManager::channel_keys_changed(const std::string& channel_id, bool ro
     if (!db_) return;
     const uint32_t current = db_->channel_key_current_epoch(channel_id);
     if (current == 0) return;   // nothing to fill from yet — the first sender creates epoch 1
-    // The filler: the online holder with the lowest uid (deterministic).
+    // The filler: the online holder with the lowest uid (deterministic),
+    // never one whose blobs the member this is for (`exclude`) refused.
     int64_t filler = 0;
     {
         const auto online = get_online_uids();
+        const auto refused = exclude != 0 ? db_->channel_key_refused_senders(channel_id, exclude)
+                                          : std::unordered_set<int64_t>{};
         for (int64_t holder : db_->channel_key_holders(channel_id, current)) {
-            if (holder == exclude || !online.count(holder)) continue;
+            if (holder == exclude || !online.count(holder) || refused.count(holder)) continue;
             if (filler == 0 || holder < filler) filler = holder;
         }
     }
@@ -5643,9 +5722,17 @@ void SessionManager::channel_keys_changed(const std::string& channel_id, bool ro
 
 void SessionManager::channel_keys_on_join(int64_t uid) {
     if (!db_ || !authz_) return;
+    const auto rotations_due = db_->channel_key_rotations_due();
     for (const auto& ch : db_->list_channels()) {
         if (ch.type != 0 || !ch.encrypted) continue;
         if (!(authz_->channel_permissions(uid, ch.id) & chatproj::perms::kViewChannel)) continue;
+        // A rotation still owed (no holder was online at the removal, or the
+        // filler never did it) is asked for again now that a holder is here.
+        if (rotations_due.count(ch.id) &&
+            db_->channel_key_holds(ch.id, db_->channel_key_current_epoch(ch.id), uid)) {
+            channel_keys_changed(ch.id, true, 0);
+            continue;
+        }
         if (db_->channel_key_missing_epochs(ch.id, uid).empty()) continue;
         channel_keys_changed(ch.id, false, uid);
     }
@@ -5654,23 +5741,19 @@ void SessionManager::channel_keys_on_join(int64_t uid) {
 void SessionManager::channel_keys_on_removal(int64_t uid) {
     if (!db_) return;
     db_->channel_key_delete_recipient(uid);
+    const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
     for (const auto& ch : db_->channel_key_channels_with_epochs()) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            key_rotations_due_.insert(ch);
-        }
+        db_->channel_key_rotation_set(ch, now_ts);
         channel_keys_changed(ch, true, uid);
     }
 }
 
 bool SessionManager::key_rotation_due(const std::string& channel_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return key_rotations_due_.count(channel_id) > 0;
+    return db_ && db_->channel_key_rotation_due(channel_id);
 }
 
 void SessionManager::key_rotation_done(const std::string& channel_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    key_rotations_due_.erase(channel_id);
+    if (db_) db_->channel_key_rotation_clear(channel_id);
 }
 
 // ─── MLS delivery service ────────────────────────────────────────────────

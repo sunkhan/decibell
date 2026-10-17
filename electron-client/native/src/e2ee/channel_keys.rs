@@ -6,8 +6,10 @@
 //! `channel_envelope::key_blob_content`) and the community server escrows
 //! those blobs per recipient. This module:
 //!
-//!   - `ensure`: fetch our blobs, unseal them, create epoch 1 when the
-//!     channel has none yet, and fill gaps the server reports for others;
+//!   - `ensure`: fetch our blobs (paged), unseal them, drop the ones we
+//!     can't use (the server then has a holder seal them again), create
+//!     epoch 1 when the channel has none yet — or the next one when nobody
+//!     holds the current one — and fill gaps the server reports for others;
 //!   - `rotate`: mint the next epoch for the current viewers (after a
 //!     removal, when the server names us as filler);
 //!   - `seal` / `open` for message bodies;
@@ -51,8 +53,14 @@ pub struct ChannelKeyring {
     pub keys: HashMap<u32, [u8; KEY_LEN]>,
     /// Everyone who can view the channel: (name, uid).
     pub members: Vec<(String, i64)>,
-    /// Viewers the server said lack blobs: (name, uid, epochs).
+    /// Viewers the server said lack blobs: (name, uid, epochs). The first
+    /// page; `more_needs` says the filler has more to walk.
     pub needs: Vec<(String, i64, Vec<u32>)>,
+    pub more_needs: bool,
+}
+
+fn needs_of(res: &ChannelKeysRes) -> Vec<(String, i64, Vec<u32>)> {
+    res.needs.iter().map(|n| (n.username.clone(), n.uid, n.epochs.clone())).collect()
 }
 
 /// The server's viewer list with its parallel uids.
@@ -70,6 +78,14 @@ fn members_of(res: &ChannelKeysRes) -> Vec<(String, i64)> {
 }
 
 pub type KeyId = (String, String);
+/// A pending CHANNEL_KEYS_REQ: server, channel and the page's cursors
+/// (`after_epoch`, `needs_after_uid`), which the reply echoes.
+pub type FetchId = (String, String, u32, i64);
+
+/// Page walks stop here (64 × 256 blobs; 64 × ≤ 200 viewers).
+const MAX_PAGES: usize = 64;
+/// The server takes at most this many epochs per CHANNEL_KEYS_REJECT.
+const MAX_REJECT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecryptError {
@@ -113,36 +129,52 @@ async fn send_community(
 
 // ── Server round-trips ──────────────────────────────────────────────
 
-async fn fetch(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeysRes, String> {
+/// One page of CHANNEL_KEYS_RES: the first (both cursors 0: viewers, needs
+/// and our first blobs), our blobs past `after_epoch`, or the needs of
+/// viewers past `needs_after_uid`.
+async fn fetch(
+    state: &Arc<Mutex<AppState>>,
+    server_id: &str,
+    channel_id: &str,
+    after_epoch: u32,
+    needs_after_uid: i64,
+) -> Result<ChannelKeysRes, String> {
+    let id: FetchId = (server_id.to_string(), channel_id.to_string(), after_epoch, needs_after_uid);
     let rx = {
         let mut s = state.lock().await;
         let (tx, rx) = oneshot::channel();
-        s.pending_channel_keys.entry(key_id(server_id, channel_id)).or_default().push(tx);
+        s.pending_channel_keys.entry(id.clone()).or_default().push(tx);
         rx
     };
     send_community(
         state,
         server_id,
         packet::Type::ChannelKeysReq,
-        packet::Payload::ChannelKeysReq(ChannelKeysReq { channel_id: channel_id.to_string() }),
+        packet::Payload::ChannelKeysReq(ChannelKeysReq {
+            channel_id: channel_id.to_string(),
+            after_epoch,
+            needs_after_uid,
+        }),
     )
     .await?;
     match tokio::time::timeout(FETCH_TIMEOUT, rx).await {
         Ok(Ok(r)) => Ok(r),
         Ok(Err(_)) => Err("Connection closed before the key reply".into()),
         Err(_) => {
-            state.lock().await.pending_channel_keys.remove(&key_id(server_id, channel_id));
+            state.lock().await.pending_channel_keys.remove(&id);
             Err("Channel key lookup timed out".into())
         }
     }
 }
 
+/// `key_check`: the new key's check when `epoch` is a creation, else empty.
 async fn publish(
     state: &Arc<Mutex<AppState>>,
     server_id: &str,
     channel_id: &str,
     epoch: u32,
     blobs: Vec<ChannelKeyBlob>,
+    key_check: Vec<u8>,
 ) -> Result<ChannelKeysPublishRes, String> {
     let rx = {
         let mut s = state.lock().await;
@@ -158,6 +190,7 @@ async fn publish(
             channel_id: channel_id.to_string(),
             epoch,
             blobs,
+            key_check,
         }),
     )
     .await?;
@@ -173,12 +206,28 @@ async fn publish(
 
 // ── Blob seal / unseal (identity envelopes) ─────────────────────────
 
+/// Why one of our blobs didn't open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlobFault {
+    /// Nothing known to be wrong with it (locked, the sender's key couldn't
+    /// be fetched, another device of ours is a key generation ahead): try
+    /// again on the next fetch.
+    Retry,
+    /// Sealed to a generation of our key older than our current one (we
+    /// reset): useless to us and nobody's fault. Dropped, to be sealed again.
+    Stale,
+    /// Doesn't authenticate, binds another channel or epoch, or its key
+    /// fails the epoch's key check. Dropped, and its sender refused.
+    Bad,
+}
+
 /// Open one escrowed blob addressed to us. A v1 blob binds the names it
 /// was sealed under, which the server returns with it.
-async fn unseal_blob(state: &Arc<Mutex<AppState>>, channel_id: &str, b: &ChannelKeyBlob) -> Option<(u32, [u8; KEY_LEN])> {
-    let (my_uid, my_name) = {
+async fn unseal_blob(state: &Arc<Mutex<AppState>>, channel_id: &str, b: &ChannelKeyBlob) -> Result<[u8; KEY_LEN], BlobFault> {
+    let (my_uid, my_name, my_kid) = {
         let s = state.lock().await;
-        (s.uid, s.username.clone()?)
+        let kid = s.e2ee.store.as_ref().and_then(|st| st.current()).map(|k| k.key_id).unwrap_or(0);
+        (s.uid, s.username.clone().ok_or(BlobFault::Retry)?, kid)
     };
     let parties = envelope::Parties {
         sender_uid: b.sender_uid,
@@ -186,8 +235,53 @@ async fn unseal_blob(state: &Arc<Mutex<AppState>>, channel_id: &str, b: &Channel
         sender_name: &b.sender,
         recipient_name: if b.recipient.is_empty() { &my_name } else { &b.recipient },
     };
-    let content = e2ee::open_inbound_raw(state, &parties, &b.blob).await.ok()?;
-    channel_envelope::parse_key_blob_content(&content, channel_id)
+    let content = match e2ee::open_inbound_raw(state, &parties, &b.blob).await {
+        Ok(c) => c,
+        Err(e2ee::DecryptError::Bad) => return Err(BlobFault::Bad),
+        Err(e2ee::DecryptError::NoKey) => {
+            // The generation of ours it names: the recipient's slot, or the
+            // sender's in one we sealed to ourselves.
+            let ours = envelope::parse_header(&b.blob)
+                .ok()
+                .map(|h| if b.sender_uid == my_uid { h.sender_key_id } else { h.recipient_key_id });
+            return Err(match ours {
+                Some(kid) if kid < my_kid => BlobFault::Stale,
+                _ => BlobFault::Retry,
+            });
+        }
+        Err(_) => return Err(BlobFault::Retry),
+    };
+    let (epoch, key) = channel_envelope::parse_key_blob_content(&content, channel_id).ok_or(BlobFault::Bad)?;
+    if epoch != b.epoch {
+        return Err(BlobFault::Bad);
+    }
+    if !b.key_check.is_empty() && b.key_check[..] != channel_envelope::key_check(channel_id, epoch, &key)[..] {
+        return Err(BlobFault::Bad);
+    }
+    Ok(key)
+}
+
+/// Tell the server our blobs for `epochs` can't be used: it drops them and
+/// asks a holder to seal again (`bad`: never their senders).
+async fn reject(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str, epochs: &[u32], bad: bool) {
+    for chunk in epochs.chunks(MAX_REJECT) {
+        let sent = send_community(
+            state,
+            server_id,
+            packet::Type::ChannelKeysReject,
+            packet::Payload::ChannelKeysReject(ChannelKeysReject {
+                channel_id: channel_id.to_string(),
+                epochs: chunk.to_vec(),
+                bad,
+            }),
+        )
+        .await;
+        let what = if bad { "bad" } else { "stale" };
+        match sent {
+            Ok(()) => log::info!("[chkeys] #{channel_id}: dropped {} {what} blob(s)", chunk.len()),
+            Err(e) => log::warn!("[chkeys] #{channel_id}: dropping {what} blobs failed: {e}"),
+        }
+    }
 }
 
 /// Seal `keys` (epoch → key) to a viewer; None when they have no identity.
@@ -213,6 +307,7 @@ async fn seal_blobs_for(
             blob: wire,
             sender_uid: 0,
             recipient_uid,
+            key_check: Vec::new(),
         });
     }
     Ok(Some(out))
@@ -237,34 +332,72 @@ pub async fn ensure(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &
     refresh(state, server_id, channel_id).await
 }
 
-/// Always talk to the server: our blobs, the current epoch, who lacks keys.
-pub async fn refresh(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
-    let res = fetch(state, server_id, channel_id).await?;
+/// Every page of our blobs plus the first of viewers and needs: opens the
+/// blobs we lack keys for and drops the ones we can't use. Also returns
+/// whether nobody holds the current epoch any more.
+async fn load(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<(ChannelKeyring, bool), String> {
+    let first = fetch(state, server_id, channel_id, 0, 0).await?;
     let mut ring = {
         let s = state.lock().await;
         s.channel_keys.get(&key_id(server_id, channel_id)).cloned().unwrap_or_default()
     };
-    ring.encrypted = res.encrypted;
-    ring.current_epoch = res.current_epoch;
-    ring.members = members_of(&res);
-    ring.needs = res.needs.iter().map(|n| (n.username.clone(), n.uid, n.epochs.clone())).collect();
-    for b in &res.blobs {
-        if ring.keys.contains_key(&b.epoch) {
-            continue;
-        }
-        match unseal_blob(state, channel_id, b).await {
-            Some((epoch, key)) if epoch == b.epoch => {
-                ring.keys.insert(epoch, key);
+    ring.encrypted = first.encrypted;
+    ring.current_epoch = first.current_epoch;
+    ring.members = members_of(&first);
+    ring.needs = needs_of(&first);
+    ring.more_needs = first.more_needs;
+    let orphaned = first.current_orphaned;
+    let (mut stale, mut bad) = (Vec::new(), Vec::new());
+    let mut page = first;
+    let mut failed = None;
+    for n in 1.. {
+        for b in &page.blobs {
+            if ring.keys.contains_key(&b.epoch) {
+                continue;
             }
-            _ => log::warn!("[chkeys] #{channel_id}: blob for epoch {} from {} did not open", b.epoch, b.sender),
+            match unseal_blob(state, channel_id, b).await {
+                Ok(key) => {
+                    ring.keys.insert(b.epoch, key);
+                }
+                Err(fault) => {
+                    log::warn!("[chkeys] #{channel_id}: blob for epoch {} from {} did not open ({fault:?})", b.epoch, b.sender);
+                    match fault {
+                        BlobFault::Stale => stale.push(b.epoch),
+                        BlobFault::Bad => bad.push(b.epoch),
+                        BlobFault::Retry => {}
+                    }
+                }
+            }
+        }
+        let after = match page.blobs.last() {
+            Some(b) if page.more_blobs && n < MAX_PAGES => b.epoch,
+            _ => break,
+        };
+        match fetch(state, server_id, channel_id, after, 0).await {
+            Ok(next) => page = next,
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
         }
     }
     state.lock().await.channel_keys.insert(key_id(server_id, channel_id), ring.clone());
+    reject(state, server_id, channel_id, &stale, false).await;
+    reject(state, server_id, channel_id, &bad, true).await;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok((ring, orphaned)),
+    }
+}
 
-    if ring.encrypted && ring.current_epoch == 0 {
-        // Nobody has minted a key for this channel yet — we do, for every
-        // viewer (ourselves included so our other devices can read).
-        return create_epoch(state, server_id, channel_id, 1, &ring.members).await;
+/// Always talk to the server: our blobs, the current epoch, who lacks keys.
+pub async fn refresh(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
+    let (ring, orphaned) = load(state, server_id, channel_id).await?;
+    if ring.encrypted && (ring.current_epoch == 0 || orphaned) {
+        // Nobody has minted a key for this channel yet, or nobody holds the
+        // current one any more (so nobody can share it) — we mint the next,
+        // for every viewer (ourselves included so our other devices can read).
+        return create_epoch(state, server_id, channel_id, ring.current_epoch + 1, &ring.members).await;
     }
     if ring.encrypted && !ring.needs.is_empty() && ring.keys.contains_key(&ring.current_epoch) {
         let st = state.clone();
@@ -305,7 +438,8 @@ async fn create_epoch(
     if blobs.is_empty() {
         return Err("Nobody in this channel has encryption keys yet.".into());
     }
-    match publish(state, server_id, channel_id, epoch, blobs).await {
+    let check = channel_envelope::key_check(channel_id, epoch, &key).to_vec();
+    match publish(state, server_id, channel_id, epoch, blobs, check).await {
         Ok(r) if r.success => {
             let mut s = state.lock().await;
             let ring = s.channel_keys.entry(key_id(server_id, channel_id)).or_default();
@@ -325,66 +459,70 @@ async fn create_epoch(
 
 /// `refresh` without the bootstrap branch (used after losing a race).
 async fn refresh_no_create(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<ChannelKeyring, String> {
-    let res = fetch(state, server_id, channel_id).await?;
-    let mut ring = {
-        let s = state.lock().await;
-        s.channel_keys.get(&key_id(server_id, channel_id)).cloned().unwrap_or_default()
-    };
-    ring.encrypted = res.encrypted;
-    ring.current_epoch = res.current_epoch;
-    ring.members = members_of(&res);
-    for b in &res.blobs {
-        if ring.keys.contains_key(&b.epoch) {
-            continue;
-        }
-        if let Some((epoch, key)) = unseal_blob(state, channel_id, b).await {
-            if epoch == b.epoch {
-                ring.keys.insert(epoch, key);
-            }
-        }
-    }
-    state.lock().await.channel_keys.insert(key_id(server_id, channel_id), ring.clone());
-    Ok(ring)
+    load(state, server_id, channel_id).await.map(|(ring, _)| ring)
 }
 
-/// Seal every epoch key we hold for each viewer the server says lacks it.
+/// Seal every epoch key we hold for each viewer the server says lacks it,
+/// walking the needs pages.
 pub async fn fill_gaps(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<(), String> {
     let ring = {
         let s = state.lock().await;
         s.channel_keys.get(&key_id(server_id, channel_id)).cloned().unwrap_or_default()
     };
+    let (mut needs, mut more) = (ring.needs.clone(), ring.more_needs);
+    for n in 1.. {
+        fill_page(state, server_id, channel_id, &ring.keys, &needs).await?;
+        let after = match needs.last() {
+            Some((_, uid, _)) if more && n < MAX_PAGES => *uid,
+            _ => break,
+        };
+        let page = fetch(state, server_id, channel_id, 0, after).await?;
+        needs = needs_of(&page);
+        more = page.more_needs;
+    }
+    let mut s = state.lock().await;
+    if let Some(r) = s.channel_keys.get_mut(&key_id(server_id, channel_id)) {
+        r.needs.clear();
+    }
+    Ok(())
+}
+
+async fn fill_page(
+    state: &Arc<Mutex<AppState>>,
+    server_id: &str,
+    channel_id: &str,
+    keys: &HashMap<u32, [u8; KEY_LEN]>,
+    needs: &[(String, i64, Vec<u32>)],
+) -> Result<(), String> {
     let mut by_epoch: HashMap<u32, Vec<ChannelKeyBlob>> = HashMap::new();
-    let mut fetched = 0usize;
-    for (user, uid, epochs) in &ring.needs {
-        let have: Vec<(u32, [u8; KEY_LEN])> =
-            epochs.iter().filter_map(|e| ring.keys.get(e).map(|k| (*e, *k))).collect();
+    for (user, uid, epochs) in needs {
+        let have: Vec<(u32, [u8; KEY_LEN])> = epochs.iter().filter_map(|e| keys.get(e).map(|k| (*e, *k))).collect();
         if have.is_empty() {
             continue;
         }
-        match seal_blobs_for(state, channel_id, (user, *uid), &have).await? {
-            Some(blobs) => {
+        // They may have dropped a blob sealed to keys they've replaced
+        // since: seal to the ones central has now.
+        let lookup = e2ee::recheck_current(state, *uid).await;
+        match seal_blobs_for(state, channel_id, (user, *uid), &have).await {
+            Ok(Some(blobs)) => {
                 for b in blobs {
                     by_epoch.entry(b.epoch).or_default().push(b);
                 }
             }
-            None => log::info!("[chkeys] #{channel_id}: {user} has no encryption keys; can't fill"),
+            Ok(None) => log::info!("[chkeys] #{channel_id}: {user} has no encryption keys; can't fill"),
+            Err(e) => log::warn!("[chkeys] #{channel_id}: sealing for {user} failed: {e}"),
         }
-        fetched += 1;
-        if fetched % 4 == 0 {
+        if lookup {
             tokio::time::sleep(FILL_PACE).await;
         }
     }
     for (epoch, blobs) in by_epoch {
         for chunk in blobs.chunks(400) {
-            let r = publish(state, server_id, channel_id, epoch, chunk.to_vec()).await?;
+            let r = publish(state, server_id, channel_id, epoch, chunk.to_vec(), Vec::new()).await?;
             if !r.success {
                 log::warn!("[chkeys] #{channel_id}: fill for epoch {epoch} refused: {}", r.message);
             }
         }
-    }
-    let mut s = state.lock().await;
-    if let Some(r) = s.channel_keys.get_mut(&key_id(server_id, channel_id)) {
-        r.needs.clear();
     }
     Ok(())
 }
@@ -401,7 +539,7 @@ pub async fn rotate(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &
 /// Forget everything cached for a community (disconnect / logout).
 pub fn forget_server(s: &mut AppState, server_id: &str) {
     s.channel_keys.retain(|(sid, _), _| sid != server_id);
-    s.pending_channel_keys.retain(|(sid, _), _| sid != server_id);
+    s.pending_channel_keys.retain(|(sid, ..), _| sid != server_id);
     s.pending_channel_keys_publish.retain(|(sid, _), _| sid != server_id);
 }
 
@@ -556,7 +694,8 @@ pub async fn open_message(
 // ── Router hooks ────────────────────────────────────────────────────
 
 pub async fn on_keys_res(state: &Arc<Mutex<AppState>>, server_id: &str, res: ChannelKeysRes) {
-    let waiters = state.lock().await.pending_channel_keys.remove(&key_id(server_id, &res.channel_id));
+    let id: FetchId = (server_id.to_string(), res.channel_id.clone(), res.after_epoch, res.needs_after_uid);
+    let waiters = state.lock().await.pending_channel_keys.remove(&id);
     if let Some(ws) = waiters {
         for w in ws {
             let _ = w.send(res.clone());
@@ -836,4 +975,102 @@ async fn handle_edited(state: &Arc<Mutex<AppState>>, server_id: &str, b: Channel
 #[allow(dead_code)]
 pub fn known_channels(s: &AppState) -> HashSet<KeyId> {
     s.channel_keys.keys().cloned().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Review S14: which blobs a member drops, and which of those refuse
+    //! their sender. Peer keys come from the pin, so nothing touches the
+    //! network.
+    use super::*;
+    use crate::e2ee::identity::IdentityKeys;
+    use crate::e2ee::keystore::{KeyStore, PeerRecord};
+
+    const ME: i64 = 10;
+    const ALICE: i64 = 20;
+    const CH: &str = "sealed-room";
+
+    fn identity(key_id: u32) -> IdentityKeys {
+        let mut k = IdentityKeys::generate(1).unwrap();
+        k.key_id = key_id;
+        k
+    }
+
+    fn priv32(k: &IdentityKeys) -> [u8; KEY_LEN] {
+        k.dh_priv.as_slice().try_into().unwrap()
+    }
+
+    /// Me at key generation 5, Alice (generation 4) pinned.
+    fn session(me: &IdentityKeys, alice: &IdentityKeys) -> Arc<Mutex<AppState>> {
+        let mut s = AppState::default();
+        s.uid = ME;
+        s.username = Some("me".into());
+        s.e2ee.status = Status::Ready;
+        let mut store = KeyStore::new(me.key_id, vec![me.clone()]);
+        store.peers.insert(
+            ALICE,
+            PeerRecord {
+                sign_pub: alice.sign_public().unwrap().to_vec(),
+                key_id: alice.key_id,
+                dh_pub: alice.dh_public().unwrap().to_vec(),
+                ..Default::default()
+            },
+        );
+        s.e2ee.store = Some(store);
+        Arc::new(Mutex::new(s))
+    }
+
+    /// Alice's blob for `epoch`, sealed to my generation `my_kid`.
+    fn blob(alice: &IdentityKeys, me: &IdentityKeys, my_kid: u32, epoch: u32, content: &[u8], key_check: Vec<u8>) -> ChannelKeyBlob {
+        let wire = envelope::seal_bytes(&priv32(alice), ALICE, alice.key_id, &me.dh_public().unwrap(), ME, my_kid, content).unwrap();
+        ChannelKeyBlob {
+            epoch,
+            sender: "alice".into(),
+            recipient: String::new(),
+            blob: wire,
+            sender_uid: ALICE,
+            recipient_uid: ME,
+            key_check,
+        }
+    }
+
+    #[tokio::test]
+    async fn blobs_open_or_say_why_not() {
+        let (me, alice) = (identity(5), identity(4));
+        let state = session(&me, &alice);
+        let key = [7u8; KEY_LEN];
+        let check = |epoch, key: &[u8; KEY_LEN]| channel_envelope::key_check(CH, epoch, key).to_vec();
+        let content = |epoch, key: &[u8; KEY_LEN], ch: &str| channel_envelope::key_blob_content(ch, epoch, key);
+
+        let good = blob(&alice, &me, 5, 2, &content(2, &key, CH), check(2, &key));
+        assert_eq!(unseal_blob(&state, CH, &good).await, Ok(key));
+        // An epoch from before key checks existed opens on the envelope alone.
+        let legacy = blob(&alice, &me, 5, 2, &content(2, &key, CH), Vec::new());
+        assert_eq!(unseal_blob(&state, CH, &legacy).await, Ok(key));
+
+        // Wrong: a key that isn't the epoch's, another epoch or channel
+        // inside, or an envelope that doesn't authenticate.
+        let wrong_key = blob(&alice, &me, 5, 2, &content(2, &[8u8; KEY_LEN], CH), check(2, &key));
+        assert_eq!(unseal_blob(&state, CH, &wrong_key).await, Err(BlobFault::Bad));
+        let wrong_epoch = blob(&alice, &me, 5, 2, &content(3, &key, CH), check(2, &key));
+        assert_eq!(unseal_blob(&state, CH, &wrong_epoch).await, Err(BlobFault::Bad));
+        let wrong_channel = blob(&alice, &me, 5, 2, &content(2, &key, "other"), check(2, &key));
+        assert_eq!(unseal_blob(&state, CH, &wrong_channel).await, Err(BlobFault::Bad));
+        let mut tampered = good.clone();
+        let last = tampered.blob.len() - 1;
+        tampered.blob[last] ^= 1;
+        assert_eq!(unseal_blob(&state, CH, &tampered).await, Err(BlobFault::Bad));
+        let garbage = ChannelKeyBlob { blob: b"GARBAGE".to_vec(), ..good.clone() };
+        assert_eq!(unseal_blob(&state, CH, &garbage).await, Err(BlobFault::Bad));
+
+        // Sealed to a generation of mine I replaced: stale, nobody's fault.
+        let old = blob(&alice, &me, 3, 2, &content(2, &key, CH), check(2, &key));
+        assert_eq!(unseal_blob(&state, CH, &old).await, Err(BlobFault::Stale));
+        // To one newer than this device holds (another device reset): retry.
+        let newer = blob(&alice, &me, 9, 2, &content(2, &key, CH), check(2, &key));
+        assert_eq!(unseal_blob(&state, CH, &newer).await, Err(BlobFault::Retry));
+        // Locked: nothing to say about the blob.
+        state.lock().await.e2ee.status = Status::Locked;
+        assert_eq!(unseal_blob(&state, CH, &good).await, Err(BlobFault::Retry));
+    }
 }
