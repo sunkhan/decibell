@@ -1244,6 +1244,168 @@ def test_dm_conversation_pages():
     drop_users(peers)
 
 
+def test_friend_list_bounds():
+    print("friend list bounds (review A1)")
+    peers = seed_users("frpeer", 5200)
+    register("frme")
+    me, ua = uid_of("frme"), uid_of("alice")
+    # 5200 strangers' requests waiting (more than one list holds), and alice
+    # as an accepted friend.
+    sql("INSERT INTO friendships (uid1, uid2, status, action_uid) "
+        "SELECT LEAST(uid, %s::bigint), GREATEST(uid, %s::bigint), 'PENDING', uid FROM users WHERE uid = ANY(%s)",
+        me, me, peers)
+    sql("INSERT INTO friendships (uid1, uid2, status, action_uid) VALUES (%s, %s, 'ACCEPTED', %s)",
+        min(me, ua), max(me, ua), ua)
+    v = User("frme")
+    fl = v.friends()
+    size = v.sizes.get(pb.Packet.FRIEND_LIST_RES, 0)
+    check("a friend list holds at most 5000 rows", fl is not None and len(fl) <= 5000 and size <= CLIENT_FRAME,
+          fl and (len(fl), size))
+    check("... accepted friends first", fl is not None and "alice" in fl
+          and fl["alice"].status in (pb.FriendInfo.ONLINE, pb.FriendInfo.OFFLINE))
+    c = User("carol")
+    r = c.friend(pb.ADD, "frme")
+    check("a request past 1000 waiting is refused", r is not None and not r.success
+          and "can't take more friend requests" in r.message, r and r.message)
+    check("... and stores nothing", not sql("SELECT 1 FROM friendships WHERE uid1 = %s AND uid2 = %s",
+                                             min(me, uid_of("carol")), max(me, uid_of("carol"))))
+    v.close(); c.close()
+    drop_users(peers)
+    sql("DELETE FROM friendships WHERE uid1 = %s OR uid2 = %s", me, me)
+
+
+def test_community_strings():
+    print("community names, descriptions, memberships and pictures (review A1)")
+    # The heartbeat clamps what a community reports, as the community does.
+    c = community_send(pb.Packet.SERVER_HEARTBEAT, server_heartbeat=pb.ServerHeartbeat(
+        name="N" * 100, description="é" * 100000, host_ip="10.0.9.1", port=9100, member_count=1,
+        public_listing=True))
+    r = c.wait(pb.Packet.SERVER_HEARTBEAT_RES)
+    c.close()
+    sid = r.server_heartbeat_res.server_id if r else 0
+    row = sql("SELECT octet_length(name), octet_length(description) FROM community_servers WHERE id = %s", sid)
+    check("a heartbeat's long name and description are clamped, not refused",
+          sid > 0 and row and row[0][0] == 64 and 0 < row[0][1] <= 512, row)
+    # A description stored before the clamp reaches nobody whole.
+    sql("UPDATE community_servers SET description = repeat('d', 1000000) WHERE id = %s", sid)
+    ua = uid_of("alice")
+    sql("INSERT INTO community_memberships (uid, server_id, joined_at) VALUES (%s, %s, 1)", ua, sid)
+    a = User("alice")
+    mine = [m for m in a.login.memberships if m.id == sid] if a.ok else []
+    check("... not in a login's memberships", len(mine) == 1 and len(mine[0].description) <= 512
+          and a.sizes.get(pb.Packet.LOGIN_RES, 0) <= CLIENT_FRAME)
+    a.send(pb.Packet.SERVER_LIST_REQ, server_list_req=pb.ServerListRequest())
+    r = a.wait(pb.Packet.SERVER_LIST_RES)
+    listed = [s for s in r.server_list_res.servers if s.id == sid] if r else []
+    check("... nor in the directory", len(listed) == 1 and len(listed[0].description) == 512)
+    c = community_send(pb.Packet.INVITE_REGISTER_REQ, invite_register_req=pb.InviteRegisterRequest(
+        code="bigdesc1", host="10.0.9.1", port=9100))
+    time.sleep(0.3); c.close()
+    a.send(pb.Packet.INVITE_RESOLVE_REQ, invite_resolve_req=pb.InviteResolveRequest(code="bigdesc1"))
+    r = a.wait(pb.Packet.INVITE_RESOLVE_RES)
+    check("... nor in an invite preview", r is not None and r.invite_resolve_res.success
+          and r.invite_resolve_res.server_id == sid and len(r.invite_resolve_res.server_description) == 512)
+    a.close()
+    # A login lists at most 200 memberships, the oldest.
+    sql("INSERT INTO community_servers (name, description, host_ip, port, member_count) "
+        "SELECT 'mcap' || g, 'd', '10.1.0.' || g, 9000 + g, 1 FROM generate_series(1, 250) g")
+    sql("INSERT INTO community_memberships (uid, server_id, joined_at) "
+        "SELECT %s::bigint, id, 2000000000 + id FROM community_servers WHERE name LIKE 'mcap%%'", ua)
+    want = [r[0] for r in sql("SELECT server_id FROM community_memberships cm JOIN community_servers cs "
+                              "ON cs.id = cm.server_id WHERE cm.uid = %s ORDER BY cm.joined_at, cm.server_id LIMIT 200",
+                              ua)]
+    a = User("alice")
+    got = [m.id for m in a.login.memberships] if a.ok else []
+    check("a login lists at most 200 memberships, the oldest", got == want and len(got) == 200, len(got))
+    a.close()
+    sql("DELETE FROM community_memberships WHERE server_id IN (SELECT id FROM community_servers WHERE name LIKE 'mcap%%') "
+        "OR server_id = %s", sid)
+    sql("DELETE FROM community_servers WHERE name LIKE 'mcap%%'")
+    # Server pictures: over the community's 1 MiB cap is dropped, and one
+    # stored before central checked is served as none.
+    small = b"\xff\xd8" + b"p" * 1000
+    c = community_send(pb.Packet.SYNC_SERVER_PICTURE_REQ, sync_server_picture_req=pb.SyncServerPictureReq(
+        host="10.0.9.1", port=9100, data=small, version="a" * 64, server_id=sid))
+    time.sleep(0.3); c.close()
+    c = community_send(pb.Packet.SYNC_SERVER_PICTURE_REQ, sync_server_picture_req=pb.SyncServerPictureReq(
+        host="10.0.9.1", port=9100, data=b"\xff\xd8" + b"q" * (1200 * 1024), version="b" * 64, server_id=sid))
+    time.sleep(0.3); c.close()
+    a = User("alice")
+    a.send(pb.Packet.FETCH_SERVER_PICTURE_REQ, fetch_server_picture_req=pb.FetchServerPictureReq(server_id=sid))
+    r = a.wait(pb.Packet.FETCH_SERVER_PICTURE_RES)
+    check("a 1.2 MB server picture is refused; the last one stays",
+          r is not None and r.fetch_server_picture_res.data == small and r.fetch_server_picture_res.version == "a" * 64)
+    sql("UPDATE community_servers SET picture = %s, picture_version = %s WHERE id = %s",
+        b"\xff\xd8" + b"r" * (1536 * 1024), "c" * 64, sid)
+    a.send(pb.Packet.FETCH_SERVER_PICTURE_REQ, fetch_server_picture_req=pb.FetchServerPictureReq(server_id=sid))
+    r = a.wait(pb.Packet.FETCH_SERVER_PICTURE_RES)
+    check("... and a stored 1.5 MB one is served as none",
+          r is not None and r.fetch_server_picture_res.data == b"" and r.fetch_server_picture_res.version == "")
+    a.close()
+    sql("DELETE FROM community_invites WHERE code = 'bigdesc1'")
+    sql("DELETE FROM community_servers WHERE id = %s", sid)
+
+
+def test_presence_parts():
+    print("presence answers in parts (review A1)")
+    import resource
+    from concurrent.futures import ThreadPoolExecutor
+    from cryptography.hazmat.primitives import serialization
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft != resource.RLIM_INFINITY and soft < 8192:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(8192, hard) if hard != resource.RLIM_INFINITY else 8192, hard))
+    n = 3000
+    # Presence entries as large as they get: a 32-character name and a
+    # 128-character status of 4-byte characters, a 32-byte emoji, an avatar.
+    # 3000 of them come to ~2.2 MB.
+    sql("INSERT INTO users (username, email, password_hash, status_text, status_emoji, avatar_version) "
+        "SELECT %s::text || lpad(g::text, 6, '0'), 'presence-part-' || g || '@example.com', 'x', "
+        "  %s::text, %s::text, %s::text "
+        "FROM generate_series(1, %s) g",
+        "𝐀" * 26, "𝐀" * 128, "😀" * 8, "f" * 64, n)
+    uids = [r[0] for r in sql("SELECT uid FROM users WHERE email LIKE 'presence-part-%%' ORDER BY uid")]
+    with open(os.path.join(RUN, "jwt_ed25519.pem"), "rb") as f:
+        key = serialization.load_pem_private_key(f.read(), password=None)
+    head = b64url(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
+
+    def resume(uid):
+        now = int(time.time())
+        body = b64url(json.dumps({"iss": "decibell_central_auth", "aud": "decibell_central_resume",
+                                  "uid": uid, "iat": now, "exp": now + 3600}).encode())
+        signing_input = f"{head}.{body}"
+        return f"{signing_input}.{b64url(key.sign(signing_input.encode()))}"
+
+    jobs = [(u, resume(u), next_source()) for u in uids]
+    with ThreadPoolExecutor(32) as ex:
+        sessions = list(ex.map(lambda j: User("", resume=j[1], src=j[2]), jobs))
+    signed_in = sum(s.ok for s in sessions)
+    check(f"{n} accounts signed in", signed_in == n, signed_in)
+    w = User("alice")
+    w.clear()
+    w.send(pb.Packet.PRESENCE_SUBSCRIBE, presence_subscribe=pb.PresenceSubscribe(uids=uids))
+    parts, covered, users, consistent = [], set(), 0, True
+    end = time.time() + 60
+    while len(covered) < n and time.time() < end:
+        p = w.wait(pb.Packet.PRESENCE_UPDATE, timeout=max(0.1, end - time.time()))
+        if p is None:
+            break
+        parts.append(w.sizes.get(pb.Packet.PRESENCE_UPDATE, 0))
+        u = p.presence_update
+        part = set(u.covered_uids)
+        covered |= part
+        users += len(u.users)
+        consistent = consistent and all(x.uid in part for x in u.users)
+    check(f"{n} big presence entries come in parts ({len(parts)}), each under the client's frame cap",
+          len(parts) >= 2 and max(parts) <= CLIENT_FRAME, parts)
+    check("... which together cover every account, each part whole", covered == set(uids) and users == n
+          and consistent, (len(covered), users, consistent))
+    w.close()
+    for s in sessions:
+        s.close()
+    time.sleep(0.5)
+    drop_users(uids)
+
+
 def test_abuse_limits():
     print("abuse limits")
     # Failed sign-ins per account and address: 10 from one address hold
@@ -1549,6 +1711,9 @@ def main():
         test_dm_pacing()
         test_dm_page_budget()
         test_dm_conversation_pages()
+        test_friend_list_bounds()
+        test_community_strings()
+        test_presence_parts()
         test_abuse_limits()
     finally:
         stop_server(proc)

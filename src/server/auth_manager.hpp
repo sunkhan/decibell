@@ -164,8 +164,16 @@ public:
     // Friend System. Both sides are existing accounts (the caller resolved
     // the target); returns '' on success or the message for the requester.
     std::string handleFriendAction(int64_t requester, chatproj::FriendActionType action, int64_t target);
+    /// Friend requests an account can have waiting for it: an ADD past this
+    /// is refused, so nobody can fill someone's friend list with requests.
+    static constexpr int MAX_PENDING_INCOMING = 1000;
+    /// Rows in a friend list (FRIEND_LIST_RES): accepted friends first, then
+    /// blocks, requests sent, requests received. A row is at most ~210
+    /// bytes (a 32-character name, the avatar version), so the list stays
+    /// near 1 MiB, inside the client's 2 MiB frame.
+    static constexpr int MAX_FRIEND_ROWS = 5000;
     /// The user's friendships, each with the other side's uid, current name
-    /// and avatar_version.
+    /// and avatar_version; at most MAX_FRIEND_ROWS of them.
     std::vector<chatproj::FriendInfo> getFriends(int64_t uid);
     /// True if there is a BLOCKED relationship between the two users
     /// (canonical pair, either direction). Used to reject DMs to/from a
@@ -411,9 +419,14 @@ public:
     /// cleanup (JWT auth).
     void revokeMembership(int64_t uid, int64_t server_id);
 
-    /// Returns every CommunityServerInfo the user is a member of.
-    /// Orphan rows (server_id no longer in community_servers) filtered
-    /// out via the JOIN, so the client never sees phantom tiles.
+    /// Memberships a login lists (LOGIN_RES): the account's oldest
+    /// MAX_LOGIN_MEMBERSHIPS. One entry is at most ~1 KiB (a 512-byte
+    /// description), so the list stays near 200 KiB.
+    static constexpr int MAX_LOGIN_MEMBERSHIPS = 200;
+    /// Returns the CommunityServerInfo of the user's memberships, oldest
+    /// first, at most MAX_LOGIN_MEMBERSHIPS. Orphan rows (server_id no longer
+    /// in community_servers) filtered out via the JOIN, so the client never
+    /// sees phantom tiles.
     std::vector<chatproj::CommunityServerInfo> getUserCommunities(int64_t uid);
 
     // --- Custom server pictures ---
@@ -434,8 +447,11 @@ public:
                           const std::string& version);
 
     /// Returns (version, data). Both empty when the server has no
-    /// picture set, or when the id is unknown.
+    /// picture set, when the id is unknown, or when the stored picture is
+    /// over MAX_SERVER_PICTURE (stored before central checked the size).
     std::pair<std::string, std::string> getServerPicture(int server_id);
+    /// A server picture's size cap: the community's own upload cap.
+    static constexpr size_t MAX_SERVER_PICTURE = 1024 * 1024;
 
     /// Every member's uid for this server_id.
     /// Drives central's SERVER_PICTURE_CHANGED broadcast.

@@ -51,6 +51,7 @@ using boost::asio::ip::tcp;
 /// means "use the client's built-in default list".
 static std::vector<std::string> g_stun_servers;
 
+using chatproj::MAX_CLIENT_FRAME;
 using chatproj::MAX_DM_CONTENT;  // the plaintext body cap (wire_limits.hpp)
 using chatproj::MAX_RESPONSE_BYTES;
 
@@ -266,6 +267,15 @@ private:
 
     void enqueue(Frame frame) {
         if (closed_ || backlog_full_) return;
+        // The client drops its connection over any frame past its cap and
+        // asks again after reconnecting: an answer that big would lock the
+        // user out. Every response is sized to fit (wire_limits.hpp); one
+        // that doesn't is not sent, which leaves that one request unanswered
+        // rather than the connection looping.
+        if (frame->size() > 4 + MAX_CLIENT_FRAME) {
+            std::cerr << "[Session] Not sending a " << frame->size() << "-byte frame (over the client's cap).\n";
+            return;
+        }
         // Cap the per-session backlog, in frames and in bytes. A client that
         // stops reading (or reads slowly) would otherwise let fan-out pile
         // up in memory without bound — and a few large replies (an avatar is
@@ -1623,9 +1633,16 @@ private:
                 return;
             }
             auto& hb = packet.server_heartbeat();
-            std::cout << "[Server] Heartbeat from community server: " << hb.name() << " at " << hb.host_ip() << ":" << hb.port() << "\n";
+            // Clamped as the community clamps them: they reach clients in the
+            // directory, every member's LOGIN_RES and invite previews (review
+            // A1), and a name over the column's 64 characters used to fail
+            // the whole heartbeat.
+            const std::string name = chatproj::clamp_display(hb.name(), chatproj::MAX_COMMUNITY_NAME);
+            const std::string description =
+                chatproj::clamp_display(hb.description(), chatproj::MAX_COMMUNITY_DESCRIPTION);
+            std::cout << "[Server] Heartbeat from community server: " << name << " at " << hb.host_ip() << ":" << hb.port() << "\n";
             int server_id = auth_manager_.upsertCommunityServer(
-                hb.name(), hb.description(), hb.host_ip(), hb.port(), hb.member_count(),
+                name, description, hb.host_ip(), hb.port(), hb.member_count(),
                 hb.server_id(), hb.cert_fingerprint(), hb.public_listing());
 
             // Auto-rejoin: reply with the assigned server_id so the
@@ -1714,6 +1731,12 @@ private:
                 return;
             }
             const auto& req = packet.sync_server_picture_req();
+            // The community's own upload cap; a version is a sha256 hex
+            // digest. Both go out to every member (review A1).
+            if (req.data().size() > AuthManager::MAX_SERVER_PICTURE || req.version().size() > 64) {
+                std::cout << "[Server] Dropped sync_server_picture - picture or version too large.\n";
+                return;
+            }
             int server_id = auth_manager_.setServerPicture(
                 req.host(), req.port(), req.data(), req.version(), req.server_id());
 
@@ -1763,7 +1786,9 @@ private:
         else if (packet.type() == chatproj::Packet::INVITE_RESOLVE_REQ) {
             if (!authenticated_) return;
             const auto& req = packet.invite_resolve_req();
-            auto resolved = auth_manager_.resolveCommunityInvite(req.code());
+            // Codes are stored as VARCHAR(32): a longer one matches nothing.
+            auto resolved = req.code().size() <= 32 ? auth_manager_.resolveCommunityInvite(req.code())
+                                                    : std::nullopt;
 
             chatproj::Packet resp;
             resp.set_type(chatproj::Packet::INVITE_RESOLVE_RES);
@@ -2291,6 +2316,11 @@ void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid,
     // Built and posted under the lock: any push about these accounts that
     // takes the lock after this is delivered after the answer, and one
     // delivered before it is already reflected in it.
+    //
+    // In parts of at most MAX_RESPONSE_BYTES (review A1): 5,000 visible
+    // accounts with long status messages come to over 3 MB. Each part is a
+    // whole answer for the accounts it covers, and clients apply each
+    // PRESENCE_UPDATE on its own.
     std::lock_guard<std::mutex> lock(mutex_);
     auto acc = accounts_.find(uid);
     if (acc == accounts_.end() || acc->second.session != session) return;
@@ -2298,14 +2328,23 @@ void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid,
     chatproj::Packet answer;
     answer.set_type(chatproj::Packet::PRESENCE_UPDATE);
     auto* update = answer.mutable_presence_update();
+    size_t bytes = 0;
     for (int64_t target : added) {
         if (!account.watching.count(target)) continue;
+        if (bytes >= MAX_RESPONSE_BYTES) {
+            session->deliver(make_frame(answer));
+            update->Clear();
+            bytes = 0;
+        }
         update->add_covered_uids(target);
+        bytes += 10;  // at most, as a varint
         const std::string* version = nullptr;
         auto other = accounts_.find(target);
         if (other != accounts_.end()) {
             if (other->second.presence.visible()) {
-                fill_presence(update->add_users(), target, other->second.presence);
+                auto* entry = update->add_users();
+                fill_presence(entry, target, other->second.presence);
+                bytes += entry->ByteSizeLong() + 3;
                 continue;
             }
             version = &other->second.presence.avatar_version;
@@ -2316,6 +2355,7 @@ void SessionManager::watch(const std::shared_ptr<Session>& session, int64_t uid,
             auto* avatar = update->add_avatars();
             avatar->set_uid(target);
             avatar->set_version(*version);
+            bytes += avatar->ByteSizeLong() + 2;
         }
     }
     if (update->covered_uids_size() > 0) session->deliver(make_frame(answer));

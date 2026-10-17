@@ -464,7 +464,9 @@ void AuthManager::migrateToUidKeys(pqxx::work& txn) {
 
 std::string AuthManager::registerUser(const std::string& username, const std::string& email, const std::string& password) {
     if (auto bad = validateUsername(username); !bad.empty()) return bad;
-    if (email.empty() || email.find('@') == std::string::npos) return "Invalid email address.";
+    // The column holds 128 characters; a longer address would only fail the
+    // insert as "Registration failed".
+    if (email.empty() || email.size() > 128 || email.find('@') == std::string::npos) return "Invalid email address.";
     // Reject empty / trivially-weak passwords at registration. Only affects
     // new accounts — existing users (any length) can still log in.
     if (password.length() < 8) return "Password must be at least 8 characters.";
@@ -850,6 +852,16 @@ bool AuthManager::verifyPassword(const std::string& plain_password, const std::s
     return bcrypt::verify(plain_password, hash);
 }
 
+/// A community's stored description, cut to MAX_COMMUNITY_DESCRIPTION: the
+/// heartbeat clamps it now, but rows from before that could hold anything a
+/// frame could carry. Queries read it as LEFT(description, cap) (characters,
+/// so never fewer bytes than the cap), so an oversized row isn't even
+/// fetched whole.
+static std::string communityDescription(const pqxx::field& f) {
+    return f.is_null() ? std::string()
+                       : chatproj::utf8_prefix(f.as<std::string>(), chatproj::MAX_COMMUNITY_DESCRIPTION);
+}
+
 std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
     std::vector<chatproj::CommunityServerInfo> servers;
     try {
@@ -864,20 +876,21 @@ std::vector<chatproj::CommunityServerInfo> AuthManager::getCommunityServers() {
         // read. Memberships (getUserCommunities) are deliberately NOT
         // filtered — a member's server that's temporarily offline is
         // still their server.
-        pqxx::result res = txn.exec(
-            "SELECT id, name, description, host_ip, port, member_count, "
+        pqxx::result res = txn.exec_params(
+            "SELECT id, name, LEFT(description, $1), host_ip, port, member_count, "
             "       COALESCE(picture_version, ''), COALESCE(cert_fingerprint, '') "
             "FROM community_servers "
             "WHERE is_public = TRUE "
             "  AND last_heartbeat > NOW() - INTERVAL '5 minutes' "
-            "ORDER BY member_count DESC LIMIT 50"
+            "ORDER BY member_count DESC LIMIT 50",
+            static_cast<int>(chatproj::MAX_COMMUNITY_DESCRIPTION)
         );
 
         for (auto row : res) {
             chatproj::CommunityServerInfo info;
             info.set_id(row[0].as<int>());
             info.set_name(row[1].as<std::string>());
-            info.set_description(row[2].is_null() ? "" : row[2].as<std::string>());
+            info.set_description(communityDescription(row[2]));
             info.set_host_ip(row[3].as<std::string>());
             info.set_port(row[4].as<int>());
             info.set_member_count(row[5].as<int>());
@@ -992,12 +1005,12 @@ std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(c
         pqxx::result res = txn.exec_params(
             "SELECT i.host, i.port, i.expires_at, "
             "       COALESCE(cs.cert_fingerprint, ''), "
-            "       COALESCE(cs.id, 0), COALESCE(cs.name, ''), COALESCE(cs.description, ''), "
+            "       COALESCE(cs.id, 0), COALESCE(cs.name, ''), COALESCE(LEFT(cs.description, $2), ''), "
             "       COALESCE(cs.member_count, 0), COALESCE(cs.picture_version, '') "
             "FROM community_invites i "
             "LEFT JOIN community_servers cs ON cs.host_ip = i.host AND cs.port = i.port "
             "WHERE i.code = $1 LIMIT 1",
-            code
+            code, static_cast<int>(chatproj::MAX_COMMUNITY_DESCRIPTION)
         );
         if (res.empty()) return std::nullopt;
 
@@ -1029,7 +1042,7 @@ std::optional<AuthManager::ResolvedInvite> AuthManager::resolveCommunityInvite(c
         out.cert_fingerprint = res[0][3].as<std::string>();
         out.server_id = res[0][4].as<int64_t>();
         out.name = res[0][5].as<std::string>();
-        out.description = res[0][6].as<std::string>();
+        out.description = communityDescription(res[0][6]);
         out.member_count = res[0][7].as<int>();
         out.picture_version = res[0][8].as<std::string>();
         return out;
@@ -1071,6 +1084,13 @@ std::string AuthManager::handleFriendAction(int64_t requester, chatproj::FriendA
                 if (status == "ACCEPTED") return "Already friends.";
                 return "Friend request already exists.";
             }
+            // Requests waiting for the target, capped so that strangers
+            // can't grow someone's friend list without end (review A1).
+            const int64_t waiting = txn.exec_params(
+                "SELECT count(*) FROM friendships "
+                "WHERE (uid1 = $1 OR uid2 = $1) AND status = 'PENDING' AND action_uid <> $1",
+                target)[0][0].as<int64_t>();
+            if (waiting >= MAX_PENDING_INCOMING) return "This user can't take more friend requests right now.";
             txn.exec_params(
                 "INSERT INTO friendships (uid1, uid2, status, action_uid) VALUES ($1, $2, 'PENDING', $3)",
                 u1, u2, requester
@@ -1157,12 +1177,23 @@ std::vector<chatproj::FriendInfo> AuthManager::getFriends(int64_t uid) {
         // JOIN users on the other side of each pair for its current name
         // and avatar_version. Clients use the version to invalidate their
         // per-user avatar cache without an extra fetch per friend.
+        // At most MAX_FRIEND_ROWS, so the list fits one frame (review A1):
+        // accepted friends first, then the user's blocks, requests they
+        // sent, requests they received. A block placed on the user is never
+        // shown, so it takes no place either.
         pqxx::result res = txn.exec_params(
             "SELECT u.uid, u.username, f.status, f.action_uid, u.avatar_version "
             "FROM friendships f "
             "JOIN users u ON u.uid = CASE WHEN f.uid1 = $1 THEN f.uid2 ELSE f.uid1 END "
-            "WHERE f.uid1 = $1 OR f.uid2 = $1",
-            uid
+            "WHERE (f.uid1 = $1 OR f.uid2 = $1) "
+            "  AND NOT (f.status = 'BLOCKED' AND f.action_uid <> $1) "
+            "ORDER BY CASE "
+            "    WHEN f.status = 'ACCEPTED' THEN 0 "
+            "    WHEN f.status IN ('BLOCKED', 'BLOCKED_BOTH') THEN 1 "
+            "    WHEN f.action_uid = $1 THEN 2 "
+            "    ELSE 3 END, u.uid "
+            "LIMIT $2",
+            uid, MAX_FRIEND_ROWS
         );
 
         for (const auto& row : res) {
@@ -2009,15 +2040,17 @@ AuthManager::getUserCommunities(int64_t uid) {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
+        // Capped, so a LOGIN_RES always fits one frame (review A1).
         pqxx::result rs = txn.exec_params(
-            "SELECT cs.id, cs.name, cs.description, cs.host_ip, "
+            "SELECT cs.id, cs.name, LEFT(cs.description, $2), cs.host_ip, "
             "       cs.port, cs.member_count, "
             "       COALESCE(cs.picture_version, ''), COALESCE(cs.cert_fingerprint, '') "
             "FROM community_memberships cm "
             "JOIN community_servers cs ON cs.id = cm.server_id "
             "WHERE cm.uid = $1 "
-            "ORDER BY cm.joined_at",
-            uid);
+            "ORDER BY cm.joined_at, cm.server_id "
+            "LIMIT $3",
+            uid, static_cast<int>(chatproj::MAX_COMMUNITY_DESCRIPTION), MAX_LOGIN_MEMBERSHIPS);
         txn.commit();
 
         out.reserve(rs.size());
@@ -2025,7 +2058,7 @@ AuthManager::getUserCommunities(int64_t uid) {
             chatproj::CommunityServerInfo info;
             info.set_id(row[0].as<int>());
             info.set_name(row[1].as<std::string>());
-            info.set_description(row[2].is_null() ? "" : row[2].as<std::string>());
+            info.set_description(communityDescription(row[2]));
             info.set_host_ip(row[3].as<std::string>());
             info.set_port(row[4].as<int>());
             info.set_member_count(row[5].as<int>());
@@ -2113,10 +2146,13 @@ AuthManager::getServerPicture(int server_id) {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
+        // A picture over the cap (stored before central checked it) is
+        // served as none: whole, it could pass the client's frame cap.
         pqxx::result rs = txn.exec_params(
             "SELECT COALESCE(picture_version, ''), picture "
-            "FROM community_servers WHERE id = $1",
-            server_id);
+            "FROM community_servers WHERE id = $1 "
+            "  AND (picture IS NULL OR octet_length(picture) <= $2)",
+            server_id, static_cast<int64_t>(MAX_SERVER_PICTURE));
         txn.commit();
         if (rs.empty()) return {"", ""};
         std::string version = rs[0][0].as<std::string>();

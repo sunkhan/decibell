@@ -13,6 +13,8 @@
 
 namespace chatproj {
 
+/// The client's frame cap (native net/framing.rs MAX_FRAME_SIZE).
+constexpr size_t MAX_CLIENT_FRAME = 2 * 1024 * 1024;
 /// The byte budget of one list or page response: what its rows may add up
 /// to. The rest of the frame cap is slack for the envelope and per-row
 /// framing. Same figure as the community's search pages.
@@ -24,6 +26,10 @@ constexpr size_t MAX_DM_CONTENT = 64 * 1024;
 /// A DM quoted as a reply parent, or shown as a conversation's last
 /// message: one line in the client, so 512 bytes is plenty.
 constexpr size_t DM_PREVIEW_MAX_BYTES = 512;
+/// A community's name and description in the directory, at logins and in
+/// invite previews: the community's own caps (SERVER_UPDATE_REQ).
+constexpr size_t MAX_COMMUNITY_NAME = 64;
+constexpr size_t MAX_COMMUNITY_DESCRIPTION = 512;
 
 /// The longest prefix of `in` that fits in `max_bytes` without cutting a
 /// UTF-8 sequence in two. The client's protobuf decoder rejects a whole
@@ -43,6 +49,19 @@ inline std::string utf8_preview(const std::string& in, size_t max_bytes) {
     if (in.size() <= max_bytes) return in;
     static const std::string ellipsis = "\xE2\x80\xA6";  // U+2026
     return utf8_prefix(in, max_bytes - ellipsis.size()) + ellipsis;
+}
+
+/// A display string from a community (its name or description): ASCII
+/// control characters dropped, then cut to `max_bytes`. The community
+/// applies the same rule before it sends them (community db.hpp clamp_utf8).
+inline std::string clamp_display(const std::string& in, size_t max_bytes) {
+    std::string out;
+    out.reserve(in.size() < max_bytes ? in.size() : max_bytes);
+    for (unsigned char c : in) {
+        if (c < 0x20 || c == 0x7F) continue;
+        out.push_back(static_cast<char>(c));
+    }
+    return utf8_prefix(out, max_bytes);
 }
 
 }  // namespace chatproj
