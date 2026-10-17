@@ -9,6 +9,8 @@
 use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
+use super::udp_recv::{RecvErrors, RECV_BUF_SIZE};
+
 /// Used when central doesn't hand out a list (older central, or the
 /// operator left DECIBELL_STUN_SERVERS unset).
 pub const DEFAULT_STUN_SERVERS: &[&str] = &["stun.l.google.com:19302", "stun.cloudflare.com:3478"];
@@ -102,7 +104,11 @@ pub fn query(socket: &UdpSocket, servers: &[String], txid: &[u8; 12]) -> Option<
     let mut next_tx = 0usize;
     let old_timeout = socket.read_timeout().ok().flatten();
     let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; RECV_BUF_SIZE];
+    // A receive error ends nothing (review A2, udp_recv.rs): one stray
+    // datagram bigger than the buffer (WSAEMSGSIZE on Windows) used to
+    // abandon the whole query. Only the budget ends it.
+    let mut recv_errors = RecvErrors::new("stun");
     let result = loop {
         let elapsed = start.elapsed();
         if elapsed >= QUERY_BUDGET {
@@ -118,17 +124,12 @@ pub fn query(socket: &UdpSocket, servers: &[String], txid: &[u8; 12]) -> Option<
         }
         match socket.recv_from(&mut buf) {
             Ok((n, _src)) => {
+                recv_errors.ok();
                 if let Some(addr) = parse_binding_response(&buf[..n], txid) {
                     break Some(addr);
                 }
             }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => {
-                log::warn!("[stun] recv error: {e}");
-                break None;
-            }
+            Err(e) => recv_errors.handle(&e),
         }
     };
     let _ = socket.set_read_timeout(old_timeout);
@@ -184,6 +185,24 @@ mod tests {
         assert!(parse_binding_response(RESPONSE, &other).is_none());
         assert!(!is_stun_message(&[0xE5; 32]));
         assert!(is_stun_message(RESPONSE));
+    }
+
+    #[test]
+    fn query_skips_junk_and_finds_the_answer() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let server_addr = server.local_addr().unwrap().to_string();
+        let t = std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            let (_, from) = server.recv_from(&mut buf).unwrap();
+            // Junk bigger than the old 256-byte buffer, then the answer.
+            server.send_to(&[0u8; 1400], from).unwrap();
+            server.send_to(RESPONSE, from).unwrap();
+        });
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = query(&sock, &[server_addr], &TXID);
+        t.join().unwrap();
+        assert_eq!(addr, Some("192.0.2.1:32853".parse().unwrap()));
     }
 
     #[test]

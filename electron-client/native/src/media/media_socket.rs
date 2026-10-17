@@ -56,6 +56,7 @@ use aes_gcm::{Aes256Gcm, Nonce, Tag};
 use super::packet::{
     bind_echo_for, PACKET_TOTAL_SIZE, PACKET_TYPE_BIND_CHALLENGE, PACKET_TYPE_PING, SENDER_ID_SIZE,
 };
+use super::udp_recv::RECV_BUF_SIZE;
 use super::video_packet::UDP_MAX_PAYLOAD;
 
 pub const OUTER_TYPE_SEALED: u8 = 0xE5;
@@ -79,6 +80,9 @@ const TX_COUNTER_LIMIT: u64 = 1 << 63;
 /// A learned peer address that has been silent this long is replaced by
 /// the source of the next authenticated datagram.
 const PEER_MIGRATE_SILENCE: Duration = Duration::from_secs(2);
+/// Sealed receives skip datagrams that don't open (and reflected peer PINGs)
+/// internally; after this many in a row they return to the caller.
+const MAX_SKIPPED_PER_RECV: usize = 64;
 
 /// Per-socket keying material. `tx_*` seals what we send, `rx_*` opens
 /// what the peer sends — mirrored on the other side.
@@ -359,14 +363,16 @@ impl MediaSocket {
     /// Punch phase (Sealed only): receive + open one datagram, returning
     /// the inner bytes and the observed source. Unauthenticated datagrams
     /// are skipped. No PING reflection, no peer learning — the punch loop
-    /// decides both.
+    /// decides both. After `MAX_SKIPPED_PER_RECV` datagrams in a row that
+    /// don't open, returns WouldBlock (an idle read) so a flood can't keep
+    /// the punch loop from its stop flag and deadline.
     pub fn recv_probe(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         let st = match &self.mode {
             Mode::Plain => return Err(io::Error::new(io::ErrorKind::Unsupported, "plain socket")),
             Mode::Sealed(st) => st,
         };
-        let mut outer = [0u8; MAX_OUTER];
-        loop {
+        let mut outer = [0u8; RECV_BUF_SIZE];
+        for _ in 0..MAX_SKIPPED_PER_RECV {
             let (n, src) = self.inner.recv_from(&mut outer)?;
             if let Some(len) = st.open(&mut outer[..n]) {
                 self.touch_rx();
@@ -375,14 +381,18 @@ impl MediaSocket {
                 return Ok((len, src));
             }
         }
+        Err(io::ErrorKind::WouldBlock.into())
     }
 
     /// Receive one inner datagram from the peer. In Plain mode this answers
     /// the relay's bind challenges and returns `Ok(0)` for them (never their
     /// bytes); in Sealed mode it loops
     /// past anything that fails to authenticate, reflects peer PINGs, and
-    /// learns/migrates the peer address (see module docs). Timeouts and
-    /// WouldBlock propagate exactly like `UdpSocket::recv`.
+    /// learns/migrates the peer address (see module docs), returning `Ok(0)`
+    /// after `MAX_SKIPPED_PER_RECV` datagrams in a row that it didn't surface,
+    /// so a flood can't pin a receive loop past its stop flag. Timeouts,
+    /// WouldBlock and errors propagate exactly like `UdpSocket::recv`; the
+    /// loops treat every error as transient (udp_recv.rs).
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         let st = match &self.mode {
             Mode::Plain => {
@@ -400,8 +410,8 @@ impl MediaSocket {
             }
             Mode::Sealed(st) => st,
         };
-        let mut outer = [0u8; MAX_OUTER];
-        loop {
+        let mut outer = [0u8; RECV_BUF_SIZE];
+        for _ in 0..MAX_SKIPPED_PER_RECV {
             let (n, src) = self.inner.recv_from(&mut outer)?;
             let Some(len) = st.open(&mut outer[..n]) else {
                 continue;
@@ -422,6 +432,7 @@ impl MediaSocket {
             buf[..len].copy_from_slice(&outer[OUTER_HEADER..OUTER_HEADER + len]);
             return Ok(len);
         }
+        Ok(0)
     }
 
     /// Relay path: echo a bind challenge straight back from this socket so
@@ -502,6 +513,41 @@ mod tests {
         let pkt = UdpAudioPacket::new_audio("alice", 7, b"hello opus").unwrap().to_bytes();
         a.send(&pkt).unwrap();
         let mut buf = [0u8; 1500];
+        let n = b.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], &pkt[..]);
+    }
+
+    #[test]
+    fn oversized_and_junk_datagrams_are_skipped() {
+        let (a, b) = pair();
+        let rogue = UdpSocket::bind("127.0.0.1:0").unwrap();
+        // Bigger than any sealed datagram (Windows used to fail the read on
+        // these), then the real one.
+        rogue.send_to(&[OUTER_TYPE_SEALED; 1500], b.local_addr().unwrap()).unwrap();
+        rogue.send_to(&[OUTER_TYPE_SEALED; RECV_BUF_SIZE + 500], b.local_addr().unwrap()).unwrap();
+        let pkt = UdpAudioPacket::new_audio("alice", 1, b"after the junk").unwrap().to_bytes();
+        a.send(&pkt).unwrap();
+        let mut buf = [0u8; RECV_BUF_SIZE];
+        let n = b.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], &pkt[..]);
+    }
+
+    #[test]
+    fn a_junk_flood_returns_to_the_caller() {
+        // More junk than one receive skips: `recv` hands back an empty read
+        // (so the loop can see its stop flag), `recv_probe` an idle one.
+        let (a, b) = pair();
+        let rogue = UdpSocket::bind("127.0.0.1:0").unwrap();
+        for _ in 0..MAX_SKIPPED_PER_RECV * 2 + 10 {
+            rogue.send_to(b"junk junk junk junk junk junk junk", b.local_addr().unwrap()).unwrap();
+        }
+        let pkt = UdpAudioPacket::new_audio("alice", 1, b"real").unwrap().to_bytes();
+        a.send(&pkt).unwrap();
+        let mut buf = [0u8; RECV_BUF_SIZE];
+        assert_eq!(b.recv(&mut buf).unwrap(), 0);
+        let e = b.recv_probe(&mut buf).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+        // The remaining 10 junk datagrams are skipped, then the real one.
         let n = b.recv(&mut buf).unwrap();
         assert_eq!(&buf[..n], &pkt[..]);
     }

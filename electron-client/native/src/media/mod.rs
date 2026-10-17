@@ -92,6 +92,7 @@ pub mod pipeline;
 pub mod punch;
 pub mod speaking;
 pub mod stun;
+pub mod udp_recv;
 #[cfg(test)]
 pub mod voice_sim_tests;
 pub mod video_packet;
@@ -474,9 +475,8 @@ impl VoiceEngine {
             let _ = handle.join();
         }
         // Signal the video recv thread to exit its UDP poll loop.
-        // Without this the join below would block indefinitely — the
-        // thread's only "exit" path is a non-recoverable socket error,
-        // which doesn't happen during a normal stop.
+        // Without this the join below would block indefinitely: receive
+        // errors never end the loop (review A2), only this flag does.
         self.video_recv_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.video_recv_thread.take() {
             let _ = handle.join();
@@ -704,15 +704,30 @@ fn run_video_recv_thread(
         video_packet::PACKET_TYPE_VIDEO
     };
 
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(5)));
-    let mut recv_buf = [0u8; std::mem::size_of::<UdpVideoPacket>()];
+    // Without the timeout the loop would block in recv and never see its
+    // stop flag, so it doesn't run without one.
+    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(5))) {
+        log::error!("[video-recv] set_read_timeout: {}", e);
+        let _ = event_tx.send(pipeline::VoiceEvent::Error(format!(
+            "Video receive couldn't start ({}) — screen share playback is unavailable",
+            e
+        )));
+        return;
+    }
+    // Every receive error is transient; only the stop flag ends this loop
+    // (review A2, udp_recv.rs).
+    let mut recv_buf = [0u8; udp_recv::RECV_BUF_SIZE];
+    let mut recv_errors = udp_recv::RecvErrors::new("video-recv");
 
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
         }
         match socket.recv(&mut recv_buf) {
+            // Cut short to fit the buffer: bigger than anything we send.
+            Ok(n) if udp_recv::is_oversized(n) => recv_errors.ok(),
             Ok(n) if n >= 1 => {
+                recv_errors.ok();
                 let packet_type = recv_buf[0];
 
                 if packet_type == accepted_video_type {
@@ -776,17 +791,8 @@ fn run_video_recv_thread(
                     media_ping_answered = true;
                 }
             }
-            Ok(_) => {}
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::ConnectionReset
-                    || e.raw_os_error() == Some(997)
-                    || e.raw_os_error() == Some(10054) => {}
-            Err(e) => {
-                log::warn!("[video-recv] Socket error: {}", e);
-                break;
-            }
+            Ok(_) => recv_errors.ok(),
+            Err(e) => recv_errors.handle(&e),
         }
 
         let media_ping_due = match last_media_ping {
@@ -1497,5 +1503,56 @@ mod media_key_tests {
         assert_eq!(media_uid("0"), None);
         assert_eq!(media_uid("-7"), None);
         assert_eq!(media_uid(""), None);
+    }
+}
+
+#[cfg(test)]
+mod video_recv_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// The media socket across a relay restart: its PINGs to the closed port
+    /// come back as ECONNREFUSED (Linux), which used to end the loop and
+    /// video with it. It must keep running and act on the relay's next
+    /// datagram, and only the stop flag ends it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn video_recv_survives_connection_refused() {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let relay_addr = relay.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(relay_addr).unwrap();
+        let client_addr = client.local_addr().unwrap();
+        drop(relay);
+
+        let socket = Arc::new(MediaSocket::plain(client, "7"));
+        let (event_tx, event_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (socket, stop) = (socket.clone(), stop.clone());
+            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, None))
+        };
+        for _ in 0..20 {
+            let _ = socket.send(b"\x05ping");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!handle.is_finished(), "video receive ended on ECONNREFUSED");
+
+        let relay = UdpSocket::bind(relay_addr).unwrap();
+        let pli = video_packet::UdpKeyframeRequest::new("9", "7").to_bytes();
+        relay.send_to(&pli, client_addr).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut asked = false;
+        while !asked && Instant::now() < deadline {
+            match event_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(VoiceEvent::KeyframeRequested) => asked = true,
+                Ok(VoiceEvent::Error(m)) => panic!("error event: {m}"),
+                _ => {}
+            }
+        }
+        assert!(asked, "datagram after the errors never reached the loop");
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
     }
 }

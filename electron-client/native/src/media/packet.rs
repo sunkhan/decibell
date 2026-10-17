@@ -4,8 +4,9 @@ pub const PACKET_TYPE_KEYFRAME_REQUEST: u8 = 2;
 pub const PACKET_TYPE_NACK: u8 = 3;
 pub const PACKET_TYPE_STREAM_AUDIO: u8 = 6;
 pub const PACKET_TYPE_PING: u8 = 5;
-/// Largest audio datagram (header + MAX_PAYLOAD_SIZE) — sizes the voice
-/// receive buffer.
+/// Largest audio datagram we send (header + MAX_PAYLOAD_SIZE). Receive
+/// buffers are bigger (`udp_recv::RECV_BUF_SIZE`), so a slightly larger
+/// datagram can't fail a read on Windows (review A2).
 pub const PACKET_TOTAL_SIZE: usize = AUDIO_HEADER_SIZE + MAX_PAYLOAD_SIZE;
 pub const SENDER_ID_SIZE: usize = 32;
 /// Max audio payload per datagram. Same cap as video (`video_packet.rs

@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use super::media_socket::MediaSocket;
 use super::packet::{UdpAudioPacket, PACKET_TYPE_PING, SENDER_ID_SIZE};
+use super::udp_recv::{RecvErrors, RECV_BUF_SIZE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateKind {
@@ -114,7 +115,8 @@ pub fn punch(
     let b = self_id.as_bytes();
     let n = b.len().min(SENDER_ID_SIZE);
     self_padded[..n].copy_from_slice(&b[..n]);
-    let mut buf = [0u8; 1500];
+    let mut buf = [0u8; RECV_BUF_SIZE];
+    let mut recv_errors = RecvErrors::new("punch");
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -139,6 +141,7 @@ pub fn punch(
         }
         match sock.recv_probe(&mut buf) {
             Ok((len, src)) => {
+                recv_errors.ok();
                 let inner = &buf[..len];
                 let is_ping = len > SENDER_ID_SIZE && inner[0] == PACKET_TYPE_PING;
                 let from_self = is_ping && inner[1..1 + SENDER_ID_SIZE] == self_padded;
@@ -173,11 +176,10 @@ pub fn punch(
                     }
                 }
             }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::ConnectionReset => {}
-            Err(e) => return Err(PunchError::Io(e.to_string())),
+            // A receive error ends nothing (review A2, udp_recv.rs): any
+            // host that knows our address could fail the punch with one
+            // datagram bigger than the buffer (WSAEMSGSIZE on Windows).
+            Err(e) => recv_errors.handle(&e),
         }
     }
 

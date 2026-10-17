@@ -19,9 +19,10 @@ use super::codec::{
 use super::peer::{PeerAudio, PeerOutput};
 use arc_swap::ArcSwap;
 use super::packet::{
-    UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TOTAL_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
+    UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
     PACKET_TYPE_STREAM_AUDIO,
 };
+use super::udp_recv::{is_oversized, RecvErrors, RECV_BUF_SIZE};
 use super::speaking::SpeakingDetector;
 use super::voice_gate::Gate as VoiceGate;
 use super::video_receiver::ReassembledFrame;
@@ -458,15 +459,36 @@ pub fn run_audio_pipeline(
     let voice_recv_handle = std::thread::Builder::new()
         .name("decibell-voice-recv".to_string())
         .spawn(move || {
-            voice_recv_thread(
-                recv_socket,
-                audio_pkt_tx,
-                recv_event_tx,
-                recv_drops_clone,
-                voice_recv_stop_thread,
-            );
+            // Guarded like the audio and video threads: a panic here would
+            // end incoming voice with nothing on screen.
+            let panic_tx = recv_event_tx.clone();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                voice_recv_thread(
+                    recv_socket,
+                    audio_pkt_tx,
+                    recv_event_tx,
+                    recv_drops_clone,
+                    voice_recv_stop_thread,
+                );
+            }));
+            if let Err(e) = outcome {
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| e.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown error".to_string());
+                log::error!("[voice-recv] thread panicked: {}", msg);
+                let _ = panic_tx.send(VoiceEvent::Error(format!(
+                    "Voice receive crashed ({}) — reconnect to hear others",
+                    msg
+                )));
+            }
         })
         .expect("spawn voice recv thread");
+    // Stops the recv thread however this function ends. The normal exit
+    // below sets the flag and joins; a panic unwinding the pipeline would
+    // otherwise leave the thread polling a silent socket forever.
+    let _stop_recv_on_exit = SetOnDrop(Arc::clone(&voice_recv_stop));
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -1636,6 +1658,21 @@ pub fn run_audio_pipeline(
 // Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice UDP socket
 // and forwards them to the audio processing thread. Video packets arrive on
 // a separate media socket handled by the video recv thread in mod.rs.
+//
+// Every receive error is transient (review A2, udp_recv.rs): an oversized
+// datagram on Windows or an ICMP unreachable after a relay restart used to
+// end this loop and, with it, incoming voice, while TCP and the UI stayed
+// connected. It ends on the stop flag, or when the audio thread has dropped
+// its receiver (that thread's own shutdown or crash, which it reports).
+
+/// Sets the flag when dropped, including while a panic unwinds.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 fn voice_recv_thread(
     socket: Arc<MediaSocket>,
@@ -1644,14 +1681,19 @@ fn voice_recv_thread(
     drops: Arc<std::sync::atomic::AtomicU64>,
     stop: Arc<AtomicBool>,
 ) {
-    const RECV_BUF_SIZE: usize = PACKET_TOTAL_SIZE;
-
+    // Without the timeout the loop would block in recv and never see its
+    // stop flag, so it doesn't run without one.
     if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
-        let _ = event_tx.send(VoiceEvent::Error(format!("voice recv thread: set_read_timeout: {}", e)));
+        log::error!("[voice-recv] set_read_timeout: {}", e);
+        let _ = event_tx.send(VoiceEvent::Error(format!(
+            "Voice receive couldn't start ({}) — reconnect to hear others",
+            e
+        )));
         return;
     }
 
     let mut buf = [0u8; RECV_BUF_SIZE];
+    let mut recv_errors = RecvErrors::new("voice-recv");
     let mut recv_count: u64 = 0;
     let mut recv_log_time = Instant::now();
 
@@ -1662,7 +1704,10 @@ fn voice_recv_thread(
         // The relay's bind challenges (review S11) are answered inside
         // MediaSocket::recv, which hands this loop an empty read for them.
         match socket.recv(&mut buf) {
+            // Cut short to fit the buffer: bigger than anything we send.
+            Ok(n) if is_oversized(n) => recv_errors.ok(),
             Ok(n) if n >= 1 => {
+                recv_errors.ok();
                 recv_count += 1;
                 if recv_log_time.elapsed() >= Duration::from_secs(5) {
                     log::debug!("[voice-recv] 5s stats: packets={}", recv_count);
@@ -1684,20 +1729,115 @@ fn voice_recv_thread(
                     }
                 }
             }
-            Ok(_) => {}
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::ConnectionReset
-                    || e.raw_os_error() == Some(997)
-                    || e.raw_os_error() == Some(10054)
-            => {}
-            Err(e) => {
-                log::warn!("[voice-recv] Socket error: {}", e);
-                break;
-            }
+            Ok(_) => recv_errors.ok(),
+            Err(e) => recv_errors.handle(&e),
         }
     }
 
     log::info!("[voice-recv] Exiting");
+}
+
+#[cfg(test)]
+mod recv_tests {
+    use super::*;
+    use std::net::UdpSocket;
+    use std::sync::mpsc::{channel, sync_channel};
+
+    /// A relay restart, as the voice socket sees it: our datagrams to the
+    /// closed port come back as ICMP unreachable, so the connected socket
+    /// reads ECONNREFUSED (on Linux). The loop used to end there; it must
+    /// keep running and deliver the relay's next datagram.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn voice_recv_survives_connection_refused() {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let relay_addr = relay.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(relay_addr).unwrap();
+        let client_addr = client.local_addr().unwrap();
+        drop(relay); // the relay goes away
+
+        let socket = Arc::new(MediaSocket::plain(client, "7"));
+        let (audio_tx, audio_rx) = sync_channel(16);
+        let (event_tx, event_rx) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (socket, stop) = (socket.clone(), stop.clone());
+            std::thread::spawn(move || {
+                voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop)
+            })
+        };
+
+        // Our keepalives to the dead port: each ICMP reply is one refused
+        // receive (or a refused send, whichever syscall comes first).
+        for _ in 0..20 {
+            let _ = socket.send(b"keepalive");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!handle.is_finished(), "voice receive ended on ECONNREFUSED");
+
+        // The relay is back on the same port and sends audio.
+        let relay = UdpSocket::bind(relay_addr).unwrap();
+        relay.send_to(b"\x00audio from the relay", client_addr).unwrap();
+        let got = audio_rx.recv_timeout(Duration::from_secs(2)).expect("datagram after the errors");
+        assert_eq!(got, b"\x00audio from the relay");
+
+        // An oversized datagram (cut to the buffer) is dropped; the loop
+        // goes on to the next one.
+        relay.send_to(&[0u8; RECV_BUF_SIZE + 100], client_addr).unwrap();
+        relay.send_to(b"\x00next", client_addr).unwrap();
+        let got = audio_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(got, b"\x00next");
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+        assert!(event_rx.try_recv().is_err(), "no error event for transient errors");
+    }
+
+    #[test]
+    fn voice_recv_stops_on_flag_and_when_the_audio_thread_is_gone() {
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(peer.local_addr().unwrap()).unwrap();
+        let client_addr = client.local_addr().unwrap();
+        let socket = Arc::new(MediaSocket::plain(client, "7"));
+
+        // The stop flag, on a silent socket.
+        let (audio_tx, _audio_rx) = sync_channel(16);
+        let (event_tx, _event_rx) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (socket, stop) = (socket.clone(), stop.clone());
+            std::thread::spawn(move || {
+                voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop)
+            })
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        let guard = SetOnDrop(stop);
+        drop(guard); // what an unwinding audio pipeline does
+        handle.join().unwrap();
+
+        // The audio thread's receiver dropped: the next datagram ends it.
+        let (audio_tx, audio_rx) = sync_channel(16);
+        let (event_tx, _event_rx) = channel();
+        drop(audio_rx);
+        let handle = {
+            let socket = socket.clone();
+            std::thread::spawn(move || {
+                voice_recv_thread(
+                    socket,
+                    audio_tx,
+                    event_tx,
+                    Arc::new(Default::default()),
+                    Arc::new(AtomicBool::new(false)),
+                )
+            })
+        };
+        peer.send_to(b"\x00audio", client_addr).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !handle.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(handle.is_finished());
+    }
 }
