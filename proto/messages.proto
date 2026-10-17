@@ -2649,8 +2649,11 @@ message ChannelKeysChanged {
 // The caller's own blobs for `epochs` can't be used: the server deletes them,
 // so the caller shows up in `needs` again, and asks a filler. `bad`: they
 // don't open, bind another channel or epoch, or fail the key check (rather
-// than being sealed to a key of ours we no longer have): their senders may
-// not seal to the caller in this channel again, nor fill for them.
+// than being sealed to a key of ours we no longer have): their senders are
+// refused for the caller in this channel — no blobs to them, never their
+// filler — while anyone else holds the epoch. A refused sender who is the
+// only way to the key still gets to seal it, so a client bug flagging honest
+// blobs can't lock a member out for good.
 message ChannelKeysReject {
   string channel_id = 1;
   repeated uint32 epochs = 2;

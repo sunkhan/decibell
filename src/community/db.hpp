@@ -498,6 +498,13 @@ public:
     // Members who refused `sender_uid`'s blobs as bad in the channel.
     std::unordered_set<int64_t> channel_key_refusing_recipients(const std::string& channel_id,
                                                                 int64_t sender_uid) const;
+    // Whether someone other than `recipient_uid` and the senders they refused
+    // holds `epoch`. A refusal holds only while this is true: it steers fills
+    // to other holders and never strands a member whose only way to the key
+    // is a sender they refused (a client bug flagging honest blobs would
+    // otherwise lock them out of a two-member channel for good).
+    bool channel_key_unrefused_holder_exists(const std::string& channel_id, uint32_t epoch,
+                                             int64_t recipient_uid) const;
     // A rotation owed since a removal (CHANNEL_KEYS_CHANGED{rotate}), kept
     // until a new epoch exists: stored, so neither a restart nor nobody
     // being online to act on it loses it.

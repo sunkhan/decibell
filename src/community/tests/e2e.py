@@ -2558,6 +2558,46 @@ def test_encrypted_channels():
     rhea.close()
     owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=rot))
     owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=3, pred=lambda p: p.channel_action_res.action == "delete")
+
+    # a refusal steers, it never strands: a refused sender who is the only
+    # holder may still seal to that member (an app bug flagging honest blobs
+    # must not lock them out of a two-member channel for good)
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(name="sealed-solo", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    solo = cr.channel_action_res.channel.id if cr and cr.channel_action_res.success else "sealed-solo"
+    # the refused sender has the lower uid, so preferring the other holder shows
+    (f, fc), (o, oc) = sorted([("alice", owner), ("edith", ed)], key=lambda t: uid_of(t[0]))
+    def solo_gus():
+        return sql("select blob from channel_key_blobs where channel_id=? and epoch=1 and recipient_uid=?", solo, uid_of("gus"))
+    for c in (owner, ed, gus): c.flush(0.4)
+    r = publish(fc, solo, 1, [(f, b"S1-" + f.encode()), ("gus", b"S1-GARBAGE")])
+    check("keys: one member holds the epoch, another has a bad blob", r is not None and r.channel_keys_publish_res.success)
+    for c in (owner, ed, gus): c.flush(0.3)
+    reject(gus, solo, [1], bad=True)
+    ch = changed(solo)
+    check("keys: the refused sender is still named filler when nobody else holds it",
+          ch is not None and ch.filler_uid == uid_of(f)
+          and sql("select sender_uid from channel_key_refusals where channel_id=? and recipient_uid=?", solo, uid_of("gus")) == [(uid_of(f),)])
+    nf = all_needs(fc, solo)
+    check("...still sees them as a need", nf is not None and nf.get(uid_of("gus")) == [1])
+    r = publish(fc, solo, 1, [("gus", b"S1-gus")])
+    check("...and may seal to them", r is not None and r.channel_keys_publish_res.success and solo_gus() == [(b"S1-gus",)])
+    r = publish(fc, solo, 1, [(o, b"S1-" + o.encode())])
+    check("keys: a second holder", r is not None and r.channel_keys_publish_res.success)
+    for c in (owner, ed, gus): c.flush(0.3)
+    reject(gus, solo, [1], bad=True)
+    ch = changed(solo)
+    check("keys: with another holder the refusal applies again: that one is named",
+          ch is not None and ch.filler_uid == uid_of(o))
+    nf = all_needs(fc, solo)
+    r = publish(fc, solo, 1, [("gus", b"S1-again")])
+    check("...the refused sender's blobs to them drop and they're not its need",
+          r is not None and r.channel_keys_publish_res.success and solo_gus() == []
+          and nf is not None and uid_of("gus") not in nf)
+    r = publish(oc, solo, 1, [("gus", b"S1-gus-2")])
+    check("...and the other holder fills them", r is not None and r.channel_keys_publish_res.success and solo_gus() == [(b"S1-gus-2",)])
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=solo))
+    owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=3, pred=lambda p: p.channel_action_res.action == "delete")
     # A sender renamed since sending: a v1 edit (0x02 binds the name it was
     # sealed under) is refused; a v2 edit (0x04 binds the uid) is accepted.
     ed2 = Client("edith2", uid=uid_for("edith")); check("renamed sender admitted", auth_ok(ed2)[0])

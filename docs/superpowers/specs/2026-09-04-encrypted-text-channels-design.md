@@ -73,7 +73,10 @@ blobs a newcomer could never replace, and a reply that grew past the client's
   - *bad*: it doesn't authenticate, binds another channel or epoch, or fails the key
     check. The server then records the sender (`channel_key_refusals`): their blobs to
     that member are dropped, they're never named filler on that member's behalf, and
-    that member is left out of their `needs`.
+    that member is left out of their `needs` — **while someone else holds the epoch**.
+    A refusal steers fills to other holders and never strands: when only refused
+    senders hold the epoch, they're named filler and may seal again, so a client bug
+    flagging honest blobs can't lock a member out of a two-member channel for good.
 
   A blob that doesn't open for any other reason (locked, the sender's key couldn't be
   fetched, a key generation newer than this device holds) is retried on the next fetch,

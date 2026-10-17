@@ -4165,6 +4165,22 @@ std::unordered_set<int64_t> CommunityDb::channel_key_refusing_recipients(const s
     return out;
 }
 
+bool CommunityDb::channel_key_unrefused_holder_exists(const std::string& channel_id, uint32_t epoch,
+                                                      int64_t recipient_uid) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_,
+        "SELECT 1 FROM channel_key_blobs b "
+        "WHERE b.channel_id=?1 AND b.epoch=?2 AND b.recipient_uid<>?3 AND NOT EXISTS ("
+        "  SELECT 1 FROM channel_key_refusals r "
+        "  WHERE r.channel_id=?1 AND r.recipient_uid=?3 AND r.sender_uid=b.recipient_uid) "
+        "LIMIT 1;");
+    if (!q.s) return false;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, epoch);
+    q.bind_int64(3, recipient_uid);
+    return q.step() == SQLITE_ROW;
+}
+
 void CommunityDb::channel_key_rotation_set(const std::string& channel_id, int64_t now) {
     std::lock_guard<std::mutex> lock(mutex_);
     Stmt q(db_, "INSERT OR IGNORE INTO channel_key_rotations(channel_id, due_since) VALUES(?, ?);");

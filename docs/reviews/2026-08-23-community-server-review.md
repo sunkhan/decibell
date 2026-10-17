@@ -3517,3 +3517,22 @@ before the fix the role delete and the purge also cut off the requesting owner. 
 napi build clean with `index.js` / `index.d.ts` unchanged; native `cargo test --lib` 264/0. On main with
 the native and central A fixes: community 725/0 (with the v14 → v17 migration check) in both builds, no
 sanitizer reports; central 250/0; native 282; tsc web / node 0 / 0.
+
+### Fix: a key-blob refusal steers fills, it never strands a member (2026-10-18, review S14 follow-up)
+
+S14 made a member's *bad* verdict on a key blob refuse its sender for good: no more blobs from them to that
+member in that channel, never their filler, no undo short of removal, deleting the channel or editing the
+database. Against a holder escrowing garbage that's right, but a client bug that flags honest blobs as bad
+(say a change to the key-check formula) would leave the member unable to get the key from that sender even
+after the bug is fixed — and in a two-member channel, from anyone. Now a refusal holds only while someone else
+the member hasn't refused holds the epoch (`channel_key_unrefused_holder_exists`). Then the refused sender's
+blobs to them drop and the filler is someone else, as before, so a holder racing an honest filler still
+can't refill garbage. When only refused senders hold it, they're named filler, see the member as a need and
+may seal to them again. If that sender really is hostile, the member loses nothing: nobody else could have
+given them the key.
+
+Verified: community e2e 733/0 (+8: the only holder, though refused, is named filler, sees the need and may
+seal; with a second holder the refusal applies again, the other holder is named and fills, the refused
+sender's blob drops and the member leaves its needs), with the v14 → v17 migration check, and the same
+under ASan + UBSan with no reports. Against the previous server the four stranding checks fail.
+

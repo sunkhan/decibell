@@ -1691,10 +1691,13 @@ private:
                     // By uid, so the filler can walk them page by page.
                     // Placeholders (negative uids) have no identity to seal
                     // to, and the caller can't fill themselves or anyone who
-                    // refused their blobs.
+                    // refused their blobs (while someone else holds the key).
                     std::sort(viewers.begin(), viewers.end());
                     const auto held = db->channel_key_held_counts(req.channel_id());
-                    const auto refusing = db->channel_key_refusing_recipients(req.channel_id(), uid_);
+                    std::unordered_set<int64_t> refusing;
+                    for (int64_t r : db->channel_key_refusing_recipients(req.channel_id(), uid_)) {
+                        if (db->channel_key_unrefused_holder_exists(req.channel_id(), current, r)) refusing.insert(r);
+                    }
                     size_t needs = 0, epochs = 0;
                     for (const auto& [uid, name] : viewers) {
                         if (uid <= 0 || uid <= req.needs_after_uid() || uid == uid_) continue;
@@ -1772,8 +1775,12 @@ private:
             if (req.blobs_size() == 0 || req.blobs_size() > kMaxBlobsPerPublish) {
                 fail("Bad blob count.", db->channel_key_current_epoch(req.channel_id())); return;
             }
-            // Members who refused this publisher's blobs as bad get none.
-            const auto refusing = db->channel_key_refusing_recipients(req.channel_id(), uid_);
+            // Members who refused this publisher's blobs as bad get none —
+            // as long as someone else holds the epoch for them to get it from.
+            std::unordered_set<int64_t> refusing;
+            for (int64_t r : db->channel_key_refusing_recipients(req.channel_id(), uid_)) {
+                if (db->channel_key_unrefused_holder_exists(req.channel_id(), req.epoch(), r)) refusing.insert(r);
+            }
             std::vector<chatproj::CommunityDb::KeyBlobIn> accepted;
             accepted.reserve(req.blobs_size());
             for (const auto& b : req.blobs()) {
@@ -5840,12 +5847,17 @@ void SessionManager::channel_keys_changed(const std::string& channel_id, bool ro
     const uint32_t current = db_->channel_key_current_epoch(channel_id);
     if (current == 0) return;   // nothing to fill from yet — the first sender creates epoch 1
     // The filler: the online holder with the lowest uid (deterministic),
-    // never one whose blobs the member this is for (`exclude`) refused.
+    // never one whose blobs the member this is for (`exclude`) refused —
+    // unless only refused senders hold the epoch: a refusal steers, it never
+    // strands (their fills are dropped only while someone else holds it).
     int64_t filler = 0;
     {
         const auto online = get_online_uids();
-        const auto refused = exclude != 0 ? db_->channel_key_refused_senders(channel_id, exclude)
-                                          : std::unordered_set<int64_t>{};
+        auto refused = exclude != 0 ? db_->channel_key_refused_senders(channel_id, exclude)
+                                    : std::unordered_set<int64_t>{};
+        if (!refused.empty() && !db_->channel_key_unrefused_holder_exists(channel_id, current, exclude)) {
+            refused.clear();
+        }
         for (int64_t holder : db_->channel_key_holders(channel_id, current)) {
             if (holder == exclude || !online.count(holder) || refused.count(holder)) continue;
             if (filler == 0 || holder < filler) filler = holder;
