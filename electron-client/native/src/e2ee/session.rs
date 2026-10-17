@@ -1436,7 +1436,89 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, res: DmHistoryRes) {
     });
 }
 
+// ── The conversation list walk ──────────────────────────────────────
+
+/// How long a conversations page may take before it is asked for again,
+/// and how many times it is sent in all.
+const CONVERSATIONS_PAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const CONVERSATIONS_PAGE_SENDS: u32 = 3;
+
+/// The conversations page central owes us (review B4). Central sends the
+/// list in pages and this worker asks for each next one, so a page lost
+/// without a reconnect (the codec skips a frame over 2 MiB) stopped the
+/// walk there and the sidebar went without every older conversation.
+/// Each request is remembered until its page arrives; one still owed when
+/// the wait ends is sent again. A later request (the next page, a new
+/// sign-in's first) takes over the slot, so only the newest walk retries.
+#[derive(Default)]
+struct ConversationsWalk {
+    /// (before_id, generation) of the page we're waiting for.
+    owed: Option<(i64, u64)>,
+    generation: u64,
+}
+
+impl ConversationsWalk {
+    fn requested(&mut self, before_id: i64) -> u64 {
+        self.generation += 1;
+        self.owed = Some((before_id, self.generation));
+        self.generation
+    }
+
+    fn answered(&mut self, before_id: i64) {
+        if matches!(self.owed, Some((b, _)) if b == before_id) {
+            self.owed = None;
+        }
+    }
+
+    /// The page the request `generation` asked for, while still owed.
+    fn overdue(&self, generation: u64) -> Option<i64> {
+        match self.owed {
+            Some((b, g)) if g == generation => Some(b),
+            _ => None,
+        }
+    }
+}
+
+static CONVERSATIONS_WALK: std::sync::Mutex<ConversationsWalk> =
+    std::sync::Mutex::new(ConversationsWalk { owed: None, generation: 0 });
+
+fn conversations_walk() -> std::sync::MutexGuard<'static, ConversationsWalk> {
+    CONVERSATIONS_WALK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn conversations_req(before_id: i64) -> packet::Payload {
+    packet::Payload::DmConversationsReq(DmConversationsReq { before_id })
+}
+
+/// Ask central for the conversations page below `before_id` (0: the
+/// newest). Fails only when the request can't be sent; a page that doesn't
+/// come is asked for again in the background.
+pub async fn request_conversations_page(state: &Arc<Mutex<AppState>>, before_id: i64) -> Result<(), String> {
+    let generation = conversations_walk().requested(before_id);
+    send_central(state, packet::Type::DmConversationsReq, conversations_req(before_id)).await?;
+    tokio::spawn(watch_conversations_page(state.clone(), generation));
+    Ok(())
+}
+
+async fn watch_conversations_page(state: Arc<Mutex<AppState>>, mut generation: u64) {
+    for sent in 1..=CONVERSATIONS_PAGE_SENDS {
+        tokio::time::sleep(CONVERSATIONS_PAGE_TIMEOUT).await;
+        let Some(before_id) = conversations_walk().overdue(generation) else { return };
+        if sent == CONVERSATIONS_PAGE_SENDS {
+            log::warn!("[dm] conversations page below {before_id} never came; the list stays short until the next sign-in");
+            return;
+        }
+        log::warn!("[dm] conversations page below {before_id} not answered; asking again");
+        generation = conversations_walk().requested(before_id);
+        if let Err(e) = send_central(&state, packet::Type::DmConversationsReq, conversations_req(before_id)).await {
+            log::warn!("[dm] conversations page not requested: {e}");
+            return;
+        }
+    }
+}
+
 async fn handle_conversations(state: &Arc<Mutex<AppState>>, res: DmConversationsRes) {
+    conversations_walk().answered(res.before_id);
     let (me_uid, me_name) = me(state).await;
     // Central sends the list in pages (review A1): the next one starts
     // below this page's oldest conversation.
@@ -1478,8 +1560,7 @@ async fn handle_conversations(state: &Arc<Mutex<AppState>>, res: DmConversations
         let state = state.clone();
         // Spawned: the worker doesn't wait on the central write queue.
         tokio::spawn(async move {
-            let payload = packet::Payload::DmConversationsReq(DmConversationsReq { before_id: next });
-            if let Err(e) = send_central(&state, packet::Type::DmConversationsReq, payload).await {
+            if let Err(e) = request_conversations_page(&state, next).await {
                 log::warn!("[dm] next conversations page not requested: {e}");
             }
         });
@@ -1825,5 +1906,41 @@ mod tests {
         // Locked device.
         state.lock().await.e2ee.status = Status::Locked;
         assert_eq!(open_inbound(&state, &p, &wire).await, Err(DecryptError::Locked));
+    }
+
+    #[test]
+    fn a_conversations_page_is_owed_until_it_arrives() {
+        let mut walk = ConversationsWalk::default();
+        let g = walk.requested(0);
+        assert_eq!(walk.overdue(g), Some(0), "no answer yet: asked for again");
+        walk.answered(0);
+        assert_eq!(walk.overdue(g), None, "answered: the wait ends quietly");
+    }
+
+    #[test]
+    fn only_the_answer_to_the_owed_page_settles_it() {
+        let mut walk = ConversationsWalk::default();
+        let g = walk.requested(500);
+        walk.answered(0); // a reply to an earlier walk's first page
+        assert_eq!(walk.overdue(g), Some(500));
+        walk.answered(500);
+        assert_eq!(walk.overdue(g), None);
+    }
+
+    #[test]
+    fn a_newer_request_takes_over_the_retries() {
+        let mut walk = ConversationsWalk::default();
+        let first = walk.requested(0);
+        // The first page came and the walk moved on; or a new sign-in
+        // started over. Either way the earlier wait stands down.
+        let next = walk.requested(300);
+        assert_eq!(walk.overdue(first), None);
+        assert_eq!(walk.overdue(next), Some(300));
+        // A resend is a new request for the same page.
+        let resend = walk.requested(300);
+        assert_eq!(walk.overdue(next), None);
+        assert_eq!(walk.overdue(resend), Some(300));
+        walk.answered(300);
+        assert_eq!(walk.overdue(resend), None);
     }
 }

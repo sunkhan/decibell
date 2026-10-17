@@ -15,38 +15,16 @@
 
 use crate::e2ee::session::{self as e2ee, Outbound, PLACEHOLDER};
 use crate::net::connection::build_packet;
-use crate::net::proto::{packet, DmConversationsReq, DmDeleteReq, DmEditReq, DmHistoryReq, DmMarkReadReq};
+use crate::net::proto::{packet, DmDeleteReq, DmEditReq, DmHistoryReq, DmMarkReadReq};
 use crate::state;
 
 #[napi]
 pub async fn request_dm_conversations() -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::DmConversationsReq,
-            // The newest page; the DM worker asks for the rest
-            // (e2ee/session.rs handle_conversations).
-            packet::Payload::DmConversationsReq(DmConversationsReq { before_id: 0 }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+    // The newest page; the DM worker asks for the rest, and again for any
+    // page that doesn't come (e2ee/session.rs handle_conversations).
+    e2ee::request_conversations_page(&state::shared(), 0)
         .await
-    {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
+        .map_err(napi::Error::from_reason)
 }
 
 #[napi(object)]
