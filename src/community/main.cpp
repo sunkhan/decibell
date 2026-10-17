@@ -489,6 +489,13 @@ public:
     // A member left / was kicked / banned: drop their blobs and ask the
     // filler of every encrypted channel to rotate.
     void channel_keys_on_removal(int64_t uid);
+    // A rotation is due: a member was removed since the channel's current
+    // epoch was created (what CHANNEL_KEYS_CHANGED{rotate} asks a filler
+    // for). Only then may a channel that has an epoch get a new one.
+    // Kept in memory: a restart forgets it, as it forgets the prompt.
+    bool key_rotation_due(const std::string& channel_id);
+    // A new epoch was created: whatever was due is done.
+    void key_rotation_done(const std::string& channel_id);
     std::optional<MlsGroupState> mls_group(const std::string& channel_id);
     // Register epoch 0. False when a group already exists.
     bool mls_create(const std::string& channel_id, const std::string& group_info);
@@ -747,6 +754,10 @@ private:
     std::mutex slowmode_mutex_;
     std::unordered_map<int64_t,
         std::unordered_map<std::string, std::chrono::steady_clock::time_point>> slowmode_last_;
+
+    // Channels whose key escrow owes a rotation (key_rotation_due), under
+    // mutex_. Only channels with an epoch ever get in.
+    std::unordered_set<std::string> key_rotations_due_;
 
     chatproj::CommunityDb* db_ = nullptr;
     const chatproj::Authorizer* authz_ = nullptr;
@@ -1543,8 +1554,10 @@ private:
         }
 
         // --- Encrypted text channels: key escrow (spec 2026-09-04) ---
-        // Opaque blobs sealed member→member; the server only checks VIEW
-        // on both ends, sequences epochs, and points at a filler.
+        // Opaque blobs sealed member→member; the server checks VIEW on both
+        // ends, sequences epochs (a new one only when none exists or a
+        // rotation is due), takes fills only from holders, and points at a
+        // filler.
         else if (packet.type() == chatproj::Packet::CHANNEL_KEYS_REQ) {
             auto* db = manager_.db();
             const auto& req = packet.channel_keys_req();
@@ -1605,6 +1618,10 @@ private:
             }
             auto ch = db->get_channel(req.channel_id());
             if (!ch || ch->type != 0) { fail("Channel not found.", 0); return; }
+            // Escrow is for encrypted channels only (a channel switched off
+            // back when that was possible keeps its old keys readable, but
+            // gets no new ones).
+            if (!ch->encrypted) { fail("This channel isn't encrypted.", 0); return; }
             constexpr int kMaxBlobsPerPublish = 500;
             constexpr size_t kMaxBlobBytes = 2 * 1024;
             if (req.blobs_size() == 0 || req.blobs_size() > kMaxBlobsPerPublish) {
@@ -1628,18 +1645,46 @@ private:
             }
             const int64_t now_ts = static_cast<int64_t>(std::time(nullptr));
             uint32_t current = db->channel_key_current_epoch(req.channel_id());
-            bool created = false;
-            if (req.epoch() == current + 1) {
+            if (req.epoch() == 0 || req.epoch() > current + 1) { fail("stale_epoch", current); return; }
+            const bool created = req.epoch() == current + 1;
+            if (created) {
                 if (accepted.empty()) { fail("A new epoch needs at least one blob.", current); return; }
-                if (!db->channel_key_create_epoch(req.channel_id(), req.epoch(), uid_, now_ts)) {
-                    fail("stale_epoch", db->channel_key_current_epoch(req.channel_id())); return;
+                // A new epoch is the first one, or the rotation the server
+                // asked for after a removal, by someone holding the current
+                // one (the filler is picked among them). Any viewer used to
+                // mint epochs without end, each one growing every
+                // CHANNEL_KEYS_RES for good.
+                if (current > 0 && !manager_.key_rotation_due(req.channel_id())) {
+                    fail("no_rotation_due", current); return;
                 }
-                created = true;
-                current = req.epoch();
-            } else if (req.epoch() == 0 || req.epoch() > current) {
-                fail("stale_epoch", current); return;
+                if (current > 0 && !db->channel_key_holds(req.channel_id(), current, uid_)) {
+                    fail("not_a_holder", current); return;
+                }
+            } else {
+                // Filling gaps in an existing epoch takes holding it: a blob
+                // is kept once stored, so anyone else could only escrow
+                // garbage the recipient can never have replaced.
+                if (!db->channel_key_holds(req.channel_id(), req.epoch(), uid_)) {
+                    fail("not_a_holder", current); return;
+                }
+                // A fill seals to members who lack the epoch, so it never
+                // includes the publisher (who holds it). One that does is a
+                // creation that lost the race for this epoch — its key isn't
+                // the winner's. Accepting it escrowed that second key to
+                // whoever the winner had missed, and told the loser its key
+                // was the epoch's; refusing it makes the loser re-fetch.
+                for (const auto& b : accepted) {
+                    if (b.recipient_uid == uid_) { fail("stale_epoch", current); return; }
+                }
             }
-            db->channel_key_insert_blobs(req.channel_id(), req.epoch(), uid_, username_, accepted, now_ts);
+            if (db->channel_key_publish(req.channel_id(), req.epoch(), created, uid_, username_,
+                                        accepted, now_ts) < 0) {
+                fail("stale_epoch", db->channel_key_current_epoch(req.channel_id())); return;
+            }
+            if (created) {
+                current = req.epoch();
+                manager_.key_rotation_done(req.channel_id());
+            }
             res->set_success(true);
             res->set_message("");
             res->set_current_epoch(current);
@@ -5565,8 +5610,22 @@ void SessionManager::channel_keys_on_removal(int64_t uid) {
     if (!db_) return;
     db_->channel_key_delete_recipient(uid);
     for (const auto& ch : db_->channel_key_channels_with_epochs()) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            key_rotations_due_.insert(ch);
+        }
         channel_keys_changed(ch, true, uid);
     }
+}
+
+bool SessionManager::key_rotation_due(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return key_rotations_due_.count(channel_id) > 0;
+}
+
+void SessionManager::key_rotation_done(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    key_rotations_due_.erase(channel_id);
 }
 
 // ─── MLS delivery service ────────────────────────────────────────────────

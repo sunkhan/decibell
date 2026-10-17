@@ -409,20 +409,23 @@ public:
     bool set_channel_topic(const std::string& channel_id, const std::string& topic);
     // Current epoch of a channel's key escrow; 0 = none yet.
     uint32_t channel_key_current_epoch(const std::string& channel_id) const;
-    // Create `epoch` (must be current + 1). False when the sequence is wrong.
-    bool channel_key_create_epoch(const std::string& channel_id, uint32_t epoch,
-                                  int64_t created_by_uid, int64_t now);
     // One blob to store: its recipient and the names it is sealed under.
     struct KeyBlobIn {
         int64_t recipient_uid = 0;
         std::string recipient;
         std::string blob;
     };
-    // Insert blobs that don't exist yet for (epoch, recipient); returns how many landed.
-    int channel_key_insert_blobs(const std::string& channel_id, uint32_t epoch,
-                                 int64_t sender_uid, const std::string& sender,
-                                 const std::vector<KeyBlobIn>& blobs,
-                                 int64_t now);
+    // Store one publish in a single transaction. With `create`, `epoch`
+    // must be current + 1 and is created first (by `sender_uid`); without,
+    // it must exist. Blobs that already exist for (epoch, recipient) are
+    // kept. Returns how many blobs landed, or -1 (nothing stored) when the
+    // epoch sequence is wrong or the write failed.
+    int channel_key_publish(const std::string& channel_id, uint32_t epoch, bool create,
+                            int64_t sender_uid, const std::string& sender,
+                            const std::vector<KeyBlobIn>& blobs,
+                            int64_t now);
+    // Whether `uid` holds a blob for `epoch`.
+    bool channel_key_holds(const std::string& channel_id, uint32_t epoch, int64_t uid) const;
     // Every blob sealed to `recipient_uid` for the channel (all epochs).
     std::vector<DbChannelKeyBlob> channel_key_blobs_for(const std::string& channel_id,
                                                         int64_t recipient_uid) const;

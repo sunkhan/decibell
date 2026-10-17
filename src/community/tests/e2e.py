@@ -2328,12 +2328,18 @@ def test_encrypted_channels():
     needs = {n.username: list(n.epochs) for n in k.channel_keys_res.needs} if k else {}
     check("owner gets her blob with the sealer stamped", mine == [(1, "edith", b"E1-alice")])
     check("needs lists fay for epoch 1", needs.get("fay") == [1] and "alice" not in needs)
-    # gap fill: alice seals epoch 1 for fay; a duplicate for herself is ignored, not overwritten
-    owner.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=enc, epoch=1, blobs=[
-        pb.ChannelKeyBlob(recipient="fay", recipient_uid=uid_of("fay"), blob=b"E1-fay"), pb.ChannelKeyBlob(recipient="alice", recipient_uid=uid_of("alice"), blob=b"OVERWRITE")]))
-    r = owner.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
+    def publish(c, channel, epoch, blobs):
+        c.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(channel_id=channel, epoch=epoch, blobs=[
+            pb.ChannelKeyBlob(recipient=u, recipient_uid=uid_of(u), blob=b) for u, b in blobs]))
+        return c.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=2)
+    def refused(r, message):
+        return r is not None and not r.channel_keys_publish_res.success and r.channel_keys_publish_res.message == message
+    # gap fill: alice (a holder) seals epoch 1 for fay; a second fill for fay doesn't replace it
+    r = publish(owner, enc, 1, [("fay", b"E1-fay")])
     check("gap fill accepted at the current epoch", r is not None and r.channel_keys_publish_res.success and r.channel_keys_publish_res.current_epoch == 1)
-    check("existing blob never overwritten", sql("select blob from channel_key_blobs where recipient='alice' and epoch=1") == [(b"E1-alice",)])
+    r = publish(owner, enc, 1, [("fay", b"OVERWRITE")])
+    check("existing blob never overwritten", r is not None and r.channel_keys_publish_res.success
+          and sql("select blob from channel_key_blobs where recipient='fay' and epoch=1") == [(b"E1-fay",)])
     fay.flush(0.3)
     fay.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id=enc))
     k = fay.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=2)
@@ -2345,12 +2351,42 @@ def test_encrypted_channels():
     gus = join("gus", owner)
     ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == enc)
     check("new member → CHANGED with a filler, no rotation", ch is not None and not ch.channel_keys_changed.rotate and ch.channel_keys_changed.filler in ("alice", "edith", "fay"))
-    # removal (leave) → blobs deleted + rotation requested
+    # review S14: fills come only from holders of the epoch...
+    gus.flush(0.3)
+    r = publish(gus, enc, 1, [("edith", b"GARBAGE")])
+    check("keys: a fill from a non-holder is refused", refused(r, "not_a_holder"))
+    # ...and never seal to their publisher: that's a creation that lost the race (a different key)
     for c in (owner, ed, fay): c.flush(0.3)
+    r = publish(ed, enc, 1, [("edith", b"LOSER"), ("gus", b"LOSER-gus")])
+    check("keys: a lost creation race is refused, not stored as a fill", refused(r, "stale_epoch")
+          and sql("select count(*) from channel_key_blobs where recipient_uid=?", uid_of("gus")) == [(0,)])
+    r = publish(ed, enc, 1, [("gus", b"E1-gus")])
+    check("keys: a holder fills the newcomer", r is not None and r.channel_keys_publish_res.success)
+    # a viewer can't mint epochs at will: a new one needs a rotation to be due
+    r = publish(ed, enc, 2, [("edith", b"E2-early")])
+    check("keys: no new epoch without a due rotation", refused(r, "no_rotation_due")
+          and sql("select max(epoch) from channel_key_epochs where channel_id=?", enc) == [(1,)])
+    # escrow only in encrypted channels
+    r = publish(ed, plain_id, 1, [("edith", b"P1")])
+    check("keys: refused in a plaintext channel", r is not None and not r.channel_keys_publish_res.success
+          and sql("select count(*) from channel_key_epochs where channel_id=?", plain_id) == [(0,)])
+    # removal (leave) → blobs deleted + rotation requested
+    for c in (owner, ed, fay, gus): c.flush(0.3)
     fay.send(pb.Packet.LEAVE_SERVER_REQ, leave_server_req=pb.LeaveServerRequest())
     ch = owner.wait(pb.Packet.CHANNEL_KEYS_CHANGED, timeout=3, pred=lambda p: p.channel_keys_changed.channel_id == enc and p.channel_keys_changed.rotate)
-    check("removal → CHANGED with rotate", ch is not None and ch.channel_keys_changed.filler in ("alice", "edith"))
+    check("removal → CHANGED with rotate", ch is not None and ch.channel_keys_changed.filler in ("alice", "edith", "gus"))
     check("removed member's blobs deleted", sql("select count(*) from channel_key_blobs where recipient='fay'") == [(0,)])
+    # the due rotation: only a holder of the current epoch may mint it, once, in one transaction
+    hal = join("hal", owner); hal.flush(0.3)
+    r = publish(hal, enc, 2, [("hal", b"E2-hal")])
+    check("keys: a non-holder can't rotate", refused(r, "not_a_holder"))
+    r = publish(ed, enc, 2, [("edith", b"E2-edith"), ("alice", b"E2-alice"), ("gus", b"E2-gus")])
+    check("keys: the due rotation by a holder is accepted", r is not None and r.channel_keys_publish_res.success
+          and r.channel_keys_publish_res.current_epoch == 2
+          and sql("select count(*) from channel_key_blobs where channel_id=? and epoch=2", enc) == [(3,)])
+    r = publish(ed, enc, 3, [("edith", b"E3-edith")])
+    check("keys: a rotation is spent once done", refused(r, "no_rotation_due"))
+    hal.close()
     # A sender renamed since sending: a v1 edit (0x02 binds the name it was
     # sealed under) is refused; a v2 edit (0x04 binds the uid) is accepted.
     ed2 = Client("edith2", uid=uid_for("edith")); check("renamed sender admitted", auth_ok(ed2)[0])

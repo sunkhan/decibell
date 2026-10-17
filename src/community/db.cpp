@@ -3873,40 +3873,47 @@ uint32_t CommunityDb::channel_key_current_epoch(const std::string& channel_id) c
     return static_cast<uint32_t>(q.col_int64(0));
 }
 
-bool CommunityDb::channel_key_create_epoch(const std::string& channel_id, uint32_t epoch,
-                                           int64_t created_by_uid, int64_t now) {
+int CommunityDb::channel_key_publish(const std::string& channel_id, uint32_t epoch, bool create,
+                                     int64_t sender_uid, const std::string& sender,
+                                     const std::vector<KeyBlobIn>& blobs,
+                                     int64_t now) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // One transaction: an epoch never exists without the blobs it was
+    // created with, and 500 blobs cost one commit, not 500.
+    if (!exec_sql(db_, "BEGIN IMMEDIATE;")) return -1;   // DB1
+    bool ok = true;
     uint32_t current = 0;
     {
         Stmt q(db_, "SELECT COALESCE(MAX(epoch), 0) FROM channel_key_epochs WHERE channel_id=?;");
-        if (!q.s) return false;
-        q.bind_text(1, channel_id);
-        if (q.step() == SQLITE_ROW) current = static_cast<uint32_t>(q.col_int64(0));
+        ok = q.s != nullptr;
+        if (ok) {
+            q.bind_text(1, channel_id);
+            if (q.step() == SQLITE_ROW) current = static_cast<uint32_t>(q.col_int64(0));
+        }
     }
-    if (epoch != current + 1) return false;
-    Stmt ins(db_,
-        "INSERT INTO channel_key_epochs(channel_id, epoch, created_by_uid, created_by, created_at) "
-        "VALUES(?1, ?2, ?3, COALESCE((SELECT username FROM members WHERE uid = ?3), ''), ?4);");
-    if (!ins.s) return false;
-    ins.bind_text(1, channel_id);
-    ins.bind_int64(2, epoch);
-    ins.bind_int64(3, created_by_uid);
-    ins.bind_int64(4, now);
-    return ins.step() == SQLITE_DONE;
-}
-
-int CommunityDb::channel_key_insert_blobs(const std::string& channel_id, uint32_t epoch,
-                                          int64_t sender_uid, const std::string& sender,
-                                          const std::vector<KeyBlobIn>& blobs,
-                                          int64_t now) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (ok) ok = create ? epoch == current + 1 : (epoch >= 1 && epoch <= current);
+    if (ok && create) {
+        Stmt ins(db_,
+            "INSERT INTO channel_key_epochs(channel_id, epoch, created_by_uid, created_by, created_at) "
+            "VALUES(?1, ?2, ?3, COALESCE((SELECT username FROM members WHERE uid = ?3), ''), ?4);");
+        ok = ins.s != nullptr;
+        if (ok) {
+            ins.bind_text(1, channel_id);
+            ins.bind_int64(2, epoch);
+            ins.bind_int64(3, sender_uid);
+            ins.bind_int64(4, now);
+            ok = ins.step() == SQLITE_DONE;
+        }
+    }
     int landed = 0;
-    for (const auto& b : blobs) {
+    for (size_t i = 0; ok && i < blobs.size(); ++i) {
+        const auto& b = blobs[i];
         Stmt q(db_,
             "INSERT OR IGNORE INTO channel_key_blobs"
             "(channel_id, epoch, recipient_uid, recipient, sender_uid, sender, blob, created_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?);");
-        if (!q.s) return landed;
+        ok = q.s != nullptr;
+        if (!ok) break;
         q.bind_text(1, channel_id);
         q.bind_int64(2, epoch);
         q.bind_int64(3, b.recipient_uid);
@@ -3915,9 +3922,21 @@ int CommunityDb::channel_key_insert_blobs(const std::string& channel_id, uint32_
         q.bind_text(6, sender);
         q.bind_blob_or_null(7, b.blob);
         q.bind_int64(8, now);
-        if (q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0) ++landed;
+        ok = q.step() == SQLITE_DONE;
+        if (ok && sqlite3_changes(db_) > 0) ++landed;
     }
-    return landed;
+    exec_sql(db_, ok ? "COMMIT;" : "ROLLBACK;");
+    return ok ? landed : -1;
+}
+
+bool CommunityDb::channel_key_holds(const std::string& channel_id, uint32_t epoch, int64_t uid) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "SELECT 1 FROM channel_key_blobs WHERE channel_id=? AND epoch=? AND recipient_uid=?;");
+    if (!q.s) return false;
+    q.bind_text(1, channel_id);
+    q.bind_int64(2, epoch);
+    q.bind_int64(3, uid);
+    return q.step() == SQLITE_ROW;
 }
 
 std::vector<DbChannelKeyBlob> CommunityDb::channel_key_blobs_for(const std::string& channel_id,
