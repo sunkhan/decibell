@@ -3184,3 +3184,43 @@ previews refused 127.0.0.1, `[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`, `[::7f00:1]
 `2130706433`, `localhost.` and /etc/hosts names with zero connections reaching the listener, while public
 pages, oEmbed, image probes and http→https redirects still unfurl. Needs an app restart to try live (main
 and preload changed).
+
+### Fix: community server security items — broadcast whitelist, channel ids, key escrow, connections, write queue (2026-10-17)
+
+From the pre-1.0 review (S2, S14, S15, S16, S17 community half).
+
+- **S2.** The CHANNEL_MSG broadcast was `routed = packet`: an unbounded nonce, `edited_at`, reply previews,
+  appended `reply_to_attachment_kinds` and unknown fields reached every viewer — a 2 MiB nonce plus a 64 KB
+  quote disconnected every viewer, 3×/s. The broadcast is now a fresh ChannelMessage: from the client only
+  channel, text, envelope, reply target, nonce (≤ 64 B; clients send 20–36) and upload ids; the server fills
+  the rest. Unknown / category channels, oversized and empty messages get CHANNEL_MSG_REJECTED {nonce}
+  instead of silence.
+- **S15.** `channel_permissions_unlocked_` cached a 0 for every unknown channel id a request named, and ids
+  were never length-checked (random 2 MiB ids grew it ~64 MiB/s). Unknown channels resolve against the
+  layout map and are never cached; one reflection pass per post-auth packet drops any request whose
+  `channel_id` / `category_id` / `channel_ids` exceeds 36 bytes (the 32-byte slug + "-999", the longest id the
+  server makes).
+- **S14.** Any viewer could mint epochs without limit (plaintext channels too) and pre-fill others' missing
+  epochs with permanent garbage. Now: encrypted channels only; a new epoch only when there is none, or when
+  a rotation is due (a kick / ban / leave since the current epoch, tracked in memory, as the client rotates
+  only on CHANNEL_KEYS_CHANGED{rotate}) and the publisher holds the current epoch; fills only from holders of
+  that epoch; the epoch and its blobs in one transaction. Also fixed: a "fill" sealed to its own publisher is
+  a creation that lost a race (two quick bans) — it used to be accepted, leaving the loser sending messages
+  nobody could read; now refused as `stale_epoch` and the client re-fetches. Still open (protocol work):
+  letting a recipient reject a bad blob, paging CHANNEL_KEYS_RES; a rotation is lost if no holder is online
+  at removal time.
+- **S16.** Neither listener had connection caps, RLIMIT_NOFILE stayed at the soft limit, and error paths left
+  sockets in CLOSE_WAIT until the 30–90 s deadline. New `connection_limits.hpp` (central's AbuseLimits,
+  simplified): per listener a server-wide cap from the fd limit (soft raised to hard at startup; chat ½,
+  attachments ¼ of what's left after 256 reserved; `DECIBELL_MAX_CONNECTIONS`), per address 256 open (as
+  central) and 60 + 10/s new. Every chat error path ends in `drop_connection()` (leave, close, cancel timers,
+  free the queue), every attachment one in `close_now()`.
+- **S17 (community half).** `Session::deliver` capped the backlog at 1024 frames only, so a non-reading client
+  requesting history pages could pin ~1.5 GB, and every overflowing deliver posted another disconnect. Now
+  also 16 MiB; an `overflowed_` flag posts the disconnect once, and the in-flight write keeps its own buffer.
+- The ban handler now answers after its purge (the "ban purge goes by uid" e2e check raced the reply).
+
+Verified on main with the S11 relay change: community e2e 627/0 (+40: whitelist / nonce / refusals, id caps
+and no cached misses, epoch and fill gating, the lost-race refusal, connection caps and immediate descriptor
+release, the byte-capped queue), and 627/0 under ASan + UBSan with no reports. 17 of the 31 targeted new
+checks fail against the pre-change binary.
