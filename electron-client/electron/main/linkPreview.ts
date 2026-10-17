@@ -1,6 +1,10 @@
 import { app, ipcMain, shell } from "electron";
-import * as dns from "node:dns";
+import * as http from "node:http";
+import * as https from "node:https";
 import { isIP } from "node:net";
+import type { Readable } from "node:stream";
+import * as zlib from "node:zlib";
+import { isPublicAddress, publicOnlyLookup } from "./publicNet";
 
 // Link unfurling for the message list. The renderer can't do this
 // itself — its `fetch()` is CORS-bound and the CSP's connect-src is
@@ -15,11 +19,14 @@ import { isIP } from "node:net";
 // written by other people:
 //   - http(s) only; no userinfo; redirects followed by hand (≤5 hops)
 //     and every hop re-validated;
-//   - hostnames resolved first and refused when any address is
-//     loopback / private / link-local / CGNAT / multicast (best-effort
-//     — the fetch resolves again, which a rebinding host could exploit,
-//     but nothing here carries credentials and the renderer can already
-//     `<img src>` any https host);
+//   - only public addresses (publicNet.ts: loopback, private, link-local,
+//     CGNAT, unique-local, multicast, NAT64 / 6to4 / Teredo and every
+//     IPv4-mapped spelling refused). Enforced on the address actually
+//     connected to — node's http(s) client resolves through
+//     `publicOnlyLookup` — so a rebinding name can't answer one address
+//     to a check and another to the connection; IP literals are checked
+//     before connecting. Covers the page, its redirects, og:image probes
+//     and the oEmbed endpoint alike (all go through fetchBounded);
 //   - bounded reads (a page up to its </head> or 3 MiB — YouTube puts
 //     its OG tags ~700 KB in, behind an inline script — 64 KiB of an
 //     image), an 8 s timeout per request, at most 4 fetches in flight;
@@ -153,59 +160,17 @@ async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
 
 // ── Destination guard ────────────────────────────────────────────────
 
-function isPrivateV4(ip: string): boolean {
-  const p = ip.split(".").map(Number);
-  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
-    return true;
-  }
-  const [a, b, c] = p;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 192 && b === 0 && c === 0) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    a >= 224
-  );
-}
-
-function isPrivateV6(ip: string): boolean {
-  const lower = ip.toLowerCase().split("%")[0];
-  const mapped = /^(?:0*:)*ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped) return isPrivateV4(mapped[1]);
-  if (lower === "::1" || lower === "::") return true;
-  const first = parseInt(lower.split(":")[0] || "0", 16);
-  if (Number.isNaN(first)) return true;
-  // fc00::/7 unique-local, fe80::/10 link-local, ff00::/8 multicast.
-  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00;
-}
-
-function isPrivateAddress(ip: string): boolean {
-  const v = isIP(ip);
-  if (v === 4) return isPrivateV4(ip);
-  if (v === 6) return isPrivateV6(ip);
-  return true;
-}
-
 const BLOCKED_HOST = /(^|\.)(localhost|local|internal|localdomain|home\.arpa)$/i;
 
-async function assertPublic(u: URL): Promise<void> {
+/// What can be decided from the URL alone. Names are checked again where
+/// it counts, on connect (`publicOnlyLookup`); an IP literal is never
+/// resolved, so this is its whole check.
+function assertAllowed(u: URL): void {
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("scheme");
   if (u.username || u.password) throw new Error("userinfo");
-  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const host = u.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (!host || BLOCKED_HOST.test(host)) throw new Error("host");
-  if (isIP(host)) {
-    if (isPrivateAddress(host)) throw new Error("private address");
-    return;
-  }
-  const addrs = await dns.promises.lookup(host, { all: true });
-  if (addrs.length === 0 || addrs.some((a) => isPrivateAddress(a.address))) {
-    throw new Error("resolves to a private address");
-  }
+  if (isIP(host) && !isPublicAddress(host)) throw new Error("private address");
 }
 
 // ── Bounded fetch ────────────────────────────────────────────────────
@@ -223,6 +188,68 @@ function userAgent(): string {
   return `Mozilla/5.0 (compatible; Decibell/${app.getVersion()}; +https://github.com/sunkhan/decibell)`;
 }
 
+// Our own pools, so a socket is only ever reused if it was opened
+// through publicOnlyLookup.
+const httpAgent = new http.Agent({ keepAlive: true });
+const httpsAgent = new https.Agent({ keepAlive: true });
+
+/// One GET, no redirect following; resolves once headers arrive. The
+/// whole exchange — connect, headers and body — gets TIMEOUT_MS from
+/// here (what fetch's AbortSignal.timeout gave each hop): the deadline
+/// tears down the request and the response being read. `done` disarms it.
+function get(u: URL, accept: string): Promise<{ res: http.IncomingMessage; done: () => void }> {
+  return new Promise((resolve, reject) => {
+    const secure = u.protocol === "https:";
+    let response: http.IncomingMessage | null = null;
+    const timer = setTimeout(() => {
+      const e = new Error("timeout");
+      response?.destroy(e);
+      req.destroy(e);
+    }, TIMEOUT_MS);
+    const req = (secure ? https : http).request(
+      u,
+      {
+        method: "GET",
+        agent: secure ? httpsAgent : httpAgent,
+        lookup: publicOnlyLookup,
+        headers: {
+          "User-Agent": userAgent(),
+          Accept: accept,
+          "Accept-Language": "en,*;q=0.5",
+          "Accept-Encoding": "gzip, deflate, br",
+        },
+      },
+      (res) => {
+        response = res;
+        resolve({ res, done: () => clearTimeout(timer) });
+      },
+    );
+    req.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    req.end();
+  });
+}
+
+/// The body with its Content-Encoding undone (what fetch() did for us);
+/// an unknown coding passes through as is.
+function decoded(res: http.IncomingMessage): Readable {
+  const coding = String(res.headers["content-encoding"] ?? "").trim().toLowerCase();
+  const decoder =
+    coding === "gzip" || coding === "x-gzip"
+      ? zlib.createGunzip()
+      : coding === "deflate"
+        ? zlib.createInflate()
+        : coding === "br"
+          ? zlib.createBrotliDecompress()
+          : null;
+  if (!decoder) return res;
+  res.on("error", (e) => decoder.destroy(e));
+  decoder.on("close", () => res.destroy());
+  return res.pipe(decoder);
+}
+
 async function fetchBounded(
   start: string,
   limit: number,
@@ -231,33 +258,29 @@ async function fetchBounded(
 ): Promise<Fetched | null> {
   let current = new URL(start);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertPublic(current);
-    const res = await fetch(current.href, {
-      method: "GET",
-      redirect: "manual",
-      headers: {
-        "User-Agent": userAgent(),
-        Accept: accept,
-        "Accept-Language": "en,*;q=0.5",
-      },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      await res.body?.cancel().catch(() => {});
-      if (!location) return null;
-      current = new URL(location, current);
-      continue;
+    assertAllowed(current);
+    const { res, done } = await get(current, accept);
+    try {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400) {
+        const location = res.headers.location;
+        res.destroy();
+        if (!location) return null;
+        current = new URL(location, current);
+        continue;
+      }
+      if (status < 200 || status > 299) {
+        res.destroy();
+        return null;
+      }
+      return {
+        url: current.href,
+        contentType: String(res.headers["content-type"] ?? "").toLowerCase(),
+        bytes: await readUpTo(decoded(res), limit, stopAt),
+      };
+    } finally {
+      done();
     }
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      return null;
-    }
-    return {
-      url: current.href,
-      contentType: (res.headers.get("content-type") ?? "").toLowerCase(),
-      bytes: await readUpTo(res, limit, stopAt),
-    };
   }
   return null;
 }
@@ -265,37 +288,28 @@ async function fetchBounded(
 /// Read the body up to `limit` bytes, or through the first chunk that
 /// completes `stopAt` (an ASCII marker; the previous chunk's tail is
 /// carried so a marker straddling two chunks still matches).
-async function readUpTo(res: Response, limit: number, stopAt?: string): Promise<Uint8Array> {
-  const body = res.body;
-  if (!body) return new Uint8Array(0);
-  const reader = body.getReader();
+async function readUpTo(body: Readable, limit: number, stopAt?: string): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let total = 0;
-  let truncated = false;
   let carry = "";
   const latin1 = new TextDecoder("latin1");
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
+    for await (const chunk of body) {
+      const value = chunk as Uint8Array;
+      if (!value.byteLength) continue;
       chunks.push(value);
       total += value.byteLength;
-      if (total >= limit) {
-        truncated = true;
-        break;
-      }
+      if (total >= limit) break;
       if (stopAt) {
         const text = carry + latin1.decode(value).toLowerCase();
-        if (text.includes(stopAt)) {
-          truncated = true;
-          break;
-        }
+        if (text.includes(stopAt)) break;
         carry = text.slice(-(stopAt.length - 1));
       }
     }
   } finally {
-    if (truncated) await reader.cancel().catch(() => {});
+    // Stop the download: leaving the loop early (limit / marker) or an
+    // error must not keep the socket pulling bytes nobody reads.
+    body.destroy();
   }
   const out = new Uint8Array(Math.min(total, limit));
   let off = 0;
