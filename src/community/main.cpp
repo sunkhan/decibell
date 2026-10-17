@@ -6931,7 +6931,14 @@ private:
                                           packet_type == chatproj::UdpPacketType::AUDIO_SEALED;
                     const bool is_stream_audio = packet_type == chatproj::UdpPacketType::STREAM_AUDIO ||
                                                  packet_type == chatproj::UdpPacketType::STREAM_AUDIO_SEALED;
-                    if ((is_audio || is_stream_audio) && bytes_recvd >= 1 + SID + 4) {
+                    // Never bigger than the audio struct (review A2): the
+                    // receive buffer is sized for the largest packet type
+                    // (video, 8 bytes more), and a client's voice socket
+                    // reads into an audio-sized buffer — on Windows a
+                    // larger datagram is a receive error, which stopped
+                    // incoming voice for everyone in the channel.
+                    if ((is_audio || is_stream_audio) && bytes_recvd >= 1 + SID + 4 &&
+                        bytes_recvd <= sizeof(chatproj::UdpAudioPacket)) {
 
                         std::string token_str;
                         chatproj::UdpAudioPacket* packet = reinterpret_cast<chatproj::UdpAudioPacket*>(udp_buffer_);
@@ -7077,7 +7084,8 @@ private:
 
                     // NACK: relay to the target streamer
                     if (packet_type == chatproj::UdpPacketType::NACK &&
-                        bytes_recvd >= sizeof(chatproj::UdpNackPacket) - sizeof(uint16_t) * chatproj::NACK_MAX_ENTRIES) {
+                        bytes_recvd >= sizeof(chatproj::UdpNackPacket) - sizeof(uint16_t) * chatproj::NACK_MAX_ENTRIES &&
+                        bytes_recvd <= sizeof(chatproj::UdpNackPacket)) {
                         chatproj::UdpNackPacket* packet =
                             reinterpret_cast<chatproj::UdpNackPacket*>(media_udp_buffer_);
                         // Require an authenticated requester before relaying
@@ -7107,8 +7115,13 @@ private:
                     // same 45-byte header with an opaque payload.
                     const bool is_video = packet_type == chatproj::UdpPacketType::VIDEO ||
                                           packet_type == chatproj::UdpPacketType::VIDEO_SEALED;
+                    // Each no bigger than its struct (as audio, review A2).
+                    // The buffer is the video struct's size, so only FEC
+                    // (2 bytes smaller) can come in over.
                     if ((is_video || packet_type == chatproj::UdpPacketType::FEC) &&
-                        bytes_recvd >= 1 + SID + 8) {
+                        bytes_recvd >= 1 + SID + 8 &&
+                        bytes_recvd <= (is_video ? sizeof(chatproj::UdpVideoPacket)
+                                                 : sizeof(chatproj::UdpFecPacket))) {
 
                         std::string token_str;
                         chatproj::UdpVideoPacket* packet =

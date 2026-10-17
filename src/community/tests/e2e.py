@@ -4450,6 +4450,55 @@ def test_a1_role_and_channel_caps():
     owner.close()
 
 
+def test_a2_relay_drops_oversized_datagrams():
+    print("[A2] the relay drops audio bigger than the audio struct (FEC / NACK likewise) instead of passing it on")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    sa = join("a2send", owner); sb = join("a2recv", owner)
+    for c in (sa, sb):
+        c.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: {"a2send", "a2recv"} <= set(p.voice_presence_update.active_users))
+
+    def sock():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((HOST, 0)); s.settimeout(2); return s
+
+    def recv(s):
+        try:
+            return s.recv(4096)
+        except socket.timeout:
+            return b""
+
+    ua, ub = sock(), sock()
+    check("relay: both voice endpoints bind", udp_bind(ua, sa.jwt, 8083) and udp_bind(ub, sb.jwt, 8083))
+    ua.sendto(udp_audio_packet(sa.jwt, 1, b"q" * 1200), (HOST, 8083))   # 1,237 bytes: the struct exactly
+    check("relay: audio of exactly the struct's size is relayed", len(recv(ub)) == 1237)
+    ua.sendto(udp_audio_packet(sa.jwt, 2, b"q" * 1201), (HOST, 8083))   # 1,238 bytes
+    check("relay: audio one byte bigger is dropped", udp_quiet(ub))
+    ua.sendto(bytes([7]) + udp_audio_packet(sa.jwt, 3, b"s" * 1201)[1:], (HOST, 8083))
+    check("relay: sealed audio one byte bigger is dropped too", udp_quiet(ub))
+    # Media: a2recv watches a2send's stream.
+    sa.send(pb.Packet.START_STREAM_REQ, start_stream_req=pb.StartStreamRequest(channel_id="voice-lounge", target_fps=30))
+    time.sleep(0.3)
+    sb.send(pb.Packet.WATCH_STREAM_REQ, watch_stream_req=pb.WatchStreamRequest(channel_id="voice-lounge", target_uid=uid_of("a2send")))
+    ma, mb = sock(), sock()
+    check("relay: both media endpoints bind", udp_bind(ma, sa.jwt, 8084) and udp_bind(mb, sb.jwt, 8084))
+    udp_quiet(ma, 0.3)   # swallow the watch's keyframe request, if it came
+    fec = lambda n: bytes([4]) + udp_key(sa.jwt) + struct.pack("<IHHH", 1, 0, 5, n) + b"f" * n
+    ma.sendto(fec(1200), (HOST, 8084))   # 1,243 bytes: the FEC struct exactly
+    check("relay: FEC of exactly the struct's size is relayed", len(recv(mb)) == 1243)
+    ma.sendto(fec(1201), (HOST, 8084))
+    check("relay: FEC one byte bigger is dropped", udp_quiet(mb))
+    nack = (bytes([3]) + udp_key(sb.jwt) + str(uid_of("a2send")).encode().ljust(32, b"\0")
+            + struct.pack("<IH", 9, 1) + b"\0" * 128)
+    mb.sendto(nack, (HOST, 8084))        # 199 bytes: the NACK struct exactly
+    check("relay: a NACK of the struct's size reaches the streamer", recv(ma)[:1] == b"\x03")
+    mb.sendto(nack + b"\0", (HOST, 8084))
+    check("relay: a bigger NACK is dropped", udp_quiet(ma))
+    for c in (sa, sb):
+        c.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    for s in (ua, ub, ma, mb): s.close()
+    sa.close(); sb.close(); owner.close()
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -4528,6 +4577,7 @@ if __name__ == "__main__":
         test_a1_attachment_metadata()
         test_a1_strings_and_forwarded_packets()
         test_a1_role_and_channel_caps()
+        test_a2_relay_drops_oversized_datagrams()
     finally:
         stop_server(proc)
     test_b9_timeouts()
