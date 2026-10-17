@@ -231,7 +231,9 @@ async fn fetch_keys(
 }
 
 /// Check a fetch reply and cache what verifies. Returns the account's uid
-/// (as asked, or as central resolved a name) and its verified bundle.
+/// (as asked, or as central resolved a name) and its verified bundle. The
+/// session cache holds whatever verifies; the store keeps only generations
+/// the pin vouches for (see `fetch_bundle`).
 async fn accept_fetched(
     state: &Arc<Mutex<AppState>>,
     asked_uid: i64,
@@ -277,7 +279,9 @@ async fn accept_fetched(
         if store.adopt_legacy(uid, &bundle.sign_pub, bundle.binding, &bundle.signed_name) {
             dirty = true;
         }
-        if store.peer_dh_pub(uid, kid).is_none() {
+        // Never a pinned peer's identity we didn't pin (review S6): written
+        // here it would open their messages from then on, unchecked.
+        if store.identity_known(uid, &bundle.sign_pub) && store.peer_dh_pub(uid, kid).is_none() {
             store.remember_peer_key(uid, kid, &bundle.dh_pub);
             dirty = true;
         }
@@ -290,7 +294,30 @@ async fn accept_fetched(
 
 /// A user's verified bundle: `key_id` 0 = their current one. `Ok(None)`
 /// = central has none (or served one that doesn't verify).
+///
+/// A historical generation (`key_id` ≠ 0) opens messages *from* them, so for
+/// a peer we've pinned it must also carry an identity we pinned for them
+/// (review S6): a self-signature only proves the bundle is self-consistent,
+/// and central could otherwise serve an identity of its own under a key_id
+/// nobody pinned and forge their side of the history with no key change
+/// shown. The current one is returned as served: `resolve_peer_current`
+/// applies the pin to it (surfacing a change), other callers only display
+/// it or check our own.
 pub async fn fetch_bundle(
+    state: &Arc<Mutex<AppState>>,
+    uid: i64,
+    key_id: u32,
+) -> Result<Option<PublicBundle>, String> {
+    let Some(bundle) = fetch_verified(state, uid, key_id).await? else { return Ok(None) };
+    if key_id == 0 || identity_known(state, uid, &bundle.sign_pub).await {
+        return Ok(Some(bundle));
+    }
+    accept_unpinned_generation(state, uid, bundle).await
+}
+
+/// `fetch_bundle` without the pin: from the session cache or central,
+/// signature and uid checked.
+async fn fetch_verified(
     state: &Arc<Mutex<AppState>>,
     uid: i64,
     key_id: u32,
@@ -310,6 +337,67 @@ pub async fn fetch_bundle(
     }
     let res = fetch_keys(state, uid, "", key_id).await?;
     Ok(accept_fetched(state, uid, key_id, res).await.1)
+}
+
+/// `KeyStore::identity_known` for `uid`; with no store loaded there are no
+/// pins to hold anything against.
+async fn identity_known(state: &Arc<Mutex<AppState>>, uid: i64, sign_pub: &[u8]) -> bool {
+    let s = state.lock().await;
+    s.e2ee.store.as_ref().map(|st| st.identity_known(uid, sign_pub)).unwrap_or(true)
+}
+
+/// A historical generation of a pinned peer under an identity we never
+/// pinned for them. The honest way to meet one is a key change we haven't
+/// seen yet — it is their new current generation — so resolve their current
+/// identity (which surfaces the change and re-pins, exactly as a send would)
+/// and accept the generation only if it carries that identity. Anything else
+/// is central vouching for an identity under an old key_id: refused and
+/// never persisted, so the message shows as unreadable (`PeerKey`).
+async fn accept_unpinned_generation(
+    state: &Arc<Mutex<AppState>>,
+    uid: i64,
+    bundle: PublicBundle,
+) -> Result<Option<PublicBundle>, String> {
+    let was_fresh = state.lock().await.e2ee.fresh.contains(&uid);
+    let mut current = resolve_peer_current(state, uid, "").await?;
+    // This session's idea of their current keys can predate a rotation we
+    // weren't told about (E2EE_KEYS_CHANGED only reaches watchers): a
+    // generation newer than it is worth one fresh look.
+    let stale = current
+        .as_ref()
+        .is_some_and(|c| c.sign_pub != bundle.sign_pub && c.key_id < bundle.key_id);
+    if was_fresh && stale {
+        {
+            let mut s = state.lock().await;
+            s.e2ee.fresh.remove(&uid);
+            s.e2ee.current_ids.remove(&uid);
+        }
+        current = resolve_peer_current(state, uid, "").await?;
+    }
+    if current.is_some_and(|c| c.sign_pub == bundle.sign_pub) {
+        remember_generation(state, uid, &bundle).await;
+        return Ok(Some(bundle));
+    }
+    log::warn!(
+        "[e2ee] uid {uid}'s key {} carries an identity never pinned for them; refusing it",
+        bundle.key_id
+    );
+    Ok(None)
+}
+
+/// Keep a generation the pin vouches for in the store.
+async fn remember_generation(state: &Arc<Mutex<AppState>>, uid: i64, bundle: &PublicBundle) {
+    let mut s = state.lock().await;
+    let added = match s.e2ee.store.as_mut() {
+        Some(store) if store.peer_dh_pub(uid, bundle.key_id).is_none() => {
+            store.remember_peer_key(uid, bundle.key_id, &bundle.dh_pub);
+            true
+        }
+        _ => false,
+    };
+    if added {
+        save_store(&s);
+    }
 }
 
 /// The account behind a name when the caller doesn't know its uid: a key
@@ -346,7 +434,9 @@ pub async fn resolve_peer_current(
             return Ok(cached.filter(|b| !b.stale_name_binding()).cloned());
         }
     }
-    let bundle = fetch_bundle(state, uid, 0).await?;
+    // Unpinned fetch: the pin is applied below. (`fetch_bundle` would also
+    // recurse: an unpinned generation resolves the current one through here.)
+    let bundle = fetch_verified(state, uid, 0).await?;
     let mut s = state.lock().await;
     s.e2ee.fresh.insert(uid);
     let Some(bundle) = bundle.as_ref() else { return Ok(None) };
@@ -374,6 +464,7 @@ pub async fn resolve_peer_current(
                         first_seen: now,
                         changed_at: 0,
                         history: HashMap::new(),
+                        previous: Vec::new(),
                     },
                 );
                 dirty = true;
@@ -386,8 +477,8 @@ pub async fn resolve_peer_current(
                     rec.first_seen = now;
                     dirty = true;
                 } else if rec.sign_pub != bundle.sign_pub {
-                    rec.sign_pub = bundle.sign_pub.clone();
-                    rec.changed_at = now;
+                    // The old identity stays known for its history.
+                    rec.repin(&bundle.sign_pub, now);
                     changed = true;
                     dirty = true;
                 }
@@ -569,11 +660,20 @@ async fn resolve_open_keys(
         let mine = store.key(my_kid).ok_or(DecryptError::NoKey)?;
         let my_priv = arr32(&mine.dh_priv).ok_or(DecryptError::Bad)?;
         // A v1 envelope may also open with a not-yet-adopted pin under the
-        // name it was sealed with (both predate renames).
+        // name it was sealed with (both predate renames). The session cache
+        // holds whatever central served and verified: only an identity pinned
+        // for the peer may open their side from it (review S6) — anything
+        // else goes through `fetch_bundle`'s check below.
         let cached = store
             .peer_dh_pub(peer_uid, peer_kid)
             .or_else(|| if hdr.version == envelope::VERSION_V1 { store.legacy_dh_pub(peer_name, peer_kid) } else { None })
-            .or_else(|| s.e2ee.cache.get(&(peer_uid, peer_kid)).map(|b| b.dh_pub.clone()));
+            .or_else(|| {
+                s.e2ee
+                    .cache
+                    .get(&(peer_uid, peer_kid))
+                    .filter(|b| store.identity_known(peer_uid, &b.sign_pub))
+                    .map(|b| b.dh_pub.clone())
+            });
         (i_am_sender, my_priv, my_kid, peer_uid, peer_kid, cached)
     };
     let peer_pub = match cached_pub {
@@ -1511,6 +1611,111 @@ mod tests {
         // A signature with no identity behind it stays a refusal either way.
         let signed = verify_peer_call_key(&state, CAROL, "carol", "call-3", &pub_key, &[9u8; 64], 4).await;
         assert!(matches!(signed, CallKeyAuth::Rejected(_)));
+    }
+
+    /// What central's E2EE_FETCH_KEYS_RES carries for `b`.
+    fn fetched(b: &PublicBundle) -> E2eeFetchKeysRes {
+        E2eeFetchKeysRes {
+            username: b.username.clone(),
+            key_id: b.key_id,
+            found: true,
+            bundle: Some(E2eeKeyBundle {
+                username: b.username.clone(),
+                key_id: b.key_id,
+                dh_pub: b.dh_pub.clone(),
+                sign_pub: b.sign_pub.clone(),
+                signature: b.signature.clone(),
+                created_at: b.created_at,
+                uid: b.uid,
+                signed_name: b.signed_name.clone(),
+                binding: b.binding,
+            }),
+            uid: b.uid,
+        }
+    }
+
+    /// Review S6: central serving an identity of its own as one of a pinned
+    /// peer's generations — self-signed, so it verifies — never opens a
+    /// message "from" them (DMs or channel key blobs) and is never kept.
+    #[tokio::test]
+    async fn a_pinned_peers_unpinned_identity_never_opens_their_messages() {
+        boot_tmp();
+        const ME: i64 = 9311;
+        let (me, a) = (identity(7), identity(5));
+        let (state, mut store) = session(ME, "me", &me);
+        store.peers.insert(ALICE, pin(&a));
+        install(&state, store).await;
+        {
+            // This session already resolved Alice's current keys: the pin.
+            let mut s = state.lock().await;
+            s.e2ee.fresh.insert(ALICE);
+            s.e2ee.current_ids.insert(ALICE, 5);
+            s.e2ee.cache.insert((ALICE, 5), a.public_bundle(ALICE, "alice").unwrap());
+        }
+        let my_pub = me.dh_public().unwrap();
+        let from_alice = Parties { sender_uid: ALICE, recipient_uid: ME, sender_name: "alice", recipient_name: "me" };
+        // An "old" generation 2, then a "newer" 9 (that one costs a re-fetch
+        // of her current keys, which fails here: no central — still refused).
+        for kid in [2u32, 9] {
+            let fake = identity(kid);
+            let (uid, served) = accept_fetched(&state, ALICE, kid, fetched(&fake.public_bundle(ALICE, "alice").unwrap())).await;
+            assert_eq!(uid, ALICE);
+            assert!(served.is_some(), "self-signed, so it verifies on its own");
+            let wire = envelope::seal(&priv32(&fake), ALICE, kid, &my_pub, ME, 7, "send me your passphrase").unwrap();
+            assert_eq!(open_inbound(&state, &from_alice, &wire).await, Err(DecryptError::PeerKey));
+            let blob = envelope::seal_bytes(&priv32(&fake), ALICE, kid, &my_pub, ME, 7, &[2, 1, 2, 3]).unwrap();
+            assert_eq!(open_inbound_raw(&state, &from_alice, &blob).await, Err(DecryptError::PeerKey));
+            let s = state.lock().await;
+            let st = s.e2ee.store.as_ref().unwrap();
+            assert!(st.peer_dh_pub(ALICE, kid).is_none(), "never persisted");
+            assert_eq!(st.peers[&ALICE].sign_pub, a.sign_public().unwrap().to_vec(), "the pin is untouched");
+        }
+        // Her real messages still open.
+        let wire = envelope::seal(&priv32(&a), ALICE, 5, &my_pub, ME, 7, "hi").unwrap();
+        assert_eq!(open_inbound(&state, &from_alice, &wire).await.unwrap(), "hi");
+        keystore::delete(ME);
+    }
+
+    /// Review S6, the honest case: a peer's reset met first in a message is
+    /// their new current identity — surfaced and re-pinned as a send would,
+    /// then it opens — and the retired identity's generations still open.
+    #[tokio::test]
+    async fn a_key_change_first_seen_in_history_is_surfaced_and_opens() {
+        boot_tmp();
+        const ME: i64 = 9312;
+        let (me, a, b) = (identity(7), identity(3), identity(5));
+        let (state, mut store) = session(ME, "me", &me);
+        store.peers.insert(ALICE, pin(&a));
+        install(&state, store).await;
+        {
+            // Alice reset to B (not resolved yet this session); central still
+            // serves A's generation 3.
+            let mut s = state.lock().await;
+            s.e2ee.current_ids.insert(ALICE, 5);
+            s.e2ee.cache.insert((ALICE, 5), b.public_bundle(ALICE, "alice").unwrap());
+            s.e2ee.cache.insert((ALICE, 3), a.public_bundle(ALICE, "alice").unwrap());
+        }
+        let my_pub = me.dh_public().unwrap();
+        let from_alice = Parties { sender_uid: ALICE, recipient_uid: ME, sender_name: "alice", recipient_name: "me" };
+        let wire = envelope::seal(&priv32(&b), ALICE, 5, &my_pub, ME, 7, "new keys").unwrap();
+        assert_eq!(open_inbound(&state, &from_alice, &wire).await.unwrap(), "new keys");
+        {
+            let s = state.lock().await;
+            let rec = &s.e2ee.store.as_ref().unwrap().peers[&ALICE];
+            assert_eq!(rec.sign_pub, b.sign_public().unwrap().to_vec(), "re-pinned");
+            assert!(rec.changed_at > 0, "surfaced as a key change");
+            assert!(rec.knows_identity(&a.sign_public().unwrap()));
+        }
+        let old = envelope::seal(&priv32(&a), ALICE, 3, &my_pub, ME, 7, "old keys").unwrap();
+        assert_eq!(open_inbound(&state, &from_alice, &old).await.unwrap(), "old keys");
+        // Another generation signed by the retired identity passes too.
+        let mut a2 = identity(2);
+        a2.sign_priv = a.sign_priv.clone();
+        state.lock().await.e2ee.cache.insert((ALICE, 2), a2.public_bundle(ALICE, "alice").unwrap());
+        assert!(fetch_bundle(&state, ALICE, 2).await.unwrap().is_some());
+        let older = envelope::seal(&priv32(&a2), ALICE, 2, &my_pub, ME, 7, "older").unwrap();
+        assert_eq!(open_inbound(&state, &from_alice, &older).await.unwrap(), "older");
+        keystore::delete(ME);
     }
 
     #[tokio::test]

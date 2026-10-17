@@ -2,8 +2,8 @@
 //!
 //! Holds every generation of our own identity (old envelopes name the
 //! key_id they were sealed under, so old private keys stay), the pinned
-//! identity of every peer we've talked to (by uid), and each peer's
-//! historical public keys by key_id. Encrypted at rest with AES-256-GCM
+//! identity of every peer we've talked to (by uid) with the identities
+//! pinned before it, and each peer's historical public keys by key_id. Encrypted at rest with AES-256-GCM
 //! under the at-rest key Electron main hands us (a `safeStorage`-wrapped
 //! random key) or, failing that, the same hostname+user derivation
 //! `config.rs` uses for the stored login credentials; the AAD binds the
@@ -51,9 +51,51 @@ pub struct PeerRecord {
     /// Unix seconds of the last identity change; 0 = never.
     pub changed_at: i64,
     /// key_id → dh_pub for every generation seen while opening history,
-    /// so old envelopes don't cost a fetch each session.
+    /// so old envelopes don't cost a fetch each session. Once the peer is
+    /// pinned, only generations of a pinned identity (`sign_pub` or
+    /// `previous`) are written here.
     #[serde(default)]
     pub history: HashMap<u32, String>,
+    /// Identities (Ed25519 public keys, base64) pinned before `sign_pub`,
+    /// oldest first: a key change moves the old pin here so history sealed
+    /// under its generations still opens — and an identity central serves
+    /// under an old key_id that was never pinned doesn't (review S6).
+    #[serde(default)]
+    pub previous: Vec<String>,
+}
+
+/// Enough for any honest history; past it the oldest retired identity goes
+/// (its generations already in `history` still open).
+const MAX_PREVIOUS_IDENTITIES: usize = 64;
+
+impl PeerRecord {
+    /// True when `sign_pub` is the pinned identity or one pinned before it.
+    pub fn knows_identity(&self, sign_pub: &[u8]) -> bool {
+        use base64::Engine as _;
+        if !self.sign_pub.is_empty() && self.sign_pub == sign_pub {
+            return true;
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(sign_pub);
+        self.previous.iter().any(|p| *p == b64)
+    }
+
+    /// A key change: `sign_pub` becomes the pin and the old identity moves
+    /// to `previous`.
+    pub fn repin(&mut self, sign_pub: &[u8], now: i64) {
+        use base64::Engine as _;
+        if !self.sign_pub.is_empty() {
+            let old = base64::engine::general_purpose::STANDARD.encode(&self.sign_pub);
+            if !self.previous.contains(&old) {
+                self.previous.push(old);
+            }
+            if self.previous.len() > MAX_PREVIOUS_IDENTITIES {
+                let excess = self.previous.len() - MAX_PREVIOUS_IDENTITIES;
+                self.previous.drain(..excess);
+            }
+        }
+        self.sign_pub = sign_pub.to_vec();
+        self.changed_at = now;
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -106,6 +148,17 @@ impl KeyStore {
     /// True when we've pinned an identity for this peer.
     pub fn is_pinned(&self, uid: i64) -> bool {
         self.pin(uid).map(|p| !p.sign_pub.is_empty()).unwrap_or(false)
+    }
+
+    /// May a verified bundle of `uid` carrying this identity open their
+    /// messages without a key change being surfaced first? Yes before we've
+    /// pinned them (first sight is trusted: TOFU), else only for the pinned
+    /// identity or one pinned before it.
+    pub fn identity_known(&self, uid: i64, sign_pub: &[u8]) -> bool {
+        match self.pin(uid) {
+            Some(rec) if !rec.sign_pub.is_empty() => rec.knows_identity(sign_pub),
+            _ => true,
+        }
     }
 
     /// Move a name-keyed pin to `uid` once a verified bundle of that
@@ -435,10 +488,46 @@ mod tests {
         delete(9201);
     }
 
+    /// Review S6: after a key change the old identity still counts (its
+    /// generations open history), an identity never pinned doesn't, and
+    /// before the first pin anything is first sight.
+    #[test]
+    fn a_key_change_keeps_the_old_identity_known() {
+        let _g = boot_tmp();
+        let (a, b, c) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        let mut store = KeyStore::new(1, vec![IdentityKeys::generate(1).unwrap()]);
+        assert!(store.identity_known(7, &a), "nothing pinned: first sight");
+        store.remember_peer_key(7, 2, &[9u8; 32]);
+        assert!(store.identity_known(7, &c), "history alone is no pin");
+        store.peers.get_mut(&7).unwrap().sign_pub = a.to_vec();
+        assert!(store.identity_known(7, &a) && !store.identity_known(7, &b));
+        store.peers.get_mut(&7).unwrap().repin(&b, 100);
+        assert_eq!(store.peers[&7].sign_pub, b.to_vec());
+        assert_eq!(store.peers[&7].changed_at, 100);
+        assert!(store.identity_known(7, &a) && store.identity_known(7, &b));
+        assert!(!store.identity_known(7, &c));
+        // Back and forth doesn't pile up duplicates.
+        store.peers.get_mut(&7).unwrap().repin(&a, 101);
+        store.peers.get_mut(&7).unwrap().repin(&b, 102);
+        assert_eq!(store.peers[&7].previous.len(), 2);
+        // The retired identities survive a save / load.
+        save(9401, &store).unwrap();
+        let back = load(9401).unwrap().unwrap();
+        assert!(back.identity_known(7, &a) && !back.identity_known(7, &c));
+        delete(9401);
+        // Bounded: the oldest retired identity goes first.
+        let rec = store.peers.get_mut(&7).unwrap();
+        for i in 0..(MAX_PREVIOUS_IDENTITIES as u8 + 5) {
+            rec.repin(&[100u8.wrapping_add(i); 32], 200);
+        }
+        assert_eq!(rec.previous.len(), MAX_PREVIOUS_IDENTITIES);
+        assert!(!rec.knows_identity(&a));
+    }
+
     #[test]
     fn a_name_bound_bundle_adopts_its_names_pin() {
         let mut store = KeyStore::new(1, vec![IdentityKeys::generate(1).unwrap()]);
-        let rec = PeerRecord { sign_pub: vec![1u8; 32], key_id: 5, dh_pub: vec![2u8; 32], first_seen: 1, changed_at: 0, history: HashMap::new() };
+        let rec = PeerRecord { sign_pub: vec![1u8; 32], key_id: 5, dh_pub: vec![2u8; 32], first_seen: 1, ..Default::default() };
         store.legacy_peers.insert("carol".into(), rec);
         // Keys generations already cached under the uid are kept.
         store.remember_peer_key(42, 6, &[3u8; 32]);

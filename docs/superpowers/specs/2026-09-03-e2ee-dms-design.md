@@ -144,6 +144,16 @@ passphrase restores it from the backup.
 `key_id`, `first_seen`, `changed_at`) plus every historical `dh_pub` by `key_id`
 seen while decrypting history, so old envelopes don't need a fetch each session.
 
+**Historical generations are pin-checked (2026-10-17, review S6).** A fetched
+`(uid, key_id)` bundle is self-signed, which proves only that it is consistent,
+not that it is the peer's. For a pinned peer it opens their side only if its
+`sign_pub` is the pin or an identity pinned before it (`previous`: a key change
+moves the old pin there). An unknown identity is accepted only when it turns out
+to be the peer's new *current* identity — resolving that surfaces the key change
+and re-pins, exactly as a send would; otherwise the message shows `peer_key` and
+nothing is stored. Channel key blobs open through the same path. Before the
+first pin anything is first sight (TOFU), as before.
+
 ## Wire protocol
 
 ```proto

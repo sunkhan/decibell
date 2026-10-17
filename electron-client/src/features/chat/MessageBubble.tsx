@@ -158,7 +158,9 @@ function decryptErrorHint(code: string): string {
     case "no_key":
       return "This was sent to encryption keys this device no longer has (keys were reset).";
     case "peer_key":
-      return "The server no longer has the key this was sent with.";
+      // Also: the server served a key under an identity this device never
+      // pinned for the sender (native refuses it rather than trust it).
+      return "The server no longer has the key this was sent with, or it doesn't match the identity this device knows for the sender.";
     default:
       return "The message failed authentication or is malformed.";
   }
