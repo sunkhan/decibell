@@ -2376,19 +2376,18 @@ bool CommunityDb::set_overwrite(const DbOverwrite& in) {
 
 uint64_t CommunityDb::channel_permissions_unlocked_(int64_t uid,
                                                     const std::string& channel_id) const {
+    // A channel that doesn't exist resolves to nothing and is never
+    // cached: the ids come from requests, and caching misses let anyone
+    // fill the cache with made-up ids (it was capped per user only after
+    // the fact, and each id could be ~2 MB). The layout map knows every
+    // channel and is rebuilt on create / delete.
+    if (!layout_valid_) rebuild_channel_layout_unlocked_();
+    if (parent_of_.find(channel_id) == parent_of_.end()) return 0;
+
     auto& per_user = channel_perm_cache_[uid];
     if (auto it = per_user.find(channel_id); it != per_user.end()) return it->second;
 
     uint64_t result = 0;
-    {
-        Stmt q(db_, "SELECT 1 FROM channels WHERE id=?;");
-        bool exists = false;
-        if (q.s) { q.bind_text(1, channel_id); exists = q.step() == SQLITE_ROW; }
-        if (!exists) {
-            per_user.emplace(channel_id, 0);
-            return 0;
-        }
-    }
     const PermEntry& base = perm_entry_unlocked_(uid);
     if (base.permissions == perms::kAll) {
         result = perms::kAll;   // owner / ADMINISTRATOR bypass overwrites
@@ -2693,8 +2692,9 @@ std::optional<DbChannel> CommunityDb::get_channel(const std::string& channel_id)
 
 namespace {
 // Filesystem-safe slug for channel ids: lowercase alnum with single
-// dashes, trimmed, capped at 32 chars. The id doubles as the channel's
-// attachment directory name, so nothing outside [a-z0-9-] survives.
+// dashes, trimmed, capped at kMaxChannelSlugBytes. The id doubles as the
+// channel's attachment directory name, so nothing outside [a-z0-9-]
+// survives.
 std::string slugify_channel_name(const std::string& name) {
     std::string out;
     out.reserve(name.size());
@@ -2711,7 +2711,7 @@ std::string slugify_channel_name(const std::string& name) {
             out.push_back('-');
             last_dash = true;
         }
-        if (out.size() >= 32) break;
+        if (out.size() >= kMaxChannelSlugBytes) break;
     }
     while (!out.empty() && out.back() == '-') out.pop_back();
     if (out.empty()) out = "channel";
@@ -2728,7 +2728,8 @@ std::optional<DbChannel> CommunityDb::create_channel(const std::string& raw_name
     if (name.empty() || (type != 0 && type != 1 && type != 2)) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Unique id: the slug, or slug-2, slug-3... on collision.
+    // Unique id: the slug, or slug-2, slug-3... on collision (at most
+    // "-999": kMaxChannelIdBytes leaves room for exactly that).
     const std::string base = slugify_channel_name(name);
     std::string id = base;
     for (int suffix = 2; suffix < 1000; ++suffix) {

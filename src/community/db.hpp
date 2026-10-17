@@ -301,6 +301,11 @@ inline std::string clamp_utf8(const std::string& in, size_t max_bytes) {
 constexpr size_t kMaxRoleNameBytes    = 64;
 constexpr size_t kMaxChannelNameBytes = 64;
 constexpr size_t kMaxNicknameBytes    = 32;
+// Channel ids are server-made slugs: up to kMaxChannelSlugBytes, plus a
+// "-2".."-999" collision suffix. Requests naming a longer id are refused
+// at the edge (they can only name a channel that doesn't exist).
+constexpr size_t kMaxChannelSlugBytes = 32;
+constexpr size_t kMaxChannelIdBytes   = kMaxChannelSlugBytes + 4;
 
 // Default upload headroom: refuse uploads that would leave the store's
 // volume with less than this much free space, until an operator changes it

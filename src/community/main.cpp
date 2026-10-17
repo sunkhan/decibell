@@ -34,6 +34,8 @@
 #include <openssl/sha.h>
 #include <jwt-cpp/traits/nlohmann-json/defaults.h>
 #include "messages.pb.h"
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/message.h>
 #include "../common/net_utils.hpp"
 #include "../common/udp_packet.hpp"
 #include "udp_path.hpp"
@@ -96,6 +98,45 @@ std::string sha256_hex(const std::string& data) {
 void strip_client_envelope(chatproj::Packet& p) {
     p.clear_auth_token();
     p.clear_timestamp();
+}
+
+/// True when every channel id a request names fits kMaxChannelIdBytes.
+/// Checked once for every packet instead of in each handler: a request's
+/// channel ids are the payload's `channel_id` / `category_id` /
+/// `channel_ids` fields, and one level down (ChannelOverwriteSetRequest's
+/// overwrite). An over-long id names no channel, yet each one used to
+/// become a key in per-user caches and server-side maps.
+bool channel_ids_within_limits(const chatproj::Packet& packet) {
+    using google::protobuf::FieldDescriptor;
+    using google::protobuf::Message;
+    auto ok = [](const Message& m, int depth, auto& self) -> bool {
+        const auto* d = m.GetDescriptor();
+        const auto* r = m.GetReflection();
+        std::string scratch;
+        for (int i = 0; i < d->field_count(); ++i) {
+            const FieldDescriptor* f = d->field(i);
+            if (f->type() == FieldDescriptor::TYPE_STRING) {
+                const auto& n = f->name();   // std::string or string_view, by protobuf version
+                if (n != "channel_id" && n != "category_id" && n != "channel_ids") continue;
+                if (f->is_repeated()) {
+                    for (int k = 0; k < r->FieldSize(m, f); ++k) {
+                        if (r->GetRepeatedStringReference(m, f, k, &scratch).size() > chatproj::kMaxChannelIdBytes) return false;
+                    }
+                } else if (r->GetStringReference(m, f, &scratch).size() > chatproj::kMaxChannelIdBytes) {
+                    return false;
+                }
+            } else if (f->type() == FieldDescriptor::TYPE_MESSAGE && !f->is_repeated() && depth > 0 &&
+                       r->HasField(m, f)) {
+                if (!self(r->GetMessage(m, f), depth - 1, self)) return false;
+            }
+        }
+        return true;
+    };
+    const auto* oneof = packet.GetDescriptor()->FindOneofByName("payload");
+    if (!oneof) return true;
+    const FieldDescriptor* f = packet.GetReflection()->GetOneofFieldDescriptor(packet, oneof);
+    if (!f || f->type() != FieldDescriptor::TYPE_MESSAGE) return true;
+    return ok(packet.GetReflection()->GetMessage(packet, f), 1, ok);
 }
 
 /// Length-prefixed wire frame for a packet, shared across fan-out paths.
@@ -1286,6 +1327,17 @@ private:
                       << ": no longer a member\n";
             manager_.leave(shared_from_this());
             close_connection();
+            return;
+        }
+
+        // Channel ids are short server-made slugs; a request naming a
+        // longer one names no channel and is dropped here, before any
+        // handler can key a cache or a map on it.
+        if (!channel_ids_within_limits(packet)) {
+            if (rate_limit_log_bucket_.try_take()) {
+                std::cout << "[Community] Dropped packet type " << packet.type() << " from "
+                          << username_ << ": over-long channel id\n";
+            }
             return;
         }
 

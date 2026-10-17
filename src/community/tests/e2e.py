@@ -3715,6 +3715,44 @@ def test_presence_follows_visibility():
     ola.close(); owner.close()
 
 
+# ---------------------------------------------------------------- pre-1.0 review (2026-10-17)
+
+def delete_channel(owner, channel_id):
+    owner.send(pb.Packet.CHANNEL_DELETE_REQ, channel_delete_req=pb.ChannelDeleteRequest(channel_id=channel_id))
+    owner.wait(pb.Packet.CHANNEL_ACTION_RES, pred=lambda p: p.channel_action_res.action == "delete")
+
+
+def test_s15_channel_id_cap():
+    print("[S15] over-long channel ids are dropped at the edge; the longest real ids still work")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.5)
+    for cid in ("x" * 37, "x" * (512 * 1024)):
+        owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=cid, limit=5))
+    r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=1)
+    check("history for an over-long channel id gets no answer", r is None)
+    owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="y" * 100, content="s15-long", nonce="s15"))
+    r = owner.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=1, pred=lambda p: p.channel_msg_rejected.nonce == "s15")
+    check("a message to an over-long channel id is dropped", r is None
+          and sql("select count(*) from messages where content='s15-long'") == [(0,)])
+    # The longest ids the server makes: a 32-byte slug, its "-2" twin,
+    # and (seeded) a "-999" one at exactly kMaxChannelIdBytes = 36.
+    c1 = create_channel(owner, "a" * 40, pb.ChannelInfo.TEXT).id
+    c2 = create_channel(owner, "a" * 40, pb.ChannelInfo.TEXT).id
+    check("slugs are capped at 32 bytes; suffixed ids extend them", len(c1) == 32 and c2 == c1 + "-2", f"{c1} {c2}")
+    c36 = "b" * 32 + "-999"
+    sql("insert into channels(id, name, type, position) values(?, 's15-edge', 0, 500)", c36)
+    c3 = create_channel(owner, "s15-refresh", pb.ChannelInfo.TEXT).id   # the server learns of the seeded row
+    owner.flush(0.3)
+    for cid in (c2, c36):
+        owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id=cid, limit=5))
+        r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.channel_id == cid)
+        check(f"a {len(cid)}-byte id is served", r is not None)
+    check("the session survives the dropped requests", not owner.is_closed(0.2))
+    for cid in (c1, c2, c36, c3):
+        delete_channel(owner, cid)
+    owner.close()
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -3785,6 +3823,7 @@ if __name__ == "__main__":
         test_theme_a_tokens_and_uid()
         test_uid_wire()
         test_live_rename()
+        test_s15_channel_id_cap()
     finally:
         stop_server(proc)
     test_b9_timeouts()
