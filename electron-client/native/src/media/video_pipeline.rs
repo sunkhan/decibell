@@ -33,8 +33,8 @@ pub struct VideoSender {
     /// before chunking (`frame_crypto::seal_video_frame`) and sent as
     /// VIDEO_SEALED. None on the P2P path (the socket itself is sealed).
     ring: Option<super::frame_crypto::SharedKeyRing>,
-    /// Random per stream so a restarted frame counter never reuses a
-    /// nonce within an epoch.
+    /// Fresh per stream (`frame_crypto::next_stream_salt`) so a restarted
+    /// frame counter never reuses a nonce within an epoch.
     stream_salt: u32,
 }
 
@@ -49,7 +49,7 @@ impl VideoSender {
             sender_id,
             next_frame_id: AtomicU32::new(0),
             ring,
-            stream_salt: super::frame_crypto::random_salt(),
+            stream_salt: super::frame_crypto::next_stream_salt(),
         }
     }
 

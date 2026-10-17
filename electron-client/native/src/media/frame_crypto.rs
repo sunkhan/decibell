@@ -18,17 +18,26 @@
 //!       chunked into packets like a plain frame; nonce = stream_salt ‖ frame_id ‖ 0;
 //!       AAD = type ‖ member(32) ‖ frame_id ‖ is_keyframe ‖ codec
 //!
-//! `stream_salt` is random per stream start, so a frame counter that restarts
-//! at 0 never reuses a nonce inside an epoch. The previous epoch's keys are
-//! kept for a grace period so in-flight packets still open across a rotation.
+//! Nonce uniqueness can't lean on the epoch: K(member, kind) stays the same
+//! for the whole epoch while pipelines come and go inside it (a screen share
+//! stopped and started again, a rebuilt voice pipeline), and two sessions of
+//! one account in a channel derive the *same* keys (MLS names a member's
+//! media keys by uid). So the audio counter is one process-wide sequence
+//! with a random 64-bit start (`next_audio_counter`), and `stream_salt` comes
+//! from a process-wide sequence with a random 32-bit start
+//! (`next_stream_salt`), so a frame counter that restarts at 0 never reuses
+//! a nonce inside this process. The receiver only reads the transmitted
+//! counter / salt, so neither choice is on the wire. The previous epoch's
+//! keys are kept for a grace period so in-flight packets still open across a
+//! rotation.
 //!
 //! The `KeyRing` is shared with the audio pipeline, the stream-audio
 //! pipeline, the video sender and the video receive thread through an
 //! `ArcSwap`, so the hot paths never lock.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -231,24 +240,43 @@ fn video_aad(username: &str, frame_id: u32, is_keyframe: bool, codec: u8) -> [u8
     aad
 }
 
-/// Per-sender-per-kind counter for audio nonces. One per pipeline instance;
-/// reset is unnecessary because the key changes with the epoch and the
-/// counter never repeats within a process.
+/// The next audio nonce counter: one sequence for every `AudioSealer` in the
+/// process (every kind, every pipeline), started at a random 64-bit value.
+///
+/// It used to be a per-sealer counter from 1, on the theory that the key
+/// changes with the epoch. It doesn't change on a pipeline restart: stopping
+/// and restarting a screen share built a new stream-audio sealer under the
+/// same K(epoch, uid, kind) and replayed nonces 1, 2, 3… — and two sessions
+/// of one account in a channel share that key from the first packet. A
+/// repeated (key, nonce) pair lets anyone holding both ciphertexts recover
+/// the GCM authentication key and forge packets (review S9). One shared
+/// sequence never repeats inside the process however sealers come and go;
+/// the random start puts another process holding the same key on an
+/// independent stretch of the 2^64 space (two runs of n packets overlap
+/// with probability about 2n / 2^64). Wrapping is harmless: the space is
+/// 2^64 wide whatever the start.
+fn next_audio_counter() -> u64 {
+    static NEXT: OnceLock<AtomicU64> = OnceLock::new();
+    NEXT.get_or_init(|| AtomicU64::new(random_u64())).fetch_add(1, Ordering::Relaxed)
+}
+
+/// Seals one audio kind (voice or stream audio) for our member. Cheap to
+/// build per pipeline: the nonce sequence is process-wide
+/// (`next_audio_counter`), never per sealer.
 pub struct AudioSealer {
     kind: Kind,
-    counter: AtomicU64,
 }
 
 impl AudioSealer {
     pub fn new(kind: Kind) -> AudioSealer {
-        AudioSealer { kind, counter: AtomicU64::new(1) }
+        AudioSealer { kind }
     }
 
     /// Seal one Opus payload. `None` when the ring can't send (no epoch yet,
     /// or quarantined) — the caller skips the packet.
     pub fn seal(&self, ring: &KeyRing, sequence: u16, plain: &[u8]) -> Option<Vec<u8>> {
         let (epoch, key) = ring.own_key(self.kind)?;
-        let counter = self.counter.fetch_add(1, Ordering::Relaxed);
+        let counter = next_audio_counter();
         let mut nonce = [0u8; 12];
         nonce[4..].copy_from_slice(&counter.to_le_bytes());
         let cipher = Aes256Gcm::new_from_slice(key).ok()?;
@@ -325,11 +353,32 @@ pub fn open_video_frame(
     cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: &sealed[8..], aad: &aad }).ok()
 }
 
-pub fn random_salt() -> u32 {
+/// The `stream_salt` for a new video stream: a process-wide sequence with a
+/// random 32-bit start. Each `VideoSender` restarts its frame ids at 0 under
+/// the same epoch key, so the salt is what keeps nonces apart; drawing it at
+/// random each time left two streams in one epoch a 2^-32 chance of sharing
+/// one. The sequence makes salts distinct within the process (for 2^32
+/// streams); the random start keeps another process holding the same key
+/// independent.
+pub fn next_stream_salt() -> u32 {
+    static NEXT: OnceLock<AtomicU32> = OnceLock::new();
+    NEXT.get_or_init(|| AtomicU32::new(random_u64() as u32)).fetch_add(1, Ordering::Relaxed)
+}
+
+/// 64 random bits from the system RNG. Should the RNG ever fail, fall back to
+/// the clock (logged): still a fresh start per process, never a fixed one.
+fn random_u64() -> u64 {
     use ring::rand::SecureRandom;
-    let mut b = [0u8; 4];
-    let _ = ring::rand::SystemRandom::new().fill(&mut b);
-    u32::from_le_bytes(b)
+    let mut b = [0u8; 8];
+    if ring::rand::SystemRandom::new().fill(&mut b).is_ok() {
+        return u64::from_le_bytes(b);
+    }
+    log::warn!("[frame-crypto] system RNG failed; seeding media nonces from the clock");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ ((std::process::id() as u64) << 32)
 }
 
 #[cfg(test)]
@@ -381,7 +430,7 @@ mod tests {
         let alice = ring_for("alice", 1, &ex);
         let bob = ring_for("bob", 1, &ex);
         let frame = vec![7u8; 5000];
-        let salt = random_salt();
+        let salt = next_stream_salt();
         let sealed = seal_video_frame(&alice, salt, 42, true, 3, &frame).unwrap();
         assert_eq!(sealed.len(), frame.len() + VIDEO_SEAL_OVERHEAD);
         assert_eq!(open_video_frame(&bob, "alice", 42, true, 3, &sealed).unwrap(), frame);
@@ -403,6 +452,38 @@ mod tests {
         let sealed = AudioSealer::new(Kind::Voice).seal(&alice, 1, b"a").unwrap();
         let bobq = ring_for("bob", 1, &ex).quarantine();
         assert!(open_audio(&bobq, Kind::Voice, "alice", 1, &sealed).is_some());
+    }
+
+    /// Review S9: a sealer rebuilt under the same epoch key (a screen share
+    /// stopped and restarted, a second pipeline of the same account) must
+    /// never repeat a nonce. Before the fix both sealers started at 1.
+    #[test]
+    fn restarted_sealers_never_repeat_a_nonce_under_one_key() {
+        let ex = [4u8; 32];
+        let alice = ring_for("alice", 7, &ex);
+        let bob = ring_for("bob", 7, &ex);
+        let mut seen = std::collections::HashSet::new();
+        for _restart in 0..3 {
+            // Built per stream start, as audio_stream_pipeline does; the voice
+            // pipeline's sealer runs alongside on the same sequence.
+            let stream = AudioSealer::new(Kind::StreamAudio);
+            let voice = AudioSealer::new(Kind::Voice);
+            for seq in 0..50u16 {
+                for (kind, sealer) in [(Kind::StreamAudio, &stream), (Kind::Voice, &voice)] {
+                    let sealed = sealer.seal(&alice, seq, b"pcm").unwrap();
+                    let counter = u64::from_le_bytes(sealed[4..12].try_into().unwrap());
+                    assert!(seen.insert(counter), "nonce {counter} reused");
+                    // The transmitted counter is all the receiver needs.
+                    assert_eq!(open_audio(&bob, kind, "alice", seq, &sealed).unwrap(), b"pcm");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_salts_are_distinct_per_stream() {
+        let salts: std::collections::HashSet<u32> = (0..1000).map(|_| next_stream_salt()).collect();
+        assert_eq!(salts.len(), 1000);
     }
 
     #[test]

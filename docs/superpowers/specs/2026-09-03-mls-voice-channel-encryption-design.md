@@ -74,10 +74,16 @@ Sealed packet types (`udp_packet.hpp`, relayed exactly like their plaintext twin
 | `STREAM_AUDIO_SEALED` = 8 | STREAM_AUDIO 6 | same framing, kind "stream-audio" |
 | `VIDEO_SEALED` = 9 | VIDEO 1 | chunks of one **sealed frame** `[epoch u32][stream_salt u32][ct][tag]` — 24 B per frame |
 
-- Audio: nonce = counter (per sender, per epoch, per kind), AAD = `type ‖ username ‖ sequence`.
+- Audio: nonce = counter, AAD = `type ‖ username ‖ sequence`. The counter is one
+  process-wide sequence with a random 64-bit start, shared by every sealer
+  (updated 2026-10-17, review S9): it was per sealer from 1, and a screen share
+  restarted inside one epoch — or two sessions of one account, which derive the
+  same keys — repeated (key, nonce) pairs. The receiver reads the counter off the
+  packet, so this isn't a wire change.
 - Video: sealed once per encoded frame before chunking (like Discord's DAVE), nonce =
-  `stream_salt ‖ frame_id`; `stream_salt` is random per stream start so a restarted
-  frame counter never reuses a nonce within an epoch. AAD = `type ‖ username ‖
+  `stream_salt ‖ frame_id`; `stream_salt` is fresh per stream start (a process-wide
+  sequence with a random start) so a restarted frame counter never reuses a nonce
+  within an epoch. AAD = `type ‖ username ‖
   frame_id ‖ is_keyframe ‖ codec`. The HEVC/AV1 decoder-description prefix is
   inside the sealed frame. FEC XORs the sealed chunks and reconstructs a sealed
   chunk; NACK retransmits sealed chunks — both untouched.

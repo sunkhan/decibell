@@ -56,8 +56,9 @@ pub enum GroupCmd {
     GroupInfoRes { exists: bool, epoch: u64, group_info: Vec<u8> },
     CommitRes { success: bool, message: String, epoch: u64 },
     CommitBroadcast { epoch: u64, sender: String, commit: Vec<u8> },
-    /// A stream is starting: nothing to do for keys (the per-stream salt
-    /// keeps nonces fresh) — kept as a hook.
+    /// The handle was dropped: stop the driver. (A stream starting needs
+    /// nothing from the group: `frame_crypto` keeps media nonces unique
+    /// across pipelines on its own.)
     Shutdown,
 }
 
