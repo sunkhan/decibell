@@ -24,7 +24,7 @@ import { registerDownloadHandlers, pauseAllForQuit } from "./downloads";
 import { registerLinkPreviewHandlers } from "./linkPreview";
 import { registerGifHandlers } from "./gifs";
 import { injectHotkey, parseHotkeyArg, registerHotkeyIpc } from "./hotkeys";
-import { startMediaServer, stopMediaServer, getMediaServerPort } from "./mediaServer";
+import { startMediaServer, stopMediaServer } from "./mediaServer";
 import { initUpdater, kickoffInitialCheck, cancelInitialCheck } from "./update";
 import { sweepStale } from "./fileRegistry";
 import { initMainSentry } from "./sentry";
@@ -428,12 +428,11 @@ function createWindow(): void {
       // the renderer's only loaded code is our own app bundle, so
       // the cross-origin restriction adds no real defence here.
       webSecurity: false,
-      // Smuggle the loopback media-server port to the renderer so
-      // buildAttachmentUrl can construct http://127.0.0.1:PORT/...
-      // URLs for `<video>` / `<audio>` elements. Synchronous
-      // hand-off at window creation — no IPC round-trip needed.
+      // Boot facts for preload, available synchronously. Nothing secret
+      // goes here: argv is readable by every local user. (The loopback
+      // media server's port + token come over a sync IPC instead, see
+      // mediaServer.ts.)
       additionalArguments: [
-        `--decibell-media-server-port=${getMediaServerPort()}`,
         `--decibell-sentry-enabled=${cachedSentryBoot.enabled ? "1" : "0"}`,
         `--decibell-install-id=${cachedSentryBoot.installId}`,
         `--decibell-version=${app.getVersion()}`,
@@ -701,8 +700,8 @@ app.whenReady().then(async () => {
   setInterval(sweepStale, 5 * 60_000).unref();
 
   // Loopback HTTP proxy for `<video>` / `<audio>` element sources. See
-  // mediaServer.ts header for the why; the port the OS picks is passed
-  // into the renderer through BrowserWindow additionalArguments below.
+  // mediaServer.ts header for the why; preload asks for the port the OS
+  // picks (and the per-launch token) over a sync IPC.
   await startMediaServer();
 
   // PR8: getDisplayMedia handler.

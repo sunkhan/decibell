@@ -139,17 +139,24 @@ type CaptureSource = {
   kind: "screen" | "window";
 };
 
-// Loopback media-server port — passed in via BrowserWindow
-// additionalArguments at window-create time so it's available
-// synchronously here (no IPC round-trip). Falls back to 0 if absent,
-// which makes buildAttachmentUrl skip the http:// rewrite and the
-// custom protocol still handles non-media attachments fine.
-const mediaPortArg = process.argv.find((a) =>
-  a.startsWith("--decibell-media-server-port="),
-);
-const mediaServerPort = mediaPortArg
-  ? parseInt(mediaPortArg.split("=")[1], 10) || 0
-  : 0;
+// Loopback media server: its port and the per-launch token every URL
+// must carry (electron/main/mediaServer.ts). Asked of main synchronously
+// so they're there before the page's code runs — not via argv, which
+// every local user can read. Falls back to port 0 / no token, which
+// makes buildAttachmentUrl skip the http:// rewrite (the custom
+// protocol still handles everything but Windows media playback).
+const mediaServer = ((): { port: number; token: string } => {
+  try {
+    const r = ipcRenderer.sendSync("decibell:mediaServer:access") as
+      | { port?: unknown; token?: unknown }
+      | null;
+    const port = typeof r?.port === "number" && Number.isInteger(r.port) ? r.port : 0;
+    const token = typeof r?.token === "string" && /^[0-9a-f]{32}$/.test(r.token) ? r.token : "";
+    return port > 0 && token ? { port, token } : { port: 0, token: "" };
+  } catch {
+    return { port: 0, token: "" };
+  }
+})();
 
 const sentryEnabledArg = process.argv.find((a) =>
   a.startsWith("--decibell-sentry-enabled="),
@@ -173,10 +180,11 @@ contextBridge.exposeInMainWorld("decibell", {
   /// on Windows (no native Chromium picker until Electron 35) vs. let
   /// `getDisplayMedia` go through xdg-desktop-portal on Linux.
   platform: process.platform as NodeJS.Platform,
-  /// Port the main process's loopback media server is listening on.
-  /// Renderer constructs `http://127.0.0.1:${port}/attachments/<sid>/<aid>`
+  /// Port + per-launch token of the main process's loopback media server.
+  /// Renderer constructs `http://127.0.0.1:${port}/${token}/attachments/<sid>/<aid>`
   /// for `<video>` / `<audio>` element sources. See electron/main/mediaServer.ts.
-  mediaServerPort,
+  mediaServerPort: mediaServer.port,
+  mediaServerToken: mediaServer.token,
   sentryConfig,
   invoke: (method: string, args: unknown): Promise<unknown> =>
     ipcRenderer.invoke("decibell:invoke", method, args),

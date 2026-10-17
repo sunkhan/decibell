@@ -11,15 +11,25 @@
 // range-fetch on its own.
 //
 // Bind to 127.0.0.1 on an OS-assigned port (we don't need a stable
-// port — the renderer learns the chosen port via additionalArguments
-// at window-create time, see index.ts) and proxy /attachments/<sid>/<aid>
-// → community server with bearer auth + range/conditional headers.
-// Mirrors registerAttachmentProtocol logic in protocol.ts — same
-// authentication injection, same Range header forwarding — only the
-// transport differs.
+// port) and proxy /<token>/attachments/<sid>/<aid> → community server
+// with bearer auth + range/conditional headers. Mirrors
+// registerAttachmentProtocol logic in protocol.ts — same authentication
+// injection, same Range header forwarding — only the transport differs.
+//
+// Locked down, because this port attaches the user's JWT and serves
+// decrypted E2EE attachments to whoever asks (review S4):
+//   - every path starts with a per-launch random 128-bit token; the
+//     renderer gets it (with the port) from preload's synchronous
+//     `decibell:mediaServer:access` IPC — not argv, which every local
+//     user can read in /proc/<pid>/cmdline or `ps`;
+//   - the Host header must be exactly 127.0.0.1:<port>, so a web page
+//     that DNS-rebinds its own name onto 127.0.0.1 is refused even if
+//     it somehow had the token;
+//   - attachment ids are digits only; GET only.
 
 import * as http from "node:http";
-import { app, net } from "electron";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { app, ipcMain, net } from "electron";
 import { getAttachmentTarget } from "./attachmentRegistry";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
 import { pacedBody } from "./downloadPacer";
@@ -27,8 +37,29 @@ import { NO_STORE } from "./noStore";
 
 let server: http.Server | null = null;
 let port = 0;
+/// Per-launch secret every request path must start with (hex, 128 bits).
+const token = randomBytes(16).toString("hex");
+const tokenBytes = Buffer.from(token, "utf8");
+
+const ATTACHMENT_ID = /^\d{1,20}$/;
+
+/// What the renderer needs to build media URLs. Asked for synchronously
+/// by preload (`ipcRenderer.sendSync`) before the page's code runs.
+export interface MediaServerAccess {
+  port: number;
+  token: string;
+}
+
+let ipcRegistered = false;
 
 export async function startMediaServer(): Promise<number> {
+  if (!ipcRegistered) {
+    ipcRegistered = true;
+    ipcMain.on("decibell:mediaServer:access", (e) => {
+      const access: MediaServerAccess = { port, token: port > 0 ? token : "" };
+      e.returnValue = access;
+    });
+  }
   return new Promise((resolve, reject) => {
     server = http.createServer(handleRequest);
     server.on("error", reject);
@@ -44,10 +75,6 @@ export async function startMediaServer(): Promise<number> {
   });
 }
 
-export function getMediaServerPort(): number {
-  return port;
-}
-
 export function stopMediaServer(): void {
   if (server) {
     server.close();
@@ -56,21 +83,50 @@ export function stopMediaServer(): void {
   }
 }
 
+/// Constant-time check of a path's first segment against the token.
+function tokenMatches(segment: string | undefined): boolean {
+  if (!segment) return false;
+  const got = Buffer.from(segment, "utf8");
+  return got.length === tokenBytes.length && timingSafeEqual(got, tokenBytes);
+}
+
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
   try {
+    // Anything else in Host is a rebound DNS name or a request not meant
+    // for us. Refused before the path is even looked at.
+    if (req.headers.host !== `127.0.0.1:${port}`) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.end("forbidden");
+      return;
+    }
+    if (req.method !== "GET") {
+      res.writeHead(405, { "Content-Type": "text/plain", Allow: "GET" });
+      res.end("method not allowed");
+      return;
+    }
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
     const parts = url.pathname.split("/").filter((p) => p.length > 0);
-    // Expected: /attachments/<serverId>/<attachmentId>
-    if (parts.length < 3 || parts[0] !== "attachments") {
+    // Expected: /<token>/attachments/<serverId>/<attachmentId>
+    let serverId = "";
+    try {
+      serverId = parts.length === 4 ? decodeURIComponent(parts[2]) : "";
+    } catch {
+      serverId = "";
+    }
+    const attachmentId = parts[3] ?? "";
+    if (
+      !tokenMatches(parts[0]) ||
+      parts[1] !== "attachments" ||
+      !serverId ||
+      !ATTACHMENT_ID.test(attachmentId)
+    ) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("not found");
       return;
     }
-    const serverId = decodeURIComponent(parts[1]);
-    const attachmentId = parts[2];
     const target = getAttachmentTarget(serverId);
     if (!target) {
       res.writeHead(404, { "Content-Type": "text/plain" });

@@ -13,6 +13,9 @@ declare global {
     decibell: {
       platform: NodeJS.Platform;
       mediaServerPort: number;
+      /// Per-launch secret the media server requires as the first path
+      /// segment ('' when the server isn't available).
+      mediaServerToken: string;
       sentryConfig: {
         enabled: boolean;
         installId: string;

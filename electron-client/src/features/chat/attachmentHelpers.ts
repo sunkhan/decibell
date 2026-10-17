@@ -8,8 +8,9 @@ import { useChatStore } from "../../stores/chatStore";
 ///   - **Images + any thumbnail variant**: `decibell-attachment://` —
 ///     a custom protocol registered in main (see protocol.ts) that
 ///     injects the Authorization header and proxies the response.
-///   - **Audio + video full-content**: `http://127.0.0.1:PORT/...`
-///     served by the loopback media server (see mediaServer.ts). The
+///   - **Audio + video full-content**: `http://127.0.0.1:PORT/TOKEN/...`
+///     served by the loopback media server (see mediaServer.ts; TOKEN is
+///     its per-launch secret, refused without it). The
 ///     custom protocol would work fine on Linux/Mac, but on Windows
 ///     Chromium routes `<video>` / `<audio>` through Media Foundation
 ///     when `MediaFoundationClearPlayback` is enabled (it's required
@@ -41,8 +42,9 @@ export function buildAttachmentUrl(
     !variant &&
     (attachment.kind === "audio" || attachment.kind === "video");
   const mediaPort = isMedia ? window.decibell?.mediaServerPort ?? 0 : 0;
-  if (isMedia && mediaPort > 0) {
-    return `http://127.0.0.1:${mediaPort}/attachments/${encodeURIComponent(serverId)}/${attachment.id}`;
+  const mediaToken = isMedia ? window.decibell?.mediaServerToken ?? "" : "";
+  if (isMedia && mediaPort > 0 && mediaToken) {
+    return `http://127.0.0.1:${mediaPort}/${mediaToken}/attachments/${encodeURIComponent(serverId)}/${attachment.id}`;
   }
 
   // URL shape mirrors what the protocol handler in main expects:
