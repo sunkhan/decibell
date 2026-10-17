@@ -511,15 +511,23 @@ std::string AuthManager::validateUsername(const std::string& username) {
     return "";
 }
 
-std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std::string& username, const std::string& password) {
+std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std::string& username, const std::string& password,
+                                                                      bool* server_error) {
     // The hash and the uid come from one row read, so a token is never
     // signed with a uid fetched separately (a second query that failed
     // used to mint uid 0, which sends communities down the name-only path).
     // A name the account renamed away from still signs it in while it is
     // reserved (a device that saved the old name); the token and the
     // response carry the current name.
-    auto stored = getCredentials(username);
-    if (!stored) stored = getCredentialsByReservedName(username);
+    bool db_error = false;
+    auto stored = getCredentials(username, db_error);
+    if (!stored && !db_error) stored = getCredentialsByReservedName(username, db_error);
+    if (db_error) {
+        // Not a wrong password: the client keeps its saved sign-in for this
+        // and the attempt isn't counted against the account.
+        if (server_error) *server_error = true;
+        return std::nullopt;
+    }
 
     if (!stored) {
         // Equalize timing with the "user exists, wrong password" path so
@@ -540,7 +548,10 @@ std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std:
     }
 
     auto token = mintToken(stored->uid, stored->username);
-    if (!token) return std::nullopt;
+    if (!token) {
+        if (server_error) *server_error = true;
+        return std::nullopt;
+    }
     return LoginResult{*token, stored->uid, stored->username};
 }
 
@@ -589,7 +600,8 @@ void AuthManager::pruneNameChanges() {
     }
 }
 
-std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReservedName(const std::string& username) {
+std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReservedName(const std::string& username,
+                                                                                       bool& db_error) {
     try {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
@@ -610,6 +622,7 @@ std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReser
         return creds;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getCredentialsByReservedName: " << e.what() << "\n";
+        db_error = true;
         return std::nullopt;
     }
 }
@@ -806,7 +819,7 @@ bool AuthManager::insertUser(const std::string& username, const std::string& ema
     }
 }
 
-std::optional<AuthManager::StoredCredentials> AuthManager::getCredentials(const std::string& username) {
+std::optional<AuthManager::StoredCredentials> AuthManager::getCredentials(const std::string& username, bool& db_error) {
     try {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
@@ -824,6 +837,7 @@ std::optional<AuthManager::StoredCredentials> AuthManager::getCredentials(const 
         return creds;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] getCredentials: " << e.what() << "\n";
+        db_error = true;
         return std::nullopt;
     }
 }

@@ -526,9 +526,12 @@ private:
                               "Too many failed sign-ins for this account. Try again in a few minutes.");
                 return;
             }
+            // Set on the CPU pool, read in the completion (posted after it).
+            auto server_error = std::make_shared<bool>(false);
             run_blocking(
-                [this, username = req.username(), password = req.password()]() -> std::optional<LoginOutcome> {
-                    auto login = auth_manager_.authenticateUser(username, password);
+                [this, username = req.username(), password = req.password(),
+                 server_error]() -> std::optional<LoginOutcome> {
+                    auto login = auth_manager_.authenticateUser(username, password, server_error.get());
                     if (!login) return std::nullopt;
                     LoginOutcome out;
                     out.login = std::move(*login);
@@ -537,13 +540,18 @@ private:
                     out.resume_token = auth_manager_.mintResumeToken(out.login.uid, unix_now()).value_or("");
                     return out;
                 },
-                [this, account](std::optional<LoginOutcome> outcome) {
+                [this, account, server_error](std::optional<LoginOutcome> outcome) {
                     if (outcome) {
                         limits_.record_login(account, ip_);
-                    } else {
+                    } else if (!*server_error) {
                         limits_.record_failed_login(account, ip_);
                     }
-                    finish_login(std::move(outcome), "Invalid username or password.");
+                    // Clients forget a saved password only on the second
+                    // message (native net/central.rs is_definitive_refusal),
+                    // so a database outage must never answer with it.
+                    finish_login(std::move(outcome), *server_error
+                        ? "The server couldn't check your sign-in right now. Please try again."
+                        : "Invalid username or password.");
                 });
         }
 

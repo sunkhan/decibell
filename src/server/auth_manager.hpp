@@ -70,7 +70,11 @@ public:
         std::string username;   // as stored
     };
     // Processes login. Returns the token and account, or std::nullopt if failed.
-    std::optional<LoginResult> authenticateUser(const std::string& username, const std::string& password);
+    // `server_error` (optional) is set when it failed because the database
+    // (or signing) did, not because of the name or password: the caller
+    // must not count that as a failed sign-in or say the password was wrong.
+    std::optional<LoginResult> authenticateUser(const std::string& username, const std::string& password,
+                                                bool* server_error = nullptr);
 
     /// A session token's claims.
     struct TokenClaims {
@@ -455,7 +459,7 @@ private:
     void migrateToUidKeys(pqxx::work& txn);
     /// The account a reserved old name belongs to (renamed away from it
     /// within the reservation), for signing in with it; nullopt otherwise.
-    std::optional<StoredCredentials> getCredentialsByReservedName(const std::string& username);
+    std::optional<StoredCredentials> getCredentialsByReservedName(const std::string& username, bool& db_error);
     /// A name another account renamed away from within the reservation.
     bool nameReservedForOther(pqxx::work& txn, const std::string& username, int64_t uid);
 
@@ -467,6 +471,7 @@ private:
     bool userExists(const std::string& username, const std::string& email);
     bool insertUser(const std::string& username, const std::string& email, const std::string& hash);
     /// The uid, stored name and password hash from one read of the users
-    /// row; nullopt when no account has the name or the database errors.
-    std::optional<StoredCredentials> getCredentials(const std::string& username);
+    /// row; nullopt when no account has the name, or (with `db_error` set)
+    /// when the database errors.
+    std::optional<StoredCredentials> getCredentials(const std::string& username, bool& db_error);
 };

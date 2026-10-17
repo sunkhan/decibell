@@ -313,6 +313,17 @@ def test_register_login():
     check("wrong password refused", not bad.ok)
     ghost = User("nobody")
     check("unknown user refused", not ghost.ok)
+    # A database failure isn't a wrong password: clients forget a saved
+    # password only on "Invalid username or password.", so an outage must
+    # never answer with it (review S10).
+    sql("ALTER TABLE users RENAME TO users_offline")
+    try:
+        down = User("alice")
+        msg = down.login.message if down.login else ""
+        check("database error isn't 'wrong password'", not down.ok and "couldn't check" in msg, msg)
+        down.close()
+    finally:
+        sql("ALTER TABLE users_offline RENAME TO users")
     for c in (a, bad, ghost):
         c.close()
 
