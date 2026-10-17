@@ -469,9 +469,13 @@ pub async fn seal_outbound(
     Ok(Outbound::Sealed(wire))
 }
 
-/// Seal arbitrary tagged content to the recipient's current identity (the
-/// same policy as a DM: None when they have no keys and aren't pinned,
-/// error when pinned-but-missing). Used for channel key blobs.
+/// Seal arbitrary tagged content to the recipient's current identity (TOFU
+/// as for a DM: a changed identity is surfaced and re-pinned). Used for
+/// channel key blobs. `None` whenever they have no usable keys — pinned or
+/// not, unlike `seal_outbound`: skipping a recipient seals nothing, so it
+/// can't leak, while an error here would abort the whole escrow and let a
+/// server stall channel keys for everyone by withholding one pinned
+/// member's bundle.
 pub async fn seal_outbound_raw(
     state: &Arc<Mutex<AppState>>,
     recipient_uid: i64,
@@ -1071,10 +1075,12 @@ pub async fn sign_own_call_key(
 pub enum CallKeyAuth {
     /// Signed by the peer's current identity.
     Verified,
-    /// The peer has no E2EE identity — nothing to verify against.
+    /// The peer has no E2EE identity and we never pinned one — nothing to
+    /// verify against.
     Unverified,
-    /// The peer has an identity but the signature is missing, stale or
-    /// wrong; or their keys couldn't be looked up. Refuse the call.
+    /// The peer has an identity (or we pinned one and central now reports
+    /// none) but the signature is missing, stale or wrong; or their keys
+    /// couldn't be looked up. Refuse the call.
     Rejected(String),
 }
 
@@ -1111,6 +1117,17 @@ pub async fn verify_peer_call_key(
             // Signed, yet the server claims they have no identity — the
             // server is lying about one of the two.
             return CallKeyAuth::Rejected("the call is signed but the server reports no keys".into());
+        }
+        // A pinned peer never drops to "not verified" (review S7), as a DM
+        // to them never drops to plaintext (`seal_outbound`): a central that
+        // withholds their bundle and strips the signature could otherwise
+        // swap the ephemeral keys and sit in the middle of the call.
+        let pinned = {
+            let s = state.lock().await;
+            s.e2ee.store.as_ref().map(|st| st.is_pinned(peer_uid)).unwrap_or(false)
+        };
+        if pinned {
+            return CallKeyAuth::Rejected("their encryption keys are missing from the server".into());
         }
         return CallKeyAuth::Unverified;
     };
@@ -1472,6 +1489,28 @@ mod tests {
         state.lock().await.e2ee.fresh.insert(BOB);
         assert!(seal_outbound(&state, BOB, "bob", "hi").await.is_err());
         keystore::delete(ME);
+    }
+
+    /// Review S7: central reporting "no keys" (with an unsigned call) for a
+    /// peer we pinned is a refusal, never an unverified-but-allowed call.
+    #[tokio::test]
+    async fn pinned_peer_without_keys_fails_call_verification() {
+        const CAROL: i64 = 30;
+        let (a, b) = (identity(3), identity(7));
+        let (state, mut store) = session(ALICE, "alice", &a);
+        store.peers.insert(BOB, pin(&b));
+        install(&state, store).await;
+        // Central answered "no keys" for both this session (nothing cached).
+        state.lock().await.e2ee.fresh.extend([BOB, CAROL]);
+        let pub_key = [1u8; 32];
+        let bob = verify_peer_call_key(&state, BOB, "bob", "call-1", &pub_key, &[], 0).await;
+        assert!(matches!(bob, CallKeyAuth::Rejected(_)));
+        // Someone we never pinned is still an unverified-but-allowed call.
+        let carol = verify_peer_call_key(&state, CAROL, "carol", "call-2", &pub_key, &[], 0).await;
+        assert!(matches!(carol, CallKeyAuth::Unverified));
+        // A signature with no identity behind it stays a refusal either way.
+        let signed = verify_peer_call_key(&state, CAROL, "carol", "call-3", &pub_key, &[9u8; 64], 4).await;
+        assert!(matches!(signed, CallKeyAuth::Rejected(_)));
     }
 
     #[tokio::test]

@@ -44,9 +44,10 @@ or the key breaks the signature.
 |---|---|---|
 | has an identity | valid signature by that identity | **Verified** |
 | has an identity | no signature / wrong key_id / stale identity / bad signature | **Rejected** — `call_connect` fails, the call ends with "Couldn't verify X" |
-| no identity | no signature | **Unverified** — allowed, shown as "Not verified" |
+| no identity, never pinned | no signature | **Unverified** — allowed, shown as "Not verified" |
+| no identity, but we pinned one | no signature | **Rejected** (2026-10-17, review S7) — as a DM to a pinned peer is never sent plaintext: otherwise a central could withhold the bundle, strip the signature and swap the keys |
 | no identity | any signature | Rejected — the server is lying about one of the two |
-| central has no key endpoints at all | — | Unverified (feature-less central) |
+| ~~central has no key endpoints at all~~ | — | ~~Unverified (feature-less central)~~ — gone with the `e2ee_keys` gate (review S8) |
 
 "Current identity" goes through the same `resolve_peer_current` the DM path
 uses, so a peer who reset their keys shows the same key-change banner and

@@ -430,7 +430,8 @@ pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
     // Verify the peer's identity over their ephemeral key BEFORE any key
     // is derived. Fails closed: a peer who has E2EE keys must have signed,
     // and the signature must verify under their current (pinned)
-    // identity. A peer without keys yields an unverified-but-allowed call.
+    // identity. A peer without keys yields an unverified-but-allowed call,
+    // unless we pinned one for them (then central withholding it refuses).
     let verified = match e2ee::verify_peer_call_key(
         &state_arc,
         peer_uid,
