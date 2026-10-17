@@ -357,6 +357,7 @@ impl CentralClient {
                         // reports before we connect to it (Theme A).
                         for m in &resp.memberships {
                             crate::net::pins::set_expected(&m.host_ip, m.port as u16, &m.cert_fingerprint);
+                            crate::net::directory::record(m.id.into(), &m.host_ip, m.port.into());
                         }
                         let memberships: Vec<events::ServerInfo> = resp
                             .memberships
@@ -427,6 +428,7 @@ impl CentralClient {
                 Some(packet::Payload::ServerListRes(resp)) => {
                     for srv in &resp.servers {
                         crate::net::pins::set_expected(&srv.host_ip, srv.port as u16, &srv.cert_fingerprint);
+                        crate::net::directory::record(srv.id.into(), &srv.host_ip, srv.port.into());
                     }
                     let servers: Vec<events::ServerInfo> = resp
                         .servers
@@ -521,6 +523,7 @@ impl CentralClient {
                 Some(packet::Payload::InviteResolveRes(resp)) => {
                     if resp.success {
                         crate::net::pins::set_expected(&resp.host, resp.port as u16, &resp.cert_fingerprint);
+                        crate::net::directory::record(resp.server_id, &resp.host, resp.port.into());
                     }
                     // Fulfil the `resolve_invite_code` waiter keyed by
                     // the echoed code. Orphan responses (caller already

@@ -10,6 +10,7 @@
 pub mod central;
 pub mod community;
 pub mod connection;
+pub mod directory;
 pub mod framing;
 pub mod pins;
 pub mod proto;

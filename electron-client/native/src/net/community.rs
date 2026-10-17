@@ -89,6 +89,63 @@ pub(crate) fn map_attachment(a: Attachment) -> events::AttachmentPayload {
     }
 }
 
+/// What a successful COMMUNITY_AUTH_RES naming the server's central id
+/// does to the client's key in `AppState.communities`.
+#[derive(Debug, PartialEq)]
+enum Rekey {
+    /// Stay under the current id (with the reason worth logging, if any).
+    Keep(Option<&'static str>),
+    /// Move onto this central id.
+    To(String),
+}
+
+/// Decide whether the client opened as `current` (connected to
+/// `host:port`) may move onto the id the server reports. The community's
+/// claim is untrusted; central's record (`net/directory.rs`) is not:
+///
+/// * only a synthetic id — the connection's own "host:port", what an
+///   invite join opens under — is ever re-keyed. A client opened under a
+///   central id already has its real key;
+/// * central must put the reported id at this very host:port;
+/// * a client already filed under that id stays unless it is connected to
+///   the same address (a stale earlier attempt at this server).
+fn rekey_decision(
+    current: &str,
+    host: &str,
+    port: u16,
+    reported: i64,
+    central_record: Option<(String, u16)>,
+    occupant: Option<(String, u16)>,
+) -> Rekey {
+    if reported <= 0 {
+        return Rekey::Keep(None);
+    }
+    let real = reported.to_string();
+    if real == current {
+        return Rekey::Keep(None);
+    }
+    let same_addr = |h: &str, p: u16| p == port && h.eq_ignore_ascii_case(host);
+    let synthetic = current
+        .rsplit_once(':')
+        .is_some_and(|(h, p)| p.parse::<u16>().ok().is_some_and(|p| same_addr(h, p)));
+    if !synthetic {
+        return Rekey::Keep(Some("the connection already has its central id"));
+    }
+    match central_record {
+        None => return Rekey::Keep(Some("central has no address on record for that id")),
+        Some((h, p)) if !same_addr(&h, p) => {
+            return Rekey::Keep(Some("central puts that id at a different address"))
+        }
+        Some(_) => {}
+    }
+    if let Some((h, p)) = occupant {
+        if !same_addr(&h, p) {
+            return Rekey::Keep(Some("a connection to another address already holds that id"));
+        }
+    }
+    Rekey::To(real)
+}
+
 pub struct CommunityClient {
     connection: Option<Connection>,
     router_task: Option<JoinHandle<()>>,
@@ -454,24 +511,48 @@ impl CommunityClient {
                         // and membership list use. Without this the same
                         // server showed up twice (and the invite-joined
                         // one had no ServerBar tile until re-login).
-                        if resp.server_id > 0 {
+                        //
+                        // The server's word alone is not enough: a hostile
+                        // community could name another community's id and
+                        // take its place (its messages, attachment target
+                        // and channel keys). Only central's record decides.
+                        let me = s.communities.get(&server_id).map(|c| (c.host.clone(), c.port));
+                        if let (true, Some((my_host, my_port))) = (resp.server_id > 0, me) {
                             let real = resp.server_id.to_string();
-                            if real != server_id && s.communities.contains_key(&server_id) {
-                                // A stale client under the real id (e.g. an
-                                // earlier attempt) would shadow this live one.
-                                if let Some(mut old) = s.communities.remove(&real) {
-                                    old.disconnect();
+                            let occupant = s.communities.get(&real).map(|c| (c.host.clone(), c.port));
+                            match rekey_decision(
+                                &server_id,
+                                &my_host,
+                                my_port,
+                                resp.server_id,
+                                crate::net::directory::lookup(resp.server_id),
+                                occupant,
+                            ) {
+                                Rekey::To(real) => {
+                                    // A stale client under the real id (an
+                                    // earlier attempt at this same address)
+                                    // would shadow this live one.
+                                    if let Some(mut old) = s.communities.remove(&real) {
+                                        old.disconnect();
+                                    }
+                                    if let Some(mut client) = s.communities.remove(&server_id) {
+                                        client.server_id = real.clone();
+                                        s.communities.insert(real.clone(), client);
+                                    }
+                                    log::info!(
+                                        "Community {} re-keyed to central id {}",
+                                        server_id,
+                                        real
+                                    );
+                                    server_id = real;
                                 }
-                                if let Some(mut client) = s.communities.remove(&server_id) {
-                                    client.server_id = real.clone();
-                                    s.communities.insert(real.clone(), client);
-                                }
-                                log::info!(
-                                    "Community {} re-keyed to central id {}",
+                                Rekey::Keep(None) => {}
+                                Rekey::Keep(Some(why)) => log::warn!(
+                                    "Community {} says it is central id {}; not re-keying: {}",
                                     server_id,
-                                    real
-                                );
-                                server_id = real;
+                                    real,
+                                    why
+                                ),
                             }
                         }
                         // Cache attachment endpoint on the client so
@@ -1240,5 +1321,58 @@ impl Drop for CommunityClient {
         if let Some(t) = self.ping_task.take() {
             t.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rekey_decision, Rekey};
+
+    fn addr(h: &str, p: u16) -> Option<(String, u16)> {
+        Some((h.to_string(), p))
+    }
+
+    #[test]
+    fn invite_join_moves_onto_the_id_central_puts_here() {
+        let d = rekey_decision("chat.example.org:7000", "chat.example.org", 7000, 5, addr("chat.example.org", 7000), None);
+        assert_eq!(d, Rekey::To("5".into()));
+        // Host case doesn't matter; central's record is stored lowercased.
+        let d = rekey_decision("Chat.Example.org:7000", "Chat.Example.org", 7000, 5, addr("chat.example.org", 7000), None);
+        assert_eq!(d, Rekey::To("5".into()));
+    }
+
+    #[test]
+    fn a_hostile_server_cannot_claim_another_communitys_id() {
+        // Central puts community 5 elsewhere: the claim is refused.
+        let d = rekey_decision("evil.example:7000", "evil.example", 7000, 5, addr("chat.example.org", 7000), None);
+        assert!(matches!(d, Rekey::Keep(Some(_))));
+        // Same host, different port: still another address.
+        let d = rekey_decision("1.2.3.4:7001", "1.2.3.4", 7001, 5, addr("1.2.3.4", 7000), None);
+        assert!(matches!(d, Rekey::Keep(Some(_))));
+        // Central has never told us where 5 is: unconfirmed, keep.
+        let d = rekey_decision("1.2.3.4:7001", "1.2.3.4", 7001, 5, None, None);
+        assert!(matches!(d, Rekey::Keep(Some(_))));
+    }
+
+    #[test]
+    fn only_a_synthetic_host_port_id_is_rekeyed() {
+        // Opened under a central id (auto-rejoin): never moves.
+        let d = rekey_decision("7", "chat.example.org", 7000, 5, addr("chat.example.org", 7000), None);
+        assert!(matches!(d, Rekey::Keep(Some(_))));
+        // A "host:port" id for some other address than this connection's.
+        let d = rekey_decision("other.example:7000", "chat.example.org", 7000, 5, addr("chat.example.org", 7000), None);
+        assert!(matches!(d, Rekey::Keep(Some(_))));
+        // Already keyed / nothing reported: silently kept.
+        assert_eq!(rekey_decision("5", "h", 1, 5, addr("h", 1), None), Rekey::Keep(None));
+        assert_eq!(rekey_decision("h:1", "h", 1, 0, addr("h", 1), None), Rekey::Keep(None));
+    }
+
+    #[test]
+    fn never_displaces_a_client_connected_elsewhere() {
+        let d = rekey_decision("h:1", "h", 1, 5, addr("h", 1), addr("other", 1));
+        assert!(matches!(d, Rekey::Keep(Some(_))));
+        // A stale client at this same address is replaced.
+        let d = rekey_decision("h:1", "h", 1, 5, addr("h", 1), addr("H", 1));
+        assert_eq!(d, Rekey::To("5".into()));
     }
 }
