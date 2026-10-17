@@ -3116,3 +3116,22 @@ Verified: `cargo test --lib` 241 (new: restarted sealers never repeat a nonce, d
 pins load with no central flag, pinned-without-keys call refused, a pinned peer's unpinned identity never
 opens a DM or channel blob and is never stored, a key change first seen in history is surfaced and still
 opens, the retired-identity list survives save/load), napi build, renderer `tsc` 0.
+
+### Fix: relay endpoints bind only through a return-routability challenge (2026-10-17, review S11)
+
+Any datagram with a valid UDP key moved the session's voice/media endpoint to its source, so a member
+could watch every stream, then send one keyed packet from a spoofed source and aim the whole relay at a
+victim (unbounded reflection). Now a keyed datagram from an unbound address only earns it a 41-byte
+`BIND_CHALLENGE` (8-byte random cookie, ≤ 1 per session per socket per 250 ms, only for triggers ≥ 41 B);
+a `BIND_ECHO` of that cookie from the same address binds or moves it (`src/community/udp_path.hpp`).
+Nothing is relayed to an unbound endpoint; PINGs echo only there, unkeyed PINGs get nothing (the voice
+port used to echo anything to anyone). Native answers inside `MediaSocket::recv` (Plain only; sealed P2P
+sockets never answer) and pings at once, every 500 ms until echoed, so joining binds in one round trip and
+a NAT rebinding re-binds on the next packet. Wire change on both sides (client + community ship together).
+Residual: an on-path observer can still complete a challenge — the UDP key travels in clear anyway (the
+open plaintext-media-plane-header item). Not yet tested live across two machines / a NAT.
+
+Verified: community e2e 587/0 (+20: no relay before the echo; wrong / stale / other-address cookies bind
+nothing; another session's key from a new socket doesn't move it; an echo from a new address moves it;
+pacing, the 41-byte floor, unknown keys, the media path), `cargo test --lib` 247 on main with the E2EE
+fixes, napi build.
