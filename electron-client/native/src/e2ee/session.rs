@@ -1283,6 +1283,11 @@ pub enum DmJob {
     History(DmHistoryRes),
     Conversations(DmConversationsRes),
     Edited(DmMessageEdited),
+    /// No crypto, but ordered with the messages they are about: a delete,
+    /// or a read on another device of ours (multi-device), must not
+    /// overtake a message still waiting here for a key fetch.
+    Deleted(DmMessageDeleted),
+    ReadSync(DmReadSync),
 }
 
 /// Queue a DM packet for decryption + emit. Installs the worker on first
@@ -1313,6 +1318,16 @@ async fn run_worker(mut rx: mpsc::Receiver<DmJob>, state: Arc<Mutex<AppState>>) 
             DmJob::History(r) => handle_history(&state, r).await,
             DmJob::Conversations(r) => handle_conversations(&state, r).await,
             DmJob::Edited(b) => handle_edited(&state, b).await,
+            DmJob::Deleted(b) => events::emit_dm_message_deleted(events::DmMessageDeletedPayload {
+                peer: b.peer,
+                peer_uid: b.peer_uid,
+                message_id: b.message_id,
+                deleted_at: b.deleted_at,
+            }),
+            DmJob::ReadSync(r) => events::send(
+                "dm_read_synced",
+                serde_json::json!({ "peerUid": r.peer_uid, "upToId": r.up_to_id }),
+            ),
         }
     }
 }

@@ -312,6 +312,7 @@ mod tests {
                 username: "test".into(),
                 password: "pass".into(),
                 resume_token: String::new(),
+                device_id: String::new(),
             }),
             Some("my_token"),
         );

@@ -9,6 +9,7 @@
 //! are kept verbatim so subsequent PRs can wire them up to commands
 //! without touching this file's connection scaffolding.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -20,6 +21,14 @@ use crate::state::AppState;
 
 const CENTRAL_HOST: &str = "178.104.131.247";
 const CENTRAL_PORT: u16 = 8080;
+
+/// Resumes refused in a row because the account is signed in on as many
+/// devices as it may be (`LoginResponse.device_limit`). The reconnect loop
+/// starts this far up its backoff, so a device waiting for a free slot asks
+/// every 30 s rather than every second.
+static DEVICE_LIMIT_STREAK: AtomicU32 = AtomicU32::new(0);
+/// That refusal was reported once since the last sign-in.
+static DEVICE_LIMIT_NOTIFIED: AtomicBool = AtomicBool::new(false);
 
 /// Where central is. A debug build (`npm run dev`, `napi build` without
 /// `--release`) takes `DECIBELL_CENTRAL=host:port` instead, to run against a
@@ -115,6 +124,7 @@ impl CentralClient {
                 username: username.into(),
                 password: password.into(),
                 resume_token: String::new(),
+                device_id: crate::config::device_id(),
             }),
             None,
         );
@@ -155,7 +165,7 @@ impl CentralClient {
         let task = tokio::spawn(async move {
             events::emit_connection_lost("central", None);
 
-            let mut attempt = 0u32;
+            let mut attempt = DEVICE_LIMIT_STREAK.load(Ordering::Relaxed);
             loop {
                 let delay = backoff_duration(attempt);
                 log::info!(
@@ -184,6 +194,7 @@ impl CentralClient {
                                     username: String::new(),
                                     password: String::new(),
                                     resume_token: token,
+                                    device_id: crate::config::device_id(),
                                 })
                             } else {
                                 s.resume_pending = false;
@@ -191,6 +202,7 @@ impl CentralClient {
                                     username: user.clone(),
                                     password: pass.clone(),
                                     resume_token: String::new(),
+                                    device_id: crate::config::device_id(),
                                 })
                             };
                             request.map(|req| {
@@ -268,6 +280,8 @@ impl CentralClient {
             match packet.payload {
                 Some(packet::Payload::LoginRes(resp)) => {
                     if resp.success {
+                        DEVICE_LIMIT_STREAK.store(0, Ordering::Relaxed);
+                        DEVICE_LIMIT_NOTIFIED.store(false, Ordering::Relaxed);
                         let mut s = state.lock().await;
                         s.token = Some(resp.jwt_token.clone());
                         // Typed credentials are saved now that central took
@@ -365,6 +379,9 @@ impl CentralClient {
                             status_text: resp.status_text.clone(),
                             status_emoji: resp.status_emoji.clone(),
                             status_clear_in: resp.status_clear_in.max(0) as f64,
+                            dm_friends_only: resp.dm_friends_only,
+                            // A device signing in is active, so the account isn't idle.
+                            account_idle: false,
                         });
                         events::emit_login_succeeded(username, resp.uid, resp.renames);
                         tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
@@ -415,11 +432,20 @@ impl CentralClient {
                         // A refused resume (expired, or central restarted
                         // with a new key) falls back to the password,
                         // silently; only a refused password sign-in is a
-                        // failure to report.
+                        // failure to report. A resume refused because the
+                        // account is signed in on as many devices as it may
+                        // be would be refused by password too: this
+                        // connection goes, and the reconnect loop asks again
+                        // later (a slot frees when another device leaves).
                         let mut refused = None;
+                        let mut retry_later = false;
                         let fallback = {
                             let mut s = state.lock().await;
-                            if std::mem::take(&mut s.resume_pending) {
+                            if s.resume_pending && resp.device_limit {
+                                s.resume_pending = false;
+                                retry_later = true;
+                                None
+                            } else if std::mem::take(&mut s.resume_pending) {
                                 s.resume_token = None;
                                 let tx = s.central.as_ref().and_then(|c| c.connection_write_tx());
                                 s.credentials.clone().zip(tx)
@@ -440,6 +466,19 @@ impl CentralClient {
                         if let Some((user, pass)) = refused {
                             forget_saved_credentials(user, pass).await;
                         }
+                        if retry_later {
+                            let streak = DEVICE_LIMIT_STREAK.load(Ordering::Relaxed);
+                            DEVICE_LIMIT_STREAK.store((streak + 1).min(5), Ordering::Relaxed);
+                            if !DEVICE_LIMIT_NOTIFIED.swap(true, Ordering::Relaxed) {
+                                events::emit_login_failed(resp.message);
+                            }
+                            // Ends this read loop, which starts the reconnect.
+                            let conn = state.lock().await.central.as_mut().and_then(|c| c.connection.take());
+                            if let Some(conn) = conn {
+                                conn.shutdown();
+                            }
+                            continue;
+                        }
                         match fallback {
                             Some(((user, pass), tx)) => {
                                 let data = build_packet(
@@ -448,6 +487,7 @@ impl CentralClient {
                                         username: user,
                                         password: pass,
                                         resume_token: String::new(),
+                                        device_id: crate::config::device_id(),
                                     }),
                                     None,
                                 );
@@ -645,13 +685,52 @@ impl CentralClient {
                         },
                     );
                 }
+                // Through the DM worker too, so a delete (or a read on
+                // another device) never overtakes the message it is about
+                // while that one waits for a key fetch.
                 Some(packet::Payload::DmMessageDeleted(b)) => {
-                    events::emit_dm_message_deleted(events::DmMessageDeletedPayload {
-                        peer: b.peer,
-                        peer_uid: b.peer_uid,
-                        message_id: b.message_id,
-                        deleted_at: b.deleted_at,
-                    });
+                    crate::e2ee::session::enqueue(&state, crate::e2ee::session::DmJob::Deleted(b)).await;
+                }
+                Some(packet::Payload::DmReadSync(sync)) => {
+                    crate::e2ee::session::enqueue(&state, crate::e2ee::session::DmJob::ReadSync(sync)).await;
+                }
+                // Multi-device (docs/superpowers/specs/2026-10-18-multi-
+                // device-design.md): the account's own state changed on one
+                // of its devices (or the sweep cleared its message).
+                Some(packet::Payload::OwnPresence(own)) => {
+                    // Invisible is the account's: this device's communities
+                    // follow it too.
+                    let invisible = own.status == crate::net::proto::PresenceStatus::PresenceInvisible as i32;
+                    tokio::spawn(crate::commands::presence::apply_hidden(invisible));
+                    events::emit_own_presence(own_presence_payload(&own));
+                }
+                Some(packet::Payload::MembershipAdded(added)) => {
+                    if let Some(info) = added.server {
+                        crate::net::pins::set_expected(&info.host_ip, info.port as u16, &info.cert_fingerprint);
+                        crate::net::directory::record(info.id.into(), &info.host_ip, info.port.into());
+                        let uid = state.lock().await.uid;
+                        tokio::spawn(join_added_membership(state.clone(), uid, info));
+                    }
+                }
+                Some(packet::Payload::SessionClosed(closed)) => {
+                    if closed.reason == session_closed::Reason::SignedOut as i32 {
+                        // The account signed its other devices out: so are we,
+                        // saved sign-in and all, rather than reconnecting.
+                        log::info!("[auth] central signed this device out");
+                        tokio::spawn(async {
+                            let _ = crate::commands::auth::logout().await;
+                        });
+                    } else {
+                        // Another connection signed in with our device id while
+                        // we are connected: this install was copied. Become a
+                        // device of our own before the reconnect that follows
+                        // (central closes this connection) signs in.
+                        let id = tokio::task::spawn_blocking(crate::config::renew_device_id).await;
+                        log::warn!(
+                            "[auth] another copy of this install signed in with our device id; now {}",
+                            id.unwrap_or_default()
+                        );
+                    }
                 }
                 Some(packet::Payload::DmEditRes(resp)) => {
                     events::emit_dm_message_edit_responded(
@@ -690,18 +769,58 @@ impl CentralClient {
                         let _ = w.send(res);
                     }
                 }
-                // Someone else changed their name; our own rename is
-                // announced by `rename_account` once its reply lands.
+                // Someone else changed their name, or another device of ours
+                // changed ours (a rename on this device is announced by
+                // `rename_account` once its reply lands; central doesn't echo
+                // it here).
                 Some(packet::Payload::UserRenamed(b)) => {
-                    let me = {
+                    let (me, own) = {
                         let mut s = state.lock().await;
                         // Re-fetch their bundle on next use: a name-bound
                         // (v1) one stops counting once the name moves on.
                         s.e2ee.fresh.remove(&b.uid);
                         s.e2ee.current_ids.remove(&b.uid);
-                        s.uid
+                        let own = (b.uid > 0 && b.uid == s.uid && s.username.as_deref() != Some(b.username.as_str()))
+                            .then(|| {
+                                s.username = Some(b.username.clone());
+                                let creds = s.credentials.as_mut().map(|(user, pass)| {
+                                    *user = b.username.clone();
+                                    crate::config::Credentials { username: user.clone(), password: pass.clone() }
+                                });
+                                // A fresh token names us anew: it goes to our
+                                // communities (net/token.rs adopts the reply).
+                                let refresh = s.token.as_deref().and_then(|token| {
+                                    let tx = s.central.as_ref()?.connection_write_tx()?;
+                                    Some((
+                                        tx,
+                                        build_packet(
+                                            packet::Type::TokenRefreshReq,
+                                            packet::Payload::TokenRefreshReq(TokenRefreshRequest {}),
+                                            Some(token),
+                                        ),
+                                    ))
+                                });
+                                (creds, refresh)
+                            });
+                        (s.uid, own)
                     };
-                    if b.uid > 0 && b.uid != me {
+                    if let Some((creds, refresh)) = own {
+                        // Auto-login uses the saved credentials: they follow
+                        // the new name (only if a sign-in is saved).
+                        if let Some(creds) = creds {
+                            persist_credentials(creds, true).await;
+                        }
+                        events::emit_user_renamed(events::UserRenamedPayload {
+                            uid: b.uid,
+                            username: b.username,
+                            is_self: true,
+                        });
+                        if let Some((tx, data)) = refresh {
+                            tokio::spawn(async move {
+                                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await;
+                            });
+                        }
+                    } else if b.uid > 0 && b.uid != me {
                         events::emit_user_renamed(events::UserRenamedPayload {
                             uid: b.uid,
                             username: b.username,
@@ -802,6 +921,74 @@ impl CentralClient {
     }
 }
 
+/// OWN_PRESENCE as the renderer's `own_presence` event (the same one a
+/// sign-in emits).
+fn own_presence_payload(own: &crate::net::proto::OwnPresence) -> events::OwnPresencePayload {
+    events::OwnPresencePayload {
+        supported: true,
+        status: crate::presence::status_name(own.status).to_string(),
+        status_text: own.status_text.clone(),
+        status_emoji: own.status_emoji.clone(),
+        status_clear_in: own.status_clear_in.max(0) as f64,
+        dm_friends_only: own.dm_friends_only,
+        account_idle: own.idle,
+    }
+}
+
+/// Whether a community central just told us we joined (MEMBERSHIP_ADDED) is
+/// one this device has a connection to already: by central's id, or by
+/// address (an invite join opens under "host:port" until the community
+/// reports its id).
+fn connected_to<'a>(
+    mut existing: impl Iterator<Item = (&'a str, &'a str, u16)>,
+    info: &crate::net::proto::CommunityServerInfo,
+) -> bool {
+    let id = info.id.to_string();
+    existing.any(|(server_id, host, port)| {
+        server_id == id || (port == info.port as u16 && host.eq_ignore_ascii_case(&info.host_ip))
+    })
+}
+
+/// Another device of this account joined a community (MEMBERSHIP_ADDED):
+/// show its tile and connect, as auto-rejoin does at sign-in. The device that
+/// joined hears it too and is connected already, perhaps still under its
+/// "host:port" id: hence the grace before looking.
+async fn join_added_membership(
+    state: Arc<Mutex<AppState>>,
+    uid: i64,
+    info: crate::net::proto::CommunityServerInfo,
+) {
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    {
+        let s = state.lock().await;
+        // Signed out (or in as someone else) meanwhile.
+        if s.token.is_none() || s.uid != uid {
+            return;
+        }
+        let existing = s.communities.values().map(|c| (c.server_id.as_str(), c.host.as_str(), c.port));
+        if connected_to(existing, &info) {
+            return;
+        }
+    }
+    let server_id = info.id.to_string();
+    let (host, port) = (info.host_ip.clone(), info.port as u16);
+    events::send(
+        "membership_added",
+        events::ServerInfo {
+            id: info.id,
+            name: info.name,
+            description: info.description,
+            host_ip: info.host_ip,
+            port: info.port,
+            member_count: info.member_count,
+            picture_version: info.picture_version,
+        },
+    );
+    if let Err(e) = crate::commands::servers::connect_with_invite(server_id, host, port, None).await {
+        log::info!("[membership] connect to a community joined elsewhere failed: {e}");
+    }
+}
+
 /// Central refused this password sign-in for good: wrong password or no
 /// such account (it doesn't say which, on purpose). LoginResponse has no
 /// error code, so this matches central's message (src/server/main.cpp
@@ -865,7 +1052,41 @@ impl Drop for CentralClient {
 
 #[cfg(test)]
 mod tests {
-    use super::is_definitive_refusal;
+    use super::{connected_to, is_definitive_refusal, own_presence_payload};
+    use crate::net::proto::{CommunityServerInfo, OwnPresence, PresenceStatus};
+
+    #[test]
+    fn own_presence_maps_to_the_sign_in_event() {
+        let p = own_presence_payload(&OwnPresence {
+            status: PresenceStatus::PresenceDnd as i32,
+            status_text: "away for lunch".into(),
+            status_emoji: "🍜".into(),
+            status_clear_in: 1800,
+            dm_friends_only: true,
+            idle: true,
+        });
+        assert!(p.supported);
+        assert_eq!(p.status, "dnd");
+        assert_eq!((p.status_text.as_str(), p.status_emoji.as_str()), ("away for lunch", "🍜"));
+        assert_eq!(p.status_clear_in, 1800.0);
+        assert!(p.dm_friends_only && p.account_idle);
+        let invisible = own_presence_payload(&OwnPresence {
+            status: PresenceStatus::PresenceInvisible as i32,
+            status_clear_in: -5,
+            ..Default::default()
+        });
+        assert_eq!(invisible.status, "invisible");
+        assert_eq!(invisible.status_clear_in, 0.0);
+    }
+
+    #[test]
+    fn a_community_joined_here_is_recognised_by_id_or_address() {
+        let info = CommunityServerInfo { id: 7, host_ip: "Chat.Example.org".into(), port: 7000, ..Default::default() };
+        assert!(connected_to([("7", "10.0.0.1", 9000)].into_iter(), &info));
+        assert!(connected_to([("chat.example.org:7000", "chat.example.org", 7000)].into_iter(), &info));
+        assert!(!connected_to([("8", "chat.example.org", 7001)].into_iter(), &info));
+        assert!(!connected_to(std::iter::empty(), &info));
+    }
 
     #[test]
     fn only_a_wrong_password_is_a_definitive_refusal() {

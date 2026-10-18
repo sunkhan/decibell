@@ -984,6 +984,10 @@ pub struct OwnPresencePayload {
     pub status_text: String,
     pub status_emoji: String,
     pub status_clear_in: f64,
+    /// The account's "only friends may DM me" (central keeps it).
+    pub dm_friends_only: bool,
+    /// Every device of the account is idle: others see Online as Away.
+    pub account_idle: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

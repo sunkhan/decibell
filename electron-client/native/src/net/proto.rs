@@ -11,11 +11,13 @@ mod tests {
             username: "alice".into(),
             password: "secret123".into(),
             resume_token: String::new(),
+            device_id: "0123456789abcdef0123456789abcdef".into(),
         };
         let bytes = req.encode_to_vec();
         let decoded = LoginRequest::decode(&bytes[..]).unwrap();
         assert_eq!(decoded.username, "alice");
         assert_eq!(decoded.password, "secret123");
+        assert_eq!(decoded.device_id, "0123456789abcdef0123456789abcdef");
     }
 
     #[test]
@@ -28,6 +30,7 @@ mod tests {
                 resume_token: String::new(),
                 username: "bob".into(),
                 password: "pass".into(),
+                device_id: String::new(),
             })),
         };
         let bytes = packet.encode_to_vec();
@@ -63,10 +66,13 @@ mod tests {
             e2ee_uid_binding: true,
             renames: true,
             resume_token: "resume.me".into(),
+            dm_friends_only: true,
+            device_limit: false,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();
         assert!(decoded.success);
+        assert!(decoded.dm_friends_only && !decoded.device_limit);
         assert_eq!(decoded.resume_token, "resume.me");
         assert_eq!(decoded.jwt_token, "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.test");
         assert!(decoded.presence_statuses);

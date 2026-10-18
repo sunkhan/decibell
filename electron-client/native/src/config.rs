@@ -253,6 +253,10 @@ struct ConfigFile {
     /// The saved sign-in, sealed (see the module doc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_login: Option<SealedLogin>,
+    /// This install's device id (multi-device sign-in, `device_id`). Kept
+    /// here rather than in `settings`, which the renderer writes back whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
     #[serde(default)]
     settings: AppSettings,
 }
@@ -574,23 +578,94 @@ fn save_at(
     settings: &AppSettings,
 ) -> Result<(), String> {
     let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let existing = read_file(path).ok().flatten().unwrap_or_default();
     let config = match credentials {
         Some(creds) => ConfigFile {
             credentials: None,
             saved_login: Some(seal_login(creds, keys)?),
+            device_id: existing.device_id,
             settings: settings.clone(),
         },
         // Only updating settings: keep whatever sign-in is saved, as is.
-        None => {
-            let existing = read_file(path).ok().flatten().unwrap_or_default();
-            ConfigFile {
-                credentials: existing.credentials,
-                saved_login: existing.saved_login,
-                settings: settings.clone(),
-            }
-        }
+        None => ConfigFile {
+            credentials: existing.credentials,
+            saved_login: existing.saved_login,
+            device_id: existing.device_id,
+            settings: settings.clone(),
+        },
     };
     write_file(path, &config)
+}
+
+// ── Device id (docs/superpowers/specs/2026-10-18-multi-device-design.md) ──
+
+/// This install's id for central (`LoginRequest.device_id`), made once.
+static DEVICE_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 128 random bits, hex.
+fn random_device_id() -> String {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0u8; 16];
+    if SystemRandom::new().fill(&mut bytes).is_err() {
+        // No randomness: a time-based id still tells this install apart.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        bytes = nanos.to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The id stored in `path`, or a new one written there.
+fn device_id_at(path: &Path) -> Result<String, String> {
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut config = read_file(path)?.unwrap_or_default();
+    if let Some(id) = config.device_id.as_ref().filter(|id| !id.is_empty() && id.len() <= 64) {
+        return Ok(id.clone());
+    }
+    let id = random_device_id();
+    config.device_id = Some(id.clone());
+    write_file(path, &config)?;
+    Ok(id)
+}
+
+/// Replace the id stored in `path` with a new one.
+fn renew_device_id_at(path: &Path) -> Result<String, String> {
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut config = read_file(path)?.unwrap_or_default();
+    let id = random_device_id();
+    config.device_id = Some(id.clone());
+    write_file(path, &config)?;
+    Ok(id)
+}
+
+/// This install's device id: read once, made on first use. A config that
+/// can't be read or written still gets one for this run (signing in then
+/// counts as a new device after a restart, which is harmless).
+pub fn device_id() -> String {
+    let mut cached = DEVICE_ID.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(id) = cached.as_ref() {
+        return id.clone();
+    }
+    let id = device_id_at(&config_path()).unwrap_or_else(|e| {
+        log::warn!("[config] device id not stored: {e}");
+        random_device_id()
+    });
+    *cached = Some(id.clone());
+    id
+}
+
+/// Central closed our connection because another connection signed in with
+/// our device id while we were connected (SESSION_CLOSED REPLACED): this
+/// install was copied. Take a new id, so the two copies are two devices.
+pub fn renew_device_id() -> String {
+    let id = renew_device_id_at(&config_path()).unwrap_or_else(|e| {
+        log::warn!("[config] new device id not stored: {e}");
+        random_device_id()
+    });
+    *DEVICE_ID.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+    id
 }
 
 /// Write-to-temp-then-rename so a crash mid-write can never tear the
@@ -834,6 +909,32 @@ mod tests {
         assert_eq!(load_at(&path, &k).unwrap().credentials, None);
         clear_at(&path).unwrap();
         assert!(load_at(&path, &k).unwrap().settings.agc_enabled);
+    }
+
+    #[test]
+    fn the_device_id_is_made_once_and_survives_every_writer() {
+        let path = tmp_config("device-id");
+        let k = keys(true);
+        let id = device_id_at(&path).unwrap();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(device_id_at(&path).unwrap(), id, "read back, not made again");
+        // Saving a sign-in, saving settings, forgetting and clearing the
+        // sign-in all keep it.
+        save_at(&path, &k, Some(&creds()), &AppSettings::default()).unwrap();
+        save_at(&path, &k, None, &AppSettings::default()).unwrap();
+        forget_if_at(&path, &k, "alice", "correct horse").unwrap();
+        clear_at(&path).unwrap();
+        assert_eq!(device_id_at(&path).unwrap(), id);
+        // A copied install renews it.
+        let renewed = renew_device_id_at(&path).unwrap();
+        assert_ne!(renewed, id);
+        assert_eq!(device_id_at(&path).unwrap(), renewed);
+        // A settings save from the renderer keeps it too.
+        let mut s = AppSettings::default();
+        s.theme = "graphite".into();
+        save_at(&path, &k, None, &s).unwrap();
+        assert_eq!(device_id_at(&path).unwrap(), renewed);
     }
 
     #[test]
