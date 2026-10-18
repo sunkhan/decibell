@@ -3896,3 +3896,119 @@ Verified: cargo test 285; napi build; tsc 0 / 0; a throwaway check of the regist
 cleared-meanwhile stays cleared, failed read keeps the entry, the pinned fingerprint still matches). Live
 test (needs an app restart: main changed): stay connected past one renewal and confirm images still load.
 To see it sooner, a debug build could shorten `REFRESH_EVERY`; the token's 24 h lifetime is the real test.
+
+### Fix: NVENC only ever gets its BGRA frame; RGBA captures are swapped into it (2026-10-18, review B8)
+
+NVENC is opened with `pix_fmt=BGRA` (it converts to NV12 on the GPU). A capture that negotiated RGBA or RGBx
+(xdg-desktop-portal-wlr and -hyprland can; the KDE dev box negotiates BGRA) fell through to the sws → NV12 path,
+and the NV12 frame went to the BGRA context. nvenc.c copies an input frame by the frame's own layout with the
+BGRA pitch, so the chroma plane landed past the input buffer. The review called the overflow likely; on this
+box's RTX 4080 the old path SIGSEGVs.
+
+`encode_bgra_frame` now routes every frame through `input_route()`. An encoder opened for BGRA only ever gets
+`bgra_frame`. A BGRA capture is copied as is. An RGBA capture is copied with R and B swapped in the same pass
+(no extra full-frame copy): about 0.7 ms per 1080p frame, against 0.4 ms for the plain copy (opt-level 3).
+A capture at another size goes through sws, which swaps while it scales. NV12 is only for the encoders opened
+with it (VAAPI, libx264), and `encode_nv12_frame` refuses a BGRA context, so a future NV12 capture fails
+visibly instead of corrupting memory. Frame geometry and length are checked before any copy. The row copies
+also take a tight last row, which used to be a slice panic.
+
+Verified (a64f331): cargo test (routing invariant: a BGRA encoder never gets ConvertToNv12; swizzle and row
+copies across strides). An ignored test (`cargo test --lib nvenc_ -- --ignored`) opens the real h264_nvenc on
+the RTX 4080 and encodes BGRA and RGBA captures, at the encoder size and scaled from 1280×720, with padded
+strides. The system ffmpeg decodes each stream and the test checks the colours: left half red, right half
+blue, so a missing or doubled swap shows up. All four pass. Planting the old behaviour makes the same test
+fail: a skipped swap decodes red as (0, 0, 254), and the NV12-into-BGRA route kills the process with SIGSEGV.
+
+Live test pending: stream with native encoding on a compositor whose portal negotiates RGBA (Hyprland with
+xdg-desktop-portal-hyprland, Sway / river with xdg-desktop-portal-wlr). The log's "Negotiated format: RGBA…"
+or "RGBx…" line confirms the route. Colours should be right and the stream should stay up.
+
+### Fix: a stream taken to another channel seals with that channel's keys (2026-10-18, review B7)
+
+"Take stream with me" re-pointed the senders at the new voice channel's sockets. But `VideoSender` and the
+stream-audio pipeline kept the MLS key ring they were built with, while `join_voice_channel` had started a new
+group with a new ring. Every frame after the move was sealed under the old group's last epoch. The new
+channel's watchers got a black, silent stream, and the channel left behind could still open it. Native
+thumbnails kept posting to the old channel, which refused them. And the picker's capture-ended callback
+stopped the stream with the ids it started with, so the old channel was told and the new one kept a ghost
+LIVE stream.
+
+- `VideoSender` keeps a `SendRoute` (socket + ring) in one `ArcSwap`, loaded once per frame, so no frame is
+  sealed for one channel and sent on the other's socket. The frame counter and stream salt carry on, so no
+  nonce repeats under any key. This covers the native encoders on both platforms and the WebCodecs path
+  (`send_video_frame` goes through the same sender).
+- The stream-audio pipeline takes `Retarget(socket, ring)`. It now reads control messages after the frame
+  wait and before encoding, so a retarget already sent applies to the next packet.
+- `move_stream_to_channel` gives both the ring of the new channel's group. If the voice session has no group
+  for that channel it refuses, and the renderer ends the stream: never the old keys, never plaintext.
+- The announce target is shared with the native thumbnail sender, now one task for Windows and Linux, so
+  thumbnails follow the stream. The WebCodecs thumbnails already used the retargeted ids.
+- `stop_screen_share` uses the channel the stream is announced in over the caller's ids. A stale id can't
+  stop the wrong channel. Explicit ids only fill in for an engine with no target.
+
+Verified (d87983f): cargo test, +2. The new tests retarget each sender mid-stream and check that the next
+packet reaches the new socket, opens with the new ring and not the old one, and that nothing more goes to the
+old socket. The commit also type-checks on its own in a detached worktree. cfg(windows): `start_windows` lost
+its two id parameters and uses the shared thumbnail sender (`media/mod.rs`, `commands/streaming.rs`). Run the
+Windows Native Check before tagging.
+
+Live test pending: two accounts, A streaming in voice channel 1 with "Take stream with me when switching voice
+channels" on. B waits in channel 2. A switches to channel 2. B's tile should show the stream's thumbnail
+within ~15 s. B watches: picture and stream audio, no black or silent stream. A stops: B sees the stream end,
+with no LIVE left in either channel. Repeat on the WebCodecs path (native encoding off) and, once the
+Windows check is green, from Windows.
+
+### Fix: a Linux native stream that loses its source or breaks ends visibly (2026-10-18, review B9)
+
+Linux native streams died silently. An encode error, a panic or the capture channel disconnecting only
+logged, the UI kept showing "Streaming", and watchers stalled. Stopping the share from the KDE / GNOME tray,
+or closing the shared window, left the PipeWire stream paused with the capture thread alive, so the encoder
+re-sent the last frame forever. The portal's `Session.Closed` was never watched. Separately,
+`stream_capture_ended` had a renderer listener but no native emitter.
+
+Capture (portal / PipeWire) now ends on its own when the source goes, and records why
+(`CaptureEndSlot`) before its frame sender drops. It watches four things:
+- the portal's `Session.Closed` on our session path (the tray's "stop sharing"; the backends also close the
+  session when the shared window or monitor goes away),
+- the shared node leaving the PipeWire registry (window closed, monitor unplugged),
+- the stream going to Error, or back to Unconnected,
+- the core connection failing.
+
+Paused alone is not an end: compositors pause a minimized window's stream and resume it. A lost source
+outranks a failure reported around the same moment. A stopper (a pw channel into the capture's main loop) ends
+a paused capture from outside, on stream stop and when the encoder fails to open, so a failed or stopped
+stream no longer leaves the portal session open.
+
+The encoder thread now works like Windows' encoder thread. The loop returns Stopped, SourceEnded or Failed:
+60 consecutive encode failures, a panic, or a capture that failed or vanished. The thread tells the renderer
+first (`stream_capture_ended` or `native_stream_failed`) and says nothing after a requested stop, so a late
+event can't end the next session. It flushes only on a requested stop. `stop()` flags the thread, ends the
+capture and joins it, giving up after 3 s as on Windows.
+
+Renderer: one end-of-stream path (`streamEnded.ts`) for native source loss, native failures and the WebCodecs
+capture ending (track ended, encoder or pump failure). It clears LIVE, leaves our own fullscreen, and tears the
+session down through `stopActiveStream()`, whose `stop_screen_share` tells the community, so watchers see the
+stream end. If a reload lost the renderer session, it stops the native engine directly. It also tells a DM-call
+peer, plays the stop sound, and shows "Stream ended" (source) or "Stream stopped" (failure). The picker's
+capture-ended callback acts only for the live session and no longer passes its original ids.
+
+Windows already reports source loss (WGC item closed, window gone, DXGI loss) as `native_stream_failed`: the
+stream ends with the failure toast. Not changed: a "Stream ended" toast there would need the capture's end
+reason plumbed into `encoder_thread.rs`.
+
+Verified (9bcbcb4): cargo test 294 (285 + 9 across the three fixes) + 3 ignored. The B9 tests cover the
+capture end priority, which PipeWire state changes end a capture, and the encoder thread's exit mapping and
+report suppression. A throwaway bundle of `streamEnded.ts` with mocked stores passed 14 checks: one teardown
+and an info toast on source loss, a repeat report silent, an orphaned engine stopped quietly, an error toast on
+failure, own fullscreen left and another's kept, a session still starting torn down. napi build clean; tsc
+web / node 0 / 0; clippy adds no lint in the touched files.
+
+Live test pending (KDE Plasma Wayland, then GNOME; native encoding on):
+1. Go live on a monitor, with a second account watching. Stop the share from the tray's screen-sharing
+   indicator. Expect the toast, the stop sound, LIVE gone on both sides, and the watcher's player closing.
+   The log should show "portal session closed — ending the capture" or "ending capture: SourceGone".
+2. Go live on a single window, then close that window: the same end.
+3. Go live, minimize the shared window for ~30 s, restore it. The stream must survive (frozen frame, then
+   live again).
+4. Press Stop normally: no toast, and no `stream_capture_ended` / `native_stream_failed` in the log.
