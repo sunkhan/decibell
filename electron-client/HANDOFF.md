@@ -419,6 +419,12 @@ letting the failure fall into a catch block.
   `get_call_config().callSignaling` (from `LoginResponse`) gates the button.
 - Ring/ringback are `loopSound("call_ring")` with a returned `stop()`; both
   sides time out at 45 s (`RING_TIMEOUT_MS`).
+- **Several devices per account** (`docs/superpowers/specs/2026-10-18-multi-device-design.md`):
+  central keeps a call registry. An INVITE rings every device of the callee; the first ACCEPT takes
+  the call and the others get `ANSWERED_ELSEWHERE` (a REJECT: `DECLINED_ELSEWHERE`), which end the
+  ringing card with a short end state (`callStore.incomingEnded`). BUSY reaches the caller only when
+  no device can ring, so a device in a call keeps auto-answering BUSY. After the answer, signals go
+  only between the two connections in the call; one that reconnects keeps its place by device id.
 
 ### 5.11 Stream-audio capture — platform traps
 
@@ -460,6 +466,10 @@ Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short versio
   loop. DM packets are handed to the ordered worker (`session::enqueue`) which awaits fetches
   and emits; the router only resolves waiters. Adding a DM-shaped packet? Route it through a
   new `DmJob` arm.
+- **Another device of the account** has the identity only after the passphrase restores the backup
+  (bootstrap reports *locked*; `setup` refuses to publish over a backup). A reset on one device reaches
+  the others as `E2EE_KEYS_CHANGED` (they lock); one that was signed out compares its store with
+  central's current bundle at bootstrap (`lock_if_rotated_elsewhere`).
 - **Status is per login, per device:** `unavailable` (central lacks `LoginResponse.e2ee_keys`,
   or logged out) → `not_set_up` → `locked` (backup exists on central, no usable local store)
   → `ready`. `session::bootstrap` runs after every LoginRes (spawned). The renderer's

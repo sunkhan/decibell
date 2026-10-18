@@ -186,6 +186,8 @@ impl CentralClient {
                         // password in the LoginRes handler. Send after
                         // releasing AppState: connection.send() writes to a
                         // bounded channel that can block on a dead socket.
+                        // Read before the lock: the first read touches the config file.
+                        let device_id = crate::config::device_id();
                         let login_data = {
                             let mut s = state.lock().await;
                             let request = if let Some(token) = s.resume_token.clone() {
@@ -194,7 +196,7 @@ impl CentralClient {
                                     username: String::new(),
                                     password: String::new(),
                                     resume_token: token,
-                                    device_id: crate::config::device_id(),
+                                    device_id: device_id.clone(),
                                 })
                             } else {
                                 s.resume_pending = false;
@@ -202,7 +204,7 @@ impl CentralClient {
                                     username: user.clone(),
                                     password: pass.clone(),
                                     resume_token: String::new(),
-                                    device_id: crate::config::device_id(),
+                                    device_id: device_id.clone(),
                                 })
                             };
                             request.map(|req| {
