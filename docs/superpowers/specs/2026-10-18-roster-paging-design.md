@@ -81,6 +81,7 @@ new row). Role ids come from one batched query per page (`member_role_ids_for`).
 | Profile popup / modal (roles, joined date), user context menu (name, hierarchy for moderation) | Fixed: `useMember` |
 | Own permissions, timeout pill, own nickname (permissions.ts, ChatPanel, RolesTab, PermissionsTab) | Fixed: own row in page 1's `extra` |
 | Server settings Members tab counts | Fixed: server counts |
+| Server settings opening (`ServerSettingsModal`) | Fixed: no longer re-fetches page 1, which replaced what the sidebar had paged in (deltas keep the roster live) |
 | Overview tab owner name | Fixed: lookup |
 | Overview tab transfer-ownership picker | Documented: lists loaded members only (it already missed unloaded offline members); a server-search picker is the fix |
 | Invite friends filtering | Documented: loaded roster only by owner decision (no friend list to the community, so no lookups either); a member can still be listed and the invite comes back already_member |

@@ -159,11 +159,12 @@ export default function ServerSettingsModal({ serverId }: Props) {
     }
   }, [isOpen]);
 
-  // Fresh roster + roles whenever the screen opens — every tab feeds
-  // off these, and the pushed broadcasts keep them live afterwards.
+  // Fresh bans + roles whenever the screen opens — tabs feed off these,
+  // and the pushed broadcasts keep them live afterwards. Not the roster:
+  // its deltas have kept it (and its counts) live since sign-in, and a
+  // first page would replace whatever the member sidebar has paged in.
   useEffect(() => {
     if (!isOpen) return;
-    invoke("list_members", { serverId, after: "", limit: 100 }).catch(console.error);
     invoke("list_bans", { serverId }).catch(() => {});
     invoke("list_roles", { serverId }).catch(() => {});
   }, [isOpen, serverId]);
