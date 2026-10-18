@@ -296,6 +296,68 @@ impl SwsScaler {
     }
 }
 
+/// How a captured BGRA/RGBA CPU frame reaches the encoder's input frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputRoute {
+    /// Rows copied as they are into the BGRA input frame.
+    CopyBgra,
+    /// Rows copied into the BGRA input frame with R and B swapped (an
+    /// RGBA/RGBx capture), in the same pass as the copy.
+    SwizzleToBgra,
+    /// sws scales (and swaps RGBA to BGRA) into the BGRA input frame.
+    ScaleToBgra,
+    /// sws converts into the NV12 input frame (encoders opened with NV12).
+    ConvertToNv12,
+}
+
+/// Pick the route for a frame. An encoder opened for BGRA input (NVENC)
+/// only ever gets its BGRA frame; NV12 is for the encoders opened with it.
+fn input_route(bgra_input: bool, is_bgra: bool, same_size: bool) -> InputRoute {
+    match (bgra_input, same_size, is_bgra) {
+        (false, _, _) => InputRoute::ConvertToNv12,
+        (true, true, true) => InputRoute::CopyBgra,
+        (true, true, false) => InputRoute::SwizzleToBgra,
+        (true, false, _) => InputRoute::ScaleToBgra,
+    }
+}
+
+/// Copy `rows` rows of `row_bytes` between buffers with their own strides.
+/// Matching strides take one memcpy, which also covers a source whose last
+/// row stops at `row_bytes`.
+fn copy_rows(src: &[u8], src_stride: usize, dst: &mut [u8], dst_stride: usize, row_bytes: usize, rows: usize) {
+    if rows == 0 {
+        return;
+    }
+    if src_stride == dst_stride {
+        let n = (rows - 1) * src_stride + row_bytes;
+        dst[..n].copy_from_slice(&src[..n]);
+        return;
+    }
+    for row in 0..rows {
+        dst[row * dst_stride..][..row_bytes].copy_from_slice(&src[row * src_stride..][..row_bytes]);
+    }
+}
+
+/// `copy_rows` for RGBA/RGBx → BGRA: each pixel's R and B bytes trade
+/// places, the 4th byte (alpha or padding) is kept. One pass with the same
+/// memory traffic as the plain copy it stands in for.
+fn swizzle_rows_rgba_to_bgra(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    row_bytes: usize,
+    rows: usize,
+) {
+    for row in 0..rows {
+        let (s, _) = src[row * src_stride..][..row_bytes].as_chunks::<4>();
+        let (d, _) = dst[row * dst_stride..][..row_bytes].as_chunks_mut::<4>();
+        for (d, s) in d.iter_mut().zip(s) {
+            *d = [s[2], s[1], s[0], s[3]];
+        }
+    }
+}
+
 /// Test-open a hardware encoder at a small probe resolution to confirm it
 /// actually works on this machine's drivers — `find_by_name` only tells us
 /// FFmpeg *registered* the encoder, not that the GPU/driver can open it.
@@ -383,9 +445,10 @@ pub struct H264Encoder {
     nv12_frame: ffmpeg_next::frame::Video,
     /// Persistent scaler for BGRA→NV12 conversion (fallback for non-NVENC).
     scaler: Option<SwsScaler>,
-    /// Whether the encoder accepts BGRA input directly (h264_nvenc).
+    /// Whether the encoder was opened with pix_fmt=BGRA (the NVENC family).
     /// When true, NVENC handles BGRA→NV12 conversion on the GPU, avoiding
-    /// expensive CPU-based sws_scale color conversion.
+    /// expensive CPU-based sws_scale color conversion — and only
+    /// `bgra_frame` may be sent to it (see `input_route`).
     supports_bgra_input: bool,
     /// Persistent BGRA frame buffer for direct BGRA input path.
     bgra_frame: Option<ffmpeg_next::frame::Video>,
@@ -1561,6 +1624,13 @@ impl H264Encoder {
     /// Encode a raw NV12 frame into H.264 AVCC format.
     /// Used by Windows capture backends which output NV12 directly.
     pub fn encode_nv12_frame(&mut self, nv12_data: &[u8], width: u32, height: u32) -> Result<Option<EncodedFrame>, String> {
+        // An encoder opened for BGRA input lays a frame out by its own
+        // format with the BGRA pitch: an NV12 frame sent to it reads (and,
+        // in NVENC's copy, writes) past the frames' buffers. No capture
+        // produces NV12 today; refuse rather than corrupt memory.
+        if self.supports_bgra_input {
+            return Err("NV12 input on an encoder opened for BGRA".to_string());
+        }
         let frame = &mut self.nv12_frame;
 
         // NV12 layout: Y plane (W×H bytes), UV plane (W×H/2 bytes, interleaved U,V)
@@ -1599,7 +1669,9 @@ impl H264Encoder {
     }
 
     /// Encode a raw BGRA/RGBA frame.
-    /// - NVENC path: sends BGRA directly to the GPU encoder (no CPU color conversion).
+    /// - NVENC path: the frame goes into the BGRA input frame (an RGBA
+    ///   capture has R and B swapped on the way) and the GPU converts to
+    ///   NV12 — no CPU colour conversion.
     /// - Fallback path: converts to NV12 via CPU sws_scale (for VA-API etc.).
     pub fn encode_bgra_frame(
         &mut self,
@@ -1609,9 +1681,20 @@ impl H264Encoder {
         stride: usize,
         is_bgra: bool,
     ) -> Result<Option<EncodedFrame>, String> {
-        // Fast path: NVENC accepts BGRA directly, GPU handles color conversion
-        if self.supports_bgra_input && is_bgra {
-            return self.encode_bgra_direct(rgba_data, src_width, src_height, stride);
+        let row_bytes = src_width as usize * 4;
+        if src_width == 0 || src_height == 0 || stride < row_bytes {
+            return Err(format!("bad frame geometry {src_width}x{src_height} stride {stride}"));
+        }
+        if rgba_data.len() < (src_height as usize - 1) * stride + row_bytes {
+            return Err(format!(
+                "short frame: {} bytes for {src_width}x{src_height} stride {stride}",
+                rgba_data.len()
+            ));
+        }
+        let same_size = src_width == self.target_width && src_height == self.target_height;
+        let route = input_route(self.supports_bgra_input, is_bgra, same_size);
+        if route != InputRoute::ConvertToNv12 {
+            return self.encode_bgra_direct(rgba_data, src_width, src_height, stride, is_bgra, route);
         }
 
         // Fallback: CPU-based BGRA→NV12 conversion via sws_scale
@@ -1631,18 +1714,7 @@ impl H264Encoder {
         let sws = self.scaler.as_mut().unwrap();
 
         let src_stride = sws.src_frame.stride(0);
-        if stride == src_stride {
-            let copy_size = (src_height as usize) * stride;
-            sws.src_frame.data_mut(0)[..copy_size].copy_from_slice(&rgba_data[..copy_size]);
-        } else {
-            let row_bytes = (src_width as usize) * 4;
-            for row in 0..src_height as usize {
-                let src_off = row * stride;
-                let dst_off = row * src_stride;
-                sws.src_frame.data_mut(0)[dst_off..dst_off + row_bytes]
-                    .copy_from_slice(&rgba_data[src_off..src_off + row_bytes]);
-            }
-        }
+        copy_rows(rgba_data, stride, sws.src_frame.data_mut(0), src_stride, src_width as usize * 4, src_height as usize);
 
         // Propagate rather than .expect(): a scaler failure on the
         // per-frame path should kill the stream cleanly (caught by the
@@ -1652,59 +1724,62 @@ impl H264Encoder {
         self.prepare_and_encode()
     }
 
-    /// NVENC fast path: send BGRA frames directly to the encoder.
-    /// The GPU handles BGRA→NV12 conversion internally.
+    /// NVENC fast path: fill the BGRA input frame and send it to the
+    /// encoder; the GPU handles BGRA→NV12 conversion internally. An RGBA
+    /// capture (RGBA/RGBx, which xdg-desktop-portal-wlr / -hyprland can
+    /// negotiate) is swapped to BGRA in the same pass as the copy, or by
+    /// sws when it is scaled anyway. The encoder was opened with
+    /// pix_fmt=BGRA, so nothing else may reach it: NVENC copies an input
+    /// frame by the frame's own layout with the BGRA pitch, and an NV12
+    /// frame wrote its chroma plane past the input buffer (review B8).
     fn encode_bgra_direct(
         &mut self,
         data: &[u8],
         src_w: u32,
         src_h: u32,
         stride: usize,
+        is_bgra: bool,
+        route: InputRoute,
     ) -> Result<Option<EncodedFrame>, String> {
-        let frame = self.bgra_frame.as_mut().unwrap();
+        let frame = self
+            .bgra_frame
+            .as_mut()
+            .ok_or_else(|| "no BGRA input frame on this encoder".to_string())?;
+        let (row_bytes, rows) = (src_w as usize * 4, src_h as usize);
 
-        if src_w == self.target_width && src_h == self.target_height {
-            // No scaling needed — single copy into encoder frame
-            let dst_stride = frame.stride(0);
-            if stride == dst_stride {
-                let size = src_h as usize * stride;
-                frame.data_mut(0)[..size].copy_from_slice(&data[..size]);
-            } else {
-                let row_bytes = src_w as usize * 4;
-                for row in 0..src_h as usize {
-                    let src_off = row * stride;
-                    let dst_off = row * dst_stride;
-                    frame.data_mut(0)[dst_off..dst_off + row_bytes]
-                        .copy_from_slice(&data[src_off..src_off + row_bytes]);
+        match route {
+            InputRoute::CopyBgra => {
+                let dst_stride = frame.stride(0);
+                copy_rows(data, stride, frame.data_mut(0), dst_stride, row_bytes, rows);
+            }
+            InputRoute::SwizzleToBgra => {
+                let dst_stride = frame.stride(0);
+                swizzle_rows_rgba_to_bgra(data, stride, frame.data_mut(0), dst_stride, row_bytes, rows);
+            }
+            InputRoute::ScaleToBgra => {
+                // Scale on the CPU (sws also swaps RGBA to BGRA), then the
+                // GPU converts to NV12.
+                let src_fmt = if is_bgra {
+                    ffmpeg_next::format::Pixel::BGRA
+                } else {
+                    ffmpeg_next::format::Pixel::RGBA
+                };
+                if self.bgra_scaler.as_ref().is_none_or(|s| !s.matches(src_w, src_h, src_fmt)) {
+                    self.bgra_scaler = Some(SwsScaler::new(
+                        src_w, src_h, src_fmt,
+                        self.target_width, self.target_height,
+                        ffmpeg_next::format::Pixel::BGRA,
+                    )?);
                 }
+                let sws = self.bgra_scaler.as_mut().unwrap();
+                let src_stride_sws = sws.src_frame.stride(0);
+                copy_rows(data, stride, sws.src_frame.data_mut(0), src_stride_sws, row_bytes, rows);
+                sws.ctx.run(&sws.src_frame, frame)
+                    .map_err(|e| format!("sws_scale bgra: {}", e))?;
             }
-        } else {
-            // Scale BGRA→BGRA on CPU, then GPU converts to NV12
-            if self.bgra_scaler.as_ref().map_or(true, |s| !s.matches(src_w, src_h, ffmpeg_next::format::Pixel::BGRA)) {
-                self.bgra_scaler = Some(SwsScaler::new(
-                    src_w, src_h, ffmpeg_next::format::Pixel::BGRA,
-                    self.target_width, self.target_height,
-                    ffmpeg_next::format::Pixel::BGRA,
-                )?);
+            InputRoute::ConvertToNv12 => {
+                return Err("NV12 conversion requested on an encoder opened for BGRA".to_string());
             }
-            let sws = self.bgra_scaler.as_mut().unwrap();
-
-            let src_stride_sws = sws.src_frame.stride(0);
-            if stride == src_stride_sws {
-                let size = src_h as usize * stride;
-                sws.src_frame.data_mut(0)[..size].copy_from_slice(&data[..size]);
-            } else {
-                let row_bytes = src_w as usize * 4;
-                for row in 0..src_h as usize {
-                    let src_off = row * stride;
-                    let dst_off = row * src_stride_sws;
-                    sws.src_frame.data_mut(0)[dst_off..dst_off + row_bytes]
-                        .copy_from_slice(&data[src_off..src_off + row_bytes]);
-                }
-            }
-
-            sws.ctx.run(&sws.src_frame, frame)
-                .map_err(|e| format!("sws_scale bgra: {}", e))?;
         }
 
         self.prepare_and_encode_bgra()
@@ -2084,5 +2159,138 @@ mod tests {
         assert!(contains_nal_type(&fixed, NalCodec::H264, 8));
         // The AUD stays first.
         assert_eq!(&fixed[..6], &[0, 0, 0, 1, 0x09, 0xF0]);
+    }
+
+    use super::{copy_rows, input_route, swizzle_rows_rgba_to_bgra, InputRoute};
+
+    /// Review B8: an encoder opened for BGRA (NVENC) only ever gets its BGRA
+    /// frame, whatever the capture negotiated. An RGBA capture used to fall
+    /// through to the NV12 path and send the NV12 frame to the BGRA context.
+    #[test]
+    fn bgra_encoders_never_get_the_nv12_frame() {
+        for is_bgra in [true, false] {
+            for same_size in [true, false] {
+                assert_ne!(input_route(true, is_bgra, same_size), InputRoute::ConvertToNv12);
+                assert_eq!(input_route(false, is_bgra, same_size), InputRoute::ConvertToNv12);
+            }
+        }
+        assert_eq!(input_route(true, true, true), InputRoute::CopyBgra);
+        assert_eq!(input_route(true, false, true), InputRoute::SwizzleToBgra);
+        assert_eq!(input_route(true, false, false), InputRoute::ScaleToBgra);
+        assert_eq!(input_route(true, true, false), InputRoute::ScaleToBgra);
+    }
+
+    #[test]
+    fn rgba_rows_land_as_bgra_across_strides() {
+        // 2×2 RGBA, source stride 12 (4 bytes of padding, then a tight last
+        // row), destination stride 16.
+        #[rustfmt::skip]
+        let src: [u8; 20] = [
+            1, 2, 3, 4,   5, 6, 7, 8,   0xEE, 0xEE, 0xEE, 0xEE,
+            9, 10, 11, 12,   13, 14, 15, 16,
+        ];
+        let mut dst = [0u8; 32];
+        swizzle_rows_rgba_to_bgra(&src, 12, &mut dst, 16, 8, 2);
+        assert_eq!(&dst[..8], &[3, 2, 1, 4, 7, 6, 5, 8]);
+        assert_eq!(&dst[8..16], &[0; 8], "destination padding untouched");
+        assert_eq!(&dst[16..24], &[11, 10, 9, 12, 15, 14, 13, 16]);
+    }
+
+    #[test]
+    fn copy_rows_across_strides_and_a_tight_last_row() {
+        let src = [1u8, 2, 3, 4, 0xEE, 0xEE, 5, 6, 7, 8];
+        let mut packed = [0u8; 8];
+        copy_rows(&src, 6, &mut packed, 4, 4, 2);
+        assert_eq!(packed, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut same = [0u8; 12];
+        copy_rows(&src, 6, &mut same, 6, 4, 2);
+        assert_eq!(&same[..10], &src);
+    }
+
+    /// A capture in `is_bgra` byte order with a padded stride: left half
+    /// red, right half blue, padding bytes 0x77.
+    fn two_tone(w: u32, h: u32, stride: usize, is_bgra: bool) -> Vec<u8> {
+        let (red, blue): ([u8; 4], [u8; 4]) = if is_bgra {
+            ([0, 0, 255, 255], [255, 0, 0, 255])
+        } else {
+            ([255, 0, 0, 255], [0, 0, 255, 255])
+        };
+        let mut f = vec![0x77u8; stride * h as usize];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let px = if x < w as usize / 2 { red } else { blue };
+                f[y * stride + x * 4..][..4].copy_from_slice(&px);
+            }
+        }
+        f
+    }
+
+    /// Decode an Annex B H.264 stream with the system ffmpeg; the last
+    /// picture as RGB24.
+    fn decode_last_frame_rgb(stream: &[u8], w: u32, h: u32, label: &str) -> Vec<u8> {
+        let path = std::env::temp_dir().join(format!("decibell-nvenc-{label}-{}.h264", std::process::id()));
+        std::fs::write(&path, stream).unwrap();
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "h264", "-i"])
+            .arg(&path)
+            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .expect("run the system ffmpeg");
+        let _ = std::fs::remove_file(&path);
+        assert!(out.status.success(), "{label}: ffmpeg failed: {}", String::from_utf8_lossy(&out.stderr));
+        let size = (w * h * 3) as usize;
+        assert!(out.stdout.len() >= size, "{label}: no decoded picture");
+        out.stdout[out.stdout.len() - size..].to_vec()
+    }
+
+    /// Opens the real NVENC encoder and pushes synthetic captures through the
+    /// stream's own path (`encode_bgra_frame`): BGRA and RGBA, at the encoder
+    /// size and scaled, with padded strides. The system ffmpeg decodes the
+    /// output and the colours are checked: a missed or doubled R/B swap turns
+    /// red into blue. Before the fix the RGBA cases sent an NV12 frame to the
+    /// BGRA context. Needs an NVIDIA GPU and `ffmpeg` on PATH:
+    /// `cargo test --lib nvenc_ -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn nvenc_encodes_rgba_and_bgra_captures_in_true_colour() {
+        use super::{EncoderConfig, H264Encoder};
+        use crate::media::caps::CodecKind;
+        const W: u32 = 640;
+        const H: u32 = 360;
+        let cfg = EncoderConfig { width: W, height: H, fps: 30, bitrate_kbps: 4000, keyframe_interval_secs: 2 };
+        for (label, is_bgra, src_w, src_h) in [
+            ("bgra", true, W, H),
+            ("rgba", false, W, H),
+            ("bgra-scaled", true, 1280, 720),
+            ("rgba-scaled", false, 1280, 720),
+        ] {
+            let mut enc = H264Encoder::new(CodecKind::H264Hw, &cfg).expect("open h264_nvenc");
+            assert!(enc.supports_bgra_input, "{label}: not an NVENC (BGRA input) encoder");
+            let stride = src_w as usize * 4 + 64;
+            let capture = two_tone(src_w, src_h, stride, is_bgra);
+            let mut stream = Vec::new();
+            for _ in 0..10 {
+                if let Some(ef) = enc.encode_bgra_frame(&capture, src_w, src_h, stride, is_bgra).expect("encode") {
+                    stream.extend_from_slice(&ef.data);
+                }
+            }
+            for ef in enc.flush() {
+                stream.extend_from_slice(&ef.data);
+            }
+            let rgb = decode_last_frame_rgb(&stream, W, H, label);
+            let px = |x: u32, y: u32| {
+                let i = ((y * W + x) * 3) as usize;
+                (rgb[i], rgb[i + 1], rgb[i + 2])
+            };
+            let (r, g, b) = px(W / 4, H / 2);
+            assert!(r > 180 && g < 70 && b < 70, "{label}: left half should be red, got ({r}, {g}, {b})");
+            let (r, g, b) = px(3 * W / 4, H / 2);
+            assert!(b > 180 && r < 70 && g < 70, "{label}: right half should be blue, got ({r}, {g}, {b})");
+            println!("{label}: {} bytes of H.264, red and blue where they belong", stream.len());
+        }
+        // An NV12 frame never reaches a BGRA context.
+        let mut enc = H264Encoder::new(CodecKind::H264Hw, &cfg).expect("open h264_nvenc");
+        let nv12 = vec![0u8; (W * H * 3 / 2) as usize];
+        assert!(enc.encode_nv12_frame(&nv12, W, H).is_err());
     }
 }
