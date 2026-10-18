@@ -135,9 +135,10 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   the session stops reading while a handler is away, so its packets stay in order. Postgres through
   `PgPool` (a lease per operation, never a connection per query). A handler that calls `run_blocking`
   must be listed in `Session::runs_on_strand`. A session touches only its
-  own fields, on its strand; everything shared (connections, signed-in accounts with their presence,
-  the watch index) lives in `SessionManager` behind its mutex, and `deliver_to_user` is the one way to
-  reach an account — the seam a message bus replaces when central splits across machines. Deliveries
+  own fields, on its strand; everything shared (connections, signed-in accounts with their devices and
+  presence, the watch index, the call registry) lives in `SessionManager` behind its mutex, and
+  `deliver_to_user` is the one way to reach an account (every device of it) — the seam a message bus
+  replaces when central splits across machines. Deliveries
   and closes are posted to the target's strand; never call into a session (beyond `deliver`, which only
   posts) or the database while holding the directory's lock. Decided for later: DM attachments go to object storage as end-to-end encrypted
   blobs (central stores no file bytes), and message ids (DM and channel) promise only "64-bit and
@@ -157,6 +158,19 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   **paced** (an over-rate request waits, never dropped); renames and token renewals are refused with an
   answer. Tests bind a fresh loopback source
   address per connection. `src/server/tests/load.py` is the load test (results in the review log).
+- **Several devices per account** (`docs/superpowers/specs/2026-10-18-multi-device-design.md`, owner
+  2026-10-18, review B3): all online together, as on Discord, never "last sign-in wins". Each install sends
+  a random `LoginRequest.device_id` (native config); the same id replaces its own earlier connection
+  (`SESSION_CLOSED {REPLACED}`: a live client reading it is a copied install and renews its id), other ids
+  coexist up to 8 (a community's per-account session cap; above it devices would evict each other there),
+  and over that the login is refused (`device_limit`), never by evicting a device. Presence is the
+  account's: online until the last device leaves, Away only while every device idles. Whatever one device
+  changes reaches the others: `OWN_PRESENCE` (status, message, friends-only DMs, idle), DM echoes / edits /
+  deletes to every device, `DM_READ_SYNC`, friend lists, profile pushes to the account's other devices,
+  `MEMBERSHIP_ADDED`. Calls ring every device of the callee; the first answer takes the call
+  (`ANSWERED_ELSEWHERE` / `DECLINED_ELSEWHERE` to the rest), BUSY only when no device can ring, and the
+  rest of the call stays between those two connections. `SessionManager::close_other_sessions` is the hook
+  for "log out other devices" (bump `sessions_valid_after` with it; clients sign out on `SIGNED_OUT`).
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.
@@ -208,7 +222,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
 - **DM calls are P2P over the native UDP engine**, wrapped in `MediaSocket` (`Plain` for the
   community relay — byte-identical; `Sealed` = AES-256-GCM + replay window, inner datagram
   unchanged). Central only relays `CALL_SIGNAL` (never persisted, INVITE gated by
-  `check_dm_allowed`, per-session bucket). STUN-only, no relay, IPv4; sealed sockets never
+  `check_dm_allowed`, per-session bucket) through a call registry: every device of the callee rings, the
+  first answer takes the call, later signals stay between the two connections in it, and a signal for no
+  call is dropped. STUN-only, no relay, IPv4; sealed sockets never
   `connect()` (peer learned from the last authenticated datagram); peer PINGs are reflected in
   `MediaSocket::recv`; `sender_id` = own uid (decimal). A call and a voice channel are mutually
   exclusive (one engine, one mic). `features/call/` + `native/src/commands/call.rs` +
@@ -218,7 +234,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   otherwise, shown as such; a peer whose identity is pinned is never downgraded. Static
   X25519 identities (no forward secrecy — deliberate: history is server-fetched, there is no
   local message store), per-message HKDF + AES-256-GCM, passphrase (Argon2id) backup of the
-  private keys on central, TOFU pins + safety numbers. **All crypto lives in native
+  private keys on central, TOFU pins + safety numbers. Another device of the account gets the identity only
+  from that backup (it reports locked; setup never publishes over a backup); a new identity on one device
+  locks the others (`E2EE_KEYS_CHANGED`, or at their next bootstrap if they were away). **All crypto lives in native
   (`native/src/e2ee/`)** — the renderer only ever sees decrypted events with `encrypted` /
   `decryptError`, and DM packets go through the ordered crypto worker (never decrypt inside
   `route_packets`: key fetches reply on that same loop). Central stores envelopes opaquely and
@@ -253,17 +271,20 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   profile pushes (renames, avatars, E2EE keys) to watchers only, answering newly watched users with a
   `PRESENCE_UPDATE` (`covered_uids`, plus `avatars`: the picture of each one not visible, so offline people
   show theirs; an invisible user answers exactly like an offline one); there's no login snapshot. The
-  client never watches itself: its own state comes from the login reply and its own requests. The avatar
+  client never watches itself: its own state comes from the login reply and `OWN_PRESENCE` (any device's
+  change, its own echoed). The avatar
   cache (`stores/avatarStore.ts`) fetches 6 at a time, skips users scrolled away, and keeps at most 400
   loaded pictures of users off screen. An invisible user is absent, never
   "invisible" on the wire. Invisible is airtight by owner decision: every
   presence-revealing path asks `is_user_visible` (friend lists, call INVITE → PEER_OFFLINE), friends-only
-  DMs are saved on the account so the DM gate answers the same online or not, and clients tell each
+  DMs are saved on the account so the DM gate answers the same online or not (clients adopt the account's
+  value at sign-in instead of pushing their own), and clients tell each
   community `presence_hidden` / `PRESENCE_VISIBILITY` so rosters list them offline. Profile pushes are
   the exception (owner, 2026-10-15): renames, avatar changes and E2EE key changes are announced even
   while invisible, because clients need them; that they reveal activity is accepted. Statuses stay
   visible to every signed-in user, so rename notices aren't narrowed to friends either. Auto-away is a
-  session idle flag (user threshold, default 10 min, + lock/sleep); DND only silences the call ring /
+  per-device idle flag (user threshold, default 10 min, + lock/sleep), and the account shows Away only while
+  every device is idle (our own dot follows `accountIdle`, as others see it); DND only silences the call ring /
   flash. A member list's Online / Offline sections follow the community's own view (connected there and
   not invisible), because the community pages and counts the roster by it (owner, 2026-10-18,
   `2026-10-18-roster-paging-design.md`); central's status sets the dot (away, DND) inside Online.

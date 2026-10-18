@@ -4123,3 +4123,103 @@ permissions, in memory) — theme 5's roster cache would cover it.
 On main (c3df2d0, 9531371, with B1–B11 fixes merged): community e2e 791/0 with the migration check, normal and
 ASan+UBSan (no reports); central e2e 290/0 with the migration check under normal, ThreadSanitizer and
 ASan+UBSan (no reports); cargo test 298; napi build; tsc 0 / 0.
+
+### Fix: an account signs in on several devices at once (2026-10-18, review B3)
+
+Two devices on one account kicked each other forever: a login silently replaced the account's previous
+connection, the replaced client came straight back with its resume token and replaced the other, about once a
+second, with an offline/online flap to every watcher and a 5,000-uid re-subscribe each time. Owner decision:
+real multi-device, as on Discord, all devices online together; not "last sign-in wins". The one-connection
+rule had leaked into everything that talks to an account, so this touches all three tiers (spec with the
+consumer audit: `docs/superpowers/specs/2026-10-18-multi-device-design.md`).
+
+- **Device identity.** Each install makes a random device id once (native config file, next to the saved
+  sign-in; every config writer keeps it) and sends it in every `LoginRequest.device_id`. The same id replaces
+  its own earlier connection (the dead-TCP case), which hears `SESSION_CLOSED {REPLACED}` first: a live client
+  that reads it is a copied install, takes a new id and reconnects as its own device, so copies never
+  ping-pong. Different ids coexist. **At most 8 devices** (changed from the starting "~10": a community keeps 8
+  sessions per account and evicts the oldest past that, so a ninth device would knock the others out there).
+  Over the cap the login is refused (`LoginResponse.device_limit`, with a message), never by evicting another
+  device. A resume refused for the cap doesn't fall back to the password; the client backs off (every 30 s at
+  most) and says why once. An empty device id is a device of its own each time.
+- **Directory.** A `Connection` per session (device id, idle flag, watch set); an account holds its
+  connections and one presence; watchers are connections, so each device watches what it shows.
+  `deliver_to_user` reaches every device. `retire()` closes a connection after a notice;
+  `close_other_sessions()` is the single operation "log out other devices" needs (no caller yet: the
+  pre-launch item adds the request, a `sessions_valid_after` bump and the UI; the client already signs out
+  on `SESSION_CLOSED {SIGNED_OUT}`).
+- **Presence per account.** Online while any device is connected (one offline delta when the last leaves);
+  status, message and friends-only DMs are the account's; Away only while every device is idle (a device
+  signing in is active); invisible unchanged and airtight (`is_user_visible` everywhere, as before).
+- **Own actions reach the other devices.** `OWN_PRESENCE` (status, message with time left, friends-only DMs,
+  account idle) to every device on any change, including the sweep's; `LOGIN_RES` carries the live state and
+  `dm_friends_only`, which clients now adopt instead of pushing their local copy (the last device to sign in
+  used to win), and is posted from inside `bind` under the directory's lock, so no change from another device
+  reaches a new connection before it. A change and its database save run one at a time per account (a
+  per-account mutex, never the directory's), so two devices changing the status at once save the last one. DMs, edits and deletes echo to every device of the sender; `DM_READ_SYNC` clears unread on the
+  reader's other devices; friend lists go to every device of both accounts; avatar, rename and E2EE key
+  changes reach the account's other devices (a rename also makes them fetch a fresh token for their
+  communities, and their central sessions pick the new name up through a rename epoch, so a DM from another
+  device goes out under it at once); a new membership sends `MEMBERSHIP_ADDED` and the other devices connect
+  (a leave was already pushed: the community closes every session of the account). Native runs
+  `DM_READ_SYNC` and `DM_MESSAGE_DELETED` through the ordered DM worker, so neither overtakes its message.
+- **Calls.** Central keeps a call registry. An INVITE rings every device of the callee (the caller's other
+  devices see nothing); the first RINGING reaches the caller; the first ACCEPT takes the call and the other
+  devices get `ANSWERED_ELSEWHERE` (also one whose ACCEPT lost the race); a REJECT stops them all
+  (`DECLINED_ELSEWHERE`); the caller hears BUSY only once every device the invite reached said busy (or
+  left). After the answer, HANGUP and stream notices stay between the two connections in the call; a device
+  that reconnects keeps its place by device id (the replacing connection takes over its side at once, a
+  ringing device keeps ringing on its new connection, and the sweep re-attaches a side that came back
+  silently). A signal with no call between the two accounts is dropped
+  (S13 stays: only an INVITE is ever answered). A connection places at most 4 calls at once; unanswered calls
+  are forgotten after 90 s. The incoming card shows "Answered on another device" / "Declined on another
+  device" for 3 s instead of vanishing mid-ring.
+- **E2EE.** A second device restores the identity from the passphrase backup (bootstrap reports locked;
+  `setup` refuses to publish over a backup), unchanged and verified. Own DMs from another device open with the
+  same static identity. A reset on one device now reaches the others (`E2EE_KEYS_CHANGED`: they lock), and a
+  device that was signed out then compares its store with central's current bundle at bootstrap and locks the
+  same way, instead of sealing with the retired identity.
+
+Wire (`proto/messages.proto`): `LoginRequest.device_id` (5); `LoginResponse.dm_friends_only` (18),
+`device_limit` (19); `CallSignal.Kind` `ANSWERED_ELSEWHERE` (11), `DECLINED_ELSEWHERE` (12); packets
+`DM_READ_SYNC` 168, `OWN_PRESENCE` 169, `MEMBERSHIP_ADDED` 170, `SESSION_CLOSED` 171 (payload fields 170–173).
+No schema change. Central and client ship together (pre-1.0).
+
+Not done: the "log out other devices" request and UI (pre-launch item), a device list in settings.
+
+Verified (on main 1368b04 … 0f77c8b, after B13 / B12): central e2e 379/0 with the migration check under the
+normal, ThreadSanitizer and ASan + UBSan builds, no sanitizer reports. Of those, 89 checks are new: two devices
+both get a DM, the sender's other device gets its own, read sync, edits / deletes / friend lists on every
+device, status / message / DM-privacy / idle sync, a new device signing in with the live state, nothing from
+another device before LOGIN_RES under concurrent changes, two devices changing the status at once saving the
+last one shown, same device id replaces with `SESSION_CLOSED`, different ids coexist, the ninth refused with
+`device_limit` and nobody evicted, online until the last device leaves, away only when every device idles,
+invisible airtight with two devices (watch answer, PEER_OFFLINE, no ringing), INVITE rings both devices, answer
+on one stops the other, a losing ACCEPT is told, later signals only to the answering device, decline on one
+stops the other, BUSY only when every device is busy or the last ringing one leaves, a device back from a
+dropped or replaced connection keeps its call, a replaced ringing device can still answer, the 4-call cap,
+rename / avatar / key pushes to the other device and not the originating one, a DM from the other device under
+the new name, MEMBERSHIP_ADDED once. An independent review of the central change found the login-reply race,
+the call re-attachment gaps and the save ordering; all fixed in 0f77c8b. `cargo test --lib` 302 (+4: device id
+kept by every config writer and renewed, own-presence mapping, joined-here detection, the stale-identity lock);
+`napi build`; tsc web / node 0 / 0; 42 throwaway checks (read sync, already-read live DMs, own DMs from another
+device in the real dmStore, call-store transitions); 17 interaction checks of the real `useCallEvents` +
+`IncomingCallModal` in the UI preview harness, captured in all 7 themes. Load test (before the rebase; 10,000
+clients, PostgreSQL on the NVMe, two passes each against c72f974 and this branch, plus one on the final central):
+824–827 vs 825–826 MB (84–85 KB a client), the same CPU, ~7,700 DMs/s delivered at the 8,000 target, all back
+3.4–3.5 s vs 3.5–3.8 s after a restart; p99 swung 15–306 ms in both builds alike (shared disk).
+
+Live test pending (two machines, or two installs with separate `--user-data-dir`): (1) sign in on both, check
+both stay online and nothing reconnects in a loop (logs quiet); (2) DM a friend from A: B shows it as yours,
+in order; the friend reads it on one device and the badge clears on the other; (3) set DND / a status message
+/ friends-only on A: B's status menu and Privacy tab follow; go idle on A only (still Online to others), then
+on both (Away); (4) have someone call you: both ring, answer on B, A's card says "Answered on another device",
+the call works and hangs up cleanly; again with decline on A; again with B already in a call (A rings, the
+caller never hears busy); (5) join a community from an invite on A: B gets the tile and connects within a few
+seconds; (6) rename on A: B shows the new name and its community sessions rename in place; (7) reset
+encryption on A: B asks for the passphrase.
+
+
+On main with everything above merged: community e2e 791/0 (migration check, normal and ASan+UBSan), central
+e2e 379/0 (migration check, normal / ThreadSanitizer / ASan+UBSan, no reports), cargo test 302, napi build,
+tsc 0 / 0.
