@@ -412,6 +412,10 @@ public:
     // through this so a private channel's traffic never reaches members
     // who can't see it.
     void broadcast_to_channel(const chatproj::Packet& packet, const std::string& channel_id);
+    // CHANNEL_UPDATE_RES to every viewer of the channel, each stamped with
+    // their own my_permissions (an unstamped copy reads as "no permissions"
+    // to a client that replaces its channel record — review B1).
+    void broadcast_channel_update(chatproj::Packet packet, const std::string& channel_id);
     // Fan-out for a bulk purge (ban-with-purge, future bulk delete): one
     // CHANNEL_PRUNED per channel per batch of ids. It used to be one
     // CHANNEL_MESSAGE_DELETED per message to every viewer, past the write
@@ -2566,8 +2570,9 @@ private:
             }
             // Fan out to everyone who can see the channel so they get the new
             // retention settings immediately (rendered in the channel
-            // sidebar + any open edit modals).
-            manager_.broadcast_to_channel(p, req.channel_id());
+            // sidebar + any open edit modals), each with their own
+            // permissions in it.
+            manager_.broadcast_channel_update(p, req.channel_id());
         }
 
         // --- CHANNEL WIPE (owner-only nuke of all history in a channel) ---
@@ -5879,6 +5884,29 @@ void SessionManager::broadcast_to_channel(const chatproj::Packet& packet, const 
         if (authz_->channel_permissions(uid, channel_id) & chatproj::perms::kViewChannel) {
             session->deliver(framed);
         }
+    }
+}
+
+void SessionManager::broadcast_channel_update(chatproj::Packet packet, const std::string& channel_id) {
+    if (!authz_) return;
+    std::vector<std::pair<std::shared_ptr<Session>, int64_t>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& s : sessions_) {
+            if (s->is_authenticated()) targets.emplace_back(s, s->get_uid());
+        }
+    }
+    // Viewers holding the same permissions share one serialisation.
+    std::unordered_map<uint64_t, std::shared_ptr<std::vector<uint8_t>>> by_perms;
+    for (const auto& [session, uid] : targets) {
+        const uint64_t perms = authz_->channel_permissions(uid, channel_id);
+        if (!(perms & chatproj::perms::kViewChannel)) continue;
+        auto it = by_perms.find(perms);
+        if (it == by_perms.end()) {
+            packet.mutable_channel_update_res()->mutable_channel()->set_my_permissions(perms);
+            it = by_perms.emplace(perms, frame_packet(packet)).first;
+        }
+        session->deliver(it->second);
     }
 }
 

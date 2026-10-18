@@ -592,10 +592,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const existing = state.channelsByServer[serverId] ?? [];
       const idx = existing.findIndex((c) => c.id === channel.id);
+      // An update that carries no permissions (0 / absent: a viewer always
+      // holds at least VIEW) keeps the ones we have instead of locking us
+      // out of the channel (review B1).
       const next =
         idx === -1
           ? [...existing, channel]
-          : existing.map((c, i) => (i === idx ? channel : c));
+          : existing.map((c, i) =>
+              i === idx
+                ? channel.myPermissions
+                  ? channel
+                  : { ...channel, myPermissions: c.myPermissions }
+                : c,
+            );
       return { channelsByServer: { ...state.channelsByServer, [serverId]: next } };
     }),
 

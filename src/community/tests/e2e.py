@@ -1983,6 +1983,12 @@ def test_channel_topic():
           r.channel_update_res.channel.topic == "Talk about anything", str(r.channel_update_res.channel.topic) if r else None)
     r = tia.wait(pb.Packet.CHANNEL_UPDATE_RES)
     check("members get the new topic", r is not None and r.channel_update_res.channel.topic == "Talk about anything")
+    # Review B1: the broadcast carries each viewer's own permissions; an
+    # unstamped copy left every non-owner with none in the channel.
+    perms = r.channel_update_res.channel.my_permissions if r else 0
+    check("a member's copy carries their own permissions",
+          bool(perms & pb.PERM_VIEW_CHANNEL) and bool(perms & pb.PERM_SEND_MESSAGES)
+          and not perms & pb.PERM_MANAGE_CHANNELS, hex(perms))
     r = update(owner, "general", slowmode_seconds=0)
     check("an update without a topic leaves it alone", r is not None and r.channel_update_res.channel.topic == "Talk about anything")
     tia.flush(0.5)
