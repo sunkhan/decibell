@@ -258,8 +258,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   while invisible, because clients need them; that they reveal activity is accepted. Statuses stay
   visible to every signed-in user, so rename notices aren't narrowed to friends either. Auto-away is a
   session idle flag (user threshold, default 10 min, + lock/sleep); DND only silences the call ring /
-  flash. Member lists show central's status, the community's `is_online` only until central has answered
-  for that user.
+  flash. A member list's Online / Offline sections follow the community's own view (connected there and
+  not invisible), because the community pages and counts the roster by it (owner, 2026-10-18,
+  `2026-10-18-roster-paging-design.md`); central's status sets the dot (away, DND) inside Online.
   Design: `docs/superpowers/specs/2026-10-11-user-status-design.md`. Custom status messages (emoji + 128
   chars, clear-after) ride the same presence entries, so others see them only while the user is visible;
   DM list rows keep the last-message preview instead (`2026-10-12-status-messages-design.md`).

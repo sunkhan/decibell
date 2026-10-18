@@ -3648,3 +3648,71 @@ markHistoriesStale and the preview coming back, stale unread counts clearing, DM
 
 On main with B11: community 739/0 (normal and ASan + UBSan, with the migration check), native 285, tsc 0 / 0;
 DM conversation paging checked live against a local central (pages of 200, 200, 50).
+
+### Fix: online members page too; counts ride every roster packet (2026-10-18, review A1 follow-up)
+
+A1 left the first `MEMBER_LIST_RES` page carrying every online member: past ~20,000 online it outgrew the
+client's frame cap, the client skipped the frame, and the member list never loaded. It couldn't simply be cut,
+because the sidebar took page 1 as the complete online set and counted it for "Online — N". Design:
+`docs/superpowers/specs/2026-10-18-roster-paging-design.md`.
+
+- **One sequence.** Pages run through every online member, then every offline member, each part in roster
+  order, at most `limit` per page (now 1–1000, default 100) and within the frame budget; a page can cross from
+  the online part into the offline part. Roster order is the sidebar's: the display name (nickname, else
+  username) folded as message search folds it (`search_fold`: case, accents, ı as i), then the name, then the
+  uid. The client mirrors it exactly (`features/members/rosterOrder.ts`; identical to the server's C++ on
+  20,000 generated names), so a page only ever extends the list at its end.
+- **Counts everywhere.** `online_count` / `total_members` on every page and, new, on every `MEMBER_UPSERT` /
+  `MEMBER_REMOVE` (the counts after the change). A client can't derive them from a delta about a member it
+  hasn't loaded (a flip or a nickname change look alike), and the revision gap check keeps them exact. The
+  client used to bump `totalMembers` on any upsert for a uid it didn't hold, which paging would have made wrong.
+- **New fields** (appended): `MemberListRequest.uids` (a lookup: up to 200 members wherever they sort);
+  `MemberListResponse.online_count`, `online_complete` (the pages so far hold every online member), `extra`
+  (a first page's requester row when the page doesn't reach it; a lookup's finds), `lookup_uids`;
+  `MemberUpsert.online_count / total_members`, `MemberRemove.online_count / total_members`. Native maps them.
+  A rate-limited `MEMBER_LIST_REQ` is answered (`success` false, echoing `first_page` / `lookup_uids`) instead
+  of dropped, which used to leave the sidebar's "Loading…" stuck.
+- **Roster index.** The server keeps every member in roster order in two sets, online and offline, changed only
+  by `emit_member_upsert` / `emit_member_remove`, so pages and counts agree with what the deltas told clients.
+  A page costs O(log members + page); before, every page (and every client's first page on every connect)
+  loaded and sorted the whole membership. A kicked member leaves the counts with their `MEMBER_REMOVE`, while
+  their session is still closing. It is rebuilt when another connection commits (`PRAGMA data_version`: hand
+  edits, the harness's seeded rows). Role ids come from one batched query per page. A claimed legacy
+  placeholder now gets a `MEMBER_REMOVE` (clients kept it beside the account's new row until a refetch).
+- **Sidebar.** The roster holds what pages, deltas and lookups brought; the sidebar draws each part only up to
+  its loaded edge (the last member of that part a page brought), so a member coming online past the edge is
+  held, not drawn, until the pages reach them. The offline part starts once the online part is complete, the
+  loading row sits at the end of what's loaded, and the headers are the server's counts ("Online — 1,234").
+  First page 500 members (every online member of most communities, as before), then 200 per scroll. A gap or a
+  reconnect refetches page 1 once while deltas wait; a later page whose revision isn't ours refetches too.
+- **Online / offline follows the community** (`MemberInfo.is_online`), so the counts add up; central's status
+  still draws the dot inside the online part (away, Do Not Disturb). Someone online on Decibell but not
+  connected to this community used to show under Online and now shows under Offline: an owner decision to
+  confirm (CLAUDE.md says member lists show central's status).
+- **Consumers of "the roster holds every online member".** Fixed: display names (`useDisplayName` looks a
+  missing member up, so nicknames show on messages, replies, search results, voice and stream views, the audit
+  log), the profile popup and modal and the user context menu (`useMember`; roles, joined date, hierarchy), our
+  own permissions / timeout / nickname (our row rides page 1), the Members tab's online count, the Overview
+  tab's owner name, and opening Server Settings (it re-fetched page 1, which would now drop what the sidebar
+  paged in). Lookups are batched per server, once per roster generation, retried three times when refused, and
+  only for uids the community itself named. Documented: the transfer-ownership picker lists loaded members only
+  (it already missed unloaded offline ones; a server-search picker is the fix), and Invite friends judges
+  membership on the loaded roster by owner decision (no friend list to the community, so no lookups either).
+  Fine: the search `from:` picker (merges a server search), settings searches (`MEMBER_SEARCH_REQ`), native
+  (maps packets only). Mention autocomplete and typing indicators don't exist yet.
+- Not done: the sidebar isn't virtualized (rows accumulate as it scrolls). An offline member whose rename the
+  community hasn't seen yet sorts under the old name, labelled with the new one.
+
+Verified (commits c4674a9, aaeaab3, 8c3f8e8, 938829c, 8799d77): community e2e 764/0 (+31 net, 37 new or
+rewritten: the sequence's order and coverage with folded names, `online_complete` and the online → offline
+crossing, counts on pages and on join / leave / kick deltas, the requester's row, deltas while partly loaded —
+an unloaded member going offline or coming online, a nickname moving a member behind the edge — lookups,
+answered refusals, the 1,000-member and byte caps, the placeholder swap), with the v14 → v17 migration check,
+and the same under ASan + UBSan with no reports. Against the previous server 20 of the 37 fail (the rest are
+controls: coverage, the caps). Renderer typecheck web / node 0 / 0; napi build clean (`index.d.ts`: the `uids`
+argument); native `cargo test --lib` 282/0. Sidebar screenshots in every theme (loaded stretch, counts, the
+loading row at the end of a partial online part, folded order, invisible self).
+
+Owner decision (2026-10-18): Online / Offline follows the community's view, central's status the dot; CLAUDE.md
+updated. On main with B4 and B11: community 770/0 (normal and ASan + UBSan, with the migration check), native
+285, tsc 0 / 0, central builds with the proto.
