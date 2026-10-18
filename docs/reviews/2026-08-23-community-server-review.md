@@ -3576,3 +3576,75 @@ pair, unread counts, falling back on delete, the conversation ending with its la
 plain SQL, the index; migration 5 logs its fill), the same under ThreadSanitizer and ASan + UBSan with no
 reports.
 
+### Fix: re-sync after a reconnect, every history wait ends, sends settle from history (2026-10-18, review B4)
+
+Nothing posted, edited or deleted while a community or central connection was down reached the loaded
+channels or DMs. A lost history reply left "Loading history…" up for good, a lost older page was never asked
+for again, and a send whose echo was lost was withdrawn by the 30 s watchdog though it was stored, so the
+user sent it twice. Since A1 the client skips a frame over 2 MiB instead of reconnecting, so a reply can also
+be lost with the connection up.
+
+- **Community: nonces in history.** History rows never carried the nonce ("never persisted"), so a refetched
+  row couldn't be matched to its pending bubble. The server now remembers every accepted message's nonce for
+  30 minutes (`SessionManager::remember_nonce`, in memory, at most 20 000, never on disk) and a history page
+  sets it on the requester's own rows only. No field changes (ChannelMessage.nonce exists; its comment says
+  so now). A restart forgets them; the client then falls back to matching text (below).
+- **One merge for every fetched page** (`lib/historyMerge.ts`, both stores). A page settles optimistic sends:
+  by nonce, else by our text, reply target and `sentAfterId` (the newest stored id when the bubble was
+  made; the row must be newer and not already loaded), oldest bubble first, so two identical sends can't
+  both claim one row. Attachment-only bubbles wait for their nonce. A page is a contiguous run, so inside its
+  range a missing row was deleted and a changed one edited (unchanged rows keep their object). A newest page
+  entirely above the slice replaces it: there may be a gap. An after page above the slice's newest row (or
+  into nothing) doesn't connect and only settles bubbles; one from below the slice's head adds nothing
+  under it. Only a windowed slice reaches the present on `has_more_after` false. Deletes awaiting an answer
+  aren't put back. DM `appendNewerDm` no longer sorts a pending bubble to the top.
+- **Community re-auth** (`markServerStale`, before the channel list is set): requests made on the old
+  connection are abandoned; slices of deleted channels go; a slice left caught up is dropped (the next visit
+  loads the newest page); one left scrolled up, or holding an unconfirmed send, goes windowed (keeps its
+  place, live arrivals wait, it pages down to the present). The channel on screen is ChatPanel's, on
+  `resyncEpoch`: at the bottom, the newest page merges in (or replaces across a gap) while the slice is
+  windowed in the store only (`resyncing`: no pill, bottom-follow on, sends go through), so a live message
+  can't land past a gap; scrolled up, it goes windowed and pages down as the user nears the bottom.
+- **Every wait ends** (`features/chat/historyRequests.ts`). Each channel / DM history request is tracked until
+  its reply (matched by the echoed around / after id, newest and older pages in order) or 10 s, and abandoned
+  when the connection drops. The newest-page load (first visit, jump to present, re-sync) tries three times
+  while connected and always ends `historyLoading`; with no answer at all the panel shows "Couldn't load
+  messages" and Retry instead of "Loading history…" or the empty-channel welcome. Paginators clear their
+  boundary guard on no answer and look at the edges again a second later (while connected; a failing send
+  can't spin). A jump stops waiting on no answer or a window without the message, and says which.
+  `RealMessageList` gained only a `recheckEdges` handle; the placement rules are untouched.
+- **Echo watchdogs** ask before withdrawing: at 30 s a still-pending send waits out a reconnect (until the
+  next re-sync), then pages through what was stored after `sentAfterId` (up to 5 × 100 rows). The reply
+  settles the bubble through the merge; only a send the server doesn't have is withdrawn, with its text put
+  back in the message box (new `restoreDmDraft` for DMs).
+- **Central re-sign-in** (a `login_succeeded` for the account already signed in: resume, or the password after
+  a refused resume). DM waits are abandoned; loaded conversations drop their rows and reload on open (the
+  conversations refetch, already sent on every sign-in, puts the previews and unread counts back), except one
+  holding an unconfirmed send, which goes windowed; the open one catches up in DmChatPanel as channels do. The
+  friend list is asked for again, retried up to three times when no list comes (also at mount). Unread badges:
+  `markRead` clears a count central still reports even at the same read marker, and the open conversation
+  marks read again when such a count arrives (a mark-read lost to the drop left it counting forever).
+- **Native:** the DM conversations walk remembers the page it's owed; one still missing after 10 s is sent
+  again (three sends), and a newer request takes over. A page skipped by the codec used to end the walk.
+- DM history rows carry no nonce, so DMs settle by text only. Making that exact needs
+  `DmHistoryMessage.nonce` filled by central (memory, as on the community); left for the central work.
+- Not changed: a send made during the brief re-sync window has its echo dropped (the slice is windowed) and
+  settles by the watchdog's check after 30 s, faded until then. A channel wiped during an outage whose newest
+  page comes back empty stays windowed with the pill. CL3 (every central sign-in reconnects every community)
+  is untouched; the resulting re-auths go through the same re-sync. Roster paging is another fix's.
+
+Verified: community e2e 713/0 (+6: the sender's history row carries its nonce on after and newest pages and
+for its other session; another member's row and someone else's row carry none) and the same under ASan +
+UBSan with no reports; no schema change, so no migration check. `cargo test --lib` 285 (+3: a conversations
+page is owed until answered, only the owed page's answer settles it, a newer request takes over the retries).
+napi build clean, `index.js` / `index.d.ts` unchanged. `tsc` web and node: 0 errors. The renderer has no test
+runner: `historyMerge.ts` compiled on its own passed 33 throwaway checks (nonce and text settling, two
+identical sends, other sessions' nonces, attachment-only bubbles, gap replacement, deletion and edit inside a
+page's range, skip ids, after pages that don't connect or start below the head), and chatStore / dmStore
+compiled with zustand passed 36 (re-sync with small and large gaps, live arrivals waiting, a lost echo settled
+by the re-sync page and by the watchdog's after page, windowed paging to the present, markServerStale's drop /
+window / leave-alone choices and epoch, jump to present keeping bubbles, pending deletes, DM text settling,
+markHistoriesStale and the preview coming back, stale unread counts clearing, DM re-sync).
+
+On main with B11: community 739/0 (normal and ASan + UBSan, with the migration check), native 285, tsc 0 / 0;
+DM conversation paging checked live against a local central (pages of 200, 200, 50).
