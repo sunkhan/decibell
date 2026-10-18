@@ -153,7 +153,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   (owner decision: a griefer typing wrong passwords for someone's name holds only their own address) with
   an account-wide cap of 100, the
   server-wide connection cap from the open-file limit; per connection, DMs / reads / writes / sign-in
-  attempts are **paced** (an over-rate request waits, never dropped). Tests bind a fresh loopback source
+  attempts, status and presence changes, presence subscriptions, call signals and E2EE key requests are
+  **paced** (an over-rate request waits, never dropped); renames and token renewals are refused with an
+  answer. Tests bind a fresh loopback source
   address per connection. `src/server/tests/load.py` is the load test (results in the review log).
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
@@ -191,7 +193,11 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   parse (`features/servers/inviteLink.ts` is the one grammar).
 - **Sends are paced client-side** to the community's per-session message bucket
   (`features/chat/sendPacing.ts`: 10 burst / 2.7 per s mirror of the server's 10 / 3, reset on
-  community auth, FIFO per server) — a burst is delayed, never dropped. The server answers a
+  community auth, FIFO per server) — a burst is delayed, never dropped. The community paces every
+  other request the way central does (`rate_bucket` / `hold_until_refill` in `src/community/main.cpp`,
+  review B13): over a per-session bucket the request waits and the session stops reading, so order holds
+  and nothing is dropped; a search is refused with `retry_after_ms` instead and stream thumbnails keep only
+  the newest in a one-packet slot. The server answers a
   refused message with `CHANNEL_MSG_REJECTED {nonce}` so exactly that optimistic bubble is
   withdrawn; a 30 s echo watchdog is the backstop. Keep the client and server numbers in step.
   Optimistic bubbles render faded (`pending`) until the echo; DMs carry `DirectMessage.nonce`.

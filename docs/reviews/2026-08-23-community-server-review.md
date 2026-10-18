@@ -4012,3 +4012,114 @@ Live test pending (KDE Plasma Wayland, then GNOME; native encoding on):
 3. Go live, minimize the shared window for ~30 s, restore it. The stream must survive (frozen frame, then
    live again).
 4. Press Stop normally: no toast, and no `stream_capture_ended` / `native_stream_failed` in the log.
+
+### Fix: requests over their rate wait instead of vanishing (2026-10-18, review B13)
+
+A request past its per-session bucket used to be dropped without an answer, except a message (refused with
+CHANNEL_MSG_REJECTED), a search and a member-list page (answered with a failure). The client was left waiting:
+a history page that never came (`historyLoading` stuck after ~25 quick channel clicks), a moderator's purge or
+a bulk "add 30 members to a role" that silently stopped after 20, a settings save stuck on "Saving…", a mute
+toggle others never saw, and PRESENCE_VISIBILITY lost, so an invisible member stayed listed online. Central
+dropped status, idle, DM-privacy, status-text and presence-subscription changes, call signals and E2EE key
+requests the same way; a lost key fetch failed an MLS member check (a quarantine) or a channel key fill.
+
+The community now paces like central. Over the rate a request waits for its bucket (`hold_until_refill`):
+the session stops reading, so its packets keep their order and a flood is slowed to the rate, never dropped.
+One request is held at a time and the rest wait in the socket, so a session holds at most one parsed packet.
+The longest single wait is one token of the slowest paced bucket (0.5 s), and every paced run re-arms the
+idle deadline, so pacing never drops a client; voice and media keep flowing over UDP while TCP waits. Three
+exceptions, each answered or bounded:
+- CHANNEL_MSG keeps its refusal (CHANNEL_MSG_REJECTED, mirrored by `sendPacing.ts`; standing decision).
+  Message edits share its bucket and are paced. The last silent path, a message naming an over-long channel
+  id, is refused out loud too (without echoing the id).
+- MESSAGE_SEARCH_REQ keeps its failure, now with the real `retry_after_ms` (the client waits it out and
+  asks again). Searches supersede each other, so one held behind newer ones would only hold up the
+  session's other packets for an answer nobody wants.
+- STREAM_THUMBNAIL_UPDATE keeps the newest: over the rate it waits in a one-packet slot (a newer one replaces
+  it) while reading goes on. At 1 per 5 s, pacing would have held the session's chat for seconds.
+
+MEMBER_LIST_REQ is paced now instead of refused: the client gave a lookup up after three refusals.
+LEAVE_VOICE / STOP_STREAM stay unlimited (they still queue behind a held request, in order).
+
+Central: SET_STATUS / SET_IDLE / SET_STATUS_MESSAGE / DM_PRIVACY, PRESENCE_SUBSCRIBE, CALL_SIGNAL and the
+three E2EE key requests moved from "dropped" into the paced path (`pace_bucket`), so a burst ends on its last
+value and every key fetch is answered. Renames stay refused with an answer (a bcrypt guard). A token renewal
+over its bucket (3 / 1 per minute) is now answered with `success = false` rather than left hanging; pacing it
+could wait a minute, past the 60 s stale sweep.
+
+Client waits: none had to change. The longest realistic pacing queue is a bulk settings action (~30
+management requests: 5 s) against the renderer's 10 s history wait, the member search / search 8 s waits and
+the 5 s save echo; the channel-key request wait in native went from 6 to 10 s to match the history wait.
+Nothing retries on a short wait, so pacing can't start a retry storm.
+
+Verified (with B12 below): community e2e 764/0 (+11 here: history pages, a role add + purge past the
+management bucket in order, PRESENCE_VISIBILITY and mute toggles past the presence bucket, UDP while TCP
+waits, a burst longer than the idle deadline, the newest thumbnail landing when the bucket refills while chat
+goes through, the over-long-id refusal; lookups paced not refused), ASan + UBSan 790/0 with the v15
+migration check (no reports); central e2e 268/0 (+6: a status burst ends on its last value, a subscription
+burst on its last set, a key-fetch burst answered in full and paced, a renewal past its bucket answered),
+ThreadSanitizer 268/0 and ASan + UBSan 268/0 (no reports); cargo test 289; napi build; tsc 0 / 0. Each new check
+fails against the pre-change binaries (the history, purge, visibility, mute, thumbnail, over-long-id, idle and
+all four central checks; the role-add half fits the burst either way).
+
+Live test: (1) In a community, click through ~30 channels as fast as possible: every channel shows its
+history, none stays on "Loading". (2) Server Settings → Roles → a role → Add members: add 30 at once; all 30
+get the role. As a moderator, delete 25 messages in a row: all go. (3) Toggle mute ~15 times quickly while in
+voice: the others' mute icon ends on your final state, and your voice is never cut meanwhile. (4) Switch your
+status to Invisible right after a burst of mute toggles: the community member list shows you offline.
+
+Not done (theme 3's other silent returns, out of this fix's scope): START_STREAM over the per-channel stream
+cap, JOIN_VOICE to an unknown channel or with oversized capabilities, CHANNEL_KEYS_REQ / REJECT for a channel
+the caller can't view or that isn't a text channel (the client's key request then times out), an empty DM or
+an over-long DM nonce at central, and the over-long-channel-id drops other than a message (deliberate).
+A request still waits behind one held ahead of it, so a leave can follow a burst of mute toggles by up to a
+few seconds. SESSION_TOKEN_UPDATE still runs before the rate limiter (theme 5).
+
+### Fix: encrypted channels of any size key every viewer (2026-10-18, review B12)
+
+The review's reading (needs and rotations capped by join order at 1000 viewers) was half stale: `needs`
+already covered every viewer since S14. The live bugs were worse. A new epoch was sealed to every viewer on
+the first page in one publish, and the server takes 500 blobs per publish, so in a channel with more than
+500 viewers who have encryption keys no epoch could ever be created: a new encrypted channel never got its
+first key (nobody could post) and a rotation after a removal never happened (the removed member read on).
+Nobody past the page's 1000 viewers was sealed to by the creator, a fill paced its lookups loosely and
+stopped at the first failure (one timeout and the rest of a big rotation never landed), it walked at most 64
+needs pages, and a fill could start a second one alongside itself. On the server, each needs page ran one
+query per viewer on the io thread.
+
+- Community: a needs page is chosen from the blob counts (one grouped query; epochs run 1..current, so a
+  count below current is a gap) and its missing epochs come from one anti-join for the whole page
+  (`channel_key_missing_epochs_for`, the uids as one JSON array so the statement is cached once). Refusal
+  steering and S14's paging are unchanged.
+- Native (`e2ee/channel_keys.rs`): a new epoch goes out with one publish's worth (`creation_recipients`:
+  ourselves, then viewers whose keys we have, then at most 16 lookups; ≤ 400 blobs), so it lands at once even
+  on a cold cache. Everyone else gets it from the filler the server names when the epoch lands, which walks
+  every needs page (`walk_fill`, up to 1000 pages, a cursor that must move). A member who can't be sealed to,
+  a publish that fails, or a page that times out once costs only itself; a refusal because we no longer hold
+  an epoch drops that epoch from the walk; three failed publishes in a row (the connection went) end it. Fills publish every 32 members, so recipients don't wait for a
+  whole page of lookups. Lookups share one client-wide budget under central's key bucket (16 burst / 4 per s,
+  `LookupRate`); community requests stay under its bucket (the existing `Pacer`). One fill per channel at a
+  time (another request makes it walk once more), one publish per channel in flight (the reply slot is per
+  channel, so two at once could swap replies), and a failed rotation is tried twice more (5 s, 20 s).
+- No wire change: the creator no longer needs the whole viewer list, so the first page's 1000 names stay a
+  first page.
+
+Verified (commit 9531371; B13 is c3df2d0): community e2e 764/0, ASan + UBSan 790/0 with the migration check
+(+7: 1,100 seeded viewers page through `needs`, the 1001st and later included; a creation over 500 blobs is
+refused, one of 400 is accepted and fills bring the epoch to all 1,101; afterwards nobody lacks it); cargo
+test 289 (+4: the creation's recipients, the lookup budget, a 1,100-viewer fill walking every page past a
+failed seal, a failed publish and a flaky page, a fill stopping on a refusal, on a cursor that doesn't move
+and on publishes that keep failing); napi build; tsc 0 / 0. The server-side checks also pass against the pre-change
+binary: what changed there is the cost (one query per page instead of one per viewer), not the answer.
+
+Live test: in a test community with 600+ members who have set up encryption (seeded accounts), create an
+encrypted channel and send a message: it goes out, and members other than you can read it within a minute
+or so (the filler walks them). Kick one member: the channel rotates (the log says "created epoch N for …
+member(s); … more get it from the filler"), and everyone else can still read new messages afterwards.
+
+Not done: CHANNEL_KEYS_REQ still loads the whole member list and checks each member's VIEW per request (cached
+permissions, in memory) — theme 5's roster cache would cover it.
+
+On main (c3df2d0, 9531371, with B1–B11 fixes merged): community e2e 791/0 with the migration check, normal and
+ASan+UBSan (no reports); central e2e 290/0 with the migration check under normal, ThreadSanitizer and
+ASan+UBSan (no reports); cargo test 298; napi build; tsc 0 / 0.
