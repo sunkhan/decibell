@@ -543,6 +543,23 @@ def test_b9_timeouts():
         ml = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2)
         check("pinging session survives 6 s past a 4 s idle deadline", alive and ml is not None)
         owner.close()
+        # Review B13: a burst past the query bucket (20 / 4 per s) is paced,
+        # 5 s of it here, longer than the idle deadline: every paced run
+        # counts as activity, so the session lives and gets every answer.
+        owner = Client("alice"); assert auth_ok(owner)[0]
+        owner.flush(0.3)
+        for i in range(40):
+            owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(
+                channel_id="general", before_id=1_000_000 + i, limit=1))
+        got = []
+        for _ in range(40):
+            r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=3)
+            if r is None:
+                break
+            got.append(r.channel_history_res.before_id)
+        check("a paced burst longer than the idle deadline: all 40 answered, session alive",
+              got == [1_000_000 + i for i in range(40)] and not owner.is_closed(0.2), f"{len(got)} answered")
+        owner.close()
     finally:
         stop_server(proc)
 
@@ -652,18 +669,27 @@ def test_stream_thumbnails():
     t = relayed(3)
     check("exactly 256 KB relayed", t is not None and len(t.thumbnail_data) == 256 * 1024)
     push(1024, 4)         # burst spent (the oversized one took a token too)
-    check("4th in a burst refused", relayed(1.0) is None)
+    check("4th in a burst waits for the bucket", relayed(1.0) is None)
+    push(1024, 5)         # newer: replaces the waiting one (review B13: latest wins)
 
     tia.send(pb.Packet.FETCH_STREAM_THUMBNAIL_REQ,
              fetch_stream_thumbnail_req=pb.FetchStreamThumbnailReq(owner_uid=uid_of("sam")))
     r = tia.wait(pb.Packet.FETCH_STREAM_THUMBNAIL_RES, timeout=3)
     d = r.fetch_stream_thumbnail_res.thumbnail_data if r is not None else b""
     check("fetch serves the last accepted thumbnail", len(d) == 256 * 1024 and d[:1] == b"\x03", len(d))
+    # Sending goes on meanwhile: the slot doesn't hold the session's reads.
+    sam.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="general", content="thumb-wait", nonce="tw"))
+    check("a message while a thumbnail waits goes straight through",
+          owner.wait(pb.Packet.CHANNEL_MSG, timeout=1.5, pred=lambda p: p.channel_msg.nonce == "tw") is not None)
 
-    time.sleep(5.2)       # 1 token per 5 s
-    push(1024, 5)
+    t = relayed(6)        # 1 token per 5 s
+    check("the newest waiting thumbnail lands when the bucket refills", t is not None and t.thumbnail_data[:1] == b"\x05",
+          None if t is None else t.thumbnail_data[:1])
+    check("...and the one it replaced never does", relayed(1.0) is None)
+    time.sleep(5.2)
+    push(1024, 6)
     t = relayed(3)
-    check("bucket refills (1 per 5 s)", t is not None and t.thumbnail_data[:1] == b"\x05")
+    check("bucket refills (1 per 5 s)", t is not None and t.thumbnail_data[:1] == b"\x06")
     sam.close(); tia.close(); owner.close()
 
 
@@ -1251,7 +1277,7 @@ def test_roster_online_paging():
           lr is not None and lr.success and sorted(m.uid for m in lr.extra) == sorted(want[:2]) and not lr.members
           and not lr.first_page and not lr.has_more and lr.online_count > 0 and lr.total_members == total,
           str(lr)[:300] if lr else "")
-    # Rate limited: still answered, so the client's "loading" never sticks.
+    # Past the rate: paced, not refused (review B13), so no lookup is lost.
     owner.flush(0.3)
     for i in range(30):
         owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(uids=[uid_of("opZed"), 5000 + i]))
@@ -1261,9 +1287,9 @@ def test_roster_online_paging():
         if p is None:
             break
         got.append(p.member_list_res)
-    refused = [r for r in got if not r.success]
-    check("rate limited lookups: every request answered, the refused ones echo their uids",
-          len(got) == 30 and refused and all(len(r.lookup_uids) == 2 for r in refused), f"{len(got)} answers, {len(refused)} refused")
+    check("lookups past the rate: every one answered, in order, none refused",
+          len(got) == 30 and all(r.success for r in got) and [r.lookup_uids[1] for r in got] == [5000 + i for i in range(30)],
+          f"{len(got)} answers, {sum(1 for r in got if not r.success)} refused")
     for cl in clients + [back]:
         cl.close()
     sql("delete from members where username like 'op%'")
@@ -4348,7 +4374,8 @@ def test_s15_channel_id_cap():
     check("history for an over-long channel id gets no answer", r is None)
     owner.send(pb.Packet.CHANNEL_MSG, channel_msg=pb.ChannelMessage(channel_id="y" * 100, content="s15-long", nonce="s15"))
     r = owner.wait(pb.Packet.CHANNEL_MSG_REJECTED, timeout=1, pred=lambda p: p.channel_msg_rejected.nonce == "s15")
-    check("a message to an over-long channel id is dropped", r is None
+    check("a message to an over-long channel id is refused out loud, the id not echoed (B13)",
+          r is not None and r.channel_msg_rejected.channel_id == ""
           and sql("select count(*) from messages where content='s15-long'") == [(0,)])
     # The longest ids the server makes: a 32-byte slug, its "-2" twin,
     # and (seeded) a "-999" one at exactly kMaxChannelIdBytes = 36.
@@ -4898,6 +4925,108 @@ def test_a3_bulk_fanout():
     owner.close()
 
 
+def test_b13_paced_requests():
+    print("[B13] requests past their bucket wait for it: every one answered, in order, nothing dropped")
+    # History pages against the query bucket (20 burst / 4 per s).
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.flush(0.3)
+    for i in range(30):
+        owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(
+            channel_id="general", before_id=2_000_000 + i, limit=1))
+    got = []
+    for _ in range(30):
+        r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=3)
+        if r is None:
+            break
+        got.append(r.channel_history_res.before_id)
+    check("history: 30 pages past the bucket, each answered, in order", got == [2_000_000 + i for i in range(30)],
+          f"{len(got)} answered")
+    owner.close()
+
+    # Management against the admin bucket (20 / 2 per s): a bulk role add,
+    # then a moderator's purge, 32 requests with the setup.
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    role = create_role(owner, "b13-bulk", 0)
+    room = create_channel(owner, "b13-purge", pb.ChannelInfo.TEXT).id
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    c.executemany("insert into members(uid, username, joined_at, nickname) values(?,?,?,'')",
+                  ((840000 + i, f"b13m{i:02d}", now) for i in range(12)))
+    c.executemany("insert into messages(channel_id, sender, sender_uid, content, timestamp) values(?,?,?,?,?)",
+                  ((room, "alice", uid_of("alice"), f"b13 purge {i}", now) for i in range(18)))
+    c.commit(); c.close()
+    ids = [r[0] for r in sql("select id from messages where channel_id=? order by id", room)]
+    owner.flush(0.3)
+    for i in range(12):
+        owner.send(pb.Packet.MEMBER_ROLES_UPDATE_REQ, member_roles_update_req=pb.MemberRolesUpdateRequest(
+            uid=840000 + i, role_ids=[role.id]))
+    for mid in ids:
+        owner.send(pb.Packet.MESSAGE_DELETE_REQ, message_delete_req=pb.MessageDeleteReq(channel_id=room, message_id=mid))
+    answers, end = [], time.time() + 15
+    while len(answers) < 30 and time.time() < end:
+        owner.drain(0.5)
+        answers += [p for p in owner.inbox if p.type in (pb.Packet.ROLE_ACTION_RES, pb.Packet.MESSAGE_DELETE_RES)]
+        owner.inbox = [p for p in owner.inbox if p.type not in (pb.Packet.ROLE_ACTION_RES, pb.Packet.MESSAGE_DELETE_RES)]
+    assigns = [a.role_action_res for a in answers[:12] if a.type == pb.Packet.ROLE_ACTION_RES]
+    deletes = [a.message_delete_res for a in answers[12:] if a.type == pb.Packet.MESSAGE_DELETE_RES]
+    check("bulk role add: all 12 applied and answered, ahead of the deletes sent after them",
+          len(assigns) == 12 and all(a.success and a.action == "assign" for a in assigns)
+          and sql("select count(*) from member_roles where role_id=?", role.id) == [(12,)], f"{len(answers)} answers")
+    check("purge: all 18 deletes applied and answered, in order",
+          [d.message_id for d in deletes] == ids and all(d.success for d in deletes)
+          and sql("select count(*) from messages where channel_id=?", room) == [(0,)], f"{len(deletes)} deletes")
+    owner.close()
+
+    # PRESENCE_VISIBILITY past the presence bucket (10 / 2 per s) is applied:
+    # dropping it listed an invisible member online.
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    pv = join("b13vis", owner)
+    owner.flush(0.5)
+    for _ in range(10):
+        pv.send(pb.Packet.VOICE_STATE_NOTIFY, voice_state_notify=pb.VoiceStateNotify(is_muted=False))
+    pv.send(pb.Packet.PRESENCE_VISIBILITY, presence_visibility=pb.PresenceVisibility(hidden=True))
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "b13vis"
+                    and not p.member_upsert.member.is_online)
+    check("PRESENCE_VISIBILITY past the bucket still turns the member invisible", up is not None)
+
+    # Mute toggles past the bucket end on the last one, and the sender's
+    # voice keeps flowing over UDP while its TCP reads wait.
+    vox = join("b13vox", owner); lis = join("b13lis", owner)
+    for cl in (vox, lis):
+        cl.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: "b13lis" in p.voice_presence_update.active_users)
+    uv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); uv.bind((HOST, 0)); uv.settimeout(2)
+    ul = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ul.bind((HOST, 0)); ul.settimeout(2)
+    bound = udp_bind(ul, lis.jwt, 8083) and udp_bind(uv, vox.jwt, 8083)
+    owner.flush(0.3)
+    for _ in range(10):
+        vox.send(pb.Packet.VOICE_STATE_NOTIFY, voice_state_notify=pb.VoiceStateNotify(is_muted=False))
+    for m in (True, False, True, False, True):
+        vox.send(pb.Packet.VOICE_STATE_NOTIFY, voice_state_notify=pb.VoiceStateNotify(is_muted=m))
+    time.sleep(0.3)
+    uv.sendto(udp_audio_packet(vox.jwt, 1, b"paced"), (HOST, 8083))
+    try:
+        heard = ul.recv(2048)
+    except socket.timeout:
+        heard = b""
+    check("UDP audio relays while the sender's TCP waits on its bucket", bound and heard[-5:] == b"paced")
+    owner.drain(4.0)
+    ups = [p.voice_presence_update for p in owner.inbox if p.type == pb.Packet.VOICE_PRESENCE_UPDATE
+           and p.voice_presence_update.channel_id == "voice-lounge"]
+    last = next((s for s in ups[-1].user_states if s.username == "b13vox"), None) if ups else None
+    check("mute toggles past the bucket: the others end on the last value", last is not None and last.is_muted,
+          f"{len(ups)} updates")
+    check("the paced sessions stay connected", not vox.is_closed(0.2) and not pv.is_closed(0.2))
+    uv.close(); ul.close()
+    for cl in (vox, lis, pv):
+        cl.close()
+    sql("delete from member_roles where role_id=?", role.id)
+    sql("delete from members where uid between 840000 and 840011")
+    delete_channel(owner, room)
+    delete_role(owner, role.id)
+    owner.close()
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -4981,6 +5110,7 @@ if __name__ == "__main__":
         test_a1_role_and_channel_caps()
         test_a2_relay_drops_oversized_datagrams()
         test_a3_bulk_fanout()
+        test_b13_paced_requests()
     finally:
         stop_server(proc)
     test_b9_timeouts()

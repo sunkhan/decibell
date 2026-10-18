@@ -387,6 +387,24 @@ private:
             case P::LOGIN_REQ:
             case P::REGISTER_REQ:
                 return &login_bucket_;
+            // These used to be dropped over the rate (review B13): a lost
+            // status / idle / privacy change left the account showing the
+            // wrong state, a lost key fetch failed an MLS leaf check (a
+            // quarantine) or a channel key fill, a lost call signal broke
+            // the handshake, a lost subscription left stale presence.
+            case P::SET_STATUS_REQ:
+            case P::SET_IDLE_REQ:
+            case P::SET_STATUS_MESSAGE_REQ:
+            case P::DM_PRIVACY:
+                return &status_bucket_;
+            case P::E2EE_PUBLISH_KEYS_REQ:
+            case P::E2EE_FETCH_KEYS_REQ:
+            case P::E2EE_FETCH_BACKUP_REQ:
+                return &key_bucket_;
+            case P::CALL_SIGNAL:
+                return &call_bucket_;
+            case P::PRESENCE_SUBSCRIBE:
+                return &watch_bucket_;
             default:
                 return nullptr;
         }
@@ -741,10 +759,6 @@ private:
         // itself from the recipient's POV — to an INVITE only.
         else if (packet.type() == chatproj::Packet::CALL_SIGNAL) {
             if (!authenticated_ || !packet.has_call_signal()) return;
-            if (!call_bucket_.take()) {
-                std::cout << "[Call] Signal rate limit hit for " << username_ << "\n";
-                return;
-            }
 
             const auto& req = packet.call_signal();
             // PEER_OFFLINE / NOT_ALLOWED are central's own answers.
@@ -1146,7 +1160,6 @@ private:
         // announced to every session like an avatar change.
         else if (packet.type() == chatproj::Packet::E2EE_PUBLISH_KEYS_REQ) {
             if (!authenticated_) return;
-            if (!key_bucket_.take()) return;
             const auto& req = packet.e2ee_publish_keys_req();
 
             auto reply = [&](bool success, const std::string& msg, uint32_t key_id) {
@@ -1267,11 +1280,14 @@ private:
         // before expiry (every packet's token is checked) and pass the new
         // one to their communities.
         else if (packet.type() == chatproj::Packet::TOKEN_REFRESH_REQ) {
-            if (!authenticated_ || !refresh_bucket_.take()) return;
+            if (!authenticated_) return;
             chatproj::Packet rsp;
             rsp.set_type(chatproj::Packet::TOKEN_REFRESH_RES);
             auto* res = rsp.mutable_token_refresh_res();
-            auto token = auth_manager_.mintToken(uid_, username_);
+            // Over the rate: answered, but with no token (review B13). Not
+            // paced: a wait of up to a minute would outlast the stale sweep.
+            const bool allowed = refresh_bucket_.take();
+            auto token = allowed ? auth_manager_.mintToken(uid_, username_) : std::nullopt;
             res->set_success(token.has_value());
             if (token) res->set_jwt_token(*token);
             res->set_username(username_);
@@ -1283,11 +1299,10 @@ private:
 
         // --- E2EE: FETCH KEYS ---
         // Any authenticated user may read anyone's public bundle (that is
-        // the point of a public key); key_id 0 = current. Bucketed: each
-        // lookup is a database round trip.
+        // the point of a public key); key_id 0 = current. Paced (key_bucket_):
+        // each lookup is a database round trip.
         else if (packet.type() == chatproj::Packet::E2EE_FETCH_KEYS_REQ) {
             if (!authenticated_) return;
-            if (!key_bucket_.take()) return;
             const auto& req = packet.e2ee_fetch_keys_req();
             if (req.uid() <= 0 && (req.username().empty() || req.username().size() > 64)) return;
             const auto user = auth_manager_.resolveUser(req.uid(), req.username());
@@ -1323,7 +1338,6 @@ private:
         // Only ever the caller's own blob.
         else if (packet.type() == chatproj::Packet::E2EE_FETCH_BACKUP_REQ) {
             if (!authenticated_) return;
-            if (!key_bucket_.take()) return;
 
             chatproj::Packet rsp;
             rsp.set_type(chatproj::Packet::E2EE_FETCH_BACKUP_RES);
@@ -1561,7 +1575,6 @@ private:
         // (accepted) — i.e. see through Invisible.
         else if (packet.type() == chatproj::Packet::DM_PRIVACY) {
             if (!authenticated_) return;
-            if (!status_bucket_.take()) return;
             const bool friends_only = packet.dm_privacy().friends_only();
             bool changed = false;
             manager_.update_presence(uid_, [&](Presence& p) {
@@ -1577,10 +1590,6 @@ private:
         // when what they can see changes.
         else if (packet.type() == chatproj::Packet::SET_STATUS_REQ) {
             if (!authenticated_ || !packet.has_set_status_req()) return;
-            if (!status_bucket_.take()) {
-                std::cout << "[Status] Rate limit hit for " << username_ << "\n";
-                return;
-            }
             const int raw = static_cast<int>(packet.set_status_req().status());
             if (!chatproj::PresenceStatus_IsValid(raw)) return;
             const auto status = static_cast<chatproj::PresenceStatus>(raw);
@@ -1597,7 +1606,6 @@ private:
         // sleep. Session-only: turns an ONLINE user AWAY until activity.
         else if (packet.type() == chatproj::Packet::SET_IDLE_REQ) {
             if (!authenticated_ || !packet.has_set_idle_req()) return;
-            if (!status_bucket_.take()) return;
             const bool idle = packet.set_idle_req().idle();
             manager_.update_presence(uid_, [&](Presence& p) { p.idle = idle; });
         }
@@ -1608,10 +1616,6 @@ private:
         // with the presence, i.e. only while the user is visible.
         else if (packet.type() == chatproj::Packet::SET_STATUS_MESSAGE_REQ) {
             if (!authenticated_ || !packet.has_set_status_message_req()) return;
-            if (!status_bucket_.take()) {
-                std::cout << "[Status] Rate limit hit for " << username_ << "\n";
-                return;
-            }
             const auto& req = packet.set_status_message_req();
             std::string text = normalize_status_line(req.text(), STATUS_TEXT_MAX_CHARS);
             std::string emoji = normalize_status_line(req.emoji(), STATUS_EMOJI_MAX_BYTES);
@@ -1637,10 +1641,6 @@ private:
         // replaces the set; the newly watched are answered at once.
         else if (packet.type() == chatproj::Packet::PRESENCE_SUBSCRIBE) {
             if (!authenticated_ || !packet.has_presence_subscribe()) return;
-            if (!watch_bucket_.take()) {
-                std::cout << "[Presence] Subscription rate limit hit for uid " << uid_ << "\n";
-                return;
-            }
             const auto& uids = packet.presence_subscribe().uids();
             const auto n = std::min<size_t>(static_cast<size_t>(uids.size()), SessionManager::MAX_WATCH);
             manager_.watch(shared_from_this(), uid_, std::vector<int64_t>(uids.begin(), uids.begin() + n),
@@ -2034,13 +2034,15 @@ private:
     RateBucket read_bucket_{60.0, 20.0};
     RateBucket write_bucket_{20.0, 1.0};
     RateBucket login_bucket_{5.0, 0.5};
-    // Refused over the rate instead (each is documented to never refuse a
-    // real client): CALL_SIGNAL (20 burst / 5 per second: far above a real
-    // handshake, ~6 signals per call, and keeps the INVITE-only DB touch
-    // bounded) and the rest below.
+    // Paced as well (review B13; each was dropped over the rate before):
+    // CALL_SIGNAL (20 burst / 5 per second: far above a real handshake, ~6
+    // signals per call, and keeps the INVITE-only DB touch bounded), the key
+    // endpoints, status changes and presence subscriptions. Renames and
+    // token renewals are refused over the rate, with an answer.
     RateBucket call_bucket_{20.0, 5.0};
     /// Same shape for the E2EE key endpoints (publish / fetch / backup):
-    /// each is a database round-trip.
+    /// each is a database round-trip. A channel key fill or an MLS leaf
+    /// check fetches one bundle per member; past the burst they wait.
     RateBucket key_bucket_{20.0, 5.0};
     /// Renames: each verifies the password (bcrypt), so a stolen token
     /// can't use this to guess it quickly. 10 burst (a few taken names in
@@ -2048,13 +2050,14 @@ private:
     RateBucket rename_bucket_{10.0, 1.0 / 30.0};
     /// Token renewal: clients ask every few hours; 3 burst / 1 per minute.
     RateBucket refresh_bucket_{3.0, 1.0 / 60.0};
-    /// Status / idle / DM-privacy changes: each is a DB write or a fan-out
-    /// to the account's watchers. A person picks a status a few times a day
-    /// and auto-away flips at most every few minutes; 10 burst / 1 per 2 s
-    /// never refuses a real client.
+    /// Status / idle / DM-privacy / status-text changes: each is a DB write
+    /// or a fan-out to the account's watchers. A person picks a status a few
+    /// times a day and auto-away flips at most every few minutes; 10 burst /
+    /// 1 per 2 s never holds back a real client, and a burst past it still
+    /// ends on its last value.
     RateBucket status_bucket_{10.0, 0.5};
     /// Presence subscriptions: the client sends its whole watch set at most
-    /// every 600 ms (throttled); 10 burst / 2 per second never refuses it.
+    /// every 600 ms (throttled); 10 burst / 2 per second never holds it back.
     RateBucket watch_bucket_{10.0, 2.0};
 };
 

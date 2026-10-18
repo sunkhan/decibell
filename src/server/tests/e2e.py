@@ -1190,6 +1190,71 @@ def test_dm_pacing():
     a.close(); b.close()
 
 
+def test_state_and_key_pacing():
+    """Review B13: status changes, presence subscriptions and key fetches past
+    their buckets used to be dropped. Now they wait, so a burst ends on its
+    last value and every fetch is answered."""
+    print("status / subscription / key-fetch pacing (B13)")
+    for name in ("paula", "quinn"):
+        register(name)
+    up, uq = uid_of("paula"), uid_of("quinn")
+    p, q = User("paula"), User("quinn")
+    q.watch(up)
+    q.clear()
+    # Status bucket: 10 burst / 1 per 2 s. Ten no-ops spend the burst; the
+    # two real changes after them wait (~4 s) and still land, in order.
+    for i in range(9):
+        p.send(pb.Packet.SET_IDLE_REQ, set_idle_req=pb.SetIdleRequest(idle=False))
+    p.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    p.send(pb.Packet.SET_IDLE_REQ, set_idle_req=pb.SetIdleRequest(idle=True))
+    p.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_DND))
+    seen = []
+    end = time.time() + 8
+    while time.time() < end and (not seen or seen[-1] != pb.PRESENCE_DND):
+        d = q.wait(pb.Packet.PRESENCE_DELTA, timeout=max(0.1, end - time.time()),
+                   pred=lambda x: x.presence_delta.user.uid == up)
+        if d:
+            seen.append(d.presence_delta.user.status)
+    check("a status burst past the bucket ends on its last value, in order",
+          [s for s in seen if s != pb.PRESENCE_ONLINE] == [pb.PRESENCE_AWAY, pb.PRESENCE_DND]
+          and sql("select presence_status from users where uid=%s", up) == [(pb.PRESENCE_DND,)], seen)
+    # Watch bucket: 10 burst / 2 per s. The last set of a burst is the one
+    # that holds.
+    for _ in range(14):
+        q.send(pb.Packet.PRESENCE_SUBSCRIBE, presence_subscribe=pb.PresenceSubscribe(uids=[up]))
+    q.send(pb.Packet.PRESENCE_SUBSCRIBE, presence_subscribe=pb.PresenceSubscribe(uids=[up, uid_of("alice")]))
+    ans = q.wait(pb.Packet.PRESENCE_UPDATE, timeout=5, pred=lambda x: uid_of("alice") in x.presence_update.covered_uids)
+    check("a subscription burst past the bucket ends on its last set", ans is not None)
+    # Key bucket: 20 burst / 5 per s. Thirty fetches all come back.
+    p.send(pb.Packet.E2EE_PUBLISH_KEYS_REQ, e2ee_publish_keys_req=pb.E2eePublishKeysReq(bundle=bundle(40)))
+    q.clear()
+    t0 = time.time()
+    for i in range(30):
+        q.send(pb.Packet.E2EE_FETCH_KEYS_REQ, e2ee_fetch_keys_req=pb.E2eeFetchKeysReq(uid=up if i % 2 else 10_000_000 + i))
+    got = []
+    while len(got) < 30:
+        r = q.wait(pb.Packet.E2EE_FETCH_KEYS_RES, timeout=3)
+        if r is None:
+            break
+        got.append(r.e2ee_fetch_keys_res.uid)
+    elapsed = time.time() - t0
+    check("a key-fetch burst past the bucket is answered in full, in order",
+          got == [up if i % 2 else 10_000_000 + i for i in range(30)], f"{len(got)} answers")
+    check(f"... paced past the burst ({elapsed:.1f} s)", 1.0 <= elapsed <= 6)
+    # Token renewals past their bucket (3 burst / 1 per minute) are answered
+    # with a refusal rather than left hanging.
+    answers = []
+    for _ in range(4):
+        p.send(pb.Packet.TOKEN_REFRESH_REQ, token_refresh_req=pb.TokenRefreshRequest())
+        r = p.wait(pb.Packet.TOKEN_REFRESH_RES, timeout=2)
+        answers.append(r.token_refresh_res.success if r else None)
+        if r and r.token_refresh_res.jwt_token:
+            p.token = r.token_refresh_res.jwt_token
+    check("a token renewal past the bucket is answered, refused", answers == [True, True, True, False], answers)
+    check("the paced sessions stay connected", p.conversations() is not None and q.conversations() is not None)
+    p.close(); q.close()
+
+
 # --- Response sizes (review A1) -----------------------------------------------
 # The native client drops its connection over any frame past 2 MiB and asks
 # again after reconnecting, so a response that big locks a user out. Big or
@@ -1804,6 +1869,7 @@ def main():
         test_token_refresh()
         test_resume()
         test_dm_pacing()
+        test_state_and_key_pacing()
         test_dm_page_budget()
         test_dm_conversation_pages()
         test_friend_list_bounds()

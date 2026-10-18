@@ -7,6 +7,7 @@
 #endif
 #endif
 
+#include <cmath>
 #include <ctime>
 #include <filesystem>
 #include <iostream>
@@ -910,6 +911,8 @@ public:
           socket_(std::move(socket), context),
           close_timer_(socket_.lowest_layer().get_executor()),
           deadline_timer_(socket_.lowest_layer().get_executor()),
+          pace_timer_(socket_.lowest_layer().get_executor()),
+          thumb_timer_(socket_.lowest_layer().get_executor()),
           manager_(manager), jwt_public_pem_(jwt_public_pem) {
         // Enable TCP keepalive to detect dead client connections.
         // Tighten from system defaults (~2h) to 15s idle + 5s interval + 3 retries = ~30s detection.
@@ -1081,8 +1084,9 @@ public:
     void finish_close() { drop_connection(); }
 
     // The connection is over (I/O error, deadline, backlog overflow, end
-    // of a flush): detach from the manager, close the socket, cancel both
-    // timers and free the backlog. Every error path ends here. Closing
+    // of a flush): detach from the manager, close the socket, cancel the
+    // timers, drop a request waiting for its rate bucket and free the
+    // backlog. Every error path ends here. Closing
     // only on the deadline used to leave a reset peer's socket in
     // CLOSE_WAIT — its descriptor held — for up to 90 s, with the timer
     // keeping the session alive. io thread only; idempotent (leave() is).
@@ -1091,6 +1095,10 @@ public:
         close_connection();
         close_timer_.cancel();
         deadline_timer_.cancel();
+        pace_timer_.cancel();
+        thumb_timer_.cancel();
+        held_packet_.reset();
+        parked_thumbnail_.reset();
         std::lock_guard<std::mutex> lock(write_mutex_);
         dropped_ = true;
         // An in-flight write holds its own reference to its buffer.
@@ -1209,7 +1217,9 @@ private:
                         inbound_body_.clear();
                         inbound_body_.shrink_to_fit();
                     }
-                    if (!closing_) do_read_header();
+                    // A request waiting for its rate bucket holds the read
+                    // loop; run_held() resumes it.
+                    if (!closing_ && !held_packet_) do_read_header();
                 } else {
                     drop_connection();
                 }
@@ -1483,13 +1493,7 @@ private:
         // row vanished by any path (ban via another node in the future,
         // manual DB edit, a race with its own leave) must not keep
         // posting, joining voice or streaming on a stale auth.
-        if (auto* db = manager_.db(); db && !db->is_member(uid_)) {
-            std::cout << "[Community] Dropping session of " << username_
-                      << ": no longer a member\n";
-            manager_.leave(shared_from_this());
-            close_connection();
-            return;
-        }
+        if (membership_lost()) return;
 
         // Channel ids are short server-made slugs; a request naming a
         // longer one names no channel and is dropped here, before any
@@ -1499,43 +1503,55 @@ private:
                 std::cout << "[Community] Dropped packet type " << packet.type() << " from "
                           << username_ << ": over-long channel id\n";
             }
+            // A message is refused out loud like on every other path (its
+            // bubble would otherwise wait for the client's echo watchdog).
+            // The id isn't echoed.
+            if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
+                chatproj::ChannelMessage named;
+                named.set_nonce(packet.channel_msg().nonce());
+                reject_channel_msg(named, "That channel doesn't exist.");
+            }
             return;
         }
 
-        // Per-session rate limits. Each packet class draws from its own
-        // bucket; an exhausted bucket drops the packet (CHANNEL_MSG tells
-        // the sender so its optimistic bubble doesn't hang). Limits are
-        // far above anything a human produces through the UI.
-        if (!rate_limit_allows(packet.type())) {
+        // Per-session rate limits (review B13). Each packet class draws
+        // from its own bucket, and nothing over the rate goes unanswered:
+        // it waits for the bucket, is refused with an answer, or (state
+        // where only the newest counts) waits in a one-packet slot. Limits
+        // are far above anything a human produces through the UI.
+        RateRule rule = RateRule::Free;
+        chatproj::TokenBucket* bucket = rate_bucket(packet.type(), &rule);
+        // A newer thumbnail replaces the one waiting for the bucket even
+        // if a token is back: the older one must never land after it.
+        if (rule == RateRule::Latest && parked_thumbnail_) {
+            park_thumbnail(std::move(packet));
+            return;
+        }
+        if (bucket && !bucket->try_take()) {
             if (rate_limit_log_bucket_.try_take()) {
                 std::cout << "[Community] Rate-limited " << username_
                           << " on packet type " << packet.type() << "\n";
             }
-            if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
-                reject_channel_msg(packet.channel_msg(), "You're sending messages too fast.");
+            switch (rule) {
+                case RateRule::Refused:
+                    refuse_over_rate(packet, *bucket);
+                    return;
+                case RateRule::Latest:
+                    park_thumbnail(std::move(packet));
+                    return;
+                case RateRule::Paced:
+                    hold_until_refill(std::move(packet), bucket);
+                    return;
+                case RateRule::Free:
+                    break;
             }
-            // Answered, not dropped: the client waits on this seq.
-            if (packet.type() == chatproj::Packet::MESSAGE_SEARCH_REQ) {
-                const auto& req = packet.message_search_req();
-                send_search_failure(req.seq(), req.cursor() == 0 && req.offset() == 0,
-                                    "You're searching too fast.", 1000);
-            }
-            // Also answered: the client holds its "loading" state (and a
-            // lookup its uids) until the reply.
-            if (packet.type() == chatproj::Packet::MEMBER_LIST_REQ) {
-                const auto& req = packet.member_list_req();
-                chatproj::Packet p;
-                p.set_type(chatproj::Packet::MEMBER_LIST_RES);
-                auto* res = p.mutable_member_list_res();
-                res->set_success(false);
-                res->set_message("Too many requests.");
-                res->set_first_page(req.after().empty() && req.uids_size() == 0);
-                for (int i = 0; i < req.uids_size() && i < 200; ++i) res->add_lookup_uids(req.uids(i));
-                send_packet(p);
-            }
-            return;
         }
+        dispatch(packet);
+    }
 
+    // A request that passed the gates and its rate: from process_packet, or
+    // once its bucket refilled (run_held / the thumbnail slot).
+    void dispatch(const chatproj::Packet& packet) {
         // --- JOIN VOICE CHANNEL ---
         if (packet.type() == chatproj::Packet::JOIN_VOICE_REQ) {
             const auto& jvr = packet.join_voice_req();
@@ -2066,14 +2082,11 @@ private:
         // --- STREAM THUMBNAIL UPDATE ---
         else if (packet.type() == chatproj::Packet::STREAM_THUMBNAIL_UPDATE) {
             const auto& in = packet.stream_thumbnail_update();
-            // Cap thumbnail size — these are JPEG posters (960 px long edge
-            // since 2026-10-04; clients step quality down to fit). Without a
-            // cap any member could repeatedly push ~2 MB blobs (up to the
-            // TCP frame limit) into the per-username cache. Oversized
-            // updates are dropped silently. Keep in step with the clients'
-            // THUMBNAIL_MAX_BYTES / MAX_THUMBNAIL_BYTES.
-            constexpr size_t MAX_STREAM_THUMB_BYTES = 256 * 1024;
-            if (in.thumbnail_data().size() <= MAX_STREAM_THUMB_BYTES &&
+            // Cap thumbnail size (kMaxStreamThumbBytes). Without a cap any
+            // member could repeatedly push ~2 MB blobs (up to the TCP frame
+            // limit) into the per-username cache. Oversized updates are
+            // dropped silently.
+            if (in.thumbnail_data().size() <= kMaxStreamThumbBytes &&
                 manager_.has_active_stream(in.channel_id(), uid_)) {
                 // Rebuilt from its fields, never forwarded: the client's
                 // packet carries its JWT, and fields this build doesn't
@@ -4571,19 +4584,42 @@ private:
         send_simple_mod_res(chatproj::Packet::MOD_ACTION_RES, false, reason, username_, "message");
     }
 
-    // Routes a packet type to its rate-limit bucket. Unlisted types
-    // (pings, stop-stream, leave) are not limited.
-    bool rate_limit_allows(chatproj::Packet::Type type) {
+    // What happens to a request over its bucket's rate (review B13: one
+    // used to be dropped without a word, which left the client waiting on
+    // a history page, a settings save or a delete that never happened).
+    enum class RateRule {
+        Free,     // not limited
+        Paced,    // waits for the bucket, reading paused (hold_until_refill)
+        Refused,  // answered at once with a refusal the client acts on
+        Latest,   // only the newest counts: waits in a one-packet slot
+    };
+
+    // Routes a packet type to its rate-limit bucket and rule. Unlisted
+    // types (pings, stop-stream, leave) are not limited. Everything listed
+    // is paced, as on central, except:
+    //  - CHANNEL_MSG is refused with CHANNEL_MSG_REJECTED: the client drops
+    //    that bubble and puts the text back, and paces its sends to the same
+    //    bucket (sendPacing.ts). (Edits share the bucket and are paced.)
+    //  - MESSAGE_SEARCH_REQ is refused with a failure carrying
+    //    retry_after_ms, which the client waits out and asks again. Searches
+    //    supersede each other, so one held behind newer ones would only hold
+    //    up the session's other packets for an answer nobody wants.
+    //  - STREAM_THUMBNAIL_UPDATE keeps only the newest (park_thumbnail): at
+    //    1 per 5 s, pacing would hold the session's chat for seconds.
+    chatproj::TokenBucket* rate_bucket(chatproj::Packet::Type type, RateRule* rule) {
         using T = chatproj::Packet;
+        *rule = RateRule::Paced;
         switch (type) {
             case T::CHANNEL_MSG:
+                *rule = RateRule::Refused;
+                return &msg_bucket_;
             case T::MESSAGE_EDIT_REQ:
-                return msg_bucket_.try_take();
+                return &msg_bucket_;
             case T::STREAM_THUMBNAIL_UPDATE:
-                return thumb_bucket_.try_take();
+                *rule = RateRule::Latest;
+                return &thumb_bucket_;
             // LEAVE_VOICE_REQ / STOP_STREAM_REQ are deliberately unlimited:
-            // dropping a leave would desync the client from the server's
-            // voice state, whereas a dropped join just gets retried.
+            // a leave must never wait behind a join or a mute toggle.
             case T::JOIN_VOICE_REQ:
             case T::VOICE_STATE_NOTIFY:
             case T::UPDATE_CAPABILITIES_REQ:
@@ -4592,16 +4628,17 @@ private:
             case T::STOP_WATCHING_REQ:
             case T::STREAM_CODEC_CHANGED_NOTIFY:
             case T::PRESENCE_VISIBILITY:
-                return presence_bucket_.try_take();
+                return &presence_bucket_;
             case T::MLS_GROUP_INFO_REQ:
             case T::MLS_GROUP_CREATE_REQ:
             case T::MLS_COMMIT_REQ:
             case T::CHANNEL_KEYS_REQ:
             case T::CHANNEL_KEYS_PUBLISH_REQ:
             case T::CHANNEL_KEYS_REJECT:
-                return mls_bucket_.try_take();
+                return &mls_bucket_;
             case T::MESSAGE_SEARCH_REQ:
-                return search_bucket_.try_take();
+                *rule = RateRule::Refused;
+                return &search_bucket_;
             case T::CHANNEL_HISTORY_REQ:
             case T::MEMBER_LIST_REQ:
             case T::MEMBER_SEARCH_REQ:
@@ -4610,7 +4647,7 @@ private:
             case T::ROLE_LIST_REQ:
             case T::INVITE_LIST_REQ:
             case T::FETCH_STREAM_THUMBNAIL_REQ:
-                return query_bucket_.try_take();
+                return &query_bucket_;
             case T::CHANNEL_UPDATE_REQ:
             case T::CHANNEL_WIPE_REQ:
             case T::MESSAGE_DELETE_REQ:
@@ -4638,10 +4675,110 @@ private:
             case T::TRANSFER_OWNERSHIP_REQ:
             case T::STORAGE_INFO_REQ:
             case T::STORAGE_CONFIG_SET_REQ:
-                return admin_bucket_.try_take();
+                return &admin_bucket_;
             default:
-                return true;
+                *rule = RateRule::Free;
+                return nullptr;
         }
+    }
+
+    // How long until `bucket` has a token, plus a millisecond so the timer
+    // never fires a hair early.
+    static std::chrono::steady_clock::duration refill_delay(chatproj::TokenBucket& bucket) {
+        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                   std::chrono::duration<double>(bucket.wait_seconds())) +
+               std::chrono::milliseconds(1);
+    }
+
+    void refuse_over_rate(const chatproj::Packet& packet, chatproj::TokenBucket& bucket) {
+        if (packet.type() == chatproj::Packet::CHANNEL_MSG) {
+            // No retry_after here: the client reads one as slowmode.
+            reject_channel_msg(packet.channel_msg(), "You're sending messages too fast.");
+        } else if (packet.type() == chatproj::Packet::MESSAGE_SEARCH_REQ) {
+            const auto& req = packet.message_search_req();
+            const auto wait_ms = static_cast<int32_t>(std::ceil(bucket.wait_seconds() * 1000.0));
+            send_search_failure(req.seq(), req.cursor() == 0 && req.offset() == 0,
+                                "You're searching too fast.", std::max<int32_t>(wait_ms, 1));
+        }
+    }
+
+    // Over the rate: the request waits for its bucket and the read loop
+    // waits with it (central's model), so the session's packets keep their
+    // order and a flood is slowed to the rate rather than dropped. One
+    // request is held at a time; the rest wait in the socket. The longest
+    // wait is one token of the slowest paced bucket (0.5 s), and each run
+    // re-arms the idle deadline, so pacing never drops a client.
+    void hold_until_refill(chatproj::Packet&& packet, chatproj::TokenBucket* bucket) {
+        held_packet_ = std::make_unique<chatproj::Packet>(std::move(packet));
+        held_bucket_ = bucket;
+        arm_pace_timer();
+    }
+
+    void arm_pace_timer() {
+        auto self = shared_from_this();
+        pace_timer_.expires_after(refill_delay(*held_bucket_));
+        pace_timer_.async_wait([this, self](const boost::system::error_code& ec) {
+            if (ec || closing_ || dropped()) return;
+            run_held();
+        });
+    }
+
+    void run_held() {
+        if (!held_packet_) return;
+        if (!held_bucket_->try_take()) {
+            arm_pace_timer();
+            return;
+        }
+        const auto packet = std::move(held_packet_);
+        held_bucket_ = nullptr;
+        // Removed while it waited: kick / ban close the session (and cancel
+        // this timer), but any other path is caught here as on arrival.
+        if (membership_lost()) return;
+        dispatch(*packet);
+        if (closing_) return;
+        arm_deadline(manager_.idle_timeout_seconds());
+        do_read_header();
+    }
+
+    // Stream thumbnails over the rate: the newest waits for the bucket in
+    // this one slot (a newer one replaces it) while reading goes on.
+    void park_thumbnail(chatproj::Packet&& packet) {
+        // One the handler would drop anyway never replaces a good one.
+        if (packet.stream_thumbnail_update().thumbnail_data().size() > kMaxStreamThumbBytes) return;
+        parked_thumbnail_ = std::make_unique<chatproj::Packet>(std::move(packet));
+        if (!thumb_timer_armed_) arm_thumb_timer();
+    }
+
+    void arm_thumb_timer() {
+        thumb_timer_armed_ = true;
+        auto self = shared_from_this();
+        thumb_timer_.expires_after(refill_delay(thumb_bucket_));
+        thumb_timer_.async_wait([this, self](const boost::system::error_code& ec) {
+            thumb_timer_armed_ = false;
+            if (ec || closing_ || dropped() || !parked_thumbnail_) return;
+            if (!thumb_bucket_.try_take()) {
+                arm_thumb_timer();
+                return;
+            }
+            const auto packet = std::move(parked_thumbnail_);
+            if (membership_lost()) return;
+            dispatch(*packet);
+        });
+    }
+
+    // The member row is gone: drop the session. True when it did.
+    bool membership_lost() {
+        auto* db = manager_.db();
+        if (!db || db->is_member(uid_)) return false;
+        std::cout << "[Community] Dropping session of " << username_ << ": no longer a member\n";
+        manager_.leave(shared_from_this());
+        close_connection();
+        return true;
+    }
+
+    bool dropped() {
+        std::lock_guard<std::mutex> lock(write_mutex_);
+        return dropped_;
     }
 
     // ClientCapabilities is stored per session and re-serialised into
@@ -4708,17 +4845,31 @@ private:
     ssl::stream<tcp::socket> socket_;
     boost::asio::steady_timer close_timer_;
     boost::asio::steady_timer deadline_timer_;
+    // A request over its bucket's rate waits here (hold_until_refill), with
+    // the read loop, until a token is back.
+    boost::asio::steady_timer pace_timer_;
+    std::unique_ptr<chatproj::Packet> held_packet_;
+    chatproj::TokenBucket* held_bucket_ = nullptr;
+    // The newest stream thumbnail over the rate (park_thumbnail).
+    boost::asio::steady_timer thumb_timer_;
+    std::unique_ptr<chatproj::Packet> parked_thumbnail_;
+    bool thumb_timer_armed_ = false;
+    // Stream thumbnails are JPEG posters (960 px long edge since
+    // 2026-10-04; clients step quality down to fit). Keep in step with the
+    // clients' THUMBNAIL_MAX_BYTES / MAX_THUMBNAIL_BYTES.
+    static constexpr size_t kMaxStreamThumbBytes = 256 * 1024;
     SessionManager& manager_;
     char inbound_header_[4];
 
-    // Rate-limit buckets (burst capacity, sustained per second).
+    // Rate-limit buckets (burst capacity, sustained per second). What
+    // happens over the rate depends on the request (rate_bucket): most wait.
     // Chat messages + edits. 10 burst / 3 per s: a human firing one-word
     // replies stays under it (the client paces to it too), a flood
     // doesn't. Mirrored in the client's sendPacing.ts — keep in step.
     chatproj::TokenBucket msg_bucket_{10, 3.0};
     // Stream thumbnails. Clients send one at stream start, a follow-up 2 s
     // later, then one per 15 s (thumbnailConfig.ts / thumb_encode.rs), so
-    // 3 burst / 1 per 5 s never refuses a real client — and caps what a
+    // 3 burst / 1 per 5 s never holds back a real client — and caps what a
     // misbehaving one can fan out at 256 KB per 5 s per listener (it was
     // 128 KB per second before the 2026-10-04 cap raise).
     chatproj::TokenBucket thumb_bucket_{3, 0.2};
@@ -4728,7 +4879,7 @@ private:
     // 1 per s covers a search plus quick scrolling through result pages.
     chatproj::TokenBucket search_bucket_{6, 1.0};
     chatproj::TokenBucket admin_bucket_{20, 2.0};     // management + moderation
-    chatproj::TokenBucket mls_bucket_{20, 5.0};       // MLS handshake relay
+    chatproj::TokenBucket mls_bucket_{20, 5.0};       // MLS relay + channel key escrow
     chatproj::TokenBucket rate_limit_log_bucket_{3, 0.2};
     std::vector<uint8_t> inbound_body_;
 

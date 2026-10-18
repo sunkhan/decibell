@@ -19,12 +19,19 @@ public:
           last_(std::chrono::steady_clock::now()) {}
 
     // Consume one token if available. Returns false (and consumes
-    // nothing) when the caller should drop the action.
+    // nothing) when the caller is over the rate: it waits (wait_seconds),
+    // or refuses with an answer.
     bool try_take() {
         refill();
         if (tokens_ < 1.0) return false;
         tokens_ -= 1.0;
         return true;
+    }
+
+    // Seconds until try_take() succeeds (0: it would now).
+    double wait_seconds() {
+        refill();
+        return tokens_ >= 1.0 ? 0.0 : (1.0 - tokens_) / refill_;
     }
 
     // Back at capacity: nothing taken recently (an idle entry can go).

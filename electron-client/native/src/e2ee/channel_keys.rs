@@ -41,7 +41,10 @@ use crate::state::AppState;
 /// What pre-E2EE clients see in `content` for a sealed channel message.
 pub const PLACEHOLDER: &str = "🔒 This message is end-to-end encrypted. Update Decibell to read it.";
 pub const UNREADABLE: &str = "🔒 Encrypted message";
-const FETCH_TIMEOUT: Duration = Duration::from_secs(6);
+/// The community answers every key request, but over a rate bucket it makes
+/// a request wait (review B13), behind whatever else this session sent: the
+/// wait covers that, like the renderer's history requests.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Gap between uncached identity fetches while sealing to many members
 /// (central's key bucket is 20 burst / 5 per s).
 const FILL_PACE: Duration = Duration::from_millis(250);
@@ -107,8 +110,9 @@ const MAX_PAGES: usize = 64;
 
 /// Spaces out the key requests of one long operation (a load's pages, a
 /// fill's publishes). The community takes CHANNEL_KEYS_* (and MLS) requests
-/// at 20 burst / 5 per s per session and drops the rest without a word, so
-/// a request past the burst would only time out.
+/// at 20 burst / 5 per s per session and makes the rest wait, holding up
+/// everything else this session sends meanwhile: staying under the rate
+/// keeps a big fill from delaying the user's own messages.
 struct Pacer(usize);
 
 impl Pacer {
