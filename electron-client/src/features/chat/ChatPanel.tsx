@@ -320,8 +320,10 @@ export default function ChatPanel() {
       return;
     }
     // Caught up: the newest page merges in, or replaces the slice when
-    // more was posted than it holds. Until it lands the slice is windowed,
-    // so a live message can't settle in past a gap.
+    // more was posted than it holds. Until it lands the slice is windowed:
+    // live messages wait and go in with it (chatStore holdLive), so none
+    // settles in past a gap, and the echo of a send made meanwhile shows
+    // it as sent at once.
     if (stored) chat.setResyncing(serverId, channelId, true);
     void loadLatest(serverId, channelId).finally(() => {
       if (stored) useChatStore.getState().setResyncing(serverId, channelId, false);

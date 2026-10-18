@@ -98,7 +98,9 @@ const ECHO_CHECK_PAGES = 5;
 /// store (lib/historyMerge). Only a send the server doesn't have is
 /// withdrawn, its text put back in the message box. While the community is
 /// unreachable the check waits for the reconnect, whose re-sync usually
-/// settles the bubble first.
+/// settles the bubble first. A bubble that stopped being pending had its
+/// echo arrive during a re-sync (chatStore holdLive): the server has it, so
+/// it is never withdrawn, and a page settles it.
 export function watchEcho(serverId: string, channelId: string, nonce: string): void {
   window.setTimeout(() => void checkEcho(serverId, channelId, nonce), ECHO_TIMEOUT_MS);
 }
@@ -138,12 +140,12 @@ async function askServer(
 }
 
 async function checkEcho(serverId: string, channelId: string, nonce: string): Promise<void> {
-  const gone = () => !channelBubble(serverId, channelId, nonce);
+  const gone = () => !channelBubble(serverId, channelId, nonce)?.pending;
   while (!gone() && !useChatStore.getState().connectedServers.has(serverId)) {
     await waitFor(useChatStore, (s) => s.resyncEpoch[serverId] ?? 0, gone);
   }
   const sent = channelBubble(serverId, channelId, nonce);
-  if (!sent) return;
+  if (!sent?.pending) return;
   await askServer(
     (afterId) =>
       requestChannelHistory(serverId, channelId, afterId > 0 ? { beforeId: 0, afterId, limit: 100 } : { beforeId: 0, limit: 100 }),
@@ -151,7 +153,7 @@ async function checkEcho(serverId: string, channelId: string, nonce: string): Pr
     gone,
   );
   const bubble = channelBubble(serverId, channelId, nonce);
-  if (!bubble) return;
+  if (!bubble?.pending) return;
   useChatStore.getState().removeMessageByNonce(serverId, channelId, nonce);
   const restored = useDraftsStore.getState().restoreChannelDraft(serverId, channelId, bubble.content);
   toast.error(
@@ -173,12 +175,12 @@ function dmBubble(peer: number, nonce: string) {
 }
 
 async function checkDmEcho(peer: number, nonce: string): Promise<void> {
-  const gone = () => !dmBubble(peer, nonce);
+  const gone = () => !dmBubble(peer, nonce)?.pending;
   while (!gone() && !centralSignedIn()) {
     await waitFor(useDmStore, (s) => s.resyncEpoch, gone);
   }
   const sent = dmBubble(peer, nonce);
-  if (!sent) return;
+  if (!sent?.pending) return;
   await askServer(
     (afterId) =>
       requestDmHistory(peer, afterId > 0 ? { beforeId: 0, afterId, limit: 100 } : { beforeId: 0, limit: 100 }),
@@ -186,7 +188,7 @@ async function checkDmEcho(peer: number, nonce: string): Promise<void> {
     gone,
   );
   const bubble = dmBubble(peer, nonce);
-  if (!bubble) return;
+  if (!bubble?.pending) return;
   useDmStore.getState().removeDmMessageByNonce(peer, nonce);
   const restored = useDraftsStore.getState().restoreDmDraft(peer, bubble.content);
   toast.error(

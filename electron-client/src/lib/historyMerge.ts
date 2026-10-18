@@ -9,7 +9,8 @@
 // let a page repair a slice that missed traffic (review B4): a row the slice
 // has inside the page's range but the page lacks was deleted, a row the page
 // has changed was edited, and a page entirely above the slice's newest row
-// may sit past a gap.
+// may sit past a gap. Live rows that arrive while a slice re-syncs wait for
+// its newest page (applyHeldRows).
 
 /// The fields the merge reads.
 export interface MergeRow {
@@ -188,6 +189,34 @@ export function mergeStoredPage<T extends MergeRow>(
     headExtended: pageOldest < storedOldest,
     reachedNewest: pageNewest >= storedNewest,
   };
+}
+
+/// Live rows held while a slice re-synced (one landing before the newest
+/// page could have sat past a gap), put in once that page has merged and
+/// the slice is at the present. The page answers for every row up to its
+/// newest: it holds them, or they were deleted since. Held rows above it
+/// go in at the top, in id order. A held row carrying a bubble's nonce
+/// settles that bubble whichever way it went: the server stored it.
+export function applyHeldRows<T extends MergeRow>(slice: T[], held: T[]): T[] {
+  if (held.length === 0) return slice;
+  const newest = newestStoredId(slice);
+  const nonces = new Set<string>();
+  const above = new Map<number, T>();
+  for (const r of held) {
+    const id = realId(r);
+    if (id === 0) continue;
+    if (r.nonce) nonces.add(r.nonce);
+    if (id > newest) above.set(id, r);
+  }
+  const stored: T[] = [];
+  const tail: T[] = [];
+  for (const m of slice) {
+    if (realId(m) > 0) stored.push(m);
+    else if (!(m.nonce && nonces.has(m.nonce))) tail.push(m);
+  }
+  if (above.size === 0 && stored.length + tail.length === slice.length) return slice;
+  const rows = [...above.values()].sort((a, b) => realId(a) - realId(b));
+  return [...stored, ...rows, ...tail];
 }
 
 /// Stored rows outside [lo, hi] as they are; inside it, the page's rows,

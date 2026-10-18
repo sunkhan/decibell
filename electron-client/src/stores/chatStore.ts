@@ -12,7 +12,7 @@ import type {
   ServerRole,
 } from "../types";
 import { channelKey, type ChannelKey } from "../lib/channelKey";
-import { mergeStoredPage } from "../lib/historyMerge";
+import { applyHeldRows, mergeStoredPage } from "../lib/historyMerge";
 import { useAuthStore } from "./authStore";
 import { rosterKey } from "../features/members/rosterOrder";
 import type { Uid } from "./usersStore";
@@ -162,9 +162,9 @@ interface ChatState {
   /// when the active server's count moves (review B4).
   resyncEpoch: Record<string, number>;
   /// Channels whose re-sync (ChatPanel's newest-page load after a
-  /// reconnect) is in flight: windowed meanwhile, so live arrivals wait,
-  /// but shown as caught up — no jump-to-present pill, bottom-follow on,
-  /// sends go through.
+  /// reconnect) is in flight: windowed meanwhile, so live arrivals wait
+  /// for that page and go in with it (holdLive), but shown as caught up —
+  /// no jump-to-present pill, bottom-follow on, sends go through.
   resyncing: Record<ChannelKey, boolean>;
 
   // Mutators
@@ -381,6 +381,49 @@ const CHANNEL_CACHE_SIZE = 10;
 function deletingIds(state: ChatState, key: ChannelKey): Set<number> | undefined {
   const pending = state.pendingDeletions[key];
   return pending && pending.size > 0 ? new Set(pending.keys()) : undefined;
+}
+
+/// Live messages that arrived for a re-syncing channel (see `resyncing`),
+/// in arrival order, from setResyncing(on) to setResyncing(off). They wait
+/// for the newest page, which puts in the ones it doesn't hold
+/// (applyHeldRows). null once more arrived than a re-sync should ever see:
+/// then they're dropped, as for any windowed slice, since putting in only
+/// some could leave a gap. Not store state: nothing renders from it.
+const HELD_CAP = 200;
+const heldLive = new Map<ChannelKey, Message[] | null>();
+
+/// A live message for a re-syncing channel waits (see heldLive). If it is
+/// the echo of a send of ours, the server has stored it: the bubble shows
+/// as sent now, and the page or the held row takes its place.
+function holdLive(state: ChatState, key: ChannelKey, message: Message): ChatState | Partial<ChatState> {
+  const held = heldLive.get(key);
+  if (!held) return state;
+  if (held.length >= HELD_CAP) {
+    heldLive.set(key, null);
+    return state;
+  }
+  held.push(message);
+  if (!message.nonce) return state;
+  const list = state.messagesByChannel[key] ?? [];
+  const idx = list.findIndex((m) => m.id === 0 && m.nonce === message.nonce && m.pending);
+  if (idx < 0) return state;
+  const next = list.slice();
+  next[idx] = { ...list[idx], pending: undefined };
+  return { messagesByChannel: { ...state.messagesByChannel, [key]: next } };
+}
+
+/// The re-syncing channel's slice reached the present: put in what waited.
+function releaseHeld(key: ChannelKey, list: Message[]): Message[] {
+  const held = heldLive.get(key);
+  if (held === undefined) return list;
+  heldLive.set(key, []);
+  return held ? applyHeldRows(list, held) : list;
+}
+
+/// Keep held rows in step with deletes and edits that arrive meanwhile.
+function updateHeld(key: ChannelKey, fn: (held: Message[]) => Message[]): void {
+  const held = heldLive.get(key);
+  if (held && held.length > 0) heldLive.set(key, fn(held));
 }
 
 // Merge a new message into a channel's list, sorted by id ascending
@@ -819,8 +862,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // message belongs past a hidden gap — dropping it keeps the window
       // contiguous. It'll load when the user returns to present / pages down.
       // Optimistic sends (id=0) never reach here in that state: the composer
-      // jumps to present before sending.
-      if (state.hasMoreAfter[key] && message.id !== 0) return state;
+      // jumps to present before sending. During a re-sync it waits instead,
+      // for the newest page (holdLive).
+      if (state.hasMoreAfter[key] && message.id !== 0) {
+        return state.resyncing[key] ? holdLive(state, key, message) : state;
+      }
       const existing = state.messagesByChannel[key];
       if (key !== displayedChannelKey && message.id !== 0) {
         // Never loaded and no fetch in flight: the first visit fetches the
@@ -870,8 +916,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const key = channelKey(serverId, channelId);
       const existing = state.messagesByChannel[key] ?? [];
       const r = mergeStoredPage(existing, messages, useAuthStore.getState().uid, 0, deletingIds(state, key));
+      // A re-sync's newest page: what arrived meanwhile goes in with it, in
+      // the same update (no render in between).
+      const list = state.resyncing[key] && r.reachedNewest ? releaseHeld(key, r.list) : r.list;
       return {
-        messagesByChannel: { ...state.messagesByChannel, [key]: r.list },
+        messagesByChannel: { ...state.messagesByChannel, [key]: list },
         hasMoreHistory: r.headExtended ? { ...state.hasMoreHistory, [key]: hasMore } : state.hasMoreHistory,
         // The newest page: the slice is at the present now.
         hasMoreAfter: r.reachedNewest ? { ...state.hasMoreAfter, [key]: false } : state.hasMoreAfter,
@@ -899,15 +948,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const existing = state.messagesByChannel[key] ?? [];
       const r = mergeStoredPage(existing, messages, useAuthStore.getState().uid, afterId, deletingIds(state, key));
       if (r.list === existing && !r.applied) return state;
+      // Only a windowed slice can reach the present: one already there
+      // stays there whatever lies beyond the page (an echo check asks
+      // from where the send was made, not from the newest row).
+      const windowed = state.hasMoreAfter[key] === true;
+      const list = r.applied && windowed && !hasMoreNewer && state.resyncing[key] ? releaseHeld(key, r.list) : r.list;
       return {
-        messagesByChannel:
-          r.list === existing ? state.messagesByChannel : { ...state.messagesByChannel, [key]: r.list },
-        // Only a windowed slice can reach the present: one already there
-        // stays there whatever lies beyond the page (an echo check asks
-        // from where the send was made, not from the newest row).
-        hasMoreAfter: r.applied
-          ? { ...state.hasMoreAfter, [key]: state.hasMoreAfter[key] === true && hasMoreNewer }
-          : state.hasMoreAfter,
+        messagesByChannel: list === existing ? state.messagesByChannel : { ...state.messagesByChannel, [key]: list },
+        hasMoreAfter: r.applied ? { ...state.hasMoreAfter, [key]: windowed && hasMoreNewer } : state.hasMoreAfter,
       };
     }),
 
@@ -973,11 +1021,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const key = channelKey(serverId, channelId);
       if (on) {
+        heldLive.set(key, []);
         return {
           resyncing: { ...state.resyncing, [key]: true },
           hasMoreAfter: { ...state.hasMoreAfter, [key]: true },
         };
       }
+      // Anything still held belongs past whatever gap the slice kept (the
+      // newest page never came): downward paging and the echo watchdog
+      // take it from here.
+      heldLive.delete(key);
       if (!state.resyncing[key]) return state;
       const resyncing = { ...state.resyncing };
       delete resyncing[key];
@@ -1032,6 +1085,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const existing = state.messagesByChannel[key] ?? [];
       const deletedSet = new Set(deletedMessageIds);
       const next = existing.filter((m) => m.id === 0 || !deletedSet.has(m.id));
+      updateHeld(key, (held) => held.filter((m) => !deletedSet.has(m.id)));
       return {
         messagesByChannel: { ...state.messagesByChannel, [key]: next },
       };
@@ -1040,6 +1094,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   applyChannelWiped: (serverId, channelId) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
+      updateHeld(key, () => []);
       return {
         messagesByChannel: { ...state.messagesByChannel, [key]: [] },
         hasMoreHistory: { ...state.hasMoreHistory, [key]: false },
@@ -1051,6 +1106,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   purgeChannelState: (serverId, channelId) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
+      heldLive.delete(key);
       const drop = <T,>(rec: Record<ChannelKey, T>): Record<ChannelKey, T> => {
         if (!(key in rec)) return rec;
         const next = { ...rec };
@@ -1070,6 +1126,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   removeMessage: (serverId, channelId, messageId) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
+      updateHeld(key, (held) => held.filter((m) => m.id !== messageId));
       const list = state.messagesByChannel[key];
       if (!list) return state;
       const next = list.filter((m) => m.id !== messageId);
@@ -1085,20 +1142,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
   applyEdit: (serverId, channelId, messageId, content, editedAt, encrypted, decryptError, suppressEmbeds) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
+      const edit = (m: Message): Message => ({
+        ...m,
+        content,
+        editedAt,
+        encrypted: encrypted || undefined,
+        decryptError: decryptError || undefined,
+        suppressEmbeds: suppressEmbeds || undefined,
+      });
+      updateHeld(key, (held) => held.map((m) => (m.id === messageId ? edit(m) : m)));
       const list = state.messagesByChannel[key];
       if (!list) return state;
       let changed = false;
       const next = list.map((m) => {
         if (m.id !== messageId) return m;
         changed = true;
-        return {
-          ...m,
-          content,
-          editedAt,
-          encrypted: encrypted || undefined,
-          decryptError: decryptError || undefined,
-          suppressEmbeds: suppressEmbeds || undefined,
-        };
+        return edit(m);
       });
       if (!changed) return state;
       return {
@@ -1187,7 +1246,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { pendingDeletions: nextPending };
     }),
 
-  resetForLogout: () =>
+  resetForLogout: () => {
+    heldLive.clear();
     set({
       servers: [],
       discoverableServers: [],
@@ -1221,7 +1281,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingInvite: null,
       resyncEpoch: {},
       resyncing: {},
-    }),
+    });
+  },
 
   setScrollPosition: (serverId, channelId, position) =>
     set((state) => ({

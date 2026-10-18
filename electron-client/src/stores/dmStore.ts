@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { DmMessage } from "../types";
-import { mergeStoredPage } from "../lib/historyMerge";
+import { applyHeldRows, mergeStoredPage } from "../lib/historyMerge";
 import { useAuthStore } from "./authStore";
 import { useUiStore } from "./uiStore";
 import { nameOf, toUid, type Uid } from "./usersStore";
@@ -246,6 +246,46 @@ function deletingDmIds(state: DmState, peer: Uid): Set<number> | undefined {
   return pending && pending.size > 0 ? new Set(pending.keys()) : undefined;
 }
 
+/// chatStore's heldLive for DMs: live DMs that arrived for a re-syncing
+/// conversation wait for its newest page, by peer.
+const HELD_CAP = 200;
+const heldDms = new Map<Uid, DmMessage[] | null>();
+
+/// chatStore's holdLive: hold the DM, and show our bubble it echoes as sent.
+function holdDm(state: DmState, peer: Uid, conv: DmConversation, message: DmMessage): DmState | Partial<DmState> {
+  const held = heldDms.get(peer);
+  if (!held) return state;
+  if (held.length >= HELD_CAP) {
+    heldDms.set(peer, null);
+    return state;
+  }
+  held.push(message);
+  if (!message.nonce) return state;
+  const idx = conv.messages.findIndex((m) => !m.id && m.nonce === message.nonce && m.pending);
+  if (idx < 0) return state;
+  const messages = conv.messages.slice();
+  messages[idx] = { ...conv.messages[idx], pending: undefined };
+  return { conversations: { ...state.conversations, [peer]: { ...conv, messages } } };
+}
+
+/// The re-syncing conversation reached the present: put in what waited.
+function releaseHeldDms(peer: Uid, list: DmMessage[]): DmMessage[] {
+  const held = heldDms.get(peer);
+  if (held === undefined) return list;
+  heldDms.set(peer, []);
+  return held ? applyHeldRows(list, held) : list;
+}
+
+function updateHeldDms(peer: Uid, fn: (held: DmMessage[]) => DmMessage[]): void {
+  const held = heldDms.get(peer);
+  if (held && held.length > 0) heldDms.set(peer, fn(held));
+}
+
+function timeOf(m: DmMessage): number {
+  const t = parseInt(m.timestamp, 10);
+  return isNaN(t) ? 0 : t * 1000;
+}
+
 function emptyConversation(peerUid: Uid, username = nameOf(peerUid)): DmConversation {
   return {
     peerUid,
@@ -286,9 +326,9 @@ export const useDmStore = create<DmState>((set, get) => ({
       // a live real-id DM belongs past the gap — drop it to keep the window
       // contiguous. It loads when the user returns to present / pages down.
       // No optimistic send reaches here in that state: the composer snaps to
-      // present before sending.
+      // present before sending. During a re-sync it waits instead (holdDm).
       if (existing?.hasMoreAfter && typeof message.id === "number" && message.id > 0) {
-        return state;
+        return existing.resyncing ? holdDm(state, otherUser, existing, message) : state;
       }
       const timestamp = parseInt(message.timestamp, 10);
       const time = isNaN(timestamp) ? Date.now() : timestamp * 1000;
@@ -420,16 +460,10 @@ export const useDmStore = create<DmState>((set, get) => ({
       // The page is newest-first per the protocol; the merge sorts by id.
       const incoming = messages.map(fromHistory);
       const r = mergeStoredPage(existing, incoming, useAuthStore.getState().uid, 0, deletingDmIds(state, peer));
-      const merged = r.list;
+      // A re-sync's newest page: what arrived meanwhile goes in with it.
+      const merged = conv?.resyncing && r.reachedNewest ? releaseHeldDms(peer, r.list) : r.list;
       const lastMessageTime =
-        merged.length > 0
-          ? Math.max(
-              ...merged.map((m) => {
-                const t = parseInt(m.timestamp, 10);
-                return isNaN(t) ? 0 : t * 1000;
-              }),
-            )
-          : conv?.lastMessageTime ?? 0;
+        merged.length > 0 ? Math.max(...merged.map(timeOf)) : conv?.lastMessageTime ?? 0;
       return {
         conversations: {
           ...state.conversations,
@@ -438,7 +472,7 @@ export const useDmStore = create<DmState>((set, get) => ({
             ...conv,
             messages: merged,
             lastMessageTime,
-            lastMessage: newerOf(conv?.lastMessage ?? null, newestOf(incoming)),
+            lastMessage: newerOf(conv?.lastMessage ?? null, newestOf(merged === r.list ? incoming : merged)),
             hasMoreHistory: r.headExtended ? hasMore : conv?.hasMoreHistory ?? hasMore,
             // The newest page: the slice is at the present now.
             hasMoreAfter: r.reachedNewest ? false : conv?.hasMoreAfter ?? false,
@@ -478,15 +512,17 @@ export const useDmStore = create<DmState>((set, get) => ({
       const existing = conv.messages.filter((m) => !m.preview);
       const incoming = messages.map(fromHistory);
       const r = mergeStoredPage(existing, incoming, useAuthStore.getState().uid, afterId, deletingDmIds(state, peer));
+      const list =
+        r.applied && conv.hasMoreAfter && !hasMoreNewer && conv.resyncing ? releaseHeldDms(peer, r.list) : r.list;
       return {
         conversations: {
           ...state.conversations,
           [peer]: {
             ...conv,
-            messages: r.list === existing ? conv.messages : r.list,
+            messages: list === existing ? conv.messages : list,
             // Only a windowed slice can reach the present (see appendNewer).
             hasMoreAfter: r.applied ? conv.hasMoreAfter && hasMoreNewer : conv.hasMoreAfter,
-            lastMessage: newerOf(conv.lastMessage, newestOf(incoming)),
+            lastMessage: newerOf(conv.lastMessage, newestOf(list === r.list ? incoming : list)),
           },
         },
       };
@@ -537,6 +573,9 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   setDmResyncing: (peer, on) =>
     set((state) => {
+      // See chatStore.setResyncing.
+      if (on) heldDms.set(peer, []);
+      else heldDms.delete(peer);
       const conv = state.conversations[peer];
       if (!conv || !!conv.resyncing === on) return state;
       const next = on ? { ...conv, resyncing: true, hasMoreAfter: true } : { ...conv, resyncing: undefined };
@@ -613,6 +652,7 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   removeDmMessage: (peer, messageId) =>
     set((state) => {
+      updateHeldDms(peer, (held) => held.filter((m) => m.id !== messageId));
       const conv = state.conversations[peer];
       if (!conv) return state;
       const next = conv.messages.filter((m) => m.id !== messageId);
@@ -642,6 +682,7 @@ export const useDmStore = create<DmState>((set, get) => ({
         encrypted: encrypted || undefined,
         decryptError: decryptError || undefined,
       };
+      updateHeldDms(peer, (held) => held.map((m) => (m.id === messageId ? { ...m, ...patch } : m)));
       const next = conv.messages.map((m) => {
         if (m.id !== messageId) return m;
         changed = true;
@@ -665,6 +706,7 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   invalidateAllHistory: () =>
     set((state) => {
+      for (const peer of heldDms.keys()) heldDms.set(peer, []);
       const next: Record<string, DmConversation> = {};
       for (const [peer, conv] of Object.entries(state.conversations)) {
         next[peer] = {
