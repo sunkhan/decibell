@@ -4,7 +4,7 @@
 Talks protobuf-over-TLS to a live community server (8082), the attachment
 HTTPS listener (8085), and pokes the SQLite DB directly for seeding checks.
 """
-import base64, hashlib, hmac, json, os, socket, sqlite3, ssl, struct, sys, time, subprocess, signal
+import base64, hashlib, hmac, json, os, socket, sqlite3, ssl, struct, sys, threading, time, subprocess, signal
 
 sys.path.insert(0, os.environ.get("DECIBELL_E2E_PB", os.path.join(os.path.dirname(__file__), "deps", "pb")))
 import messages_pb2 as pb  # noqa: E402
@@ -50,12 +50,16 @@ def uid_for(username):
     return _uid_counter.setdefault(username, 1000 + len(_uid_counter))
 
 
-def jwt(username, nonce="", uid=None, iat=None):
+def jwt(username, nonce="", uid=None, iat=None, claims=None):
+    """Central's session token. `claims` adds or overrides (e.g. `sid`, the
+    device at central; `exp`)."""
     ensure_keys()
     h = b64(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
     now = int(time.time())
-    p = b64(json.dumps({"iss": "decibell_central_auth", "sub": username, "uid": uid if uid is not None else uid_for(username),
-                        "iat": now if iat is None else iat, "exp": now + 3600, "n": nonce}).encode())
+    body = {"iss": "decibell_central_auth", "sub": username, "uid": uid if uid is not None else uid_for(username),
+            "iat": now if iat is None else iat, "exp": now + 3600, "n": nonce}
+    body.update(claims or {})
+    p = b64(json.dumps(body).encode())
     return f"{h}.{p}.{b64(ed25519_sign(KEY_PEM, f'{h}.{p}'.encode()))}"
 
 
@@ -91,14 +95,15 @@ def connect(port, timeout=3.0, src=None):
 class Client:
     max_frame = 0   # largest frame received (the client drops any over 2 MiB)
 
-    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False, iat=None, src=None):
+    def __init__(self, username, invite="", nonce="", timeout=3.0, uid=None, hidden=False, iat=None, src=None,
+                 claims=None):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         raw = connect(8082, timeout, src)
         self.s = ctx.wrap_socket(raw)
         self.username = username
-        self.jwt = jwt(username, nonce, uid, iat)
+        self.jwt = jwt(username, nonce, uid, iat, claims)
         self.buf = b""
         self.inbox = []
         self.closed = False
@@ -510,6 +515,129 @@ def socket_closed(sock, wait):
         return True
     except socket.timeout:
         return False
+
+
+class StubCentral:
+    """Central's end of the community's sync, enough for heartbeats: each
+    answer carries `revoked` ((uid, sid, until) triples: devices signed out
+    at central, docs/superpowers/specs/2026-10-19-devices-and-password-
+    design.md). Serves the community's own certificate, pinned by
+    fingerprint."""
+
+    def __init__(self):
+        self.revoked = []
+        self.heartbeats = 0
+        self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.ctx.load_cert_chain(os.path.join(RUN, "server.crt"), os.path.join(RUN, "server.key"))
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((HOST, 0))
+        self.sock.listen(16)
+        self.sock.settimeout(0.2)
+        self.port = self.sock.getsockname()[1]
+        self.stopping = False
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def fingerprint(self):
+        import hashlib
+        with open(os.path.join(RUN, "server.crt")) as f:
+            return hashlib.sha256(ssl.PEM_cert_to_DER_cert(f.read())).hexdigest()
+
+    def serve(self):
+        while not self.stopping:
+            try:
+                raw, _ = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            try:
+                s = self.ctx.wrap_socket(raw, server_side=True)
+                s.settimeout(3)
+                buf = b""
+                while len(buf) < 4:
+                    buf += s.recv(4 - len(buf))
+                n = struct.unpack(">I", buf)[0]
+                body = b""
+                while len(body) < n:
+                    body += s.recv(n - len(body))
+                p = pb.Packet()
+                p.ParseFromString(body)
+                if p.type == pb.Packet.SERVER_HEARTBEAT:
+                    self.heartbeats += 1
+                    res = pb.Packet(type=pb.Packet.SERVER_HEARTBEAT_RES, server_heartbeat_res=pb.ServerHeartbeatRes(
+                        server_id=0, revoked=[pb.RevokedSession(uid=u, sid=d, until=t) for u, d, t in self.revoked]))
+                    data = res.SerializeToString()
+                    s.sendall(struct.pack(">I", len(data)) + data)
+                s.close()
+            except (OSError, ssl.SSLError, struct.error):
+                raw.close()
+
+    def wait_heartbeats(self, n, timeout=5.0):
+        end = time.time() + timeout
+        target = self.heartbeats + n
+        while self.heartbeats < target and time.time() < end:
+            time.sleep(0.05)
+        return self.heartbeats >= target
+
+    def close(self):
+        self.stopping = True
+        self.sock.close()
+
+
+def test_devices_signed_out_at_central():
+    print("[devices] devices central signed out: sessions closed, tokens refused; expired tokens end sessions")
+    stub = StubCentral()
+    proc = start_server(extra_env={"DECIBELL_CENTRAL_PORT": str(stub.port),
+                                   "DECIBELL_HEARTBEAT_INTERVAL_SECONDS": "1",
+                                   "DECIBELL_CENTRAL_CERT_FINGERPRINT": stub.fingerprint()})
+    try:
+        check("the community heartbeats to the configured port at the configured pace", stub.wait_heartbeats(2))
+        uid = uid_of("alice")
+        laptop = Client("alice", claims={"sid": 501})
+        phone = Client("alice", claims={"sid": 502})
+        legacy = Client("alice")  # a token from before devices: no sid
+        check("three devices connect", auth_ok(laptop)[0] and auth_ok(phone)[0] and auth_ok(legacy)[0])
+        stub.revoked = [(uid, 502, int(time.time()) + 3600)]
+        check("a session of the device central signed out closes within a heartbeat", phone.is_closed(4.0))
+        laptop.drain(0.3); legacy.drain(0.3)
+        check("... the account's other sessions stay", not laptop.closed and not legacy.closed)
+        again = Client("alice", claims={"sid": 502})
+        check("... and its tokens are refused from then on", not auth_ok(again)[0])
+        again.close()
+        renew = jwt("alice", claims={"sid": 502})
+        laptop.send(pb.Packet.SESSION_TOKEN_UPDATE, session_token_update=pb.SessionTokenUpdate(jwt_token=renew))
+        stub.revoked.append((uid, 501, int(time.time()) + 3600))
+        check("a renewal with a signed-out device's token is ignored (the session stays its own device's)",
+              laptop.is_closed(4.0))
+        fresh = Client("alice", claims={"sid": 503})
+        check("a new device of the account still connects", auth_ok(fresh)[0])
+        fresh.close()
+        stub.revoked = [(uid, 504, int(time.time()) + 2)]
+        stub.wait_heartbeats(1)
+        r = Client("alice", claims={"sid": 504})
+        check("a revocation holds until its time", not auth_ok(r)[0])
+        r.close()
+        time.sleep(2.5)
+        r = Client("alice", claims={"sid": 504})
+        check("... by when every token of the device has expired, and is forgotten", auth_ok(r)[0])
+        r.close()
+        # A token that runs out without a renewal ends its session.
+        brief = Client("alice", claims={"exp": int(time.time()) + 2})
+        kept = Client("alice", claims={"exp": int(time.time()) + 2})
+        ok = auth_ok(brief)[0] and auth_ok(kept)[0]
+        kept.send(pb.Packet.SESSION_TOKEN_UPDATE, session_token_update=pb.SessionTokenUpdate(jwt_token=jwt("alice")))
+        time.sleep(3)
+        brief.send(pb.Packet.CLIENT_PING)
+        kept.send(pb.Packet.CLIENT_PING)
+        check("a session whose token expired closes", ok and brief.is_closed(2.0))
+        check("... one renewed in time stays", not kept.is_closed(1.0))
+        for c in (laptop, phone, legacy, brief, kept):
+            c.close()
+    finally:
+        stop_server(proc)
+        stub.close()
 
 
 def test_b9_timeouts():
@@ -5189,6 +5317,7 @@ if __name__ == "__main__":
     finally:
         stop_server(proc)
     test_b9_timeouts()
+    test_devices_signed_out_at_central()
     test_b12_b27_retention_sweep()
     test_upload_sweep_goes_by_idle_time()
     test_s16_connection_caps()

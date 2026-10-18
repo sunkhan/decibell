@@ -682,6 +682,15 @@ public:
     void enqueue_central(std::vector<uint8_t> framed, bool read_response = false,
                          chatproj::CentralSyncWorker::Done done = nullptr);
 
+    // --- Devices signed out at central (docs/superpowers/specs/2026-10-19-
+    // devices-and-password-design.md), from SERVER_HEARTBEAT_RES.revoked ---
+    /// Remember them (until each `until`) and close their live sessions.
+    /// Any thread.
+    void apply_revocations(const google::protobuf::RepeatedPtrField<chatproj::RevokedSession>& revoked);
+    /// A token of `uid`'s device `sid` (0: a token from before devices,
+    /// never revoked). Any thread.
+    bool is_revoked(int64_t uid, int64_t sid);
+
     // --- Auto-rejoin: server_id learned from SERVER_HEARTBEAT_RES ---
     // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
     int64_t server_id() const { return server_id_.load(); }
@@ -894,6 +903,10 @@ private:
     // every SERVER_HEARTBEAT_RES.
     std::atomic<int64_t> server_id_{0};
 
+    // (uid, sid) → until (unix seconds): devices central signed out.
+    std::mutex revoked_mutex_;
+    std::map<std::pair<int64_t, int64_t>, int64_t> revoked_;
+
     std::mutex mutex_;
 
     // Central-sync worker (see central_sync.hpp). Created by
@@ -1018,6 +1031,8 @@ public:
     std::string get_username() const { return username_; }
     void set_username(const std::string& name) { username_ = name; }
     std::string get_token() const { return token_; }
+    /// The device at central the session's token was issued to (io thread).
+    int64_t token_sid() const { return token_sid_; }
     std::string get_udp_key() const { return udp_key_; }
     bool is_authenticated() const { return authenticated_; }
     uint64_t search_owner() const { return search_owner_; }
@@ -1261,6 +1276,15 @@ private:
             std::string candidate_username = claims->username;
             const int64_t candidate_uid = claims->uid;
             const int64_t candidate_iat = claims->iat;
+            // A device signed out at central (devices design): its tokens
+            // are refused until they have all expired.
+            if (manager_.is_revoked(candidate_uid, claims->sid)) {
+                std::cout << "[Community] Auth refused: uid " << candidate_uid << " signed that device out\n";
+                send_auth_response(false, "Invalid token.", "auth");
+                manager_.leave(shared_from_this());
+                close_after_flush();
+                return;
+            }
 
             // Step 2: Membership + invite gating.
             auto* db = manager_.db();
@@ -1402,6 +1426,8 @@ private:
             uid_ = candidate_uid;
             token_ = token;
             token_iat_ = candidate_iat;
+            token_exp_ = claims->exp;
+            token_sid_ = claims->sid;
 
             constexpr size_t UDP_KEY_LEN = chatproj::SENDER_ID_SIZE - 1;
             if (token_.size() >= UDP_KEY_LEN) {
@@ -1458,7 +1484,10 @@ private:
             if (!authenticated_) return;
             auto claims = verify_token(packet.session_token_update().jwt_token(), nullptr);
             if (!claims || claims->uid != uid_ || claims->iat < token_iat_) return;
+            if (manager_.is_revoked(claims->uid, claims->sid)) return;
             token_iat_ = claims->iat;
+            token_exp_ = claims->exp;
+            token_sid_ = claims->sid;
             auto* db = manager_.db();
             if (!db) return;
             std::string current;
@@ -1476,6 +1505,7 @@ private:
         // removed member's session can't keep itself alive on pings.
         if (packet.type() == chatproj::Packet::CLIENT_PING) {
             if (authenticated_) {
+                if (token_expired()) return;
                 if (auto* db = manager_.db(); db && !db->is_member(uid_)) {
                     manager_.leave(shared_from_this());
                     close_connection();
@@ -1494,6 +1524,7 @@ private:
         // manual DB edit, a race with its own leave) must not keep
         // posting, joining voice or streaming on a stale auth.
         if (membership_lost()) return;
+        if (token_expired()) return;
 
         // Channel ids are short server-made slugs; a request naming a
         // longer one names no channel and is dropped here, before any
@@ -4779,6 +4810,22 @@ private:
     }
 
     // The member row is gone: drop the session. True when it did.
+    /// The session's token ran out without a renewal (SESSION_TOKEN_UPDATE;
+    /// clients renew every 6 hours, 18 before expiry): it closes, as a
+    /// reconnect with that token would be refused. A device central signed
+    /// out can't renew, so this bounds its sessions even when the heartbeat
+    /// can't reach central.
+    bool token_expired() {
+        if (token_exp_ <= 0) return false;
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (now < token_exp_) return false;
+        std::cout << "[Community] Dropping session of " << username_ << ": its token expired\n";
+        manager_.leave(shared_from_this());
+        close_connection();
+        return true;
+    }
+
     bool membership_lost() {
         auto* db = manager_.db();
         if (!db || db->is_member(uid_)) return false;
@@ -4914,12 +4961,19 @@ private:
     // and the issue time of the newest token seen (SESSION_TOKEN_UPDATE).
     std::string token_;
     int64_t token_iat_ = 0;
+    // The newest token's expiry and device (devices design): the session
+    // closes when the token runs out without a renewal, or when central
+    // reports the device signed out.
+    int64_t token_exp_ = 0;
+    int64_t token_sid_ = 0;
     std::string udp_key_;
 
     struct TokenClaims {
         std::string username;
         int64_t uid = 0;
         int64_t iat = 0;
+        int64_t exp = 0;  // unix seconds
+        int64_t sid = 0;  // the device at central (0: a token from before devices)
     };
     /// Central's token, verified (Ed25519 with central's public key: this
     /// server can check a token but can't mint one). nullopt with `error`.
@@ -4946,6 +5000,15 @@ private:
             if (decoded.has_issued_at()) {
                 c.iat = std::chrono::duration_cast<std::chrono::seconds>(
                     decoded.get_issued_at().time_since_epoch()).count();
+            }
+            if (decoded.has_expires_at()) {
+                c.exp = std::chrono::duration_cast<std::chrono::seconds>(
+                    decoded.get_expires_at().time_since_epoch()).count();
+            }
+            if (decoded.has_payload_claim("sid")) {
+                const auto& claim = decoded.get_payload_claim("sid");
+                if (claim.get_type() == jwt::json::type::integer) c.sid = claim.as_integer();
+                else if (claim.get_type() == jwt::json::type::number) c.sid = static_cast<int64_t>(claim.as_number());
             }
             return c;
         } catch (const std::exception& e) {
@@ -6923,6 +6986,46 @@ size_t SessionManager::force_disconnect(int64_t uid,
     return sessions.size();
 }
 
+void SessionManager::apply_revocations(
+    const google::protobuf::RepeatedPtrField<chatproj::RevokedSession>& revoked) {
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::vector<std::pair<int64_t, int64_t>> fresh;
+    {
+        std::lock_guard<std::mutex> lock(revoked_mutex_);
+        for (auto it = revoked_.begin(); it != revoked_.end();) {
+            it = it->second <= now ? revoked_.erase(it) : std::next(it);
+        }
+        for (const auto& r : revoked) {
+            if (r.uid() <= 0 || r.sid() <= 0 || r.until() <= now) continue;
+            auto [it, inserted] = revoked_.emplace(std::make_pair(r.uid(), r.sid()), r.until());
+            if (inserted) fresh.emplace_back(r.uid(), r.sid());
+            else it->second = std::max(it->second, r.until());
+        }
+    }
+    if (fresh.empty() || !io_) return;
+    // Sessions live on the io thread.
+    boost::asio::post(*io_, [this, fresh = std::move(fresh)]() {
+        for (const auto& [uid, sid] : fresh) {
+            for (const auto& session : find_sessions_by_uid(uid)) {
+                if (session->token_sid() != sid) continue;
+                std::cout << "[Community] Closing a session of uid " << uid << ": central signed its device out\n";
+                session->close_after_flush();
+            }
+        }
+    });
+}
+
+bool SessionManager::is_revoked(int64_t uid, int64_t sid) {
+    if (sid <= 0) return false;
+    std::lock_guard<std::mutex> lock(revoked_mutex_);
+    auto it = revoked_.find(std::make_pair(uid, sid));
+    if (it == revoked_.end()) return false;
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return it->second > now;
+}
+
 namespace {
 bool send_to_central_blocking(const std::string& host, int port,
                               const std::vector<uint8_t>& framed,
@@ -7679,7 +7782,8 @@ private:
 void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_timer& timer,
                     const std::string& central_host, int central_port,
                     const std::string& public_ip, int community_port,
-                    SessionManager& manager, const std::string& community_secret) {
+                    SessionManager& manager, const std::string& community_secret,
+                    int interval_seconds) {
     // Build heartbeat packet. Name/description come from the DB every
     // tick so an in-app rename (SERVER_UPDATE_REQ) reaches the central
     // directory within a minute.
@@ -7736,20 +7840,21 @@ void send_heartbeat(boost::asio::io_context& io_context, boost::asio::steady_tim
                     std::cout << "[Heartbeat] Cached central server_id = "
                               << id << "\n";
                 }
+                manager.apply_revocations(resp.server_heartbeat_res().revoked());
             }
             std::cout << "[Heartbeat] Sent to central server (" << central_host
                       << ":" << central_port << ")\n";
         });
 
-    // Schedule next heartbeat in 60 seconds
-    timer.expires_after(std::chrono::seconds(60));
+    // The next one in a minute (DECIBELL_HEARTBEAT_INTERVAL_SECONDS).
+    timer.expires_after(std::chrono::seconds(interval_seconds));
     timer.async_wait([&io_context, &timer, &central_host, central_port,
                       &public_ip, community_port,
-                      &manager, &community_secret](boost::system::error_code ec) {
+                      &manager, &community_secret, interval_seconds](boost::system::error_code ec) {
         if (!ec) {
             send_heartbeat(io_context, timer, central_host, central_port,
                            public_ip, community_port,
-                           manager, community_secret);
+                           manager, community_secret, interval_seconds);
         }
     });
 }
@@ -7790,6 +7895,8 @@ int main() {
         const char* auth_timeout_env = std::getenv("DECIBELL_AUTH_TIMEOUT_SECONDS");
         const char* idle_timeout_env = std::getenv("DECIBELL_IDLE_TIMEOUT_SECONDS");
         const char* retention_interval_env = std::getenv("DECIBELL_RETENTION_INTERVAL_SECONDS");
+        const char* central_port_env = std::getenv("DECIBELL_CENTRAL_PORT");
+        const char* heartbeat_interval_env = std::getenv("DECIBELL_HEARTBEAT_INTERVAL_SECONDS");
 
         if (std::getenv("DECIBELL_JWT_SECRET")) {
             std::cerr << "[Community] DECIBELL_JWT_SECRET is no longer used (Theme A): tokens are verified "
@@ -7838,6 +7945,11 @@ int main() {
         const int auth_timeout_s = env_seconds(auth_timeout_env, 10);
         const int idle_timeout_s = env_seconds(idle_timeout_env, 90);
         const int retention_interval_s = env_seconds(retention_interval_env, 600);
+        // Central's port (the test harness runs a stand-in elsewhere) and how
+        // often the heartbeat goes: it carries the directory listing and
+        // brings back devices signed out at central.
+        const int central_port = env_seconds(central_port_env, 8080);
+        const int heartbeat_interval_s = env_seconds(heartbeat_interval_env, 60);
 
         // Connections stop short of the open-file limit, leaving room for
         // SQLite (the database, its WAL and the search worker's read-only
@@ -7913,7 +8025,7 @@ int main() {
                       << cached << "\n";
         }
         manager.set_cert_fingerprint(own_cert_fingerprint);
-        manager.set_central_sync(central_host, 8080, community_secret, public_ip, 8082, central_cert_pin);
+        manager.set_central_sync(central_host, central_port, community_secret, public_ip, 8082, central_cert_pin);
         // Attachment HTTP/TLS listener. port+3 (= 8085 by default).
         const int attachment_port = 8082 + 3;
         manager.set_attachment_config(attachment_port, max_attachment_bytes);
@@ -7956,8 +8068,8 @@ int main() {
         // Start heartbeat timer. Pull the authoritative server name/description
         // from the DB so the central directory reflects any rename.
         boost::asio::steady_timer heartbeat_timer(io_context);
-        send_heartbeat(io_context, heartbeat_timer, central_host, 8080,
-                       public_ip, 8082, manager, community_secret);
+        send_heartbeat(io_context, heartbeat_timer, central_host, central_port,
+                       public_ip, 8082, manager, community_secret, heartbeat_interval_s);
 
         // Retention pruner. Fires every 10 minutes — long enough to be
         // negligible overhead, short enough that users see retention-capped
