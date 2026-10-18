@@ -21,6 +21,20 @@ use crate::state::AppState;
 const CENTRAL_HOST: &str = "178.104.131.247";
 const CENTRAL_PORT: u16 = 8080;
 
+/// Where central is. A debug build (`npm run dev`, `napi build` without
+/// `--release`) takes `DECIBELL_CENTRAL=host:port` instead, to run against a
+/// local central (e.g. the e2e harness's); release builds compile it out.
+fn central_addr() -> (String, u16) {
+    #[cfg(debug_assertions)]
+    if let Some((host, port)) = std::env::var("DECIBELL_CENTRAL")
+        .ok()
+        .and_then(|v| v.rsplit_once(':').and_then(|(h, p)| Some((h.to_string(), p.parse().ok()?))))
+    {
+        return (host, port);
+    }
+    (CENTRAL_HOST.to_string(), CENTRAL_PORT)
+}
+
 pub struct CentralClient {
     connection: Option<Connection>,
     router_task: Option<JoinHandle<()>>,
@@ -33,7 +47,8 @@ pub struct CentralClient {
 impl CentralClient {
     /// Connect to the central server and start the packet routing loop.
     pub async fn connect(state: Arc<Mutex<AppState>>) -> Result<Self, String> {
-        let (connection, read_rx) = Connection::connect(CENTRAL_HOST, CENTRAL_PORT).await?;
+        let (host, port) = central_addr();
+        let (connection, read_rx) = Connection::connect(&host, port).await?;
 
         let router_task = tokio::spawn(Self::route_packets(read_rx, state.clone()));
 
@@ -150,7 +165,8 @@ impl CentralClient {
                 );
                 tokio::time::sleep(delay).await;
 
-                match Connection::connect(CENTRAL_HOST, CENTRAL_PORT).await {
+                let (host, port) = central_addr();
+                match Connection::connect(&host, port).await {
                     Ok((connection, read_rx)) => {
                         log::info!("Reconnected to central server");
 

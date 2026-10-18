@@ -3536,3 +3536,43 @@ seal; with a second holder the refusal applies again, the other holder is named 
 sender's blob drops and the member leaves its needs), with the v14 → v17 migration check, and the same
 under ASan + UBSan with no reports. Against the previous server the four stranding checks fail.
 
+### Fix: the DM conversation list reads a table, not every DM the user has (2026-10-18, review B11)
+
+DM_CONVERSATIONS (every login and resume, each page since A1) grouped all of the user's DMs:
+`sender_uid = $1 OR recipient_uid = $1`, with no index leading on sender_uid, so a full scan of dm_messages
+per call, and the unread count per conversation walked everything the user received above their cursor.
+Right after a central restart, every resume ran one.
+
+- **`dm_conversations`** (central migration 5): one row per pair (`lo_uid < hi_uid`) holding the pair's
+  newest message id. A page reads the user's rows through the primary key's prefix and a `hi_uid` index,
+  sorted by `last_id`. Triggers on dm_messages keep it current for every write path: an insert raises
+  `last_id` (GREATEST, in case a smaller id commits after a bigger one); deleting the newest message falls
+  back to the one before (`last_id = OLD.id`, so a message sent meanwhile wins); deleting the last removes
+  the row. The migration fills it from dm_messages.
+- **Unread count:** `dm_messages_unread_idx (recipient_uid, sender_uid, id)` makes it a range scan per
+  conversation. It replaces `(recipient_uid, id)`, which only that count used.
+- **Write cost, measured:** the first version (a row per side, `last_id` indexed) cost ~35% more PostgreSQL
+  CPU at 6,000–8,000 DMs/s and doubled p99. With one row per pair, `last_id` in no index and
+  `fillfactor = 70`, each DM makes one heap-only update. Load test, same machine and day, 10,000 clients,
+  PostgreSQL on the NVMe:
+
+| DMs/s | before: p50 / p99, PostgreSQL CPU | after: p50 / p99, PostgreSQL CPU |
+|---:|---|---|
+| 2,000 | 5.2 / 15.7 ms, 0.55 | 5.0 / 19.2 ms, 0.54 |
+| 4,000 | 7.8 / 99.2 ms, 1.01 | 5.9 / 34.0 ms, 1.00 |
+| 6,000 | 12.1 / 32.6 ms, 1.31 | 10.9 / 34.1 ms, 1.43 |
+| 8,000 | 14.2 / 32.6 ms, 1.69 | 15.0 / 37.4 ms, 1.87 |
+
+  Delivery keeps up at every step in both.
+- **Read cost, measured** (2 M DMs, one user with 50,000 across 1,000 conversations): a page took 282 ms
+  for that user and 35 ms for a light one; now 2.7 ms and 1.8 ms, with the same rows. The migration took
+  5–9 s on 2 M rows.
+- Also: a debug build of the client takes `DECIBELL_CENTRAL=host:port` (release builds compile it out), which
+  is how DM conversation paging was checked live: the native addon signed in to a local central holding 450
+  conversations and fetched pages of 200, 200 and 50.
+
+Verified: central e2e 279/0 with the migration check from the pre-uid schema (+8: listing order, one row per
+pair, unread counts, falling back on delete, the conversation ending with its last message, rows written with
+plain SQL, the index; migration 5 logs its fill), the same under ThreadSanitizer and ASan + UBSan with no
+reports.
+

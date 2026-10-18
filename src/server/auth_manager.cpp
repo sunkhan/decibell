@@ -244,6 +244,80 @@ void AuthManager::initializeDatabase() {
             txn.exec("UPDATE central_schema SET version = 4 WHERE id = 1");
             std::cout << "[DB] Migration 4: users.sessions_valid_after\n";
         }
+        if (version < 5) {
+            // Migration 5: the DM conversation list from a table (review B11).
+            // DM_CONVERSATIONS (every login and resume, every page) grouped all
+            // of the user's DMs, `sender_uid = $1 OR recipient_uid = $1` with no
+            // index on sender_uid: a full scan of dm_messages per call. Now one
+            // row per pair (lo_uid < hi_uid) holds the conversation's newest
+            // message id, and a page reads the user's rows through the primary
+            // key's prefix and the hi_uid index, not their messages. Triggers
+            // keep it current for every write path (and for rows tests seed with
+            // SQL). One row per pair, last_id in no index and room left in the
+            // pages (fillfactor): each DM makes one heap-only update. A row per
+            // side with last_id indexed cost ~35% more PostgreSQL CPU at
+            // 6,000–8,000 DMs/s in the load test.
+            txn.exec(
+                "CREATE TABLE dm_conversations ("
+                "  lo_uid BIGINT NOT NULL REFERENCES users (uid),"
+                "  hi_uid BIGINT NOT NULL REFERENCES users (uid),"
+                "  last_id BIGINT NOT NULL,"
+                "  PRIMARY KEY (lo_uid, hi_uid)"
+                ") WITH (fillfactor = 70)"
+            );
+            txn.exec("CREATE INDEX dm_conversations_hi_idx ON dm_conversations (hi_uid)");
+            // A new message is its pair's newest (GREATEST in case a smaller id
+            // commits after a bigger one).
+            txn.exec(
+                "CREATE FUNCTION dm_conversations_on_insert() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN "
+                "  INSERT INTO dm_conversations (lo_uid, hi_uid, last_id) "
+                "  VALUES (LEAST(NEW.sender_uid, NEW.recipient_uid), GREATEST(NEW.sender_uid, NEW.recipient_uid), NEW.id) "
+                "  ON CONFLICT (lo_uid, hi_uid) DO UPDATE "
+                "    SET last_id = GREATEST(dm_conversations.last_id, EXCLUDED.last_id); "
+                "  RETURN NULL; "
+                "END $$"
+            );
+            // Deleting a pair's newest message falls back to the one before
+            // it, and the last one ends the conversation. `last_id = OLD.id`
+            // leaves the row alone when a message sent meanwhile took its place.
+            txn.exec(
+                "CREATE FUNCTION dm_conversations_on_delete() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "DECLARE "
+                "  lo BIGINT := LEAST(OLD.sender_uid, OLD.recipient_uid); "
+                "  hi BIGINT := GREATEST(OLD.sender_uid, OLD.recipient_uid); "
+                "BEGIN "
+                "  UPDATE dm_conversations c SET last_id = COALESCE(( "
+                "    SELECT MAX(m.id) FROM dm_messages m "
+                "    WHERE LEAST(m.sender_uid, m.recipient_uid) = lo "
+                "      AND GREATEST(m.sender_uid, m.recipient_uid) = hi), 0) "
+                "  WHERE c.lo_uid = lo AND c.hi_uid = hi AND c.last_id = OLD.id; "
+                "  DELETE FROM dm_conversations c WHERE c.lo_uid = lo AND c.hi_uid = hi AND c.last_id = 0; "
+                "  RETURN NULL; "
+                "END $$"
+            );
+            txn.exec(
+                "CREATE TRIGGER dm_conversations_insert AFTER INSERT ON dm_messages "
+                "FOR EACH ROW EXECUTE FUNCTION dm_conversations_on_insert()"
+            );
+            txn.exec(
+                "CREATE TRIGGER dm_conversations_delete AFTER DELETE ON dm_messages "
+                "FOR EACH ROW EXECUTE FUNCTION dm_conversations_on_delete()"
+            );
+            const auto filled = txn.exec(
+                "INSERT INTO dm_conversations (lo_uid, hi_uid, last_id) "
+                "SELECT LEAST(sender_uid, recipient_uid), GREATEST(sender_uid, recipient_uid), MAX(id) "
+                "FROM dm_messages GROUP BY 1, 2"
+            ).affected_rows();
+            // The unread count per conversation: messages from that peer to
+            // the reader above their cursor, a range scan of this index. It
+            // replaces (recipient_uid, id), which only that count used (and
+            // there it walked everything the reader received).
+            txn.exec("CREATE INDEX dm_messages_unread_idx ON dm_messages (recipient_uid, sender_uid, id)");
+            txn.exec("DROP INDEX IF EXISTS dm_messages_recipient_uid_idx");
+            txn.exec("UPDATE central_schema SET version = 5 WHERE id = 1");
+            std::cout << "[DB] Migration 5: dm_conversations filled: " << filled << "\n";
+        }
 
         txn.exec(
             "CREATE TABLE IF NOT EXISTS community_invites ("
@@ -1715,23 +1789,19 @@ AuthManager::fetchDmConversations(int64_t uid, int64_t before_id, bool& has_more
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
         pqxx::work txn(conn);
-        // Picks the latest message id per conversation (pair grouped
-        // by LEAST/GREATEST) — one page of them, below the cursor, plus one
-        // to tell whether more follow — then joins back to dm_messages for
-        // the preview content and to users for the current names, and to
-        // dm_read_cursors via a correlated subquery to derive the unread
-        // count: messages from the peer with id > last_read_id (i.e.
-        // messages the local user received, not their own outgoing).
+        // One page of the user's conversations, newest first, below the
+        // cursor, plus one to tell whether more follow: the user's rows of
+        // dm_conversations (migration 5, kept by triggers; one per pair, the
+        // user on either side), sorted. Joins back to
+        // dm_messages for the preview, to users for the current names, and
+        // to dm_read_cursors via a correlated subquery for the unread count:
+        // messages from the peer with id > last_read_id (dm_messages_unread_idx).
         const std::string sql =
             "WITH latest AS ( "
-            "  SELECT LEAST(sender_uid, recipient_uid) AS a, "
-            "         GREATEST(sender_uid, recipient_uid) AS b, "
-            "         MAX(id) AS max_id "
-            "  FROM dm_messages "
-            "  WHERE sender_uid = $1 OR recipient_uid = $1 "
-            "  GROUP BY 1, 2 "
-            "  HAVING $2::bigint = 0 OR MAX(id) < $2::bigint "
-            "  ORDER BY max_id DESC "
+            "  SELECT CASE WHEN lo_uid = $1 THEN hi_uid ELSE lo_uid END AS peer_uid, last_id "
+            "  FROM dm_conversations "
+            "  WHERE (lo_uid = $1 OR hi_uid = $1) AND ($2::bigint = 0 OR last_id < $2::bigint) "
+            "  ORDER BY last_id DESC "
             "  LIMIT $3 "
             ") "
             "SELECT pu.uid, pu.username, " + leftSql("m.content", chatproj::DM_PREVIEW_MAX_BYTES) + ", "
@@ -1740,19 +1810,18 @@ AuthManager::fetchDmConversations(int64_t uid, int64_t before_id, bool& has_more
             "  COALESCE(( "
             "    SELECT COUNT(*) FROM dm_messages d "
             "    WHERE d.recipient_uid = $1 "
-            "      AND d.sender_uid = pu.uid "
+            "      AND d.sender_uid = l.peer_uid "
             "      AND d.id > COALESCE(( "
             "        SELECT last_read_id FROM dm_read_cursors rc "
-            "        WHERE rc.reader_uid = $1 AND rc.peer_uid = pu.uid "
+            "        WHERE rc.reader_uid = $1 AND rc.peer_uid = l.peer_uid "
             "      ), 0) "
             "  ), 0) AS unread, "
             "  m.envelope "
             "FROM latest l "
-            "JOIN dm_messages m ON m.id = l.max_id "
-            "JOIN users pu ON pu.uid = "
-            "  CASE WHEN m.sender_uid = $1 THEN m.recipient_uid ELSE m.sender_uid END "
+            "JOIN dm_messages m ON m.id = l.last_id "
+            "JOIN users pu ON pu.uid = l.peer_uid "
             "JOIN users su ON su.uid = m.sender_uid "
-            "ORDER BY m.id DESC";
+            "ORDER BY l.last_id DESC";
         pqxx::result rs = txn.exec_params(sql, uid, before_id, DM_CONVERSATIONS_PAGE + 1);
         txn.commit();
 

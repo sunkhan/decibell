@@ -408,6 +408,56 @@ def test_dms():
     a.close(); b.close()
 
 
+def test_dm_conversation_rows():
+    """Review B11: the conversation list comes from dm_conversations (one row
+    per owner and peer, kept by triggers on dm_messages) instead of grouping
+    every DM the user ever sent or received. A send moves the pair up, deleting
+    its newest message falls back to the one before, deleting the last ends
+    the conversation, and rows written with plain SQL keep it current too."""
+    print("dm conversations from their own table (review B11)")
+    for n in ("dora", "ezra", "finn"):
+        register(n)
+    a, b, c = User("dora"), User("ezra"), User("finn")
+    ua, ub, uc = uid_of("dora"), uid_of("ezra"), uid_of("finn")
+
+    def listing(u):
+        u.send(pb.Packet.DM_CONVERSATIONS_REQ, dm_conversations_req=pb.DmConversationsReq())
+        r = u.wait(pb.Packet.DM_CONVERSATIONS_RES)
+        return [(x.peer, x.last_message_id) for x in r.dm_conversations_res.conversations] if r else None
+
+    def rows(x, y):
+        return sql("SELECT lo_uid, hi_uid, last_id FROM dm_conversations WHERE lo_uid = %s AND hi_uid = %s",
+                   min(x, y), max(x, y))
+
+    def delete(u, peer_uid, mid):
+        u.send(pb.Packet.DM_DELETE_REQ, dm_delete_req=pb.DmDeleteReq(peer_uid=peer_uid, message_id=mid))
+        r = u.wait(pb.Packet.DM_DELETE_RES)
+        return r is not None and r.dm_delete_res.success
+
+    d1 = a.dm("ezra", "one", nonce="cv1")
+    d2 = b.dm("dora", "two", nonce="cv2")
+    d3 = a.dm("finn", "three", nonce="cv3")
+    ok = all(m and m.id > 0 for m in (d1, d2, d3))
+    check("conversations listed newest first", ok and listing(a) == [("finn", d3.id), ("ezra", d2.id)]
+          and listing(b) == [("dora", d2.id)], listing(a))
+    check("one row per conversation, at the pair's newest message", ok
+          and rows(ua, ub) == [(min(ua, ub), max(ua, ub), d2.id)])
+    convs = c.conversations()
+    check("unread counted per conversation", convs and convs["dora"].unread_count == 1)
+    check("deleting the newest falls back to the one before", ok and delete(b, ua, d2.id)
+          and listing(a) == [("finn", d3.id), ("ezra", d1.id)]
+          and a.conversations()["ezra"].last_message_content == "one")
+    check("deleting the last ends the conversation", ok and delete(a, ub, d1.id)
+          and listing(a) == [("finn", d3.id)] and listing(b) == [] and rows(ua, ub) == [])
+    sql("INSERT INTO dm_messages (sender_uid, sender, recipient_uid, recipient, content, sent_at) "
+        "VALUES (%s, 'ezra', %s, 'finn', 'seeded', 1)", ub, uc)
+    seeded = sql("SELECT max(id) FROM dm_messages WHERE content = 'seeded'")[0][0]
+    check("a row written with SQL lists too", listing(c) == [("ezra", seeded), ("dora", d3.id)] if ok else False,
+          listing(c))
+    check("the unread index exists", sql("SELECT count(*) FROM pg_indexes WHERE indexname = 'dm_messages_unread_idx'")[0][0] == 1)
+    a.close(); b.close(); c.close()
+
+
 def test_dm_gates():
     print("dm gates")
     a, c = User("alice"), User("carol")
@@ -1623,7 +1673,9 @@ def test_migration():
         check("migration ran and logged its counts", "friendships 3/3" in line and "dm_messages 3/4" in line
               and "(1 for unknown names removed)" in line and "e2ee keys 3/3" in line
               and "e2ee backups 2/2" in line and "memberships 2/2" in line and "read cursors 1/1" in line, line)
-        check("schema version 4", sql("SELECT version FROM central_schema")[0][0] == 4)
+        check("schema version 5", sql("SELECT version FROM central_schema")[0][0] == 5)
+        line5 = next((l for l in log.splitlines() if "Migration 5" in l), "")
+        check("migration 5 filled the conversation table", "dm_conversations filled: 1" in line5, line5)
         check("no account starts with a session cutoff",
               sql("SELECT DISTINCT sessions_valid_after FROM users") == [(0,)])
         check("migrated bundles bind the name", sql("SELECT DISTINCT binding FROM e2ee_keys") == [(1,)])
@@ -1693,6 +1745,7 @@ def main():
         test_register_login()
         test_friends()
         test_dms()
+        test_dm_conversation_rows()
         test_dm_gates()
         test_blocks()
         test_presence_and_avatars()

@@ -550,6 +550,11 @@ npm run build:native:debug  # debug build (fast, ~5s incremental)
 npm run build:native        # release build
 ```
 
+A debug build connects to central at `DECIBELL_CENTRAL=host:port` when that's
+set (e.g. `DECIBELL_CENTRAL=127.0.0.1:8080 npm run dev` against a local central
+from `src/server/tests`); release builds compile the override out
+(`native/src/net/central.rs` `central_addr`).
+
 Type checking:
 
 ```bash
