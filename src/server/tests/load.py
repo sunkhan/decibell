@@ -110,10 +110,13 @@ class Minter:
 
 class Client:
     __slots__ = ("w", "uid", "src", "resume", "token", "writer", "up", "attempt", "watch", "task", "idle",
-                 "relogin_at")
+                 "relogin_at", "device")
 
     def __init__(self, w, uid, src, resume):
         self.w, self.uid, self.src, self.resume = w, uid, src, resume
+        # One install per account, as the native client sends it: a reconnect
+        # replaces its own earlier connection (multi-device design).
+        self.device = f"{uid:032x}"
         self.token, self.writer, self.up, self.attempt, self.watch, self.task = "", None, False, 0, [], None
         self.idle = False
         self.relogin_at = None
@@ -146,7 +149,8 @@ class Client:
                 await self.backoff()
                 continue
             self.writer = writer
-            writer.write(frame(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(resume_token=self.resume)))
+            writer.write(frame(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(resume_token=self.resume,
+                                                                              device_id=self.device)))
             try:
                 ok = await self.read_until_login(reader)
                 if not ok:
