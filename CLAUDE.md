@@ -148,8 +148,9 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   restart). Resume tokens are central-only by audience (`decibell_central_resume`): communities hold every
   member's session token, so a session token must never sign anyone into central, central refuses a token
   with an audience per packet, and communities refuse any token with an audience. They last 30 days from
-  the password sign-in and a resume never extends them; `users.sessions_valid_after` cancels an account's
-  older ones (the hook for "log out other devices" / password changes). Limits live in `abuse_limits.hpp`: per address
+  the password sign-in and a resume never extends them, and each is bound to its device and password sign-in
+  (devices, below); `users.sessions_valid_after` cancels an account's older ones (a password change sets
+  it). Limits live in `abuse_limits.hpp`: per address
   (connections, new connections, password sign-ins, sign-ups), failed sign-ins per account **and address**
   (owner decision: a griefer typing wrong passwords for someone's name holds only their own address) with
   an account-wide cap of 100, the
@@ -169,8 +170,23 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   deletes to every device, `DM_READ_SYNC`, friend lists, profile pushes to the account's other devices,
   `MEMBERSHIP_ADDED`. Calls ring every device of the callee; the first answer takes the call
   (`ANSWERED_ELSEWHERE` / `DECLINED_ELSEWHERE` to the rest), BUSY only when no device can ring, and the
-  rest of the call stays between those two connections. `SessionManager::close_other_sessions` is the hook
-  for "log out other devices" (bump `sessions_valid_after` with it; clients sign out on `SIGNED_OUT`).
+  rest of the call stays between those two connections. A password sign-in needs a device id.
+- **Devices and passwords** (`docs/superpowers/specs/2026-10-19-devices-and-password-design.md`, owner
+  request 2026-10-19: sign out specific devices from a list, not only "all other devices", and change the
+  password). A device is an install that signed in by password and wasn't signed out since: one `devices`
+  row at central, and that row is what lets it back in without typing the password (resume tokens name the
+  device and its password sign-in; a saved password signs in automatically, `LoginRequest.automatic`, only on
+  a device the account has; typing always works). Signing a device out deletes the row, closes its
+  connections (`SESSION_CLOSED {SIGNED_OUT}`: the client signs out and forgets its saved sign-in), refuses
+  its resume / saved password with `LoginResponse.signed_out`, and reaches communities through their
+  heartbeat (`ServerHeartbeatRes.revoked`: session tokens carry the device as `sid`; refused and closed for
+  25 h, by when every token expired). Community sessions also end when their token expires unrenewed.
+  Password change: confirmed with the current one (wrong ones count as failed sign-ins), signs out every
+  other device (`PASSWORD_CHANGED`), keeps this one with a new resume token. The list shows the OS name
+  (never the hostname), app version, address and activity; a typed sign-in on a new device notifies the
+  account's other devices. Logging out tells central to forget the device. Installs from before devices are
+  recorded at their next automatic sign-in for 30 days after migration 6; devices unused for 90 days are
+  forgotten.
 - UI snaps to the Design System v1 tokens (`electron-client/src/styles/globals.css`):
   no arbitrary px/shadows; radii via `rounded-*` so themes (e.g. console) can flatten them.
   Buttons copy the settings idiom: `rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover`.

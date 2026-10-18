@@ -26,8 +26,9 @@ login (the last device to sign in won), and a key rotation on one device had no 
   A live client that receives it is a copy of this install running elsewhere (a copied profile): it makes
   itself a new device id and reconnects as its own device, so two copies never ping-pong. A client that
   really lost its connection never reads the notice (its reader ended before it reconnected).
-- **Different device ids coexist.** An empty device id counts as its own device each time (it replaces
-  nothing and nothing replaces it); such a connection that dies is reaped by the 60 s stale sweep.
+- **Different device ids coexist.** An empty device id counted as its own device each time (it replaced
+  nothing and nothing replaced it). Since the devices design (2026-10-19) a password sign-in needs a device
+  id: every signed-in install is a device the account can see and sign out.
 - **At most 8 devices per account** (`MAX_DEVICES`). Changed from the starting "~10": a community keeps at
   most 8 live sessions per account and evicts the oldest past that (`kMaxSessionsPerUser`), and an
   evicted session reconnects and evicts the next one. With central's cap at the community's, every
@@ -71,9 +72,9 @@ login (the last device to sign in won), and a key rotation on one device had no 
 - **Closing.** `retire(session, reason)` forgets a connection and closes it once `SESSION_CLOSED` is
   written (5 s at most). `close_other_sessions(uid, keep)` is the single operation "log out other
   devices" needs: every connection of the account but `keep` is retired with `SIGNED_OUT`, and the client
-  signs out (forgets its saved sign-in) instead of reconnecting. It has no caller yet: the pre-launch item
-  adds the request, a `sessions_valid_after` bump (so the closed devices' resume tokens stop working) and
-  the UI.
+  signs out (forgets its saved sign-in) instead of reconnecting. Its callers came with
+  `2026-10-19-devices-and-password-design.md`: "sign out of all other devices" and password changes (with
+  `PASSWORD_CHANGED`); signing out specific devices uses `close_device_sessions`.
 
 ### Own actions on the other devices
 
@@ -225,9 +226,8 @@ the call card in the UI preview harness.
 
 ## Not done
 
-- "Log out other devices" UI and request (pre-launch item; the operation and the client's handling of
-  `SIGNED_OUT` exist).
-- A device list (names, last seen) in settings.
+- ~~"Log out other devices" and a device list~~: done in `2026-10-19-devices-and-password-design.md`
+  (specific devices or all others, plus password changes).
 - Read state for channels (communities keep none).
 - A community leave while another device's community connection is down is learned when that connection
   comes back (refused, the existing "Membership revoked" path), not pushed by central.

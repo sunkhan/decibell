@@ -4223,3 +4223,68 @@ encryption on A: B asks for the passphrase.
 On main with everything above merged: community e2e 791/0 (migration check, normal and ASan+UBSan), central
 e2e 379/0 (migration check, normal / ThreadSanitizer / ASan+UBSan, no reports), cargo test 302, napi build,
 tsc 0 / 0.
+
+### Feature: device list, signing out specific devices, password change (2026-10-19)
+
+Multi-device sign-in (B3) let an account stay signed in on up to 8 devices, which also let someone holding the
+password or a copied reconnect token sit beside the owner unnoticed: nothing listed the devices and nothing could
+remove one. Owner request: a device list where specific devices can be signed out (not only "all other devices"),
+and a password change. Spec: `docs/superpowers/specs/2026-10-19-devices-and-password-design.md`.
+
+- **A device row is what lets an install back in without the password** (central schema 6, `devices`). Resume
+  tokens now name their device (`did`) and its password sign-in (`iat` = `signed_in_at`), and a saved password
+  signs in automatically (`LoginRequest.automatic`) only on a device the account has; typing always works.
+  A password sign-in needs a device id.
+- **Signing out** (`DEVICE_SIGN_OUT_REQ`, by id or all others): rows deleted and recorded in `revoked_devices`,
+  connections closed with `SESSION_CLOSED {SIGNED_OUT}` (the client signs out and forgets its saved sign-in), a
+  later resume or saved-password sign-in refused with `LoginResponse.signed_out`, the account's other devices
+  told (`DEVICES_CHANGED`). Logging out asks central to forget the device first.
+- **Communities drop a signed-out device within a minute**: session tokens carry the device as `sid`, and the
+  heartbeat answer lists members' devices signed out in the last 25 h (`ServerHeartbeatRes.revoked`); the
+  community refuses those tokens and closes live sessions holding one. Backstop: a community session now ends
+  when its token expires unrenewed (clients renew every 6 h; if central is unreachable for ~18 h, community
+  sessions end as tokens run out: accepted).
+- **Password change** (`PASSWORD_CHANGE_REQ`): current password required (a wrong one counts as a failed
+  sign-in per account and address), at least 8 characters, not the same; bcrypt with nothing locked and an
+  optimistic write; `sessions_valid_after` bumped, every other device signed out (`PASSWORD_CHANGED`), this one
+  kept with a new resume token and its saved sign-in updated. The E2EE passphrase is separate.
+- **New sign-in notice**: a typed sign-in that creates a device row reaches the account's other devices as
+  `DEVICES_CHANGED {new_device}`; the client shows "New sign-in to your account" with the OS and address and a
+  "Review devices" button.
+- **What the list shows**: OS name (os-release `PRETTY_NAME` on Linux; never the hostname, which often holds a
+  real name), app version, address, active now / last active, signed-in date. Settings → Devices; Account →
+  Change password; the sign-in page says why it was reached.
+- **Deploy grace**: for 30 days after migration 6 an automatic sign-in from an unknown device is recorded (unless
+  that device was signed out), so saved sign-ins survive the deploy (old resume tokens have no `did` and fall
+  back to the password). Devices unused for 90 days are forgotten; at most 100 per account.
+- Community: `DECIBELL_CENTRAL_PORT` / `DECIBELL_HEARTBEAT_INTERVAL_SECONDS` (defaults 8080 / 60).
+
+Wire: `LoginRequest` 6–9, `LoginResponse.signed_out` (20) / `devices` (21), `SessionClosed.PASSWORD_CHANGED`,
+packets 172–178 (payload fields 174–180), `ServerHeartbeatRes.revoked` (2). Central schema 6. Central and client
+ship with the multi-device change; the community change is safe in any order.
+
+Verified (9e1b213 … f4f95c5): central e2e 442/0 with the migration check under the normal, ThreadSanitizer and
+ASan + UBSan builds, no sanitizer reports (63 new checks: the list, the `sid` claim, the new sign-in notice and
+when it isn't sent, resume bound to its device, a renewal for a signed-out device closing it, signing out one /
+all others / this device, refusals of the signed-out device's resume and saved password, typing bringing it back
+as a new device, the grace period, password change refusals and effects, ten wrong current passwords holding
+that address's sign-ins, heartbeat revocations per community, migration to schema 6). Community e2e 802/0 with
+the migration check, normal and ASan + UBSan (11 new, against a stand-in central on its own port with 1 s
+heartbeats: a revoked device's session closes within a heartbeat and its tokens are refused, other sessions and
+a token without `sid` stay, a renewal onto a revoked token is ignored, revocations lapse at `until`, an expired
+token ends its session and a renewed one doesn't). `cargo test --lib` 304 (+2: os-release names, `LoginRequest`
+fields per kind of sign-in); `napi build`; tsc web / node 0 / 0. UI preview harness captures of the Devices tab
+(4 themes and the 800 × 600 icon rail), the sign-out confirm, the password dialog, the new sign-in toast and the
+sign-in page notice. Load test (10,000 clients, PostgreSQL on the NVMe, two passes each against 63dd6ac and
+this): 828–830 vs 825–828 MB, the same CPU and DM throughput (~7,700/s delivered at the 8,000 target); password
+sign-ins 16.4–16.6/s vs 17.2–17.5/s and connects 2,307–2,391/s vs 2,445–2,561/s (the device row written at
+sign-in); all back after a restart in 3.7–4.0 s vs 3.3–3.4 s (each resume now checks and touches its device row,
+committed without waiting for a flush).
+
+Live test pending (two installs, e.g. separate `--user-data-dir`): (1) sign in on A, then type the password on
+B: A shows "New sign-in to your account" with B's OS and address, and Review devices opens Settings → Devices;
+(2) on A, sign B out: B lands on the sign-in page saying it was signed out, and restarting B asks for the
+password (the saved one no longer works); B's community connections close within a minute; (3) sign B back in,
+then "Sign out of all other devices" on A; (4) Change password on A: B lands on the sign-in page saying the
+password changed; A stays connected, and after an app restart A signs in with the new password automatically;
+(5) Log out on A: B's Devices list no longer shows A.

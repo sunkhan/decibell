@@ -425,6 +425,14 @@ letting the failure fall into a catch block.
   ringing card with a short end state (`callStore.incomingEnded`). BUSY reaches the caller only when
   no device can ring, so a device in a call keeps auto-answering BUSY. After the answer, signals go
   only between the two connections in the call; one that reconnects keeps its place by device id.
+- **Devices and password changes** (`docs/superpowers/specs/2026-10-19-devices-and-password-design.md`):
+  every `LoginRequest` comes from `ThisDevice` (`net/central.rs`). Typed sign-ins send
+  `automatic: false`; the saved sign-in and the reconnect fallbacks send `true`, and central refuses those
+  on a device it doesn't know any more (`LoginResponse.signed_out`). Never mark anything the user didn't
+  just type as typed: that is what makes signing a device out stick. The refusal and
+  `SESSION_CLOSED {SIGNED_OUT | PASSWORD_CHANGED}` go through `commands::auth::signed_out_elsewhere`, a
+  full sign-out (saved sign-in cleared) with the reason in `logged_out`; Log out asks central to forget
+  the device first (`commands/devices.rs::forget_this_device`).
 
 ### 5.11 Stream-audio capture — platform traps
 
