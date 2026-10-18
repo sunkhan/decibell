@@ -759,6 +759,26 @@ export interface SendFriendActionArgs {
   targetUid?: number
 }
 export declare function sendFriendAction(args: SendFriendActionArgs): Promise<void>
+export interface FriendsInCommunityArgs {
+  serverId: string
+}
+export interface FriendsInCommunity {
+  /**
+   * False when central couldn't say: not a community it lists, not one
+   * we're a member of, or its database failed. The caller then judges
+   * on what it has.
+   */
+  known: boolean
+  memberUids: Array<number>
+}
+/**
+ * The welcome banner's "Invite friends": which of our accepted friends are
+ * already members of this community. Central answers from its membership
+ * table, so the friend list never reaches the community (owner rule).
+ * Communities central doesn't list (a raw host:port join) answer `known:
+ * false`. Times out after 5 seconds.
+ */
+export declare function friendsInCommunity(args: FriendsInCommunityArgs): Promise<FriendsInCommunity>
 export interface HotkeyBindingArg {
   id: string
   /**

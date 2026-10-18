@@ -1241,6 +1241,40 @@ bool AuthManager::areFriends(int64_t a, int64_t b) {
     }
 }
 
+std::optional<std::vector<int64_t>> AuthManager::friendsInCommunity(int64_t uid, int64_t server_id) {
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        // Only about a community the caller is in: the answer is then their
+        // mutual communities with friends, which its member list shows anyway.
+        pqxx::result in = txn.exec_params(
+            "SELECT 1 FROM community_memberships WHERE uid = $1 AND server_id = $2", uid, server_id);
+        if (in.empty()) {
+            txn.commit();
+            return std::nullopt;
+        }
+        // Friends first (friendships' key and uid2 index), then each one's
+        // membership (community_memberships' key).
+        pqxx::result rs = txn.exec_params(
+            "SELECT fr.u FROM ( "
+            "  SELECT uid2 AS u FROM friendships WHERE uid1 = $1 AND status = 'ACCEPTED' "
+            "  UNION ALL "
+            "  SELECT uid1 FROM friendships WHERE uid2 = $1 AND status = 'ACCEPTED' "
+            ") fr "
+            "WHERE EXISTS (SELECT 1 FROM community_memberships cm WHERE cm.uid = fr.u AND cm.server_id = $2)",
+            uid, server_id);
+        txn.commit();
+        std::vector<int64_t> out;
+        out.reserve(rs.size());
+        for (const auto& row : rs) out.push_back(row[0].as<int64_t>());
+        return out;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] friendsInCommunity: " << e.what() << "\n";
+        return std::nullopt;
+    }
+}
+
 std::vector<chatproj::FriendInfo> AuthManager::getFriends(int64_t uid) {
     std::vector<chatproj::FriendInfo> friends;
     try {

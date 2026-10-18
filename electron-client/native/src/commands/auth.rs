@@ -272,6 +272,7 @@ pub async fn logout() -> napi::Result<()> {
         s.voice_deafened = false;
         s.voice_muted_before_deafen = false;
         s.pending_invite_resolves.clear();
+        s.pending_friends_in_community.clear();
         s.pending_avatar_fetches.clear();
         s.pending_thumbnail_fetches.clear();
         s.pending_avatar_update = None;

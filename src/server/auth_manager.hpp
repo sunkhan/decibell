@@ -175,6 +175,10 @@ public:
     /// The user's friendships, each with the other side's uid, current name
     /// and avatar_version; at most MAX_FRIEND_ROWS of them.
     std::vector<chatproj::FriendInfo> getFriends(int64_t uid);
+    // The welcome banner's "Invite friends": the uids of `uid`'s accepted
+    // friends who are members of community `server_id`. Nothing when `uid`
+    // isn't a member of it themselves, or the database failed.
+    std::optional<std::vector<int64_t>> friendsInCommunity(int64_t uid, int64_t server_id);
     /// True if there is a BLOCKED relationship between the two users
     /// (canonical pair, either direction). Used to reject DMs to/from a
     /// blocked user regardless of online state or friends-only setting.

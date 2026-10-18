@@ -249,6 +249,7 @@ pub async fn shutdown() -> napi::Result<()> {
     s.central = None;
     s.credentials = None;
     s.pending_invite_resolves.clear();
+    s.pending_friends_in_community.clear();
 
     Ok(())
 }

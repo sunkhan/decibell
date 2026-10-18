@@ -575,6 +575,12 @@ impl CentralClient {
                         log::debug!("Orphan InviteResolveRes for code {}", resp.code);
                     }
                 }
+                Some(packet::Payload::FriendsInCommunityRes(resp)) => {
+                    let waiter = state.lock().await.pending_friends_in_community.remove(&resp.server_id);
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(resp);
+                    }
+                }
                 Some(packet::Payload::UpdateAvatarRes(resp)) => {
                     // Fulfil the upload_avatar waiter. Single-slot
                     // (only one upload in flight per session).

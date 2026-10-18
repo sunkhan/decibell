@@ -914,6 +914,44 @@ def test_memberships_by_uid():
     b.close()
 
 
+def test_friends_in_community():
+    """Invite friends: central says which of my friends are already in a
+    community I'm in, from its membership table (the community never sees the
+    friend list), and nothing about one I'm not in."""
+    print("friends in a community (invite friends)")
+    for n in ("gail", "hank", "iris", "jude"):
+        register(n)
+    sid = heartbeat(name="Friends", port=9005)
+    other = heartbeat(name="Elsewhere", port=9006)
+    ug, uh, ui, uj = (uid_of(n) for n in ("gail", "hank", "iris", "jude"))
+    for u, s in ((ug, sid), (uh, sid), (uj, sid), (ui, other)):
+        c = community_send(pb.Packet.MEMBERSHIP_REGISTER_REQ,
+                           membership_register_req=pb.MembershipRegisterReq(uid=u, server_id=s))
+        time.sleep(0.2); c.close()
+    g, h, i, j = User("gail"), User("hank"), User("iris"), User("jude")
+    for peer in (h, i):   # gail's friends: hank (in), iris (elsewhere); jude is in but no friend
+        g.friend(pb.ADD, target_uid=peer.login.uid)
+        peer.friend(pb.ACCEPT, target_uid=ug)
+    time.sleep(0.3)
+
+    def ask(u, server_id):
+        u.send(pb.Packet.FRIENDS_IN_COMMUNITY_REQ, friends_in_community_req=pb.FriendsInCommunityRequest(server_id=server_id))
+        r = u.wait(pb.Packet.FRIENDS_IN_COMMUNITY_RES, pred=lambda p: p.friends_in_community_res.server_id == server_id)
+        return r.friends_in_community_res if r else None
+
+    r = ask(g, sid)
+    check("friends who are members, and only they", r is not None and r.success and list(r.member_uids) == [uh],
+          r and list(r.member_uids))
+    r = ask(g, other)
+    check("nothing about a community the caller isn't in", r is not None and not r.success and not r.member_uids)
+    r = ask(i, sid)
+    check("a friend who isn't a member learns nothing about it", r is not None and not r.success)
+    r = ask(h, sid)
+    check("the other side of the friendship sees the caller", r is not None and r.success and list(r.member_uids) == [ug])
+    for x in (g, h, i, j):
+        x.close()
+
+
 def test_rename_keeps_everything():
     """There is no rename feature yet (stage 5); renaming the row directly
     shows every table follows the uid, and a newcomer under the old name
@@ -1757,6 +1795,7 @@ def main():
         test_memberships()
         test_uid_wire()
         test_memberships_by_uid()
+        test_friends_in_community()
         test_rename_keeps_everything()
         test_rename()
         test_token_refresh()

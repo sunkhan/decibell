@@ -8,12 +8,13 @@ import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { UserAvatar } from "../../components/UserAvatar";
 import { StatusDot } from "../../components/StatusDot";
 import { EMPTY_LIST } from "../../lib/empty";
+import { invoke } from "../../lib/ipc";
 import { AlreadyMemberError, inviteFriend } from "./personalInvite";
 import type { ServerMember } from "../../types";
 import { useUsersStore, type Uid } from "../../stores/usersStore";
 
 /// "member": the server refused the invite because they're already in —
-/// an offline member the loaded roster didn't include.
+/// one neither central's answer nor the loaded roster had.
 type RowState = "sending" | "sent" | "member";
 
 function FriendRow({
@@ -67,12 +68,13 @@ function FriendRow({
 /// yet, each a click away from a personal invite (single-use, never
 /// expires, only they can redeem it) sent to them as a DM.
 ///
-/// "Not a member" is judged on the roster the client already has (owner
-/// decision: the friend list never goes to the community, and the server
-/// isn't asked to filter it, nor are friends looked up one by one). That
-/// roster pages in as the member list scrolls (online members first, then
-/// offline), so on a big server a member can still be listed; inviting
-/// them comes back already_member and the row says so.
+/// "Not a member" comes from central, which holds both our friend list and
+/// every community's members (`friends_in_community`), plus the roster we
+/// already have. The friend list never goes to the community (owner rule):
+/// it isn't asked to filter it, nor are friends looked up there one by one.
+/// When central can't say (a community it doesn't list, or no answer), the
+/// loaded roster alone decides, and inviting someone it missed comes back
+/// already_member, which the row shows.
 export default function InviteFriendsModal() {
   const open = useUiStore((s) => s.activeModal === "invite-friends");
   const closeModal = useUiStore((s) => s.closeModal);
@@ -90,6 +92,9 @@ export default function InviteFriendsModal() {
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<Record<Uid, RowState>>({});
   const names = useUsersStore((s) => s.names);
+  // Central's answer for this server: friends who are members. null while
+  // asking; "unknown" when it can't say (then the roster alone decides).
+  const [centralMembers, setCentralMembers] = useState<Set<Uid> | "unknown" | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -102,6 +107,22 @@ export default function InviteFriendsModal() {
     }
   }, [open, serverId]);
 
+  useEffect(() => {
+    if (!open || !serverId) return;
+    let live = true;
+    setCentralMembers(null);
+    invoke<{ known: boolean; memberUids: (number | bigint)[] }>("friends_in_community", { serverId })
+      .then((r) => {
+        if (live) setCentralMembers(r.known ? new Set(r.memberUids.map((u) => Number(u))) : "unknown");
+      })
+      .catch(() => {
+        if (live) setCentralMembers("unknown");
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, serverId]);
+
   // Accepted friends only — not pending requests or blocked users.
   const candidates = useMemo(
     () =>
@@ -112,12 +133,14 @@ export default function InviteFriendsModal() {
     [friends, names],
   );
   const notMembers = useMemo(() => {
-    // The loaded roster only, never a member lookup (see above).
-    const inRoster = new Set(roster.map((m) => m.uid));
+    // Central's answer plus the loaded roster, never a lookup on the
+    // community (see above).
+    const members = new Set(roster.map((m) => m.uid));
+    if (centralMembers instanceof Set) for (const uid of centralMembers) members.add(uid);
     // A row with an outcome stays put (a friend who joins after their
     // invite keeps showing "Sent").
-    return candidates.filter((c) => rows[c.uid] !== undefined || !inRoster.has(c.uid));
-  }, [candidates, roster, rows]);
+    return candidates.filter((c) => rows[c.uid] !== undefined || !members.has(c.uid));
+  }, [candidates, roster, rows, centralMembers]);
   const query = search.trim().toLowerCase();
   const shown = query ? notMembers.filter((c) => c.name.toLowerCase().includes(query)) : notMembers;
 
@@ -148,6 +171,7 @@ export default function InviteFriendsModal() {
 
   let empty: string | null = null;
   if (candidates.length === 0) empty = "Add some friends first — they'll show up here.";
+  else if (centralMembers === null) empty = "Loading…";
   else if (notMembers.length === 0) empty = "All your friends are already here.";
   else if (shown.length === 0) empty = "No friends match that search.";
 

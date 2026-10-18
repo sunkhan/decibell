@@ -303,6 +303,9 @@ message Packet {
     // Key escrow (review S14): a member drops their own blobs that won't
     // open, so a holder can seal them again.
     CHANNEL_KEYS_REJECT  = 165;   // client→community (no reply)
+    // "Invite friends": which of my friends are already in a community I'm in.
+    FRIENDS_IN_COMMUNITY_REQ = 166;   // client→central
+    FRIENDS_IN_COMMUNITY_RES = 167;   // central→requester
   }
 
   Type type = 1;
@@ -511,6 +514,8 @@ message Packet {
     SessionTokenUpdate       session_token_update   = 165;
     PresenceSubscribe        presence_subscribe     = 166;
     ChannelKeysReject        channel_keys_reject    = 167;
+    FriendsInCommunityRequest  friends_in_community_req = 168;
+    FriendsInCommunityResponse friends_in_community_res = 169;
   }
 }
 
@@ -1437,6 +1442,20 @@ message InviteCreateResponse {
   // The Invite friends picker filters against the roster it has loaded,
   // which may lack offline members; this tells it which rows to mark.
   bool already_member = 5;
+}
+
+// The welcome banner's "Invite friends" lists friends who aren't members yet.
+// Central answers from its own membership table, so the friend list never
+// reaches the community (owner rule), and only for a community the caller is
+// a member of: what it reveals is the caller's mutual communities with their
+// friends, which the community's own member list shows them anyway.
+message FriendsInCommunityRequest {
+  int64 server_id = 1;   // central's community id
+}
+message FriendsInCommunityResponse {
+  int64 server_id = 1;             // echoed
+  bool  success = 2;               // false: not a member of it, or the database failed
+  repeated int64 member_uids = 3;  // the caller's (accepted) friends who are members
 }
 
 message InviteListRequest {}

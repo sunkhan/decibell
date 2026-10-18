@@ -377,6 +377,7 @@ private:
             case P::FETCH_AVATAR_REQ:
             case P::FETCH_SERVER_PICTURE_REQ:
             case P::FRIEND_LIST_REQ:
+            case P::FRIENDS_IN_COMMUNITY_REQ:
             case P::SERVER_LIST_REQ:
             case P::INVITE_RESOLVE_REQ:
                 return &read_bucket_;
@@ -1442,6 +1443,25 @@ private:
             res_packet.SerializeToString(&serialized);
             auto framed = std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized));
             deliver(framed);
+        }
+
+        // "Invite friends": which of my friends are already in this community.
+        // Central answers from its membership table, so the friend list never
+        // reaches the community (owner rule).
+        else if (packet.type() == chatproj::Packet::FRIENDS_IN_COMMUNITY_REQ) {
+            if (!authenticated_) return;
+            const int64_t server_id = packet.friends_in_community_req().server_id();
+            chatproj::Packet res_packet;
+            res_packet.set_type(chatproj::Packet::FRIENDS_IN_COMMUNITY_RES);
+            auto* res = res_packet.mutable_friends_in_community_res();
+            res->set_server_id(server_id);
+            if (auto uids = auth_manager_.friendsInCommunity(uid_, server_id)) {
+                res->set_success(true);
+                for (int64_t u : *uids) res->add_member_uids(u);
+            }
+            std::string serialized;
+            res_packet.SerializeToString(&serialized);
+            deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
         }
 
         // --- AVATAR UPLOAD ---

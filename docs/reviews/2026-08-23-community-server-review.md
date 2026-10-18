@@ -3716,3 +3716,22 @@ loading row at the end of a partial online part, folded order, invisible self).
 Owner decision (2026-10-18): Online / Offline follows the community's view, central's status the dot; CLAUDE.md
 updated. On main with B4 and B11: community 770/0 (normal and ASan + UBSan, with the migration check), native
 285, tsc 0 / 0, central builds with the proto.
+
+### Fix: "Invite friends" asks central which friends are already members (2026-10-18)
+
+The welcome banner's "Invite friends" judged "not a member yet" on the roster the client had loaded (owner rule:
+the friend list never goes to the community, so the community can't be asked). With paged rosters a friend who
+was a member but not loaded was offered an invite, which came back `already_member`. Central already holds
+both sides: the friend list and every community's members (`community_memberships`, kept by the communities'
+membership sync). New `FRIENDS_IN_COMMUNITY_REQ {server_id}` → `RES {server_id, success, member_uids}`:
+the caller's accepted friends who are members, answered only for a community the caller is a member of
+(so it reveals only mutual communities, which that community's member list shows them anyway). Read-paced
+like the friend list; two indexed lookups per friend set. Native `friends_in_community` (`known: false` for a
+community central doesn't list, such as a raw host:port join, or on no answer), and the modal hides central's
+members plus the loaded roster's, falling back to the roster alone when central can't say.
+
+Verified: central e2e 283/0 with the migration check (+4: friends who are members and only they; nothing about a community the caller
+isn't in, also for a friend who isn't a member; both sides of the friendship), with ThreadSanitizer and
+ASan + UBSan, no reports; community 770/0 with the proto; cargo test 285; napi build (the new export); tsc 0 / 0; the modal in the UI preview harness
+(central's answer hides a member the roster lacks; without one the roster decides).
+

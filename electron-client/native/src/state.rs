@@ -21,7 +21,7 @@ use crate::net::central::CentralClient;
 use crate::net::community::CommunityClient;
 use crate::net::proto::{
     ChannelKeysPublishRes, ChannelKeysRes, E2eeFetchBackupRes, E2eeFetchKeysRes,
-    E2eePublishKeysRes, FetchAvatarRes, FetchStreamThumbnailRes, InviteResolveResponse,
+    E2eePublishKeysRes, FetchAvatarRes, FetchStreamThumbnailRes, FriendsInCommunityResponse, InviteResolveResponse,
     UpdateAvatarRes,
 };
 
@@ -94,6 +94,9 @@ pub struct AppState {
     /// matching INVITE_RESOLVE_RES arrives; the caller drops its half
     /// after a 5s timeout.
     pub pending_invite_resolves: HashMap<String, oneshot::Sender<InviteResolveResponse>>,
+    /// friends_in_community waiters, by central's community id (the newest
+    /// request for a community wins).
+    pub pending_friends_in_community: HashMap<i64, oneshot::Sender<FriendsInCommunityResponse>>,
     /// Active voice channel session. None when not in a voice channel.
     /// Lifecycle: created in `join_voice_channel`, dropped in
     /// `leave_voice_channel` or on logout.
@@ -215,6 +218,7 @@ impl Default for AppState {
             resume_pending: false,
             save_credentials_on_login: false,
             pending_invite_resolves: HashMap::new(),
+            pending_friends_in_community: HashMap::new(),
             voice_engine: None,
             video_engine: None,
             audio_stream_engine: None,
