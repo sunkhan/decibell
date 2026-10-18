@@ -94,8 +94,13 @@ public:
     /// same non-empty device id is replaced; other devices stay. Over
     /// MAX_DEVICES the login is refused. Watchers see the account come
     /// online (or stop idling) when that is visible.
+    ///
+    /// On success the sign-in's reply goes to `session` from under the lock,
+    /// so nothing another device changes reaches the connection before it:
+    /// `reply` (built with `presence`), or `rebuild(live)` when the account
+    /// was signed in already and its live state differs.
     Bound bind(const std::shared_ptr<Session>& session, int64_t uid, const std::string& device_id,
-               Presence presence);
+               Presence presence, const Frame& reply, const std::function<Frame(const Presence&)>& rebuild);
 
     // --- Delivery ---
     /// Every connection of the account. False when it has none here.
@@ -115,7 +120,11 @@ public:
     /// see changes, its watchers get a PresenceDelta, and when its own state
     /// changes (status, message, DM privacy) every connection of the account
     /// gets an OWN_PRESENCE. False when the account isn't signed in here.
-    bool update_presence(int64_t uid, const std::function<void(Presence&)>& change);
+    /// `save` (a database write) runs after, outside the lock but in order
+    /// with the account's other changes: two devices changing it at once
+    /// leave the database with the directory's last state.
+    bool update_presence(int64_t uid, const std::function<void(Presence&)>& change,
+                         const std::function<void(const Presence&)>& save = nullptr);
     /// Auto-away for one connection. The account is idle while all of its
     /// connections are.
     void set_idle(const std::shared_ptr<Session>& session, bool idle);
@@ -174,6 +183,9 @@ private:
         /// Its signed-in connections, in sign-in order.
         std::vector<std::shared_ptr<Session>> sessions;
         Presence presence;
+        /// Held (never with mutex_) across one presence change and its
+        /// database save (update_presence).
+        std::shared_ptr<std::mutex> saving = std::make_shared<std::mutex>();
     };
     /// A call between two accounts, by call id. The caller's connection,
     /// the callee connections still ringing, and once answered the one that
@@ -216,8 +228,13 @@ private:
     void presence_changed_locked(int64_t uid, const Account& account, const Presence& before,
                                  const Session* except, Fanout& out);
     void recompute_idle_locked(Account& account);
-    std::shared_ptr<Session> device_session_locked(int64_t uid, const std::string& device) const;
-    void call_leave_locked(Session* session, Fanout& out);
+    /// The account's connection from `device`, other than `except`.
+    std::shared_ptr<Session> device_session_locked(int64_t uid, const std::string& device,
+                                                   const Session* except = nullptr) const;
+    /// A side of a call whose connection left: the same device signed back in
+    /// (or replacing it) takes its place.
+    void reattach_locked(Call& c, const std::string& id, const Session* except = nullptr);
+    void call_leave_locked(Session* session, const std::string& device, Fanout& out);
     void erase_call_locked(const std::string& id);
     void index_call_locked(Session* session, const std::string& id);
     void unindex_call_locked(Session* session, const std::string& id);

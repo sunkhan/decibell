@@ -1391,6 +1391,51 @@ def test_multi_device_presence():
     check("visible again from the other device", d is not None and d.online)
     a2.close(); w.close()
     time.sleep(0.3)
+    # A change racing a sign-in never reaches the new device before its
+    # LOGIN_RES (which carries the state as of then).
+    import threading
+    a1 = User("mira", device="m1")
+    stop = []
+
+    def churn():
+        i = 0
+        while not stop:
+            a1.send(pb.Packet.SET_STATUS_MESSAGE_REQ, set_status_message_req=pb.SetStatusMessageRequest(text=f"churn {i}"))
+            i += 1
+            time.sleep(0.02)
+
+    t = threading.Thread(target=churn)
+    t.start()
+    early = []
+    for i in range(6):
+        b = User("mira", device="race")
+        early.append(any(p.type == pb.Packet.OWN_PRESENCE for p in b.inbox))
+    stop.append(True)
+    t.join()
+    b.close()
+    check("nothing from another device arrives before LOGIN_RES", not any(early), early)
+    a1.send(pb.Packet.SET_STATUS_MESSAGE_REQ, set_status_message_req=pb.SetStatusMessageRequest())
+    # Two devices changing the status at once: the saved one is the last one shown.
+    a2 = User("mira", device="m2")
+    time.sleep(0.5)
+    for u in (a1, a2):
+        u.clear()
+    for status in (pb.PRESENCE_DND, pb.PRESENCE_AWAY, pb.PRESENCE_DND, pb.PRESENCE_AWAY):
+        a1.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=status))
+        a2.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(
+            status=pb.PRESENCE_AWAY if status == pb.PRESENCE_DND else pb.PRESENCE_DND))
+    time.sleep(1.0)
+    a1.drain(0.3)
+    shown = [p.own_presence.status for p in a1.inbox if p.type == pb.Packet.OWN_PRESENCE]
+    a1.close(); a2.close()
+    time.sleep(0.5)
+    back = User("mira", device="m1")
+    check("two devices changing the status at once: the saved one is the last shown",
+          shown and back.ok and back.login.status == shown[-1], (shown[-1:] if shown else None, back.login.status))
+    back.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    time.sleep(0.2)
+    back.close()
+    time.sleep(0.3)
 
 
 def test_multi_device_calls():
@@ -1478,6 +1523,34 @@ def test_multi_device_calls():
     call(b1, pb.CallSignal.HANGUP, "mc6", to_uid=un)
     check("... and hangs up from", got_call(c, pb.CallSignal.HANGUP, "mc6") is not None)
     other.close()
+    # The same device signing in again while its old connection is still up
+    # (replaced, not dropped) takes its place in the call at once.
+    call(c, pb.CallSignal.INVITE, "mc7", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc7")
+    call(b1, pb.CallSignal.ACCEPT, "mc7", to_uid=un)
+    got_call(c, pb.CallSignal.ACCEPT, "mc7")
+    b1r = User("mira", device="b1")
+    b1r.clear()
+    call(c, pb.CallSignal.STREAM_START, "mc7", to_uid=um)
+    check("a replaced connection's call moves to the new one", got_call(b1r, pb.CallSignal.STREAM_START, "mc7") is not None)
+    call(c, pb.CallSignal.HANGUP, "mc7", to_uid=um)
+    got_call(b1r, pb.CallSignal.HANGUP, "mc7")
+    b1.close()
+    b1 = b1r
+    # A ringing device replaced by its own new connection keeps ringing there.
+    b2 = User("mira", device="b2")
+    for u in (b1, b2):
+        u.clear()
+    call(c, pb.CallSignal.INVITE, "mc8", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc8"); got_call(b2, pb.CallSignal.INVITE, "mc8")
+    b2r = User("mira", device="b2")
+    call(b2r, pb.CallSignal.ACCEPT, "mc8", to_uid=un)
+    check("a ringing device that signed in again can still answer", got_call(c, pb.CallSignal.ACCEPT, "mc8") is not None
+          and got_call(b1, pb.CallSignal.ANSWERED_ELSEWHERE, "mc8") is not None)
+    call(c, pb.CallSignal.HANGUP, "mc8", to_uid=um)
+    check("... and hears the hang-up", got_call(b2r, pb.CallSignal.HANGUP, "mc8") is not None)
+    for u in (b2, b2r):
+        u.close()
     # A connection places at most 4 calls at once.
     for i in range(5):
         call(c, pb.CallSignal.INVITE, f"cap{i}", to_uid=um)

@@ -1320,7 +1320,6 @@ private:
                     // (renames, avatars, E2EE keys) may reveal activity;
                     // clients need them.
                     manager_.push_user_renamed(uid_, username_, this);
-                    name_epoch_ = manager_.rename_epoch();
                 });
         }
 
@@ -1623,11 +1622,15 @@ private:
             if (!authenticated_) return;
             const bool friends_only = packet.dm_privacy().friends_only();
             bool changed = false;
-            manager_.update_presence(uid_, [&](Presence& p) {
-                changed = p.dm_friends_only != friends_only;
-                p.dm_friends_only = friends_only;
-            });
-            if (changed) auth_manager_.setDmFriendsOnly(uid_, friends_only);
+            manager_.update_presence(
+                uid_,
+                [&](Presence& p) {
+                    changed = p.dm_friends_only != friends_only;
+                    p.dm_friends_only = friends_only;
+                },
+                [&](const Presence& p) {
+                    if (changed) auth_manager_.setDmFriendsOnly(uid_, p.dm_friends_only);
+                });
         }
 
         // --- USER STATUS ---
@@ -1640,11 +1643,15 @@ private:
             if (!chatproj::PresenceStatus_IsValid(raw)) return;
             const auto status = static_cast<chatproj::PresenceStatus>(raw);
             bool changed = false;
-            manager_.update_presence(uid_, [&](Presence& p) {
-                changed = p.status != status;
-                p.status = status;
-            });
-            if (changed) auth_manager_.setPresenceStatus(uid_, raw);
+            manager_.update_presence(
+                uid_,
+                [&](Presence& p) {
+                    changed = p.status != status;
+                    p.status = status;
+                },
+                [&](const Presence& p) {
+                    if (changed) auth_manager_.setPresenceStatus(uid_, static_cast<int>(p.status));
+                });
         }
 
         // --- AUTO-AWAY ---
@@ -1672,14 +1679,18 @@ private:
             const bool empty = text.empty() && emoji.empty();
             const int64_t expires_at = empty || clear_after == 0 ? 0 : unix_now() + clear_after;
             bool changed = false;
-            manager_.update_presence(uid_, [&](Presence& p) {
-                if (p.status_text == text && p.status_emoji == emoji && p.status_expires_at == expires_at) return;
-                p.status_text = text;
-                p.status_emoji = emoji;
-                p.status_expires_at = expires_at;
-                changed = true;
-            });
-            if (changed) auth_manager_.setStatusMessage(uid_, text, emoji, expires_at);
+            manager_.update_presence(
+                uid_,
+                [&](Presence& p) {
+                    if (p.status_text == text && p.status_emoji == emoji && p.status_expires_at == expires_at) return;
+                    p.status_text = text;
+                    p.status_emoji = emoji;
+                    p.status_expires_at = expires_at;
+                    changed = true;
+                },
+                [&](const Presence& p) {
+                    if (changed) auth_manager_.setStatusMessage(uid_, p.status_text, p.status_emoji, p.status_expires_at);
+                });
         }
 
         // --- PRESENCE SUBSCRIPTIONS ---
@@ -1973,7 +1984,17 @@ private:
         // same device's previous connection (a dead one, or a copy of the
         // install) is replaced. The saved status applies before anyone hears
         // of the login, so an invisible user never flashes online.
-        auto bound = manager_.bind(shared_from_this(), outcome->login.uid, device_id_, std::move(presence));
+        // Read before bind: a rename landing after it bumps the epoch past
+        // this, and the next packet picks the name up.
+        const uint64_t epoch = manager_.rename_epoch();
+        // The reply goes out from inside bind, under the directory's lock, so
+        // nothing another device changes reaches this connection before it.
+        // Built here from the login's own read; bind rebuilds it only when
+        // the account is signed in elsewhere with a different state.
+        const Frame reply = login_frame(*outcome, presence);
+        const LoginOutcome& login = *outcome;
+        auto bound = manager_.bind(shared_from_this(), outcome->login.uid, device_id_, std::move(presence), reply,
+                                   [&login](const Presence& live) { return login_frame(login, live); });
         if (bound.full) {
             // Never by evicting another device: that is the ping-pong this
             // replaced (review B3).
@@ -1991,12 +2012,11 @@ private:
         authenticated_ = true;
         uid_ = outcome->login.uid;
         username_ = bound.presence.username.empty() ? outcome->login.username : bound.presence.username;
-        name_epoch_ = manager_.rename_epoch();
+        name_epoch_ = epoch;
         if (bound.replaced) {
             std::cout << "[Manager] Replacing the previous connection of uid " << uid_ << " (same device)\n";
             manager_.retire(bound.replaced, chatproj::SessionClosed::REPLACED);
         }
-        send_login_success(*outcome, bound.presence);
     }
 
     /// REGISTER_RES, or a refused LOGIN_RES.
@@ -2015,8 +2035,9 @@ private:
         deliver(resp_packet);
     }
 
-    /// `p`: the account's live presence (SessionManager::bind).
-    void send_login_success(const LoginOutcome& outcome, const Presence& p) {
+    /// A successful LOGIN_RES with the account's presence `p` (the login's
+    /// read, or the live one: SessionManager::bind sends it).
+    static Frame login_frame(const LoginOutcome& outcome, const Presence& p) {
         chatproj::Packet resp_packet;
         resp_packet.set_type(chatproj::Packet::LOGIN_RES);
         auto* resp = resp_packet.mutable_login_res();
@@ -2024,8 +2045,8 @@ private:
         resp->set_message("Login successful!");
         resp->set_jwt_token(outcome.login.token);
         resp->set_resume_token(outcome.resume_token);
-        resp->set_uid(uid_);
-        resp->set_username(username_);
+        resp->set_uid(outcome.login.uid);
+        resp->set_username(p.username.empty() ? outcome.login.username : p.username);
         // Auto-rejoin: the user's community memberships inline, so the
         // client can start connecting without an extra round-trip.
         for (const auto& info : outcome.memberships) {
@@ -2055,7 +2076,7 @@ private:
             resp->set_status_clear_in(std::max<int64_t>(1, p.status_expires_at - unix_now()));
         }
         resp->set_dm_friends_only(p.dm_friends_only);
-        deliver(resp_packet);
+        return make_frame(resp_packet);
     }
 
     ssl::stream<tcp::socket> socket_;
@@ -2307,11 +2328,13 @@ void SessionManager::presence_changed_locked(int64_t uid, const Account& account
     }
 }
 
-std::shared_ptr<Session> SessionManager::device_session_locked(int64_t uid, const std::string& device) const {
+std::shared_ptr<Session> SessionManager::device_session_locked(int64_t uid, const std::string& device,
+                                                               const Session* except) const {
     if (device.empty()) return nullptr;
     auto acc = accounts_.find(uid);
     if (acc == accounts_.end()) return nullptr;
     for (const auto& s : acc->second.sessions) {
+        if (s.get() == except) continue;
         auto it = sessions_.find(s);
         if (it != sessions_.end() && it->second.device_id == device) return s;
     }
@@ -2321,7 +2344,7 @@ std::shared_ptr<Session> SessionManager::device_session_locked(int64_t uid, cons
 void SessionManager::sign_out_locked(const std::shared_ptr<Session>& session, Connection& conn, Fanout& out) {
     const int64_t uid = conn.uid;
     unwatch_all_locked(session.get(), conn);
-    call_leave_locked(session.get(), out);
+    call_leave_locked(session.get(), conn.device_id, out);
     conn.uid = 0;
     if (uid <= 0) return;
     auto acc = accounts_.find(uid);
@@ -2403,8 +2426,18 @@ size_t SessionManager::close_other_sessions(int64_t uid, const std::shared_ptr<S
     return others.size();
 }
 
+namespace {
+/// What a LOGIN_RES says of the account's own state.
+bool login_view_differs(const Presence& a, const Presence& b) {
+    return a.username != b.username || a.status != b.status || a.status_text != b.status_text ||
+           a.status_emoji != b.status_emoji || a.status_expires_at != b.status_expires_at ||
+           a.dm_friends_only != b.dm_friends_only;
+}
+}  // namespace
+
 SessionManager::Bound SessionManager::bind(const std::shared_ptr<Session>& session, int64_t uid,
-                                           const std::string& device_id, Presence presence) {
+                                           const std::string& device_id, Presence presence, const Frame& reply,
+                                           const std::function<Frame(const Presence&)>& rebuild) {
     Bound result;
     Fanout out;
     {
@@ -2421,7 +2454,10 @@ SessionManager::Bound SessionManager::bind(const std::shared_ptr<Session>& sessi
         if (!fresh) {
             Account& account = acc->second;
             // The same device signing in again: its old connection is dead
-            // (or a copy of the install). It gives up its place.
+            // (or a copy of the install). It gives up its place; the account
+            // stays (and says nothing) even when that was its only one. Its
+            // calls stay too: the new connection has its device id and takes
+            // its place in them once retire() detaches it.
             if (auto old = device_session_locked(uid, device_id)) {
                 result.replaced = old;
                 auto old_it = sessions_.find(old);
@@ -2430,12 +2466,6 @@ SessionManager::Bound SessionManager::bind(const std::shared_ptr<Session>& sessi
                     old_it->second.uid = 0;
                 }
                 remove_from(account.sessions, old.get());
-                // Its calls stay: the new connection has its device id and
-                // takes its place in them.
-                if (account.sessions.empty()) {
-                    // Nothing else of this account is signed in: keep the
-                    // account (and say nothing) across the swap.
-                }
             } else if (account.sessions.size() >= MAX_DEVICES) {
                 result.full = true;
                 return result;
@@ -2446,9 +2476,9 @@ SessionManager::Bound SessionManager::bind(const std::shared_ptr<Session>& sessi
         conn.uid = uid;
         conn.device_id = device_id;
         conn.idle = false;
-        const bool first = account.sessions.empty();
         account.sessions.push_back(session);
-        if (first && fresh) {
+        Frame answer = reply;
+        if (fresh) {
             // The saved status applies before anyone hears of the login, so
             // an invisible user never flashes online.
             account.presence = std::move(presence);
@@ -2460,10 +2490,14 @@ SessionManager::Bound SessionManager::bind(const std::shared_ptr<Session>& sessi
         } else {
             // Already online elsewhere (or swapping its only device): the
             // live presence stands. An active device ends auto-away.
+            if (login_view_differs(account.presence, presence)) answer = rebuild(account.presence);
             const Presence before = account.presence;
             recompute_idle_locked(account);
             presence_changed_locked(uid, account, before, session.get(), out);
         }
+        // Posted under the lock: a change from another device takes the lock
+        // to find this connection, so it reaches it after the reply.
+        session->deliver(answer);
         result.presence = account.presence;
         result.ok = true;
     }
@@ -2549,8 +2583,21 @@ bool SessionManager::is_user_visible(int64_t uid) {
     return it != accounts_.end() && it->second.presence.visible();
 }
 
-bool SessionManager::update_presence(int64_t uid, const std::function<void(Presence&)>& change) {
+bool SessionManager::update_presence(int64_t uid, const std::function<void(Presence&)>& change,
+                                     const std::function<void(const Presence&)>& save) {
+    std::shared_ptr<std::mutex> saving;
+    if (save) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = accounts_.find(uid);
+        if (it == accounts_.end()) return false;
+        saving = it->second.saving;
+    }
+    // One change and its save at a time for this account, taken before the
+    // directory's lock and held across the database write (never mutex_).
+    std::unique_lock<std::mutex> in_order;
+    if (saving) in_order = std::unique_lock<std::mutex>(*saving);
     Fanout out;
+    Presence after;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = accounts_.find(uid);
@@ -2558,8 +2605,10 @@ bool SessionManager::update_presence(int64_t uid, const std::function<void(Prese
         const Presence before = it->second.presence;
         change(it->second.presence);
         presence_changed_locked(uid, it->second, before, nullptr, out);
+        if (save) after = it->second.presence;
     }
     out.run();
+    if (save) save(after);
     return true;
 }
 
@@ -2780,26 +2829,46 @@ void SessionManager::erase_call_locked(const std::string& id) {
     calls_.erase(it);
 }
 
-void SessionManager::call_leave_locked(Session* session, Fanout& out) {
+void SessionManager::reattach_locked(Call& c, const std::string& id, const Session* except) {
+    if (!c.caller) {
+        c.caller = device_session_locked(c.caller_uid, c.caller_device, except);
+        index_call_locked(c.caller.get(), id);
+    }
+    if (c.answered && !c.callee) {
+        c.callee = device_session_locked(c.callee_uid, c.callee_device, except);
+        index_call_locked(c.callee.get(), id);
+    }
+    if (c.caller && (c.callee || !c.answered)) {
+        c.detached = {};
+    } else if (c.answered && c.detached == std::chrono::steady_clock::time_point{}) {
+        c.detached = std::chrono::steady_clock::now();
+    }
+}
+
+void SessionManager::call_leave_locked(Session* session, const std::string& device, Fanout& out) {
     auto idx = call_index_.find(session);
     if (idx == call_index_.end()) return;
     const std::vector<std::string> ids = std::move(idx->second);
     call_index_.erase(idx);
-    const auto now = std::chrono::steady_clock::now();
     for (const auto& id : ids) {
         auto it = calls_.find(id);
         if (it == calls_.end()) continue;
         Call& c = it->second;
-        if (c.caller.get() == session) {
-            c.caller.reset();
-            if (c.answered) c.detached = now;
-        }
-        if (c.callee.get() == session) {
-            c.callee.reset();
-            c.detached = now;
-        }
+        // A side whose device has another connection already (the one that
+        // replaced this) moves there; otherwise it waits for that device.
+        if (c.caller.get() == session) c.caller.reset();
+        if (c.callee.get() == session) c.callee.reset();
+        reattach_locked(c, id, session);
         if (contains(c.ringing, session)) {
             remove_from(c.ringing, session);
+            // A ringing device that signed in again keeps ringing there: the
+            // call may still be showing, and its answer comes from the new
+            // connection.
+            auto back = device_session_locked(c.callee_uid, device, session);
+            if (back && !contains(c.ringing, back.get())) {
+                c.ringing.push_back(back);
+                index_call_locked(back.get(), id);
+            }
             if (!c.answered && c.ringing.empty()) {
                 // No device of the callee can ring any more. Busy if one of
                 // them said so; otherwise the caller's own timeout ends it.
@@ -2862,11 +2931,11 @@ SessionManager::CallRoute SessionManager::route_call(const std::shared_ptr<Sessi
             if (!by_caller && !by_callee) return CallRoute::dropped;
             const Frame frame = make_frame(routed);
             // The other side's connection, or the one its device signed back
-            // in on.
-            auto target = [&](const std::shared_ptr<Session>& s, int64_t uid, const std::string& dev) {
+            // in on (which takes its place).
+            auto target = [&](const std::shared_ptr<Session>& s, int64_t, const std::string&) {
                 std::vector<std::shared_ptr<Session>> to;
+                if (!s) reattach_locked(c, id);
                 if (s) to.push_back(s);
-                else if (auto back = device_session_locked(uid, dev)) to.push_back(back);
                 return to;
             };
             auto elsewhere = [&](K::Kind k) {
@@ -2916,10 +2985,13 @@ SessionManager::CallRoute SessionManager::route_call(const std::shared_ptr<Sessi
                         }
                         break;
                     case K::ACCEPT:
-                        // The first to answer takes the call.
+                        // The first to answer takes the call. A caller whose
+                        // connection is gone is waited for from now
+                        // (reattach_locked starts the clock).
                         c.answered = true;
                         c.callee = from;
                         c.callee_device = device;
+                        reattach_locked(c, id);
                         for (const auto& s : others) unindex_call_locked(s.get(), id);
                         c.ringing.clear();
                         out.add(std::move(others), elsewhere(K::ANSWERED_ELSEWHERE));
@@ -2971,7 +3043,9 @@ void SessionManager::sweep_calls() {
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> stale;
-    for (const auto& [id, c] : calls_) {
+    for (auto& [id, c] : calls_) {
+        // A side's device may have signed back in without sending anything.
+        if (c.answered && c.detached != std::chrono::steady_clock::time_point{}) reattach_locked(c, id);
         if (!c.answered ? now - c.started > RING_KEEP
                         : (c.detached != std::chrono::steady_clock::time_point{} && now - c.detached > DETACHED_KEEP)) {
             stale.push_back(id);

@@ -58,9 +58,13 @@ login (the last device to sign in won), and a key rotation on one device had no 
   account): the chosen status, the status message with the seconds left, friends-only DMs, and whether the
   account is idle. Sent whenever any of them changes, from whichever device or the sweep, except to a
   device signing in (its `LOGIN_RES` carries the same). `LOGIN_RES` now carries the live account state
-  rather than what the login's database read found (a change racing the sign-in can't be lost), plus
-  `dm_friends_only`; the client adopts it instead of pushing its local copy (which made the last device
-  to sign in win).
+  rather than what the login's database read found, plus `dm_friends_only`; the client adopts it instead
+  of pushing its local copy (which made the last device to sign in win). `bind` posts it under the
+  directory's lock (prebuilt from the login's read, rebuilt only when the live state differs), so no
+  change from another device reaches the new connection before it.
+- **Saves in order.** A status, message or DM-privacy change and its database write run one at a time
+  per account (`Account::saving`, a mutex never held with the directory's), so two devices changing it at
+  once leave the database with the directory's last state.
 - **Names.** A rename updates the directory, and every other connection of the account picks the new name
   up before its next handler (a global rename counter each session compares). DMs, edits and call signals
   from another device go out under the current name at once, and its token refresh names it.
@@ -107,9 +111,10 @@ Signals for a call route only between the connections in it.
   `DECLINED_ELSEWHERE`.
 - **CANCEL** from the caller: to every ringing device.
 - After the answer, **HANGUP / STREAM_START / STREAM_STOP** go only between the two connections in the call.
-- **Reconnects.** A connection in a call that drops keeps its place by device id: when the same device
-  comes back (same id) its signals are accepted again and the other side's reach it. A connection with
-  another device id gets nothing.
+- **Reconnects.** A connection in a call that drops keeps its place by device id: the connection that
+  replaces it (or the same device signing back in later) takes over its side, and a ringing device's new
+  connection keeps ringing and may answer. The other side's signals reach it, and the sweep re-attaches a
+  side that came back without sending anything. A connection with another device id gets nothing.
 - **S13 stays:** only an INVITE is ever answered (`PEER_OFFLINE` / `NOT_ALLOWED`); every other signal needs
   a call in the registry between those two accounts and is dropped silently otherwise (stronger than the
   block check alone). Clients still can't send central's own kinds.
