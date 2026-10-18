@@ -3837,3 +3837,62 @@ reports); throwaway checks of the merge (a deleted newest
 row, an empty newest page, an older page still answering only for its range, a bubble settled by its nonce,
 an unsettled bubble kept), plus the earlier 33 / 36 / 38 checks; cargo test 285; tsc 0 / 0.
 
+
+### Fix: a channel edit no longer strips everyone else's permissions in it (2026-10-18, review B1)
+
+CHANNEL_UPDATE_RES (a topic, slowmode, retention or bitrate change) was filled with `fill_channel_info`,
+which never sets `my_permissions`, and broadcast as is to every viewer. The client's `upsertChannel` replaced
+the whole channel record, so every non-owner's permissions for that channel became 0: the composer turned
+into "no permission", moderators lost the slowmode bypass, search skipped the channel, the mic showed blocked
+after a bitrate change, and the manager who saved lost the settings window. Owners bypass permissions, which
+is why nobody noticed. Now `SessionManager::broadcast_channel_update` stamps each viewer's own permissions
+(viewers holding the same bits share one serialisation, as `broadcast_channels` does per user), and
+`upsertChannel` keeps the permissions it has when an update carries none (a viewer always holds VIEW, so 0
+means absent).
+
+Verified: community e2e 773/0 with the migration check, normal and ASan+UBSan (no reports) (+1: a member's copy of the update carries their own permissions —
+VIEW and SEND, not MANAGE_CHANNELS); tsc 0 / 0.
+
+### Fix: encrypted-channel sends keep their attachment keys for a retry; GIFs seal (2026-10-18, review B5, B6)
+
+B5: `handleSend` consumed each sealed upload's metadata (its key) before the send. When the send failed (e.g.
+"no current key yet — try again"), the uploads stayed in the composer for the retry, which then sent their
+ids without keys: the server bound stand-ins nobody could ever decrypt. The metadata is now read, not taken,
+and dropped only once the message went out, when nothing is left to send, or when the chip is removed.
+
+B6: `sendGif` left out `encrypted`, so a GIF went out as plaintext and the server refused it in an encrypted
+channel ("update Decibell to post here"). Every send, edit and upload site now asks one helper,
+`channelIsEncrypted` (it was copied out three times in ChatPanel).
+
+Verified: tsc 0 / 0. Live test: in an encrypted channel, attach an image, make the send fail (e.g. send in a
+freshly created encrypted channel before its key exists, if that reproduces "no current key yet"), send
+again: the image opens for another member. Send a GIF in an encrypted channel.
+
+### Fix: logging out stops the share, the voice session and the call, and closes what was open (2026-10-18, review B10)
+
+Logging out while in voice or streaming: native dropped its engines, but the renderer never stopped its
+side. On the WebCodecs path getDisplayMedia and the VideoEncoder kept running (the OS "sharing" indicator
+stayed on), the next login showed the old channel "in session", a ringing call kept ringing, and an open
+window (e.g. Settings) opened again for the next account. The `logged_out` handler now stops the active share,
+the ring, the call state and the voice session, closes the modal, popups, context menus and the image viewer,
+and clears main's attachment targets and attachment decryption keys (both kept the old session's token and
+keys until the app quit). The E2EE store already resets from native's "unavailable" status after logout.
+
+Verified: tsc 0 / 0. Live test: start a screen share in a voice channel (WebCodecs path, e.g. a window share
+on Linux without NVENC), open Settings, log out: the sharing indicator goes away, and the next login lands
+outside voice with no window open.
+
+### Fix: attachments keep working past a day connected (2026-10-18, review B2)
+
+Electron main authenticates attachment fetches and uploads with its own copy of each community's token, set
+only when the community auth reply arrived. Central renews the session token every 6 hours (it lives 24 h)
+and native hands the new one to every community, but main never heard of it: after ~24 h connected, every
+image, video, download and upload got 401 until a reconnect. Native now emits `session_token_updated` (no
+payload, so the token rides no event) from `net::token::adopt`, and main re-reads every registered target
+through `get_attachment_target`. An entry cleared meanwhile (logout, leaving the community) stays cleared,
+and a failed read keeps the current entry.
+
+Verified: cargo test 285; napi build; tsc 0 / 0; a throwaway check of the registry refresh (refreshed,
+cleared-meanwhile stays cleared, failed read keeps the entry, the pinned fingerprint still matches). Live
+test (needs an app restart: main changed): stay connected past one renewal and confirm images still load.
+To see it sooner, a debug build could shorten `REFRESH_EVERY`; the token's 24 h lifetime is the real test.
