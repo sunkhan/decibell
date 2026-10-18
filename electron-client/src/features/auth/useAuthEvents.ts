@@ -9,7 +9,13 @@ import { useUiStore } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useDraftsStore } from "../../stores/draftsStore";
 import { useFriendsStore } from "../../stores/friendsStore";
+import { useVoiceStore } from "../../stores/voiceStore";
+import { useCallStore } from "../../stores/callStore";
+import { useImageViewerStore } from "../../stores/imageViewerStore";
+import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import type { ServerInfoPayload } from "../../types";
+import { stopActiveStream } from "../voice/streaming/StreamCapture";
+import { stopRing } from "../call/callActions";
 import { clearRetainedImages } from "../chat/imageRetention";
 import { abandonDmRequests } from "../chat/historyRequests";
 import { requestFriendList } from "../friends/friendList";
@@ -101,6 +107,25 @@ export function useAuthEvents() {
     );
 
     const unlistenLoggedOut = listen("logged_out", () => {
+      // Native dropped the voice, stream and call engines; the renderer's
+      // half goes with them. Otherwise a WebCodecs share keeps capturing
+      // (the OS "sharing" indicator stays on) and the next login shows the
+      // old voice channel in session (review B10).
+      stopActiveStream().catch(() => {});
+      stopRing();
+      useCallStore.getState().reset();
+      useVoiceStore.getState().disconnect();
+      // Nothing open carries over to the next account: windows, popups,
+      // menus, the image viewer.
+      const ui = useUiStore.getState();
+      ui.closeModal();
+      ui.closeProfilePopup();
+      ui.closeContextMenu();
+      useImageViewerStore.getState().close();
+      useImageContextMenuStore.getState().close();
+      // Main's attachment tokens and decryption keys belong to this session.
+      window.decibell.attachmentRegistry.clearAll().catch(() => {});
+      window.decibell.attachments.clearKeys().catch(() => {});
       useAuthStore.getState().logout();
       useChatStore.getState().resetForLogout();
       usePresenceStore.getState().reset();
