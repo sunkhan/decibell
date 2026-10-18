@@ -19,22 +19,30 @@ use arc_swap::ArcSwap;
 use super::media_socket::MediaSocket;
 use super::video_packet::{UdpVideoPacket, PACKET_TYPE_VIDEO, UDP_MAX_PAYLOAD};
 
+/// Where a stream's frames go: the media socket and, in a community channel,
+/// the MLS epoch keys that seal them (None on the P2P path, where the socket
+/// itself is sealed). Both change when the stream follows the user into
+/// another voice channel: the new channel has its own socket and its own
+/// group, and a frame sealed under the old group's keys is unreadable there
+/// (while the channel we left could still open it).
+pub struct SendRoute {
+    pub socket: Arc<MediaSocket>,
+    pub ring: Option<super::frame_crypto::SharedKeyRing>,
+}
+
 /// Per-stream send context. One of these per active outgoing stream.
-/// Cheap to construct — just an atomic counter and a clone of the UDP
-/// socket handle. The socket lives in an `ArcSwap` so it can be
-/// hot-swapped when the stream follows the user into a new voice channel
-/// (which spins up a fresh VoiceEngine with a new media socket) without
-/// tearing down the capture/encoder pipeline.
+/// Cheap to construct: an atomic counter and the route. The route lives in
+/// an `ArcSwap` so a stream carried into a new voice channel (a fresh
+/// VoiceEngine with a new media socket, and a new MLS group) is re-pointed
+/// without tearing down the capture/encoder pipeline.
 pub struct VideoSender {
-    socket: ArcSwap<MediaSocket>,
+    route: ArcSwap<SendRoute>,
     sender_id: String,
     next_frame_id: AtomicU32,
-    /// Community channel: the MLS epoch keys; each frame is sealed once
-    /// before chunking (`frame_crypto::seal_video_frame`) and sent as
-    /// VIDEO_SEALED. None on the P2P path (the socket itself is sealed).
-    ring: Option<super::frame_crypto::SharedKeyRing>,
     /// Fresh per stream (`frame_crypto::next_stream_salt`) so a restarted
-    /// frame counter never reuses a nonce within an epoch.
+    /// frame counter never reuses a nonce within an epoch. Kept across a
+    /// retarget: the frame counter keeps advancing, so (salt, frame id)
+    /// never repeats under whichever key the stream seals with.
     stream_salt: u32,
 }
 
@@ -45,19 +53,19 @@ impl VideoSender {
         ring: Option<super::frame_crypto::SharedKeyRing>,
     ) -> Self {
         Self {
-            socket: ArcSwap::from(socket),
+            route: ArcSwap::from_pointee(SendRoute { socket, ring }),
             sender_id,
             next_frame_id: AtomicU32::new(0),
-            ring,
             stream_salt: super::frame_crypto::next_stream_salt(),
         }
     }
 
-    /// Re-point the sender at a new media socket. Used when the stream is
-    /// carried into a new voice channel — the frame id counter keeps
-    /// advancing so the receiver treats it as the same continuous stream.
-    pub fn set_socket(&self, socket: Arc<MediaSocket>) {
-        self.socket.store(socket);
+    /// Re-point the sender at a new media socket and key ring in one swap.
+    /// Used when the stream is carried into a new voice channel; the frame
+    /// id counter keeps advancing so receivers treat it as the same
+    /// continuous stream.
+    pub fn retarget(&self, socket: Arc<MediaSocket>, ring: Option<super::frame_crypto::SharedKeyRing>) {
+        self.route.store(Arc::new(SendRoute { socket, ring }));
     }
 
     /// Packetise an encoded frame and emit it onto the media socket.
@@ -69,10 +77,13 @@ impl VideoSender {
         data: &[u8],
     ) -> (u32, u32) {
         let frame_id = self.next_frame_id.fetch_add(1, Ordering::Relaxed);
+        // One route snapshot per frame (an atomic load), so a frame is never
+        // sealed for one channel and sent on the other's socket.
+        let route = self.route.load();
         // Encrypted channel: seal the whole frame first. No epoch keys yet
         // (or quarantined) → the frame is dropped, never sent in the clear.
         let sealed;
-        let (data, packet_type): (&[u8], u8) = match &self.ring {
+        let (data, packet_type): (&[u8], u8) = match &route.ring {
             Some(r) => {
                 match super::frame_crypto::seal_video_frame(
                     &r.load(),
@@ -95,8 +106,6 @@ impl VideoSender {
         let total = chunks.len() as u16;
         let mut ok = 0u32;
         let mut err = 0u32;
-        // Snapshot the current socket once per frame (cheap Arc load).
-        let socket = self.socket.load();
         for (i, chunk) in chunks.iter().enumerate() {
             let mut pkt = UdpVideoPacket::new_with_codec(
                 &self.sender_id,
@@ -108,7 +117,7 @@ impl VideoSender {
                 chunk,
             );
             pkt.packet_type = packet_type;
-            match socket.send(&pkt.to_bytes()) {
+            match route.socket.send(&pkt.to_bytes()) {
                 Ok(_) => ok += 1,
                 Err(_) => err += 1,
             }
@@ -349,6 +358,63 @@ mod tests {
         // The owning engine clears its own sink.
         assert!(clear_frame_sink_if(&new));
         assert!(current_frame_sink().is_none());
+    }
+
+    /// One member's ring for epoch 1 of a group whose exporter is `[ex; 32]`.
+    fn ring(member: &str, ex: u8) -> super::super::frame_crypto::SharedKeyRing {
+        use super::super::frame_crypto::{EpochKeys, KeyRing};
+        let keys = EpochKeys::derive(1, &[ex; 32], &[member.to_string()]);
+        Arc::new(ArcSwap::from_pointee(KeyRing::empty(member).rotated(keys)))
+    }
+
+    fn socket_to(rx: &UdpSocket) -> Arc<MediaSocket> {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(rx.local_addr().unwrap()).unwrap();
+        Arc::new(MediaSocket::plain(sock, "7"))
+    }
+
+    fn recv_packet(rx: &UdpSocket) -> Option<UdpVideoPacket> {
+        let mut buf = vec![0u8; 65536];
+        let n = rx.recv(&mut buf).ok()?;
+        UdpVideoPacket::from_bytes(&buf[..n])
+    }
+
+    /// Review B7: a stream carried into another voice channel seals with the
+    /// new channel's group and goes out on its socket. Before, the socket
+    /// moved but the ring stayed: frames went to the new channel sealed
+    /// under the old group's last epoch, black for the new watchers and
+    /// readable by the channel left behind.
+    #[test]
+    fn retarget_moves_socket_and_keys_together() {
+        use super::super::frame_crypto::{open_video_frame, PACKET_TYPE_VIDEO_SEALED};
+        let old_rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let new_rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        for rx in [&old_rx, &new_rx] {
+            rx.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        }
+        let (old_ring, new_ring) = (ring("7", 1), ring("7", 2));
+        let s = VideoSender::new(socket_to(&old_rx), "7".into(), Some(old_ring.clone()));
+
+        s.send_frame(1, true, b"before");
+        let p = recv_packet(&old_rx).expect("first frame on the old socket");
+        assert_eq!(p.packet_type, PACKET_TYPE_VIDEO_SEALED);
+        assert_eq!(
+            open_video_frame(&old_ring.load(), "7", p.frame_id, true, 1, p.payload_data()).unwrap(),
+            b"before"
+        );
+
+        s.retarget(socket_to(&new_rx), Some(new_ring.clone()));
+        s.send_frame(1, false, b"after");
+        let p = recv_packet(&new_rx).expect("frame after the move on the new socket");
+        assert_eq!({ p.frame_id }, 1, "the frame counter carries on across the move");
+        let sealed = p.payload_data();
+        assert_eq!(open_video_frame(&new_ring.load(), "7", 1, false, 1, sealed).unwrap(), b"after");
+        assert!(
+            open_video_frame(&old_ring.load(), "7", 1, false, 1, sealed).is_none(),
+            "the old channel's keys must not open frames sent to the new one"
+        );
+        old_rx.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        assert!(recv_packet(&old_rx).is_none(), "nothing more goes to the old socket");
     }
 
     #[test]

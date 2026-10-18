@@ -1185,10 +1185,12 @@ export interface MoveStreamToChannelArgs {
 /**
  * Carry an already-running stream into a new voice channel WITHOUT restarting
  * capture/encode. The caller has already joined the new voice channel, so a
- * fresh VoiceEngine with new UDP sockets exists; here we re-point the video
- * (and stream-audio) senders at those sockets and re-announce the stream in
- * the new channel. Because capture keeps running there is no portal/WGC
- * re-prompt — the whole reason this exists instead of stop+start.
+ * fresh VoiceEngine with new UDP sockets exists, and a new MLS group whose
+ * keys are the only ones the new channel can open; here we re-point the
+ * video (and stream-audio) senders at those sockets and that key ring, and
+ * re-announce the stream in the new channel. Because capture keeps running
+ * there is no portal/WGC re-prompt — the whole reason this exists instead of
+ * stop+start.
  */
 export declare function moveStreamToChannel(args: MoveStreamToChannelArgs): Promise<void>
 /**

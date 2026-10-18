@@ -855,11 +855,13 @@ pub struct VideoEngine {
     /// Process-unique id of this streaming session, so a caller cleaning
     /// up after a failed start only removes ITS engine from AppState.
     session_id: u64,
-    /// Community (server_id, channel_id) the stream was announced in —
+    /// Community (server_id, channel_id) the stream is announced in —
     /// None in a DM call (no community). Lets `stop_screen_share` notify
     /// the community when called without ids (the main process stopping
-    /// an orphaned share after a renderer reload/crash).
-    announce_target: Option<(String, String)>,
+    /// an orphaned share after a renderer reload/crash), and tells the
+    /// native thumbnail sender where to post, so a stream carried into
+    /// another channel posts there.
+    announce_target: AnnounceTarget,
     /// JS-side encoder may emit an `EncodedFrame` self-preview pump too
     /// — but the local self-preview is just the raw VideoFrame painted
     /// to a canvas in the StreamCapture component, so the receive-side
@@ -915,6 +917,44 @@ impl WinCapture {
     }
 }
 
+/// The community (server_id, channel_id) a stream is announced in, shared by
+/// the engine and its native thumbnail sender. None in a DM call.
+type AnnounceTarget = Arc<arc_swap::ArcSwapOption<(String, String)>>;
+
+/// Drain thumbnail JPEGs from a native encoder thread and post each one to
+/// the channel the stream is announced in at that moment (nothing in a DM
+/// call). The channel is bounded at 1 and the encoder thread uses try_send,
+/// so a slow server drops a thumbnail instead of back-pressuring the encoder.
+/// The task ends once the encoder thread drops its sender.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn spawn_thumbnail_sender(
+    target: AnnounceTarget,
+) -> (tokio::sync::mpsc::Sender<Vec<u8>>, tokio::task::JoinHandle<()>) {
+    let (thumb_tx, mut thumb_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let task = tokio::spawn(async move {
+        while let Some(jpeg) = thumb_rx.recv().await {
+            let Some(target) = target.load_full() else {
+                continue;
+            };
+            let (server_id, channel_id) = &*target;
+            // Clone the write channel + build the packet under the lock,
+            // then release it before awaiting the send — holding AppState
+            // across the send stalls every other command.
+            let parts = {
+                let state_arc = crate::state::shared();
+                let s = state_arc.lock().await;
+                s.communities
+                    .get(server_id)
+                    .and_then(|c| c.thumbnail_send_parts(channel_id, &jpeg))
+            };
+            if let Some((tx, data)) = parts {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await;
+            }
+        }
+    });
+    (thumb_tx, task)
+}
+
 impl VideoEngine {
     /// Start a streaming session. PR8 keeps this trivial: just record
     /// who we are so log output can mention it, and clone a sender for
@@ -936,7 +976,7 @@ impl VideoEngine {
             sender,
             self_username,
             session_id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
-            announce_target: None,
+            announce_target: AnnounceTarget::default(),
             _phantom: std::marker::PhantomData,
             #[cfg(target_os = "windows")]
             win_capture: None,
@@ -955,12 +995,13 @@ impl VideoEngine {
         }
     }
 
-    /// Re-point the video sender at a new media socket. Used when the stream
-    /// is carried into a new voice channel: the new VoiceEngine has a fresh
-    /// media socket, and swapping it here re-routes outgoing frames without
-    /// tearing down (and re-prompting) the capture pipeline.
-    pub fn set_send_socket(&self, socket: Arc<MediaSocket>) {
-        self.sender.set_socket(socket);
+    /// Re-point the video sender at a new media socket and the new channel's
+    /// MLS key ring. Used when the stream is carried into a new voice
+    /// channel: the new VoiceEngine has a fresh media socket and the channel
+    /// its own group, and swapping both here re-routes outgoing frames
+    /// without tearing down (and re-prompting) the capture pipeline.
+    pub fn retarget(&self, socket: Arc<MediaSocket>, ring: Option<frame_crypto::SharedKeyRing>) {
+        self.sender.retarget(socket, ring);
     }
 
     pub fn session_id(&self) -> u64 {
@@ -970,14 +1011,12 @@ impl VideoEngine {
     /// Record the community channel the stream is announced in (start, and
     /// again on move_stream_to_channel). None for a DM-call stream.
     pub fn set_announce_target(&mut self, target: Option<(String, String)>) {
-        self.announce_target = target;
+        self.announce_target.store(target.map(Arc::new));
     }
 
     /// (server_id, channel_id) the stream is announced in, if any.
-    pub fn announce_target(&self) -> Option<(&str, &str)> {
-        self.announce_target
-            .as_ref()
-            .map(|(s, c)| (s.as_str(), c.as_str()))
+    pub fn announce_target(&self) -> Option<(String, String)> {
+        self.announce_target.load_full().map(|t| (*t).clone())
     }
 
     /// Windows-only: spin up the native capture + encoder pipeline.
@@ -996,8 +1035,6 @@ impl VideoEngine {
         fps: u32,
         bitrate_kbps: u32,
         include_cursor: bool,
-        server_id: String,
-        channel_id: String,
     ) -> Result<(u32, u32), String> {
         let target = source_id::parse(source_id)
             .map_err(|e| format!("source id '{}': {:?}", source_id, e))?;
@@ -1011,34 +1048,10 @@ impl VideoEngine {
             windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
         >(2);
 
-        // Thumbnail channel: encoder thread try_sends JPEGs here every
-        // 3s; tokio task below drains and ships them to the community
-        // server. Depth=1 + try_send means a slow server drops the new
-        // thumb instead of back-pressuring the encoder.
-        let (thumb_tx, mut thumb_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-        let thumb_server_id = server_id.clone();
-        let thumb_channel_id = channel_id.clone();
-        let thumb_task = tokio::spawn(async move {
-            while let Some(jpeg) = thumb_rx.recv().await {
-                // Clone the write channel + build the packet under the
-                // lock, then release it before awaiting the send — holding
-                // AppState across the send stalls every other command.
-                let parts = {
-                    let state_arc = crate::state::shared();
-                    let s = state_arc.lock().await;
-                    s.communities
-                        .get(&thumb_server_id)
-                        .and_then(|c| c.thumbnail_send_parts(&thumb_channel_id, &jpeg))
-                };
-                if let Some((tx, data)) = parts {
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        tx.send(data),
-                    )
-                    .await;
-                }
-            }
-        });
+        // Thumbnail channel: the encoder thread try_sends JPEGs on its
+        // schedule; the task posts them to the channel the stream is
+        // announced in (followed across move_stream_to_channel).
+        let (thumb_tx, thumb_task) = spawn_thumbnail_sender(self.announce_target.clone());
 
         // WGC wherever it can go borderless (Win11+ — better cursor/HDR/
         // rotation handling); on Win10, where the WGC border is mandatory,
@@ -1104,9 +1117,6 @@ impl VideoEngine {
         self.win_capture = Some(capture);
         self.win_encoder_thread = Some(encoder_thread);
         self.win_thumbnail_task = Some(thumb_task);
-        // server_id + channel_id were consumed into the tokio task above;
-        // silence unused warnings if the task is the only consumer.
-        let _ = (server_id, channel_id);
         Ok((width, height))
     }
 
@@ -1162,8 +1172,6 @@ impl VideoEngine {
         fps: u32,
         bitrate_kbps: u32,
         include_cursor: bool,
-        server_id: String,
-        channel_id: String,
     ) -> Result<(u32, u32), String> {
         let config = capture::CaptureConfig {
             target_fps: fps,
@@ -1185,33 +1193,9 @@ impl VideoEngine {
             capture_pipewire::start_capture(source_id, &config).await?
         };
 
-        // Thumbnail drain task — identical pattern to start_windows:
-        // bounded depth=1, so a slow server drops thumbs rather than
-        // back-pressuring the encoder thread.
-        let (thumb_tx, mut thumb_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-        let thumb_server_id = server_id.clone();
-        let thumb_channel_id = channel_id.clone();
-        let thumb_task = tokio::spawn(async move {
-            while let Some(jpeg) = thumb_rx.recv().await {
-                // Clone the write channel + build the packet under the
-                // lock, then release it before awaiting the send — holding
-                // AppState across the send stalls every other command.
-                let parts = {
-                    let state_arc = crate::state::shared();
-                    let s = state_arc.lock().await;
-                    s.communities
-                        .get(&thumb_server_id)
-                        .and_then(|c| c.thumbnail_send_parts(&thumb_channel_id, &jpeg))
-                };
-                if let Some((tx, data)) = parts {
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        tx.send(data),
-                    )
-                    .await;
-                }
-            }
-        });
+        // Thumbnail drain task, as on Windows: posts to the channel the
+        // stream is announced in at the time.
+        let (thumb_tx, thumb_task) = spawn_thumbnail_sender(self.announce_target.clone());
 
         let thread = encoder_thread_linux::LinuxEncoderThread::start(
             encoder_thread_linux::LinuxEncoderThreadConfig {
@@ -1231,7 +1215,6 @@ impl VideoEngine {
         self.lin_force_keyframe = Some(thread.force_keyframe_handle());
         self.lin_encoder_thread = Some(thread);
         self.lin_thumbnail_task = Some(thumb_task);
-        let _ = (server_id, channel_id);
         Ok((width, height))
     }
 
@@ -1385,12 +1368,13 @@ impl AudioStreamEngine {
         }
     }
 
-    /// Re-point the STREAM_AUDIO sends at a new voice socket — used when the
-    /// stream follows the user into a new voice channel.
-    pub fn set_socket(&self, socket: Arc<MediaSocket>) {
+    /// Re-point the STREAM_AUDIO sends at a new voice socket and the new
+    /// channel's MLS key ring — used when the stream follows the user into
+    /// a new voice channel.
+    pub fn retarget(&self, socket: Arc<MediaSocket>, ring: Option<frame_crypto::SharedKeyRing>) {
         let _ = self
             .control_tx
-            .send(audio_stream_pipeline::AudioStreamControl::SetSocket(socket));
+            .send(audio_stream_pipeline::AudioStreamControl::Retarget(socket, ring));
     }
 }
 

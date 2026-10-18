@@ -891,10 +891,11 @@ export class StreamCapture {
 
   /// Move an already-running stream to a different voice channel WITHOUT
   /// restarting capture (so no getDisplayMedia / portal / WGC re-prompt).
-  /// Native re-points the video (and stream-audio) send sockets at the new
-  /// voice channel's UDP sockets and re-announces the stream — capture and
-  /// the encoder keep running untouched on BOTH the WebCodecs and native
-  /// paths. Watchers in the new channel catch up on the forced keyframe.
+  /// Native re-points the video (and stream-audio) senders at the new voice
+  /// channel's UDP sockets and MLS keys, moves the native thumbnails along
+  /// and re-announces the stream — capture and the encoder keep running
+  /// untouched on BOTH the WebCodecs and native paths. Watchers in the new
+  /// channel catch up on the forced keyframe.
   async retarget(serverId: string, channelId: string): Promise<void> {
     if (this.stopping) return;
 

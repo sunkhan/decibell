@@ -220,8 +220,6 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     args.fps,
                     args.video_bitrate_kbps,
                     args.include_cursor.unwrap_or(true),
-                    args.server_id.clone().unwrap_or_default(),
-                    args.channel_id.clone().unwrap_or_default(),
                 )
                 .map_err(napi::Error::from_reason)?;
 
@@ -295,8 +293,6 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                 args.fps,
                 args.video_bitrate_kbps,
                 args.include_cursor.unwrap_or(true),
-                args.server_id.clone().unwrap_or_default(),
-                args.channel_id.clone().unwrap_or_default(),
             )
             .await
             .map_err(napi::Error::from_reason)?;
@@ -444,17 +440,22 @@ pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
         let was_streaming = s.video_engine.is_some();
         let video = s.video_engine.take();
         let audio = s.audio_stream_engine.take();
-        // Explicit ids win (unchanged behaviour). Without ids — the main
-        // process stopping an orphaned share after a renderer reload/crash
-        // — fall back to the channel the stream was announced in. A DM-call
-        // stream has no target and no community to notify.
-        let target: Option<(String, String)> = match args.server_id.clone() {
-            Some(server_id) => Some((server_id, args.channel_id.clone().unwrap_or_default())),
-            None => video
-                .as_ref()
-                .and_then(|v| v.announce_target())
-                .map(|(sid, cid)| (sid.to_string(), cid.to_string())),
-        };
+        // The channel the stream is announced in wins: it follows the
+        // stream across move_stream_to_channel, while a caller's ids can be
+        // the channel it started in (the picker's capture-ended callback
+        // stopped the old channel and left the new one showing a ghost LIVE
+        // stream). Explicit ids only fill in for an engine with no target;
+        // the main process stopping an orphaned share after a renderer
+        // reload/crash passes none. A DM-call stream has no target and no
+        // community to notify.
+        let target: Option<(String, String)> = video
+            .as_ref()
+            .and_then(|v| v.announce_target())
+            .or_else(|| {
+                args.server_id
+                    .clone()
+                    .map(|server_id| (server_id, args.channel_id.clone().unwrap_or_default()))
+            });
         let send = if was_streaming && s.active_call.is_none() {
             target.and_then(|(server_id, channel_id)| {
                 s.communities.get(&server_id).and_then(|client| {
@@ -513,10 +514,12 @@ pub struct MoveStreamToChannelArgs {
 
 /// Carry an already-running stream into a new voice channel WITHOUT restarting
 /// capture/encode. The caller has already joined the new voice channel, so a
-/// fresh VoiceEngine with new UDP sockets exists; here we re-point the video
-/// (and stream-audio) senders at those sockets and re-announce the stream in
-/// the new channel. Because capture keeps running there is no portal/WGC
-/// re-prompt — the whole reason this exists instead of stop+start.
+/// fresh VoiceEngine with new UDP sockets exists, and a new MLS group whose
+/// keys are the only ones the new channel can open; here we re-point the
+/// video (and stream-audio) senders at those sockets and that key ring, and
+/// re-announce the stream in the new channel. Because capture keeps running
+/// there is no portal/WGC re-prompt — the whole reason this exists instead of
+/// stop+start.
 #[napi]
 pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Result<()> {
     let state_arc = state::shared();
@@ -532,11 +535,25 @@ pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Resu
             .ok_or_else(|| napi::Error::from_reason("Not in a voice channel"))?;
         let media_socket = voice.media_socket();
         let voice_socket = voice.voice_socket();
+        // The new channel's group: its epoch keys seal the stream from here
+        // on (nothing is sent until its first epoch lands). Never fall back
+        // to the old group's keys, or to plaintext.
+        let ring = match s.voice_mls.as_ref() {
+            Some(h) if h.server_id == args.server_id && h.channel_id == args.channel_id => {
+                h.ring.clone()
+            }
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "The new voice channel has no encryption group yet",
+                ))
+            }
+        };
 
-        // Re-point the video sender at the new media socket and force a
-        // keyframe so the new channel's watchers get an IDR immediately.
+        // Re-point the video sender at the new media socket and keys, and
+        // force a keyframe so the new channel's watchers get an IDR
+        // immediately.
         if let Some(video) = s.video_engine.as_ref() {
-            video.set_send_socket(media_socket);
+            video.retarget(media_socket, Some(ring.clone()));
             // Native-encode paths force their own keyframe; the renderer forces
             // one for the WebCodecs path.
             #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -544,9 +561,9 @@ pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Resu
         }
         // Re-point stream audio too (present only when sharing audio).
         if let Some(audio) = s.audio_stream_engine.as_ref() {
-            audio.set_socket(voice_socket);
+            audio.retarget(voice_socket, Some(ring));
         }
-        // A later stop without ids must notify the NEW channel.
+        // A later stop, and the native thumbnails, follow to the NEW channel.
         if let Some(video) = s.video_engine.as_mut() {
             video.set_announce_target(Some((args.server_id.clone(), args.channel_id.clone())));
         }

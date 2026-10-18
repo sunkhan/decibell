@@ -10,9 +10,10 @@ use super::packet::UdpAudioPacket;
 
 pub enum AudioStreamControl {
     Shutdown,
-    /// Re-point the STREAM_AUDIO sends at a new voice socket — used when the
-    /// stream follows the user into a new voice channel.
-    SetSocket(Arc<MediaSocket>),
+    /// Re-point the STREAM_AUDIO sends at a new voice socket and key ring —
+    /// used when the stream follows the user into a new voice channel, whose
+    /// MLS group seals with keys of its own.
+    Retarget(Arc<MediaSocket>, Option<super::frame_crypto::SharedKeyRing>),
 }
 
 pub enum AudioStreamEvent {
@@ -31,7 +32,7 @@ pub fn run_audio_stream_pipeline(
     mut socket: Arc<MediaSocket>,
     sender_id: String,
     bitrate_kbps: u32,
-    ring: Option<super::frame_crypto::SharedKeyRing>,
+    mut ring: Option<super::frame_crypto::SharedKeyRing>,
 ) {
     use super::frame_crypto::{AudioSealer, Kind, PACKET_TYPE_STREAM_AUDIO_SEALED};
     let sealer = AudioSealer::new(Kind::StreamAudio);
@@ -63,24 +64,30 @@ pub fn run_audio_stream_pipeline(
     let mut accum_r: Vec<f64> = Vec::new();
     let mut passthrough = false;
 
-    loop {
-        // Check control messages
-        match control_rx.try_recv() {
-            Ok(AudioStreamControl::Shutdown) => break,
-            Ok(AudioStreamControl::SetSocket(s)) => {
-                log::info!("[stream-audio] send socket re-pointed (channel move)");
-                socket = s;
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        }
-
+    'pipeline: loop {
         // Receive audio frame from platform capture
         let frame = match frame_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(f) => f,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Ok(f) => Some(f),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
+
+        // Control messages after the wait and before encoding: a retarget
+        // already sent applies to the frame in hand, so no packet goes out
+        // after a channel move sealed for, or sent to, the channel we left.
+        loop {
+            match control_rx.try_recv() {
+                Ok(AudioStreamControl::Shutdown) => break 'pipeline,
+                Ok(AudioStreamControl::Retarget(s, r)) => {
+                    log::info!("[stream-audio] send route re-pointed (channel move)");
+                    socket = s;
+                    ring = r;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'pipeline,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        let Some(frame) = frame else { continue };
 
         // Initialize resampler on first frame (now we know the device sample rate)
         if resampler.is_none() && !passthrough {
@@ -191,4 +198,77 @@ pub fn run_audio_stream_pipeline(
 
     log::info!("[stream-audio] Pipeline stopped after {} frames", frame_count);
     let _ = event_tx.send(AudioStreamEvent::Stopped);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::frame_crypto::{open_audio, EpochKeys, KeyRing, Kind, SharedKeyRing, PACKET_TYPE_STREAM_AUDIO_SEALED};
+    use std::net::UdpSocket;
+    use std::sync::mpsc;
+
+    fn ring(ex: u8) -> SharedKeyRing {
+        let keys = EpochKeys::derive(1, &[ex; 32], &["7".to_string()]);
+        Arc::new(arc_swap::ArcSwap::from_pointee(KeyRing::empty("7").rotated(keys)))
+    }
+
+    fn socket_to(rx: &UdpSocket) -> Arc<MediaSocket> {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(rx.local_addr().unwrap()).unwrap();
+        Arc::new(MediaSocket::plain(sock, "7"))
+    }
+
+    /// Exactly one Opus frame of 48 kHz stereo (no resampler involved).
+    fn frame() -> AudioFrame {
+        AudioFrame { data: vec![0.1; STEREO_FRAME_SAMPLES], channels: 2, sample_rate: SAMPLE_RATE }
+    }
+
+    fn recv(rx: &UdpSocket) -> Option<UdpAudioPacket> {
+        let mut buf = [0u8; 2048];
+        let n = rx.recv(&mut buf).ok()?;
+        UdpAudioPacket::from_bytes(&buf[..n])
+    }
+
+    /// Review B7: stream audio carried into another voice channel is sealed
+    /// with the new channel's group and sent on its socket.
+    #[test]
+    fn retarget_moves_stream_audio_to_the_new_socket_and_keys() {
+        let old_rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let new_rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        for rx in [&old_rx, &new_rx] {
+            rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        }
+        let (old_ring, new_ring) = (ring(1), ring(2));
+        let (frame_tx, frame_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::channel();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let pipeline = {
+            let (socket, ring) = (socket_to(&old_rx), old_ring.clone());
+            std::thread::spawn(move || {
+                run_audio_stream_pipeline(frame_rx, control_rx, event_tx, socket, "7".into(), 64, Some(ring))
+            })
+        };
+
+        frame_tx.send(frame()).unwrap();
+        let p = recv(&old_rx).expect("first packet on the old socket");
+        assert_eq!(p.packet_type, PACKET_TYPE_STREAM_AUDIO_SEALED);
+        assert!(open_audio(&old_ring.load(), Kind::StreamAudio, "7", p.sequence, p.payload_data()).is_some());
+
+        // The move: the retarget goes out before the next captured frame.
+        control_tx
+            .send(AudioStreamControl::Retarget(socket_to(&new_rx), Some(new_ring.clone())))
+            .unwrap();
+        frame_tx.send(frame()).unwrap();
+        let p = recv(&new_rx).expect("packet after the move on the new socket");
+        assert!(open_audio(&new_ring.load(), Kind::StreamAudio, "7", p.sequence, p.payload_data()).is_some());
+        assert!(
+            open_audio(&old_ring.load(), Kind::StreamAudio, "7", p.sequence, p.payload_data()).is_none(),
+            "the old channel's keys must not open audio sent to the new one"
+        );
+        old_rx.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        assert!(recv(&old_rx).is_none(), "nothing more goes to the old socket");
+
+        control_tx.send(AudioStreamControl::Shutdown).unwrap();
+        pipeline.join().unwrap();
+    }
 }
