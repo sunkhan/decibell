@@ -10,8 +10,9 @@ import {
   startActiveStream,
   stopActiveStream,
 } from "./streaming/StreamCapture";
+import { endStreamFromCapture } from "./streaming/streamEnded";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
-import { announceCallStreamStart, announceCallStreamStop } from "../call/callActions";
+import { announceCallStreamStart } from "../call/callActions";
 import SegmentedControl from "../../components/SegmentedControl";
 import Switch from "../../components/Switch";
 import StreamAudioAppPicker from "./StreamAudioAppPicker";
@@ -126,11 +127,15 @@ export default function CaptureSourcePicker({
         channelId,
         useNativeSize: streamSettings.resolution === "source",
         sourceId: pickedSourceId ?? undefined,
+        // The capture ended under the stream (track ended, encoder or pump
+        // failure; the failures toast themselves). Never stop with this
+        // picker's ids: a stream taken along to another channel lives
+        // there now, and stopping here left it LIVE. Only while this is
+        // still the live session — a stale one must not end the next.
         onCaptureEnded: () => {
-          useVoiceStore.getState().setIsStreaming(false);
-          invoke("stop_screen_share", { serverId, channelId }).catch(() => {});
-          announceCallStreamStop();
-          playSound("stream_stop");
+          if (activeStreamCapture() === stream) {
+            endStreamFromCapture({ kind: "source", notify: false });
+          }
         },
       });
       let actualDims: { width: number; height: number };

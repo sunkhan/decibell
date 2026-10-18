@@ -13,10 +13,10 @@ import {
 import { playSound } from "../../utils/sounds";
 import { buildCodecToast } from "../../utils/codecToasts";
 import { getCurrentWindow } from "../../lib/window";
-import { activeStreamCapture, stopActiveStream } from "./streaming/StreamCapture";
+import { activeStreamCapture } from "./streaming/StreamCapture";
+import { endStreamFromCapture } from "./streaming/streamEnded";
 import { isNativeEncodeActive } from "../../utils/encoderProbe";
 import { toast } from "../../stores/toastStore";
-import { announceCallStreamStop } from "../call/callActions";
 import { applySavedUserGains } from "./userGain";
 import { nameOf, toUid, type Uid } from "../../stores/usersStore";
 
@@ -204,33 +204,12 @@ export function useVoiceEvents() {
 
     // ── Streaming events ──
 
-    // Capture source ended (window closed, monitor disconnected) → auto-stop.
+    // Native capture lost its source (window closed, monitor unplugged, the
+    // desktop's "stop sharing" closed the session) → the one end-of-stream
+    // path, shared with failures and the WebCodecs track end.
     promises.push(
       listen("stream_capture_ended", () => {
-        const me = useAuthStore.getState().uid;
-        const {
-          connectedServerId,
-          connectedChannelId,
-          callPeer,
-          isStreaming,
-          fullscreenStream,
-          isStreamFullscreen,
-        } = useVoiceStore.getState();
-        const inCall = !!callPeer && !connectedChannelId;
-        if (isStreaming && ((connectedServerId && connectedChannelId) || inCall)) {
-          invoke("stop_screen_share", {
-            serverId: connectedServerId ?? undefined,
-            channelId: connectedChannelId ?? undefined,
-          }).catch(console.error);
-          useVoiceStore.getState().setIsStreaming(false);
-          if (inCall) announceCallStreamStop();
-
-          if (fullscreenStream === me && isStreamFullscreen) {
-            useVoiceStore.getState().setFullscreenStream(null);
-            useVoiceStore.getState().setStreamFullscreen(false);
-            getCurrentWindow().setFullscreen(false).catch(() => {});
-          }
-        }
+        endStreamFromCapture({ kind: "source", notify: true });
       }),
     );
 
@@ -368,21 +347,9 @@ export function useVoiceEvents() {
     promises.push(
       listen<string>("native_stream_failed", (event) => {
         // The native encoder thread died mid-stream (panic, encoder
-        // error, capture channel gone). Without this the UI kept
-        // advertising a live stream over nothing. stopActiveStream()
-        // drives stop_screen_share with the session's own
-        // server/channel ids and clears voice state here.
-        console.error("[voice] native stream failed:", event.payload);
-        useVoiceStore.getState().setIsStreaming(false);
-        stopActiveStream().catch(() => {});
-        // In a DM call the peer has no server presence to tell them the
-        // share is gone — send STREAM_STOP (no-op outside a call).
-        announceCallStreamStop();
-        playSound("stream_stop");
-        toast.error(
-          "Stream stopped",
-          "The GPU encoder or screen capture stopped. Try going live again.",
-        );
+        // error, capture broke). Without this the UI kept advertising a
+        // live stream over nothing.
+        endStreamFromCapture({ kind: "failed", reason: event.payload, notify: true });
       }),
     );
 

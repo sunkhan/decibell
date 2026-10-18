@@ -19,17 +19,27 @@
 //! GPU (no CPU `sws_scale`). The DMA-BUF branch below is kept wired so
 //! it lights up automatically if a capture backend starts delivering
 //! `DmaBufFrame`s again.
+//!
+//! Exit path (as on Windows): when the stream ends without being asked to,
+//! the thread tells the renderer FIRST — `stream_capture_ended` when the
+//! source went away (portal session closed from the desktop's tray, window
+//! closed, monitor gone), `native_stream_failed` when the capture or the
+//! encoder broke or panicked — and the renderer's one stop path tears the
+//! stream down and tells the community, so watchers see it end. Nothing is
+//! reported for a requested stop: a late event would end the NEXT session.
 #![cfg(target_os = "linux")]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use jpeg_encoder::ColorType;
 
-use super::capture::{CaptureOutput, PixelFormat, RawFrame};
+use super::capture::{
+    CaptureEnd, CaptureEndSlot, CaptureOutput, CaptureStopper, DmaBufFrame, PixelFormat, RawFrame,
+};
 use super::encoder_linux::{EncodedFrame, EncoderConfig, H264Encoder};
 use super::thumb_encode::{ThumbnailJob, ThumbnailSchedule, ThumbnailWorker};
 use super::gpu_interop::{GpuBackendType, GpuContext};
@@ -40,11 +50,86 @@ use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
 /// GOP length in seconds — keyframe every 2s, matching the renderer path.
 const KEYFRAME_INTERVAL_SECS: u32 = 2;
 
+/// Consecutive frames that may fail to encode before the stream is declared
+/// dead (as on Windows): ~1 s at 60 fps. A transient failure recovers well
+/// inside it; a dead encoder fails every frame.
+const MAX_CONSECUTIVE_FAILURES: u32 = 60;
+
+/// How long `stop()` waits for the thread before detaching it. The loop
+/// checks its stop flag at least every 50 ms; only a thread wedged inside
+/// the encoder/driver overruns this.
+const STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub struct LinuxEncoderThread {
     stop: Arc<AtomicBool>,
     force_keyframe: Arc<AtomicBool>,
+    /// Ends the capture feeding the thread (taken by `stop`).
+    capture_stopper: Option<CaptureStopper>,
     thread: Option<JoinHandle<()>>,
 }
+
+/// Why the encode loop returned.
+#[derive(Debug, PartialEq, Eq)]
+enum LoopExit {
+    /// The stop flag was set (or the capture ended because of it).
+    Stopped,
+    /// The capture source went away; the stream ends normally.
+    SourceEnded(String),
+    /// The stream is dead; the reason goes to the renderer.
+    Failed(String),
+}
+
+/// What the renderer is told about an exit.
+#[derive(Debug, PartialEq, Eq)]
+enum ExitReport {
+    Quiet,
+    /// `stream_capture_ended`.
+    CaptureEnded(String),
+    /// `native_stream_failed` with the reason.
+    Failed(String),
+}
+
+/// The loop's exit when the capture's frame channel disconnects. The flag
+/// is checked first: stop() flags the loop before it ends the capture.
+fn exit_on_capture_disconnect(stop_requested: bool, end: Option<CaptureEnd>) -> LoopExit {
+    if stop_requested {
+        return LoopExit::Stopped;
+    }
+    match end {
+        Some(CaptureEnd::SourceGone(why)) => LoopExit::SourceEnded(why),
+        Some(CaptureEnd::Failed(why)) => LoopExit::Failed(format!("capture failed: {why}")),
+        None => LoopExit::Failed("capture stopped unexpectedly".to_string()),
+    }
+}
+
+/// Whether (and how) to tell the renderer. Suppressed when we were asked to
+/// stop, whatever the loop saw: that exit is expected.
+fn report_for(exit: &LoopExit, stop_requested: bool) -> ExitReport {
+    if stop_requested {
+        return ExitReport::Quiet;
+    }
+    match exit {
+        LoopExit::Stopped => ExitReport::Quiet,
+        LoopExit::SourceEnded(why) => ExitReport::CaptureEnded(why.clone()),
+        LoopExit::Failed(why) => ExitReport::Failed(why.clone()),
+    }
+}
+
+// Event emits sit behind these so the unit tests never reach the napi event
+// bus (its threadsafe-function symbols only exist inside Node).
+#[cfg(not(test))]
+fn emit_capture_ended() {
+    events::emit_stream_capture_ended();
+}
+#[cfg(test)]
+fn emit_capture_ended() {}
+
+#[cfg(not(test))]
+fn emit_stream_failed(reason: String) {
+    events::send("native_stream_failed", serde_json::Value::String(reason));
+}
+#[cfg(test)]
+fn emit_stream_failed(_reason: String) {}
 
 pub struct LinuxEncoderThreadConfig {
     pub target_codec: crate::media::caps::CodecKind,
@@ -74,41 +159,84 @@ impl LinuxEncoderThread {
             bitrate_kbps: cfg.bitrate_kbps,
             keyframe_interval_secs: KEYFRAME_INTERVAL_SECS,
         };
+        let CaptureOutput { receiver, gpu_receiver, end, stopper, .. } = capture;
         // Open the encoder up front so a failure surfaces here in start()
         // rather than deep inside the thread. `find_hw_encoder` logs which
         // backend it picked (h264_nvenc / *_vaapi / libx264) — that line
         // is the signal for whether we're on the GPU fast path or the CPU
-        // sws_scale fallback.
-        let encoder = H264Encoder::new(cfg.target_codec, &config)?;
+        // sws_scale fallback. On failure the capture is ended here: the
+        // portal session would otherwise stay open behind a failed start.
+        let mut encoder = H264Encoder::new(cfg.target_codec, &config).inspect_err(|_| {
+            if let Some(s) = &stopper {
+                s.stop();
+            }
+        })?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let force_keyframe = Arc::new(AtomicBool::new(false));
         let stop_t = stop.clone();
         let fk_t = force_keyframe.clone();
-        let thread = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("decibell-encoder-linux".to_string())
             .spawn(move || {
-                // Catch panics so a codec-specific bug (e.g. malformed
-                // bitstream parsing) logs a clear message instead of
-                // silently unwinding the thread, dropping the capture
-                // receiver, and stopping the whole stream with no trace.
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_encode_loop(encoder, config, capture, &cfg, &stop_t, &fk_t);
-                }));
-                if let Err(panic) = r {
+                let input = CaptureInput { frames: receiver, gpu_frames: gpu_receiver, end };
+                let stream_start = Instant::now();
+                // catch_unwind: a panic anywhere in the encode loop (FFmpeg
+                // binding, bitstream parsing) must not silently kill this
+                // thread while the app keeps claiming to stream. Contained,
+                // logged, and surfaced to the renderer below.
+                let exit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_encode_loop(&mut encoder, &config, input, &cfg, &stop_t, &fk_t, stream_start)
+                }))
+                .unwrap_or_else(|panic| {
                     let msg = panic
                         .downcast_ref::<&str>()
                         .map(|s| s.to_string())
                         .or_else(|| panic.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "<non-string panic payload>".to_string());
                     log::error!("[encoder-linux] encode thread PANICKED: {msg}");
+                    LoopExit::Failed(format!("encoder panicked: {msg}"))
+                });
+                // Tell the renderer FIRST, before the flush below or the
+                // encoder's teardown can block on a wedged device.
+                match report_for(&exit, stop_t.load(Ordering::Relaxed)) {
+                    ExitReport::Quiet => {
+                        if exit != LoopExit::Stopped {
+                            log::info!("[encoder-linux] loop ended during stop: {exit:?}");
+                        }
+                    }
+                    ExitReport::CaptureEnded(why) => {
+                        log::info!("[encoder-linux] capture source ended ({why}); ending the stream");
+                        emit_capture_ended();
+                    }
+                    ExitReport::Failed(why) => {
+                        log::error!("[encoder-linux] stream failed: {why}");
+                        emit_stream_failed(why);
+                    }
                 }
-            })
-            .map_err(|e| format!("spawn linux encoder thread: {e}"))?;
+                // Flush only a requested stop. A stream that died is ending
+                // anyway, and a broken encoder may never return from it.
+                if exit == LoopExit::Stopped {
+                    let mut frames_sent = 0;
+                    for ef in encoder.flush() {
+                        emit_encoded(&ef, &cfg, stream_start, &mut frames_sent);
+                    }
+                }
+            });
+        let thread = match spawned {
+            Ok(t) => t,
+            Err(e) => {
+                if let Some(s) = &stopper {
+                    s.stop();
+                }
+                return Err(format!("spawn linux encoder thread: {e}"));
+            }
+        };
 
         Ok(Self {
             stop,
             force_keyframe,
+            capture_stopper: stopper,
             thread: Some(thread),
         })
     }
@@ -117,12 +245,52 @@ impl LinuxEncoderThread {
         self.force_keyframe.clone()
     }
 
+    /// Flag the loop, end the capture, and join, bounded by
+    /// STOP_JOIN_TIMEOUT. The flag goes first: ending the capture
+    /// disconnects the frame channel, and a loop that saw that before the
+    /// flag would report a failure. A thread still running after the
+    /// timeout is wedged in the encoder/driver and is detached (the flag
+    /// keeps it from reporting anything) rather than hanging the caller.
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
+        if let Some(s) = self.capture_stopper.take() {
+            s.stop();
+        }
+        let Some(t) = self.thread.take() else {
+            return;
+        };
+        let deadline = Instant::now() + STOP_JOIN_TIMEOUT;
+        while !t.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if t.is_finished() {
             let _ = t.join();
+        } else {
+            log::error!(
+                "[encoder-linux] encoder thread did not exit within {:?} — detaching it (wedged in the encoder/driver?)",
+                STOP_JOIN_TIMEOUT
+            );
         }
     }
+}
+
+impl Drop for LinuxEncoderThread {
+    /// Dropped without `stop()` (an error path): flag the loop so the
+    /// capture's end isn't reported as a failure, then end the capture.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(s) = self.capture_stopper.take() {
+            s.stop();
+        }
+    }
+}
+
+/// The capture side of the loop: frame receivers plus the slot where the
+/// capture records why it ended.
+struct CaptureInput {
+    frames: Receiver<RawFrame>,
+    gpu_frames: Option<Receiver<DmaBufFrame>>,
+    end: Arc<CaptureEndSlot>,
 }
 
 /// Packetise + ship one encoded frame: UDP wire (with HEVC/AV1 keyframe
@@ -181,15 +349,16 @@ fn emit_encoded(
 }
 
 fn run_encode_loop(
-    mut encoder: H264Encoder,
-    config: EncoderConfig,
-    capture: CaptureOutput,
+    encoder: &mut H264Encoder,
+    config: &EncoderConfig,
+    capture: CaptureInput,
     cfg: &LinuxEncoderThreadConfig,
     stop: &AtomicBool,
     force_keyframe: &AtomicBool,
-) {
-    let frame_rx = capture.receiver;
-    let gpu_frame_rx = capture.gpu_receiver;
+    stream_start: Instant,
+) -> LoopExit {
+    let frame_rx = capture.frames;
+    let gpu_frame_rx = capture.gpu_frames;
 
     // Lazily created on the first DMA-BUF frame; stays None on the CPU
     // path so no GPU context is allocated when it isn't needed.
@@ -197,19 +366,25 @@ fn run_encode_loop(
     let mut gpu_initialized = false;
 
     // Re-encode the last frame if capture stalls (static screen) so the
-    // GOP keeps flowing and receivers don't time out the stream.
+    // GOP keeps flowing and receivers don't time out the stream. A source
+    // that is gone ends the capture (see capture_pipewire), so this never
+    // repeats a frame for a share that no longer exists.
     let repeat_interval = Duration::from_millis((1000 / cfg.fps.max(1)).max(1) as u64);
     let mut last_frame: Option<RawFrame> = None;
     let mut last_frame_time = Instant::now();
 
-    let stream_start = Instant::now();
     let mut last_telemetry = Instant::now();
     let mut thumb_schedule = ThumbnailSchedule::new();
     let thumb_worker = ThumbnailWorker::spawn(cfg.thumbnail_tx.clone());
     let mut frames_sent = 0u32;
     let mut thumbnails_sent = 0u32;
+    let mut consecutive_failures = 0u32;
+    let mut last_failure_warn: Option<Instant> = None;
 
-    while !stop.load(Ordering::Relaxed) {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return LoopExit::Stopped;
+        }
         if force_keyframe.swap(false, Ordering::Relaxed) {
             encoder.force_keyframe();
         }
@@ -236,7 +411,10 @@ fn run_encode_loop(
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     log::info!("[encoder-linux] capture channel disconnected");
-                    break;
+                    return exit_on_capture_disconnect(
+                        stop.load(Ordering::Relaxed),
+                        capture.end.get(),
+                    );
                 }
             }
         }
@@ -258,7 +436,7 @@ fn run_encode_loop(
 
         let encode_result: Result<Option<EncodedFrame>, String> =
             if let Some(dmabuf) = gpu_frame_opt {
-                encode_dmabuf(&mut encoder, &mut gpu_ctx, &mut gpu_initialized, &config, &dmabuf)
+                encode_dmabuf(encoder, &mut gpu_ctx, &mut gpu_initialized, config, &dmabuf)
             } else {
                 let frame = match last_frame.as_ref() {
                     Some(f) => f,
@@ -282,11 +460,25 @@ fn run_encode_loop(
             };
 
         match encode_result {
-            Ok(Some(ef)) => emit_encoded(&ef, cfg, stream_start, &mut frames_sent),
-            Ok(None) => {}
+            Ok(encoded) => {
+                consecutive_failures = 0;
+                if let Some(ef) = encoded {
+                    emit_encoded(&ef, cfg, stream_start, &mut frames_sent);
+                }
+            }
             Err(e) => {
-                log::error!("[encoder-linux] encode failed: {e}");
-                break;
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    return LoopExit::Failed(format!(
+                        "{consecutive_failures} consecutive frames failed to encode (last: {e})"
+                    ));
+                }
+                if last_failure_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                    log::warn!(
+                        "[encoder-linux] encode failed: {e} (consecutive={consecutive_failures})"
+                    );
+                    last_failure_warn = Some(Instant::now());
+                }
             }
         }
 
@@ -305,16 +497,6 @@ fn run_encode_loop(
             thumbnails_sent = 0;
             last_telemetry = Instant::now();
         }
-    }
-
-    log::info!(
-        "[encoder-linux] encode loop exiting (stop_requested={})",
-        stop.load(Ordering::Relaxed),
-    );
-
-    // Flush the encoder's internal queue on stop.
-    for ef in encoder.flush() {
-        emit_encoded(&ef, cfg, stream_start, &mut frames_sent);
     }
 }
 
@@ -435,4 +617,44 @@ fn thumbnail_job(frame: &RawFrame) -> Option<ThumbnailJob> {
         stride: frame.stride,
         color,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review B9: why the capture channel disconnected decides what the
+    /// renderer hears. Before, every exit only logged, so the UI stayed
+    /// "Streaming" over a dead stream.
+    #[test]
+    fn capture_disconnect_maps_to_an_exit() {
+        let gone = || Some(CaptureEnd::SourceGone("portal session closed".into()));
+        // A requested stop wins over whatever the capture recorded.
+        assert_eq!(exit_on_capture_disconnect(true, gone()), LoopExit::Stopped);
+        assert_eq!(exit_on_capture_disconnect(true, None), LoopExit::Stopped);
+        assert_eq!(
+            exit_on_capture_disconnect(false, gone()),
+            LoopExit::SourceEnded("portal session closed".into())
+        );
+        assert!(matches!(
+            exit_on_capture_disconnect(false, Some(CaptureEnd::Failed("stream error".into()))),
+            LoopExit::Failed(why) if why.contains("stream error")
+        ));
+        // A capture that vanished without saying why is a failure.
+        assert!(matches!(exit_on_capture_disconnect(false, None), LoopExit::Failed(_)));
+    }
+
+    #[test]
+    fn exits_report_once_and_never_during_a_stop() {
+        let ended = LoopExit::SourceEnded("window closed".into());
+        let failed = LoopExit::Failed("encoder panicked".into());
+        assert_eq!(report_for(&ended, false), ExitReport::CaptureEnded("window closed".into()));
+        assert_eq!(report_for(&failed, false), ExitReport::Failed("encoder panicked".into()));
+        assert_eq!(report_for(&LoopExit::Stopped, false), ExitReport::Quiet);
+        // stop() flagged the thread: a late event would end the NEXT
+        // session, so nothing is reported whatever the loop saw.
+        for exit in [ended, failed, LoopExit::Stopped] {
+            assert_eq!(report_for(&exit, true), ExitReport::Quiet);
+        }
+    }
 }

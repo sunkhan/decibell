@@ -8,10 +8,16 @@
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
 use std::sync::mpsc::SyncSender;
+use std::sync::Arc;
 use std::time::Instant;
 
 use std::os::fd::FromRawFd;
-use super::capture::{CaptureConfig, CaptureOutput, CaptureSource, CaptureSourceType, DmaBufFrame, RawFrame};
+use super::capture::{
+    CaptureConfig, CaptureEnd, CaptureEndSlot, CaptureOutput, CaptureSource, CaptureSourceType,
+    CaptureStopper, DmaBufFrame, RawFrame,
+};
+
+const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
 
 /// On Linux, screen/window selection is handled by the XDG Desktop Portal.
 /// We return a single placeholder entry; the real picker dialog appears
@@ -30,6 +36,13 @@ pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
 /// Start capturing via XDG Desktop Portal + PipeWire.
 /// This triggers the portal picker dialog (blocking until user selects),
 /// then starts a PipeWire capture thread that feeds frames through the channel.
+///
+/// The capture ends on its own when the source goes away — the portal
+/// session is closed (the desktop's "stop sharing" in the KDE/GNOME tray),
+/// the shared window closes, the monitor goes, the PipeWire stream breaks —
+/// and records why in `CaptureOutput::end` before its frame sender drops,
+/// so the encoder thread can end the stream visibly instead of re-encoding
+/// the last frame for a source that no longer exists.
 pub async fn start_capture(
     _source_id: &str,
     config: &CaptureConfig,
@@ -38,9 +51,9 @@ pub async fn start_capture(
 
     // Run portal dialog + PipeWire setup on a blocking thread
     // (portal dialog blocks until user picks a source)
-    let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
+    let (output, watch) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         // Step 1: Portal D-Bus interaction (shows picker dialog)
-        let (pw_fd, node_id, dbus_conn) = portal_screencast_session(config.include_cursor)?;
+        let (pw_fd, node_id, dbus_conn, session) = portal_screencast_session(config.include_cursor)?;
 
         // Step 2: Start PipeWire capture on a dedicated thread
         // The D-Bus connection is moved into the thread to keep the portal
@@ -62,29 +75,105 @@ pub async fn start_capture(
         let needs_resolution = config.target_width == 0 || config.target_height == 0;
         let known_dims = (config.target_width, config.target_height);
 
+        // Ending the capture from another thread: a message on this channel
+        // quits the PipeWire main loop. A paused stream never runs process(),
+        // so it would never notice a dropped frame receiver by itself.
+        let (quit_tx, quit_rx) = pw::channel::channel::<()>();
+        let stopper = CaptureStopper::new(move || {
+            let _ = quit_tx.send(());
+        });
+        let end = Arc::new(CaptureEndSlot::default());
+        // Dropped when the capture thread exits; ends the Session.Closed watch.
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let watch_conn = dbus_conn.inner().clone();
+
+        let thread_end = end.clone();
         std::thread::Builder::new()
             .name("decibell-capture".to_string())
             .spawn(move || {
-                if let Err(e) = pipewire_capture_loop(pw_fd, node_id, tx, gpu_tx, config, dbus_conn, dim_tx) {
+                let _done = done_tx;
+                let loop_end = thread_end.clone();
+                if let Err(e) = pipewire_capture_loop(
+                    pw_fd, node_id, tx, gpu_tx, config, dbus_conn, dim_tx, quit_rx, loop_end,
+                ) {
                     log::warn!("[capture] Capture loop error: {}", e);
+                    thread_end.record(CaptureEnd::Failed(e));
                 }
             })
             .map_err(|e| format!("Spawn capture thread: {}", e))?;
 
         // Wait for resolved dimensions from PipeWire format negotiation
         let (width, height) = if needs_resolution {
-            dim_rx.recv_timeout(std::time::Duration::from_secs(10))
-                .map_err(|_| "Timeout waiting for PipeWire format negotiation".to_string())?
+            match dim_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(dims) => dims,
+                Err(_) => {
+                    stopper.stop();
+                    return Err("Timeout waiting for PipeWire format negotiation".to_string());
+                }
+            }
         } else {
             known_dims
         };
 
-        Ok(CaptureOutput { receiver: rx, width, height, gpu_receiver: Some(gpu_rx) })
+        let output = CaptureOutput {
+            receiver: rx,
+            width,
+            height,
+            gpu_receiver: Some(gpu_rx),
+            end: end.clone(),
+            stopper: Some(stopper.clone()),
+        };
+        Ok((output, (watch_conn, session, end, stopper, done_rx)))
     })
     .await
     .map_err(|e| format!("Join error: {}", e))??;
 
-    Ok(result)
+    let (conn, session, end, stopper, done) = watch;
+    watch_portal_session(conn, session, end, stopper, done);
+    Ok(output)
+}
+
+/// End the capture when the portal closes its session: what the desktop's
+/// own "stop sharing" control (KDE / GNOME tray indicator) does, and what
+/// the portal backends do when the shared window or monitor goes away. The
+/// watch ends with the capture thread (`done`).
+fn watch_portal_session(
+    conn: zbus::Connection,
+    session: zbus::zvariant::OwnedObjectPath,
+    end: Arc<CaptureEndSlot>,
+    stopper: CaptureStopper,
+    done: tokio::sync::oneshot::Receiver<()>,
+) {
+    use futures_util::StreamExt;
+    tokio::spawn(async move {
+        let closed = async {
+            let proxy = zbus::proxy::Builder::<zbus::Proxy>::new(&conn)
+                .destination(PORTAL_BUS)?
+                .path(session.as_ref())?
+                .interface("org.freedesktop.portal.Session")?
+                .cache_properties(zbus::proxy::CacheProperties::No)
+                .build()
+                .await?;
+            // Any Closed on our session path is the end of it; the body
+            // (a{sv} details) carries nothing we act on.
+            let mut signals = proxy.receive_signal("Closed").await?;
+            Ok::<bool, zbus::Error>(signals.next().await.is_some())
+        };
+        tokio::select! {
+            closed = closed => match closed {
+                Ok(true) => {
+                    log::info!("[capture] portal session closed — ending the capture");
+                    end.record(CaptureEnd::SourceGone("the screen share was ended by the desktop".into()));
+                    stopper.stop();
+                }
+                Ok(false) => {}
+                Err(e) => log::warn!(
+                    "[capture] can't watch the portal session ({e}); the PipeWire stream still reports a lost source"
+                ),
+            },
+            _ = done => {}
+        }
+    });
 }
 
 // ─── XDG Desktop Portal D-Bus interaction ───────────────────────────────────
@@ -106,13 +195,13 @@ fn value_to_object_path(val: &zbus::zvariant::OwnedValue) -> Result<zbus::zvaria
 }
 
 /// Run the full portal screencast session (blocking).
-/// Returns (PipeWire fd, node_id, D-Bus connection) on success.
+/// Returns (PipeWire fd, node_id, D-Bus connection, session handle) on success.
 /// IMPORTANT: The D-Bus connection must be kept alive for the duration of
 /// the capture — the portal cleans up the screencast session when the
 /// requesting client disconnects from D-Bus.
 fn portal_screencast_session(
     include_cursor: bool,
-) -> Result<(OwnedFd, u32, zbus::blocking::Connection), String> {
+) -> Result<(OwnedFd, u32, zbus::blocking::Connection, zbus::zvariant::OwnedObjectPath), String> {
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::{OwnedObjectPath, Value};
 
@@ -224,7 +313,7 @@ fn portal_screencast_session(
         .deserialize()
         .map_err(|e| format!("Parse PipeWire fd: {}", e))?;
 
-    Ok((fd.into(), node_id, conn))
+    Ok((fd.into(), node_id, conn, session))
 }
 
 /// Make a portal method call and wait for the Response signal.
@@ -679,6 +768,34 @@ fn build_param_buffers(_width: u32, _height: u32, uses_dmabuf: bool) -> Vec<u8> 
     .into_inner()
 }
 
+/// Quit the capture's main loop because the source is gone or the stream
+/// broke, recording why first (the encoder thread reads it once the frame
+/// channel disconnects).
+fn end_capture(mainloop: &pw::main_loop::MainLoopWeak, end: &CaptureEndSlot, why: CaptureEnd) {
+    log::info!("[capture] ending capture: {:?}", why);
+    end.record(why);
+    if let Some(ml) = mainloop.upgrade() {
+        ml.quit();
+    }
+}
+
+/// What a PipeWire stream state change means for the capture. Error and a
+/// fall back to Unconnected (after connecting) end it. Paused after
+/// Streaming does not: compositors pause a minimized or occluded window's
+/// stream and resume it later. A source that is really gone shows up as
+/// the portal's Session.Closed or the node leaving the registry instead.
+fn capture_end_for_state(old: &pw::stream::StreamState, new: &pw::stream::StreamState) -> Option<CaptureEnd> {
+    use pw::stream::StreamState;
+    match new {
+        StreamState::Error(msg) => Some(CaptureEnd::Failed(format!("PipeWire stream error: {msg}"))),
+        StreamState::Unconnected if !matches!(old, StreamState::Unconnected) => {
+            Some(CaptureEnd::Failed("PipeWire stream disconnected".into()))
+        }
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn pipewire_capture_loop(
     fd: OwnedFd,
     node_id: u32,
@@ -687,6 +804,8 @@ fn pipewire_capture_loop(
     config: CaptureConfig,
     _dbus_conn: zbus::blocking::Connection, // kept alive to preserve portal session
     dim_tx: std::sync::mpsc::SyncSender<(u32, u32)>,
+    quit_rx: pw::channel::Receiver<()>,
+    end: Arc<CaptureEndSlot>,
 ) -> Result<(), String> {
     // 0 means "source resolution" — will be resolved in param_changed once
     // PipeWire negotiates the actual format.
@@ -706,6 +825,48 @@ fn pipewire_capture_loop(
         .map_err(|e| format!("PW Context: {:?}", e))?;
     let core = context.connect_fd_rc(fd, None)
         .map_err(|e| format!("PW connect_fd: {:?}", e))?;
+
+    // The stopper (stream stop, the portal session closing) quits the loop.
+    let _quit = quit_rx.attach(mainloop.loop_(), {
+        let ml = mainloop.downgrade();
+        move |()| {
+            if let Some(ml) = ml.upgrade() {
+                ml.quit();
+            }
+        }
+    });
+
+    // The connection to PipeWire itself breaking (daemon restart, the remote
+    // revoked) ends the capture.
+    let _core_listener = core
+        .add_listener_local()
+        .error({
+            let (ml, end) = (mainloop.downgrade(), end.clone());
+            move |id, _seq, res, message| {
+                if id == pw::core::PW_ID_CORE {
+                    let why = CaptureEnd::Failed(format!("PipeWire connection error {res}: {message}"));
+                    end_capture(&ml, &end, why);
+                }
+            }
+        })
+        .register();
+
+    // The shared node leaving the registry: the compositor destroyed the
+    // stream (window closed, monitor unplugged, sharing stopped). The
+    // portal's remote only shows us the nodes it granted, so this is ours.
+    let registry = core.get_registry_rc().map_err(|e| format!("PW registry: {:?}", e))?;
+    let _registry_listener = registry
+        .add_listener_local()
+        .global_remove({
+            let (ml, end) = (mainloop.downgrade(), end.clone());
+            move |id| {
+                if id == node_id {
+                    let why = CaptureEnd::SourceGone("the shared screen or window is gone".into());
+                    end_capture(&ml, &end, why);
+                }
+            }
+        })
+        .register();
 
     let data = CaptureData {
         format: Default::default(),
@@ -741,12 +902,12 @@ fn pipewire_capture_loop(
 
     let _listener = stream
         .add_local_listener_with_user_data(data)
-        .state_changed(move |_stream, _data, old, new| {
-            log::info!("[capture] PipeWire stream: {:?} -> {:?}", old, new);
-            if let pw::stream::StreamState::Error(msg) = &new {
-                log::warn!("[capture] Stream error: {}", msg);
-                if let Some(ml) = mainloop_weak.upgrade() {
-                    ml.quit();
+        .state_changed({
+            let end = end.clone();
+            move |_stream, _data, old, new| {
+                log::info!("[capture] PipeWire stream: {:?} -> {:?}", old, new);
+                if let Some(why) = capture_end_for_state(&old, &new) {
+                    end_capture(&mainloop_weak, &end, why);
                 }
             }
         })
@@ -1111,5 +1272,40 @@ fn pipewire_capture_loop(
     log::info!("[capture] PipeWire main loop exited");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pw::stream::StreamState;
+
+    /// Review B9: a broken or disconnected stream ends the capture; the
+    /// normal start-up transitions and a pause don't.
+    #[test]
+    fn stream_states_that_end_the_capture() {
+        use StreamState::*;
+        for (old, new) in [
+            (Unconnected, Connecting),
+            (Connecting, Paused),
+            (Paused, Streaming),
+            // A minimized / occluded window: the producer pauses and resumes.
+            (Streaming, Paused),
+            (Paused, Streaming),
+        ] {
+            assert_eq!(capture_end_for_state(&old, &new), None, "{old:?} -> {new:?}");
+        }
+        assert!(matches!(
+            capture_end_for_state(&Streaming, &Error("node removed".into())),
+            Some(CaptureEnd::Failed(_))
+        ));
+        assert!(matches!(
+            capture_end_for_state(&Streaming, &Unconnected),
+            Some(CaptureEnd::Failed(_))
+        ));
+        assert!(matches!(
+            capture_end_for_state(&Paused, &Unconnected),
+            Some(CaptureEnd::Failed(_))
+        ));
+    }
 }
 

@@ -132,6 +132,10 @@ pub async fn start_capture(
             height,
             #[cfg(target_os = "linux")]
             gpu_receiver: None,
+            // Ends once the receiver is dropped; an exit of its own reads
+            // as an unexplained capture failure.
+            end: Default::default(),
+            stopper: None,
         })
     })
     .await

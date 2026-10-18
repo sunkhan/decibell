@@ -1219,9 +1219,10 @@ impl VideoEngine {
     }
 
     /// Linux-only: tear down the native pipeline. The encode thread's
-    /// stop() joins it (which drops its capture receivers, ending the
-    /// capture threads); dropping the thumbnail Sender ends the drain
-    /// task naturally, with abort() as belt-and-suspenders.
+    /// stop() flags it, ends the capture (which may sit paused with no
+    /// frame to notice a dropped receiver on) and joins it; dropping the
+    /// thumbnail Sender ends the drain task naturally, with abort() as
+    /// belt-and-suspenders.
     #[cfg(target_os = "linux")]
     pub fn stop_linux(&mut self) {
         log::info!("[video-linux] stop_linux: tearing down native pipeline");

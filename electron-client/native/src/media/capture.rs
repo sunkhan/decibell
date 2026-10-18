@@ -113,4 +113,84 @@ pub struct CaptureOutput {
     pub width: u32,
     pub height: u32,
     pub gpu_receiver: Option<std::sync::mpsc::Receiver<DmaBufFrame>>,
+    /// Why the capture ended on its own, recorded before its frame sender
+    /// drops; the encoder thread reads it when the channel disconnects.
+    pub end: std::sync::Arc<CaptureEndSlot>,
+    /// Ends the capture from outside (stream stop, failed encoder open).
+    /// None for a backend that ends once `receiver` is dropped.
+    pub stopper: Option<CaptureStopper>,
+}
+
+/// Why a native capture ended without being asked to.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureEnd {
+    /// The source went away: the portal session was closed (the desktop's
+    /// own "stop sharing"), the shared window closed, the monitor was
+    /// unplugged. An ordinary end of the stream, not an error.
+    SourceGone(String),
+    /// The capture broke (PipeWire stream error, lost connection).
+    Failed(String),
+}
+
+/// Where a capture records its `CaptureEnd`. Several observers can report
+/// one end (the portal's Session.Closed, the node leaving the registry, the
+/// stream state); a source that went away outranks a failure seen around
+/// the same moment, since losing the source is what makes PipeWire complain.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+pub struct CaptureEndSlot(std::sync::Mutex<Option<CaptureEnd>>);
+
+#[cfg(target_os = "linux")]
+impl CaptureEndSlot {
+    pub fn record(&self, end: CaptureEnd) {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let replace = matches!(
+            (&*slot, &end),
+            (None, _) | (Some(CaptureEnd::Failed(_)), CaptureEnd::SourceGone(_))
+        );
+        if replace {
+            *slot = Some(end);
+        }
+    }
+
+    pub fn get(&self) -> Option<CaptureEnd> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Ends a running capture from another thread. Cheap to clone; calling it
+/// after the capture already ended is a no-op.
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct CaptureStopper(std::sync::Arc<dyn Fn() + Send + Sync>);
+
+#[cfg(target_os = "linux")]
+impl CaptureStopper {
+    pub fn new(stop: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(stop))
+    }
+
+    pub fn stop(&self) {
+        (self.0)()
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lost_source_outranks_a_failure_but_not_the_reverse() {
+        let slot = CaptureEndSlot::default();
+        assert_eq!(slot.get(), None);
+        slot.record(CaptureEnd::Failed("stream error".into()));
+        slot.record(CaptureEnd::SourceGone("session closed".into()));
+        assert_eq!(slot.get(), Some(CaptureEnd::SourceGone("session closed".into())));
+        // The first source-gone reason stays; a later failure doesn't
+        // turn a stopped share into an error.
+        slot.record(CaptureEnd::SourceGone("node removed".into()));
+        slot.record(CaptureEnd::Failed("disconnected".into()));
+        assert_eq!(slot.get(), Some(CaptureEnd::SourceGone("session closed".into())));
+    }
 }
