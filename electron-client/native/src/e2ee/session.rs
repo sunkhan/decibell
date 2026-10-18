@@ -1433,6 +1433,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, res: DmHistoryRes) {
         has_more_after: res.has_more_after,
         around_id: res.around_id,
         after_id: res.after_id,
+        before_id: res.before_id,
     });
 }
 

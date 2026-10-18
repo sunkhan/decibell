@@ -150,6 +150,8 @@ interface DmState {
     peer: Uid,
     messages: HistoryMessageInput[],
     hasMore: boolean,
+    /// The conversation's newest page (central echoed no cursor).
+    latest?: boolean,
   ) => void;
   /// Jump-to-message: REPLACE a peer's loaded messages with a context window
   /// (drops the preview placeholder / stale live tail), setting both the
@@ -451,7 +453,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       return { conversations: next };
     }),
 
-  appendHistory: (peer, messages, hasMore) =>
+  appendHistory: (peer, messages, hasMore, latest = false) =>
     set((state) => {
       const conv = state.conversations[peer];
       // A row synthesized from the conversation preview gives way to the
@@ -459,7 +461,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       const existing = (conv?.messages ?? []).filter((m) => !m.preview);
       // The page is newest-first per the protocol; the merge sorts by id.
       const incoming = messages.map(fromHistory);
-      const r = mergeStoredPage(existing, incoming, useAuthStore.getState().uid, 0, deletingDmIds(state, peer));
+      const r = mergeStoredPage(existing, incoming, useAuthStore.getState().uid, 0, deletingDmIds(state, peer), latest);
       // A re-sync's newest page: what arrived meanwhile goes in with it.
       const merged = conv?.resyncing && r.reachedNewest ? releaseHeldDms(peer, r.list) : r.list;
       const lastMessageTime =

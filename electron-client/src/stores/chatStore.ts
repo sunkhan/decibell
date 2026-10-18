@@ -241,6 +241,8 @@ interface ChatState {
     channelId: string,
     messages: Message[],
     hasMore: boolean,
+    /// The channel's newest page (the server echoed no cursor).
+    latest?: boolean,
   ) => void;
   /// Jump-to-message: REPLACE the channel's loaded messages with a context
   /// window (drops optimistics), setting both older/newer "has more" flags.
@@ -911,11 +913,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // id), confirm sends whose echo was lost (review B4), or lie entirely
   // above the slice after a reconnect, where it replaces it: there may be
   // a gap in between. See mergeStoredPage.
-  prependHistory: (serverId, channelId, messages, hasMore) =>
+  prependHistory: (serverId, channelId, messages, hasMore, latest = false) =>
     set((state) => {
       const key = channelKey(serverId, channelId);
       const existing = state.messagesByChannel[key] ?? [];
-      const r = mergeStoredPage(existing, messages, useAuthStore.getState().uid, 0, deletingIds(state, key));
+      const r = mergeStoredPage(existing, messages, useAuthStore.getState().uid, 0, deletingIds(state, key), latest);
       // A re-sync's newest page: what arrived meanwhile goes in with it, in
       // the same update (no render in between).
       const list = state.resyncing[key] && r.reachedNewest ? releaseHeld(key, r.list) : r.list;

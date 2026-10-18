@@ -116,8 +116,12 @@ function unchanged(a: MergeRow, b: MergeRow): boolean {
 
 /// Merge a page into a slice. `afterId` > 0: the page holds the rows above
 /// it (downward paging, a re-sync); 0: a newest or older page (rows below
-/// a `before_id`). `skip` ids are never added (deletes awaiting the
-/// server's answer). Pending bubbles the page confirms are dropped (see
+/// a `before_id`). `latest`: the server echoed no cursor at all, so the
+/// page is the channel's newest and answers for everything from its oldest
+/// row up (the byte budget only cuts the far end, and live rows arrive in
+/// order with it): a row the slice holds above it was deleted, and an empty
+/// one means an empty channel. `skip` ids are never added (deletes awaiting
+/// the server's answer). Pending bubbles the page confirms are dropped (see
 /// settledNonces); the rest stay at the tail.
 export function mergeStoredPage<T extends MergeRow>(
   slice: T[],
@@ -125,6 +129,7 @@ export function mergeStoredPage<T extends MergeRow>(
   ownUid: number,
   afterId = 0,
   skip?: Set<number>,
+  latest = false,
 ): MergedPage<T> {
   const settled = settledNonces(slice, page, ownUid);
   const stored: T[] = [];
@@ -168,7 +173,9 @@ export function mergeStoredPage<T extends MergeRow>(
   }
 
   if (rows.length === 0) {
-    // Nothing below the request's boundary (or an empty channel).
+    // The newest page of an empty channel: everything the slice held is gone.
+    if (latest) return { list: tail, applied: true, replaced: stored.length > 0, headExtended: true, reachedNewest: true };
+    // Nothing below the request's boundary.
     return keepSlice(true, true, stored.length === 0);
   }
   const pageOldest = realId(rows[0]);
@@ -183,11 +190,11 @@ export function mergeStoredPage<T extends MergeRow>(
     };
   }
   return {
-    list: refresh(stored, rows, pageOldest, pageNewest, tail),
+    list: refresh(stored, rows, pageOldest, latest ? Number.POSITIVE_INFINITY : pageNewest, tail),
     applied: true,
     replaced: false,
     headExtended: pageOldest < storedOldest,
-    reachedNewest: pageNewest >= storedNewest,
+    reachedNewest: latest || pageNewest >= storedNewest,
   };
 }
 

@@ -366,6 +366,9 @@ def test_dms():
           and m2.reply_to_content == "hello bob")
     h = a.history("bob", uid_of("bob"))
     check("history newest first", h and [x.content for x in h.messages][:2] == ["reply", "hello bob"])
+    older = a.history("bob", uid_of("bob"), before_id=m2.id if m2 else 0)
+    check("history echoes its before_id (0 = the newest page)", h and h.before_id == 0 and older
+          and older.before_id == (m2.id if m2 else -1) and [x.content for x in older.messages][:1] == ["hello bob"])
     convs = a.conversations()
     check("conversation listed", convs and "bob" in convs and convs["bob"].last_message_content == "reply")
     check("one unread for alice", convs and convs["bob"].unread_count == 1, convs and convs["bob"].unread_count)

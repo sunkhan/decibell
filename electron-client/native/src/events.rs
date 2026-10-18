@@ -739,6 +739,8 @@ pub struct ChannelHistoryReceivedPayload {
     pub has_more_after: bool,
     pub around_id: i64,
     pub after_id: i64,
+    /// Echoed too: all three 0 marks the channel's newest page (review B4).
+    pub before_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1798,6 +1800,8 @@ pub struct DmHistoryReceivedPayload {
     /// older/most-recent prepend.
     pub around_id: i64,
     pub after_id: i64,
+    /// Echoed too: all three 0 marks the newest page (review B4).
+    pub before_id: i64,
 }
 
 pub fn emit_dm_conversations_received(payload: DmConversationsReceivedPayload) {

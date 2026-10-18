@@ -3378,6 +3378,17 @@ def test_history_around_and_after():
     r = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.after_id == ids[0])
     after = [m.id for m in r.channel_history_res.messages]
     check("after page is the 10 ids right after ids[0]", after == ids[1:11])
+    # The cursor of an older page is echoed too: all three 0 marks the
+    # channel's newest page (review B4).
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ,
+               channel_history_req=pb.ChannelHistoryRequest(channel_id="general", before_id=ids[5], limit=3))
+    rb = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.before_id == ids[5])
+    check("an older page echoes its before_id", rb is not None and all(m.id < ids[5] for m in rb.channel_history_res.messages))
+    owner.send(pb.Packet.CHANNEL_HISTORY_REQ, channel_history_req=pb.ChannelHistoryRequest(channel_id="general", limit=3))
+    rn = owner.wait(pb.Packet.CHANNEL_HISTORY_RES, timeout=2, pred=lambda p: p.channel_history_res.channel_id == "general"
+                   and p.channel_history_res.before_id == 0 and p.channel_history_res.after_id == 0
+                   and p.channel_history_res.around_id == 0)
+    check("the newest page echoes no cursor", rn is not None and len(rn.channel_history_res.messages) > 0)
     check("after page reports more newer", r.channel_history_res.has_more_after)
 
     # after_id near the end → no more newer.

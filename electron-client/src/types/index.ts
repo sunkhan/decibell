@@ -853,6 +853,8 @@ export interface ChannelHistoryReceivedPayload {
   /// page (append); both 0 → older page / most-recent (prepend).
   aroundId: number;
   afterId: number;
+  /// All three cursors 0: the channel's newest page (review B4).
+  beforeId: number;
 }
 
 export interface ChannelPrunedPayload {

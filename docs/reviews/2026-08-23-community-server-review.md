@@ -3735,3 +3735,105 @@ isn't in, also for a friend who isn't a member; both sides of the friendship), w
 ASan + UBSan, no reports; community 770/0 with the proto; cargo test 285; napi build (the new export); tsc 0 / 0; the modal in the UI preview harness
 (central's answer hides a member the roster lacks; without one the roster decides).
 
+### Fix: re-sync holds live messages, the member sidebar is windowed, the owner picker searches the server (2026-10-18, B4 / roster follow-ups)
+
+Three items that B4 and roster paging left open.
+
+- **Live messages wait out a re-sync** (`chatStore` / `dmStore`, `lib/historyMerge.ts` `applyHeldRows`). While the
+  channel or DM on screen re-syncs after a reconnect, its slice is windowed in the store only (`resyncing`), and
+  a live message arriving then was dropped, since it could land past a gap. The B4 entry expected a send made in
+  that window to stay faded until the 30 s echo check. Traced end to end, that is rarer than it read. The
+  community and central answer one session's packets in order, and native's crypto workers emit live messages
+  and history pages in arrival order. The newest-page request goes out in the same tick that starts the
+  re-sync. So an echo that arrives before the page was sent before the request, and the page carries its row
+  and nonce. One that arrives after the page finds the slice at the present again. The window is real when a
+  reply is lost or late (a retry 11 s on, after the echo), and in DMs, whose history has no nonces, when the row
+  was edited meanwhile, so text matching misses. The fix doesn't depend on any of that. Live rows for a
+  re-syncing slice are held (at most 200; past that all are dropped, since putting in only some could leave a
+  gap) and go in with the newest page, in the same update. Rows the page covers are its business: it has them,
+  or they were deleted since. Rows above it go on top. A held row with a bubble's nonce settles that bubble
+  either way. Deletes and edits that arrive meanwhile apply to held rows. The echo itself shows the bubble as
+  sent at once (`pending` off), and the echo watchdog never withdraws a bubble whose echo came: the server has
+  it. A re-sync that never gets its page drops what it held, as before; downward paging and the watchdog take
+  over. DMs had the same window and get the same treatment.
+- **The member sidebar is windowed** (`MembersList.tsx`, `features/members/memberWindow.ts`). It rendered every
+  loaded member, and paging adds 200 per scroll. Now it draws the items within 480 px of the viewport, with
+  spacers keeping the scroll height. The stretch snaps to 240 px, so scrolling re-renders once per few rows:
+  about 40 rows in the DOM at a 720 px viewport, whatever the member count. Every item has a fixed whole-pixel
+  height. Member rows are the avatar plus padding, scaled by List density and rounded in CSS (`round()`), with or
+  without a status message. The headers are h-7 and h-8, within a pixel of before. A hidden probe styled like the
+  items measures them, again on a density change, so the arithmetic always matches the CSS. The loading row ends
+  the list and is always drawn, so its button keeps keyboard focus. The next page loads when the loading row
+  comes within 200 px of the bottom, a scroll check that replaces the IntersectionObserver (it never saw a
+  sentinel mounted later), and again after each page that didn't fill the viewport. `loadMore` reads the store,
+  so two scroll events can't send one page twice, and a failed page waits for the next scroll instead of retrying
+  in a loop. Rows stay keyed by uid: hover, the profile popup anchor and the context menu work as before. Fewer
+  rows also means fewer presence watches (only drawn rows watch). No virtualization library.
+- **Transfer Ownership searches the server** (`OverviewTab.tsx`). The new-owner picker was a Select over the
+  roster store, so since roster paging it offered only members the sidebar had loaded. It is now a trigger that
+  looks like that Select (its classes and chevron are exported from `Select.tsx`). The trigger opens a popover
+  with a search field over `MEMBER_SEARCH_REQ` (`useMemberSearch`), like the Roles tab's add-members picker:
+  every member by name or nickname, 100 per page, with Show more. Results stay in the picker, never in the
+  roster store. Placeholders and yourself are left out. The pick is kept as its record, and the typed
+  confirmation is unchanged. ArrowDown opens the popover, the arrow keys move through the results, Enter picks,
+  and Escape closes it, with focus back on the trigger. The list has a fixed height, so the popover doesn't flip
+  between above and below the trigger as results arrive while typing.
+- Not done: member rows aren't keyboard-focusable (they weren't before either). Below the default density, a row
+  with a status message keeps the common height, and its two text lines reach about 2.5 px into the padding.
+  A newest page that doesn't reach the slice's newest row still leaves the slice windowed. That happens when the
+  newest loaded message, or the whole channel, was deleted during an outage. A send made then settles when the
+  downward page comes back (one round trip), not after 30 s, but the pill shows briefly and the deleted row stays
+  until a reload. Fixing it needs the reply to say it was a newest page, so the client never has to guess from
+  order.
+
+Verified (commits c6fa3eb, 35da28c, 33a14cc, 9870e52): renderer typecheck web / node 0 / 0; no native, proto or
+server change. The renderer has no test runner, so these checks were throwaway scripts. chatStore, dmStore
+and historyMerge, compiled on their own, passed 38 checks. Pure `applyHeldRows`: covered rows, rows above,
+nonce settling. Ordered echo after the page, echo before the page with and without its row in the page, an
+attachment-only bubble whose row has no nonce, deletes and edits while held, a gap replace with held rows
+on top, a re-sync with no page (the bubble stays as sent and a downward page settles it), overflow, older pages
+not releasing, the echo check's after page releasing, a second re-sync, logout. The DM twins: settling a
+bubble whose row was edited, no page, delete and edit. B4's 36 store checks and 33 merge checks still pass.
+`memberWindow.ts` passed 20 checks: totals, every item once, spacers and items adding up and covering the
+viewport at every scroll position of a 5,000-member list, a bounded item count, density 0.85 and 1.3 heights,
+snapping, the paging margin. The UI preview harness with the real components passed 32 interaction checks.
+A 5,000-member list (1,235 online, page 1 of 500 then 200 per page) scrolled top to bottom in 1,384 steps:
+at most 41 rows in the DOM, 23 page requests for 23 pages, nothing blank in the viewport at any step, the full
+scroll height, the Offline header between the parts, one 48 px row height (41 / 62 px at density 0.85 / 1.3).
+Click opens the profile popup anchored at the row, right click the context menu, hover highlights the row
+under the pointer, and the Load more button keeps focus while the list scrolls. The owner picker, with the
+roster holding 20 of 5,000: 100 server results, never yourself, a typed query sent to the server and
+answered with a member the roster lacks. Picking closes the popover and returns focus, the confirmation asks
+for that name, and the roster store is untouched. The transfer goes out only once the name is typed, with that
+member's uid. Keyboard: ArrowDown, arrows, Enter, Escape. Screenshots: the sidebar in all 7 themes, the big
+list's top, boundary, end and loading row, both densities, and the owner picker closed, open, searched and
+picked in four themes (`scratchpad/followup-shots/`).
+
+Live test pending. (1) Drop a community connection (kill its socket or the server for ~10 s) while
+looking at a channel scrolled to the bottom, and send a message the moment it reconnects. The bubble should
+un-fade within a moment, and nothing should jump or show the pill. Same for a DM across a central re-sign-in.
+(2) In a community with a few thousand members, scroll the member sidebar to the end, checking the DOM row count
+in DevTools, the paging, hover, the profile popup position, the context menu, and Tab to Load more. Change List
+density while scrolled. (3) Server Settings, Overview, Transfer ownership: search for an offline member the
+sidebar hasn't loaded, pick them, type the name, and transfer (on a test server).
+
+On main: the agent's 33 merge / 36 store / 38 follow-up checks rerun against main, tsc 0 / 0 (e99a92d … 1c707d9).
+
+### Fix: history replies say which page they are, so a re-sync knows it reached the present (2026-10-18, review B4)
+
+The last B4 edge. A history reply echoed `around_id` and `after_id` but not `before_id`, so the client
+couldn't tell the channel's newest page from an older one. A newest page answered only for the range between
+its oldest and newest rows: when the newest message the client held (or every message) had been deleted
+during an outage, the deleted row stayed until a reload, and a re-syncing channel stayed windowed with the
+"Jump to present" pill up. Now `ChannelHistoryResponse.before_id` and `DmHistoryRes.before_id` are echoed too,
+native passes them on, and a reply with no cursor at all is the newest page. It answers for everything from
+its oldest row up (the byte budget only cuts the far end, and live messages arrive in order with the reply):
+a row the client holds above it was deleted, an empty one means an empty channel or conversation, and the
+slice is at the present either way. Pending bubbles stay unless the page settles them.
+
+Verified: community e2e 772/0 (+2: the older page and the newest page echo their cursors), central e2e 284/0
+(+1: DM history echoes its before_id), both with the migration checks and under their sanitizer builds (no
+reports); throwaway checks of the merge (a deleted newest
+row, an empty newest page, an older page still answering only for its range, a bubble settled by its nonce,
+an unsettled bubble kept), plus the earlier 33 / 36 / 38 checks; cargo test 285; tsc 0 / 0.
+

@@ -976,6 +976,7 @@ private:
             res->set_has_more_after(has_more_after);
             res->set_around_id(req.around_id());
             res->set_after_id(req.after_id());
+            res->set_before_id(req.before_id());
             for (size_t i = first; i < last; ++i) *res->add_messages() = std::move(messages[i]);
 
             std::string s;

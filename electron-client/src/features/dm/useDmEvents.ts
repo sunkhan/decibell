@@ -120,8 +120,9 @@ export function useDmEvents() {
       hasMoreAfter: boolean;
       aroundId: number;
       afterId: number;
+      beforeId: number;
     }>("dm_history_received", (event) => {
-      const { hasMore, hasMoreAfter, aroundId, afterId } = event.payload;
+      const { hasMore, hasMoreAfter, aroundId, afterId, beforeId } = event.payload;
       const peer = toUid(event.payload.peerUid);
       if (!(peer > 0)) return;
       const messages = event.payload.messages.map((m) => ({
@@ -139,7 +140,8 @@ export function useDmEvents() {
       } else if (afterId > 0) {
         dm.appendNewerDm(peer, messages, hasMoreAfter, Number(afterId));
       } else {
-        dm.appendHistory(peer, messages, hasMore);
+        // No cursor at all: the newest page (see useChatEvents).
+        dm.appendHistory(peer, messages, hasMore, !(Number(beforeId) > 0));
       }
       let newestId = 0;
       for (const m of messages) if (Number(m.id) > newestId) newestId = Number(m.id);

@@ -2383,6 +2383,7 @@ private:
             auto* res = p.mutable_channel_history_res();
             const auto& req = packet.channel_history_req();
             res->set_channel_id(req.channel_id());
+            res->set_before_id(req.before_id());
             if (!db) { send_packet(p); return; }
             // Permissions v2: no READ_HISTORY (or no VIEW) → empty page.
             if (!manager_.authz().check(chatproj::Action::ReadHistory,

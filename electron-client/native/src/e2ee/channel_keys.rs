@@ -1015,6 +1015,7 @@ async fn handle_history(state: &Arc<Mutex<AppState>>, server_id: &str, resp: Cha
         has_more_after: resp.has_more_after,
         around_id: resp.around_id,
         after_id: resp.after_id,
+        before_id: resp.before_id,
     });
 }
 

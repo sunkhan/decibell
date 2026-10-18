@@ -171,7 +171,7 @@ export function useChatEvents() {
     const unlistenHistory = listen<ChannelHistoryReceivedPayload>(
       "channel_history_received",
       (event) => {
-        const { serverId, channelId, messages, hasMore, hasMoreAfter, aroundId, afterId } =
+        const { serverId, channelId, messages, hasMore, hasMoreAfter, aroundId, afterId, beforeId } =
           event.payload;
         const mapped = messages.map((m) => mapStoredMessage(serverId, m));
         const store = useChatStore.getState();
@@ -184,7 +184,9 @@ export function useChatEvents() {
         } else if (afterId > 0) {
           store.appendNewer(serverId, channelId, mapped, hasMoreAfter, Number(afterId));
         } else {
-          store.prependHistory(serverId, channelId, mapped, hasMore);
+          // No cursor at all: the channel's newest page, which answers for
+          // every row above its oldest (a deleted newest row goes too).
+          store.prependHistory(serverId, channelId, mapped, hasMore, !(Number(beforeId) > 0));
         }
         store.setHistoryLoading(serverId, channelId, false);
         // A newer page only extends a slice already loaded; one landing on

@@ -1200,6 +1200,11 @@ message ChannelHistoryResponse {
   // (append); both 0 → older page (prepend) / most-recent.
   int64 around_id = 5;
   int64 after_id = 6;
+  // Echoed too (review B4): all three 0 marks the channel's newest page, which
+  // answers for everything from its oldest row up (the byte budget only cuts
+  // the far end), so a row the client holds above it was deleted, and an empty
+  // newest page means an empty channel.
+  int64 before_id = 7;
 }
 
 message ChannelUpdateRequest {
@@ -2268,6 +2273,7 @@ message DmHistoryRes {
   int64  around_id = 5;        // echoes the request mode so the client routes the reply
   int64  after_id  = 6;
   int64  peer_uid = 7;
+  int64  before_id = 8;        // echoed; all three 0 = the newest page (see ChannelHistoryResponse)
 }
 
 message DmMarkReadReq {
