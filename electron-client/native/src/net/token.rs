@@ -5,7 +5,8 @@
 //! reconnect (uid design: a rename is only a database change). A
 //! community connection's UDP key stays derived from the token it
 //! authenticated with (`CommunityClient::auth_jwt`); a reconnect
-//! authenticates with the newest token.
+//! authenticates with the newest token. Electron main's attachment
+//! registry re-reads its targets on `session_token_updated`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +47,10 @@ pub async fn adopt(state: &Arc<Mutex<AppState>>, jwt: String) {
     for (tx, data) in sends {
         let _ = tokio::time::timeout(SEND_TIMEOUT, tx.send(data)).await;
     }
+    // Electron main authenticates attachment fetches and uploads with its
+    // own copy of the token; without this it kept the one from community
+    // auth, and every attachment failed once that expired (review B2).
+    crate::events::emit_session_token_updated();
 }
 
 /// Ask central for a fresh token every REFRESH_EVERY while signed in. Owned

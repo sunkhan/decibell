@@ -1,5 +1,6 @@
 // Registry of attachment HTTP endpoints keyed by serverId. Populated
-// by the renderer via IPC whenever a community auth response arrives;
+// by the renderer via IPC whenever a community auth response arrives,
+// refreshed here when central renews the token;
 // consumed by the decibell-attachment:// protocol handler so the
 // renderer can use a plain <img src="decibell-attachment://…"> tag
 // that gets transparently authenticated server-side.
@@ -34,6 +35,23 @@ export function clearAllAttachmentTargets(): void {
 
 export function getAttachmentTarget(serverId: string): AttachmentTarget | null {
   return targets.get(serverId) ?? null;
+}
+
+/// Central renewed the session token (native `session_token_updated`):
+/// re-read every registered community's target from native, which holds
+/// the newest token. Tokens live 24 h and are renewed every 6; a registry
+/// that kept the token from community auth 401'd every attachment a day
+/// into a connection (review B2). An entry cleared meanwhile (logout,
+/// leave) stays cleared; a failed read keeps the current entry.
+export async function refreshAttachmentTargets(
+  read: (serverId: string) => Promise<AttachmentTarget | null>,
+): Promise<void> {
+  await Promise.all(
+    [...targets.keys()].map(async (serverId) => {
+      const fresh = await read(serverId).catch(() => null);
+      if (fresh && targets.has(serverId)) targets.set(serverId, fresh);
+    }),
+  );
 }
 
 /// Pinning verdict for a TLS connection Chromium is about to trust, given

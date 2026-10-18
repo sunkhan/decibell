@@ -389,6 +389,7 @@ pub const USER_RENAMED: &str = "user_renamed";
 pub const LOGIN_FAILED: &str = "login_failed";
 pub const REGISTER_RESPONDED: &str = "register_responded";
 pub const LOGGED_OUT: &str = "logged_out";
+pub const SESSION_TOKEN_UPDATED: &str = "session_token_updated";
 pub const SERVER_LIST_RECEIVED: &str = "server_list_received";
 pub const MEMBERSHIPS_RECEIVED: &str = "memberships_received";
 pub const COMMUNITY_AUTH_RESPONDED: &str = "community_auth_responded";
@@ -873,6 +874,13 @@ pub fn emit_register_responded(success: bool, message: String) {
 
 pub fn emit_logged_out() {
     send(LOGGED_OUT, serde_json::Value::Null);
+}
+
+/// Central renewed our token (`net::token::adopt`). No payload: Electron
+/// main re-reads each community's attachment target through
+/// `get_attachment_target`, so the token never rides an event.
+pub fn emit_session_token_updated() {
+    send(SESSION_TOKEN_UPDATED, serde_json::Value::Null);
 }
 
 pub fn emit_server_list_received(servers: Vec<ServerInfo>) {

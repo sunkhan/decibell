@@ -2,6 +2,7 @@ import * as path from "path";
 import * as os from "os";
 import { app, BrowserWindow } from "electron";
 import { loadOrCreateE2eeLocalKey, localKeyProtected } from "./e2eeLocalKey";
+import { refreshAttachmentTargets } from "./attachmentRegistry";
 
 type EventEnvelope = { name: string; payload: unknown };
 type StreamFrame = {
@@ -140,6 +141,17 @@ export function callCommand(method: string, args: unknown): unknown {
   return (fn as (a: unknown) => unknown)(args ?? {});
 }
 
+type NativeAttachmentTarget = { host: string; port: number; jwt: string; certFingerprint: string };
+
+/// The attachment registry's tokens, renewed from native's current ones.
+function refreshTargetsFromNative(): Promise<void> {
+  const read = addon.getAttachmentTarget as (args: { serverId: string }) => Promise<NativeAttachmentTarget | null>;
+  return refreshAttachmentTargets(async (serverId) => {
+    const t = await read({ serverId });
+    return t ? { host: t.host, port: t.port, jwt: t.jwt, certFingerprint: t.certFingerprint } : null;
+  });
+}
+
 /// Call exactly once after `app.whenReady()`. Hands the addon its boot
 /// config and two broadcasters:
 /// - `bus` for normal named events (login, presence, etc.) — JSON over
@@ -159,6 +171,7 @@ export function initAddon(): void {
       localKeyProtected: e2eeLocalKey !== null && localKeyProtected(),
     },
     (env) => {
+      if (env.name === "session_token_updated") void refreshTargetsFromNative();
       for (const w of BrowserWindow.getAllWindows()) {
         w.webContents.send("decibell:event", env);
       }
