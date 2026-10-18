@@ -73,11 +73,17 @@ public:
     /// close it once that is written.
     void retire(const std::shared_ptr<Session>& session, chatproj::SessionClosed::Reason reason);
     /// Retire every connection of `uid` but `keep` (null: all of them) with
-    /// SIGNED_OUT, which tells clients to sign out rather than reconnect:
-    /// "log out other devices". Bump the account's sessions_valid_after
-    /// first, or their resume tokens sign them straight back in. Returns how
-    /// many were closed.
-    size_t close_other_sessions(int64_t uid, const std::shared_ptr<Session>& keep);
+    /// `reason` (SIGNED_OUT, PASSWORD_CHANGED), which tells clients to sign
+    /// out rather than reconnect: "sign out all other devices", a password
+    /// change. Sign the devices out at central first (their rows), or their
+    /// resume tokens sign them straight back in. Returns how many were closed.
+    size_t close_other_sessions(int64_t uid, const std::shared_ptr<Session>& keep,
+                                chatproj::SessionClosed::Reason reason);
+    /// The same for the connections of the account's `devices` (device ids).
+    size_t close_device_sessions(int64_t uid, const std::vector<std::string>& devices,
+                                 const std::shared_ptr<Session>& keep, chatproj::SessionClosed::Reason reason);
+    /// The device ids the account is connected from.
+    std::unordered_set<std::string> online_devices(int64_t uid);
 
     struct Bound {
         bool ok = false;    // false: refused (`full`) or the connection left meanwhile

@@ -62,6 +62,9 @@ constexpr size_t MAX_DM_ENVELOPE = 64 * 1024 + 64;
 constexpr size_t MAX_DM_NONCE = 64;
 /// LoginRequest.device_id (the client sends 32 hex characters).
 constexpr size_t MAX_DEVICE_ID = 64;
+/// Devices one DEVICE_SIGN_OUT_REQ may name (an account keeps at most
+/// AuthManager::MAX_DEVICE_ROWS).
+constexpr int MAX_SIGN_OUT_IDS = 128;
 /// A call candidate's address: the longest IPv6 literal is 45 bytes.
 constexpr size_t MAX_CALL_CANDIDATE_IP = 45;
 /// Identity-bundle field sizes (X25519 / Ed25519 public keys, Ed25519
@@ -123,8 +126,40 @@ struct LoginOutcome {
     AuthManager::LoginResult login;
     AuthManager::PresenceProfile profile;
     std::vector<chatproj::CommunityServerInfo> memberships;
-    std::string resume_token;  // '' if signing one failed (the client then signs in by password)
+    bool password = false;  // a password sign-in (not a resume)
 };
+
+/// A login attempt's result: the outcome, or why it was refused. The
+/// default (what a password check that threw leaves) is a server error, not
+/// a wrong password.
+struct LoginAttempt {
+    std::optional<LoginOutcome> outcome;
+    AuthManager::LoginRefusal refusal = AuthManager::LoginRefusal::server_error;
+};
+
+/// A device id as clients make them (hex), at most MAX_DEVICE_ID bytes:
+/// it is stored and goes in resume tokens.
+static bool valid_device_id(const std::string& id) {
+    if (id.empty() || id.size() > MAX_DEVICE_ID) return false;
+    for (const char c : id) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                        c == '-' || c == '_' || c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static void fill_device(chatproj::DeviceInfo* out, const AuthManager::DeviceRow& d, bool online, bool current) {
+    out->set_id(d.id);
+    out->set_name(d.name);
+    out->set_platform(d.platform);
+    out->set_app_version(d.app_version);
+    out->set_address(d.address);
+    out->set_signed_in_at(d.signed_in_at);
+    out->set_last_active_at(d.last_active_at);
+    out->set_online(online);
+    out->set_current(current);
+}
 
 /// Lowercased, for keying failed sign-ins (usernames are lowercase).
 static std::string account_key(const std::string& name) {
@@ -276,6 +311,12 @@ private:
     void shut() {
         if (closed_) return;
         closed_ = true;
+        // The device's "last active" (devices design): seen until now.
+        if (authenticated_) {
+            boost::asio::post(db_pool_, [&auth = auth_manager_, uid = uid_, device = device_id_]() {
+                auth.touchDevice(uid, device);
+            });
+        }
         pace_timer_.cancel();
         boost::system::error_code ec;
         socket_.lowest_layer().cancel(ec);
@@ -407,9 +448,11 @@ private:
             case P::FRIENDS_IN_COMMUNITY_REQ:
             case P::SERVER_LIST_REQ:
             case P::INVITE_RESOLVE_REQ:
+            case P::DEVICE_LIST_REQ:
                 return &read_bucket_;
             case P::FRIEND_ACTION_REQ:
             case P::UPDATE_AVATAR_REQ:
+            case P::DEVICE_SIGN_OUT_REQ:
                 return &write_bucket_;
             case P::LOGIN_REQ:
             case P::REGISTER_REQ:
@@ -448,6 +491,7 @@ private:
             case P::CLIENT_PING:
             case P::REGISTER_REQ:
             case P::RENAME_REQ:
+            case P::PASSWORD_CHANGE_REQ:
                 return true;
             case P::LOGIN_REQ:
                 return packet.login_req().resume_token().empty();  // a password sign-in
@@ -613,22 +657,32 @@ private:
         else if (packet.type() == chatproj::Packet::LOGIN_REQ) {
             if (authenticated_) return;
             const auto& req = packet.login_req();
-            if (req.device_id().size() > MAX_DEVICE_ID) {
-                send_response(chatproj::Packet::LOGIN_RES, false, "Invalid request.");
+            // A resume may leave the device id out (its token names it); a
+            // password sign-in needs one: every signed-in install is a device
+            // the account can see and sign out.
+            const bool resume = !req.resume_token().empty();
+            if (resume ? !req.device_id().empty() && !valid_device_id(req.device_id())
+                       : !valid_device_id(req.device_id())) {
+                send_response(chatproj::Packet::LOGIN_RES, false,
+                              req.device_id().empty() ? "This version of Decibell is out of date. Please update it."
+                                                      : "Invalid request.");
                 return;
             }
-            device_id_ = req.device_id();
-            if (!req.resume_token().empty()) {
-                std::optional<LoginOutcome> outcome;
-                if (auto login = auth_manager_.resumeSession(req.resume_token())) {
-                    outcome.emplace();
-                    outcome->login = std::move(*login);
-                    outcome->profile = auth_manager_.getPresenceProfile(outcome->login.uid);
-                    outcome->memberships = auth_manager_.getUserCommunities(outcome->login.uid);
-                    // Still valid until the expiry its password sign-in set.
-                    outcome->resume_token = req.resume_token();
+            device_.device_id = req.device_id();
+            device_.name = normalize_status_line(req.device_name(), AuthManager::MAX_DEVICE_NAME);
+            device_.platform = normalize_status_line(req.device_platform(), AuthManager::MAX_DEVICE_PLATFORM);
+            device_.app_version = normalize_status_line(req.app_version(), AuthManager::MAX_APP_VERSION);
+            device_.address = ip_;
+            device_.automatic = req.automatic();
+            if (resume) {
+                LoginAttempt attempt;
+                if (auto login = auth_manager_.resumeSession(req.resume_token(), device_, attempt.refusal)) {
+                    attempt.outcome.emplace();
+                    attempt.outcome->login = std::move(*login);
+                    attempt.outcome->profile = auth_manager_.getPresenceProfile(attempt.outcome->login.uid);
+                    attempt.outcome->memberships = auth_manager_.getUserCommunities(attempt.outcome->login.uid);
                 }
-                finish_login(std::move(outcome), "Your session has expired. Please sign in again.");
+                finish_login(std::move(attempt), "Your session has expired. Please sign in again.");
                 return;
             }
             const std::string account = account_key(req.username());
@@ -642,30 +696,31 @@ private:
                               "Too many failed sign-ins for this account. Try again in a few minutes.");
                 return;
             }
-            // Set on the CPU pool, read in the completion (posted after it).
-            auto server_error = std::make_shared<bool>(false);
             run_blocking(
-                [this, username = req.username(), password = req.password(),
-                 server_error]() -> std::optional<LoginOutcome> {
-                    auto login = auth_manager_.authenticateUser(username, password, server_error.get());
-                    if (!login) return std::nullopt;
+                [this, username = req.username(), password = req.password(), device = device_]() {
+                    LoginAttempt attempt;
+                    auto login = auth_manager_.authenticateUser(username, password, device, attempt.refusal);
+                    if (!login) return attempt;
                     LoginOutcome out;
                     out.login = std::move(*login);
                     out.profile = auth_manager_.getPresenceProfile(out.login.uid);
                     out.memberships = auth_manager_.getUserCommunities(out.login.uid);
-                    out.resume_token = auth_manager_.mintResumeToken(out.login.uid, unix_now()).value_or("");
-                    return out;
+                    out.password = true;
+                    attempt.outcome = std::move(out);
+                    return attempt;
                 },
-                [this, account, server_error](std::optional<LoginOutcome> outcome) {
-                    if (outcome) {
+                [this, account](LoginAttempt attempt) {
+                    using R = AuthManager::LoginRefusal;
+                    if (attempt.outcome || attempt.refusal == R::signed_out) {
                         limits_.record_login(account, ip_);
-                    } else if (!*server_error) {
+                    } else if (attempt.refusal == R::credentials) {
                         limits_.record_failed_login(account, ip_);
                     }
                     // Clients forget a saved password only on the second
                     // message (native net/central.rs is_definitive_refusal),
                     // so a database outage must never answer with it.
-                    finish_login(std::move(outcome), *server_error
+                    const bool server_error = attempt.refusal == R::server_error;
+                    finish_login(std::move(attempt), server_error
                         ? "The server couldn't check your sign-in right now. Please try again."
                         : "Invalid username or password.");
                 });
@@ -1301,8 +1356,9 @@ private:
             }
             // The password check (bcrypt) runs on the CPU pool.
             run_blocking(
-                [this, uid = uid_, name = req.new_username(), password = req.password()]() {
-                    return std::optional<AuthManager::RenameResult>(auth_manager_.renameUser(uid, name, password));
+                [this, uid = uid_, name = req.new_username(), password = req.password(), sid = sid_]() {
+                    return std::optional<AuthManager::RenameResult>(
+                        auth_manager_.renameUser(uid, name, password, sid));
                 },
                 [this](std::optional<AuthManager::RenameResult> r) {
                     if (!r) {
@@ -1335,7 +1391,15 @@ private:
             // Over the rate: answered, but with no token (review B13). Not
             // paced: a wait of up to a minute would outlast the stale sweep.
             const bool allowed = refresh_bucket_.take();
-            auto token = allowed ? auth_manager_.mintToken(uid_, username_) : std::nullopt;
+            // Renewals are how a device's "last active" stays current. One
+            // signed out meanwhile (its connection closing as this arrived)
+            // gets nothing more; a database hiccup doesn't hold a renewal back.
+            bool db_ok = true;
+            if (allowed && !auth_manager_.touchDevice(uid_, device_id_, &db_ok) && db_ok) {
+                manager_.retire(shared_from_this(), chatproj::SessionClosed::SIGNED_OUT);
+                return;
+            }
+            auto token = allowed ? auth_manager_.mintToken(uid_, username_, sid_) : std::nullopt;
             res->set_success(token.has_value());
             if (token) res->set_jwt_token(*token);
             res->set_username(username_);
@@ -1343,6 +1407,112 @@ private:
             rsp.SerializeToString(&serialized);
             deliver(std::make_shared<std::vector<uint8_t>>(
                 chatproj::create_framed_packet(serialized)));
+        }
+
+        // --- DEVICES (docs/superpowers/specs/2026-10-19-devices-and-password-design.md) ---
+        // The account's devices, which of them are connected, and which one
+        // is asking.
+        else if (packet.type() == chatproj::Packet::DEVICE_LIST_REQ) {
+            if (!authenticated_) return;
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::DEVICE_LIST_RES);
+            auto* res = rsp.mutable_device_list_res();
+            if (auto rows = auth_manager_.listDevices(uid_)) {
+                const auto online = manager_.online_devices(uid_);
+                for (const auto& d : *rows) {
+                    fill_device(res->add_devices(), d, online.count(d.device_id) > 0, d.device_id == device_id_);
+                }
+                res->set_success(true);
+            }
+            deliver(rsp);
+        }
+
+        // Sign devices out: their rows go (no resume, no automatic sign-in),
+        // communities hear of it with their next heartbeat, and their
+        // connections close with SIGNED_OUT. Logging out signs out the device
+        // asking (this_device); it closes its own connection.
+        else if (packet.type() == chatproj::Packet::DEVICE_SIGN_OUT_REQ) {
+            if (!authenticated_) return;
+            const auto& req = packet.device_sign_out_req();
+            chatproj::Packet rsp;
+            rsp.set_type(chatproj::Packet::DEVICE_SIGN_OUT_RES);
+            auto* res = rsp.mutable_device_sign_out_res();
+            if (req.this_device()) {
+                const bool ok = auth_manager_.forgetDevice(uid_, device_id_);
+                res->set_success(ok);
+                if (!ok) res->set_message("Couldn't sign this device out. Please try again.");
+                deliver(rsp);
+                if (ok) announce_devices_changed(nullptr);
+                return;
+            }
+            if (req.ids_size() > MAX_SIGN_OUT_IDS) {
+                res->set_message("Invalid request.");
+                deliver(rsp);
+                return;
+            }
+            const std::vector<int64_t> ids(req.ids().begin(), req.ids().end());
+            const auto gone = auth_manager_.signOutDevices(uid_, device_id_, ids, req.all_others());
+            if (!gone) {
+                res->set_message("Couldn't sign those devices out. Please try again.");
+                deliver(rsp);
+                return;
+            }
+            // "All other devices" closes every other connection, whether or
+            // not the account still lists its device.
+            if (req.all_others()) {
+                manager_.close_other_sessions(uid_, shared_from_this(), chatproj::SessionClosed::SIGNED_OUT);
+            } else {
+                manager_.close_device_sessions(uid_, *gone, shared_from_this(), chatproj::SessionClosed::SIGNED_OUT);
+            }
+            std::cout << "[Devices] uid " << uid_ << " signed out " << gone->size() << " device(s)\n";
+            res->set_success(true);
+            res->set_signed_out(static_cast<int32_t>(gone->size()));
+            deliver(rsp);
+            if (!gone->empty()) announce_devices_changed(nullptr);
+        }
+
+        // --- PASSWORD CHANGE ---
+        // Confirmed with the current password (bcrypt, on the CPU pool; a
+        // wrong one counts as a failed sign-in). Every other device is signed
+        // out with PASSWORD_CHANGED; this one gets a new resume token.
+        else if (packet.type() == chatproj::Packet::PASSWORD_CHANGE_REQ) {
+            if (!authenticated_) return;
+            if (!password_bucket_.take()) {
+                send_password_change_res(false, "Too many attempts. Try again in a minute.");
+                return;
+            }
+            const auto& req = packet.password_change_req();
+            if (req.current_password().size() > 1024 || req.new_password().size() > 1024) {
+                send_password_change_res(false, "Invalid request.");
+                return;
+            }
+            const std::string account = account_key(username_);
+            if (limits_.account_blocked(account, ip_)) {
+                send_password_change_res(false, "Too many failed attempts. Try again in a few minutes.");
+                return;
+            }
+            run_blocking(
+                [this, uid = uid_, current = req.current_password(), next = req.new_password(),
+                 device = device_id_]() {
+                    return std::optional<AuthManager::PasswordChange>(
+                        auth_manager_.changePassword(uid, current, next, device));
+                },
+                [this, account](std::optional<AuthManager::PasswordChange> r) {
+                    if (!r) {
+                        send_password_change_res(false, "Couldn't change your password. Please try again.");
+                        return;
+                    }
+                    if (r->wrong_password) limits_.record_failed_login(account, ip_);
+                    if (!r->error.empty()) {
+                        send_password_change_res(false, r->error);
+                        return;
+                    }
+                    manager_.close_other_sessions(uid_, shared_from_this(),
+                                                  chatproj::SessionClosed::PASSWORD_CHANGED);
+                    std::cout << "[Password] uid " << uid_ << " changed its password; " << r->signed_out.size()
+                              << " other device(s) signed out\n";
+                    send_password_change_res(true, "", r->resume_token, r->signed_out.size());
+                });
         }
 
         // --- E2EE: FETCH KEYS ---
@@ -1731,6 +1901,11 @@ private:
             chatproj::Packet resp;
             resp.set_type(chatproj::Packet::SERVER_HEARTBEAT_RES);
             resp.mutable_server_heartbeat_res()->set_server_id(server_id);
+            // Its members' devices signed out lately (devices design): the
+            // community refuses their tokens and closes their sessions.
+            for (auto& revoked : auth_manager_.revokedSessionsFor(server_id)) {
+                *resp.mutable_server_heartbeat_res()->add_revoked() = std::move(revoked);
+            }
             std::string serialized;
             resp.SerializeToString(&serialized);
             auto framed = std::make_shared<std::vector<uint8_t>>(
@@ -1962,13 +2137,26 @@ private:
         deliver(std::make_shared<std::vector<uint8_t>>(chatproj::create_framed_packet(serialized)));
     }
 
-    /// Sign in with what a password check or a resume found, or refuse with
-    /// `refusal`.
-    void finish_login(std::optional<LoginOutcome> outcome, const char* refusal) {
-        if (!outcome) {
-            send_response(chatproj::Packet::LOGIN_RES, false, refusal);
+    /// Sign in with what a password check or a resume found, or refuse it
+    /// (`message`, unless the device was signed out).
+    void finish_login(LoginAttempt attempt, const char* message) {
+        if (!attempt.outcome) {
+            if (attempt.refusal == AuthManager::LoginRefusal::signed_out) {
+                // The client forgets its saved sign-in and asks for the
+                // password (devices design).
+                chatproj::Packet resp;
+                resp.set_type(chatproj::Packet::LOGIN_RES);
+                auto* res = resp.mutable_login_res();
+                res->set_success(false);
+                res->set_signed_out(true);
+                res->set_message("This device was signed out. Sign in again with your password.");
+                deliver(resp);
+                return;
+            }
+            send_response(chatproj::Packet::LOGIN_RES, false, message);
             return;
         }
+        std::optional<LoginOutcome>& outcome = attempt.outcome;
         const auto& p = outcome->profile;
         Presence presence;
         presence.username = outcome->login.username;
@@ -1978,6 +2166,9 @@ private:
         presence.status_emoji = p.status_emoji;
         presence.status_expires_at = p.status_expires_at;
         presence.dm_friends_only = p.dm_friends_only;
+        // A resume names its device in the token.
+        device_id_ = outcome->login.device_id;
+        device_.device_id = device_id_;
         // Sign in only once the account is proven, so an unauthenticated
         // client can't evict anyone. Other devices stay signed in
         // (docs/superpowers/specs/2026-10-18-multi-device-design.md); the
@@ -2011,12 +2202,53 @@ private:
         if (!bound.ok) return;  // the connection went away meanwhile
         authenticated_ = true;
         uid_ = outcome->login.uid;
+        sid_ = outcome->login.sid;
         username_ = bound.presence.username.empty() ? outcome->login.username : bound.presence.username;
         name_epoch_ = epoch;
         if (bound.replaced) {
             std::cout << "[Manager] Replacing the previous connection of uid " << uid_ << " (same device)\n";
             manager_.retire(bound.replaced, chatproj::SessionClosed::REPLACED);
         }
+        // A password sign-in may have changed the account's device list; a
+        // device it didn't have, typed in, is the "new sign-in" notice.
+        if (outcome->password) {
+            chatproj::DeviceInfo info;
+            if (outcome->login.fresh_device) {
+                const int64_t now = unix_now();
+                AuthManager::DeviceRow row;
+                row.id = sid_;
+                row.name = device_.name;
+                row.platform = device_.platform;
+                row.app_version = device_.app_version;
+                row.address = device_.address;
+                row.signed_in_at = now;
+                row.last_active_at = now;
+                fill_device(&info, row, true, false);
+            }
+            announce_devices_changed(outcome->login.fresh_device ? &info : nullptr);
+        }
+    }
+
+    /// DEVICES_CHANGED to the account's other connections (their open
+    /// device lists reload).
+    void announce_devices_changed(const chatproj::DeviceInfo* new_device) {
+        chatproj::Packet packet;
+        packet.set_type(chatproj::Packet::DEVICES_CHANGED);
+        auto* changed = packet.mutable_devices_changed();
+        if (new_device) *changed->mutable_new_device() = *new_device;
+        manager_.deliver_to_user_except(uid_, this, packet);
+    }
+
+    void send_password_change_res(bool success, const std::string& msg, const std::string& resume_token = "",
+                                  size_t signed_out = 0) {
+        chatproj::Packet rsp;
+        rsp.set_type(chatproj::Packet::PASSWORD_CHANGE_RES);
+        auto* res = rsp.mutable_password_change_res();
+        res->set_success(success);
+        res->set_message(msg);
+        res->set_resume_token(resume_token);
+        res->set_signed_out(static_cast<int32_t>(signed_out));
+        deliver(rsp);
     }
 
     /// REGISTER_RES, or a refused LOGIN_RES.
@@ -2044,7 +2276,7 @@ private:
         resp->set_success(true);
         resp->set_message("Login successful!");
         resp->set_jwt_token(outcome.login.token);
-        resp->set_resume_token(outcome.resume_token);
+        resp->set_resume_token(outcome.login.resume_token);
         resp->set_uid(outcome.login.uid);
         resp->set_username(p.username.empty() ? outcome.login.username : p.username);
         // Auto-rejoin: the user's community memberships inline, so the
@@ -2064,6 +2296,8 @@ private:
         resp->set_e2ee_uid_binding(true);
         // Username changes (uid design, stage 5).
         resp->set_renames(true);
+        // The device list, signing devices out, password changes.
+        resp->set_devices(true);
         // User statuses: this build understands SET_STATUS_REQ /
         // SET_IDLE_REQ; echo the account's choice.
         resp->set_presence_statuses(true);
@@ -2101,6 +2335,10 @@ private:
     uint64_t name_epoch_ = 0;
     /// LoginRequest.device_id: which install this connection is.
     std::string device_id_;
+    /// What it said about itself at sign-in (devices design), and its row
+    /// at central (devices.id: the `sid` its session tokens carry).
+    AuthManager::DeviceLogin device_;
+    int64_t sid_ = 0;
     /// A handler is running on the database pool, waiting on the CPU pool or
     /// waiting for its rate bucket; whatever finishes it resumes reading.
     bool read_paused_ = false;
@@ -2147,6 +2385,9 @@ private:
     RateBucket rename_bucket_{10.0, 1.0 / 30.0};
     /// Token renewal: clients ask every few hours; 3 burst / 1 per minute.
     RateBucket refresh_bucket_{3.0, 1.0 / 60.0};
+    /// Password changes: like renames, each verifies the password (and
+    /// wrong ones count as failed sign-ins on top).
+    RateBucket password_bucket_{10.0, 1.0 / 30.0};
     /// Status / idle / DM-privacy / status-text changes: each is a DB write
     /// or a fan-out to the account's watchers. A person picks a status a few
     /// times a day and auto-away flips at most every few minutes; 10 burst /
@@ -2412,7 +2653,8 @@ void SessionManager::retire(const std::shared_ptr<Session>& session, chatproj::S
     out.run();
 }
 
-size_t SessionManager::close_other_sessions(int64_t uid, const std::shared_ptr<Session>& keep) {
+size_t SessionManager::close_other_sessions(int64_t uid, const std::shared_ptr<Session>& keep,
+                                            chatproj::SessionClosed::Reason reason) {
     std::vector<std::shared_ptr<Session>> others;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2422,8 +2664,40 @@ size_t SessionManager::close_other_sessions(int64_t uid, const std::shared_ptr<S
             if (s != keep) others.push_back(s);
         }
     }
-    for (const auto& s : others) retire(s, chatproj::SessionClosed::SIGNED_OUT);
+    for (const auto& s : others) retire(s, reason);
     return others.size();
+}
+
+size_t SessionManager::close_device_sessions(int64_t uid, const std::vector<std::string>& devices,
+                                             const std::shared_ptr<Session>& keep,
+                                             chatproj::SessionClosed::Reason reason) {
+    if (devices.empty()) return 0;
+    const std::unordered_set<std::string> wanted(devices.begin(), devices.end());
+    std::vector<std::shared_ptr<Session>> closing;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto acc = accounts_.find(uid);
+        if (acc == accounts_.end()) return 0;
+        for (const auto& s : acc->second.sessions) {
+            if (s == keep) continue;
+            auto it = sessions_.find(s);
+            if (it != sessions_.end() && wanted.count(it->second.device_id)) closing.push_back(s);
+        }
+    }
+    for (const auto& s : closing) retire(s, reason);
+    return closing.size();
+}
+
+std::unordered_set<std::string> SessionManager::online_devices(int64_t uid) {
+    std::unordered_set<std::string> out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto acc = accounts_.find(uid);
+    if (acc == accounts_.end()) return out;
+    for (const auto& s : acc->second.sessions) {
+        auto it = sessions_.find(s);
+        if (it != sessions_.end()) out.insert(it->second.device_id);
+    }
+    return out;
 }
 
 namespace {
@@ -3403,7 +3677,8 @@ int main() {
 
         // Periodic sweep of stale sessions (no activity for 60s).
         // Catches dead connections where TCP FIN was never sent (e.g. client crash).
-        // Hourly (from the first tick): forget renames past the reservation.
+        // Hourly (from the first tick): forget renames past the reservation,
+        // devices unused for 90 days and old revocations.
         boost::asio::steady_timer sweep_timer(io_context);
         std::function<void(const boost::system::error_code&)> sweep_fn;
         int sweeps_until_prune = 0;
@@ -3415,6 +3690,7 @@ int main() {
             limits.sweep();
             if (sweeps_until_prune-- == 0) {
                 auth_manager.pruneNameChanges();
+                auth_manager.pruneDevices();
                 sweeps_until_prune = 120;
             }
             sweep_timer.expires_after(std::chrono::seconds(30));

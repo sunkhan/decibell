@@ -318,6 +318,48 @@ void AuthManager::initializeDatabase() {
             txn.exec("UPDATE central_schema SET version = 5 WHERE id = 1");
             std::cout << "[DB] Migration 5: dm_conversations filled: " << filled << "\n";
         }
+        if (version < 6) {
+            // Migration 6: devices (docs/superpowers/specs/2026-10-19-devices-
+            // and-password-design.md). One row per install signed in to an
+            // account: what its device list shows, and what lets it come back
+            // without the password (a resume token names the row and its
+            // password sign-in; a saved password signs in automatically only
+            // on a device the account has). Signing a device out deletes its
+            // row and records the revocation: communities learn it from their
+            // heartbeat, and it keeps a signed-out install from slipping back
+            // in during the grace period. `devices_since` starts that grace:
+            // installs signed in before devices were tracked are recorded at
+            // their next automatic sign-in for DEVICE_GRACE_SECONDS.
+            txn.exec(
+                "CREATE TABLE devices ("
+                "  id BIGSERIAL PRIMARY KEY,"
+                "  uid BIGINT NOT NULL REFERENCES users (uid),"
+                "  device_id TEXT NOT NULL,"
+                "  name TEXT NOT NULL DEFAULT '',"
+                "  platform TEXT NOT NULL DEFAULT '',"
+                "  app_version TEXT NOT NULL DEFAULT '',"
+                "  address TEXT NOT NULL DEFAULT '',"
+                "  signed_in_at BIGINT NOT NULL,"
+                "  last_active_at BIGINT NOT NULL,"
+                "  UNIQUE (uid, device_id)"
+                ")"
+            );
+            txn.exec("CREATE INDEX devices_last_active_idx ON devices (last_active_at)");
+            txn.exec(
+                "CREATE TABLE revoked_devices ("
+                "  uid BIGINT NOT NULL,"
+                "  device_id TEXT NOT NULL,"
+                "  sid BIGINT NOT NULL,"
+                "  revoked_at BIGINT NOT NULL"
+                ")"
+            );
+            txn.exec("CREATE INDEX revoked_devices_device_idx ON revoked_devices (uid, device_id)");
+            txn.exec("CREATE INDEX revoked_devices_at_idx ON revoked_devices (revoked_at)");
+            txn.exec("ALTER TABLE central_schema ADD COLUMN devices_since BIGINT NOT NULL DEFAULT 0");
+            txn.exec_params("UPDATE central_schema SET version = 6, devices_since = $1 WHERE id = 1",
+                            static_cast<int64_t>(std::time(nullptr)));
+            std::cout << "[DB] Migration 6: devices\n";
+        }
 
         txn.exec(
             "CREATE TABLE IF NOT EXISTS community_invites ("
@@ -587,8 +629,11 @@ std::string AuthManager::validateUsername(const std::string& username) {
     return "";
 }
 
-std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std::string& username, const std::string& password,
-                                                                      bool* server_error) {
+std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std::string& username,
+                                                                      const std::string& password,
+                                                                      const DeviceLogin& device,
+                                                                      LoginRefusal& refusal) {
+    refusal = LoginRefusal::credentials;
     // The hash and the uid come from one row read, so a token is never
     // signed with a uid fetched separately (a second query that failed
     // used to mint uid 0, which sends communities down the name-only path).
@@ -601,7 +646,7 @@ std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std:
     if (db_error) {
         // Not a wrong password: the client keeps its saved sign-in for this
         // and the attempt isn't counted against the account.
-        if (server_error) *server_error = true;
+        refusal = LoginRefusal::server_error;
         return std::nullopt;
     }
 
@@ -622,29 +667,108 @@ std::optional<AuthManager::LoginResult> AuthManager::authenticateUser(const std:
         std::cerr << "[Auth] Refusing to sign a token without a uid for " << username << "\n";
         return std::nullopt;
     }
+    auto session = signInDevice(stored->uid, device, refusal);
+    if (!session) return std::nullopt;  // signed out, or the database failed
 
-    auto token = mintToken(stored->uid, stored->username);
+    auto token = mintToken(stored->uid, stored->username, session->sid);
     if (!token) {
-        if (server_error) *server_error = true;
+        refusal = LoginRefusal::server_error;
         return std::nullopt;
     }
-    return LoginResult{*token, stored->uid, stored->username};
+    refusal = LoginRefusal::none;
+    LoginResult out;
+    out.token = std::move(*token);
+    out.uid = stored->uid;
+    out.username = stored->username;
+    out.device_id = device.device_id;
+    out.sid = session->sid;
+    out.resume_token = mintResumeToken(stored->uid, device.device_id, session->signed_in_at).value_or("");
+    out.fresh_device = session->fresh;
+    return out;
 }
 
-std::optional<std::string> AuthManager::mintToken(int64_t uid, const std::string& username) {
+std::optional<AuthManager::DeviceSession> AuthManager::signInDevice(int64_t uid, const DeviceLogin& d,
+                                                                   LoginRefusal& refusal) {
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        DeviceSession out;
+        out.signed_in_at = now;
+        if (d.automatic) {
+            // Only on a device the account has. One that was signed out,
+            // never signed in here, or went unused for DEVICE_IDLE_SECONDS
+            // types the password.
+            const pqxx::result seen = txn.exec_params(
+                "UPDATE devices SET name = $3, platform = $4, app_version = $5, address = $6, "
+                "signed_in_at = $7, last_active_at = $7 WHERE uid = $1 AND device_id = $2 RETURNING id",
+                uid, d.device_id, d.name, d.platform, d.app_version, d.address, now);
+            if (!seen.empty()) {
+                out.sid = seen[0][0].as<int64_t>();
+                txn.commit();
+                return out;
+            }
+            // Signed in before devices were tracked: recorded now, during the
+            // grace period, unless the account signed it out since.
+            const int64_t since =
+                txn.exec("SELECT devices_since FROM central_schema WHERE id = 1")[0][0].as<int64_t>(0);
+            const bool revoked = !txn.exec_params(
+                "SELECT 1 FROM revoked_devices WHERE uid = $1 AND device_id = $2 LIMIT 1",
+                uid, d.device_id).empty();
+            if (now >= since + DEVICE_GRACE_SECONDS || revoked) {
+                refusal = LoginRefusal::signed_out;
+                return std::nullopt;
+            }
+        }
+        const pqxx::result row = txn.exec_params(
+            "INSERT INTO devices (uid, device_id, name, platform, app_version, address, signed_in_at, last_active_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $7) "
+            "ON CONFLICT (uid, device_id) DO UPDATE SET name = EXCLUDED.name, platform = EXCLUDED.platform, "
+            "app_version = EXCLUDED.app_version, address = EXCLUDED.address, "
+            "signed_in_at = EXCLUDED.signed_in_at, last_active_at = EXCLUDED.last_active_at "
+            "RETURNING id, (xmax = 0)",
+            uid, d.device_id, d.name, d.platform, d.app_version, d.address, now);
+        out.sid = row[0][0].as<int64_t>();
+        const bool inserted = row[0][1].as<bool>();
+        out.fresh = inserted && !d.automatic;
+        if (inserted) {
+            // Past MAX_DEVICE_ROWS the least recently used are signed out, so
+            // sign-ins from made-up device ids can't grow the list without
+            // bound (each one needs the password).
+            txn.exec_params(
+                "WITH gone AS ("
+                "  DELETE FROM devices WHERE id IN ("
+                "    SELECT id FROM devices WHERE uid = $1 ORDER BY last_active_at DESC, id DESC OFFSET $2)"
+                "  RETURNING id, device_id) "
+                "INSERT INTO revoked_devices (uid, device_id, sid, revoked_at) "
+                "SELECT $1, device_id, id, $3 FROM gone",
+                uid, static_cast<int64_t>(MAX_DEVICE_ROWS), now);
+        }
+        txn.commit();
+        return out;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] signInDevice: " << e.what() << "\n";
+        refusal = LoginRefusal::server_error;
+        return std::nullopt;
+    }
+}
+
+std::optional<std::string> AuthManager::mintToken(int64_t uid, const std::string& username, int64_t sid) {
     // Generate a JWT valid for 24 hours. Ed25519 (EdDSA): only this
     // process holds the private key, so a community server — which gets
     // the public key — can verify tokens but never mint one.
     auto now = std::chrono::system_clock::now();
     try {
-        return jwt::create()
+        auto builder = jwt::create()
             .set_issuer(TOKEN_ISSUER)
             .set_type("JWS")
             .set_subject(username)
             .set_payload_claim("uid", jwt::claim(nlohmann::json(uid)))
             .set_issued_at(now)
-            .set_expires_at(now + std::chrono::hours(24))
-            .sign(signer_);
+            .set_expires_at(now + std::chrono::seconds(TOKEN_LIFETIME_SECONDS));
+        if (sid > 0) builder.set_payload_claim("sid", jwt::claim(nlohmann::json(sid)));
+        return builder.sign(signer_);
     } catch (const std::exception& e) {
         std::cerr << "[Auth] JWT signing failed: " << e.what() << "\n";
         return std::nullopt;
@@ -704,7 +828,7 @@ std::optional<AuthManager::StoredCredentials> AuthManager::getCredentialsByReser
 }
 
 AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string& new_username,
-                                                  const std::string& password) {
+                                                  const std::string& password, int64_t sid) {
     RenameResult out;
     if (auto bad = validateUsername(new_username); !bad.empty()) {
         out.error = bad;
@@ -759,7 +883,7 @@ AuthManager::RenameResult AuthManager::renameUser(int64_t uid, const std::string
     }
     out.username = new_username;
     // Without a token (signing failed) the client signs in again by name.
-    if (auto token = mintToken(uid, new_username)) out.token = *token;
+    if (auto token = mintToken(uid, new_username, sid)) out.token = *token;
     return out;
 }
 
@@ -788,7 +912,8 @@ std::optional<AuthManager::TokenClaims> AuthManager::verifyToken(const std::stri
     }
 }
 
-std::optional<std::string> AuthManager::mintResumeToken(int64_t uid, int64_t signed_in_at) {
+std::optional<std::string> AuthManager::mintResumeToken(int64_t uid, const std::string& device_id,
+                                                       int64_t signed_in_at) {
     using clock = std::chrono::system_clock;
     try {
         return jwt::create()
@@ -796,6 +921,7 @@ std::optional<std::string> AuthManager::mintResumeToken(int64_t uid, int64_t sig
             .set_audience(RESUME_AUDIENCE)
             .set_type("JWS")
             .set_payload_claim("uid", jwt::claim(nlohmann::json(uid)))
+            .set_payload_claim("did", jwt::claim(device_id))
             .set_issued_at(clock::time_point(std::chrono::seconds(signed_in_at)))
             .set_expires_at(clock::time_point(std::chrono::seconds(signed_in_at + RESUME_LIFETIME_SECONDS)))
             .sign(signer_);
@@ -805,37 +931,303 @@ std::optional<std::string> AuthManager::mintResumeToken(int64_t uid, int64_t sig
     }
 }
 
-std::optional<AuthManager::LoginResult> AuthManager::resumeSession(const std::string& resume_token) {
+std::optional<AuthManager::LoginResult> AuthManager::resumeSession(const std::string& resume_token,
+                                                                   const DeviceLogin& device,
+                                                                   LoginRefusal& refusal) {
+    refusal = LoginRefusal::credentials;
     int64_t uid = 0;
     int64_t signed_in_at = 0;
+    std::string did;
     try {
         const auto decoded = jwt::decode(resume_token);
         resume_verifier_.verify(decoded);  // signature, issuer, audience, expiry
         uid = uid_claim(decoded);
         signed_in_at = std::chrono::duration_cast<std::chrono::seconds>(
             decoded.get_issued_at().time_since_epoch()).count();
+        if (decoded.has_payload_claim("did") &&
+            decoded.get_payload_claim("did").get_type() == jwt::json::type::string) {
+            did = decoded.get_payload_claim("did").as_string();
+        }
     } catch (const std::exception&) {
         return std::nullopt;
     }
-    if (uid <= 0) return std::nullopt;
+    // A token from before devices (no `did`) signs in by password once.
+    if (uid <= 0 || did.empty()) return std::nullopt;
+    // Issued to another device id: this install took a new one (a copy of
+    // it was signing in as the old). The password signs the new one in.
+    if (!device.device_id.empty() && device.device_id != did) return std::nullopt;
     std::string username;
+    int64_t sid = 0;
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        const pqxx::result user = txn.exec_params(
+            "SELECT username, sessions_valid_after FROM users WHERE uid = $1", uid);
+        if (user.empty()) return std::nullopt;
+        // Valid only for the device and the password sign-in it was issued
+        // for: a newer one on the device hands out its own, and a device
+        // signed out has no row.
+        const pqxx::result row = txn.exec_params(
+            "UPDATE devices SET last_active_at = $4, address = $5, "
+            "name = COALESCE(NULLIF($6, ''), name), platform = COALESCE(NULLIF($7, ''), platform), "
+            "app_version = COALESCE(NULLIF($8, ''), app_version) "
+            "WHERE uid = $1 AND device_id = $2 AND signed_in_at = $3 RETURNING id",
+            uid, did, signed_in_at, static_cast<int64_t>(std::time(nullptr)), device.address,
+            device.name, device.platform, device.app_version);
+        if (row.empty()) {
+            const bool known = !txn.exec_params(
+                "SELECT 1 FROM devices WHERE uid = $1 AND device_id = $2", uid, did).empty();
+            if (!known) refusal = LoginRefusal::signed_out;
+            return std::nullopt;
+        }
+        // Cancelled: the account's resume tokens from before the cutoff.
+        if (signed_in_at < user[0][1].as<int64_t>(0)) return std::nullopt;
+        username = user[0][0].as<std::string>();
+        sid = row[0][0].as<int64_t>();
+        // Only "last active" and the address changed: a crash may lose them,
+        // and a restart's thousands of resumes don't each wait for a flush.
+        txn.exec("SET LOCAL synchronous_commit TO OFF");
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] resumeSession: " << e.what() << "\n";
+        refusal = LoginRefusal::server_error;
+        return std::nullopt;
+    }
+    auto token = mintToken(uid, username, sid);
+    if (!token) {
+        refusal = LoginRefusal::server_error;
+        return std::nullopt;
+    }
+    refusal = LoginRefusal::none;
+    LoginResult out;
+    out.token = std::move(*token);
+    out.uid = uid;
+    out.username = std::move(username);
+    out.device_id = did;
+    out.sid = sid;
+    // Still valid until the expiry its password sign-in set.
+    out.resume_token = resume_token;
+    return out;
+}
+
+bool AuthManager::touchDevice(int64_t uid, const std::string& device_id, bool* ok) {
+    if (ok) *ok = true;
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        // Not worth a flush (a crash only loses "last active"), and a
+        // network blip disconnects many devices at once.
+        txn.exec("SET LOCAL synchronous_commit TO OFF");
+        const bool known = txn.exec_params(
+            "UPDATE devices SET last_active_at = $3 WHERE uid = $1 AND device_id = $2",
+            uid, device_id, static_cast<int64_t>(std::time(nullptr))).affected_rows() > 0;
+        txn.commit();
+        return known;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] touchDevice: " << e.what() << "\n";
+        if (ok) *ok = false;
+        return false;
+    }
+}
+
+std::optional<std::vector<AuthManager::DeviceRow>> AuthManager::listDevices(int64_t uid) {
     try {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
         pqxx::nontransaction txn(conn);
         const pqxx::result rs = txn.exec_params(
-            "SELECT username, sessions_valid_after FROM users WHERE uid = $1", uid);
-        if (rs.empty()) return std::nullopt;
-        // Cancelled: the account's resume tokens from before the cutoff.
-        if (signed_in_at < rs[0][1].as<int64_t>(0)) return std::nullopt;
-        username = rs[0][0].as<std::string>();
+            "SELECT id, device_id, name, platform, app_version, address, signed_in_at, last_active_at "
+            "FROM devices WHERE uid = $1 ORDER BY last_active_at DESC, id DESC LIMIT $2",
+            uid, static_cast<int64_t>(MAX_DEVICE_ROWS));
+        std::vector<DeviceRow> out;
+        out.reserve(rs.size());
+        for (const auto& r : rs) {
+            DeviceRow d;
+            d.id = r[0].as<int64_t>();
+            d.device_id = r[1].as<std::string>();
+            d.name = r[2].as<std::string>();
+            d.platform = r[3].as<std::string>();
+            d.app_version = r[4].as<std::string>();
+            d.address = r[5].as<std::string>();
+            d.signed_in_at = r[6].as<int64_t>();
+            d.last_active_at = r[7].as<int64_t>();
+            out.push_back(std::move(d));
+        }
+        return out;
     } catch (const std::exception& e) {
-        std::cerr << "[DB Error] resumeSession: " << e.what() << "\n";
+        std::cerr << "[DB Error] listDevices: " << e.what() << "\n";
         return std::nullopt;
     }
-    auto token = mintToken(uid, username);
-    if (!token) return std::nullopt;
-    return LoginResult{*token, uid, username};
+}
+
+/// Delete the account's device rows `where` picks ($1 = uid, $2 = the time,
+/// then `params`) and record their revocations; returns their device ids.
+template <class... Params>
+static std::vector<std::string> revoke_devices(pqxx::work& txn, const std::string& where, int64_t uid,
+                                               int64_t now, const Params&... params) {
+    const pqxx::result rs = txn.exec_params(
+        "WITH gone AS (DELETE FROM devices WHERE uid = $1 AND (" + where + ") RETURNING id, device_id) "
+        "INSERT INTO revoked_devices (uid, device_id, sid, revoked_at) "
+        "SELECT $1, device_id, id, $2 FROM gone RETURNING device_id",
+        uid, now, params...);
+    std::vector<std::string> ids;
+    ids.reserve(rs.size());
+    for (const auto& r : rs) ids.push_back(r[0].as<std::string>());
+    return ids;
+}
+
+std::optional<std::vector<std::string>> AuthManager::signOutDevices(int64_t uid, const std::string& keep_device,
+                                                                    const std::vector<int64_t>& ids,
+                                                                    bool all_others) {
+    if (!all_others && ids.empty()) return std::vector<std::string>{};
+    // A bigint[] literal: the ids are numbers, so nothing needs quoting.
+    std::string array = "{";
+    for (size_t i = 0; i < ids.size(); ++i) {
+        if (i) array += ',';
+        array += std::to_string(ids[i]);
+    }
+    array += '}';
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        auto gone = revoke_devices(txn, "device_id <> $3 AND ($4 OR id = ANY($5::bigint[]))", uid,
+                                   static_cast<int64_t>(std::time(nullptr)), keep_device, all_others, array);
+        txn.commit();
+        return gone;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] signOutDevices: " << e.what() << "\n";
+        return std::nullopt;
+    }
+}
+
+bool AuthManager::forgetDevice(int64_t uid, const std::string& device_id) {
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        revoke_devices(txn, "device_id = $3", uid, static_cast<int64_t>(std::time(nullptr)), device_id);
+        txn.commit();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] forgetDevice: " << e.what() << "\n";
+        return false;
+    }
+}
+
+AuthManager::PasswordChange AuthManager::changePassword(int64_t uid, const std::string& current,
+                                                        const std::string& next, const std::string& device_id) {
+    PasswordChange out;
+    if (next.size() < MIN_PASSWORD) {
+        out.error = "Your new password must be at least 8 characters.";
+        return out;
+    }
+    if (next == current) {
+        out.error = "That's already your password.";
+        return out;
+    }
+    // bcrypt (~0.25 s each) runs with nothing locked: the current password
+    // is checked against a plain read, the new one hashed, and the write
+    // goes through only if the hash is still the one checked.
+    std::string checked;
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::nontransaction txn(conn);
+        const pqxx::result me = txn.exec_params("SELECT password_hash FROM users WHERE uid = $1", uid);
+        if (me.empty()) {
+            out.error = "Your account wasn't found.";
+            return out;
+        }
+        checked = me[0][0].as<std::string>();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] changePassword: " << e.what() << "\n";
+        out.error = "Couldn't change your password. Please try again.";
+        return out;
+    }
+    if (!verifyPassword(current, checked)) {
+        out.wrong_password = true;
+        out.error = "Wrong password.";
+        return out;
+    }
+    const std::string hash = hashPassword(next);
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        const pqxx::result me = txn.exec_params(
+            "SELECT password_hash FROM users WHERE uid = $1 FOR UPDATE", uid);
+        if (me.empty() || me[0][0].as<std::string>() != checked) {
+            out.error = "Your password was just changed on another device.";
+            return out;
+        }
+        // Every resume token from before now stops working; this device's
+        // new one is issued for now.
+        txn.exec_params("UPDATE users SET password_hash = $1, sessions_valid_after = $2 WHERE uid = $3",
+                        hash, now, uid);
+        out.signed_out = revoke_devices(txn, "device_id <> $3", uid, now, device_id);
+        txn.exec_params(
+            "INSERT INTO devices (uid, device_id, signed_in_at, last_active_at) VALUES ($1, $2, $3, $3) "
+            "ON CONFLICT (uid, device_id) DO UPDATE SET signed_in_at = EXCLUDED.signed_in_at, "
+            "last_active_at = EXCLUDED.last_active_at",
+            uid, device_id, now);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] changePassword: " << e.what() << "\n";
+        out.error = "Couldn't change your password. Please try again.";
+        out.signed_out.clear();
+        return out;
+    }
+    out.resume_token = mintResumeToken(uid, device_id, now).value_or("");
+    return out;
+}
+
+std::vector<chatproj::RevokedSession> AuthManager::revokedSessionsFor(int64_t server_id) {
+    std::vector<chatproj::RevokedSession> out;
+    if (server_id <= 0) return out;
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::nontransaction txn(conn);
+        const pqxx::result rs = txn.exec_params(
+            "SELECT r.uid, r.sid, r.revoked_at FROM revoked_devices r "
+            "WHERE r.revoked_at > $2 AND EXISTS ("
+            "  SELECT 1 FROM community_memberships m WHERE m.uid = r.uid AND m.server_id = $1) "
+            "ORDER BY r.revoked_at DESC LIMIT $3",
+            server_id, static_cast<int64_t>(std::time(nullptr)) - REVOCATION_NOTICE_SECONDS,
+            static_cast<int64_t>(MAX_REVOCATIONS));
+        out.reserve(rs.size());
+        for (const auto& r : rs) {
+            chatproj::RevokedSession entry;
+            entry.set_uid(r[0].as<int64_t>());
+            entry.set_sid(r[1].as<int64_t>());
+            entry.set_until(r[2].as<int64_t>() + REVOCATION_NOTICE_SECONDS);
+            out.push_back(std::move(entry));
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] revokedSessionsFor: " << e.what() << "\n";
+        out.clear();
+    }
+    return out;
+}
+
+void AuthManager::pruneDevices() {
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    try {
+        auto lease = pool_.acquire();
+        pqxx::connection& conn = *lease;
+        pqxx::work txn(conn);
+        // Unused that long, every token it held has expired: nothing to
+        // revoke. Its saved password no longer signs it in.
+        txn.exec_params("DELETE FROM devices WHERE last_active_at < $1", now - DEVICE_IDLE_SECONDS);
+        txn.exec_params("DELETE FROM revoked_devices WHERE revoked_at < $1", now - REVOCATION_KEEP_SECONDS);
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "[DB Error] pruneDevices: " << e.what() << "\n";
+    }
 }
 
 AuthManager::UserRef AuthManager::resolveUser(int64_t uid, const std::string& username) {

@@ -51,8 +51,9 @@ public:
     };
     /// Change `uid`'s username (uid design, stage 5). Confirmed with the
     /// password; the old name is reserved for this account for
-    /// NAME_RESERVATION_SECONDS; at most RENAMES_PER_DAY a day.
-    RenameResult renameUser(int64_t uid, const std::string& new_username, const std::string& password);
+    /// NAME_RESERVATION_SECONDS; at most RENAMES_PER_DAY a day. The fresh
+    /// token carries `sid`, the renaming device's.
+    RenameResult renameUser(int64_t uid, const std::string& new_username, const std::string& password, int64_t sid);
     static constexpr int64_t NAME_RESERVATION_SECONDS = 14 * 24 * 3600;
     static constexpr int RENAMES_PER_DAY = 2;
     /// Forget renames past the reservation: nothing reads them (the
@@ -62,20 +63,53 @@ public:
     void pruneNameChanges();
 
     /// A signed 24 h token naming the account (login, renames, renewal).
-    std::optional<std::string> mintToken(int64_t uid, const std::string& username);
+    /// `sid` is the device it was issued to (devices.id; 0 for none):
+    /// communities refuse the tokens of a device signed out since
+    /// (ServerHeartbeatRes.revoked).
+    std::optional<std::string> mintToken(int64_t uid, const std::string& username, int64_t sid);
+    static constexpr int64_t TOKEN_LIFETIME_SECONDS = 24 * 3600;
 
-    /// A successful login: the signed JWT and the account it names.
+    // --- Devices (docs/superpowers/specs/2026-10-19-devices-and-password-design.md) ---
+    // A device is an install (LoginRequest.device_id) that signed in to the
+    // account by password and hasn't been signed out since. Its row is what
+    // lets it come back without typing the password: a resume token is valid
+    // only for the device and password sign-in it was issued to, and a saved
+    // password signs in automatically only on a device the account has.
+    // Signing a device out deletes its row and records the revocation, which
+    // communities learn from their heartbeat.
+
+    /// A device signing in: what it says about itself and where it connects
+    /// from.
+    struct DeviceLogin {
+        std::string device_id;
+        std::string name;
+        std::string platform;
+        std::string app_version;
+        std::string address;
+        bool automatic = false;  // not typed just now (LoginRequest.automatic)
+    };
+    /// A successful login: the signed JWT and the account and device it names.
     struct LoginResult {
         std::string token;
         int64_t uid = 0;
-        std::string username;   // as stored
+        std::string username;      // as stored
+        std::string device_id;     // the install (LoginRequest.device_id, or the resume token's)
+        int64_t sid = 0;           // the device (devices.id)
+        std::string resume_token;  // '' if signing one failed (the client then signs in by password)
+        bool fresh_device = false; // a typed sign-in on a device the account didn't have
     };
-    // Processes login. Returns the token and account, or std::nullopt if failed.
-    // `server_error` (optional) is set when it failed because the database
-    // (or signing) did, not because of the name or password: the caller
-    // must not count that as a failed sign-in or say the password was wrong.
+    /// Why a login was refused.
+    enum class LoginRefusal {
+        none,
+        credentials,   // wrong name or password, or a resume token that doesn't count (any more)
+        signed_out,    // this device was signed out: a resume or an automatic sign-in
+        server_error,  // the database (or signing) failed: not the client's fault
+    };
+    /// A password sign-in from `device`. On success the device is recorded
+    /// (or seen again) with a new password sign-in, which its resume token
+    /// carries.
     std::optional<LoginResult> authenticateUser(const std::string& username, const std::string& password,
-                                                bool* server_error = nullptr);
+                                                const DeviceLogin& device, LoginRefusal& refusal);
 
     /// A session token's claims.
     struct TokenClaims {
@@ -93,15 +127,79 @@ public:
     /// see every member's session token, from ever passing one as a session
     /// token, and a session token is never accepted as one. Valid for
     /// RESUME_LIFETIME from the password sign-in; resuming doesn't extend it.
+    /// Bound to the device (`did`) and its password sign-in (`iat`).
     static constexpr int64_t RESUME_LIFETIME_SECONDS = 30 * 24 * 3600;
-    std::optional<std::string> mintResumeToken(int64_t uid, int64_t signed_in_at);
+    std::optional<std::string> mintResumeToken(int64_t uid, const std::string& device_id, int64_t signed_in_at);
     /// Sign in with a resume token: the account (its current name) and a
-    /// fresh session token; nullopt when the token is invalid or expired,
-    /// the account is gone, or its password sign-in predates the account's
-    /// `users.sessions_valid_after` (setting that column to now cancels
-    /// every resume token the account has; the hook for "log out other
-    /// devices" and password changes).
-    std::optional<LoginResult> resumeSession(const std::string& resume_token);
+    /// fresh session token. Refused (`credentials`) when the token is
+    /// invalid or expired, the account is gone, its password sign-in
+    /// predates `users.sessions_valid_after`, or the device has signed in by
+    /// password since; `signed_out` when the device was signed out. `device`
+    /// says where from (its id may be empty: the token names it).
+    std::optional<LoginResult> resumeSession(const std::string& resume_token, const DeviceLogin& device,
+                                             LoginRefusal& refusal);
+
+    /// A device seen now (a token renewal, a disconnect). False when it isn't
+    /// signed in any more (or the database failed: `ok` false).
+    bool touchDevice(int64_t uid, const std::string& device_id, bool* ok = nullptr);
+    struct DeviceRow {
+        int64_t id = 0;
+        std::string device_id;
+        std::string name;
+        std::string platform;
+        std::string app_version;
+        std::string address;
+        int64_t signed_in_at = 0;
+        int64_t last_active_at = 0;
+    };
+    /// The account's devices, most recently active first; nullopt when the
+    /// database fails.
+    std::optional<std::vector<DeviceRow>> listDevices(int64_t uid);
+    /// Sign out the account's devices `ids` (or every one, `all_others`),
+    /// never `keep_device` (the one asking). Returns the device ids signed
+    /// out, to close their connections; nullopt when the database fails.
+    std::optional<std::vector<std::string>> signOutDevices(int64_t uid, const std::string& keep_device,
+                                                           const std::vector<int64_t>& ids, bool all_others);
+    /// Sign out the device asking (logging out). False when the database fails.
+    bool forgetDevice(int64_t uid, const std::string& device_id);
+    struct PasswordChange {
+        std::string error;            // "" on success
+        bool wrong_password = false;  // counts as a failed sign-in
+        std::string resume_token;
+        std::vector<std::string> signed_out;  // the other devices' ids
+    };
+    /// Change `uid`'s password, confirmed with `current`. Every other device
+    /// is signed out and the account's older resume tokens stop working
+    /// (`sessions_valid_after`); `device_id` stays signed in, with a new
+    /// password sign-in and resume token.
+    PasswordChange changePassword(int64_t uid, const std::string& current, const std::string& next,
+                                  const std::string& device_id);
+    static constexpr size_t MIN_PASSWORD = 8;
+    /// Devices of `server_id`'s members signed out within the last
+    /// REVOCATION_NOTICE_SECONDS, for its heartbeat answer.
+    std::vector<chatproj::RevokedSession> revokedSessionsFor(int64_t server_id);
+    /// Forget devices unused for DEVICE_IDLE_SECONDS (they sign in by
+    /// password again) and revocations nothing reads any more. Hourly.
+    void pruneDevices();
+    /// A device left unused this long is signed out (its row forgotten).
+    static constexpr int64_t DEVICE_IDLE_SECONDS = 90 * 24 * 3600;
+    /// For this long after migration 6 an automatic sign-in from a device the
+    /// account doesn't have yet records it, unless it was signed out: the
+    /// installs signed in before devices were tracked carry on.
+    static constexpr int64_t DEVICE_GRACE_SECONDS = 30 * 24 * 3600;
+    /// A revocation reaches communities for this long: every session token
+    /// the device held has expired by then.
+    static constexpr int64_t REVOCATION_NOTICE_SECONDS = TOKEN_LIFETIME_SECONDS + 3600;
+    /// Kept this long: the grace check reads them too.
+    static constexpr int64_t REVOCATION_KEEP_SECONDS = DEVICE_GRACE_SECONDS + 24 * 3600;
+    /// Most devices an account keeps; a new one past it signs out the least
+    /// recently used.
+    static constexpr size_t MAX_DEVICE_ROWS = 100;
+    /// Most revocations one heartbeat answer carries.
+    static constexpr size_t MAX_REVOCATIONS = 2000;
+    static constexpr size_t MAX_DEVICE_NAME = 64;
+    static constexpr size_t MAX_DEVICE_PLATFORM = 16;
+    static constexpr size_t MAX_APP_VERSION = 32;
 
     // Constant-time comparison of the community↔central secret. (Length is
     // allowed to short-circuit; the length isn't the secret.)
@@ -482,6 +580,18 @@ private:
         std::string username;
         std::string password_hash;
     };
+
+    /// The device a password sign-in recorded: `sid` (devices.id) goes in its
+    /// session tokens, `signed_in_at` in its resume token.
+    struct DeviceSession {
+        int64_t sid = 0;
+        int64_t signed_in_at = 0;
+        bool fresh = false;  // a typed sign-in on a device the account didn't have
+    };
+    /// Record a password sign-in from `device` (the password is right). An
+    /// automatic one needs the device signed in already (or the grace
+    /// period); refused with `signed_out` otherwise.
+    std::optional<DeviceSession> signInDevice(int64_t uid, const DeviceLogin& device, LoginRefusal& refusal);
 
     /// Builds the schema and runs pending migrations (central_schema).
     /// Throws when a migration fails: serving on a half-migrated schema

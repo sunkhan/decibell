@@ -205,14 +205,20 @@ def register(username, password="password123", email=None, src=None):
 
 
 class User(Conn):
-    """A logged-in client session. `device`: LoginRequest.device_id (empty:
-    a device of its own every time)."""
+    """A logged-in client session. `device`: LoginRequest.device_id (None: a
+    new install each time for a password sign-in, the token's for a resume).
+    `automatic`: a saved sign-in rather than a typed one."""
 
-    def __init__(self, username, password="password123", resume="", src=None, device=""):
+    def __init__(self, username, password="password123", resume="", src=None, device=None, automatic=False,
+                 name="Test OS", platform="linux", version="0.0-test"):
         super().__init__(src=src)
         self.username = username
+        if device is None:
+            device = "" if resume else "dev" + os.urandom(8).hex()
+        self.device = device
         req = pb.LoginRequest(resume_token=resume, device_id=device) if resume else \
-            pb.LoginRequest(username=username, password=password, device_id=device)
+            pb.LoginRequest(username=username, password=password, device_id=device, automatic=automatic,
+                            device_name=name, device_platform=platform, app_version=version)
         self.send(pb.Packet.LOGIN_REQ, login_req=req)
         r = self.wait(pb.Packet.LOGIN_RES, timeout=15)
         self.login = r.login_res if r else None
@@ -1131,6 +1137,7 @@ def test_resume():
     check("a password sign-in hands out a resume token", rt and rt != a.token
           and claims.get("aud") == "decibell_central_resume" and claims.get("exp", 0) - claims.get("iat", 0) == 30 * 86400,
           claims)
+    check("... bound to the device", claims.get("did") == a.device, claims)
     check("the session token has no audience", "aud" not in a.claims())
     a.close()
     a = User("rhea", device="rhea-dev")
@@ -1212,9 +1219,16 @@ def test_devices():
     check("... and closes it", b.closed)
     a.drain(0.3)
     check("... leaving the other device alone", not a.closed)
+    bare = User("mira", device="")
+    check("a password sign-in without a device id is refused (every install is a device)",
+          bare.login is not None and not bare.ok and "out of date" in bare.login.message, bare.login)
+    bare.close()
+    odd = User("mira", device="dev\u00e9")
+    check("so is one that isn't a plain id", not odd.ok)
+    odd.close()
     e1, e2 = User("mira"), User("mira")
     e1.drain(0.3)
-    check("connections without a device id coexist", e1.ok and e2.ok and not e1.closed)
+    check("other device ids coexist", e1.ok and e2.ok and not e1.closed)
     more = [User("mira", device=f"dev-{i}") for i in range(4)]  # 8 in all
     check("eight devices fit", all(u.ok for u in more))
     over = User("mira", device="dev-ninth")
@@ -1230,6 +1244,265 @@ def test_devices():
     for u in (a, b2, e1, e2, over, again, long_id, *more):
         u.close()
     time.sleep(0.3)
+
+
+# --- Devices and passwords (docs/superpowers/specs/2026-10-19-devices-and-password-design.md) ---
+
+def device_list(u):
+    u.send(pb.Packet.DEVICE_LIST_REQ, device_list_req=pb.DeviceListRequest())
+    r = u.wait(pb.Packet.DEVICE_LIST_RES)
+    return r.device_list_res if r else None
+
+
+def device_ids(u):
+    """The account's devices as `u` lists them: name -> DeviceInfo."""
+    lst = device_list(u)
+    return {d.name: d for d in lst.devices} if lst else {}
+
+
+def sign_out(u, ids=(), all_others=False, this_device=False):
+    u.send(pb.Packet.DEVICE_SIGN_OUT_REQ, device_sign_out_req=pb.DeviceSignOutRequest(
+        ids=list(ids), all_others=all_others, this_device=this_device))
+    r = u.wait(pb.Packet.DEVICE_SIGN_OUT_RES)
+    return r.device_sign_out_res if r else None
+
+
+def change_password(u, current, new):
+    u.send(pb.Packet.PASSWORD_CHANGE_REQ, password_change_req=pb.PasswordChangeRequest(
+        current_password=current, new_password=new))
+    r = u.wait(pb.Packet.PASSWORD_CHANGE_RES, timeout=15)
+    return r.password_change_res if r else None
+
+
+def closed_with(u, reason, timeout=1.5):
+    """`u` was told SESSION_CLOSED `reason`, and its connection closed."""
+    p = u.wait(pb.Packet.SESSION_CLOSED, timeout=timeout)
+    u.drain(0.5)
+    return p is not None and p.session_closed.reason == reason and u.closed
+
+
+def test_device_list():
+    print("devices: the list and the new sign-in notice")
+    register("devlist")
+    a = User("devlist", device="dora-laptop", name="CachyOS Linux", platform="linux", version="0.9.1")
+    b = User("devlist", device="dora-desk", name="Windows", platform="windows", version="0.9.2")
+    lst = device_list(a)
+    by = {d.name: d for d in lst.devices} if lst else {}
+    check("the list has both devices", lst and lst.success and set(by) == {"CachyOS Linux", "Windows"}, lst)
+    check("... the one asking marked current", by and by["CachyOS Linux"].current and not by["Windows"].current)
+    check("... both online, with platform, version and address", by and all(d.online for d in by.values())
+          and by["Windows"].platform == "windows" and by["Windows"].app_version == "0.9.2"
+          and by["Windows"].address.startswith("127.") and by["Windows"].signed_in_at > 0, by)
+    check("session tokens carry the device's id", by and a.claims().get("sid") == by["CachyOS Linux"].id
+          and b.claims().get("sid") == by["Windows"].id, a.claims())
+    b.close()
+    time.sleep(0.4)
+    by = device_ids(a)
+    check("a device that disconnected stays listed, offline, seen just now", by.get("Windows")
+          and not by["Windows"].online and abs(by["Windows"].last_active_at - time.time()) < 5)
+    register("devlist2")
+    x = User("devlist2")
+    check("another account lists only its own", [d.name for d in device_list(x).devices] == ["Test OS"])
+    x.close()
+    # The notice: a typed sign-in on a device the account didn't have.
+    a.clear()
+    c = User("devlist", device="dora-mac", name="macOS", platform="macos")
+    ch = a.wait(pb.Packet.DEVICES_CHANGED, timeout=1.5)
+    check("a typed sign-in on a new device tells the other devices, naming it", ch
+          and ch.devices_changed.HasField("new_device") and ch.devices_changed.new_device.name == "macOS"
+          and ch.devices_changed.new_device.id == jwt_claims(c.token).get("sid"), ch)
+    check("... not the new device itself", no_packet(c, pb.Packet.DEVICES_CHANGED))
+    c.close()
+    a.clear()
+    c = User("devlist", device="dora-mac", automatic=True, name="macOS")
+    ch = a.wait(pb.Packet.DEVICES_CHANGED, timeout=1.5)
+    check("an automatic sign-in on a known device only refreshes lists", c.ok and ch
+          and not ch.devices_changed.HasField("new_device"))
+    c.close()
+    a.clear()
+    c = User("devlist", device="dora-mac", name="macOS")
+    ch = a.wait(pb.Packet.DEVICES_CHANGED, timeout=1.5)
+    check("... and so does a typed one", c.ok and ch and not ch.devices_changed.HasField("new_device"))
+    check("a known device keeps its id", jwt_claims(c.token).get("sid") == device_ids(a)["macOS"].id)
+    c.close()
+    # A resume keeps the device and its id.
+    rt = a.login.resume_token
+    sid = a.claims().get("sid")
+    r = User("", resume=rt)
+    check("a resume signs in as the token's device", r.ok and jwt_claims(r.token).get("sid") == sid)
+    a.drain(0.4)
+    check("... replacing its own earlier connection", a.closed)
+    other = User("", resume=rt, device="dora-desk")
+    check("a resume token presented by another device id is refused", not other.ok and not other.login.signed_out)
+    # A renewal after the device was signed out behind the session's back.
+    sql("DELETE FROM devices WHERE uid = %s AND device_id = 'dora-laptop'", r.login.uid)
+    r.send(pb.Packet.TOKEN_REFRESH_REQ, token_refresh_req=pb.TokenRefreshRequest())
+    check("a renewal for a device no longer signed in closes it (SIGNED_OUT)",
+          closed_with(r, pb.SessionClosed.SIGNED_OUT) and no_packet(r, pb.Packet.TOKEN_REFRESH_RES, 0.1))
+    for u in (a, r, other):
+        u.close()
+
+
+def test_device_sign_out():
+    print("devices: signing out")
+    register("devsign")
+    a = User("devsign", device="otto-a", name="A")
+    b = User("devsign", device="otto-b", name="B")
+    c = User("devsign", device="otto-c", name="C")
+    b_rt = b.login.resume_token
+    by = device_ids(a)
+    c.clear()
+    res = sign_out(a, [by["B"].id])
+    check("signing out one device", res and res.success and res.signed_out == 1, res)
+    check("... closes it, saying SIGNED_OUT", closed_with(b, pb.SessionClosed.SIGNED_OUT))
+    c.drain(0.2)
+    check("... leaves the others", not a.closed and not c.closed)
+    check("... tells them, so their lists reload", c.wait(pb.Packet.DEVICES_CHANGED, timeout=1.0) is not None)
+    check("... and drops it from the list", set(device_ids(a)) == {"A", "C"})
+    r = User("", resume=b_rt)
+    check("its resume token is refused, saying it was signed out", r.login and not r.ok and r.login.signed_out, r.login)
+    r = User("devsign", device="otto-b", automatic=True, name="B")
+    check("so is its saved password", r.login and not r.ok and r.login.signed_out)
+    r = User("devsign", device="otto-b", name="B")
+    check("typing the password signs it in again", r.ok)
+    check("... as a new device", jwt_claims(r.token).get("sid") not in (0, by["B"].id))
+    res = sign_out(a, [by["A"].id])
+    a.drain(0.2)
+    check("the device asking can't sign itself out by id", res and res.success and res.signed_out == 0 and not a.closed)
+    register("devsign2")
+    x = User("devsign2")
+    xid = device_list(x).devices[0].id
+    res = sign_out(a, [xid])
+    x.drain(0.3)
+    check("nor another account's device", res and res.signed_out == 0 and not x.closed)
+    x.close()
+    res = sign_out(a, list(range(1, 200)))
+    check("an oversized request is refused", res and not res.success)
+    d = User("devsign", device="otto-d", name="D")
+    res = sign_out(a, all_others=True)
+    check("signing out every other device", res and res.success and res.signed_out == 3, res)
+    check("... closes them all", all(closed_with(u, pb.SessionClosed.SIGNED_OUT) for u in (c, r, d)))
+    check("... leaving this one", not a.closed and set(device_ids(a)) == {"A"})
+    res = sign_out(a, this_device=True)
+    check("logging out signs out the device asking", res and res.success)
+    a.close()
+    e = User("devsign", device="otto-a", automatic=True, name="A")
+    check("... so its saved password won't sign it back in", not e.ok and e.login.signed_out)
+    f = User("devsign", device="otto-f", name="F")
+    check("... and the account has no other device", set(device_ids(f)) == {"F"})
+    f.close()
+
+
+def test_device_grace():
+    print("devices: automatic sign-ins and the grace period")
+    register("devgrace")
+    g = User("devgrace", device="gwen-old", automatic=True)
+    check("within the grace period, an install from before devices signs in automatically", g.ok)
+    g.close()
+    sql("UPDATE central_schema SET devices_since = %s", int(time.time()) - 31 * 86400)
+    try:
+        h = User("devgrace", device="gwen-new", automatic=True)
+        check("after it, an automatic sign-in needs a device the account has", not h.ok and h.login.signed_out)
+        h.close()
+        h = User("devgrace", device="gwen-old", automatic=True)
+        check("... as the one recorded during it is", h.ok)
+        h.close()
+        h = User("devgrace", device="gwen-new")
+        check("a typed sign-in needs nothing", h.ok)
+        h.close()
+        bad = User("devgrace", password="wrongpass", device="gwen-x", automatic=True)
+        check("a wrong password is still a wrong password", not bad.ok and not bad.login.signed_out
+              and bad.login.message == "Invalid username or password.")
+        bad.close()
+    finally:
+        sql("UPDATE central_schema SET devices_since = %s", int(time.time()))
+
+
+def test_password_change():
+    print("password change")
+    register("pwchange")
+    a = User("pwchange", device="pia-a", name="A")
+    b = User("pwchange", device="pia-b", name="B")
+    a_rt, b_rt = a.login.resume_token, b.login.resume_token
+    r = change_password(a, "wrongpass", "newpassword1")
+    check("a wrong current password is refused", r and not r.success and r.message == "Wrong password.", r)
+    r = change_password(a, "password123", "short")
+    check("a new password under 8 characters is refused", r and not r.success and "8 characters" in r.message, r)
+    r = change_password(a, "password123", "password123")
+    check("so is the same password", r and not r.success and "already" in r.message, r)
+    b.drain(0.2)
+    check("... and the other device stays", not b.closed)
+    r = change_password(a, "password123", "newpassword1")
+    check("password changed", r and r.success and r.signed_out == 1 and r.resume_token, r)
+    check("... the other device is closed, saying PASSWORD_CHANGED", closed_with(b, pb.SessionClosed.PASSWORD_CHANGED))
+    check("... this one carries on", a.conversations() is not None and not a.closed)
+    check("... and is the account's only device", set(device_ids(a)) == {"A"})
+    check("the old password no longer signs in", not User("pwchange").ok)
+    n = User("pwchange", password="newpassword1")
+    check("the new one does", n.ok)
+    n.close()
+    check("this device's old resume token stops working", not User("", resume=a_rt).ok)
+    old = User("", resume=b_rt)
+    check("the other device's is refused as signed out", not old.ok and old.login.signed_out)
+    nr = User("", resume=r.resume_token)
+    check("this device's new one works", nr.ok and jwt_claims(nr.token).get("sid") == a.claims().get("sid"))
+    nr.close()
+    a.close()
+    # Wrong current passwords count as failed sign-ins (per account and
+    # address), so a stolen session can't guess the password through here.
+    c = User("pwchange", password="newpassword1")
+    for i in range(10):
+        change_password(c, f"guess{i}x", "whatever123")
+    blocked = User("pwchange", password="newpassword1", src=c.s.getsockname()[0])
+    check("ten wrong attempts hold the account's sign-ins from that address", not blocked.ok
+          and "failed sign-ins" in blocked.login.message, blocked.login and blocked.login.message)
+    blocked.close()
+    elsewhere = User("pwchange", password="newpassword1")
+    check("... not from elsewhere", elsewhere.ok)
+    elsewhere.close()
+    c.close()
+
+
+def heartbeat_revocations(name, port):
+    c = community_send(pb.Packet.SERVER_HEARTBEAT, server_heartbeat=pb.ServerHeartbeat(
+        name=name, description="d", host_ip="10.0.0.1", port=port, member_count=1))
+    r = c.wait(pb.Packet.SERVER_HEARTBEAT_RES)
+    c.close()
+    return list(r.server_heartbeat_res.revoked) if r else None
+
+
+def test_revocations_reach_communities():
+    print("devices: communities hear of signed-out devices")
+    register("devrevoke")
+    uid = uid_of("devrevoke")
+    sid = heartbeat(name="Revoking", port=9300)
+    heartbeat(name="Elsewhere", port=9301)
+    k = community_send(pb.Packet.MEMBERSHIP_REGISTER_REQ,
+                       membership_register_req=pb.MembershipRegisterReq(uid=uid, server_id=sid))
+    time.sleep(0.3); k.close()
+    a = User("devrevoke", device="rory-a", name="A")
+    b = User("devrevoke", device="rory-b", name="B")
+    b_sid = b.claims().get("sid")
+    check("nothing revoked before", not [r for r in heartbeat_revocations("Revoking", 9300) if r.uid == uid])
+    sign_out(a, [device_ids(a)["B"].id])
+    revoked = [r for r in heartbeat_revocations("Revoking", 9300) if r.uid == uid]
+    check("the member's community hears of the signed-out device with its next heartbeat",
+          [r.sid for r in revoked] == [b_sid], revoked)
+    check("... until its last token has expired", revoked
+          and abs(revoked[0].until - (time.time() + 25 * 3600)) < 60, revoked)
+    check("a community the account isn't in hears nothing",
+          not [r for r in heartbeat_revocations("Elsewhere", 9301) if r.uid == uid])
+    r = change_password(a, "password123", "newpassword1")
+    c_sid = None
+    check("a password change revokes nothing more when there's nothing else", r and r.success and r.signed_out == 0)
+    c = User("devrevoke", password="newpassword1", device="rory-c", name="C")
+    c_sid = c.claims().get("sid")
+    r = change_password(a, "newpassword1", "newpassword2")
+    revoked = [x.sid for x in heartbeat_revocations("Revoking", 9300) if x.uid == uid]
+    check("... and the devices a password change signs out reach communities too",
+          r and r.success and sorted(revoked) == sorted([b_sid, c_sid]), revoked)
+    for u in (a, b, c):
+        u.close()
 
 
 def test_multi_device_dms():
@@ -1733,6 +2006,7 @@ def drop_users(uids):
     sql("DELETE FROM dm_read_cursors WHERE reader_uid = ANY(%s) OR peer_uid = ANY(%s)", u, u)
     sql("DELETE FROM dm_messages WHERE sender_uid = ANY(%s) OR recipient_uid = ANY(%s)", u, u)
     sql("DELETE FROM community_memberships WHERE uid = ANY(%s)", u)
+    sql("DELETE FROM devices WHERE uid = ANY(%s)", u)
     sql("DELETE FROM users WHERE uid = ANY(%s)", u)
 
 
@@ -1978,10 +2252,16 @@ def test_presence_parts():
         key = serialization.load_pem_private_key(f.read(), password=None)
     head = b64url(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
 
+    # Each signed in on one device (devices design), the one its token names.
+    signed_in_at = int(time.time())
+    sql("INSERT INTO devices (uid, device_id, signed_in_at, last_active_at) "
+        "SELECT uid, 'parts' || uid, %s, %s FROM users WHERE email LIKE 'presence-part-%%'",
+        signed_in_at, signed_in_at)
+
     def resume(uid):
-        now = int(time.time())
         body = b64url(json.dumps({"iss": "decibell_central_auth", "aud": "decibell_central_resume",
-                                  "uid": uid, "iat": now, "exp": now + 3600}).encode())
+                                  "uid": uid, "did": f"parts{uid}", "iat": signed_in_at,
+                                  "exp": signed_in_at + 3600}).encode())
         signing_input = f"{head}.{body}"
         return f"{signing_input}.{b64url(key.sign(signing_input.encode()))}"
 
@@ -2073,7 +2353,8 @@ def test_abuse_limits():
 
     def attempt(i):
         t0 = time.time()
-        conns[i].send(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=f"nosuch{i}", password="x"))
+        conns[i].send(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=f"nosuch{i}", password="x",
+                                                                      device_id=f"guess{i}"))
         r = conns[i].wait(pb.Packet.LOGIN_RES, timeout=60)
         results.append((r.login_res.message if r else "", time.time() - t0))
 
@@ -2233,7 +2514,9 @@ def test_migration():
         check("migration ran and logged its counts", "friendships 3/3" in line and "dm_messages 3/4" in line
               and "(1 for unknown names removed)" in line and "e2ee keys 3/3" in line
               and "e2ee backups 2/2" in line and "memberships 2/2" in line and "read cursors 1/1" in line, line)
-        check("schema version 5", sql("SELECT version FROM central_schema")[0][0] == 5)
+        check("schema version 6", sql("SELECT version FROM central_schema")[0][0] == 6)
+        check("migration 6: devices tracked from now", sql("SELECT count(*) FROM devices")[0][0] == 0
+              and abs(sql("SELECT devices_since FROM central_schema")[0][0] - time.time()) < 60)
         line5 = next((l for l in log.splitlines() if "Migration 5" in l), "")
         check("migration 5 filled the conversation table", "dm_conversations filled: 1" in line5, line5)
         check("no account starts with a session cutoff",
@@ -2323,6 +2606,11 @@ def main():
         test_token_refresh()
         test_resume()
         test_devices()
+        test_device_list()
+        test_device_sign_out()
+        test_device_grace()
+        test_password_change()
+        test_revocations_reach_communities()
         test_multi_device_dms()
         test_multi_device_presence()
         test_multi_device_calls()

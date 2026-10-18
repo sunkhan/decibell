@@ -90,18 +90,27 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-class Minter:
-    """Resume tokens signed with central's key, as central mints them."""
+def device_of(uid):
+    """The load account's one install, as the native client names it."""
+    return f"{uid:032x}"
 
-    def __init__(self, key_path):
+
+class Minter:
+    """Resume tokens signed with central's key, as central mints them: for
+    the account's device (seed() recorded it) and its password sign-in at
+    `signed_in_at`."""
+
+    def __init__(self, key_path, signed_in_at):
         with open(key_path, "rb") as f:
             self.key = serialization.load_pem_private_key(f.read(), password=None)
         self.head = b64url(json.dumps({"alg": "EdDSA", "typ": "JWS"}).encode())
+        self.signed_in_at = signed_in_at
 
     def resume(self, uid):
-        now = int(time.time())
+        iat = self.signed_in_at
         body = b64url(json.dumps({"iss": "decibell_central_auth", "aud": "decibell_central_resume",
-                                  "uid": uid, "iat": now, "exp": now + 30 * 86400}).encode())
+                                  "uid": uid, "did": device_of(uid), "iat": iat,
+                                  "exp": iat + 30 * 86400}).encode())
         signing_input = f"{self.head}.{body}"
         return f"{signing_input}.{b64url(self.key.sign(signing_input.encode()))}"
 
@@ -116,7 +125,7 @@ class Client:
         self.w, self.uid, self.src, self.resume = w, uid, src, resume
         # One install per account, as the native client sends it: a reconnect
         # replaces its own earlier connection (multi-device design).
-        self.device = f"{uid:032x}"
+        self.device = device_of(uid)
         self.token, self.writer, self.up, self.attempt, self.watch, self.task = "", None, False, 0, [], None
         self.idle = False
         self.relogin_at = None
@@ -225,10 +234,10 @@ class Client:
 
 
 class Worker:
-    def __init__(self, wid, uids, key_path, addr_base):
+    def __init__(self, wid, uids, key_path, signed_in_at, addr_base):
         self.wid = wid
         self.ctx = tls_context()
-        self.minter = Minter(key_path)
+        self.minter = Minter(key_path, signed_in_at)
         self.all_uids = uids  # every load account, in index order
         self.stopping = False
         self.clients = []
@@ -325,14 +334,14 @@ class Worker:
                 "answers": self.answers, "lat": lat, "first_down": self.first_down, "last_up": self.last_up}
 
 
-def worker_main(conn, wid, uids, key_path, addr_base, cpus):
+def worker_main(conn, wid, uids, key_path, signed_in_at, addr_base, cpus):
     if cpus:
         os.sched_setaffinity(0, cpus)
     import resource
     hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
     resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    w = Worker(wid, uids, key_path, addr_base)
+    w = Worker(wid, uids, key_path, signed_in_at, addr_base)
 
     async def main():
         loop = asyncio.get_running_loop()
@@ -370,13 +379,14 @@ def worker_main(conn, wid, uids, key_path, addr_base, cpus):
 # --- Orchestrator -------------------------------------------------------------
 
 class Pool:
-    def __init__(self, n, uids, key_path, cpus):
+    def __init__(self, n, uids, key_path, signed_in_at, cpus):
         ctx = mp.get_context("spawn")
         self.conns, self.procs = [], []
         for wid in range(n):
             a, b = ctx.Pipe()
             # Each worker's loopback range: room for 25,000 addresses.
-            p = ctx.Process(target=worker_main, args=(b, wid, uids, key_path, wid * 25000, cpus), daemon=True)
+            p = ctx.Process(target=worker_main, args=(b, wid, uids, key_path, signed_in_at, wid * 25000, cpus),
+                            daemon=True)
             p.start()
             self.conns.append(a)
             self.procs.append(p)
@@ -468,7 +478,9 @@ def pin_postgres(cpus):
 
 
 def seed(n):
-    """`n` load accounts and two probes, sharing one bcrypt hash."""
+    """`n` load accounts and two probes, sharing one bcrypt hash; each load
+    account signed in on one device (devices design) at the returned time.
+    Returns (uids, signed_in_at)."""
     r = e2e.register("loadseed", PASSWORD)
     assert r and r.success, r
     h = e2e.sql("SELECT password_hash FROM users WHERE username = 'loadseed'")[0][0]
@@ -477,7 +489,11 @@ def seed(n):
     e2e.sql("INSERT INTO users (username, email, password_hash) VALUES "
             "('probea', 'probea@load.test', %s), ('probeb', 'probeb@load.test', %s)", h, h)
     rows = e2e.sql("SELECT uid FROM users WHERE username ~ '^load[0-9]+$' ORDER BY uid")
-    return [r[0] for r in rows]
+    signed_in_at = int(time.time())
+    e2e.sql("INSERT INTO devices (uid, device_id, signed_in_at, last_active_at) "
+            "SELECT uid, lpad(to_hex(uid), 32, '0'), %s, %s FROM users WHERE username ~ '^load[0-9]+$'",
+            signed_in_at, signed_in_at)
+    return [r[0] for r in rows], signed_in_at
 
 
 async def password_logins(n, uid_names):
@@ -487,7 +503,8 @@ async def password_logins(n, uid_names):
 
     async def one(i):
         reader, writer = await asyncio.open_connection(HOST, PORT, ssl=ctx, local_addr=(f"127.9.{i // 10}.1", 0))
-        writer.write(frame(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=uid_names[i], password=PASSWORD)))
+        writer.write(frame(pb.Packet.LOGIN_REQ, login_req=pb.LoginRequest(username=uid_names[i], password=PASSWORD,
+                                                                          device_id=f"burst{i}")))
         ok = False
         try:
             while True:
@@ -590,7 +607,7 @@ def main():
     pool = None
     try:
         print(f"seeding {n_users} accounts")
-        uids = seed(n_users)
+        uids, signed_in_at = seed(n_users)
         names = [f"load{i}" for i in range(n_users)]
         meter = Meter(proc.pid, os.path.join(run, "pg"))
 
@@ -598,7 +615,7 @@ def main():
         report["password"] = asyncio.run(password_logins(args.password_logins, names))
         print(f"  {report['password']}")
 
-        pool = Pool(args.workers, uids, os.path.join(run, "jwt_ed25519.pem"), worker_cpus)
+        pool = Pool(args.workers, uids, os.path.join(run, "jwt_ed25519.pem"), signed_in_at, worker_cpus)
         meter = Meter(proc.pid, os.path.join(run, "pg"), [p.pid for p in pool.procs])
         online = 0
         for target in steps:
