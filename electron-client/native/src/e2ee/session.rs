@@ -842,6 +842,7 @@ pub async fn bootstrap(state: Arc<Mutex<AppState>>) {
                 s.e2ee.status = Status::Ready;
                 emit_status(&s);
             }
+            lock_if_rotated_elsewhere(&state).await;
             rebind_if_needed(&state).await;
             return;
         }
@@ -867,6 +868,45 @@ pub async fn bootstrap(state: Arc<Mutex<AppState>>) {
         }
     }
     emit_status(&s);
+}
+
+/// A new identity made on another device of ours while this one was away
+/// never reached it (E2EE_KEYS_CHANGED goes to the account's connected
+/// devices). A device that loads its store compares it with central's
+/// current bundle and, when that is a later generation, locks as
+/// `on_keys_changed` does live: the passphrase then restores the new keys
+/// from the backup, instead of this device sealing with a retired identity.
+async fn lock_if_rotated_elsewhere(state: &Arc<Mutex<AppState>>) {
+    let (uid, mine) = {
+        let s = state.lock().await;
+        if s.e2ee.status != Status::Ready || s.uid <= 0 {
+            return;
+        }
+        let Some(kid) = s.e2ee.store.as_ref().map(|st| st.current_key_id) else { return };
+        (s.uid, kid)
+    };
+    // Cached for the session: rebind_if_needed asks for the same bundle next.
+    let current = match fetch_bundle(state, uid, 0).await {
+        Ok(Some(b)) => b.key_id,
+        Ok(None) => return,
+        Err(e) => {
+            log::warn!("[e2ee] own key lookup failed: {e}");
+            return;
+        }
+    };
+    if current <= mine {
+        return;
+    }
+    let mut s = state.lock().await;
+    let unchanged = s.e2ee.status == Status::Ready
+        && !s.e2ee.publish_in_flight
+        && s.e2ee.store.as_ref().map(|st| st.current_key_id) == Some(mine);
+    if unchanged {
+        log::info!("[e2ee] our keys were rotated elsewhere while away (have {mine}, now {current}) — locking");
+        s.e2ee.status = Status::Locked;
+        s.e2ee.pending_backup = None;
+        emit_status(&s);
+    }
 }
 
 /// Our pre-uid store (filed under our name) becomes the uid file only when
@@ -1726,6 +1766,27 @@ mod tests {
         state.lock().await.e2ee.fresh.insert(BOB);
         assert!(seal_outbound(&state, BOB, "bob", "hi").await.is_err());
         keystore::delete(ME);
+    }
+
+    /// Multi-device: a device that was away while another one made a new
+    /// identity locks when it loads its store (central's current bundle is
+    /// a later generation); the device whose keys are current stays ready.
+    #[tokio::test]
+    async fn a_device_back_after_a_rotation_elsewhere_locks() {
+        let (old, new) = (identity(3), identity(5));
+        for (central_current, locked) in [(&new, true), (&old, false)] {
+            let (state, store) = session(ALICE, "alice", &old);
+            install(&state, store).await;
+            {
+                let mut s = state.lock().await;
+                let b = central_current.public_bundle(ALICE, "alice").unwrap();
+                s.e2ee.current_ids.insert(ALICE, b.key_id);
+                s.e2ee.cache.insert((ALICE, b.key_id), b);
+            }
+            lock_if_rotated_elsewhere(&state).await;
+            let status = state.lock().await.e2ee.status;
+            assert_eq!(status == Status::Locked, locked, "central at {}", central_current.key_id);
+        }
     }
 
     /// Review S7: central reporting "no keys" (with an unsigned call) for a

@@ -127,7 +127,9 @@ Signals for a call route only between the connections in it.
 - Own DMs sent from another device open here: DM envelopes are sealed so that both parties open them with
   their static identity (the sender's own echo opens the same way), and the identity is the account's.
 - A new identity made on one device (reset) now reaches the account's other devices
-  (`E2EE_KEYS_CHANGED`), which lock and re-sync from the new backup.
+  (`E2EE_KEYS_CHANGED`), which lock and re-sync from the new backup. A device that was signed out at
+  the time compares its store with central's current bundle when it loads it and locks the same way
+  (`lock_if_rotated_elsewhere`), instead of sealing with the retired identity.
 - Pins (TOFU) are per device: each device's key store pins peers on its own. Unchanged.
 
 ### Communities
@@ -181,6 +183,7 @@ behaviour.
 | `net/central.rs` LoginRes refusal | every refused resume falls back to the password | a device-limit refusal doesn't; a refused resume backs off and retries |
 | `net/central.rs` `UserRenamed` | our own rename only via `rename_account` | ours from another device: name, saved sign-in, `user_renamed {self}`, token refresh |
 | `net/central.rs` `E2eeKeysChanged` → `on_keys_changed` | (already handled our own uid: dead code until now) | reachable |
+| `e2ee/session.rs` `bootstrap` | a loaded store's current key is the account's | compared with central's current bundle; a later one locks (`lock_if_rotated_elsewhere`) |
 | `presence.rs` hidden flag | only this device sets Invisible | `OWN_PRESENCE` sets it too and tells the communities (`commands/presence.rs::apply_hidden`) |
 | `e2ee/session.rs` DM worker | — | `DmJob::ReadSync`, `DmJob::Deleted` |
 | `commands/auth.rs` `upload_avatar` | announces our own picture locally (central never told us) | unchanged; other devices hear `AVATAR_CHANGED` from central |
