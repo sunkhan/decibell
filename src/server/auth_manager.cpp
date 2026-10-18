@@ -2098,7 +2098,7 @@ std::optional<std::pair<uint32_t, std::string>> AuthManager::getE2eeBackup(int64
 // --- Auto-rejoin community memberships ---
 // (see docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md)
 
-void AuthManager::registerMembership(int64_t uid, int64_t server_id) {
+std::optional<chatproj::CommunityServerInfo> AuthManager::registerMembership(int64_t uid, int64_t server_id) {
     try {
         auto lease = pool_.acquire();
         pqxx::connection& conn = *lease;
@@ -2108,16 +2108,40 @@ void AuthManager::registerMembership(int64_t uid, int64_t server_id) {
         // Only for an existing account (a forged uid would trip the
         // foreign key into an error log).
         if (txn.exec_params("SELECT 1 FROM users WHERE uid = $1", uid).empty()) {
-            return;
+            return std::nullopt;
         }
-        txn.exec_params(
+        const pqxx::result inserted = txn.exec_params(
             "INSERT INTO community_memberships (uid, server_id, joined_at) "
             "VALUES ($1, $2, $3) "
             "ON CONFLICT (uid, server_id) DO NOTHING",
             uid, server_id, now_ts);
+        std::optional<chatproj::CommunityServerInfo> joined;
+        if (inserted.affected_rows() == 1) {
+            // The same columns and caps as getUserCommunities.
+            const pqxx::result rs = txn.exec_params(
+                "SELECT id, name, LEFT(description, $2), host_ip, port, member_count, "
+                "       COALESCE(picture_version, ''), COALESCE(cert_fingerprint, '') "
+                "FROM community_servers WHERE id = $1",
+                server_id, static_cast<int>(chatproj::MAX_COMMUNITY_DESCRIPTION));
+            if (!rs.empty()) {
+                const auto& row = rs[0];
+                chatproj::CommunityServerInfo info;
+                info.set_id(row[0].as<int>());
+                info.set_name(row[1].as<std::string>());
+                info.set_description(communityDescription(row[2]));
+                info.set_host_ip(row[3].as<std::string>());
+                info.set_port(row[4].as<int>());
+                info.set_member_count(row[5].as<int>());
+                info.set_picture_version(row[6].as<std::string>());
+                info.set_cert_fingerprint(row[7].as<std::string>());
+                joined = std::move(info);
+            }
+        }
         txn.commit();
+        return joined;
     } catch (const std::exception& e) {
         std::cerr << "[DB Error] registerMembership: " << e.what() << "\n";
+        return std::nullopt;
     }
 }
 

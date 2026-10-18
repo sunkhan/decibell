@@ -205,12 +205,14 @@ def register(username, password="password123", email=None, src=None):
 
 
 class User(Conn):
-    """A logged-in client session."""
+    """A logged-in client session. `device`: LoginRequest.device_id (empty:
+    a device of its own every time)."""
 
-    def __init__(self, username, password="password123", resume="", src=None):
+    def __init__(self, username, password="password123", resume="", src=None, device=""):
         super().__init__(src=src)
         self.username = username
-        req = pb.LoginRequest(resume_token=resume) if resume else pb.LoginRequest(username=username, password=password)
+        req = pb.LoginRequest(resume_token=resume, device_id=device) if resume else \
+            pb.LoginRequest(username=username, password=password, device_id=device)
         self.send(pb.Packet.LOGIN_REQ, login_req=req)
         r = self.wait(pb.Packet.LOGIN_RES, timeout=15)
         self.login = r.login_res if r else None
@@ -582,9 +584,12 @@ def test_watch_cleanup():
     b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
     a2.drain(0.5)
     check("a new login starts with an empty watch set", not any(p.type == pb.Packet.PRESENCE_DELTA for p in a2.inbox))
-    # A second login replaces the first connection; the old one's set goes.
+    # A second login from the same device replaces the first connection; the
+    # old one's set goes.
+    a2.close()
+    a2 = User("alice", device="watch-dev")
     a2.watch(ub)
-    a3 = User("alice")
+    a3 = User("alice", device="watch-dev")
     a3.clear()
     time.sleep(0.3)
     b.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_DND))
@@ -1127,13 +1132,16 @@ def test_resume():
           and claims.get("aud") == "decibell_central_resume" and claims.get("exp", 0) - claims.get("iat", 0) == 30 * 86400,
           claims)
     check("the session token has no audience", "aud" not in a.claims())
-    b = User("", resume=rt)
+    a.close()
+    a = User("rhea", device="rhea-dev")
+    rt = a.login.resume_token if a.ok else ""
+    b = User("", resume=rt, device="rhea-dev")
     check("resume signs the account in", b.ok and b.login.uid == a.login.uid and b.login.username == "rhea"
           and jwt_claims(b.token).get("uid") == a.login.uid, b.login)
     check("resume echoes its token (no extension)", b.ok and b.login.resume_token == rt)
     check("the resumed session works", b.conversations() is not None)
     a.drain(0.5)
-    check("it replaced the earlier connection", a.closed)
+    check("it replaced the same device's earlier connection", a.closed)
     a.close()
     check("a session token isn't a resume token", not User("", resume=b.token).ok)
     check("nor is junk", not User("", resume="x.y.z").ok)
@@ -1169,6 +1177,379 @@ def test_resume():
     rt2 = e.login.resume_token if e.ok else ""
     e.close()
     check("one from a later password sign-in works", rt2 and User("", resume=rt2).ok)
+
+
+# --- Multi-device sign-in (docs/superpowers/specs/2026-10-18-multi-device-design.md, review B3) ---
+
+def no_packet(conn, ptype, timeout=0.6, pred=lambda p: True):
+    """True when nothing of `ptype` (matching `pred`) arrives within `timeout`."""
+    return conn.wait(ptype, timeout=timeout, pred=pred) is None
+
+
+def call(conn, kind, call_id, to_uid=0, to=""):
+    conn.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(kind=kind, call_id=call_id, to_uid=to_uid, to=to))
+
+
+def got_call(conn, kind, call_id, timeout=1.5):
+    p = conn.wait(pb.Packet.CALL_SIGNAL, timeout=timeout,
+                  pred=lambda p: p.call_signal.kind == kind and p.call_signal.call_id == call_id)
+    return p.call_signal if p else None
+
+
+def test_devices():
+    print("multi-device: device ids and the cap")
+    register("mira")
+    a = User("mira", device="dev-a")
+    b = User("mira", device="dev-b")
+    check("two devices sign in", a.ok and b.ok)
+    a.drain(0.4)
+    check("... and the first stays connected", not a.closed)
+    b2 = User("mira", device="dev-b")
+    closed = b.wait(pb.Packet.SESSION_CLOSED, timeout=1.5)
+    check("the same device id replaces its earlier connection, saying so",
+          b2.ok and closed is not None and closed.session_closed.reason == pb.SessionClosed.REPLACED)
+    b.drain(0.5)
+    check("... and closes it", b.closed)
+    a.drain(0.3)
+    check("... leaving the other device alone", not a.closed)
+    e1, e2 = User("mira"), User("mira")
+    e1.drain(0.3)
+    check("connections without a device id coexist", e1.ok and e2.ok and not e1.closed)
+    more = [User("mira", device=f"dev-{i}") for i in range(4)]  # 8 in all
+    check("eight devices fit", all(u.ok for u in more))
+    over = User("mira", device="dev-ninth")
+    check("a ninth is refused, saying why", over.login is not None and not over.ok and over.login.device_limit
+          and "too many devices" in over.login.message, over.login)
+    for u in (a, b2, e1, e2, *more):
+        u.drain(0.1)
+    check("... and evicts nobody", not any(u.closed for u in (a, b2, e1, e2, *more)))
+    again = User("mira", device="dev-a")
+    check("the same device still signs in at the cap (it replaces itself)", again.ok)
+    long_id = User("mira", device="x" * 65)
+    check("an oversized device id is refused", not long_id.ok)
+    for u in (a, b2, e1, e2, over, again, long_id, *more):
+        u.close()
+    time.sleep(0.3)
+
+
+def test_multi_device_dms():
+    print("multi-device: DMs, reads, edits, deletes, friends")
+    register("noel")
+    um, un = uid_of("mira"), uid_of("noel")
+    a1, a2 = User("mira", device="m1"), User("mira", device="m2")
+    n1, n2 = User("noel", device="n1"), User("noel", device="n2")
+    for u in (a1, a2, n1, n2):
+        u.clear()
+    m = a1.dm(recipient_uid=un, content="from my laptop", nonce="md1")
+    check("the sender gets its echo", m is not None and m.id > 0 and m.nonce == "md1")
+    own = a2.wait(pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.content == "from my laptop")
+    check("the sender's other device gets the stored message (id, nonce, sender, recipient)",
+          own is not None and m is not None and own.direct_msg.id == m.id and own.direct_msg.nonce == "md1"
+          and own.direct_msg.sender_uid == um and own.direct_msg.recipient_uid == un
+          and own.auth_token == "")
+    r1 = n1.wait(pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.content == "from my laptop")
+    r2 = n2.wait(pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.content == "from my laptop")
+    check("both devices of the recipient get it", r1 is not None and r2 is not None)
+    mid = m.id if m else 0
+    n1.send(pb.Packet.DM_MARK_READ_REQ, dm_mark_read_req=pb.DmMarkReadReq(peer_uid=um, up_to_id=mid))
+    sync = n2.wait(pb.Packet.DM_READ_SYNC, timeout=1.5)
+    check("a read on one device reaches the other", sync is not None and sync.dm_read_sync.peer_uid == um
+          and sync.dm_read_sync.up_to_id == mid, sync)
+    check("... but not the device that read", no_packet(n1, pb.Packet.DM_READ_SYNC))
+    check("... nor the other account", no_packet(a1, pb.Packet.DM_READ_SYNC, 0.2) and
+          no_packet(a2, pb.Packet.DM_READ_SYNC, 0.2))
+    a1.send(pb.Packet.DM_EDIT_REQ, dm_edit_req=pb.DmEditReq(peer_uid=un, message_id=mid, content="edited"))
+    e = a2.wait(pb.Packet.DM_MESSAGE_EDITED, timeout=1.5)
+    check("an edit reaches the editor's other device", e is not None and e.dm_message_edited.peer_uid == un
+          and e.dm_message_edited.content == "edited")
+    check("... and both of the peer's", n1.wait(pb.Packet.DM_MESSAGE_EDITED) is not None
+          and n2.wait(pb.Packet.DM_MESSAGE_EDITED) is not None)
+    a1.send(pb.Packet.DM_DELETE_REQ, dm_delete_req=pb.DmDeleteReq(peer_uid=un, message_id=mid))
+    d = a2.wait(pb.Packet.DM_MESSAGE_DELETED, timeout=1.5)
+    check("a delete reaches the sender's other device", d is not None and d.dm_message_deleted.message_id == mid
+          and d.dm_message_deleted.peer_uid == un)
+    check("... and both of the peer's", n1.wait(pb.Packet.DM_MESSAGE_DELETED) is not None
+          and n2.wait(pb.Packet.DM_MESSAGE_DELETED) is not None)
+    r = a1.dm(recipient_uid=um, content="me", nonce="md-self")
+    check("a refusal goes to the sending device only", r is not None and r.id == 0
+          and no_packet(a2, pb.Packet.DIRECT_MSG, pred=lambda p: p.direct_msg.nonce == "md-self"))
+    for u in (a1, a2, n1, n2):
+        u.clear()
+    r = a1.friend(pb.ADD, target_uid=un)
+    check("friend request sent", r is not None and r.success)
+    fl = a2.wait(pb.Packet.FRIEND_LIST_RES, timeout=1.5)
+    check("the requester's other device gets its new list", fl is not None and any(
+        f.uid == un and f.status == pb.FriendInfo.PENDING_OUTGOING for f in fl.friend_list_res.friends))
+    check("... and both of the target's", all(
+        x is not None and any(f.uid == um and f.status == pb.FriendInfo.PENDING_INCOMING for f in x.friend_list_res.friends)
+        for x in (n1.wait(pb.Packet.FRIEND_LIST_RES), n2.wait(pb.Packet.FRIEND_LIST_RES))))
+    n2.friend(pb.ACCEPT, target_uid=um)
+    acc = n1.wait(pb.Packet.FRIEND_LIST_RES, timeout=1.5)
+    check("accepting on one device shows on the other", acc is not None and any(
+        f.uid == um and f.status == pb.FriendInfo.ONLINE for f in acc.friend_list_res.friends))
+    a1.friend(pb.REMOVE, target_uid=un)
+    for u in (a1, a2, n1, n2):
+        u.close()
+    time.sleep(0.3)
+
+
+def test_multi_device_presence():
+    print("multi-device: presence and the account's own state")
+    um = uid_of("mira")
+    w = User("noel", device="watcher")
+    w.watch(um)
+    w.clear()
+
+    def delta(timeout=1.5):
+        p = w.wait(pb.Packet.PRESENCE_DELTA, timeout=timeout, pred=lambda p: p.presence_delta.user.uid == um)
+        return p.presence_delta if p else None
+
+    a1 = User("mira", device="m1")
+    d = delta()
+    check("the first device brings the account online", d is not None and d.online)
+    a2 = User("mira", device="m2")
+    check("a second device says nothing to watchers", delta(0.6) is None)
+    for u in (a1, a2):
+        u.clear()
+    a1.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_DND))
+    d = delta()
+    own = a2.wait(pb.Packet.OWN_PRESENCE, timeout=1.5)
+    check("a status set on one device reaches watchers", d is not None and d.user.status == pb.PRESENCE_DND)
+    check("... and the account's other device", own is not None and own.own_presence.status == pb.PRESENCE_DND)
+    a2.send(pb.Packet.SET_STATUS_MESSAGE_REQ, set_status_message_req=pb.SetStatusMessageRequest(
+        text="in a meeting", emoji="📅", clear_after=3600))
+    own = a1.wait(pb.Packet.OWN_PRESENCE, timeout=1.5, pred=lambda p: p.own_presence.status_text)
+    check("a status message set on one device reaches the other", own is not None
+          and own.own_presence.status_text == "in a meeting" and own.own_presence.status_emoji == "📅"
+          and 3500 < own.own_presence.status_clear_in <= 3600, own)
+    a1.send(pb.Packet.DM_PRIVACY, dm_privacy=pb.DmPrivacySetting(friends_only=True))
+    own = a2.wait(pb.Packet.OWN_PRESENCE, timeout=1.5, pred=lambda p: p.own_presence.dm_friends_only)
+    check("friends-only DMs set on one device reach the other", own is not None)
+    a3 = User("mira", device="m3")
+    check("a new device signs in with the account's live state", a3.ok and a3.login.status == pb.PRESENCE_DND
+          and a3.login.dm_friends_only and a3.login.status_text == "in a meeting", a3.login)
+    a3.close()
+    a1.send(pb.Packet.DM_PRIVACY, dm_privacy=pb.DmPrivacySetting(friends_only=False))
+    a1.send(pb.Packet.SET_STATUS_MESSAGE_REQ, set_status_message_req=pb.SetStatusMessageRequest())
+    a1.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    w.wait(pb.Packet.PRESENCE_DELTA, timeout=1.5, pred=lambda p: p.presence_delta.user.uid == um
+           and p.presence_delta.user.status == pb.PRESENCE_ONLINE and not p.presence_delta.user.status_text)
+    time.sleep(0.3)
+    for u in (a1, a2, w):
+        u.clear()
+    # Auto-away: only while every device is idle.
+    a1.send(pb.Packet.SET_IDLE_REQ, set_idle_req=pb.SetIdleRequest(idle=True))
+    check("one idle device of two: still online", delta(0.6) is None)
+    a2.send(pb.Packet.SET_IDLE_REQ, set_idle_req=pb.SetIdleRequest(idle=True))
+    d = delta()
+    own = a1.wait(pb.Packet.OWN_PRESENCE, timeout=1.5, pred=lambda p: p.own_presence.idle)
+    check("both idle: away", d is not None and d.online and d.user.status == pb.PRESENCE_AWAY)
+    check("... which the account's devices hear too", own is not None)
+    a3 = User("mira", device="m3")
+    d = delta()
+    check("a device signing in is active: online again", d is not None and d.user.status == pb.PRESENCE_ONLINE)
+    a3.close()
+    d = delta()
+    check("... and away once it leaves the idle ones", d is not None and d.user.status == pb.PRESENCE_AWAY)
+    a1.send(pb.Packet.SET_IDLE_REQ, set_idle_req=pb.SetIdleRequest(idle=False))
+    d = delta()
+    check("activity on one device ends away", d is not None and d.user.status == pb.PRESENCE_ONLINE)
+    a2.send(pb.Packet.SET_IDLE_REQ, set_idle_req=pb.SetIdleRequest(idle=False))
+    time.sleep(0.2)
+    w.clear()
+    # Online until the last device leaves.
+    a1.close()
+    check("one device leaving: still online", delta(0.6) is None)
+    a2.close()
+    d = delta()
+    check("the last device leaving: offline", d is not None and not d.online)
+    # Invisible stays airtight with two devices.
+    a1, a2 = User("mira", device="m1"), User("mira", device="m2")
+    delta()
+    a2.clear()
+    a1.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_INVISIBLE))
+    d = delta()
+    check("invisible on one device: offline to watchers", d is not None and not d.online)
+    own = a2.wait(pb.Packet.OWN_PRESENCE, timeout=1.5)
+    check("... and the other device knows", own is not None and own.own_presence.status == pb.PRESENCE_INVISIBLE)
+    w.watch()
+    ans = w.watch(um)
+    check("... a watch answers as for someone offline", ans is not None and len(ans.users) == 0)
+    call(w, pb.CallSignal.INVITE, "md-invis", to_uid=um)
+    r = got_call(w, pb.CallSignal.PEER_OFFLINE, "md-invis")
+    check("... calls answer PEER_OFFLINE", r is not None)
+    check("... and neither device rings", no_packet(a1, pb.Packet.CALL_SIGNAL, 0.3)
+          and no_packet(a2, pb.Packet.CALL_SIGNAL, 0.3))
+    a3 = User("mira", device="m3")
+    check("a device signing in stays invisible", a3.ok and a3.login.status == pb.PRESENCE_INVISIBLE
+          and delta(0.6) is None)
+    a3.close()
+    a1.close()
+    check("... and a device leaving says nothing", delta(0.6) is None)
+    a2.send(pb.Packet.SET_STATUS_REQ, set_status_req=pb.SetStatusRequest(status=pb.PRESENCE_ONLINE))
+    d = delta()
+    check("visible again from the other device", d is not None and d.online)
+    a2.close(); w.close()
+    time.sleep(0.3)
+
+
+def test_multi_device_calls():
+    print("multi-device: calls")
+    um, un = uid_of("mira"), uid_of("noel")
+    c, c2 = User("noel", device="c1"), User("noel", device="c2")
+    b1, b2 = User("mira", device="b1"), User("mira", device="b2")
+    for u in (c, c2, b1, b2):
+        u.clear()
+    call(c, pb.CallSignal.INVITE, "mc1", to_uid=um)
+    i1, i2 = got_call(b1, pb.CallSignal.INVITE, "mc1"), got_call(b2, pb.CallSignal.INVITE, "mc1")
+    check("an invite rings every device of the callee", i1 is not None and i2 is not None
+          and getattr(i1, "from") == "noel" and i1.from_uid == un)
+    check("... and none of the caller's other devices", no_packet(c2, pb.Packet.CALL_SIGNAL))
+    call(b1, pb.CallSignal.RINGING, "mc1", to_uid=un)
+    call(b2, pb.CallSignal.RINGING, "mc1", to_uid=un)
+    check("the caller hears RINGING", got_call(c, pb.CallSignal.RINGING, "mc1") is not None)
+    check("... once", no_packet(c, pb.Packet.CALL_SIGNAL, pred=lambda p: p.call_signal.kind == pb.CallSignal.RINGING))
+    call(b2, pb.CallSignal.ACCEPT, "mc1", to_uid=un)
+    check("the first device to answer takes the call", got_call(c, pb.CallSignal.ACCEPT, "mc1") is not None)
+    el = got_call(b1, pb.CallSignal.ANSWERED_ELSEWHERE, "mc1")
+    check("... and the other stops ringing: answered elsewhere", el is not None and el.from_uid == un
+          and el.to_uid == um)
+    call(b1, pb.CallSignal.ACCEPT, "mc1", to_uid=un)
+    check("an answer that lost the race hears who won", got_call(b1, pb.CallSignal.ANSWERED_ELSEWHERE, "mc1") is not None)
+    check("... and the caller hears nothing of it", no_packet(c, pb.Packet.CALL_SIGNAL))
+    c.send(pb.Packet.CALL_SIGNAL, call_signal=pb.CallSignal(
+        kind=pb.CallSignal.STREAM_START, call_id="mc1", to_uid=um,
+        stream=pb.CallStreamMeta(codec=1, width=1280, height=720, fps=30)))
+    check("after the answer, signals reach only the answering device",
+          got_call(b2, pb.CallSignal.STREAM_START, "mc1") is not None and no_packet(b1, pb.Packet.CALL_SIGNAL))
+    call(b2, pb.CallSignal.STREAM_STOP, "mc1", to_uid=un)
+    check("... both ways", got_call(c, pb.CallSignal.STREAM_STOP, "mc1") is not None
+          and no_packet(c2, pb.Packet.CALL_SIGNAL))
+    call(c, pb.CallSignal.HANGUP, "mc1", to_uid=um)
+    check("a hang-up reaches the device in the call", got_call(b2, pb.CallSignal.HANGUP, "mc1") is not None
+          and no_packet(b1, pb.Packet.CALL_SIGNAL))
+    call(c, pb.CallSignal.HANGUP, "mc1", to_uid=um)
+    check("signals for a finished call are dropped", no_packet(b2, pb.Packet.CALL_SIGNAL))
+    call(c, pb.CallSignal.RINGING, "md-nocall", to_uid=um)
+    check("signals for no call are dropped", no_packet(b1, pb.Packet.CALL_SIGNAL, 0.3)
+          and no_packet(b2, pb.Packet.CALL_SIGNAL, 0.3))
+    # Declined on one device.
+    call(c, pb.CallSignal.INVITE, "mc2", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc2"); got_call(b2, pb.CallSignal.INVITE, "mc2")
+    call(b1, pb.CallSignal.REJECT, "mc2", to_uid=un)
+    check("a decline reaches the caller", got_call(c, pb.CallSignal.REJECT, "mc2") is not None)
+    check("... and stops the other device: declined elsewhere",
+          got_call(b2, pb.CallSignal.DECLINED_ELSEWHERE, "mc2") is not None)
+    # Busy only when no device can ring.
+    call(c, pb.CallSignal.INVITE, "mc3", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc3"); got_call(b2, pb.CallSignal.INVITE, "mc3")
+    call(b1, pb.CallSignal.BUSY, "mc3", to_uid=un)
+    check("one busy device while another rings: no BUSY", no_packet(c, pb.Packet.CALL_SIGNAL))
+    call(b2, pb.CallSignal.RINGING, "mc3", to_uid=un)
+    check("... the caller hears it ringing", got_call(c, pb.CallSignal.RINGING, "mc3") is not None)
+    call(c, pb.CallSignal.CANCEL, "mc3", to_uid=um)
+    check("a cancel reaches the ringing device", got_call(b2, pb.CallSignal.CANCEL, "mc3") is not None
+          and no_packet(b1, pb.Packet.CALL_SIGNAL, 0.3))
+    call(c, pb.CallSignal.INVITE, "mc4", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc4"); got_call(b2, pb.CallSignal.INVITE, "mc4")
+    call(b1, pb.CallSignal.BUSY, "mc4", to_uid=un)
+    call(b2, pb.CallSignal.BUSY, "mc4", to_uid=un)
+    check("every device busy: BUSY", got_call(c, pb.CallSignal.BUSY, "mc4") is not None)
+    call(c, pb.CallSignal.INVITE, "mc5", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc5"); got_call(b2, pb.CallSignal.INVITE, "mc5")
+    call(b1, pb.CallSignal.BUSY, "mc5", to_uid=un)
+    b2.close()
+    check("the only ringing device leaving, the rest busy: BUSY", got_call(c, pb.CallSignal.BUSY, "mc5") is not None)
+    # The device in a call signs back in (same device id) and keeps it.
+    call(c, pb.CallSignal.INVITE, "mc6", to_uid=um)
+    got_call(b1, pb.CallSignal.INVITE, "mc6")
+    call(b1, pb.CallSignal.ACCEPT, "mc6", to_uid=un)
+    got_call(c, pb.CallSignal.ACCEPT, "mc6")
+    b1.close()
+    time.sleep(0.3)
+    b1 = User("mira", device="b1")
+    b1.clear()
+    call(c, pb.CallSignal.STREAM_START, "mc6", to_uid=um)
+    check("a device back from a dropped connection keeps its call", got_call(b1, pb.CallSignal.STREAM_START, "mc6") is not None)
+    other = User("mira", device="b9")
+    other.clear()
+    call(other, pb.CallSignal.HANGUP, "mc6", to_uid=un)
+    check("... which another device of the callee can't touch", no_packet(c, pb.Packet.CALL_SIGNAL))
+    call(b1, pb.CallSignal.HANGUP, "mc6", to_uid=un)
+    check("... and hangs up from", got_call(c, pb.CallSignal.HANGUP, "mc6") is not None)
+    other.close()
+    # A connection places at most 4 calls at once.
+    for i in range(5):
+        call(c, pb.CallSignal.INVITE, f"cap{i}", to_uid=um)
+    rung = []
+    end = time.time() + 1.5
+    while time.time() < end:
+        p = b1.wait(pb.Packet.CALL_SIGNAL, timeout=max(0.05, end - time.time()))
+        if p is None:
+            break
+        rung.append(p.call_signal.call_id)
+    check("a connection places at most 4 calls at once", sorted(rung) == [f"cap{i}" for i in range(4)], rung)
+    for i in range(4):
+        call(c, pb.CallSignal.CANCEL, f"cap{i}", to_uid=um)
+    for u in (c, c2, b1):
+        u.close()
+    time.sleep(0.3)
+
+
+def test_multi_device_profile():
+    print("multi-device: rename, avatar, keys, memberships")
+    register("ozzy")
+    register("pia")
+    uo = uid_of("ozzy")
+    a1, a2 = User("ozzy", device="o1"), User("ozzy", device="o2")
+    p = User("pia")
+    for u in (a1, a2, p):
+        u.clear()
+    jpeg = b"\xff\xd8" + b"y" * 64
+    a1.send(pb.Packet.UPDATE_AVATAR_REQ, update_avatar_req=pb.UpdateAvatarReq(data=jpeg))
+    res = a1.wait(pb.Packet.UPDATE_AVATAR_RES)
+    ch = a2.wait(pb.Packet.AVATAR_CHANGED, timeout=1.5)
+    check("an avatar set on one device reaches the other", res is not None and ch is not None
+          and ch.avatar_changed.uid == uo and ch.avatar_changed.version == res.update_avatar_res.version)
+    check("... not the device that set it", no_packet(a1, pb.Packet.AVATAR_CHANGED))
+    a1.send(pb.Packet.E2EE_PUBLISH_KEYS_REQ, e2ee_publish_keys_req=pb.E2eePublishKeysReq(bundle=bundle(40), backup=b"w"))
+    pub = a1.wait(pb.Packet.E2EE_PUBLISH_KEYS_RES)
+    kc = a2.wait(pb.Packet.E2EE_KEYS_CHANGED, timeout=1.5)
+    check("new keys made on one device reach the other", pub is not None and kc is not None
+          and kc.e2ee_keys_changed.uid == uo and kc.e2ee_keys_changed.key_id == pub.e2ee_publish_keys_res.key_id)
+    check("... not the device that made them", no_packet(a1, pb.Packet.E2EE_KEYS_CHANGED))
+    a1.send(pb.Packet.RENAME_REQ, rename_req=pb.RenameRequest(new_username="ozzy2", password="password123"))
+    rr = a1.wait(pb.Packet.RENAME_RES)
+    ren = a2.wait(pb.Packet.USER_RENAMED, timeout=1.5)
+    check("a rename on one device reaches the other", rr is not None and rr.rename_res.success and ren is not None
+          and ren.user_renamed.uid == uo and ren.user_renamed.username == "ozzy2")
+    check("... not the device that renamed", no_packet(a1, pb.Packet.USER_RENAMED))
+    m = a2.dm(recipient_uid=uid_of("pia"), content="still me", nonce="md-ren")
+    check("the other device's messages go out under the new name at once", m is not None and m.sender == "ozzy2")
+    a2.send(pb.Packet.TOKEN_REFRESH_REQ, token_refresh_req=pb.TokenRefreshRequest())
+    t = a2.wait(pb.Packet.TOKEN_REFRESH_RES)
+    check("... and its fresh token names it", t is not None and t.token_refresh_res.username == "ozzy2"
+          and jwt_claims(t.token_refresh_res.jwt_token).get("sub") == "ozzy2")
+    # Memberships: a new one reaches every device; one already held, nobody.
+    sid = heartbeat("Multi Device", port=9123)
+    for u in (a1, a2):
+        u.clear()
+    cm = community_send(pb.Packet.MEMBERSHIP_REGISTER_REQ,
+                        membership_register_req=pb.MembershipRegisterReq(uid=uo, server_id=sid))
+    x1 = a1.wait(pb.Packet.MEMBERSHIP_ADDED, timeout=1.5)
+    x2 = a2.wait(pb.Packet.MEMBERSHIP_ADDED, timeout=1.5)
+    cm.close()
+    check("a new membership reaches every device, with the community", x1 is not None and x2 is not None
+          and x1.membership_added.server.id == sid and x1.membership_added.server.port == 9123
+          and x1.membership_added.server.name == "Multi Device")
+    check("... and nobody else", no_packet(p, pb.Packet.MEMBERSHIP_ADDED, 0.3))
+    cm = community_send(pb.Packet.MEMBERSHIP_REGISTER_REQ,
+                        membership_register_req=pb.MembershipRegisterReq(uid=uo, server_id=sid))
+    check("re-registering a membership says nothing", no_packet(a1, pb.Packet.MEMBERSHIP_ADDED))
+    cm.close()
+    for u in (a1, a2, p):
+        u.close()
+    time.sleep(0.3)
 
 
 def test_dm_pacing():
@@ -1868,6 +2249,11 @@ def main():
         test_rename()
         test_token_refresh()
         test_resume()
+        test_devices()
+        test_multi_device_dms()
+        test_multi_device_presence()
+        test_multi_device_calls()
+        test_multi_device_profile()
         test_dm_pacing()
         test_state_and_key_pacing()
         test_dm_page_budget()

@@ -238,7 +238,7 @@ message Packet {
     E2EE_FETCH_KEYS_RES   = 132;    // central→client
     E2EE_FETCH_BACKUP_REQ = 133;    // client→central: the caller's own backup blob
     E2EE_FETCH_BACKUP_RES = 134;    // central→client
-    E2EE_KEYS_CHANGED     = 135;    // central→the account's watchers: a new bundle
+    E2EE_KEYS_CHANGED     = 135;    // central→the account's watchers and its other sessions: a new bundle
     // MLS-encrypted voice channels (docs/superpowers/specs/
     // 2026-09-03-mls-voice-channel-encryption-design.md). The community
     // server is the MLS delivery service: it sequences commits per voice
@@ -289,7 +289,7 @@ message Packet {
     // stage 5): password-confirmed, the old name reserved for 14 days.
     RENAME_REQ   = 158;   // client→central
     RENAME_RES   = 159;   // central→requester
-    USER_RENAMED = 160;   // central→the account's watchers: its new name
+    USER_RENAMED = 160;   // central→the account's watchers and its other sessions: its new name
     // Token renewal: central mints a fresh token for the signed-in session
     // (renames, and before the 24 h expiry); the client hands it to each
     // community it's connected to, which updates the session in place.
@@ -306,6 +306,12 @@ message Packet {
     // "Invite friends": which of my friends are already in a community I'm in.
     FRIENDS_IN_COMMUNITY_REQ = 166;   // client→central
     FRIENDS_IN_COMMUNITY_RES = 167;   // central→requester
+    // Multi-device sign-in (docs/superpowers/specs/2026-10-18-multi-device-design.md):
+    // what one device of an account did, for its other devices.
+    DM_READ_SYNC     = 168;   // central→the reader's other sessions
+    OWN_PRESENCE     = 169;   // central→every session of the account
+    MEMBERSHIP_ADDED = 170;   // central→every session of the account
+    SESSION_CLOSED   = 171;   // central→a session it is about to close
   }
 
   Type type = 1;
@@ -516,6 +522,10 @@ message Packet {
     ChannelKeysReject        channel_keys_reject    = 167;
     FriendsInCommunityRequest  friends_in_community_req = 168;
     FriendsInCommunityResponse friends_in_community_res = 169;
+    DmReadSync               dm_read_sync           = 170;
+    OwnPresence              own_presence           = 171;
+    MembershipAdded          membership_added       = 172;
+    SessionClosed            session_closed         = 173;
   }
 }
 
@@ -545,6 +555,11 @@ message LoginRequest {
   // its last password sign-in, instead of username / password. A refusal
   // (expired, or the account is gone) means signing in by password.
   string resume_token = 4;
+  // This install, made once at random (multi-device design; at most 64
+  // bytes). A login from the same device id replaces that device's previous
+  // connection; other device ids stay signed in alongside. Empty counts as a
+  // device of its own every time.
+  string device_id = 5;
 }
 
 message LoginResponse {
@@ -593,6 +608,13 @@ message LoginResponse {
   // (never send it to a community, which wouldn't accept it anyway), valid
   // for 30 days from the password sign-in. A resume echoes it.
   string resume_token = 17;
+  // The account's "only friends may DM me" setting. Central keeps it; the
+  // client adopts it (OWN_PRESENCE carries later changes).
+  bool dm_friends_only = 18;
+  // Refused because the account is signed in on as many devices as it may
+  // be (8). Signing in again works once one of them leaves; the client
+  // doesn't fall back to the password for it.
+  bool device_limit = 19;
 }
 
 // Change the signed-in account's username. Confirmed with the password;
@@ -716,7 +738,8 @@ message AvatarVersion {
 
 // The full set of accounts the client is showing (friends, DM peers,
 // member lists, profiles): PRESENCE_DELTA, USER_RENAMED, AVATAR_CHANGED
-// and E2EE_KEYS_CHANGED for them reach this session; nothing else does.
+// and E2EE_KEYS_CHANGED for them reach this session; nothing else does
+// (the account's own profile changes reach its other sessions anyway).
 // Each request replaces the previous set. At most 5,000 uids (the rest are
 // ignored).
 message PresenceSubscribe {
@@ -749,6 +772,19 @@ message SetStatusMessageRequest {
   string text = 1;
   string emoji = 2;
   int64 clear_after = 3;
+}
+
+// To every session of an account when its own state changes on any of
+// them, or when the sweep clears its status message (multi-device). A
+// device signing in gets the same in its LoginResponse instead.
+message OwnPresence {
+  PresenceStatus status = 1;       // the chosen one (INVISIBLE included)
+  string status_text = 2;
+  string status_emoji = 3;
+  int64  status_clear_in = 4;      // seconds until central clears the message; 0 = never
+  bool   dm_friends_only = 5;
+  // Every device of the account is idle: others see an Online user as Away.
+  bool   idle = 6;
 }
 
 // Client→community: while true, the community reports this member as
@@ -2282,6 +2318,14 @@ message DmMarkReadReq {
   int64  peer_uid = 3;   // preferred over peer
 }
 
+// To the reader's other sessions after a DmMarkReadReq (multi-device): the
+// conversation with `peer_uid` is read up to `up_to_id` (the request's
+// value; central's cursor never moves back).
+message DmReadSync {
+  int64 peer_uid = 1;
+  int64 up_to_id = 2;
+}
+
 // --- Auto-rejoin community memberships ---
 // See docs/superpowers/specs/2026-05-14-auto-rejoin-communities-design.md
 // (+ plan amendment: SERVER_HEARTBEAT_RES exists so the community can
@@ -2297,6 +2341,26 @@ message MembershipRevokeReq {
   string username = 1;
   int64  server_id = 2;
   int64  uid = 3;
+}
+
+// To every session of the account when a community registers a membership
+// it didn't have (another device joined): the client connects to it.
+message MembershipAdded {
+  CommunityServerInfo server = 1;
+}
+
+// Central closes this connection right after it (multi-device).
+message SessionClosed {
+  enum Reason {
+    // A newer sign-in with this connection's device id took over. A live
+    // client that reads this is a copy of the install running elsewhere: it
+    // makes itself a new device id and signs in again as its own device.
+    REPLACED = 0;
+    // The account signed its other devices out: sign out here, don't
+    // reconnect.
+    SIGNED_OUT = 1;
+  }
+  Reason reason = 1;
 }
 
 // Sent by central in response to a SERVER_HEARTBEAT, over the same
@@ -2496,6 +2560,11 @@ message CallSignal {
     NOT_ALLOWED = 8;   // central→sender: check_dm_allowed refused the INVITE
     STREAM_START = 9;  // streamer→peer: screen share started (stream meta)
     STREAM_STOP = 10;  // streamer→peer: screen share ended
+    // Central→the callee's other devices, which were ringing (multi-device):
+    // one device answered (also to a device whose ACCEPT lost the race), or
+    // one declined. `from` is the caller, as in the INVITE.
+    ANSWERED_ELSEWHERE = 11;
+    DECLINED_ELSEWHERE = 12;
   }
   Kind kind = 1;
   string call_id = 2;                     // caller-minted UUID

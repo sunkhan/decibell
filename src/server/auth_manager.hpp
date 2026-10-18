@@ -415,8 +415,10 @@ public:
     /// Idempotent insert. Called on every successful community auth
     /// (via MEMBERSHIP_REGISTER_REQ). ON CONFLICT DO NOTHING — safe to
     /// re-fire on every auth and serves as bootstrap for pre-feature
-    /// memberships. A uid with no account is ignored.
-    void registerMembership(int64_t uid, int64_t server_id);
+    /// memberships. A uid with no account is ignored. Returns the
+    /// community, as a login lists it, when the row is new (one of the
+    /// account's devices just joined: the others connect too).
+    std::optional<chatproj::CommunityServerInfo> registerMembership(int64_t uid, int64_t server_id);
 
     /// Idempotent delete. Called by the community-side kick/ban/leave
     /// path (shared secret) and by the client-side stale-membership
