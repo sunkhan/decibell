@@ -4116,6 +4116,37 @@ std::vector<uint32_t> CommunityDb::channel_key_missing_epochs(const std::string&
     return out;
 }
 
+std::unordered_map<int64_t, std::vector<uint32_t>> CommunityDb::channel_key_missing_epochs_for(
+        const std::string& channel_id, const std::vector<int64_t>& uids, size_t per_uid) const {
+    std::unordered_map<int64_t, std::vector<uint32_t>> out;
+    if (uids.empty()) return out;
+    // The uids go in as one JSON array, so the statement text (and its
+    // cache entry) is the same for every page.
+    std::string list = "[";
+    for (size_t i = 0; i < uids.size(); ++i) {
+        if (i) list += ',';
+        list += std::to_string(uids[i]);
+    }
+    list += ']';
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Every (uid, epoch) pair without a blob: an anti-join on the blobs'
+    // primary key.
+    Stmt q(db_,
+        "WITH u(uid) AS (SELECT value FROM json_each(?2)) "
+        "SELECT u.uid, e.epoch FROM u JOIN channel_key_epochs e ON e.channel_id = ?1 "
+        "WHERE NOT EXISTS (SELECT 1 FROM channel_key_blobs b "
+        "  WHERE b.channel_id = ?1 AND b.epoch = e.epoch AND b.recipient_uid = u.uid) "
+        "ORDER BY u.uid, e.epoch;");
+    if (!q.s) return out;
+    q.bind_text(1, channel_id);
+    q.bind_text(2, list);
+    while (q.step() == SQLITE_ROW) {
+        auto& epochs = out[q.col_int64(0)];
+        if (epochs.size() < per_uid) epochs.push_back(static_cast<uint32_t>(q.col_int64(1)));
+    }
+    return out;
+}
+
 std::vector<int64_t> CommunityDb::channel_key_holders(const std::string& channel_id, uint32_t epoch) const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<int64_t> out;

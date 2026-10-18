@@ -18,10 +18,12 @@
 //!     the router loop — same reason the DM worker exists).
 //!
 //! Fills are paced to central's key-lookup bucket: sealing to N members
-//! needs N identity bundles.
+//! needs N identity bundles. A channel of any size is covered: a new epoch
+//! goes out with one publish's worth of blobs, and the filler the server
+//! names walks every page of viewers who lack it (review B12).
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,9 +47,17 @@ pub const UNREADABLE: &str = "🔒 Encrypted message";
 /// a request wait (review B13), behind whatever else this session sent: the
 /// wait covers that, like the renderer's history requests.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Gap between uncached identity fetches while sealing to many members
-/// (central's key bucket is 20 burst / 5 per s).
-const FILL_PACE: Duration = Duration::from_millis(250);
+/// The most blobs one publish carries (the community takes 500).
+const MAX_PUBLISH_BLOBS: usize = 400;
+/// Identity lookups a new epoch waits for before it goes out: within the
+/// lookup burst, so even a cold cache publishes it at once. Viewers left out
+/// get it from the filler's walk of the needs pages.
+const CREATE_LOOKUPS: usize = 16;
+/// A fill publishes after this many members, so they needn't wait for a
+/// whole page of lookups (200 viewers, ~50 s).
+const FILL_FLUSH_MEMBERS: usize = 32;
+/// Needs pages a fill walks at most (200 viewers each).
+const MAX_NEEDS_PAGES: usize = 1000;
 
 /// Everything we know about one encrypted channel.
 #[derive(Clone, Default)]
@@ -76,6 +86,13 @@ pub struct LoadSlot {
     /// When the last load from the open path finished, successful or not.
     /// CHANNEL_KEYS_CHANGED clears it: a new epoch is worth a fresh look.
     tried: std::sync::Mutex<Option<Instant>>,
+    /// A fill is walking this channel's needs; another one asked meanwhile
+    /// (`fill_again`) makes it walk once more rather than run alongside.
+    filling: AtomicBool,
+    fill_again: AtomicBool,
+    /// One publish in flight per channel: the reply slot is per channel, so
+    /// two at once could swap replies (a creation taking a fill's success).
+    publishing: Mutex<()>,
 }
 
 /// Within this long of the last load, a message under an epoch we don't hold
@@ -105,7 +122,7 @@ pub type KeyId = (String, String);
 /// (`after_epoch`, `needs_after_uid`), which the reply echoes.
 pub type FetchId = (String, String, u32, i64);
 
-/// Page walks stop here (64 × 256 blobs; 64 × ≤ 200 viewers).
+/// Blob page walks stop here (64 × 256 blobs).
 const MAX_PAGES: usize = 64;
 
 /// Spaces out the key requests of one long operation (a load's pages, a
@@ -126,6 +143,52 @@ impl Pacer {
         self.0 += 1;
     }
 }
+
+/// Identity lookups made while sealing epoch keys, for every channel and
+/// community at once: they all go to central, whose key bucket is 20 burst /
+/// 5 per s per connection (over it a lookup waits there). Kept a little
+/// under that, so sealing to a big channel never queues ahead of the lookups
+/// someone is waiting on (a DM, an MLS member check). Tokens may go below
+/// zero: callers reserve their turn and sleep until it.
+struct LookupRate {
+    tokens: f64,
+    last: Option<tokio::time::Instant>,
+}
+
+impl LookupRate {
+    const BURST: f64 = 16.0;
+    const PER_SEC: f64 = 4.0;
+
+    const fn new() -> Self {
+        LookupRate { tokens: Self::BURST, last: None }
+    }
+
+    /// Take a lookup at `now`: how long to wait before making it.
+    fn reserve(&mut self, now: tokio::time::Instant) -> Duration {
+        if let Some(last) = self.last {
+            let refill = now.saturating_duration_since(last).as_secs_f64() * Self::PER_SEC;
+            self.tokens = (self.tokens + refill).min(Self::BURST);
+        }
+        self.last = Some(now);
+        self.tokens -= 1.0;
+        if self.tokens >= 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(-self.tokens / Self::PER_SEC)
+        }
+    }
+}
+
+static LOOKUPS: std::sync::Mutex<LookupRate> = std::sync::Mutex::new(LookupRate::new());
+
+/// Wait for a turn to ask central for an identity bundle.
+async fn lookup_turn() {
+    let wait = LOOKUPS.lock().unwrap_or_else(|e| e.into_inner()).reserve(tokio::time::Instant::now());
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+}
+
 /// The server takes at most this many epochs per CHANNEL_KEYS_REJECT.
 const MAX_REJECT: usize = 512;
 
@@ -218,6 +281,8 @@ async fn publish(
     blobs: Vec<ChannelKeyBlob>,
     key_check: Vec<u8>,
 ) -> Result<ChannelKeysPublishRes, String> {
+    let slot = load_slot(&mut *state.lock().await, server_id, channel_id);
+    let _one_at_a_time = slot.publishing.lock().await;
     let rx = {
         let mut s = state.lock().await;
         let (tx, rx) = oneshot::channel();
@@ -455,7 +520,10 @@ async fn load_shared(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: 
 }
 
 /// When we hold the current key and the server lists viewers without
-/// blobs, seal for them in the background.
+/// blobs, seal for them in the background. One fill per channel at a time:
+/// one asked for while another runs (a member joined, a blob was dropped)
+/// makes it walk once more when done, from a fresh look, rather than run
+/// alongside it and double the lookups.
 fn spawn_fill(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str, ring: &ChannelKeyring) {
     if !ring.encrypted || ring.needs.is_empty() || !ring.keys.contains_key(&ring.current_epoch) {
         return;
@@ -463,8 +531,31 @@ fn spawn_fill(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str, r
     let st = state.clone();
     let (sid, cid) = (server_id.to_string(), channel_id.to_string());
     tokio::spawn(async move {
-        if let Err(e) = fill_gaps(&st, &sid, &cid).await {
-            log::warn!("[chkeys] #{cid}: fill failed: {e}");
+        let slot = load_slot(&mut *st.lock().await, &sid, &cid);
+        if slot.filling.swap(true, Ordering::AcqRel) {
+            slot.fill_again.store(true, Ordering::Release);
+            return;
+        }
+        let mut again = false;
+        loop {
+            slot.fill_again.store(false, Ordering::Release);
+            let walk = if again { load_shared(&st, &sid, &cid).await.map(|_| ()) } else { Ok(()) };
+            if let Err(e) = match walk {
+                Ok(()) => fill_gaps(&st, &sid, &cid).await,
+                Err(e) => Err(e),
+            } {
+                log::warn!("[chkeys] #{cid}: fill failed: {e}");
+            }
+            again = true;
+            if slot.fill_again.load(Ordering::Acquire) {
+                continue;
+            }
+            slot.filling.store(false, Ordering::Release);
+            // Asked for between that check and now (it still saw `filling`):
+            // ours to walk, unless another fill took it up already.
+            if !slot.fill_again.load(Ordering::Acquire) || slot.filling.swap(true, Ordering::AcqRel) {
+                break;
+            }
         }
     });
 }
@@ -498,8 +589,32 @@ pub async fn refresh(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: 
     Ok(ring)
 }
 
-/// Mint `epoch` and escrow it to `members`. Loses the race gracefully: a
-/// stale-epoch reply re-fetches and returns whatever the winner published.
+/// Who a new epoch's own publish is sealed to: ourselves first (a holder can
+/// fill the rest, and our other devices read with it), then viewers whose
+/// keys this session has (no lookup), then up to `lookups` who need one —
+/// at most `max` in all, one publish's worth. Everyone else gets the key
+/// from the filler the server names once the epoch exists, which walks every
+/// page of viewers who lack it (review B12: the epoch used to be sealed to
+/// the whole first page of viewers in one publish, which the server refuses
+/// past 500, and nobody past the page's 1000 was ever sealed to).
+fn creation_recipients(
+    me: (&str, i64),
+    members: &[(String, i64)],
+    cached: &HashSet<i64>,
+    lookups: usize,
+    max: usize,
+) -> Vec<(String, i64)> {
+    let others = || members.iter().filter(|(_, uid)| *uid > 0 && *uid != me.1);
+    let mut out = vec![(me.0.to_string(), me.1)];
+    out.extend(others().filter(|(_, uid)| cached.contains(uid)).cloned());
+    out.extend(others().filter(|(_, uid)| !cached.contains(uid)).take(lookups).cloned());
+    out.truncate(max);
+    out
+}
+
+/// Mint `epoch` and escrow it to `members` (see `creation_recipients`).
+/// Loses the race gracefully: a stale-epoch reply re-fetches and returns
+/// whatever the winner published.
 async fn create_epoch(
     state: &Arc<Mutex<AppState>>,
     server_id: &str,
@@ -508,19 +623,29 @@ async fn create_epoch(
     members: &[(String, i64)],
 ) -> Result<ChannelKeyring, String> {
     let key: [u8; KEY_LEN] = random_bytes()?;
+    let me = {
+        let s = state.lock().await;
+        (s.username.clone().unwrap_or_default(), s.uid)
+    };
+    let mut cached = HashSet::new();
+    for (_, uid) in members {
+        if !e2ee::needs_lookup(state, *uid).await {
+            cached.insert(*uid);
+        }
+    }
+    let recipients = creation_recipients((&me.0, me.1), members, &cached, CREATE_LOOKUPS, MAX_PUBLISH_BLOBS);
     let mut blobs = Vec::new();
     let mut skipped = Vec::new();
-    for (name, uid) in members {
-        // Only a lookup costs central's key bucket; members whose keys this
-        // session already has seal at once (a channel's first send used to
-        // wait 250 ms per member).
-        let lookup = e2ee::needs_lookup(state, *uid).await;
-        match seal_blobs_for(state, channel_id, (name, *uid), &[(epoch, key)]).await? {
-            Some(b) => blobs.extend(b),
-            None => skipped.push(name.clone()),
+    for (name, uid) in &recipients {
+        if e2ee::needs_lookup(state, *uid).await {
+            lookup_turn().await;
         }
-        if lookup {
-            tokio::time::sleep(FILL_PACE).await;
+        // One member's failure doesn't stop the epoch (after a removal that
+        // would let the removed member read on): the filler seals to them.
+        match seal_blobs_for(state, channel_id, (name, *uid), &[(epoch, key)]).await {
+            Ok(Some(b)) => blobs.extend(b),
+            Ok(None) => skipped.push(name.clone()),
+            Err(e) => log::warn!("[chkeys] #{channel_id}: sealing epoch {epoch} for {name} failed: {e}"),
         }
     }
     if !skipped.is_empty() {
@@ -529,6 +654,7 @@ async fn create_epoch(
     if blobs.is_empty() {
         return Err("Nobody in this channel has encryption keys yet.".into());
     }
+    let sealed = blobs.len();
     let check = channel_envelope::key_check(channel_id, epoch, &key).to_vec();
     match publish(state, server_id, channel_id, epoch, blobs, check).await {
         Ok(r) if r.success => {
@@ -537,7 +663,11 @@ async fn create_epoch(
             ring.encrypted = true;
             ring.current_epoch = epoch;
             ring.keys.insert(epoch, key);
-            log::info!("[chkeys] #{channel_id}: created epoch {epoch} for {} member(s)", members.len());
+            let rest = members.iter().filter(|(_, uid)| *uid > 0 && *uid != me.1).count() + 1;
+            log::info!(
+                "[chkeys] #{channel_id}: created epoch {epoch} for {sealed} member(s); {} more get it from the filler",
+                rest.saturating_sub(recipients.len())
+            );
             Ok(ring.clone())
         }
         Ok(_) => {
@@ -554,24 +684,19 @@ async fn refresh_no_create(state: &Arc<Mutex<AppState>>, server_id: &str, channe
 }
 
 /// Seal every epoch key we hold for each viewer the server says lacks it,
-/// walking the needs pages.
+/// walking every needs page.
 pub async fn fill_gaps(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<(), String> {
     let ring = {
         let s = state.lock().await;
         s.channel_keys.get(&key_id(server_id, channel_id)).cloned().unwrap_or_default()
     };
-    let (mut needs, mut more) = (ring.needs.clone(), ring.more_needs);
-    let mut pace = Pacer(0);
-    for n in 1.. {
-        fill_page(state, server_id, channel_id, &ring.keys, &needs, &mut pace).await?;
-        let after = match needs.last() {
-            Some((_, uid, _)) if more && n < MAX_PAGES => *uid,
-            _ => break,
-        };
-        pace.tick().await;
-        let page = fetch(state, server_id, channel_id, 0, after).await?;
-        needs = needs_of(&page);
-        more = page.more_needs;
+    let mut io = NetFill { state, server_id, channel_id, pace: Pacer(0) };
+    let report = walk_fill(&mut io, channel_id, ring.keys, ring.needs, ring.more_needs).await?;
+    if report.sealed > 0 || report.unsealed > 0 || report.failed_publishes > 0 {
+        log::info!(
+            "[chkeys] #{channel_id}: filled {} member(s) ({} blob(s)) over {} page(s); {} couldn't be sealed to, {} publish(es) failed",
+            report.sealed, report.blobs, report.pages, report.unsealed, report.failed_publishes
+        );
     }
     let mut s = state.lock().await;
     if let Some(r) = s.channel_keys.get_mut(&key_id(server_id, channel_id)) {
@@ -580,49 +705,178 @@ pub async fn fill_gaps(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id
     Ok(())
 }
 
-async fn fill_page(
-    state: &Arc<Mutex<AppState>>,
-    server_id: &str,
-    channel_id: &str,
-    keys: &HashMap<u32, [u8; KEY_LEN]>,
-    needs: &[(String, i64, Vec<u32>)],
-    pace: &mut Pacer,
-) -> Result<(), String> {
-    let mut by_epoch: HashMap<u32, Vec<ChannelKeyBlob>> = HashMap::new();
-    for (user, uid, epochs) in needs {
-        let have: Vec<(u32, [u8; KEY_LEN])> = epochs.iter().filter_map(|e| keys.get(e).map(|k| (*e, *k))).collect();
-        if have.is_empty() {
-            continue;
-        }
+/// One viewer who lacks epochs: (name, uid, epochs).
+type Need = (String, i64, Vec<u32>);
+
+/// What a fill asks of the network (a seam for the tests).
+trait FillIo {
+    /// The needs page after `after_uid`, and whether more follow.
+    async fn needs_after(&mut self, after_uid: i64) -> Result<(Vec<Need>, bool), String>;
+    /// `keys` sealed to one viewer; None when they have no identity.
+    async fn seal(&mut self, user: &str, uid: i64, keys: &[(u32, [u8; KEY_LEN])]) -> Result<Option<Vec<ChannelKeyBlob>>, String>;
+    async fn publish(&mut self, epoch: u32, blobs: Vec<ChannelKeyBlob>) -> Result<ChannelKeysPublishRes, String>;
+}
+
+struct NetFill<'a> {
+    state: &'a Arc<Mutex<AppState>>,
+    server_id: &'a str,
+    channel_id: &'a str,
+    pace: Pacer,
+}
+
+impl FillIo for NetFill<'_> {
+    async fn needs_after(&mut self, after_uid: i64) -> Result<(Vec<Need>, bool), String> {
+        self.pace.tick().await;
+        let page = fetch(self.state, self.server_id, self.channel_id, 0, after_uid).await?;
+        Ok((needs_of(&page), page.more_needs))
+    }
+
+    async fn seal(&mut self, user: &str, uid: i64, keys: &[(u32, [u8; KEY_LEN])]) -> Result<Option<Vec<ChannelKeyBlob>>, String> {
         // They may have dropped a blob sealed to keys they've replaced
         // since: seal to the ones central has now.
-        let lookup = e2ee::recheck_current(state, *uid).await;
-        match seal_blobs_for(state, channel_id, (user, *uid), &have).await {
-            Ok(Some(blobs)) => {
-                for b in blobs {
-                    by_epoch.entry(b.epoch).or_default().push(b);
+        if e2ee::recheck_current(self.state, uid).await {
+            lookup_turn().await;
+        }
+        seal_blobs_for(self.state, self.channel_id, (user, uid), keys).await
+    }
+
+    async fn publish(&mut self, epoch: u32, blobs: Vec<ChannelKeyBlob>) -> Result<ChannelKeysPublishRes, String> {
+        self.pace.tick().await;
+        publish(self.state, self.server_id, self.channel_id, epoch, blobs, Vec::new()).await
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct FillReport {
+    /// Viewers sealed to, and the blobs of theirs that landed.
+    sealed: usize,
+    blobs: usize,
+    /// Viewers with no keys, or whose sealing failed.
+    unsealed: usize,
+    failed_publishes: usize,
+    pages: usize,
+}
+
+/// Publishes that fail in a row before a fill gives up (the community
+/// connection is gone, most likely).
+const MAX_FAILED_PUBLISHES_IN_A_ROW: usize = 3;
+
+/// Seal what we hold of `keys` for every viewer who lacks it, walking the
+/// needs pages from `first` (`more`: pages follow), publishing as it goes. A
+/// failure costs only what it touched — a viewer who couldn't be sealed to, a
+/// publish that didn't land — and the walk goes on: one failure used to end
+/// it, so a big rotation never reached everyone. Err only when a page can't
+/// be had (after one retry) or publishes keep failing; the rest wait for the
+/// next fill.
+async fn walk_fill(
+    io: &mut impl FillIo,
+    channel_id: &str,
+    mut keys: HashMap<u32, [u8; KEY_LEN]>,
+    first: Vec<Need>,
+    more: bool,
+) -> Result<FillReport, String> {
+    let mut report = FillReport::default();
+    let (mut needs, mut more) = (first, more);
+    let mut pending: BTreeMap<u32, Vec<ChannelKeyBlob>> = BTreeMap::new();
+    let mut since_flush = 0;
+    let mut failed_in_a_row = 0;
+    let mut after = 0i64;
+    loop {
+        report.pages += 1;
+        for (user, uid, epochs) in &needs {
+            let have: Vec<(u32, [u8; KEY_LEN])> = epochs.iter().filter_map(|e| keys.get(e).map(|k| (*e, *k))).collect();
+            if have.is_empty() {
+                continue;
+            }
+            match io.seal(user, *uid, &have).await {
+                Ok(Some(blobs)) => {
+                    report.sealed += 1;
+                    for b in blobs {
+                        pending.entry(b.epoch).or_default().push(b);
+                    }
+                    since_flush += 1;
+                }
+                Ok(None) => {
+                    report.unsealed += 1;
+                    log::info!("[chkeys] #{channel_id}: {user} has no encryption keys; can't fill");
+                }
+                Err(e) => {
+                    report.unsealed += 1;
+                    log::warn!("[chkeys] #{channel_id}: sealing for {user} failed: {e}");
                 }
             }
-            Ok(None) => log::info!("[chkeys] #{channel_id}: {user} has no encryption keys; can't fill"),
-            Err(e) => log::warn!("[chkeys] #{channel_id}: sealing for {user} failed: {e}"),
+            if since_flush >= FILL_FLUSH_MEMBERS || pending.values().map(Vec::len).sum::<usize>() >= MAX_PUBLISH_BLOBS {
+                publish_pending(io, channel_id, &mut pending, &mut keys, &mut report, &mut failed_in_a_row).await?;
+                since_flush = 0;
+            }
         }
-        if lookup {
-            tokio::time::sleep(FILL_PACE).await;
+        publish_pending(io, channel_id, &mut pending, &mut keys, &mut report, &mut failed_in_a_row).await?;
+        since_flush = 0;
+        let next = match needs.last() {
+            Some((_, uid, _)) if more && report.pages < MAX_NEEDS_PAGES => *uid,
+            _ => break,
+        };
+        // A page that doesn't get past the last one would walk forever.
+        if next <= after {
+            break;
         }
+        after = next;
+        (needs, more) = match io.needs_after(after).await {
+            Ok(page) => page,
+            Err(e) => {
+                log::debug!("[chkeys] #{channel_id}: needs page after {after} failed ({e}); once more");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                io.needs_after(after).await?
+            }
+        };
     }
-    for (epoch, blobs) in by_epoch {
-        for chunk in blobs.chunks(400) {
-            pace.tick().await;
-            let r = publish(state, server_id, channel_id, epoch, chunk.to_vec(), Vec::new()).await?;
-            if !r.success {
-                log::warn!("[chkeys] #{channel_id}: fill for epoch {epoch} refused: {}", r.message);
+    Ok(report)
+}
+
+/// Publish what a fill has sealed, per epoch, at most a publish's worth at a
+/// time. A refusal for an epoch we no longer hold drops it from the walk.
+/// Err once `MAX_FAILED_PUBLISHES_IN_A_ROW` publishes in a row didn't get
+/// through.
+async fn publish_pending(
+    io: &mut impl FillIo,
+    channel_id: &str,
+    pending: &mut BTreeMap<u32, Vec<ChannelKeyBlob>>,
+    keys: &mut HashMap<u32, [u8; KEY_LEN]>,
+    report: &mut FillReport,
+    failed_in_a_row: &mut usize,
+) -> Result<(), String> {
+    for (epoch, blobs) in std::mem::take(pending) {
+        for chunk in blobs.chunks(MAX_PUBLISH_BLOBS) {
+            match io.publish(epoch, chunk.to_vec()).await {
+                Ok(r) if r.success => {
+                    report.blobs += chunk.len();
+                    *failed_in_a_row = 0;
+                }
+                Ok(r) => {
+                    report.failed_publishes += 1;
+                    *failed_in_a_row = 0;
+                    log::warn!("[chkeys] #{channel_id}: fill for epoch {epoch} refused: {}", r.message);
+                    if r.message == "not_a_holder" {
+                        keys.remove(&epoch);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    report.failed_publishes += 1;
+                    *failed_in_a_row += 1;
+                    log::warn!("[chkeys] #{channel_id}: fill for epoch {epoch} failed: {e}");
+                    if *failed_in_a_row >= MAX_FAILED_PUBLISHES_IN_A_ROW {
+                        return Err(format!("{failed_in_a_row} publishes in a row failed, last: {e}"));
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
-/// After a removal: the next epoch for the current viewer list.
+/// After a removal: the next epoch for the current viewers (the creation
+/// carries one publish's worth; the filler brings it to the rest).
 pub async fn rotate(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str) -> Result<(), String> {
     let ring = refresh_no_create(state, server_id, channel_id).await?;
     if !ring.encrypted {
@@ -831,7 +1085,17 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, server_id: &str, b: C
     let sid = server_id.to_string();
     tokio::spawn(async move {
         let r = if b.rotate {
-            rotate(&st, &sid, &b.channel_id).await
+            // The rotation keeps a removed member out of what's said next:
+            // worth two more tries (the server keeps it owed, but asks again
+            // only when a holder comes online).
+            let mut r = rotate(&st, &sid, &b.channel_id).await;
+            for wait in [5, 20] {
+                let Err(e) = &r else { break };
+                log::warn!("[chkeys] #{}: rotation failed ({e}); again in {wait} s", b.channel_id);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                r = rotate(&st, &sid, &b.channel_id).await;
+            }
+            r
         } else {
             refresh(&st, &sid, &b.channel_id).await.map(|_| ())
         };
@@ -1226,5 +1490,186 @@ mod tests {
         // Forgetting the community drops its bookkeeping.
         forget_server(&mut *state.lock().await, "srv");
         assert!(tried(&state).await.is_none());
+    }
+
+    // ── Big channels (review B12) ────────────────────────────────────
+
+    fn members(uids: impl IntoIterator<Item = i64>) -> Vec<(String, i64)> {
+        uids.into_iter().map(|u| (format!("m{u}"), u)).collect()
+    }
+
+    /// A new epoch's own publish: us first, then who we have keys for, then
+    /// a few lookups; one publish's worth at most.
+    #[test]
+    fn a_creation_carries_one_publish_worth() {
+        let list = members([-3, ME, 1, 2, 3, 4, 5, 6]);
+        let cached: HashSet<i64> = [4, 6].into();
+        let got: Vec<i64> = creation_recipients(("me", ME), &list, &cached, 2, 400).iter().map(|m| m.1).collect();
+        assert_eq!(got, vec![ME, 4, 6, 1, 2], "self, cached, then lookups; no placeholder, no second self");
+
+        let crowd = members(1..=1100);
+        let cached: HashSet<i64> = (1..=600).collect();
+        let got = creation_recipients(("me", ME), &crowd, &cached, CREATE_LOOKUPS, MAX_PUBLISH_BLOBS);
+        assert_eq!(got.len(), MAX_PUBLISH_BLOBS);
+        assert_eq!(got[0].1, ME);
+        assert!(got[1..].iter().all(|m| cached.contains(&m.1)));
+
+        let cold = creation_recipients(("me", ME), &crowd, &HashSet::new(), CREATE_LOOKUPS, MAX_PUBLISH_BLOBS);
+        assert_eq!(cold.len(), 1 + CREATE_LOOKUPS, "a cold cache waits for one burst of lookups, no more");
+    }
+
+    /// Lookups for sealing run a little under central's key bucket: a
+    /// burst, then 4 a second, refilled while idle.
+    #[test]
+    fn lookups_stay_under_centrals_key_bucket() {
+        let t0 = tokio::time::Instant::now();
+        let mut rate = LookupRate::new();
+        for _ in 0..16 {
+            assert_eq!(rate.reserve(t0), Duration::ZERO);
+        }
+        assert_eq!(rate.reserve(t0), Duration::from_millis(250));
+        assert_eq!(rate.reserve(t0), Duration::from_millis(500), "callers queue for their turns");
+        // Two seconds later the queue has drained and six are back.
+        let t2 = t0 + Duration::from_secs(2);
+        for _ in 0..6 {
+            assert_eq!(rate.reserve(t2), Duration::ZERO);
+        }
+        assert!(rate.reserve(t2) > Duration::ZERO);
+        // A long rest refills the burst, never more.
+        let later = t2 + Duration::from_secs(60);
+        for _ in 0..16 {
+            assert_eq!(rate.reserve(later), Duration::ZERO);
+        }
+        assert!(rate.reserve(later) > Duration::ZERO);
+    }
+
+    /// A scripted community for `walk_fill`.
+    #[derive(Default)]
+    struct FakeFill {
+        /// The needs page after each cursor.
+        pages: HashMap<i64, (Vec<Need>, bool)>,
+        /// Cursors whose first fetch fails.
+        flaky: HashSet<i64>,
+        no_keys: HashSet<i64>,
+        seal_fails: HashSet<i64>,
+        /// Publish calls (0-based) that fail outright.
+        publish_fails: HashSet<usize>,
+        /// Epochs the server says we don't hold.
+        not_held: HashSet<u32>,
+        fetched: Vec<i64>,
+        sealed: Vec<i64>,
+        /// Per publish call: epoch, recipients, landed.
+        published: Vec<(u32, Vec<i64>, bool)>,
+    }
+
+    impl FillIo for FakeFill {
+        async fn needs_after(&mut self, after_uid: i64) -> Result<(Vec<Need>, bool), String> {
+            self.fetched.push(after_uid);
+            if self.flaky.remove(&after_uid) {
+                return Err("timed out".into());
+            }
+            self.pages.get(&after_uid).cloned().ok_or_else(|| "no such page".into())
+        }
+
+        async fn seal(&mut self, _user: &str, uid: i64, keys: &[(u32, [u8; KEY_LEN])]) -> Result<Option<Vec<ChannelKeyBlob>>, String> {
+            if self.seal_fails.contains(&uid) {
+                return Err("key lookup timed out".into());
+            }
+            if self.no_keys.contains(&uid) {
+                return Ok(None);
+            }
+            self.sealed.push(uid);
+            Ok(Some(keys.iter().map(|(epoch, _)| ChannelKeyBlob { epoch: *epoch, recipient_uid: uid, ..Default::default() }).collect()))
+        }
+
+        async fn publish(&mut self, epoch: u32, blobs: Vec<ChannelKeyBlob>) -> Result<ChannelKeysPublishRes, String> {
+            let call = self.published.len();
+            let uids: Vec<i64> = blobs.iter().map(|b| b.recipient_uid).collect();
+            assert!(uids.len() <= MAX_PUBLISH_BLOBS, "one publish carries at most {MAX_PUBLISH_BLOBS} blobs");
+            assert!(blobs.iter().all(|b| b.epoch == epoch));
+            let (landed, message) = if self.publish_fails.contains(&call) {
+                self.published.push((epoch, uids, false));
+                return Err("Publishing channel keys timed out".into());
+            } else if self.not_held.contains(&epoch) {
+                (false, "not_a_holder")
+            } else {
+                (true, "")
+            };
+            self.published.push((epoch, uids, landed));
+            Ok(ChannelKeysPublishRes { channel_id: CH.into(), success: landed, message: message.into(), current_epoch: 2 })
+        }
+    }
+
+    fn need_page(uids: impl IntoIterator<Item = i64>, epochs: &[u32]) -> Vec<Need> {
+        uids.into_iter().map(|u| (format!("m{u}"), u, epochs.to_vec())).collect()
+    }
+
+    fn keys_for(epochs: &[u32]) -> HashMap<u32, [u8; KEY_LEN]> {
+        epochs.iter().map(|e| (*e, [*e as u8; KEY_LEN])).collect()
+    }
+
+    /// Review B12 / §3: a fill reaches every page of a 1,100-viewer channel,
+    /// and a viewer it can't seal to, a publish that fails, or a page that
+    /// times out once costs only itself.
+    #[tokio::test(start_paused = true)]
+    async fn a_fill_walks_every_page_past_failures() {
+        let mut io = FakeFill::default();
+        let first = need_page(1..=200, &[1, 2, 3]);
+        io.pages.insert(200, (need_page(201..=400, &[2]), true));
+        io.pages.insert(400, (need_page(401..=1100, &[1, 2]), false));
+        io.flaky.insert(400);
+        io.seal_fails.insert(7);
+        io.no_keys.insert(300);
+        io.publish_fails.insert(1);
+        // We hold epochs 1 and 2 only: epoch 3 is sealed to nobody.
+        let report = walk_fill(&mut io, CH, keys_for(&[1, 2]), first, true).await.unwrap();
+
+        assert_eq!(io.fetched, vec![200, 400, 400], "every page, the flaky one asked twice");
+        assert_eq!(report.pages, 3);
+        assert_eq!(report.unsealed, 2);
+        assert_eq!(report.failed_publishes, 1);
+        let sealed: HashSet<i64> = io.sealed.iter().copied().collect();
+        let expect: HashSet<i64> = (1..=1100).filter(|u| *u != 7 && *u != 300).collect();
+        assert_eq!(sealed, expect, "everyone but the two who couldn't be sealed to");
+        assert!(io.published.iter().all(|(e, _, _)| *e != 3), "nothing for an epoch we don't hold");
+        // Only the failed publish's recipients miss out, and the walk went on past it.
+        let lost: HashSet<(u32, i64)> = io.published.iter().filter(|p| !p.2).flat_map(|(e, u, _)| u.iter().map(|u| (*e, *u))).collect();
+        let landed: HashSet<(u32, i64)> = io.published.iter().filter(|p| p.2).flat_map(|(e, u, _)| u.iter().map(|u| (*e, *u))).collect();
+        assert!(!lost.is_empty() && lost.iter().all(|(_, u)| *u <= 200), "the failed call was on the first page");
+        assert!(landed.contains(&(2, 1100)) && landed.contains(&(1, 401)), "the last page landed");
+        assert_eq!(report.blobs, landed.len());
+        // Recipients don't wait a whole page for their key.
+        assert!(io.published.iter().all(|(_, u, _)| u.len() <= FILL_FLUSH_MEMBERS));
+    }
+
+    /// A refusal because we no longer hold an epoch drops it from the rest of
+    /// the walk; a page that doesn't move past its cursor ends it.
+    #[tokio::test(start_paused = true)]
+    async fn a_fill_stops_what_cannot_go_on() {
+        let mut io = FakeFill::default();
+        io.not_held.insert(2);
+        io.pages.insert(40, (need_page([10, 20, 40], &[1, 2]), true));
+        let report = walk_fill(&mut io, CH, keys_for(&[1, 2]), need_page(1..=40, &[1, 2]), true).await.unwrap();
+        assert_eq!(io.fetched, vec![40], "a page that doesn't get past 40 ends the walk");
+        let epoch2_calls = io.published.iter().filter(|(e, _, _)| *e == 2).count();
+        assert_eq!(epoch2_calls, 1, "after not_a_holder, epoch 2 is sealed to nobody else");
+        assert_eq!(report.failed_publishes, 1);
+        // A page that can't be had twice is an error; what came before stays done.
+        let mut io = FakeFill::default();
+        io.flaky.insert(5);
+        let r = walk_fill(&mut io, CH, keys_for(&[1]), need_page(1..=5, &[1]), true).await;
+        assert!(r.is_err());
+        assert_eq!(io.sealed, vec![1, 2, 3, 4, 5]);
+        assert!(io.published.iter().all(|p| p.2));
+        // Publishes that keep failing (the connection went) end the walk
+        // instead of sealing on into the void.
+        let mut io = FakeFill::default();
+        io.publish_fails = (0..100).collect();
+        io.pages.insert(400, (need_page(401..=600, &[1]), false));
+        let r = walk_fill(&mut io, CH, keys_for(&[1]), need_page(1..=400, &[1]), true).await;
+        assert!(r.is_err());
+        assert_eq!(io.published.len(), MAX_FAILED_PUBLISHES_IN_A_ROW);
+        assert_eq!(io.sealed.len(), MAX_FAILED_PUBLISHES_IN_A_ROW * FILL_FLUSH_MEMBERS);
+        assert!(io.fetched.is_empty());
     }
 }

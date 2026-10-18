@@ -1787,37 +1787,49 @@ private:
                     }
                 }
                 if (want_needs) {
-                    // By uid, so the filler can walk them page by page.
-                    // Placeholders (negative uids) have no identity to seal
-                    // to, and the caller can't fill themselves or anyone who
-                    // refused their blobs (while someone else holds the key).
+                    // By uid, so the filler can walk them page by page —
+                    // every viewer, however many (review B12). Placeholders
+                    // (negative uids) have no identity to seal to, and the
+                    // caller can't fill themselves or anyone who refused
+                    // their blobs (while someone else holds the key). Who
+                    // lacks something comes from the blob counts (epochs
+                    // run 1..current, so a count below current is a gap),
+                    // what they lack from one query for the whole page; it
+                    // used to be one query per viewer.
                     std::sort(viewers.begin(), viewers.end());
                     const auto held = db->channel_key_held_counts(req.channel_id());
                     std::unordered_set<int64_t> refusing;
                     for (int64_t r : db->channel_key_refusing_recipients(req.channel_id(), uid_)) {
                         if (db->channel_key_unrefused_holder_exists(req.channel_id(), current, r)) refusing.insert(r);
                     }
-                    size_t needs = 0, epochs = 0;
+                    std::vector<int64_t> page;
+                    std::vector<const std::string*> page_names;
+                    size_t epochs = 0;
                     for (const auto& [uid, name] : viewers) {
                         if (uid <= 0 || uid <= req.needs_after_uid() || uid == uid_) continue;
                         auto it = held.find(uid);
-                        if (it != held.end() && it->second >= current) continue;
+                        const uint32_t have = it != held.end() ? it->second : 0;
+                        if (have >= current) continue;
                         if (refusing.count(uid)) continue;
-                        auto missing = db->channel_key_missing_epochs(req.channel_id(), uid);
-                        if (missing.empty()) continue;
-                        if (needs >= kMaxNeeds || (needs > 0 && epochs + missing.size() > kMaxNeededEpochs)) {
+                        // One viewer missing more than a page's worth gets the
+                        // rest on a later pass.
+                        const size_t missing = std::min<size_t>(current - have, kMaxNeededEpochs);
+                        if (page.size() >= kMaxNeeds || (!page.empty() && epochs + missing > kMaxNeededEpochs)) {
                             res->set_more_needs(true);
                             break;
                         }
-                        // One viewer missing more than a page's worth gets the
-                        // rest on a later pass.
-                        if (missing.size() > kMaxNeededEpochs) missing.resize(kMaxNeededEpochs);
+                        page.push_back(uid);
+                        page_names.push_back(&name);
+                        epochs += missing;
+                    }
+                    const auto missing = db->channel_key_missing_epochs_for(req.channel_id(), page, kMaxNeededEpochs);
+                    for (size_t i = 0; i < page.size(); ++i) {
+                        auto it = missing.find(page[i]);
+                        if (it == missing.end()) continue;
                         auto* n = res->add_needs();
-                        n->set_username(name);
-                        n->set_uid(uid);
-                        for (uint32_t e : missing) n->add_epochs(e);
-                        epochs += missing.size();
-                        ++needs;
+                        n->set_username(*page_names[i]);
+                        n->set_uid(page[i]);
+                        for (uint32_t e : it->second) n->add_epochs(e);
                     }
                 }
             }

@@ -489,6 +489,11 @@ public:
     // Epochs (1..=current) `uid` has no blob for.
     std::vector<uint32_t> channel_key_missing_epochs(const std::string& channel_id,
                                                      int64_t uid) const;
+    // The same for each of `uids` (a page of CHANNEL_KEYS_RES needs) in one
+    // query, at most `per_uid` epochs each (the lowest). Members missing
+    // nothing are absent.
+    std::unordered_map<int64_t, std::vector<uint32_t>> channel_key_missing_epochs_for(
+        const std::string& channel_id, const std::vector<int64_t>& uids, size_t per_uid) const;
     // Accounts holding a blob for `epoch`.
     std::vector<int64_t> channel_key_holders(const std::string& channel_id, uint32_t epoch) const;
     // Delete `recipient_uid`'s own blobs for `epochs` (they can't use them);

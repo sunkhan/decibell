@@ -5027,6 +5027,80 @@ def test_b13_paced_requests():
     owner.close()
 
 
+def test_b12_many_viewers():
+    print("[B12] an encrypted channel with > 1000 viewers: needs page through all of them; chunked rotations land")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    owner.send(pb.Packet.CHANNEL_CREATE_REQ, channel_create_req=pb.ChannelCreateRequest(
+        name="b12-crowd", type=pb.ChannelInfo.TEXT, encrypted=True))
+    cr = owner.wait(pb.Packet.CHANNEL_ACTION_RES, timeout=2, pred=lambda p: p.channel_action_res.action == "create")
+    room = cr.channel_action_res.channel.id
+    KC = b"K" * 32
+    me = uid_of("alice")
+
+    def publish(epoch, uids, key_check=b""):
+        owner.send(pb.Packet.CHANNEL_KEYS_PUBLISH_REQ, channel_keys_publish_req=pb.ChannelKeysPublishReq(
+            channel_id=room, epoch=epoch, key_check=key_check,
+            blobs=[pb.ChannelKeyBlob(recipient_uid=u, blob=b"B%d-%d" % (epoch, u)) for u in uids]))
+        r = owner.wait(pb.Packet.CHANNEL_KEYS_PUBLISH_RES, timeout=5)
+        return r.channel_keys_publish_res if r else None
+
+    def keys_res(after=0):
+        owner.send(pb.Packet.CHANNEL_KEYS_REQ, channel_keys_req=pb.ChannelKeysReq(channel_id=room, needs_after_uid=after))
+        r = owner.wait(pb.Packet.CHANNEL_KEYS_RES, timeout=5, pred=lambda p: p.channel_keys_res.channel_id == room
+                       and p.channel_keys_res.needs_after_uid == after)
+        return r.channel_keys_res if r else None
+
+    def all_needs():
+        out, after, pages = {}, 0, 0
+        while pages < 100:
+            r = keys_res(after)
+            if r is None:
+                return None, pages
+            pages += 1
+            out.update({n.uid: list(n.epochs) for n in r.needs})
+            if not r.more_needs or not r.needs:
+                return out, pages
+            after = r.needs[-1].uid
+        return None, pages
+
+    r = publish(1, [me], KC)
+    check("b12: epoch 1, held by the owner alone", r is not None and r.success)
+    N = 1100
+    crowd = [850000 + i for i in range(N)]
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    c.executemany("insert into members(uid, username, joined_at, nickname) values(?,?,?,'')",
+                  ((u, f"b12m{i:04d}", now + 1 + i) for i, u in enumerate(crowd)))
+    c.commit(); c.close()
+    owner.flush(0.3)
+    first = keys_res()
+    check("b12: the first page names at most 1000 viewers", first is not None and 0 < len(first.members) <= 1000
+          and first.more_needs and len(first.needs) == 200, (len(first.members), len(first.needs)) if first else None)
+    needs, pages = all_needs()
+    check("b12: needs page through every viewer, the 1001st and later included",
+          needs is not None and all(needs.get(u) == [1] for u in crowd) and me not in needs,
+          f"{pages} pages, {len(needs or {})} needs, missing {sum(1 for u in crowd if u not in (needs or {}))}")
+    # A rotation the client's way: the creation carries one publish's worth
+    # (the server takes 500 blobs per publish), fills bring the rest.
+    sql("insert or ignore into channel_key_rotations(channel_id, due_since) values(?, ?)", room, now)
+    r = publish(2, [me] + crowd[:500], KC)
+    check("b12: a creation over 500 blobs is refused", r is not None and not r.success and r.message == "Bad blob count.")
+    r = publish(2, [me] + crowd[:399], KC)
+    check("b12: the rotation goes out with its first 400 blobs", r is not None and r.success and r.current_epoch == 2)
+    ok = True
+    for i in range(399, N, 400):
+        r = publish(2, crowd[i:i + 400])
+        ok = ok and r is not None and r.success
+    holders = sql("select count(*) from channel_key_blobs where channel_id=? and epoch=2", room)[0][0]
+    check("b12: fills bring the new epoch to every viewer", ok and holders == N + 1, f"{holders} hold epoch 2")
+    needs, pages = all_needs()
+    check("b12: afterwards nobody lacks the new epoch (only the old one they never had)",
+          needs is not None and all(needs.get(u) == [1] for u in crowd), f"{pages} pages")
+    sql("delete from members where uid between 850000 and 851099")
+    delete_channel(owner, room)
+    owner.close()
+
+
 if __name__ == "__main__":
     if OLD_SERVER_BIN:
         test_v15_uid_migration()
@@ -5111,6 +5185,7 @@ if __name__ == "__main__":
         test_a2_relay_drops_oversized_datagrams()
         test_a3_bulk_fanout()
         test_b13_paced_requests()
+        test_b12_many_viewers()
     finally:
         stop_server(proc)
     test_b9_timeouts()
