@@ -1160,7 +1160,7 @@ def test_roster_online_paging():
     # A page size that leaves the online part ending mid-page, after at
     # least two pages of online members only.
     n_online = member_page(owner, limit=1).online_count
-    limit = next(k for k in (7, 8, 9, 6, 5) if n_online % k and n_online > 2 * k)
+    limit = next((k for k in (7, 8, 9, 6, 5) if n_online % k and n_online > 2 * k), 7)
     pages, seq = roster_pages(owner, limit=limit)
     online = [m for m in seq if m.is_online]
     offline = [m for m in seq if not m.is_online]
@@ -1774,7 +1774,8 @@ def test_message_search():
     rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.uid == -500)
     up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.uid == uid_for("lazy"))
     check("legacy member: rosters swap the placeholder's row for the account's", rm is not None and up is not None
-          and up.member_upsert.member.nickname == "Lazy" and up.member_upsert.total_members == rm.member_remove.total_members + 1)
+          and up.member_upsert.member.nickname == "Lazy"
+          and up.member_upsert.total_members == sql("select count(*) from members")[0][0], f"{rm} / {up}")
     lazy.close()
 
     # Bans go by uid: a made-up placeholder can't be banned (it would only
