@@ -67,6 +67,15 @@ interface Props<T extends string | number> {
 
 const MARGIN = 8;
 const GAP = 4;
+const TRIGGER_BASE =
+  "dsel-trigger group/dsel flex w-full min-w-0 items-center rounded-md border border-border text-left font-normal normal-case tracking-normal outline-none transition-all hover:border-accent/40 focus-visible:border-accent focus-visible:shadow-ring aria-expanded:border-accent aria-expanded:shadow-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border";
+const TRIGGER_MD = "gap-2 px-3 py-2.5 text-[13px] leading-[18px]";
+const TRIGGER_FIELD = "bg-bg-lighter text-text-primary";
+
+/// A md field Select's trigger, for a picker that opens something else (a
+/// popover searching the server) but should read as a Select. Pair it with
+/// SelectChevron and aria-expanded.
+export const SELECT_TRIGGER_CLASS = `${TRIGGER_BASE} ${TRIGGER_MD} ${TRIGGER_FIELD}`;
 const MAX_MENU_H = 320;
 const TYPEAHEAD_MS = 600;
 const PAGE = 8;
@@ -347,12 +356,8 @@ export default function Select<T extends string | number>({
     }
   };
 
-  const triggerSize =
-    size === "sm"
-      ? "gap-1.5 px-2.5 py-1.5 text-[12px] leading-[16px]"
-      : "gap-2 px-3 py-2.5 text-[13px] leading-[18px]";
-  const triggerTone =
-    variant === "sunken" ? "bg-bg-darkest text-text-secondary" : "bg-bg-lighter text-text-primary";
+  const triggerSize = size === "sm" ? "gap-1.5 px-2.5 py-1.5 text-[12px] leading-[16px]" : TRIGGER_MD;
+  const triggerTone = variant === "sunken" ? "bg-bg-darkest text-text-secondary" : TRIGGER_FIELD;
 
   let flatIndex = -1;
   const menuStyle: CSSProperties = placement
@@ -382,7 +387,7 @@ export default function Select<T extends string | number>({
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={onKeyDown}
         data-size={size}
-        className={`dsel-trigger group/dsel flex w-full min-w-0 items-center rounded-md border border-border text-left font-normal normal-case tracking-normal outline-none transition-all hover:border-accent/40 focus-visible:border-accent focus-visible:shadow-ring aria-expanded:border-accent aria-expanded:shadow-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border ${triggerSize} ${triggerTone} ${className}`}
+        className={`${TRIGGER_BASE} ${triggerSize} ${triggerTone} ${className}`}
       >
         {icon && <span className="flex shrink-0 text-text-muted">{icon}</span>}
         {selected?.icon && <span className="flex shrink-0">{selected.icon}</span>}
@@ -487,6 +492,11 @@ export default function Select<T extends string | number>({
 
 function enabledFromAll<T extends string | number>(all: SelectOption<T>[]): number {
   return all.findIndex((o) => !o.disabled);
+}
+
+/// The md trigger's chevron (SELECT_TRIGGER_CLASS).
+export function SelectChevron() {
+  return <Chevron size="md" />;
 }
 
 function Chevron({ size }: { size: "md" | "sm" }) {

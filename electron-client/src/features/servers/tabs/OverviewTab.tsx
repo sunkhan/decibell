@@ -2,18 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { invoke, listen } from "../../../lib/ipc";
 import { clampLine } from "../../../lib/utf8";
 import { useChatStore } from "../../../stores/chatStore";
-import { EMPTY_LIST } from "../../../lib/empty";
 import { useAuthStore } from "../../../stores/authStore";
 import { toast } from "../../../stores/toastStore";
 import { stringToGradient } from "../../../utils/colors";
 import { ServerPictureCropperModal } from "../ServerPictureCropperModal";
 import { PERM, usePermission } from "../permissions";
 import Switch from "../../../components/Switch";
-import Select from "../../../components/Select";
+import { SELECT_TRIGGER_CLASS, SelectChevron } from "../../../components/Select";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { useEchoSave } from "../saveEcho";
 import { useLeaveGuard } from "../leaveGuard";
-import { SaveBar } from "./settingsUi";
+import { Popover, SaveBar, SearchField, anchorBelow } from "./settingsUi";
+import { useMemberSearch } from "./useMemberSearch";
+import type { MenuAnchor } from "../../../hooks/useMenuPosition";
+import type { ServerMember } from "../../../types";
 import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
 import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
 import { useMember } from "../../../hooks/useDisplayName";
@@ -37,7 +39,6 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   const hasPicture = pictureVersion !== "";
   const ownUid = useAuthStore((s) => s.uid);
   const isOwner = !!ownUid && !!owner && owner === ownUid;
-  const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
   // The owner's row, looked up if the roster hasn't paged that far.
   const ownerName = useUserName(owner, useMember(serverId, owner ?? 0)?.username ?? "Unknown user");
   const names = useUsersStore((s) => s.names);
@@ -126,23 +127,23 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
     };
   }, [serverId, stopMeta, stopPublic]);
 
-  // Ownership transfer (owner only, typed confirmation).
-  const [transferTarget, setTransferTarget] = useState<Uid>(0);
+  // Ownership transfer (owner only, typed confirmation). The new owner is
+  // found by searching the server (OwnerPicker), not among the members the
+  // roster happens to hold; the pick is kept as its record, since search
+  // results come and go.
+  const [transferTarget, setTransferTarget] = useState<ServerMember | null>(null);
   const [transferConfirm, setTransferConfirm] = useState("");
   const [transferring, setTransferring] = useState(false);
-  // Accounts only: a community placeholder can't own the server. Only the
-  // members the roster holds (it pages in as the sidebar scrolls): in a big
-  // community the one you want may need a scroll of the member list first.
-  const transferCandidates = members.filter((m) => m.uid > 0 && m.uid !== ownUid);
+  const [ownerPicker, setOwnerPicker] = useState<MenuAnchor | null>(null);
+  const ownerPickerRef = useRef<HTMLButtonElement>(null);
   const nameFor = (m: { uid: Uid; username: string }) => names.get(m.uid) ?? m.username;
-  const targetMember = transferTarget ? transferCandidates.find((m) => m.uid === transferTarget) : undefined;
-  const targetName = targetMember ? nameFor(targetMember) : "";
+  const targetName = transferTarget ? nameFor(transferTarget) : "";
   const runTransfer = async () => {
-    if (!isOwner || !targetName || transferConfirm !== targetName) return;
+    if (!isOwner || !transferTarget || !targetName || transferConfirm !== targetName) return;
     setTransferring(true);
     try {
-      await invoke("transfer_ownership", { serverId, newOwner: targetName, newOwnerUid: transferTarget });
-      setTransferTarget(0);
+      await invoke("transfer_ownership", { serverId, newOwner: targetName, newOwnerUid: transferTarget.uid });
+      setTransferTarget(null);
       setTransferConfirm("");
     } catch (err) {
       toast.error("Transfer failed", String(err));
@@ -284,21 +285,49 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
                 The new owner gets every permission and outranks every role; you
                 keep only the roles you hold. This can't be undone by you.
               </p>
-              <Select
-                className="mt-3"
+              <button
+                ref={ownerPickerRef}
+                type="button"
                 aria-label="New owner"
-                placeholder="Choose a member…"
-                value={transferTarget || null}
-                onChange={(v) => {
-                  setTransferTarget(v);
-                  setTransferConfirm("");
+                aria-haspopup="menu"
+                aria-expanded={!!ownerPicker}
+                onClick={() => setOwnerPicker(ownerPicker ? null : anchorBelow(ownerPickerRef.current!))}
+                onKeyDown={(e) => {
+                  // As a Select opens on ArrowDown.
+                  if (e.key !== "ArrowDown" || ownerPicker) return;
+                  e.preventDefault();
+                  setOwnerPicker(anchorBelow(e.currentTarget));
                 }}
-                options={transferCandidates.map((m) => ({
-                  value: m.uid,
-                  label: m.nickname ? `${m.nickname} (${nameFor(m)})` : nameFor(m),
-                  icon: <UserAvatar uid={m.uid} name={nameFor(m)} size={18} />,
-                }))}
-              />
+                className={`mt-3 ${SELECT_TRIGGER_CLASS}`}
+              >
+                {transferTarget && <UserAvatar uid={transferTarget.uid} name={targetName} size={18} />}
+                <span className={`min-w-0 flex-1 truncate ${transferTarget ? "" : "text-text-muted"}`}>
+                  {transferTarget
+                    ? transferTarget.nickname
+                      ? `${transferTarget.nickname} (${targetName})`
+                      : targetName
+                    : "Choose a member…"}
+                </span>
+                <SelectChevron />
+              </button>
+              {ownerPicker && (
+                <OwnerPicker
+                  serverId={serverId}
+                  ownUid={ownUid}
+                  anchor={ownerPicker}
+                  ignore={ownerPickerRef}
+                  onClose={() => {
+                    setOwnerPicker(null);
+                    ownerPickerRef.current?.focus();
+                  }}
+                  onPick={(m) => {
+                    setOwnerPicker(null);
+                    setTransferTarget(m);
+                    setTransferConfirm("");
+                    ownerPickerRef.current?.focus();
+                  }}
+                />
+              )}
               {targetName && (
                 <>
                   <input
@@ -396,5 +425,75 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
         />
       )}
     </div>
+  );
+}
+
+/// The new owner, searched for on the server (MEMBER_SEARCH_REQ): every
+/// member, whether the roster has paged them in or not. The results live
+/// here only, never in the roster store. Accounts only (a community
+/// placeholder can't own the server), and not yourself.
+function OwnerPicker({
+  serverId,
+  ownUid,
+  anchor,
+  ignore,
+  onClose,
+  onPick,
+}: {
+  serverId: string;
+  ownUid: Uid;
+  anchor: MenuAnchor;
+  ignore: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+  onPick: (member: ServerMember) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const found = useMemberSearch(serverId, query, 0);
+  const names = useUsersStore((s) => s.names);
+  const nameFor = (m: ServerMember) => names.get(m.uid) ?? m.username;
+  const shown = found.members.filter((m) => m.uid > 0 && m.uid !== ownUid);
+  return (
+    <Popover anchor={anchor} onClose={onClose} ignore={ignore} className="flex w-80 flex-col p-2">
+      <SearchField value={query} onChange={setQuery} placeholder="Find a member" autoFocus />
+      {/* A fixed height: the popover sits low in the tab and may open above
+          the trigger, and a list that grew and shrank as results came in
+          would flip it from side to side while typing. */}
+      <div className="mt-2 flex h-64 flex-col overflow-y-auto scrollbar-thin">
+        {shown.map((m) => (
+          <button
+            key={m.uid}
+            type="button"
+            role="menuitem"
+            onClick={() => onPick(m)}
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left outline-none hover:bg-surface-hover focus-visible:bg-surface-hover"
+          >
+            <UserAvatar uid={m.uid} name={nameFor(m)} size={24} />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary">
+              {m.nickname || nameFor(m)}
+              {m.nickname && <span className="ml-1.5 font-meta text-meta font-normal text-text-muted">{nameFor(m)}</span>}
+            </span>
+          </button>
+        ))}
+        {found.hasMore && (
+          <button
+            type="button"
+            onClick={found.loadMore}
+            disabled={found.loading}
+            className="rounded-md px-2 py-1.5 text-left text-[12px] font-medium text-text-muted hover:bg-surface-hover hover:text-text-primary disabled:opacity-60"
+          >
+            {found.loading ? "Loading…" : "Show more"}
+          </button>
+        )}
+        {!found.loaded && <p className="px-2 py-4 text-center text-[12px] text-text-muted">Searching…</p>}
+        {found.loaded && found.error && (
+          <p className="px-2 py-4 text-center text-[12px] leading-[1.5] text-error">{found.error}</p>
+        )}
+        {found.loaded && !found.error && shown.length === 0 && !found.hasMore && (
+          <p className="px-2 py-4 text-center text-[12px] text-text-muted">
+            {query.trim() ? "No one else matches." : "No one else is a member yet."}
+          </p>
+        )}
+      </div>
+    </Popover>
   );
 }
