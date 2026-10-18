@@ -311,8 +311,7 @@ mod tests {
             packet::Payload::LoginReq(LoginRequest {
                 username: "test".into(),
                 password: "pass".into(),
-                resume_token: String::new(),
-                device_id: String::new(),
+                ..Default::default()
             }),
             Some("my_token"),
         );

@@ -44,6 +44,84 @@ fn central_addr() -> (String, u16) {
     (CENTRAL_HOST.to_string(), CENTRAL_PORT)
 }
 
+/// What every LoginRequest says about this install (docs/superpowers/specs/
+/// 2026-10-19-devices-and-password-design.md): its device id, and for the
+/// account's device list the operating system's name (never the computer's
+/// name), the platform and the app's version. Read before taking AppState:
+/// the first read touches the config file.
+pub(crate) struct ThisDevice {
+    id: String,
+    name: String,
+    platform: &'static str,
+    app_version: String,
+}
+
+impl ThisDevice {
+    pub(crate) fn read() -> Self {
+        ThisDevice {
+            id: crate::config::device_id(),
+            name: os_name().to_string(),
+            platform: match std::env::consts::OS {
+                "macos" => "macos",
+                "windows" => "windows",
+                _ => "linux",
+            },
+            app_version: crate::state::boot_opt().map(|b| b.app_version.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// A password sign-in. `automatic`: not typed just now (the saved
+    /// sign-in, or the password kept for reconnecting), which central
+    /// accepts only on a device the account has.
+    pub(crate) fn login(&self, username: String, password: String, automatic: bool) -> LoginRequest {
+        LoginRequest {
+            username,
+            password,
+            automatic,
+            ..self.resume(String::new())
+        }
+    }
+
+    pub(crate) fn resume(&self, resume_token: String) -> LoginRequest {
+        LoginRequest {
+            username: String::new(),
+            password: String::new(),
+            resume_token,
+            device_id: self.id.clone(),
+            device_name: self.name.clone(),
+            device_platform: self.platform.to_string(),
+            app_version: self.app_version.clone(),
+            automatic: false,
+        }
+    }
+}
+
+/// "CachyOS Linux", "Windows", "macOS": what the device list calls this
+/// install. Linux names its distribution (os-release's PRETTY_NAME).
+fn os_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| match std::env::consts::OS {
+        "windows" => "Windows".to_string(),
+        "macos" => "macOS".to_string(),
+        _ => std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|text| pretty_name(&text))
+            .unwrap_or_else(|| "Linux".to_string()),
+    })
+}
+
+/// os-release's PRETTY_NAME (else NAME), unquoted, at most 64 characters.
+fn pretty_name(os_release: &str) -> Option<String> {
+    let field = |key: &str| {
+        os_release.lines().find_map(|line| {
+            let value = line.strip_prefix(key)?.strip_prefix('=')?.trim();
+            let value = value.trim_matches(|c| c == '"' || c == '\'');
+            (!value.is_empty()).then(|| value.chars().take(64).collect::<String>())
+        })
+    };
+    field("PRETTY_NAME").or_else(|| field("NAME"))
+}
+
 pub struct CentralClient {
     connection: Option<Connection>,
     router_task: Option<JoinHandle<()>>,
@@ -116,18 +194,10 @@ impl CentralClient {
         }
     }
 
-    /// Send a LoginRequest.
-    pub async fn login(&self, username: &str, password: &str) -> Result<(), String> {
-        let data = build_packet(
-            packet::Type::LoginReq,
-            packet::Payload::LoginReq(LoginRequest {
-                username: username.into(),
-                password: password.into(),
-                resume_token: String::new(),
-                device_id: crate::config::device_id(),
-            }),
-            None,
-        );
+    /// Send a LoginRequest. `automatic`: the saved sign-in, not typed.
+    pub async fn login(&self, username: &str, password: &str, automatic: bool) -> Result<(), String> {
+        let request = ThisDevice::read().login(username.into(), password.into(), automatic);
+        let data = build_packet(packet::Type::LoginReq, packet::Payload::LoginReq(request), None);
         self.send(data).await
     }
 
@@ -187,25 +257,17 @@ impl CentralClient {
                         // releasing AppState: connection.send() writes to a
                         // bounded channel that can block on a dead socket.
                         // Read before the lock: the first read touches the config file.
-                        let device_id = crate::config::device_id();
+                        let device = ThisDevice::read();
                         let login_data = {
                             let mut s = state.lock().await;
                             let request = if let Some(token) = s.resume_token.clone() {
                                 s.resume_pending = true;
-                                Some(LoginRequest {
-                                    username: String::new(),
-                                    password: String::new(),
-                                    resume_token: token,
-                                    device_id: device_id.clone(),
-                                })
+                                Some(device.resume(token))
                             } else {
                                 s.resume_pending = false;
-                                s.credentials.as_ref().map(|(user, pass)| LoginRequest {
-                                    username: user.clone(),
-                                    password: pass.clone(),
-                                    resume_token: String::new(),
-                                    device_id: device_id.clone(),
-                                })
+                                s.credentials
+                                    .as_ref()
+                                    .map(|(user, pass)| device.login(user.clone(), pass.clone(), true))
                             };
                             request.map(|req| {
                                 build_packet(packet::Type::LoginReq, packet::Payload::LoginReq(req), None)
@@ -385,7 +447,7 @@ impl CentralClient {
                             // A device signing in is active, so the account isn't idle.
                             account_idle: false,
                         });
-                        events::emit_login_succeeded(username, resp.uid, resp.renames);
+                        events::emit_login_succeeded(username, resp.uid, resp.renames, resp.devices);
                         tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
                         // Auto-rejoin: ship memberships to the renderer
@@ -439,6 +501,15 @@ impl CentralClient {
                         // be would be refused by password too: this
                         // connection goes, and the reconnect loop asks again
                         // later (a slot frees when another device leaves).
+                        // This device was signed out (from another device, or
+                        // by a password change) while it was away: so it is
+                        // here, saved sign-in and all, with the sign-in page
+                        // saying why.
+                        if resp.signed_out {
+                            log::info!("[auth] central says this device was signed out");
+                            tokio::spawn(crate::commands::auth::signed_out_elsewhere("signed_out"));
+                            continue;
+                        }
                         let mut refused = None;
                         let mut retry_later = false;
                         let fallback = {
@@ -485,12 +556,7 @@ impl CentralClient {
                             Some(((user, pass), tx)) => {
                                 let data = build_packet(
                                     packet::Type::LoginReq,
-                                    packet::Payload::LoginReq(LoginRequest {
-                                        username: user,
-                                        password: pass,
-                                        resume_token: String::new(),
-                                        device_id: crate::config::device_id(),
-                                    }),
+                                    packet::Payload::LoginReq(ThisDevice::read().login(user, pass, true)),
                                     None,
                                 );
                                 tokio::spawn(async move {
@@ -715,13 +781,15 @@ impl CentralClient {
                     }
                 }
                 Some(packet::Payload::SessionClosed(closed)) => {
-                    if closed.reason == session_closed::Reason::SignedOut as i32 {
-                        // The account signed its other devices out: so are we,
-                        // saved sign-in and all, rather than reconnecting.
+                    let signed_out = closed.reason == session_closed::Reason::SignedOut as i32;
+                    let password_changed = closed.reason == session_closed::Reason::PasswordChanged as i32;
+                    if signed_out || password_changed {
+                        // Another device signed this one out, or changed the
+                        // password: sign out here, saved sign-in and all,
+                        // rather than reconnecting.
                         log::info!("[auth] central signed this device out");
-                        tokio::spawn(async {
-                            let _ = crate::commands::auth::logout().await;
-                        });
+                        let reason = if password_changed { "password_changed" } else { "signed_out" };
+                        tokio::spawn(crate::commands::auth::signed_out_elsewhere(reason));
                     } else {
                         // Another connection signed in with our device id while
                         // we are connected: this install was copied. Become a
@@ -770,6 +838,27 @@ impl CentralClient {
                     if let Some(w) = state.lock().await.pending_rename.take() {
                         let _ = w.send(res);
                     }
+                }
+                // Devices and passwords (devices design): answers for the
+                // commands waiting on them, and a change in the account's
+                // device list (with the "new sign-in" notice).
+                Some(packet::Payload::DeviceListRes(res)) => {
+                    if let Some(w) = state.lock().await.pending_device_list.take() {
+                        let _ = w.send(res);
+                    }
+                }
+                Some(packet::Payload::DeviceSignOutRes(res)) => {
+                    if let Some(w) = state.lock().await.pending_device_sign_out.take() {
+                        let _ = w.send(res);
+                    }
+                }
+                Some(packet::Payload::PasswordChangeRes(res)) => {
+                    if let Some(w) = state.lock().await.pending_password_change.take() {
+                        let _ = w.send(res);
+                    }
+                }
+                Some(packet::Payload::DevicesChanged(changed)) => {
+                    events::emit_devices_changed(changed.new_device.map(events::DevicePayload::from));
                 }
                 // Someone else changed their name, or another device of ours
                 // changed ours (a rename on this device is announced by
@@ -1054,7 +1143,7 @@ impl Drop for CentralClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{connected_to, is_definitive_refusal, own_presence_payload};
+    use super::{connected_to, is_definitive_refusal, own_presence_payload, pretty_name, ThisDevice};
     use crate::net::proto::{CommunityServerInfo, OwnPresence, PresenceStatus};
 
     #[test]
@@ -1097,5 +1186,34 @@ mod tests {
         assert!(!is_definitive_refusal("Too many failed sign-ins for this account. Try again in a few minutes."));
         assert!(!is_definitive_refusal("Your session has expired. Please sign in again."));
         assert!(!is_definitive_refusal(""));
+    }
+
+    #[test]
+    fn the_device_list_names_the_distribution() {
+        let cachy = "NAME=\"CachyOS Linux\"\nPRETTY_NAME=\"CachyOS\"\nID=cachyos\n";
+        assert_eq!(pretty_name(cachy).as_deref(), Some("CachyOS"));
+        assert_eq!(pretty_name("NAME='Arch Linux'\n").as_deref(), Some("Arch Linux"));
+        assert_eq!(pretty_name("ID=debian\nPRETTY_NAME=\n").as_deref(), None);
+        let long = format!("PRETTY_NAME={}\n", "x".repeat(100));
+        assert_eq!(pretty_name(&long).map(|n| n.chars().count()), Some(64));
+    }
+
+    #[test]
+    fn sign_ins_carry_the_device_and_whether_they_were_typed() {
+        // Built by hand: read() takes the id from the config file.
+        let device = ThisDevice {
+            id: "0123abcd".into(),
+            name: "CachyOS".into(),
+            platform: "linux",
+            app_version: "1.2.3".into(),
+        };
+        let typed = device.login("ann".into(), "pw".into(), false);
+        let saved = device.login("ann".into(), "pw".into(), true);
+        let resume = device.resume("rt".into());
+        assert!(!typed.automatic && saved.automatic && !resume.automatic);
+        assert!(typed.device_id == "0123abcd" && resume.device_id == "0123abcd");
+        assert_eq!((typed.device_name.as_str(), typed.device_platform.as_str()), ("CachyOS", "linux"));
+        assert_eq!(resume.app_version, "1.2.3");
+        assert_eq!((resume.resume_token.as_str(), resume.username.as_str()), ("rt", ""));
     }
 }

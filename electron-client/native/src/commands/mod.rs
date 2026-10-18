@@ -9,6 +9,7 @@ pub mod auth;
 pub mod call;
 pub mod channels;
 pub mod community;
+pub mod devices;
 pub mod dm;
 pub mod e2ee;
 pub mod friends;

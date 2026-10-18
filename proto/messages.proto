@@ -312,6 +312,15 @@ message Packet {
     OWN_PRESENCE     = 169;   // central→every session of the account
     MEMBERSHIP_ADDED = 170;   // central→every session of the account
     SESSION_CLOSED   = 171;   // central→a session it is about to close
+    // Devices and passwords (docs/superpowers/specs/2026-10-19-devices-and-password-design.md):
+    // the account's devices, signing some out, changing the password.
+    DEVICE_LIST_REQ      = 172;   // client→central
+    DEVICE_LIST_RES      = 173;   // central→requester
+    DEVICE_SIGN_OUT_REQ  = 174;   // client→central
+    DEVICE_SIGN_OUT_RES  = 175;   // central→requester
+    DEVICES_CHANGED      = 176;   // central→the account's other sessions
+    PASSWORD_CHANGE_REQ  = 177;   // client→central
+    PASSWORD_CHANGE_RES  = 178;   // central→requester
   }
 
   Type type = 1;
@@ -526,6 +535,13 @@ message Packet {
     OwnPresence              own_presence           = 171;
     MembershipAdded          membership_added       = 172;
     SessionClosed            session_closed         = 173;
+    DeviceListRequest        device_list_req        = 174;
+    DeviceListResponse       device_list_res        = 175;
+    DeviceSignOutRequest     device_sign_out_req    = 176;
+    DeviceSignOutResponse    device_sign_out_res    = 177;
+    DevicesChanged           devices_changed        = 178;
+    PasswordChangeRequest    password_change_req    = 179;
+    PasswordChangeResponse   password_change_res    = 180;
   }
 }
 
@@ -557,9 +573,19 @@ message LoginRequest {
   string resume_token = 4;
   // This install, made once at random (multi-device design; at most 64
   // bytes). A login from the same device id replaces that device's previous
-  // connection; other device ids stay signed in alongside. Empty counts as a
-  // device of its own every time.
+  // connection; other device ids stay signed in alongside. Required for a
+  // password sign-in; a resume takes the one its token was issued to.
   string device_id = 5;
+  // What the account's device list shows for this install (devices design):
+  // the operating system's name (e.g. "CachyOS Linux"; never the computer's
+  // name), "linux" / "windows" / "macos", and the app's version.
+  string device_name = 6;
+  string device_platform = 7;
+  string app_version = 8;
+  // Not typed just now: the saved sign-in, or the password kept for
+  // reconnecting. Such a sign-in needs the device to be signed in already
+  // (central knows it and nothing signed it out); a typed one never does.
+  bool automatic = 9;
 }
 
 message LoginResponse {
@@ -615,6 +641,67 @@ message LoginResponse {
   // be (8). Signing in again works once one of them leaves; the client
   // doesn't fall back to the password for it.
   bool device_limit = 19;
+  // Refused because this device was signed out (from another device, or by
+  // a password change): forget the saved sign-in and show the sign-in page.
+  // Only a resume or an automatic sign-in is refused for it.
+  bool signed_out = 20;
+  // This central serves the device list, signing devices out and password
+  // changes (devices design); without it the client hides them.
+  bool devices = 21;
+}
+
+// --- Devices and passwords (docs/superpowers/specs/2026-10-19-devices-and-password-design.md) ---
+
+// One device signed in to the account: an install that signed in by
+// password and hasn't been signed out since (or left unused for 90 days).
+message DeviceInfo {
+  int64  id = 1;              // central's handle for it (DeviceSignOutRequest.ids)
+  string name = 2;            // LoginRequest.device_name
+  string platform = 3;        // LoginRequest.device_platform
+  string app_version = 4;
+  string address = 5;         // the address it last signed in or reconnected from
+  int64  signed_in_at = 6;    // unix seconds: its last password sign-in
+  int64  last_active_at = 7;  // unix seconds: last seen (sign-in, renewal or disconnect)
+  bool   online = 8;          // connected now
+  bool   current = 9;         // the device asking
+}
+message DeviceListRequest {}
+message DeviceListResponse {
+  repeated DeviceInfo devices = 1;  // most recently active first
+  bool success = 2;                 // false: central couldn't read them
+}
+// Sign devices out: their connections close (SESSION_CLOSED SIGNED_OUT), their
+// resume tokens stop working, communities drop their sessions within a
+// minute, and they need the password to sign in again.
+message DeviceSignOutRequest {
+  repeated int64 ids = 1;   // the requester's own id is ignored (use this_device)
+  bool all_others = 2;      // every device but the requester
+  bool this_device = 3;     // the requester itself, logging out
+}
+message DeviceSignOutResponse {
+  bool   success = 1;
+  string message = 2;
+  int32  signed_out = 3;    // devices signed out
+}
+// To the account's other sessions when its device list changed: a device
+// signed in by password, or some were signed out. `new_device` is set for a
+// typed sign-in on a device the account didn't have (the "new sign-in"
+// notice).
+message DevicesChanged {
+  DeviceInfo new_device = 1;
+}
+// Change the account's password, confirmed with the current one. Every
+// other device is signed out (SESSION_CLOSED PASSWORD_CHANGED); this one
+// stays, with a new resume token (the old ones stop working).
+message PasswordChangeRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
+message PasswordChangeResponse {
+  bool   success = 1;
+  string message = 2;
+  string resume_token = 3;  // success: this device's
+  int32  signed_out = 4;    // other devices signed out
 }
 
 // Change the signed-in account's username. Confirmed with the password;
@@ -2356,9 +2443,12 @@ message SessionClosed {
     // client that reads this is a copy of the install running elsewhere: it
     // makes itself a new device id and signs in again as its own device.
     REPLACED = 0;
-    // The account signed its other devices out: sign out here, don't
-    // reconnect.
+    // The account signed this device out (devices design): sign out here,
+    // forget the saved sign-in, don't reconnect.
     SIGNED_OUT = 1;
+    // The account's password was changed on another device: the same, and
+    // the saved password is wrong now anyway.
+    PASSWORD_CHANGED = 2;
   }
   Reason reason = 1;
 }
@@ -2369,6 +2459,15 @@ message SessionClosed {
 // populate Membership{Register,Revoke}Req on future packets.
 message ServerHeartbeatRes {
   int64 server_id = 1;
+  // Devices of this community's members signed out within the last 25 hours
+  // (devices design): refuse their session tokens (the `sid` claim) until
+  // `until`, by when every one of them has expired, and close their sessions.
+  repeated RevokedSession revoked = 2;
+}
+message RevokedSession {
+  int64 uid = 1;
+  int64 sid = 2;    // the session token's `sid` claim: central's device id
+  int64 until = 3;  // unix seconds
 }
 
 // --- Message deletion ---

@@ -12,6 +12,7 @@ export default function LoginPage() {
 
   const isLoggingIn = useAuthStore((s) => s.isLoggingIn);
   const loginError = useAuthStore((s) => s.loginError);
+  const loginNotice = useAuthStore((s) => s.loginNotice);
   const isRegistering = useAuthStore((s) => s.isRegistering);
   const registerResult = useAuthStore((s) => s.registerResult);
 
@@ -129,6 +130,9 @@ export default function LoginPage() {
 
         {loginError && (
           <p className="mt-3 text-center text-sm text-error">{loginError}</p>
+        )}
+        {!loginError && loginNotice && mode === "login" && (
+          <p className="mt-3 text-center text-sm text-warning">{loginNotice}</p>
         )}
         {registerResult && (
           <p className={`mt-3 text-center text-sm ${registerResult.success ? "text-success" : "text-error"}`}>

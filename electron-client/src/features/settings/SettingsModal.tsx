@@ -1,6 +1,8 @@
 import { createPortal } from "react-dom";
 import { useUiStore } from "../../stores/uiStore";
 import AccountTab from "./tabs/AccountTab";
+import DevicesTab from "./tabs/DevicesTab";
+import { useAuthStore } from "../../stores/authStore";
 import AppearanceTab from "./tabs/AppearanceTab";
 import PrivacyTab from "./tabs/PrivacyTab";
 import AudioTab from "./tabs/AudioTab";
@@ -31,6 +33,17 @@ const TABS = [
       </svg>
     ),
     component: AccountTab,
+  },
+  {
+    id: "devices",
+    label: "Devices",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="4" width="20" height="13" rx="2" />
+        <path d="M8 21h8M12 17v4" />
+      </svg>
+    ),
+    component: DevicesTab,
   },
   {
     id: "appearance",
@@ -121,6 +134,9 @@ export default function SettingsModal() {
   const closeModal = useUiStore((s) => s.closeModal);
   const settingsTab = useUiStore((s) => s.settingsTab);
   const setSettingsTab = useUiStore((s) => s.setSettingsTab);
+  // The Devices tab needs a central that serves it (LoginResponse.devices).
+  const devices = useAuthStore((s) => s.devices);
+  const tabs = devices ? TABS : TABS.filter((t) => t.id !== "devices");
 
   const isOpen = activeModal === "settings";
   const [mounted, setMounted] = useState(false);
@@ -152,7 +168,7 @@ export default function SettingsModal() {
 
   if (!mounted) return null;
 
-  const activeTab = TABS.find((t) => t.id === settingsTab) ?? TABS[0];
+  const activeTab = tabs.find((t) => t.id === settingsTab) ?? tabs[0];
   const TabComponent = activeTab.component;
 
   return createPortal(
@@ -172,7 +188,7 @@ export default function SettingsModal() {
       >
         <SettingsNav>
           <SettingsNavLabel>Settings</SettingsNavLabel>
-          {TABS.map((tab) => (
+          {tabs.map((tab) => (
             <SettingsNavItem
               key={tab.id}
               icon={tab.icon}

@@ -186,6 +186,11 @@ pub struct AppState {
     pub pending_backup_fetch: Option<oneshot::Sender<E2eeFetchBackupRes>>,
     /// In-flight RENAME_REQ (one at a time, from the account settings).
     pub pending_rename: Option<oneshot::Sender<crate::net::proto::RenameResponse>>,
+    /// Devices and passwords (commands/devices.rs): the command waiting on
+    /// each answer.
+    pub pending_device_list: Option<oneshot::Sender<crate::net::proto::DeviceListResponse>>,
+    pub pending_device_sign_out: Option<oneshot::Sender<crate::net::proto::DeviceSignOutResponse>>,
+    pub pending_password_change: Option<oneshot::Sender<crate::net::proto::PasswordChangeResponse>>,
     /// The ordered DM crypto worker's queue (installed on first DM
     /// packet; outlives reconnects). See e2ee/session.rs.
     pub dm_crypto_tx: Option<tokio::sync::mpsc::Sender<crate::e2ee::session::DmJob>>,
@@ -245,6 +250,9 @@ impl Default for AppState {
             pending_key_publish: None,
             pending_backup_fetch: None,
             pending_rename: None,
+            pending_device_list: None,
+            pending_device_sign_out: None,
+            pending_password_change: None,
             dm_crypto_tx: None,
             voice_mls: None,
             channel_keys: HashMap::new(),
@@ -271,6 +279,11 @@ pub fn set_boot(cfg: BootConfig) {
 
 pub fn boot() -> &'static BootConfig {
     BOOT.get().expect("state::set_boot has not been called")
+}
+
+/// boot(), or None before init (unit tests).
+pub fn boot_opt() -> Option<&'static BootConfig> {
+    BOOT.get()
 }
 
 pub fn shared() -> Arc<Mutex<AppState>> {

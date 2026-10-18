@@ -389,6 +389,7 @@ pub const USER_RENAMED: &str = "user_renamed";
 pub const LOGIN_FAILED: &str = "login_failed";
 pub const REGISTER_RESPONDED: &str = "register_responded";
 pub const LOGGED_OUT: &str = "logged_out";
+pub const DEVICES_CHANGED: &str = "devices_changed";
 pub const SESSION_TOKEN_UPDATED: &str = "session_token_updated";
 pub const SERVER_LIST_RECEIVED: &str = "server_list_received";
 pub const MEMBERSHIPS_RECEIVED: &str = "memberships_received";
@@ -492,6 +493,8 @@ pub struct LoginSucceededPayload {
     pub uid: i64,
     /// Central accepts username changes.
     pub renames: bool,
+    /// Central serves the device list and password changes.
+    pub devices: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -857,8 +860,8 @@ pub fn emit_connection_restored(server_type: &str, server_id: Option<String>) {
     );
 }
 
-pub fn emit_login_succeeded(username: String, uid: i64, renames: bool) {
-    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username, uid, renames });
+pub fn emit_login_succeeded(username: String, uid: i64, renames: bool, devices: bool) {
+    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username, uid, renames, devices });
 }
 
 pub fn emit_login_failed(message: String) {
@@ -872,8 +875,60 @@ pub fn emit_register_responded(success: bool, message: String) {
     );
 }
 
-pub fn emit_logged_out() {
-    send(LOGGED_OUT, serde_json::Value::Null);
+#[derive(Debug, Clone, Serialize)]
+pub struct LoggedOutPayload {
+    /// Why, when it wasn't this device's own Log out: "signed_out" (another
+    /// device signed this one out) or "password_changed".
+    pub reason: Option<String>,
+}
+
+pub fn emit_logged_out(reason: Option<&str>) {
+    send(LOGGED_OUT, LoggedOutPayload { reason: reason.map(str::to_string) });
+}
+
+/// One of the account's devices (docs/superpowers/specs/2026-10-19-devices-
+/// and-password-design.md).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicePayload {
+    pub id: i64,
+    pub name: String,
+    pub platform: String,
+    pub app_version: String,
+    pub address: String,
+    pub signed_in_at: i64,
+    pub last_active_at: i64,
+    pub online: bool,
+    pub current: bool,
+}
+
+impl From<crate::net::proto::DeviceInfo> for DevicePayload {
+    fn from(d: crate::net::proto::DeviceInfo) -> Self {
+        DevicePayload {
+            id: d.id,
+            name: d.name,
+            platform: d.platform,
+            app_version: d.app_version,
+            address: d.address,
+            signed_in_at: d.signed_in_at,
+            last_active_at: d.last_active_at,
+            online: d.online,
+            current: d.current,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicesChangedPayload {
+    /// A typed sign-in on a device the account didn't have.
+    pub new_device: Option<DevicePayload>,
+}
+
+/// The account's device list changed on central (a sign-in by password,
+/// devices signed out): open lists reload; `new_device` is the notice.
+pub fn emit_devices_changed(new_device: Option<DevicePayload>) {
+    send(DEVICES_CHANGED, DevicesChangedPayload { new_device });
 }
 
 /// Central renewed our token (`net::token::adopt`). No payload: Electron

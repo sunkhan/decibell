@@ -6,12 +6,15 @@ import { useAvatarStore } from "../../../stores/avatarStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { AvatarCropperModal } from "../AvatarCropperModal";
 import RenameUsernameModal from "../RenameUsernameModal";
+import ChangePasswordModal from "../ChangePasswordModal";
 
 export default function AccountTab() {
   const username = useAuthStore((s) => s.username);
   const selfUid = useAuthStore((s) => s.uid);
   const renames = useAuthStore((s) => s.renames);
+  const devices = useAuthStore((s) => s.devices);
   const [renaming, setRenaming] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pickedFile, setPickedFile] = useState<File | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -89,6 +92,15 @@ export default function AccountTab() {
                 Change username
               </button>
             )}
+            {devices && <span aria-hidden>·</span>}
+            {devices && (
+              <button
+                onClick={() => setChangingPassword(true)}
+                className="text-text-secondary underline-offset-2 hover:text-text-primary hover:underline"
+              >
+                Change password
+              </button>
+            )}
           </div>
         </div>
         <div className="flex flex-col gap-2">
@@ -117,6 +129,7 @@ export default function AccountTab() {
       />
 
       <RenameUsernameModal open={renaming} onClose={() => setRenaming(false)} />
+      <ChangePasswordModal open={changingPassword} onClose={() => setChangingPassword(false)} />
 
       {pickedFile && (
         <AvatarCropperModal

@@ -10,8 +10,11 @@
 //!      leaves native.
 //!   2. register(args) reuses the central connection and sends a
 //!      RegisterReq. Response goes through `register_responded`.
-//!   3. logout(args) tears down all connections, clears in-memory and
-//!      on-disk credentials, and emits `logged_out`.
+//!   3. logout(args) asks central to forget this device (devices design),
+//!      tears down all connections, clears in-memory and on-disk
+//!      credentials, and emits `logged_out`. A device signed out from
+//!      elsewhere goes the same way (`signed_out_elsewhere`), with the
+//!      reason in the event.
 
 use crate::config;
 use crate::events;
@@ -71,8 +74,9 @@ async fn password_login(username: String, password: String, save: bool) -> napi:
     let client = CentralClient::connect(state_arc.clone())
         .await
         .map_err(napi::Error::from_reason)?;
+    // Not typed: central accepts it only on a device the account has.
     client
-        .login(&username, &password)
+        .login(&username, &password, !save)
         .await
         .map_err(napi::Error::from_reason)?;
 
@@ -232,6 +236,20 @@ pub async fn register(args: RegisterArgs) -> napi::Result<()> {
 
 #[napi]
 pub async fn logout() -> napi::Result<()> {
+    // Central forgets this device first, while the connection is up.
+    crate::commands::devices::forget_this_device().await;
+    sign_out_locally(None).await;
+    Ok(())
+}
+
+/// Central signed this device out: another device did ("signed_out"), or
+/// changed the password ("password_changed"). Signs out here as Log out
+/// does, saved sign-in and all; the sign-in page says why.
+pub async fn signed_out_elsewhere(reason: &'static str) {
+    sign_out_locally(Some(reason)).await;
+}
+
+async fn sign_out_locally(reason: Option<&'static str>) {
     let state_arc = state::shared();
 
     // Extract clients + media engines and clear state under lock, then
@@ -309,7 +327,7 @@ pub async fn logout() -> napi::Result<()> {
         });
     }
 
-    events::emit_logged_out();
+    events::emit_logged_out(reason);
     events::emit_e2ee_status_changed(events::E2eeStatusPayload {
         supported: false,
         status: "unavailable".to_string(),
@@ -318,8 +336,6 @@ pub async fn logout() -> napi::Result<()> {
     });
 
     let _ = config::clear_credentials();
-
-    Ok(())
 }
 
 // ─── Avatar upload / fetch ───────────────────────────────────────────

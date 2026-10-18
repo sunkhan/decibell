@@ -658,6 +658,55 @@ export interface SetNicknameArgs {
   nickname: string
 }
 export declare function setNickname(args: SetNicknameArgs): Promise<void>
+export interface DeviceEntry {
+  /** Central's handle for it (`sign_out_devices`). */
+  id: number
+  /** The operating system's name, as the device reported it. */
+  name: string
+  /** "linux" / "windows" / "macos". */
+  platform: string
+  appVersion: string
+  /** The address it last signed in or reconnected from. */
+  address: string
+  /** Unix seconds: its last password sign-in. */
+  signedInAt: number
+  /** Unix seconds: last seen. */
+  lastActiveAt: number
+  online: boolean
+  /** This device. */
+  current: boolean
+}
+/** The devices signed in to the account, most recently active first. */
+export declare function listDevices(): Promise<Array<DeviceEntry>>
+export interface SignOutDevicesArgs {
+  /** The devices to sign out (this device's own id is ignored). */
+  ids: Array<number>
+  /** Every device but this one, instead. */
+  allOthers?: boolean
+}
+export interface SignOutDevicesResult {
+  signedOut: number
+}
+/**
+ * Sign devices out: central closes their connections (they sign out and
+ * forget their saved sign-in), their reconnect tokens stop working, and
+ * communities drop their sessions within a minute.
+ */
+export declare function signOutDevices(args: SignOutDevicesArgs): Promise<SignOutDevicesResult>
+export interface ChangePasswordArgs {
+  currentPassword: string
+  newPassword: string
+}
+export interface ChangePasswordResult {
+  /** Other devices signed out by the change. */
+  signedOut: number
+}
+/**
+ * Change the account's password. Central checks the current one and signs
+ * every other device out; this one stays signed in with a new reconnect
+ * token, and its saved sign-in (if any) takes the new password.
+ */
+export declare function changePassword(args: ChangePasswordArgs): Promise<ChangePasswordResult>
 export declare function requestDmConversations(): Promise<void>
 export interface RequestDmHistoryArgs {
   /** The peer's current name (a label). */

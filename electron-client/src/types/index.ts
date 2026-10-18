@@ -149,6 +149,28 @@ export interface ServerInvite {
   forUid: number;
 }
 
+/// One of the account's devices (docs/superpowers/specs/2026-10-19-devices-
+/// and-password-design.md): `list_devices`, and `devices_changed`'s
+/// `newDevice` (whose numbers may arrive as BigInt: coerce).
+export interface DeviceEntry {
+  /// Central's handle for it (`sign_out_devices`).
+  id: number;
+  /// The operating system's name, as the device reported it.
+  name: string;
+  /// "linux" / "windows" / "macos".
+  platform: string;
+  appVersion: string;
+  /// The address it last signed in or reconnected from.
+  address: string;
+  /// Unix seconds: its last password sign-in.
+  signedInAt: number;
+  /// Unix seconds: last seen (sign-in, token renewal or disconnect).
+  lastActiveAt: number;
+  online: boolean;
+  /// This device.
+  current: boolean;
+}
+
 /// CHANNEL_MSG_REJECTED — the community refused one of our messages;
 /// `nonce` identifies the optimistic bubble to withdraw.
 export interface ChannelMessageRejectedPayload {

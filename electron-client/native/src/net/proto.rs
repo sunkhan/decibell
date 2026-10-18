@@ -10,8 +10,8 @@ mod tests {
         let req = LoginRequest {
             username: "alice".into(),
             password: "secret123".into(),
-            resume_token: String::new(),
             device_id: "0123456789abcdef0123456789abcdef".into(),
+            ..Default::default()
         };
         let bytes = req.encode_to_vec();
         let decoded = LoginRequest::decode(&bytes[..]).unwrap();
@@ -27,10 +27,9 @@ mod tests {
             timestamp: 1234567890,
             auth_token: String::new(),
             payload: Some(packet::Payload::LoginReq(LoginRequest {
-                resume_token: String::new(),
                 username: "bob".into(),
                 password: "pass".into(),
-                device_id: String::new(),
+                ..Default::default()
             })),
         };
         let bytes = packet.encode_to_vec();
@@ -68,6 +67,8 @@ mod tests {
             resume_token: "resume.me".into(),
             dm_friends_only: true,
             device_limit: false,
+            signed_out: false,
+            devices: true,
         };
         let bytes = resp.encode_to_vec();
         let decoded = LoginResponse::decode(&bytes[..]).unwrap();

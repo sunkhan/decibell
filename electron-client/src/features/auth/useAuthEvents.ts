@@ -14,7 +14,9 @@ import { useCallStore } from "../../stores/callStore";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { toast } from "../../stores/toastStore";
-import type { ServerInfoPayload } from "../../types";
+import { useDevicesStore } from "../../stores/devicesStore";
+import type { DeviceEntry, ServerInfoPayload } from "../../types";
+import { deviceTitle } from "../settings/deviceLabels";
 import { stopActiveStream } from "../voice/streaming/StreamCapture";
 import { stopRing } from "../call/callActions";
 import { clearRetainedImages } from "../chat/imageRetention";
@@ -25,7 +27,7 @@ export function useAuthEvents() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const unlistenSuccess = listen<{ username: string; renames?: boolean; uid?: number | bigint }>(
+    const unlistenSuccess = listen<{ username: string; renames?: boolean; devices?: boolean; uid?: number | bigint }>(
       "login_succeeded",
       (event) => {
         const uid = Number(event.payload.uid ?? 0) || 0;
@@ -34,7 +36,7 @@ export function useAuthEvents() {
         // connection.
         const auth = useAuthStore.getState();
         const again = auth.isAuthenticated && uid > 0 && auth.uid === uid;
-        auth.login(event.payload.username, !!event.payload.renames, uid);
+        auth.login(event.payload.username, !!event.payload.renames, uid, !!event.payload.devices);
         // Others' pictures come with their presence; nothing sends our own.
         useAvatarStore.getState().seed(uid);
         // Replace, never push: a history entry is something back/forward
@@ -113,7 +115,7 @@ export function useAuthEvents() {
       },
     );
 
-    const unlistenLoggedOut = listen("logged_out", () => {
+    const unlistenLoggedOut = listen<{ reason?: string | null } | null>("logged_out", (event) => {
       // Native dropped the voice, stream and call engines; the renderer's
       // half goes with them. Otherwise a WebCodecs share keeps capturing
       // (the OS "sharing" indicator stays on) and the next login shows the
@@ -134,6 +136,16 @@ export function useAuthEvents() {
       window.decibell.attachmentRegistry.clearAll().catch(() => {});
       window.decibell.attachments.clearKeys().catch(() => {});
       useAuthStore.getState().logout();
+      // Not our own Log out: another device signed this one out (or it was
+      // left unused), or changed the password (devices design).
+      const reason = event.payload?.reason;
+      useAuthStore.getState().setLoginNotice(
+        reason === "password_changed"
+          ? "Your password was changed on another device. Sign in with the new one."
+          : reason === "signed_out"
+            ? "You were signed out on this device. Sign in again to keep using it here."
+            : null,
+      );
       useChatStore.getState().resetForLogout();
       usePresenceStore.getState().reset();
       // The next account on this device sees none of this one's DMs,
@@ -160,7 +172,33 @@ export function useAuthEvents() {
       },
     );
 
+    // The account's device list changed on central: an open Devices tab
+    // reloads, and a device that signed in by password for the first time is
+    // announced, so a sign-in that wasn't ours gets noticed.
+    const unlistenDevices = listen<{ newDevice?: DeviceEntry | null }>("devices_changed", (event) => {
+      useDevicesStore.getState().bump();
+      const d = event.payload.newDevice;
+      if (!d) return;
+      const where = [deviceTitle(d), d.address].filter(Boolean).join(" · ");
+      toast.warning(
+        "New sign-in to your account",
+        `${where}. If this wasn't you, sign that device out and change your password.`,
+        {
+          duration: 20_000,
+          action: {
+            label: "Review devices",
+            run: () => {
+              const ui = useUiStore.getState();
+              ui.setSettingsTab("devices");
+              ui.openModal("settings");
+            },
+          },
+        },
+      );
+    });
+
     return () => {
+      unlistenDevices.then((fn) => fn());
       unlistenSuccess.then((fn) => fn());
       unlistenFailed.then((fn) => fn());
       unlistenRegister.then((fn) => fn());

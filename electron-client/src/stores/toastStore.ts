@@ -2,17 +2,29 @@ import { create } from "zustand";
 
 export type ToastSeverity = "error" | "warning" | "info" | "success";
 
+/// A button on the toast; running it dismisses the toast.
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: string;
   severity: ToastSeverity;
   title: string;
   body?: string;
   duration: number;
+  action?: ToastAction;
+}
+
+export interface ToastOptions {
+  duration?: number;
+  action?: ToastAction;
 }
 
 interface ToastState {
   toasts: Toast[];
-  push: (input: { severity: ToastSeverity; title: string; body?: string; duration?: number }) => string;
+  push: (input: { severity: ToastSeverity; title: string; body?: string } & ToastOptions) => string;
   dismiss: (id: string) => void;
 }
 
@@ -39,6 +51,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
       title: input.title,
       body: input.body,
       duration: input.duration ?? 5000,
+      action: input.action,
     };
     set((s) => ({ toasts: [...s.toasts, toast] }));
     return id;
@@ -49,12 +62,12 @@ export const useToastStore = create<ToastState>((set, get) => ({
 
 /** Imperative helpers — call from anywhere, no React required. */
 export const toast = {
-  error: (title: string, body?: string) =>
-    useToastStore.getState().push({ severity: "error", title, body }),
-  warning: (title: string, body?: string) =>
-    useToastStore.getState().push({ severity: "warning", title, body }),
-  info: (title: string, body?: string) =>
-    useToastStore.getState().push({ severity: "info", title, body }),
-  success: (title: string, body?: string) =>
-    useToastStore.getState().push({ severity: "success", title, body }),
+  error: (title: string, body?: string, opts?: ToastOptions) =>
+    useToastStore.getState().push({ severity: "error", title, body, ...opts }),
+  warning: (title: string, body?: string, opts?: ToastOptions) =>
+    useToastStore.getState().push({ severity: "warning", title, body, ...opts }),
+  info: (title: string, body?: string, opts?: ToastOptions) =>
+    useToastStore.getState().push({ severity: "info", title, body, ...opts }),
+  success: (title: string, body?: string, opts?: ToastOptions) =>
+    useToastStore.getState().push({ severity: "success", title, body, ...opts }),
 };
