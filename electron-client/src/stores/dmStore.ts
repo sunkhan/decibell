@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { DmMessage } from "../types";
 import { applyHeldRows, mergeStoredPage } from "../lib/historyMerge";
+import { alreadyRead, unreadAfterReadSync } from "../features/dm/readSync";
 import { useAuthStore } from "./authStore";
 import { useUiStore } from "./uiStore";
 import { nameOf, toUid, type Uid } from "./usersStore";
@@ -197,6 +198,9 @@ interface DmState {
   /// Optimistically zero the unread count and bump lastReadId.
   /// Called from DmChatPanel when the conversation becomes visible.
   markRead: (peer: Uid, upToId: number) => void;
+  /// Another device of ours read the conversation up to `upToId`
+  /// (DM_READ_SYNC): clear what that covers (features/dm/readSync.ts).
+  applyReadSync: (peer: Uid, upToId: number) => void;
   /// Remove a DM from a peer's visible message list. Idempotent.
   removeDmMessage: (peer: Uid, messageId: number) => void;
   /// Drop an optimistic (id-less) DM by its nonce — the send failed or
@@ -369,10 +373,12 @@ export const useDmStore = create<DmState>((set, get) => ({
       const isInDmView = useUiStore.getState().activeView === "dm";
       const isViewing = isInDmView && state.activeDmUser === otherUser;
       const baseUnread = existing?.unreadCount ?? 0;
-      // Don't bump unread for self-sent or for the conversation
-      // we're actively reading. DmChatPanel's mark-read effect
-      // clears the count when the panel is visible.
-      const newUnread = isFromSelf || isViewing ? baseUnread : baseUnread + 1;
+      // Don't bump unread for self-sent (from any of our devices), for the
+      // conversation we're actively reading, or for a message another
+      // device of ours already read. DmChatPanel's mark-read effect clears
+      // the count when the panel is visible.
+      const newUnread =
+        isFromSelf || isViewing || alreadyRead(existing?.lastReadId ?? 0, message.id) ? baseUnread : baseUnread + 1;
 
       // A live arrival is the newest by definition (even id-less legacy ones).
       const conversation: DmConversation = existing
@@ -629,6 +635,18 @@ export const useDmStore = create<DmState>((set, get) => ({
             lastReadId: Math.max(conv.lastReadId, upToId),
           },
         },
+      };
+    }),
+
+  applyReadSync: (peer, upToId) =>
+    set((state) => {
+      const conv = state.conversations[peer];
+      if (!conv || !(upToId > 0)) return state;
+      const unreadCount = unreadAfterReadSync(conv, upToId, useAuthStore.getState().uid);
+      const lastReadId = Math.max(conv.lastReadId, upToId);
+      if (unreadCount === conv.unreadCount && lastReadId === conv.lastReadId) return state;
+      return {
+        conversations: { ...state.conversations, [peer]: { ...conv, unreadCount, lastReadId } },
       };
     }),
 

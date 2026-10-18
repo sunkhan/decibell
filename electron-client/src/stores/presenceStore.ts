@@ -86,8 +86,11 @@ interface PresenceState {
   supported: boolean;
   /// The local user's chosen status (saved on central).
   ownStatus: OwnStatus;
-  /// Auto-away is reporting no input — central shows an Online user Away.
+  /// Auto-away is reporting no input on this device (what we tell central).
   idle: boolean;
+  /// Every device of the account is idle (central's OWN_PRESENCE,
+  /// multi-device): others then see an Online user as Away, and so do we.
+  accountIdle: boolean;
   /// Visible online users' custom status messages (absent = none). Kept
   /// apart from `statuses` so a message edit doesn't regroup member lists.
   messages: Record<Uid, StatusMessage>;
@@ -108,11 +111,14 @@ interface PresenceState {
     statusText?: string,
     statusEmoji?: string,
   ) => void;
+  /// The account's own state, from a sign-in or from another device of
+  /// ours (OWN_PRESENCE).
   setOwnFromLogin: (
     supported: boolean,
     status: string,
     message: StatusMessage | null,
     clearsInSeconds: number,
+    accountIdle?: boolean,
   ) => void;
   setOwnStatus: (status: OwnStatus) => void;
   setOwnMessage: (message: StatusMessage | null, clearsAt: number | null) => void;
@@ -130,6 +136,7 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
   supported: false,
   ownStatus: "online",
   idle: false,
+  accountIdle: false,
   messages: {},
   ownMessage: null,
   ownMessageClearsAt: null,
@@ -184,12 +191,20 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       }
       return patch;
     }),
-  setOwnFromLogin: (supported, status, message, clearsInSeconds) => {
+  setOwnFromLogin: (supported, status, message, clearsInSeconds, accountIdle = false) => {
     set({
       supported,
       ownStatus: isPresenceStatus(status) || status === "invisible" ? status : "online",
+      accountIdle,
     });
-    get().setOwnMessage(message, message && clearsInSeconds > 0 ? Date.now() + clearsInSeconds * 1000 : null);
+    const clearsAt = message && clearsInSeconds > 0 ? Date.now() + clearsInSeconds * 1000 : null;
+    const s = get();
+    // The same message again (an echo of our own change, or another device
+    // saving what we show): keep the timer we have unless the deadline moved.
+    const sameDeadline =
+      (s.ownMessageClearsAt === null) === (clearsAt === null) &&
+      (clearsAt === null || Math.abs((s.ownMessageClearsAt ?? 0) - clearsAt) < 2000);
+    if (!sameMessage(s.ownMessage, message) || !sameDeadline) s.setOwnMessage(message, clearsAt);
   },
   setOwnStatus: (ownStatus) => set({ ownStatus }),
   setOwnMessage: (ownMessage, clearsAt) => {
@@ -219,17 +234,19 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       supported: false,
       ownStatus: "online",
       idle: false,
+      accountIdle: false,
       ownMessage: null,
       ownMessageClearsAt: null,
     });
   },
 }));
 
-/// The local user as others see them (Away while idle on Online), except
-/// that Invisible shows as itself rather than offline.
+/// The local user as others see them (Away while every device of theirs
+/// idles on Online), except that Invisible shows as itself rather than
+/// offline.
 export function useOwnDisplayStatus(): DisplayStatus {
   return usePresenceStore((s) =>
-    s.ownStatus === "online" && s.idle ? "away" : s.ownStatus,
+    s.ownStatus === "online" && s.accountIdle ? "away" : s.ownStatus,
   );
 }
 
@@ -266,12 +283,12 @@ export const isOnlineStatus = (s: DisplayStatus) =>
 /// Non-hook resolver for list splitting (MembersList groups). The list
 /// must watch its users (usePresenceInterest) for central to answer.
 export function resolvePresence(
-  state: Pick<PresenceState, "statuses" | "known" | "ownStatus" | "idle">,
+  state: Pick<PresenceState, "statuses" | "known" | "ownStatus" | "accountIdle">,
   me: Uid,
   uid: Uid,
   communityOnline?: boolean,
 ): DisplayStatus {
-  if (uid > 0 && uid === me) return state.ownStatus === "online" && state.idle ? "away" : state.ownStatus;
+  if (uid > 0 && uid === me) return state.ownStatus === "online" && state.accountIdle ? "away" : state.ownStatus;
   const st = state.statuses[uid];
   if (st) return st;
   return !state.known.has(uid) && communityOnline ? "online" : "offline";
@@ -280,5 +297,5 @@ export function resolvePresence(
 /// The local user, for code outside React (call ringing).
 export function ownDisplayStatus(): DisplayStatus {
   const s = usePresenceStore.getState();
-  return s.ownStatus === "online" && s.idle ? "away" : s.ownStatus;
+  return s.ownStatus === "online" && s.accountIdle ? "away" : s.ownStatus;
 }

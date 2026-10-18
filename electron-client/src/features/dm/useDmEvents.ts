@@ -148,6 +148,16 @@ export function useDmEvents() {
       noteDmHistoryReply(peer, Number(aroundId), Number(afterId), { newestId, hasMoreAfter: !!hasMoreAfter });
     });
 
+    // Another device of ours read a conversation (multi-device): its unread
+    // badge clears here too.
+    const unlistenReadSync = listen<{ peerUid: number | bigint; upToId: number | bigint }>(
+      "dm_read_synced",
+      (event) => {
+        const peer = toUid(event.payload.peerUid);
+        if (peer > 0) useDmStore.getState().applyReadSync(peer, Number(event.payload.upToId));
+      },
+    );
+
     // Replies to DM requests went down with central's connection.
     const unlistenLost = listen<{ serverType: string }>("connection_lost", (event) => {
       if (event.payload.serverType === "central") abandonDmRequests();
@@ -221,6 +231,7 @@ export function useDmEvents() {
       unlisten.then((fn) => fn());
       unlistenConv.then((fn) => fn());
       unlistenHist.then((fn) => fn());
+      unlistenReadSync.then((fn) => fn());
       unlistenLost.then((fn) => fn());
       unlistenDmDeleteRes.then((fn) => fn());
       unlistenDmDeleted.then((fn) => fn());

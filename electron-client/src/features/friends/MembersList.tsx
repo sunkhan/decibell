@@ -90,12 +90,12 @@ export default function MembersList() {
   const statuses = usePresenceStore((s) => s.statuses);
   const known = usePresenceStore((s) => s.known);
   const ownStatus = usePresenceStore((s) => s.ownStatus);
-  const idle = usePresenceStore((s) => s.idle);
+  const accountIdle = usePresenceStore((s) => s.accountIdle);
   const { online, offline } = useMemo(() => visibleRoster(roster, rosterMeta), [roster, rosterMeta]);
   // Only for the rows drawn.
   const statusOf = (m: ServerMember, isOnline: boolean): DisplayStatus => {
     if (isOnline) {
-      const s = resolvePresence({ statuses, known, ownStatus, idle }, me, m.uid, true);
+      const s = resolvePresence({ statuses, known, ownStatus, accountIdle }, me, m.uid, true);
       return isOnlineStatus(s) ? s : "online";
     }
     // Ourselves invisible: the invisible dot, as everywhere else.

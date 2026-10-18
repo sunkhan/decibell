@@ -13,6 +13,7 @@ import { useVoiceStore } from "../../stores/voiceStore";
 import { useCallStore } from "../../stores/callStore";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
+import { toast } from "../../stores/toastStore";
 import type { ServerInfoPayload } from "../../types";
 import { stopActiveStream } from "../voice/streaming/StreamCapture";
 import { stopRing } from "../call/callActions";
@@ -66,6 +67,12 @@ export function useAuthEvents() {
       "login_failed",
       (event) => {
         useAuthStore.getState().setLoginError(event.payload.message);
+        // Signed in already: central refused to sign this device back in
+        // after a dropped connection (the account is on as many devices as
+        // it may be). Native keeps trying; say why chat is offline.
+        if (useAuthStore.getState().isAuthenticated) {
+          toast.warning("Can't reconnect", event.payload.message);
+        }
       },
     );
 

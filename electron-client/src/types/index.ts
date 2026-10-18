@@ -990,7 +990,11 @@ export type CallSignalKind =
   | "PEER_OFFLINE"
   | "NOT_ALLOWED"
   | "STREAM_START"
-  | "STREAM_STOP";
+  | "STREAM_STOP"
+  // Central, to the callee's other devices (multi-device): one of them
+  // answered (or declined) the call ringing here.
+  | "ANSWERED_ELSEWHERE"
+  | "DECLINED_ELSEWHERE";
 
 export interface CallCandidate {
   socket: "VOICE" | "MEDIA";

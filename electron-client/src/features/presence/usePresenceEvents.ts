@@ -3,7 +3,8 @@
 // flag and the avatar cache, which both ride on presence.
 
 import { useEffect } from "react";
-import { invoke, listen } from "../../lib/ipc";
+import { listen } from "../../lib/ipc";
+import { saveSettings } from "../settings/saveSettings";
 import { useAvatarStore } from "../../stores/avatarStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useFriendsStore } from "../../stores/friendsStore";
@@ -74,17 +75,21 @@ export function usePresenceEvents() {
       reconcileFriends((u) => (u === uid ? online : !!usePresenceStore.getState().statuses[u]));
     });
 
-    // Our own saved status, just before login_succeeded. Also re-push the
-    // friends-only DM setting: central keeps it on the account now, and
-    // this client's local copy is what the user last chose.
+    // The account's own state: just before login_succeeded, and whenever a
+    // device of ours changes it (multi-device). Central keeps the friends-only
+    // DM setting for the account, so this device adopts it rather than
+    // pushing its local copy (which made the last device to sign in win).
     const unlistenOwn = listen<{
       supported: boolean;
       status: string;
       statusText: string;
       statusEmoji: string;
       statusClearIn: number;
+      dmFriendsOnly?: boolean;
+      accountIdle?: boolean;
     }>("own_presence", (event) => {
-      const { supported, status, statusText, statusEmoji, statusClearIn } = event.payload;
+      const { supported, status, statusText, statusEmoji, statusClearIn, dmFriendsOnly, accountIdle } =
+        event.payload;
       usePresenceStore
         .getState()
         .setOwnFromLogin(
@@ -92,10 +97,13 @@ export function usePresenceEvents() {
           status,
           statusText || statusEmoji ? { text: statusText, emoji: statusEmoji } : null,
           Number(statusClearIn) || 0,
+          !!accountIdle,
         );
-      invoke("set_dm_privacy", { friendsOnly: useDmStore.getState().friendsOnlyDms }).catch(
-        console.error,
-      );
+      if (typeof dmFriendsOnly === "boolean" && useDmStore.getState().friendsOnlyDms !== dmFriendsOnly) {
+        useDmStore.getState().setFriendsOnlyDms(dmFriendsOnly);
+        // The local copy only shows in Settings before sign-in; keep it current.
+        saveSettings();
+      }
     });
 
     const unlistenLost = listen<{ serverType: string }>("connection_lost", (event) => {

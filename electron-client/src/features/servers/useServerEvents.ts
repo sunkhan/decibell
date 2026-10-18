@@ -127,6 +127,27 @@ export function useServerEvents() {
       },
     );
 
+    // Another device of ours joined a community (multi-device): native is
+    // connecting to it; its tile shows now.
+    const unlistenMembershipAdded = listen<MembershipsReceivedPayload["memberships"][number]>(
+      "membership_added",
+      (event) => {
+        const s = event.payload;
+        const chat = useChatStore.getState();
+        chat.mergeServers([
+          {
+            id: String(s.id),
+            name: s.name,
+            description: s.description,
+            hostIp: s.hostIp,
+            port: s.port,
+            memberCount: s.memberCount,
+          },
+        ]);
+        chat.setServerPictureVersion(String(s.id), s.pictureVersion ?? "");
+      },
+    );
+
     const unlistenAuth = listen<CommunityAuthRespondedPayload>(
       "community_auth_responded",
       (event) => {
@@ -796,6 +817,7 @@ export function useServerEvents() {
 
     return () => {
       unlistenMemberships.then((fn) => fn());
+      unlistenMembershipAdded.then((fn) => fn());
       unlistenAuth.then((fn) => fn());
       unlistenChannelDeleteRes.then((fn) => fn());
       unlistenChannelDeleted.then((fn) => fn());

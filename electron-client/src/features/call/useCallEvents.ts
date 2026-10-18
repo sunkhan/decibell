@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { ownDisplayStatus } from "../../stores/presenceStore";
 import { invoke, listen } from "../../lib/ipc";
 import { useAuthStore } from "../../stores/authStore";
-import { useCallStore } from "../../stores/callStore";
+import { elsewhereReason, useCallStore } from "../../stores/callStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
 import { playSound } from "../../utils/sounds";
@@ -100,6 +100,8 @@ export function useCallEvents() {
             void acceptCall();
             return;
           }
+          // Central tells the caller "busy" only once no device of ours
+          // can ring (multi-device), so this never hides another one.
           if (call.status !== "idle") {
             sendSignal(sig.callId, from, "BUSY").catch(() => {});
             return;
@@ -170,6 +172,27 @@ export function useCallEvents() {
             void endCall("Call ended", { notifyPeer: false });
           }
           return;
+        // Another device of ours took the call ringing here, or turned it
+        // down (multi-device). Central says so; we never answer it.
+        case "ANSWERED_ELSEWHERE":
+        case "DECLINED_ELSEWHERE": {
+          if (!mine) return;
+          const reason = elsewhereReason(sig.kind) ?? "";
+          if (call.status === "incoming") {
+            clearIncomingTimer();
+            stopRing();
+            call.endIncomingElsewhere(reason, sig.kind === "ANSWERED_ELSEWHERE");
+          } else if (call.status === "connecting" && !call.isCaller) {
+            // Our answer lost the race to another device's (or that one
+            // declined first).
+            toast.info(
+              reason,
+              sig.kind === "ANSWERED_ELSEWHERE" ? `Your call with ${nameOf(from, sig.from)} goes on there.` : undefined,
+            );
+            void endCall(reason, { notifyPeer: false });
+          }
+          return;
+        }
         case "PEER_OFFLINE":
           if (mine) {
             toast.info("Not available", `${nameOf(from, sig.from)} is offline.`);

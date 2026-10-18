@@ -13,7 +13,28 @@ import type { Uid } from "./usersStore";
 //   idle ──INVITE──▶ incoming ──accept()─▶ connecting ──call_connected──▶ active
 //   any ──REJECT/BUSY/CANCEL/HANGUP/PEER_OFFLINE/NOT_ALLOWED/call_failed/
 //         call_dropped/timeout──▶ idle
+//   incoming ──ANSWERED_ELSEWHERE/DECLINED_ELSEWHERE──▶ idle (+ incomingEnded)
 export type CallStatus = "idle" | "outgoing" | "incoming" | "connecting" | "active";
+
+/// An incoming call that another device of ours answered or declined
+/// (multi-device): the incoming card shows it for a moment instead of
+/// vanishing mid-ring.
+export interface IncomingEnded {
+  callId: string;
+  fromUid: Uid;
+  from: string;
+  /// "Answered on another device" / "Declined on another device".
+  reason: string;
+  answered: boolean;
+}
+
+/// What the incoming card says when another device of ours took (or turned
+/// down) the call ringing here; null for any other signal.
+export function elsewhereReason(kind: string): string | null {
+  if (kind === "ANSWERED_ELSEWHERE") return "Answered on another device";
+  if (kind === "DECLINED_ELSEWHERE") return "Declined on another device";
+  return null;
+}
 
 export interface IncomingCall {
   callId: string;
@@ -48,6 +69,9 @@ interface CallState {
   endReason: string | null;
   /// The pending INVITE while `status === "incoming"`, kept until Accept.
   incoming: IncomingCall | null;
+  /// Set when another device of ours answered / declined the ringing call;
+  /// IncomingCallModal shows it briefly, then clears it.
+  incomingEnded: IncomingEnded | null;
   /// Theater: the call stage fills the DM panel and the conversation folds
   /// into a header toggle. `theaterBaseline` is the conversation's message
   /// count when theater was switched on — the toggle's unread badge is the
@@ -68,6 +92,10 @@ interface CallState {
   setConnecting: () => void;
   setActive: (path: "host" | "srflx", verified: boolean) => void;
   reset: (endReason?: string | null) => void;
+  /// The ringing call ended on another device of ours: back to idle, with
+  /// the card's end state.
+  endIncomingElsewhere: (reason: string, answered: boolean) => void;
+  clearIncomingEnded: () => void;
 }
 
 export const useCallStore = create<CallState>((set) => ({
@@ -81,6 +109,7 @@ export const useCallStore = create<CallState>((set) => ({
   verified: null,
   endReason: null,
   incoming: null,
+  incomingEnded: null,
   callSignaling: false,
   stunServers: [],
   theater: false,
@@ -100,6 +129,7 @@ export const useCallStore = create<CallState>((set) => ({
       verified: null,
       endReason: null,
       incoming: null,
+      incomingEnded: null,
     }),
   setIncoming: (call) =>
     set({
@@ -113,6 +143,7 @@ export const useCallStore = create<CallState>((set) => ({
       verified: null,
       endReason: null,
       incoming: call,
+      incomingEnded: null,
     }),
   setRingingAcked: () => set({ ringingAcked: true }),
   setConnecting: () => set({ status: "connecting", incoming: null }),
@@ -130,7 +161,27 @@ export const useCallStore = create<CallState>((set) => ({
       verified: null,
       endReason,
       incoming: null,
+      incomingEnded: null,
       theater: false,
       theaterBaseline: 0,
     }),
+  endIncomingElsewhere: (reason, answered) =>
+    set((s) => ({
+      status: "idle",
+      callId: null,
+      peer: null,
+      isCaller: false,
+      ringingAcked: false,
+      startedAt: null,
+      connectedPath: null,
+      verified: null,
+      endReason: reason,
+      incoming: null,
+      incomingEnded: s.incoming
+        ? { callId: s.incoming.callId, fromUid: s.incoming.fromUid, from: s.incoming.from, reason, answered }
+        : null,
+      theater: false,
+      theaterBaseline: 0,
+    })),
+  clearIncomingEnded: () => set((s) => (s.incomingEnded ? { incomingEnded: null } : s)),
 }));
