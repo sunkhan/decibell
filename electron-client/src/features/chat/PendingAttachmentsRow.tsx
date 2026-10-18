@@ -1,6 +1,7 @@
 import { useShallow } from "zustand/react/shallow";
 import { useAttachmentsStore } from "../../stores/attachmentsStore";
 import { useChatStore } from "../../stores/chatStore";
+import { forgetEncryptedUploadMeta } from "./uploadAttachment";
 
 /// Composer-side preview row: renders queued/in-flight attachments
 /// for the active channel above the chat input, with cancel + remove
@@ -67,6 +68,7 @@ export default function PendingAttachmentsRow() {
               onClick={() => {
                 p.abortController.abort();
                 removePending(p.pendingId);
+                forgetEncryptedUploadMeta(p.pendingId);
               }}
               className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-bg-darkest text-text-secondary hover:bg-error hover:text-white"
               title="Remove"

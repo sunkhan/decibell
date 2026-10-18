@@ -68,7 +68,9 @@ const KIND_INDEX: Record<AttachmentKind, number> = { image: 0, video: 1, documen
 /// Bits of Attachment.thumbnailSizesMask (server: attachment_http.cpp).
 const THUMB_BIT: Record<number, number> = { 320: 1, 640: 2, 1280: 4 };
 
-function channelIsEncrypted(serverId: string, channelId: string): boolean {
+/// The one lookup every send / edit / upload site uses to pick sealed or
+/// plain (a site that skipped it sent plaintext the server refuses).
+export function channelIsEncrypted(serverId: string, channelId: string): boolean {
   return (
     useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)?.encrypted ??
     false
@@ -498,11 +500,16 @@ export interface EncryptedUploadMeta {
 }
 const encryptedUploadMeta = new Map<string, EncryptedUploadMeta>();
 
-/// Consume the sealed-upload metadata of a pending (null for plain ones).
-export function takeEncryptedUploadMeta(pendingId: string): EncryptedUploadMeta | null {
-  const m = encryptedUploadMeta.get(pendingId) ?? null;
+/// The sealed-upload metadata of a pending (null for plain ones). Read, not
+/// consumed: a send that fails keeps its uploads for the retry, and the retry
+/// needs their keys too, or it binds stand-ins nobody can decrypt (review B5).
+export function peekEncryptedUploadMeta(pendingId: string): EncryptedUploadMeta | null {
+  return encryptedUploadMeta.get(pendingId) ?? null;
+}
+
+/// Drop a pending's sealed-upload metadata once its message went out.
+export function forgetEncryptedUploadMeta(pendingId: string): void {
   encryptedUploadMeta.delete(pendingId);
-  return m;
 }
 
 /// Phase 2: actually send the bytes for a previously-queued

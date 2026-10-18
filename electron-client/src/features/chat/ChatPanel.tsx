@@ -25,7 +25,13 @@ import RichComposer from "./RichComposer";
 import EmojiPicker from "./EmojiPicker";
 import RichInput, { type RichInputHandle } from "../../components/editor/RichInput";
 import { pickFiles } from "./filePicker";
-import { queueUpload, startQueuedUpload, takeEncryptedUploadMeta } from "./uploadAttachment";
+import {
+  channelIsEncrypted,
+  forgetEncryptedUploadMeta,
+  peekEncryptedUploadMeta,
+  queueUpload,
+  startQueuedUpload,
+} from "./uploadAttachment";
 import { encryptedAttachmentArgs } from "./attachmentCrypto";
 import { paceSend, watchEcho } from "./sendPacing";
 import { chunkSourceFromPath } from "./chunkSource";
@@ -570,6 +576,7 @@ export default function ChatPanel() {
       if (pendingIds.length > 0) toast.error("Attachment upload failed");
       for (const id of pendingIds) {
         useAttachmentsStore.getState().removePending(id);
+        forgetEncryptedUploadMeta(id);
       }
       releaseClaims();
       return;
@@ -578,7 +585,7 @@ export default function ChatPanel() {
     // Encrypted channel: each sealed upload's real metadata + key goes
     // into the message envelope; the server only ever saw stand-ins.
     const encryptedAttachments = pendingIds
-      .map((id) => takeEncryptedUploadMeta(id))
+      .map((id) => peekEncryptedUploadMeta(id))
       .filter((m): m is NonNullable<typeof m> => m !== null && attachmentIds.includes(m.id));
 
     try {
@@ -595,9 +602,7 @@ export default function ChatPanel() {
           replyTo: replyToId,
           // Encrypted channel: native seals the body under the channel's
           // epoch key; the server refuses plaintext there.
-          encrypted:
-            useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)
-              ?.encrypted ?? false,
+          encrypted: channelIsEncrypted(serverId, channelId),
         }),
       );
       watchEcho(serverId, channelId, nonce);
@@ -614,6 +619,7 @@ export default function ChatPanel() {
       }
       for (const id of pendingIds) {
         useAttachmentsStore.getState().removePending(id);
+        forgetEncryptedUploadMeta(id);
       }
     } catch (err) {
       console.error("send_channel_message:", err);
@@ -673,6 +679,7 @@ export default function ChatPanel() {
           message: content,
           nonce,
           replyTo: replyToId,
+          encrypted: channelIsEncrypted(serverId, channelId),
         }),
       );
       watchEcho(serverId, channelId, nonce);
@@ -778,11 +785,7 @@ export default function ChatPanel() {
         messageId: message.id,
         content,
         encryptedAttachments: encryptedAttachmentArgs(message.attachments),
-        encrypted:
-          useChatStore
-            .getState()
-            .channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId)?.encrypted ??
-          false,
+        encrypted: channelIsEncrypted(activeServerId, activeChannelId),
       }),
     ).catch((err) => console.error("edit_channel_message:", err));
   }, []);
@@ -792,9 +795,7 @@ export default function ChatPanel() {
     if (!activeServerId || !activeChannelId || !username) return;
     const key = channelKey(activeServerId, activeChannelId);
     const list = byCh[key] ?? [];
-    const channelEncrypted = useChatStore
-      .getState()
-      .channelsByServer[activeServerId]?.find((c) => c.id === activeChannelId)?.encrypted;
+    const channelEncrypted = channelIsEncrypted(activeServerId, activeChannelId);
     for (let i = list.length - 1; i >= 0; i--) {
       if (list[i].senderUid === ownUid && list[i].id > 0 && (channelEncrypted || !list[i].encrypted)) {
         setEditingMessageId(list[i].id);
