@@ -482,10 +482,11 @@ public:
     uint64_t roster_revision() const { return roster_revision_; }
     // Builds the wire MemberInfo for one member (nullopt if not a member).
     std::optional<chatproj::MemberInfo> build_member_info(int64_t uid);
-    // Paged snapshot for MEMBER_LIST_REQ. First page (after == "") = every
-    // online member + the first `limit` offline members by username;
-    // later pages = offline only.
-    void fill_member_page(const std::string& after, int32_t limit,
+    // MEMBER_LIST_REQ: one page of the roster sequence (online members,
+    // then offline, each in roster order; see "Roster protocol" in
+    // messages.proto) from the roster index, or a lookup by uid.
+    // `requester` gets their own row on a first page.
+    void fill_member_page(const chatproj::MemberListRequest& req, int64_t requester,
                           chatproj::MemberListResponse* res);
     // MEMBER_SEARCH_REQ: members matching a name and/or role, online or
     // not, ordered by username and paged by `after`.
@@ -839,6 +840,42 @@ private:
 
     boost::asio::io_context* io_ = nullptr;
     uint64_t roster_revision_ = 0;
+
+    // Roster index: every member in roster order, split online / offline
+    // as the deltas told clients. Only emit_member_upsert /
+    // emit_member_remove change it, so pages and the counts on every roster
+    // packet agree with what clients hold, and a page costs O(log members
+    // + page) instead of a sort of the whole membership. Built on first
+    // use; rebuilt when another connection commits to the database (a
+    // hand edit, the test harness seeding rows: PRAGMA data_version). io
+    // thread only.
+    struct RosterKey {
+        std::string fold;   // search_fold(name)
+        std::string name;   // nickname, else username
+        int64_t uid = 0;
+        bool operator<(const RosterKey& o) const {
+            return std::tie(fold, name, uid) < std::tie(o.fold, o.name, o.uid);
+        }
+    };
+    struct RosterEntry {
+        RosterKey key;
+        bool online = false;
+        std::string username;
+        std::string nickname;
+        int64_t joined_at = 0;
+        int64_t timed_out_until = 0;
+    };
+    std::unordered_map<int64_t, RosterEntry> roster_entries_;
+    std::set<RosterKey> roster_online_;
+    std::set<RosterKey> roster_offline_;
+    bool roster_built_ = false;
+    int64_t roster_data_version_ = -1;
+    void ensure_roster_index();
+    void roster_index_put(const chatproj::MemberInfo& info);
+    void roster_index_erase(int64_t uid);
+    static RosterKey roster_key(const std::string& username, const std::string& nickname, int64_t uid);
+    void fill_roster_info(chatproj::MemberInfo* info, const RosterEntry& e, int64_t owner,
+                          const std::unordered_map<int64_t, std::vector<int64_t>>& roles);
     // broadcast_bans() coalescing (io thread only): while the timer runs,
     // a change only marks the list dirty; the timer sends it once.
     std::unique_ptr<boost::asio::steady_timer> bans_timer_;
@@ -1237,9 +1274,15 @@ private:
             // under its uid already; a claimed legacy ban bans it too.
             bool member = db->is_member(candidate_uid);
             bool banned = db->is_banned(candidate_uid);
-            if (!banned && !member && db->claim_legacy(candidate_uid, candidate_username)) {
+            int64_t placeholder = 0;
+            if (!banned && !member && db->claim_legacy(candidate_uid, candidate_username, &placeholder)) {
                 member = db->is_member(candidate_uid);
                 banned = db->is_banned(candidate_uid);
+                // Rosters swap the placeholder's row for the account's
+                // (offline until the session is in; the accept path below
+                // announces it online).
+                manager_.emit_member_remove(placeholder, candidate_username);
+                if (member) manager_.emit_member_upsert(candidate_uid);
             }
 
             if (banned) {
@@ -1472,6 +1515,19 @@ private:
                 const auto& req = packet.message_search_req();
                 send_search_failure(req.seq(), req.cursor() == 0 && req.offset() == 0,
                                     "You're searching too fast.", 1000);
+            }
+            // Also answered: the client holds its "loading" state (and a
+            // lookup its uids) until the reply.
+            if (packet.type() == chatproj::Packet::MEMBER_LIST_REQ) {
+                const auto& req = packet.member_list_req();
+                chatproj::Packet p;
+                p.set_type(chatproj::Packet::MEMBER_LIST_RES);
+                auto* res = p.mutable_member_list_res();
+                res->set_success(false);
+                res->set_message("Too many requests.");
+                res->set_first_page(req.after().empty() && req.uids_size() == 0);
+                for (int i = 0; i < req.uids_size() && i < 200; ++i) res->add_lookup_uids(req.uids(i));
+                send_packet(p);
             }
             return;
         }
@@ -2984,10 +3040,9 @@ private:
 
         // --- MEMBER LIST (paged snapshot; deltas keep it live) ---
         else if (packet.type() == chatproj::Packet::MEMBER_LIST_REQ) {
-            const auto& req = packet.member_list_req();
             chatproj::Packet p;
             p.set_type(chatproj::Packet::MEMBER_LIST_RES);
-            manager_.fill_member_page(req.after(), req.limit(), p.mutable_member_list_res());
+            manager_.fill_member_page(packet.member_list_req(), uid_, p.mutable_member_list_res());
             send_packet(p);
         }
 
@@ -5168,13 +5223,25 @@ std::optional<chatproj::MemberInfo> SessionManager::build_member_info(int64_t ui
 }
 
 void SessionManager::emit_member_upsert(int64_t uid) {
+    ensure_roster_index();
     auto info = build_member_info(uid);
-    if (!info) return;   // not a member (any more) — a MEMBER_REMOVE covers it
+    if (!info) {
+        // Not a member (any more): a MEMBER_REMOVE normally went out
+        // already. One whose row went without it (a claimed placeholder)
+        // gets it now, so neither clients nor the index keep a ghost.
+        if (auto it = roster_entries_.find(uid); it != roster_entries_.end()) {
+            emit_member_remove(uid, it->second.username);
+        }
+        return;
+    }
+    roster_index_put(*info);
     chatproj::Packet p;
     p.set_type(chatproj::Packet::MEMBER_UPSERT);
     auto* up = p.mutable_member_upsert();
     *up->mutable_member() = std::move(*info);
     up->set_revision(++roster_revision_);
+    up->set_online_count(static_cast<int64_t>(roster_online_.size()));
+    up->set_total_members(static_cast<int64_t>(roster_entries_.size()));
     broadcast_to_members(p);
 }
 
@@ -5205,12 +5272,19 @@ void SessionManager::on_member_renamed(int64_t uid, const std::string& name) {
 }
 
 void SessionManager::emit_member_remove(int64_t uid, const std::string& username) {
+    ensure_roster_index();
+    // Out of the counts at once, though a kicked member's sessions are
+    // still closing: the upsert their last session's leave() would send
+    // finds no member and stays quiet.
+    roster_index_erase(uid);
     chatproj::Packet p;
     p.set_type(chatproj::Packet::MEMBER_REMOVE);
     auto* rm = p.mutable_member_remove();
     rm->set_username(username);
     rm->set_uid(uid);
     rm->set_revision(++roster_revision_);
+    rm->set_online_count(static_cast<int64_t>(roster_online_.size()));
+    rm->set_total_members(static_cast<int64_t>(roster_entries_.size()));
     broadcast_to_members(p);
     // A member who left took their roles: every count they held moved. (A
     // rename retires only the old name's row; the member is still here.)
@@ -5218,10 +5292,10 @@ void SessionManager::emit_member_remove(int64_t uid, const std::string& username
 }
 
 namespace {
-// Member pages run in (name, uid) order: names aren't unique (a stale row
-// beside the account now holding the name, a placeholder beside a member
-// renamed onto it). The cursor is opaque to clients: "<name>\x1f<uid>".
-// A bare name (an older client's cursor) resumes after every row of it.
+// Member search pages (MEMBER_SEARCH_REQ) run in (name, uid) order: names
+// aren't unique (a stale row beside the account now holding the name, a
+// placeholder beside a member renamed onto it). The cursor is opaque to
+// clients: "<name>\x1f<uid>". A bare name resumes after every row of it.
 struct MemberCursor {
     std::string name;
     int64_t uid = 0;
@@ -5247,61 +5321,199 @@ bool member_order(const chatproj::DbMember& a, const chatproj::DbMember& b) {
 bool past_cursor(const chatproj::DbMember& m, const MemberCursor& c) {
     return m.username != c.name ? m.username > c.name : m.uid > c.uid;
 }
+
+// The roster sequence's cursor, opaque to clients: "o\x1f<uid>\x1f<name>"
+// or "f\x1f<uid>\x1f<name>" — the part (online / offline) and the roster
+// key of the last member sent (the fold is recomputed from the name, which
+// goes last because a nickname may hold any byte) — or a bare "f": the
+// offline part from its start, once the online part is all sent. Anything
+// else (an older client's cursor) also starts the offline part over.
+struct RosterCursor {
+    bool online = false;
+    bool has_key = false;
+    int64_t uid = 0;
+    std::string name;
+};
+RosterCursor parse_roster_cursor(const std::string& s) {
+    RosterCursor c;
+    if (s.size() < 4 || (s[0] != 'o' && s[0] != 'f') || s[1] != '\x1f') return c;
+    const auto sep = s.find('\x1f', 2);
+    if (sep == std::string::npos) return c;
+    c.online = s[0] == 'o';
+    c.has_key = true;
+    c.uid = std::strtoll(s.c_str() + 2, nullptr, 10);
+    c.name = s.substr(sep + 1);
+    return c;
+}
 }  // namespace
 
-void SessionManager::fill_member_page(const std::string& after, int32_t limit,
+SessionManager::RosterKey SessionManager::roster_key(const std::string& username,
+                                                     const std::string& nickname, int64_t uid) {
+    RosterKey k;
+    k.name = nickname.empty() ? username : nickname;
+    k.fold = chatproj::search_fold(k.name);
+    k.uid = uid;
+    return k;
+}
+
+void SessionManager::ensure_roster_index() {
+    if (!db_) return;
+    const int64_t version = db_->data_version();
+    if (roster_built_ && version != -1 && version == roster_data_version_) return;
+    roster_entries_.clear();
+    roster_online_.clear();
+    roster_offline_.clear();
+    // Online = a member with a visible session, as build_member_info has it
+    // (a kicked member's closing sessions aren't members any more).
+    const auto visible = get_visible_uids();
+    for (auto& m : db_->list_members()) {
+        RosterEntry e;
+        e.key = roster_key(m.username, m.nickname, m.uid);
+        e.online = visible.count(m.uid) > 0;
+        e.username = std::move(m.username);
+        e.nickname = std::move(m.nickname);
+        e.joined_at = m.joined_at;
+        e.timed_out_until = m.timed_out_until;
+        (e.online ? roster_online_ : roster_offline_).insert(e.key);
+        roster_entries_.emplace(m.uid, std::move(e));
+    }
+    roster_built_ = true;
+    roster_data_version_ = version;
+}
+
+void SessionManager::roster_index_put(const chatproj::MemberInfo& info) {
+    RosterEntry e;
+    e.key = roster_key(info.username(), info.nickname(), info.uid());
+    e.online = info.is_online();
+    e.username = info.username();
+    e.nickname = info.nickname();
+    e.joined_at = info.joined_at();
+    e.timed_out_until = info.timed_out_until();
+    auto it = roster_entries_.find(info.uid());
+    if (it != roster_entries_.end()) {
+        (it->second.online ? roster_online_ : roster_offline_).erase(it->second.key);
+        it->second = std::move(e);
+    } else {
+        it = roster_entries_.emplace(info.uid(), std::move(e)).first;
+    }
+    (it->second.online ? roster_online_ : roster_offline_).insert(it->second.key);
+}
+
+void SessionManager::roster_index_erase(int64_t uid) {
+    auto it = roster_entries_.find(uid);
+    if (it == roster_entries_.end()) return;
+    (it->second.online ? roster_online_ : roster_offline_).erase(it->second.key);
+    roster_entries_.erase(it);
+}
+
+void SessionManager::fill_roster_info(chatproj::MemberInfo* info, const RosterEntry& e, int64_t owner,
+                                      const std::unordered_map<int64_t, std::vector<int64_t>>& roles) {
+    info->set_username(e.username);
+    info->set_uid(e.key.uid);
+    info->set_joined_at(e.joined_at);
+    info->set_nickname(e.nickname);
+    info->set_is_owner(e.key.uid == owner);
+    info->set_is_online(e.online);
+    info->set_timed_out_until(e.timed_out_until);
+    if (auto it = roles.find(e.key.uid); it != roles.end()) {
+        for (int64_t rid : it->second) info->add_role_ids(rid);
+    }
+}
+
+void SessionManager::fill_member_page(const chatproj::MemberListRequest& req, int64_t requester,
                                       chatproj::MemberListResponse* res) {
     if (!db_) { res->set_success(false); res->set_message("Server misconfigured."); return; }
-    if (limit <= 0) limit = 100;
-    if (limit > 200) limit = 200;
+    ensure_roster_index();
     const int64_t owner = db_->owner_uid();
-    auto online = get_visible_uids();
-    // One roster scan + one member_roles scan; both are cheap at the
-    // scale a single community server serves, and this only runs on
-    // demand (page fetches), never on every roster event.
-    std::unordered_map<int64_t, std::vector<int64_t>> roles_by_user;
-    for (const auto& [uid, role_id] : db_->list_all_member_roles()) {
-        roles_by_user[uid].push_back(role_id);
-    }
-    auto members = db_->list_members();
-    std::sort(members.begin(), members.end(), member_order);
-    const bool first_page = after.empty();
-    const MemberCursor cursor = parse_member_cursor(after);
-    auto emit = [&](const chatproj::DbMember& m) {
-        auto* info = res->add_members();
-        info->set_username(m.username);
-        info->set_uid(m.uid);
-        info->set_joined_at(m.joined_at);
-        info->set_nickname(m.nickname);
-        info->set_is_owner(m.uid == owner);
-        info->set_is_online(online.count(m.uid) > 0);
-        info->set_timed_out_until(m.timed_out_until);
-        if (auto it = roles_by_user.find(m.uid); it != roles_by_user.end()) {
-            for (int64_t rid : it->second) info->add_role_ids(rid);
-        }
-    };
-    if (first_page) {
-        for (const auto& m : members) {
-            if (online.count(m.uid)) emit(m);
-        }
-    }
-    int32_t offline_sent = 0;
-    bool has_more = false;
-    std::string next_after;
-    for (const auto& m : members) {
-        if (online.count(m.uid)) continue;
-        if (!first_page && !past_cursor(m, cursor)) continue;
-        if (offline_sent >= limit) { has_more = true; break; }
-        emit(m);
-        ++offline_sent;
-        next_after = member_cursor(m);
-    }
     res->set_success(true);
     res->set_revision(roster_revision_);
-    res->set_total_members(static_cast<int64_t>(members.size()));
-    res->set_has_more(has_more);
-    res->set_next_after(has_more ? next_after : "");
+    res->set_total_members(static_cast<int64_t>(roster_entries_.size()));
+    res->set_online_count(static_cast<int64_t>(roster_online_.size()));
+
+    // A lookup: the named members, wherever they sort.
+    if (req.uids_size() > 0) {
+        constexpr int kMaxLookup = 200;
+        std::vector<int64_t> found;
+        for (int i = 0; i < req.uids_size() && i < kMaxLookup; ++i) {
+            const int64_t uid = req.uids(i);
+            res->add_lookup_uids(uid);
+            if (roster_entries_.count(uid) && std::find(found.begin(), found.end(), uid) == found.end()) {
+                found.push_back(uid);
+            }
+        }
+        const auto roles = db_->member_role_ids_for(found);
+        for (int64_t uid : found) fill_roster_info(res->add_extra(), roster_entries_.at(uid), owner, roles);
+        return;
+    }
+
+    size_t limit = req.limit() <= 0 ? 100 : std::min<size_t>(static_cast<size_t>(req.limit()), 1000);
+    const bool first_page = req.after().empty();
     res->set_first_page(first_page);
+    RosterCursor cursor;   // a first page: the online part from its start
+    if (first_page) cursor.online = true;
+    else cursor = parse_roster_cursor(req.after());
+    std::optional<RosterKey> after;
+    if (cursor.has_key) after = roster_key(cursor.name, "", cursor.uid);
+
+    // The page's members in sequence order: the online part past the
+    // cursor, and once that runs out the offline part.
+    std::vector<const RosterEntry*> page;
+    page.reserve(std::min(limit, roster_entries_.size()));
+    bool online_complete = true;
+    if (cursor.online) {
+        auto it = after ? roster_online_.upper_bound(*after) : roster_online_.begin();
+        for (; it != roster_online_.end() && page.size() < limit; ++it) page.push_back(&roster_entries_.at(it->uid));
+        online_complete = it == roster_online_.end();
+    }
+    const size_t online_in_page = page.size();
+    bool has_more = !online_complete;
+    if (online_complete) {
+        auto it = (after && !cursor.online) ? roster_offline_.upper_bound(*after) : roster_offline_.begin();
+        for (; it != roster_offline_.end() && page.size() < limit; ++it) page.push_back(&roster_entries_.at(it->uid));
+        has_more = it != roster_offline_.end();
+    }
+
+    std::vector<int64_t> uids;
+    uids.reserve(page.size() + 1);
+    for (const auto* e : page) uids.push_back(e->key.uid);
+    const RosterEntry* self = nullptr;
+    if (first_page) {
+        auto it = roster_entries_.find(requester);
+        if (it != roster_entries_.end()) self = &it->second;
+        if (self) uids.push_back(requester);
+    }
+    const auto roles = db_->member_role_ids_for(uids);
+    // Within the frame budget (review A1): 1000 members with every role
+    // and the longest names come near it.
+    size_t bytes = 0;
+    size_t sent = 0;
+    bool self_sent = false;
+    for (const auto* e : page) {
+        chatproj::MemberInfo info;
+        fill_roster_info(&info, *e, owner, roles);
+        const size_t size = info.ByteSizeLong() + 8;   // + tag and length
+        if (sent > 0 && bytes + size > kMaxResponseBytes - 64 * 1024) break;   // room for `extra`
+        bytes += size;
+        *res->add_members() = std::move(info);
+        self_sent = self_sent || e == self;
+        ++sent;
+    }
+    if (sent < page.size()) {
+        has_more = true;
+        if (sent < online_in_page) online_complete = false;
+    }
+    if (self && !self_sent) fill_roster_info(res->add_extra(), *self, owner, roles);
+    res->set_online_complete(online_complete);
+    res->set_has_more(has_more);
+    if (has_more) {
+        const RosterEntry* last = sent > 0 ? page[sent - 1] : nullptr;
+        if (last && !(last->online && online_complete)) {
+            res->set_next_after(std::string(last->online ? "o" : "f") + '\x1f' +
+                                std::to_string(last->key.uid) + '\x1f' + last->key.name);
+        } else {
+            res->set_next_after("f");
+        }
+    }
 }
 
 namespace {

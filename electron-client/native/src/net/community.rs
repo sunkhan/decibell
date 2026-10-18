@@ -777,6 +777,10 @@ impl CommunityClient {
                         has_more: resp.has_more,
                         next_after: resp.next_after,
                         first_page: resp.first_page,
+                        online_count: resp.online_count,
+                        online_complete: resp.online_complete,
+                        extra: resp.extra.into_iter().map(member_info_payload).collect(),
+                        lookup_uids: resp.lookup_uids,
                     });
                 }
                 Some(packet::Payload::MemberSearchRes(resp)) => {
@@ -798,6 +802,8 @@ impl CommunityClient {
                             server_id: server_id.clone(),
                             member: member_info_payload(m),
                             revision: up.revision,
+                            online_count: up.online_count,
+                            total_members: up.total_members,
                         });
                     }
                 }
@@ -807,6 +813,8 @@ impl CommunityClient {
                         username: rm.username,
                         uid: rm.uid,
                         revision: rm.revision,
+                        online_count: rm.online_count,
+                        total_members: rm.total_members,
                     });
                 }
                 Some(packet::Payload::BanListRes(resp)) => {

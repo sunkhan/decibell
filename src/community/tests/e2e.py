@@ -982,8 +982,84 @@ def test_v2_overwrite_guards():
     for c in (sam, tia, uma, owner): c.close()
 
 
+def _latin_fold_table():
+    """kLatinFold from search.cpp (U+00C0..U+017F), the server's fold."""
+    import re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "search.cpp"), encoding="utf-8").read()
+    body = src[src.index("kLatinFold[0x180 - 0xC0] = {"):]
+    body = body[body.index("{") + 1:body.index("};")]
+    return [int(v, 16) for line in body.splitlines() for v in re.findall(r"0x([0-9A-Fa-f]{4})", line.split("//")[0])]
+
+
+_LATIN = None
+
+
+def search_fold(s):
+    """search.cpp search_fold, code point by code point."""
+    global _LATIN
+    if _LATIN is None:
+        _LATIN = _latin_fold_table()
+        assert len(_LATIN) == 0xC0, len(_LATIN)
+    out = []
+    for ch in s:
+        c = ord(ch)
+        if 0x300 <= c <= 0x36F:
+            continue
+        if c < 0x80:
+            c = c + 32 if 0x41 <= c <= 0x5A else c
+        elif 0xC0 <= c < 0x180:
+            c = _LATIN[c - 0xC0]
+        elif 0x391 <= c <= 0x3A9 and c != 0x3A2:
+            c += 0x20
+        elif 0x410 <= c <= 0x42F:
+            c += 0x20
+        elif 0x400 <= c <= 0x40F:
+            c += 0x50
+        out.append(chr(c))
+    return "".join(out)
+
+
+def roster_order_key(m):
+    """messages.proto "Roster order": fold(display), display, uid."""
+    name = m.nickname or m.username
+    return (search_fold(name).encode(), name.encode(), m.uid)
+
+
+def member_page(c, after="", limit=100):
+    """One roster page; a refusal (the query bucket is shared with every
+    list fetch) is retried."""
+    first = after == ""
+    for _ in range(20):
+        c.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after=after, limit=limit))
+        pg = c.wait(pb.Packet.MEMBER_LIST_RES, timeout=5,
+                    pred=lambda p: p.member_list_res.first_page == first and not p.member_list_res.lookup_uids)
+        if pg is None or pg.member_list_res.success:
+            return pg.member_list_res if pg else None
+        time.sleep(0.6)
+    return None
+
+
+def roster_pages(c, limit=1000, max_pages=10000):
+    """Every page of the roster sequence: (pages, members in order)."""
+    pages, members, after = [], [], ""
+    while len(pages) < max_pages:
+        r = member_page(c, after, limit)
+        if r is None:
+            break
+        pages.append(r)
+        members.extend(r.members)
+        if not r.has_more:
+            break
+        after = r.next_after
+    return pages, members
+
+
+def roster_all(c):
+    return roster_pages(c)[1]
+
+
 def test_roster_deltas():
-    print("[roster] paged snapshot + MEMBER_UPSERT/REMOVE deltas + revision")
+    print("[roster] paged snapshot + MEMBER_UPSERT/REMOVE deltas + revision + counts")
     owner = Client("alice"); assert auth_ok(owner)[0]
     owner.flush(0.5)
     # Seed 250 offline members directly (joined long ago) to exercise paging.
@@ -993,34 +1069,37 @@ def test_roster_deltas():
         c.execute("insert or ignore into members(uid, username, joined_at, nickname) values(?, ?, ?, '')",
                   (uid_for(f"zz{i:03d}"), f"zz{i:03d}", now))
     c.commit(); c.close()
-    owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after="", limit=100))
-    p1 = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
-    r1 = p1.member_list_res
-    online = [m.username for m in r1.members if m.is_online]
-    offline = [m.username for m in r1.members if not m.is_online]
-    check("first page: all online members + 100 offline", "alice" in online and len(offline) == 100 and r1.has_more, f"online={len(online)} offline={len(offline)} has_more={r1.has_more}")
-    check("total_members reported", r1.total_members >= 251, str(r1.total_members))
-    seen = set(offline)
-    after = r1.next_after; pages = 1
-    while after:
-        owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after=after, limit=100))
-        pg = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: not p.member_list_res.first_page)
-        r = pg.member_list_res; pages += 1
-        names = [m.username for m in r.members]
-        check(f"page {pages}: offline only, no duplicates", all(not m.is_online for m in r.members) and not (seen & set(names)))
-        seen |= set(names)
-        after = r.next_after if r.has_more else ""
-    check("paging covers every offline member exactly once", len(seen) == r1.total_members - len(online), f"{len(seen)} vs {r1.total_members - len(online)}")
+    total = sql("select count(*) from members")[0][0]
+    pages, seq = roster_pages(owner, limit=100)
+    r1 = pages[0]
+    online = [m for m in seq if m.is_online]
+    check("first page: first_page, 100 members, more to come", r1.first_page and len(r1.members) == 100 and r1.has_more,
+          f"first={r1.first_page} n={len(r1.members)} more={r1.has_more}")
+    check("total_members = the members table", r1.total_members == total, f"{r1.total_members} vs {total}")
+    check("online_count = the online members listed", all(p.online_count == len(online) for p in pages) and "alice" in [m.username for m in online],
+          f"{[p.online_count for p in pages]} vs {len(online)}")
+    check("later pages: not first_page", all(not p.first_page for p in pages[1:]) and len(pages) >= 3)
+    flips = [i for i in range(1, len(seq)) if seq[i - 1].is_online != seq[i].is_online]
+    check("sequence: every online member, then every offline member", len(flips) <= 1 and seq[0].is_online, f"flips at {flips}")
+    check("each part in roster order",
+          [roster_order_key(m) for m in online] == sorted(roster_order_key(m) for m in online)
+          and [roster_order_key(m) for m in seq if not m.is_online] == sorted(roster_order_key(m) for m in seq if not m.is_online))
+    uids = [m.uid for m in seq]
+    check("paging covers every member exactly once", len(uids) == len(set(uids)) == total, f"{len(uids)} / {len(set(uids))} / {total}")
     rev = r1.revision
-    # presence flip → upsert with is_online
+    # presence flip → upsert with is_online and the counts after it
     vic = join("vic", owner)
     up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "vic")
     check("join → MEMBER_UPSERT online", up is not None and up.member_upsert.member.is_online)
+    check("join → counts: one more member, one more online", up is not None and up.member_upsert.total_members == total + 1
+          and up.member_upsert.online_count == len(online) + 1, f"{up.member_upsert.total_members if up else None}/{up.member_upsert.online_count if up else None}")
     check("revision increased", up is not None and up.member_upsert.revision > rev)
     rev = up.member_upsert.revision
     vic.close()
     up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "vic" and not p.member_upsert.member.is_online)
     check("disconnect → MEMBER_UPSERT offline", up is not None)
+    check("disconnect → online count back down", up is not None and up.member_upsert.online_count == len(online)
+          and up.member_upsert.total_members == total + 1)
     check("revision strictly monotonic", up is not None and up.member_upsert.revision == rev + 1, f"{up.member_upsert.revision if up else None} vs {rev}")
     # two sessions: only the last disconnect flips presence
     w1 = join("wes", owner, nonce="a"); owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "wes")
@@ -1031,6 +1110,20 @@ def test_roster_deltas():
     w2.close()
     up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "wes" and not p.member_upsert.member.is_online)
     check("last session closing → offline upsert", up is not None)
+    # A kicked member leaves the counts at once, though their session is
+    # still closing; their leave() then says nothing more.
+    xen = join("xen", owner)
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.username == "xen")
+    before = (up.member_upsert.online_count, up.member_upsert.total_members) if up else (0, 0)
+    owner.send(pb.Packet.KICK_MEMBER_REQ, kick_member_req=pb.KickMemberRequest(username="xen", uid=uid_of("xen")))
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.username == "xen")
+    check("kick → MEMBER_REMOVE with the counts after it", rm is not None
+          and (rm.member_remove.online_count, rm.member_remove.total_members) == (before[0] - 1, before[1] - 1),
+          f"{(rm.member_remove.online_count, rm.member_remove.total_members) if rm else None} vs {before}")
+    owner.drain(1.0)
+    check("kick → no upsert when the kicked session closes",
+          not any(p.type == pb.Packet.MEMBER_UPSERT and p.member_upsert.member.username == "xen" for p in owner.inbox))
+    xen.close()
     # ban list request gating
     xan = join("xan", owner); xan.flush(0.5)
     xan.send(pb.Packet.BAN_LIST_REQ, ban_list_req=pb.BanListRequest())
@@ -1041,6 +1134,163 @@ def test_roster_deltas():
     check("owner gets ban list", bl is not None)
     sql("delete from members where username like 'zz%'")
     xan.close(); owner.close()
+
+
+def test_roster_online_paging():
+    print("[roster] online members page too: order, cursor across online → offline, counts, deltas, lookups")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    # Names that only sort right folded (case, accents, Turkish ı / İ) and
+    # one nickname that sorts its member first. All join online.
+    names = ["opÇağrı", "opcem", "opÖmer", "opoya", "opZed", "opábel", "opAbby", "opıpek", "opİlker", "opilknur",
+             "opbo", "opBo", "opdan", "opemre", "opfaye", "opgus", "ophal", "opivy", "opjo", "opkai"]
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    c.executemany("insert or ignore into members(uid, username, joined_at, nickname) values(?,?,?,'')",
+                  ((uid_for(n), n, now) for n in names))
+    # Offline neighbours on both sides of the online names.
+    c.executemany("insert or ignore into members(uid, username, joined_at, nickname) values(?,?,?,'')",
+                  ((uid_for(f"opoff{i:02d}"), f"opoff{i:02d}", now) for i in range(12)))
+    c.commit(); c.close()
+    clients = []
+    for n in names:
+        cl = Client(n); assert auth_ok(cl)[0], n
+        clients.append(cl)
+    owner.flush(1.0)
+    total = sql("select count(*) from members")[0][0]
+    # A page size that leaves the online part ending mid-page, after at
+    # least two pages of online members only.
+    n_online = member_page(owner, limit=1).online_count
+    limit = next(k for k in (7, 8, 9, 6, 5) if n_online % k and n_online > 2 * k)
+    pages, seq = roster_pages(owner, limit=limit)
+    online = [m for m in seq if m.is_online]
+    offline = [m for m in seq if not m.is_online]
+    check("online paging: every member exactly once", len({m.uid for m in seq}) == len(seq) == total, f"{len(seq)} vs {total}")
+    check("online paging: online part in roster order", [roster_order_key(m) for m in online] == sorted(roster_order_key(m) for m in online))
+    check("online paging: offline part in roster order", [roster_order_key(m) for m in offline] == sorted(roster_order_key(m) for m in offline))
+    check("online paging: online part first", seq[:len(online)] == online)
+    check("online paging: the first page holds only online members and says more follow",
+          pages[0].first_page and len(pages[0].members) == limit and all(m.is_online for m in pages[0].members)
+          and not pages[0].online_complete and pages[0].has_more)
+    done = next((i for i, p in enumerate(pages) if p.online_complete), None)
+    check("online paging: online_complete from the page that ends the online part on",
+          done is not None and all(p.online_complete for p in pages[done:]) and not any(p.online_complete for p in pages[:done])
+          and all(all(m.is_online for m in p.members) for p in pages[:done]))
+    crossing = pages[done] if done is not None else None
+    check("online paging: one page crosses from online into offline",
+          crossing is not None and any(m.is_online for m in crossing.members) and any(not m.is_online for m in crossing.members),
+          str([m.is_online for m in crossing.members]) if crossing else "")
+    check("online paging: every page carries the counts",
+          all(p.online_count == len(online) and p.total_members == total for p in pages))
+    folded = [m.username for m in online if m.username.startswith("op")]
+    check("online paging: folded order (Abby, ábel, Bo, bo, Çağrı, cem … İlker, ilknur, ıpek …)",
+          folded[:6] == ["opAbby", "opábel", "opBo", "opbo", "opÇağrı", "opcem"]
+          and folded.index("opİlker") < folded.index("opilknur") < folded.index("opıpek") < folded.index("opivy"), str(folded))
+    # The requester's own row rides the first page when the page doesn't
+    # reach it.
+    late = clients[names.index("opZed")]
+    late.flush(0.3)
+    late.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(limit=2))
+    p1 = late.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
+    check("first page: the requester's own row in `extra`", p1 is not None and len(p1.member_list_res.extra) == 1
+          and p1.member_list_res.extra[0].uid == uid_of("opZed") and p1.member_list_res.extra[0].is_online
+          and uid_of("opZed") not in [m.uid for m in p1.member_list_res.members])
+    early = clients[names.index("opAbby")]
+    early.flush(0.3)
+    early.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(limit=50))
+    p1 = early.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
+    check("first page: no `extra` when the page holds the requester", p1 is not None and len(p1.member_list_res.extra) == 0)
+    # Deltas while partly loaded: the owner holds page 1 (limit 3); a member
+    # who sorts past it goes offline, another comes online, a nickname moves
+    # one to the front. The pages that follow from page 1's cursor stay
+    # consistent with what the deltas said.
+    owner.flush(0.3)
+    p1 = member_page(owner, limit=3)
+    rev = p1.revision
+    gone = clients.pop(names.index("opkai")); names.remove("opkai")
+    gone.close()
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "opkai")
+    check("partial: an unloaded member going offline → upsert with the online count down",
+          up is not None and not up.member_upsert.member.is_online and up.member_upsert.online_count == p1.online_count - 1
+          and up.member_upsert.revision == rev + 1)
+    back = Client("opoff11"); assert auth_ok(back)[0]
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "opoff11")
+    check("partial: an unloaded member coming online → upsert with the count back up",
+          up is not None and up.member_upsert.member.is_online and up.member_upsert.online_count == p1.online_count
+          and up.member_upsert.revision == rev + 2)
+    r = set_nick(owner, "opjo", "Aaaa first")
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=3, pred=lambda p: p.member_upsert.member.username == "opjo")
+    check("partial: a nickname change → upsert, counts unchanged", mod_ok(r) and up is not None
+          and up.member_upsert.member.nickname == "Aaaa first" and up.member_upsert.online_count == p1.online_count)
+    rest, after = [], p1.next_after
+    while after:
+        pg = member_page(owner, after, limit=10)
+        rest.extend(pg.members)
+        after = pg.next_after if pg.has_more else ""
+    later_online = [m.username for m in rest if m.is_online]
+    later_offline = [m.username for m in rest if not m.is_online]
+    check("partial: the member who went offline is in the offline part", "opkai" in later_offline and "opkai" not in later_online)
+    check("partial: the member who came online is in the online part, once",
+          later_online.count("opoff11") == 1 and "opoff11" not in later_offline)
+    check("partial: a member renamed before the loaded edge isn't sent again",
+          "opjo" not in later_online + later_offline and roster_order_key(next(m for m in seq if m.username == "opjo")) > roster_order_key(p1.members[-1]))
+    loaded = {m.uid for m in p1.members}
+    check("partial: page 1 + the rest = every member but the one moved behind the edge, once each",
+          len(loaded | {m.uid for m in rest}) == len(p1.members) + len(rest) == total - 1)
+    fresh = [m.username for m in roster_all(owner) if m.is_online]
+    check("after the rename: the nickname sorts its member before alice and every op member",
+          "opjo" in fresh and fresh.index("opjo") < fresh.index("alice")
+          and all(fresh.index("opjo") <= i for i, n in enumerate(fresh) if n.startswith("op")), str(fresh[:5]))
+    # Lookups: members wherever they sort; a uid that isn't a member is
+    # echoed but not returned.
+    owner.flush(0.3)
+    want = [uid_of("opoff05"), uid_of("opZed"), 987654321]
+    owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(uids=want))
+    lk = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: list(p.member_list_res.lookup_uids) == want)
+    lr = lk.member_list_res if lk else None
+    check("lookup: the members among the uids, the rest echoed only",
+          lr is not None and lr.success and sorted(m.uid for m in lr.extra) == sorted(want[:2]) and not lr.members
+          and not lr.first_page and not lr.has_more and lr.online_count > 0 and lr.total_members == total,
+          str(lr)[:300] if lr else "")
+    # Rate limited: still answered, so the client's "loading" never sticks.
+    owner.flush(0.3)
+    for i in range(30):
+        owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(uids=[uid_of("opZed"), 5000 + i]))
+    got = []
+    for _ in range(30):
+        p = owner.wait(pb.Packet.MEMBER_LIST_RES, timeout=2)
+        if p is None:
+            break
+        got.append(p.member_list_res)
+    refused = [r for r in got if not r.success]
+    check("rate limited lookups: every request answered, the refused ones echo their uids",
+          len(got) == 30 and refused and all(len(r.lookup_uids) == 2 for r in refused), f"{len(got)} answers, {len(refused)} refused")
+    for cl in clients + [back]:
+        cl.close()
+    sql("delete from members where username like 'op%'")
+    owner.close()
+
+
+def test_roster_page_budget():
+    print("[roster] a page stops at the frame budget and at 1,000 members")
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    now = int(time.time())
+    c = sqlite3.connect(DB)
+    # Nicknames far past the 32-byte cap (written behind the server's back):
+    # 400 rows of ~4 KB would make a 1.6 MB page.
+    c.executemany("insert into members(uid, username, joined_at, nickname) values(?,?,?,?)",
+                  ((900000 + i, f"bg{i:04d}", now, f"bg{i:04d}" + "n" * 4000) for i in range(400)))
+    c.executemany("insert into members(uid, username, joined_at, nickname) values(?,?,?,'')",
+                  ((901000 + i, f"bh{i:04d}", now) for i in range(1100)))
+    c.commit(); c.close()
+    owner.flush(0.3)
+    total = sql("select count(*) from members")[0][0]
+    pages, seq = roster_pages(owner, limit=5000)
+    check("budget: no page past 1,000 members", pages and all(len(p.members) <= 1000 for p in pages), str([len(p.members) for p in pages]))
+    check("budget: a page of 4 KB names stops short of the frame cap", owner.max_frame < 1536 * 1024
+          and any(len(p.members) < 1000 and p.has_more for p in pages), f"max frame {owner.max_frame}, {[len(p.members) for p in pages]}")
+    check("budget: the pages still cover every member once", len(seq) == len({m.uid for m in seq}) == total, f"{len(seq)} vs {total}")
+    sql("delete from members where uid between 900000 and 902099")
+    owner.close()
 
 
 def test_presence_hidden():
@@ -1054,10 +1304,8 @@ def test_presence_hidden():
     ivy = join("ivy", owner, hidden=True)
     up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=any_ivy)
     check("new member joining invisible → upsert, offline", up is not None and not up.member_upsert.member.is_online)
-    owner.send(pb.Packet.MEMBER_LIST_REQ, member_list_req=pb.MemberListRequest(after="", limit=100))
-    page = owner.wait(pb.Packet.MEMBER_LIST_RES, pred=lambda p: p.member_list_res.first_page)
-    entry = [m for m in page.member_list_res.members if m.username == "ivy"] if page else []
-    check("first page lists the invisible member offline", len(entry) == 1 and not entry[0].is_online)
+    entry = [m for m in roster_all(owner) if m.username == "ivy"]
+    check("the roster lists the invisible member offline", len(entry) == 1 and not entry[0].is_online)
     # Disconnecting and reconnecting invisible: no roster traffic at all —
     # an upsert at either moment would give the connection away.
     ivy.close()
@@ -1523,6 +1771,10 @@ def test_message_search():
     check("legacy member: messages and roles follow", sql("select sender_uid from messages where id=?", lm) == [(uid_for("lazy"),)]
           and sql("select count(*) from member_roles where uid=?", uid_for("lazy"))[0][0] == had_role
           and sql("select count(*) from legacy_claims where username='lazy'") == [(0,)])
+    rm = owner.wait(pb.Packet.MEMBER_REMOVE, timeout=2, pred=lambda p: p.member_remove.uid == -500)
+    up = owner.wait(pb.Packet.MEMBER_UPSERT, timeout=2, pred=lambda p: p.member_upsert.member.uid == uid_for("lazy"))
+    check("legacy member: rosters swap the placeholder's row for the account's", rm is not None and up is not None
+          and up.member_upsert.member.nickname == "Lazy" and up.member_upsert.total_members == rm.member_remove.total_members + 1)
     lazy.close()
 
     # Bans go by uid: a made-up placeholder can't be banned (it would only
@@ -4660,6 +4912,8 @@ if __name__ == "__main__":
         test_v2_private_channel()
         test_v2_overwrite_guards()
         test_roster_deltas()
+        test_roster_online_paging()
+        test_roster_page_budget()
         test_member_search_and_role_counts()
         test_audit_search()
         test_message_search()

@@ -1049,15 +1049,26 @@ pub struct MemberListReceivedPayload {
     pub server_id: String,
     pub success: bool,
     pub message: String,
-    /// One page (see "Roster protocol" in messages.proto): the first page
-    /// carries every online member + the first `limit` offline members;
-    /// later pages carry offline members only.
+    /// One page (see "Roster protocol" in messages.proto): the roster
+    /// sequence runs through every online member, then every offline
+    /// member, in roster order; a page may cross from one part into the
+    /// other. Empty on a lookup's reply.
     pub members: Vec<MemberInfoPayload>,
     pub revision: u64,
+    /// Whole server, loaded or not (as is `online_count`).
     pub total_members: i64,
     pub has_more: bool,
     pub next_after: String,
     pub first_page: bool,
+    pub online_count: i64,
+    /// The pages so far hold every online member (this one may begin the
+    /// offline part).
+    pub online_complete: bool,
+    /// Rows outside the sequence: the requester's own on a first page, the
+    /// members found on a lookup.
+    pub extra: Vec<MemberInfoPayload>,
+    /// A lookup's reply only: the uids it asked for.
+    pub lookup_uids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1066,6 +1077,9 @@ pub struct MemberUpsertPayload {
     pub server_id: String,
     pub member: MemberInfoPayload,
     pub revision: u64,
+    /// The whole server's counts after the change.
+    pub online_count: i64,
+    pub total_members: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1075,6 +1089,9 @@ pub struct MemberRemovePayload {
     pub username: String,
     pub uid: i64,
     pub revision: u64,
+    /// The whole server's counts after the change.
+    pub online_count: i64,
+    pub total_members: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

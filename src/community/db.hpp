@@ -435,8 +435,8 @@ public:
     // A legacy placeholder for `username` (a name seen before uids reached
     // this server, or a fresh server's configured owner) becomes `uid` in
     // every table, in one transaction. Only when `uid` has no member row
-    // yet. True if a placeholder was claimed.
-    bool claim_legacy(int64_t uid, const std::string& username);
+    // yet. True if a placeholder was claimed; `placeholder` gets its uid.
+    bool claim_legacy(int64_t uid, const std::string& username, int64_t* placeholder = nullptr);
     // The member's token carries another name than their row (renamed at
     // central): store the new one. Returns the previous name, or nullopt
     // when unchanged / not a member.
@@ -448,6 +448,11 @@ public:
                                                    int64_t iat, std::string* current = nullptr);
     bool remove_member(int64_t uid);
     std::vector<DbMember> list_members() const;
+    // SQLite's PRAGMA data_version: changes when another connection (a
+    // hand edit, the test harness) commits to the database, never for
+    // this connection's own writes. -1 on error. Lets an in-memory copy
+    // of a table notice writes that bypassed it.
+    int64_t data_version() const;
 
     // --- Encrypted text channels (spec 2026-09-04) ---
     // Text channels only; the caller clamps the length.
@@ -598,6 +603,9 @@ public:
     std::vector<int64_t> get_member_role_ids(int64_t uid) const;
     // (uid, assigned role id) pairs, for building member lists in one query.
     std::vector<std::pair<int64_t, int64_t>> list_all_member_roles() const;
+    // Assigned role ids of each of `uids` (members without roles absent),
+    // highest role first, in a few queries: one roster page's worth.
+    std::unordered_map<int64_t, std::vector<int64_t>> member_role_ids_for(const std::vector<int64_t>& uids) const;
     // role id -> how many members hold it (roles nobody holds are absent).
     std::unordered_map<int64_t, int64_t> role_member_counts() const;
     // Replaces the member's role set. Caller validates hierarchy; this

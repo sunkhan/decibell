@@ -1427,7 +1427,7 @@ void CommunityDb::ensure_legacy_claims_deadline_() {
     set_meta_("legacy_claims_until", std::to_string(until));
 }
 
-bool CommunityDb::claim_legacy(int64_t uid, const std::string& username) {
+bool CommunityDb::claim_legacy(int64_t uid, const std::string& username, int64_t* claimed) {
     if (uid <= 0 || username.empty()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     // Past the deadline a name may belong to someone else: what's left
@@ -1507,6 +1507,7 @@ bool CommunityDb::claim_legacy(int64_t uid, const std::string& username) {
         // owner cache was refreshed by set_meta_ inside the transaction.
         std::cout << "[DB] " << username << " claimed legacy uid " << placeholder
                   << " as " << uid << "\n";
+        if (claimed) *claimed = placeholder;
     } else {
         try { owner_cache_ = std::stoll(get_meta_("owner_uid")); } catch (...) {}
         invalidate_perm_cache_();
@@ -1600,6 +1601,13 @@ std::vector<DbMember> CommunityDb::list_members() const {
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) out.push_back(member_from_row(q));
     return out;
+}
+
+int64_t CommunityDb::data_version() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Stmt q(db_, "PRAGMA data_version;");
+    if (!q.s || q.step() != SQLITE_ROW) return -1;
+    return q.col_int64(0);
 }
 
 std::optional<DbMember> CommunityDb::get_member(int64_t uid) const {
@@ -1990,6 +1998,30 @@ std::vector<std::pair<int64_t, int64_t>> CommunityDb::list_all_member_roles() co
     if (!q.s) return out;
     while (q.step() == SQLITE_ROW) {
         out.emplace_back(q.col_int64(0), q.col_int64(1));
+    }
+    return out;
+}
+
+std::unordered_map<int64_t, std::vector<int64_t>> CommunityDb::member_role_ids_for(
+        const std::vector<int64_t>& uids) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<int64_t, std::vector<int64_t>> out;
+    // A fixed number of slots, the unused ones bound to uid 0 (nobody), so
+    // every chunk reuses one cached statement.
+    constexpr size_t kChunk = 100;
+    static const std::string sql = [] {
+        std::string s = "SELECT mr.uid, mr.role_id FROM member_roles mr "
+                        "JOIN roles r ON r.id = mr.role_id WHERE mr.uid IN (";
+        for (size_t i = 0; i < kChunk; ++i) s += i ? ",?" : "?";
+        return s + ") ORDER BY mr.uid ASC, r.position DESC;";
+    }();
+    for (size_t at = 0; at < uids.size(); at += kChunk) {
+        Stmt q(db_, sql.c_str());
+        if (!q.s) break;
+        for (size_t i = 0; i < kChunk; ++i) {
+            q.bind_int64(static_cast<int>(i + 1), at + i < uids.size() ? uids[at + i] : 0);
+        }
+        while (q.step() == SQLITE_ROW) out[q.col_int64(0)].push_back(q.col_int64(1));
     }
     return out;
 }

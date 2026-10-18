@@ -1486,41 +1486,80 @@ message MemberInfo {
 // online) bytes per event, the first thing that falls over past a few
 // hundred members. Now:
 //   * MEMBER_LIST_REQ is a PAGED snapshot the client fetches on demand.
-//     The first page (after == "") carries EVERY online member plus the
-//     first `limit` offline members (ordered by username); later pages
-//     (after = previous next_after) carry offline members only. Clients
-//     render online members from page 1 and load offline members as the
-//     sidebar scrolls.
+//     Pages run through one sequence: every online member, then every
+//     offline member, each part in roster order (below). A page holds at
+//     most `limit` members and may cross from the online part into the
+//     offline part. Every page carries the whole server's counts
+//     (online_count, total_members), so the sidebar's headers are right
+//     while only part of the list is loaded, and the first page carries
+//     the requester's own row. Clients show the loaded stretch of each
+//     part and load more as the sidebar scrolls.
+//   * A lookup (MemberListRequest.uids) fetches named members wherever
+//     they sort, for views that show someone the pages haven't reached
+//     (a message author, a voice participant, a profile).
 //   * Live changes arrive as MEMBER_UPSERT (join, nickname, roles,
 //     online/offline flip — carries the full MemberInfo) and
-//     MEMBER_REMOVE (leave / kick / ban). O(online) per event.
+//     MEMBER_REMOVE (leave / kick / ban), each with the counts after the
+//     change. O(online) per event. Every session gets every delta,
+//     whether it has loaded that member or not; a client keeps the row
+//     but shows it only once its place is inside the loaded stretch.
 //   * Every roster packet carries `revision`, a per-server-process
 //     counter incremented on each change. A client that sees a gap
 //     (delta.revision != last + 1) missed something and re-fetches page 1.
 //   * Bans are their own list (BAN_LIST_REQ/RES), sent only to
 //     BAN_MEMBERS holders, pushed on change.
+// Roster order (the sidebar's; clients mirror it exactly): the display
+// name — the nickname, else the username — folded as message search
+// folds text (lower case, accents removed, dotless ı as i: search.cpp
+// search_fold) and compared in code point order; then the display name
+// itself in code point order; then the uid. Which part a member is in
+// follows MemberInfo.is_online.
 message MemberListRequest {
-  // Opaque cursor (pages run in name, uid order): "" for the first page,
-  // else next_after of the page before. Offline members only after the
-  // first page.
+  // Opaque cursor: "" for the first page, else next_after of the page
+  // before.
   string after = 1;
-  // Offline members per page; server clamps to [1, 200], default 100.
+  // Members per page; server clamps to [1, 1000], default 100. A page can
+  // stop short of it to stay under the frame cap (has_more says so).
   int32 limit = 2;
+  // A lookup instead of a page (at most 200 uids; the rest are ignored):
+  // the reply's `extra` holds those of them that are members and
+  // `lookup_uids` echoes them; `after` and `limit` are ignored, and the
+  // reply's page fields (members, has_more, next_after, first_page,
+  // online_complete) are unset.
+  repeated int64 uids = 3;
 }
 
 message MemberListResponse {
   bool success = 1;
   string message = 2;
+  // The page in sequence order: online members first while any remain
+  // past the cursor, then offline members.
   repeated MemberInfo members = 3;
   reserved 4;
   reserved "bans";
   uint64 revision = 5;
-  // Members in the whole server (online + offline), for "N members" UI.
+  // Members in the whole server (online + offline), loaded or not.
   int64 total_members = 6;
   bool has_more = 7;
   string next_after = 8;
-  // True on the first page (all online members are included).
+  // True when the request's `after` was "" (and it wasn't a lookup).
   bool first_page = 9;
+  // Members shown online right now (MemberInfo.is_online) in the whole
+  // server, loaded or not.
+  int64 online_count = 10;
+  // True once the pages up to and including this one hold every online
+  // member: `members` ends the online part and may go on into the offline
+  // part. While false, every member of the page is online and more online
+  // members follow.
+  bool online_complete = 11;
+  // Rows outside the sequence: on a first page, the requester's own row
+  // when `members` doesn't hold it; on a lookup, the requested uids that
+  // are members.
+  repeated MemberInfo extra = 12;
+  // A lookup's reply only: the uids it asked for (those missing from
+  // `extra` aren't members). A refused lookup (success false, e.g. rate
+  // limited) echoes them too.
+  repeated int64 lookup_uids = 13;
 }
 
 // Settings-screen search over the whole membership. Matches are every
@@ -1633,12 +1672,19 @@ message MessageSearchResponse {
 message MemberUpsert {
   MemberInfo member = 1;
   uint64 revision = 2;
+  // The whole server's counts after this change (as in
+  // MemberListResponse), right for members the client hasn't loaded too.
+  int64 online_count = 3;
+  int64 total_members = 4;
 }
 
 message MemberRemove {
   string username = 1;
   uint64 revision = 2;
   int64 uid = 3;
+  // The whole server's counts after this change.
+  int64 online_count = 4;
+  int64 total_members = 5;
 }
 
 message BanListRequest {}

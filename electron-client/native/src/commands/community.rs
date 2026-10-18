@@ -38,15 +38,22 @@ async fn send_for_server(
 #[napi(object)]
 pub struct ListMembersArgs {
     pub server_id: String,
-    /// Username cursor: omit/"" for the first page (all online members +
-    /// first `limit` offline), else `nextAfter` of the previous page.
+    /// Opaque cursor: omit/"" for the first page, else `nextAfter` of the
+    /// previous page. Pages run through every online member, then every
+    /// offline member, in roster order.
     pub after: Option<String>,
-    /// Offline members per page (server clamps to [1, 200]; default 100).
+    /// Members per page (server clamps to [1, 1000]; default 100).
     pub limit: Option<i32>,
+    /// A lookup instead of a page: these members (at most 200), wherever
+    /// they sort. The reply carries them in `extra` and echoes the uids in
+    /// `lookupUids`.
+    pub uids: Option<Vec<i64>>,
 }
 
-/// Fetch one page of the roster. Live changes arrive as member_upsert /
-/// member_remove; this is only for the initial load and scroll paging.
+/// Fetch one page of the roster, or look members up by uid. Live changes
+/// arrive as member_upsert / member_remove; this is only for the initial
+/// load, scroll paging and the members a view shows before paging reaches
+/// them.
 #[napi]
 pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
     send_for_server(
@@ -55,6 +62,7 @@ pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
         packet::Payload::MemberListReq(MemberListRequest {
             after: args.after.unwrap_or_default(),
             limit: args.limit.unwrap_or(0),
+            uids: args.uids.unwrap_or_default(),
         }),
     )
     .await

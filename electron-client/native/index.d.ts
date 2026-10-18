@@ -405,16 +405,25 @@ export declare function deleteChannel(args: DeleteChannelArgs): Promise<void>
 export interface ListMembersArgs {
   serverId: string
   /**
-   * Username cursor: omit/"" for the first page (all online members +
-   * first `limit` offline), else `nextAfter` of the previous page.
+   * Opaque cursor: omit/"" for the first page, else `nextAfter` of the
+   * previous page. Pages run through every online member, then every
+   * offline member, in roster order.
    */
   after?: string
-  /** Offline members per page (server clamps to [1, 200]; default 100). */
+  /** Members per page (server clamps to [1, 1000]; default 100). */
   limit?: number
+  /**
+   * A lookup instead of a page: these members (at most 200), wherever
+   * they sort. The reply carries them in `extra` and echoes the uids in
+   * `lookupUids`.
+   */
+  uids?: Array<number>
 }
 /**
- * Fetch one page of the roster. Live changes arrive as member_upsert /
- * member_remove; this is only for the initial load and scroll paging.
+ * Fetch one page of the roster, or look members up by uid. Live changes
+ * arrive as member_upsert / member_remove; this is only for the initial
+ * load, scroll paging and the members a view shows before paging reaches
+ * them.
  */
 export declare function listMembers(args: ListMembersArgs): Promise<void>
 export interface SearchMembersArgs {
