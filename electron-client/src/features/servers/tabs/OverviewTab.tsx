@@ -16,6 +16,7 @@ import { useLeaveGuard } from "../leaveGuard";
 import { SaveBar } from "./settingsUi";
 import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
 import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
+import { useMember } from "../../../hooks/useDisplayName";
 
 const MAX_BYTES = 1024 * 1024;
 
@@ -37,7 +38,8 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   const ownUid = useAuthStore((s) => s.uid);
   const isOwner = !!ownUid && !!owner && owner === ownUid;
   const members = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
-  const ownerName = useUserName(owner, members.find((m) => m.uid === owner)?.username ?? "Unknown user");
+  // The owner's row, looked up if the roster hasn't paged that far.
+  const ownerName = useUserName(owner, useMember(serverId, owner ?? 0)?.username ?? "Unknown user");
   const names = useUsersStore((s) => s.names);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -128,7 +130,9 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
   const [transferTarget, setTransferTarget] = useState<Uid>(0);
   const [transferConfirm, setTransferConfirm] = useState("");
   const [transferring, setTransferring] = useState(false);
-  // Accounts only: a community placeholder can't own the server.
+  // Accounts only: a community placeholder can't own the server. Only the
+  // members the roster holds (it pages in as the sidebar scrolls): in a big
+  // community the one you want may need a scroll of the member list first.
   const transferCandidates = members.filter((m) => m.uid > 0 && m.uid !== ownUid);
   const nameFor = (m: { uid: Uid; username: string }) => names.get(m.uid) ?? m.username;
   const targetMember = transferTarget ? transferCandidates.find((m) => m.uid === transferTarget) : undefined;

@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { useChatStore } from "../stores/chatStore";
 import { nameOf, useUserName, type Uid } from "../stores/usersStore";
+import { requestMember } from "../features/members/memberLookup";
 import type { ServerMember } from "../types";
 
 /// uid → member, built once per roster array. Rosters are replaced (never
@@ -21,7 +23,10 @@ export function memberIndex(list: ServerMember[]): Map<Uid, ServerMember> {
   return idx;
 }
 
-/// The member record for `uid` in `serverId`'s loaded roster, if any.
+/// The member record for `uid` in `serverId`'s loaded roster, if any. The
+/// roster pages in (proto "Roster protocol"): besides our own row, a big
+/// community's members may not be loaded yet. Views that show a member
+/// use useMember / useMemberInterest so a missing one is looked up.
 export function findMember(
   membersByServer: Record<string, ServerMember[]>,
   serverId: string,
@@ -31,15 +36,41 @@ export function findMember(
   return list && uid ? memberIndex(list).get(uid) : undefined;
 }
 
+/// Looks `uid` up in `serverId` when the roster lacks them (paging hasn't
+/// reached them): a message author, a voice participant, a profile. Only
+/// for uids the community itself named (features/members/memberLookup.ts).
+export function useMemberInterest(serverId: string | null | undefined, uid: Uid): void {
+  // The roster generation while the member is missing, else -1: a new
+  // generation (a first page replaced the roster) asks again.
+  const generation = useChatStore((s) => {
+    if (!serverId || !uid) return -1;
+    const meta = s.memberRosterMeta[serverId];
+    if (!meta || meta.refetching) return -1;
+    return findMember(s.membersByServer, serverId, uid) ? -1 : meta.generation;
+  });
+  useEffect(() => {
+    if (serverId && uid && generation >= 0) requestMember(serverId, uid, generation);
+  }, [serverId, uid, generation]);
+}
+
+/// `uid`'s member record in `serverId`, looked up when not loaded yet
+/// (undefined meanwhile, and for someone who isn't a member).
+export function useMember(serverId: string | null | undefined, uid: Uid): ServerMember | undefined {
+  useMemberInterest(serverId, uid);
+  return useChatStore((s) => (serverId && uid ? findMember(s.membersByServer, serverId, uid) : undefined));
+}
+
 /// The name shown for `uid` within a server: the member's server nickname
 /// when set, otherwise their current name (`name` is the one the caller's
 /// record carries, used until the users store knows better). Reactive —
 /// re-renders on a nickname change or a rename. A null/undefined serverId
-/// (DMs, no server context) skips the nickname.
+/// (DMs, no server context) skips the nickname. A member the roster hasn't
+/// loaded is looked up, so their nickname shows once it arrives.
 ///
 /// Identity-derived visuals (avatar image, letter/gradient colour) key on
 /// the uid — only the visible name text uses this.
 export function useDisplayName(serverId: string | null | undefined, uid: Uid, name: string): string {
+  useMemberInterest(serverId, uid);
   const nickname = useChatStore((s) =>
     serverId ? findMember(s.membersByServer, serverId, uid)?.nickname : undefined,
   );

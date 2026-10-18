@@ -26,7 +26,7 @@ import { LockGlyph } from "../chat/MessageBubble";
 import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
 import { useUserName, type Uid } from "../../stores/usersStore";
-import { findMember } from "../../hooks/useDisplayName";
+import { useMember } from "../../hooks/useDisplayName";
 
 // The full profile screen: a centred modal reached by clicking the avatar
 // in the anchored popup (UserProfilePopup), the way Discord's popout opens
@@ -84,9 +84,8 @@ function ProfileScreen({
   const isSelf = uid === ownUid;
   // `find` returns the stored object (or undefined) — a stable ref.
   const friend = useFriendsStore((s) => s.friends.find((f) => f.uid === uid));
-  const memberEntry = useChatStore((s) =>
-    serverId ? findMember(s.membersByServer, serverId, uid) : undefined,
-  );
+  // Looked up when the roster hasn't paged that far yet.
+  const memberEntry = useMember(serverId, uid);
   const username = useUserName(uid, memberEntry?.username || friend?.username || "Unknown user");
   const displayName = useDisplayName(serverId, uid, username);
   const presence = usePresence(uid, memberEntry?.isOnline);

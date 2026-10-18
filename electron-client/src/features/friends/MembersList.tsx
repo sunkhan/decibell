@@ -15,11 +15,8 @@ import { StatusDot } from "../../components/StatusDot";
 import { StatusMessageText } from "../../components/StatusMessageText";
 import { EMPTY_LIST } from "../../lib/empty";
 import type { ServerMember } from "../../types";
-import { useUserName, useUsersStore, type Uid } from "../../stores/usersStore";
-
-// One collator for every sort: localeCompare without one rebuilds the ICU
-// collator per comparison.
-const collator = new Intl.Collator();
+import { useUserName, type Uid } from "../../stores/usersStore";
+import { ROSTER_PAGE, visibleRoster } from "../members/rosterOrder";
 
 export default function MembersList() {
   const activeServerId = useChatStore((s) => s.activeServerId);
@@ -33,16 +30,17 @@ export default function MembersList() {
   );
   const setMembersLoadingMore = useChatStore((s) => s.setMembersLoadingMore);
 
-  // Roster paging: page 1 (every online member + the first offline page)
-  // is fetched on auth; further offline pages load as the list scrolls
-  // to its end. Live changes arrive as deltas, so no polling.
+  // Roster paging ("Roster protocol" in messages.proto): page 1 is fetched
+  // on auth; the pages run through the online members, then the offline
+  // ones, and the next loads as the list scrolls to the end of what's
+  // loaded. Live changes arrive as deltas, so no polling.
   const loadMore = useCallback(() => {
-    if (!activeServerId || !rosterMeta?.hasMore || rosterMeta.loadingMore) return;
+    if (!activeServerId || !rosterMeta?.hasMore || rosterMeta.loadingMore || rosterMeta.refetching) return;
     setMembersLoadingMore(activeServerId, true);
     invoke("list_members", {
       serverId: activeServerId,
       after: rosterMeta.nextAfter,
-      limit: 100,
+      limit: ROSTER_PAGE,
     }).catch((err) => {
       console.error("list_members:", err);
       setMembersLoadingMore(activeServerId, false);
@@ -63,29 +61,46 @@ export default function MembersList() {
     return () => io.disconnect();
   }, [loadMore]);
 
-  // Status comes from central (presenceStore); the community's own
-  // isOnline only stands in until central's first snapshot. Away and Do
-  // Not Disturb are online.
+  // Which part a member is in, and the counts, are the community's
+  // (MemberInfo.isOnline: connected and not invisible), so the headers stay
+  // exact while only part of the list is loaded. Central's status refines
+  // the dot inside the online part (away, Do Not Disturb), and stands in
+  // nowhere else: an online member central hasn't heard from shows online,
+  // one central has online but who isn't connected here shows offline.
   const me = useAuthStore((s) => s.uid);
-  // Current names (nickname first), so a rename re-sorts the list.
-  const names = useUsersStore((s) => s.names);
   const statuses = usePresenceStore((s) => s.statuses);
   const known = usePresenceStore((s) => s.known);
   const ownStatus = usePresenceStore((s) => s.ownStatus);
   const idle = usePresenceStore((s) => s.idle);
-  const { online, offline, statusOf } = useMemo(() => {
+  const { online, offline } = useMemo(() => visibleRoster(roster, rosterMeta), [roster, rosterMeta]);
+  const statusOf = useMemo(() => {
     const presence = { statuses, known, ownStatus, idle };
-    const statusOf = new Map<Uid, DisplayStatus>();
-    for (const m of roster) statusOf.set(m.uid, resolvePresence(presence, me, m.uid, m.isOnline));
-    const onlineList = roster.filter((m) => isOnlineStatus(statusOf.get(m.uid)!));
-    const offlineList = roster.filter((m) => !isOnlineStatus(statusOf.get(m.uid)!));
-    const shown = (m: ServerMember) => m.nickname || (m.uid ? names.get(m.uid) : undefined) || m.username;
-    const byName = (a: ServerMember, b: ServerMember) => collator.compare(shown(a), shown(b));
-    // Sort by display name (nickname when set), matching how the list reads.
-    onlineList.sort(byName);
-    offlineList.sort(byName);
-    return { online: onlineList, offline: offlineList, statusOf };
-  }, [roster, statuses, known, ownStatus, idle, me, names]);
+    const out = new Map<Uid, DisplayStatus>();
+    for (const m of online) {
+      const s = resolvePresence(presence, me, m.uid, true);
+      out.set(m.uid, isOnlineStatus(s) ? s : "online");
+    }
+    // Ourselves invisible: the invisible dot, as everywhere else.
+    for (const m of offline) out.set(m.uid, m.uid === me && ownStatus === "invisible" ? "invisible" : "offline");
+    return out;
+  }, [online, offline, statuses, known, ownStatus, idle, me]);
+  const onlineCount = rosterMeta?.onlineCount ?? online.length;
+  const offlineCount = rosterMeta ? Math.max(0, rosterMeta.totalMembers - rosterMeta.onlineCount) : offline.length;
+  // The end of what's loaded: under the online part until it's complete,
+  // under the offline part after.
+  const onlineDone = !rosterMeta || rosterMeta.onlineComplete;
+  const loadingRow = rosterMeta?.hasMore ? (
+    <div ref={sentinelRef} className="px-1 py-2">
+      <button
+        type="button"
+        onClick={loadMore}
+        disabled={rosterMeta.loadingMore || rosterMeta.refetching}
+        className="w-full rounded-sm py-1.5 text-[12px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary disabled:cursor-default"
+      >
+        {rosterMeta.loadingMore || rosterMeta.refetching ? "Loading…" : "Load more"}
+      </button>
+    </div>
+  ) : null;
 
   const renderRow = (m: ServerMember) => (
     <MemberRow
@@ -104,35 +119,25 @@ export default function MembersList() {
       >
         <div className="px-1 pt-3 pb-1">
           <h3 className="font-section text-section font-medium uppercase leading-none tracking-section text-text-muted">
-            Online — {online.length}
+            Online — {onlineCount.toLocaleString()}
           </h3>
         </div>
         {online.map(renderRow)}
+        {!onlineDone && loadingRow}
 
-        {(offline.length > 0 || rosterMeta?.hasMore) && (
+        {onlineDone && (offline.length > 0 || offlineCount > 0) && (
           <>
             <div className="px-1 pt-4 pb-1">
               <h3 className="font-section text-section font-medium uppercase leading-none tracking-section text-text-muted">
-                Offline — {rosterMeta ? Math.max(0, rosterMeta.totalMembers - online.length) : offline.length}
+                Offline — {offlineCount.toLocaleString()}
               </h3>
             </div>
             {offline.map(renderRow)}
-            {rosterMeta?.hasMore && (
-              <div ref={sentinelRef} className="px-1 py-2">
-                <button
-                  type="button"
-                  onClick={loadMore}
-                  disabled={rosterMeta.loadingMore}
-                  className="w-full rounded-sm py-1.5 text-[12px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary disabled:cursor-default"
-                >
-                  {rosterMeta.loadingMore ? "Loading…" : "Load more"}
-                </button>
-              </div>
-            )}
+            {loadingRow}
           </>
         )}
 
-        {online.length === 0 && offline.length === 0 && (
+        {online.length === 0 && offline.length === 0 && !rosterMeta?.hasMore && (
           <p className="mt-4 text-center text-xs text-text-muted">
             No members yet
           </p>

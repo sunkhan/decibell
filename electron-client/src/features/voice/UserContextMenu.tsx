@@ -3,7 +3,7 @@ import { EMPTY_LIST } from "../../lib/empty";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
-import { findMember, useDisplayName } from "../../hooks/useDisplayName";
+import { useDisplayName, useMember } from "../../hooks/useDisplayName";
 import { useMenuPosition } from "../../hooks/useMenuPosition";
 import { useVoiceStore, voiceKey } from "../../stores/voiceStore";
 import { useAuthStore } from "../../stores/authStore";
@@ -29,9 +29,9 @@ export default function UserContextMenu() {
   const contextServerId = useUiStore((s) => s.contextMenuServerId);
   const closeContextMenu = useUiStore((s) => s.closeContextMenu);
   // A community placeholder (no account) has its name only on the member.
-  const memberName = useChatStore((s) =>
-    contextServerId && uid ? findMember(s.membersByServer, contextServerId, uid)?.username : undefined,
-  );
+  // Looked up when the roster hasn't paged that far yet (the hierarchy
+  // checks below need their roles too).
+  const memberName = useMember(contextServerId, uid)?.username;
   const username = useUserName(uid, memberName ?? "Unknown user");
   const open = uid !== 0;
   const displayName = useDisplayName(contextServerId, uid, username);

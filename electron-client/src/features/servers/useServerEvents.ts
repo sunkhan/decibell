@@ -6,6 +6,8 @@ import { invoke, listen } from "../../lib/ipc";
 import { applySavedUserGains } from "../voice/userGain";
 import { useChatStore } from "../../stores/chatStore";
 import { toUid } from "../../stores/usersStore";
+import { lookupRefused } from "../members/memberLookup";
+import { ROSTER_FIRST_PAGE } from "../members/rosterOrder";
 import { useUiStore } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { toast } from "../../stores/toastStore";
@@ -257,33 +259,61 @@ export function useServerEvents() {
           }
         }
         // Populate the members sidebar — every server view uses it. Page 1
-        // = every online member + the first offline page; deltas keep it
-        // live from here on.
-        refetchRoster(p.serverId);
+        // = the first ROSTER_FIRST_PAGE of the online-then-offline
+        // sequence, our own row and the counts; deltas keep it live from
+        // here on. Always fetched on (re)auth.
+        refetchRoster(p.serverId, true);
       },
     );
 
     // Roster protocol: paged snapshot + live deltas with a revision. A
     // delta that doesn't continue the last applied revision means we
-    // missed one (reconnect window) → refetch page 1.
-    const refetchRoster = (serverId: string) =>
-      invoke("list_members", { serverId, after: "", limit: 100 }).catch(console.error);
+    // missed one (reconnect window) → refetch page 1, once: deltas wait
+    // for it (MemberRosterMeta.refetching).
+    const refetchRoster = (serverId: string, force = false) => {
+      const chat = useChatStore.getState();
+      if (!force && chat.memberRosterMeta[serverId]?.refetching) return;
+      chat.setRosterRefetching(serverId, true);
+      invoke("list_members", { serverId, after: "", limit: ROSTER_FIRST_PAGE }).catch((err) => {
+        console.error("list_members:", err);
+        useChatStore.getState().setRosterRefetching(serverId, false);
+      });
+    };
 
     const unlistenMembers = listen<MemberListReceivedPayload>(
       "member_list_received",
       (event) => {
         const p = event.payload;
-        if (!p.success) {
-          useChatStore.getState().setMembersLoadingMore(p.serverId, false);
+        const chat = useChatStore.getState();
+        const lookupUids = (p.lookupUids ?? []).map(toUid);
+        if (lookupUids.length > 0) {
+          if (p.success) chat.applyMemberLookup(p.serverId, p.extra ?? [], Number(p.revision));
+          else lookupRefused(p.serverId, lookupUids);
           return;
         }
-        useChatStore.getState().applyMemberPage(p.serverId, p.members, {
-          revision: p.revision,
-          totalMembers: p.totalMembers,
+        if (!p.success) {
+          // Refused (rate limited): a first page is asked again shortly; a
+          // later one stays "loading" for a moment, then the sidebar asks
+          // again (its sentinel still in view) or waits for a scroll.
+          if (p.firstPage) {
+            setTimeout(() => refetchRoster(p.serverId, true), 1000);
+          } else {
+            setTimeout(() => useChatStore.getState().setMembersLoadingMore(p.serverId, false), 1000);
+          }
+          return;
+        }
+        const consistent = chat.applyMemberPage(p.serverId, {
+          members: p.members,
+          extra: p.extra ?? [],
+          revision: Number(p.revision),
+          totalMembers: Number(p.totalMembers),
+          onlineCount: Number(p.onlineCount),
+          onlineComplete: p.onlineComplete,
           hasMore: p.hasMore,
           nextAfter: p.nextAfter,
           firstPage: p.firstPage,
         });
+        if (!consistent) refetchRoster(p.serverId);
       },
     );
 
@@ -291,7 +321,8 @@ export function useServerEvents() {
       "member_upsert",
       (event) => {
         const { serverId, member, revision } = event.payload;
-        if (!useChatStore.getState().upsertMember(serverId, member, revision)) {
+        const counts = { onlineCount: Number(event.payload.onlineCount), totalMembers: Number(event.payload.totalMembers) };
+        if (!useChatStore.getState().upsertMember(serverId, member, Number(revision), counts)) {
           refetchRoster(serverId);
         }
       },
@@ -301,7 +332,8 @@ export function useServerEvents() {
       "member_remove",
       (event) => {
         const { serverId, uid, revision } = event.payload;
-        if (!useChatStore.getState().removeMember(serverId, toUid(uid), revision)) {
+        const counts = { onlineCount: Number(event.payload.onlineCount), totalMembers: Number(event.payload.totalMembers) };
+        if (!useChatStore.getState().removeMember(serverId, toUid(uid), Number(revision), counts)) {
           refetchRoster(serverId);
         }
       },

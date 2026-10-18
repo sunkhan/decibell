@@ -82,8 +82,8 @@ export function useUserDirectory() {
       // Communities.
       listen<{ messages: Sent[] }>("channel_history_received", ({ payload }) => community(sentPairs(payload.messages))),
       listen<{ messages?: Sent[] }>("message_search_received", ({ payload }) => community(sentPairs(payload.messages ?? []))),
-      listen<{ members: Named[] }>("member_list_received", ({ payload }) => {
-        community(payload.members.map((m) => [m.username, m.uid] as const));
+      listen<{ members: Named[]; extra?: Named[] }>("member_list_received", ({ payload }) => {
+        community([...payload.members, ...(payload.extra ?? [])].map((m) => [m.username, m.uid] as const));
       }),
       listen<{ members: Named[] }>("member_search_received", ({ payload }) => {
         community(payload.members.map((m) => [m.username, m.uid] as const));

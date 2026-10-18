@@ -69,10 +69,10 @@ function FriendRow({
 ///
 /// "Not a member" is judged on the roster the client already has (owner
 /// decision: the friend list never goes to the community, and the server
-/// isn't asked to filter it). That roster holds every online member but
-/// only the first page of offline ones, so on a big server an offline
-/// member can still be listed; inviting them comes back already_member
-/// and the row says so.
+/// isn't asked to filter it, nor are friends looked up one by one). That
+/// roster pages in as the member list scrolls (online members first, then
+/// offline), so on a big server a member can still be listed; inviting
+/// them comes back already_member and the row says so.
 export default function InviteFriendsModal() {
   const open = useUiStore((s) => s.activeModal === "invite-friends");
   const closeModal = useUiStore((s) => s.closeModal);
@@ -112,6 +112,7 @@ export default function InviteFriendsModal() {
     [friends, names],
   );
   const notMembers = useMemo(() => {
+    // The loaded roster only, never a member lookup (see above).
     const inRoster = new Set(roster.map((m) => m.uid));
     // A row with an outcome stays put (a friend who joins after their
     // invite keeps showing "Sent").

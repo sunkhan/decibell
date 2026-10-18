@@ -500,15 +500,42 @@ export interface ChannelOverwrite {
   deny: number;
 }
 
+/// A member's place in roster order ("Roster order" in
+/// proto/messages.proto; features/members/rosterOrder.ts): the folded
+/// display name, the display name, the uid.
+export interface RosterKey {
+  fold: string;
+  name: string;
+  uid: number;
+}
+
 /// Roster paging state per server (see "Roster protocol" in
 /// proto/messages.proto). `revision` is the last roster revision applied;
 /// a delta that doesn't continue it means we missed something → refetch.
+/// The roster holds more members than the sidebar shows: the sidebar draws
+/// only the stretch of each part the pages have reached (up to
+/// `onlineEdge` / `offlineEdge`), while deltas and lookups also bring in
+/// members past it.
 export interface MemberRosterMeta {
   revision: number;
+  /// Whole server, loaded or not (from the server, kept by every delta).
   totalMembers: number;
+  onlineCount: number;
+  /// The pages have reached the offline part: every online member is held.
+  onlineComplete: boolean;
+  /// Last online / offline member the pages brought, in roster order
+  /// (null: none yet). Unused once that part is complete.
+  onlineEdge: RosterKey | null;
+  offlineEdge: RosterKey | null;
   hasMore: boolean;
   nextAfter: string;
   loadingMore: boolean;
+  /// Bumped by every first page, which replaces the roster: members looked
+  /// up under an older one are asked for again (memberLookup.ts).
+  generation: number;
+  /// A first page is on its way (a revision gap, a reconnect): further gaps
+  /// don't ask again and scroll paging waits for it.
+  refetching: boolean;
 }
 
 export interface MemberListReceivedPayload {
@@ -521,12 +548,21 @@ export interface MemberListReceivedPayload {
   hasMore: boolean;
   nextAfter: string;
   firstPage: boolean;
+  onlineCount: number;
+  onlineComplete: boolean;
+  /// Rows outside the page: our own on a first page, a lookup's finds.
+  extra: ServerMember[];
+  /// A lookup's reply only: the uids it asked for (i64: may be BigInt).
+  lookupUids: (number | bigint)[];
 }
 
 export interface MemberUpsertPayload {
   serverId: string;
   member: ServerMember;
   revision: number;
+  /// The whole server's counts after the change.
+  onlineCount: number;
+  totalMembers: number;
 }
 
 export interface MemberRemovePayload {
@@ -534,6 +570,8 @@ export interface MemberRemovePayload {
   username: string;
   uid: number;
   revision: number;
+  onlineCount: number;
+  totalMembers: number;
 }
 
 export interface BanInfo {

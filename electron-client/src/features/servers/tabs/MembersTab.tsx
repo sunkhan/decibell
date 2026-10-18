@@ -47,10 +47,11 @@ type Acts = { nick: boolean; roles: boolean; timeout: boolean; endTimeout: boole
 /// every moderation action lives behind the row's ⋯ menu (or a right
 /// click), so rows stay quiet. Hierarchy gates mirror the server.
 export default function MembersTab({ serverId }: { serverId: string }) {
-  // The roster (sidebar data) only feeds the header counts: page 1 of it
-  // carries every online member. The table itself is a server search.
-  const roster = useChatStore((s) => s.membersByServer[serverId] ?? EMPTY_LIST);
+  // The header counts are the server's, carried by every roster packet (the
+  // roster itself pages in, so it can't be counted). The table itself is a
+  // server search.
   const totalMembers = useChatStore((s) => s.memberRosterMeta[serverId]?.totalMembers);
+  const onlineCount = useChatStore((s) => s.memberRosterMeta[serverId]?.onlineCount ?? 0);
   const roles = useChatStore((s) => s.rolesByServer[serverId] ?? EMPTY_LIST);
   const ownUid = useAuthStore((s) => s.uid);
   // Current names: member records keep the name they were fetched with.
@@ -109,7 +110,6 @@ export default function MembersTab({ serverId }: { serverId: string }) {
   );
   const visible = search.members;
   const filtering = !!query.trim() || roleFilter !== "all";
-  const onlineCount = useMemo(() => roster.filter((m) => m.isOnline).length, [roster]);
 
   /// What the local user may do to `m` — one place, read by the row and
   /// its menu alike.
@@ -302,7 +302,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
               <>
                 <span className="text-text-secondary">{(totalMembers ?? search.total).toLocaleString()}</span> members
                 <span className="mx-1.5 text-text-faint">·</span>
-                <span className="text-success">●</span> {onlineCount} online
+                <span className="text-success">●</span> {onlineCount.toLocaleString()} online
               </>
             )}
           </div>

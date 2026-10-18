@@ -19,7 +19,7 @@ import { THUMBNAIL_INTERVAL_MS } from "../voice/thumbnailConfig";
 import { joinVoiceChannel } from "../voice/streaming/joinVoiceChannel";
 import { RoleChips } from "../profile/RoleChips";
 import { useUserName } from "../../stores/usersStore";
-import { findMember } from "../../hooks/useDisplayName";
+import { useMember } from "../../hooks/useDisplayName";
 
 // Anchored profile popup. Triggered from anywhere a username is shown
 // (members list, message bubble click, etc.) by calling
@@ -49,9 +49,8 @@ export default function UserProfilePopup() {
   const serverRoles = useChatStore((s) =>
     serverId ? s.rolesByServer[serverId] : undefined,
   );
-  const memberEntry = useChatStore((s) =>
-    serverId && uid ? findMember(s.membersByServer, serverId, uid) : undefined,
-  );
+  // Looked up when the roster hasn't paged that far yet.
+  const memberEntry = useMember(serverId, uid ?? 0);
   const username = useUserName(uid, memberEntry?.username ?? "Unknown user");
   const presence = usePresence(uid ?? 0, memberEntry?.isOnline);
   const statusMessage = useStatusMessage(uid ?? 0);

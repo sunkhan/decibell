@@ -14,7 +14,29 @@ import type {
 import { channelKey, type ChannelKey } from "../lib/channelKey";
 import { mergeStoredPage } from "../lib/historyMerge";
 import { useAuthStore } from "./authStore";
+import { rosterKey } from "../features/members/rosterOrder";
 import type { Uid } from "./usersStore";
+
+/// The whole server's member counts, as every roster packet carries them.
+export interface RosterCounts {
+  onlineCount: number;
+  totalMembers: number;
+}
+
+/// One MEMBER_LIST_RES page (see "Roster protocol" in proto/messages.proto).
+export interface MemberPage extends RosterCounts {
+  members: ServerMember[];
+  extra: ServerMember[];
+  revision: number;
+  onlineComplete: boolean;
+  hasMore: boolean;
+  nextAfter: string;
+  firstPage: boolean;
+}
+
+// Roster generations, unique across servers and reconnects (a lookup asked
+// under one is never mistaken for an answer under the next).
+let rosterGeneration = 0;
 
 // PR4 chatStore — text channels, messages, history paging, optimistic
 // bubbles. Members/bans/invites are deferred to later PRs. The LRU
@@ -179,18 +201,21 @@ interface ChatState {
   ) => void;
   setServerOwner: (serverId: string, owner: Uid) => void;
   setServerPublicListing: (serverId: string, on: boolean) => void;
-  /// Apply one roster page. The first page replaces the list (it carries
-  /// every online member); later pages append offline members.
-  applyMemberPage: (
-    serverId: string,
-    members: ServerMember[],
-    meta: { revision: number; totalMembers: number; hasMore: boolean; nextAfter: string; firstPage: boolean },
-  ) => void;
-  /// Live deltas. Return false when the revision doesn't continue the
-  /// last applied one (a gap) so the caller can refetch page 1.
-  upsertMember: (serverId: string, member: ServerMember, revision: number) => boolean;
-  removeMember: (serverId: string, uid: Uid, revision: number) => boolean;
+  /// Apply one roster page. The first page replaces the roster (a new
+  /// generation); later pages add to it and move the loaded edges. False
+  /// when a later page doesn't match the revision we hold (a delta went
+  /// missing): the caller refetches page 1.
+  applyMemberPage: (serverId: string, page: MemberPage) => boolean;
+  /// A lookup's finds, merged in when they're as current as the roster.
+  applyMemberLookup: (serverId: string, found: ServerMember[], revision: number) => void;
+  /// Live deltas, with the server's counts after them. Return false when
+  /// the revision doesn't continue the last applied one (a gap) so the
+  /// caller can refetch page 1.
+  upsertMember: (serverId: string, member: ServerMember, revision: number, counts: RosterCounts) => boolean;
+  removeMember: (serverId: string, uid: Uid, revision: number, counts: RosterCounts) => boolean;
   setMembersLoadingMore: (serverId: string, loading: boolean) => void;
+  /// A first page is (or no longer is) on its way; see MemberRosterMeta.
+  setRosterRefetching: (serverId: string, refetching: boolean) => void;
   setBansForServer: (serverId: string, bans: BanInfo[], truncated?: boolean) => void;
   /// Also drops role ids the list no longer names from every member held
   /// for the server: a deleted role's holders get no MEMBER_UPSERT.
@@ -602,32 +627,71 @@ export const useChatStore = create<ChatState>((set, get) => ({
       serverPublicListing: { ...state.serverPublicListing, [serverId]: on },
     })),
 
-  applyMemberPage: (serverId, members, meta) =>
-    set((state) => {
-      const existing = meta.firstPage ? [] : state.membersByServer[serverId] ?? [];
-      const byUid = new Map(existing.map((m) => [m.uid, m]));
-      for (const m of members) byUid.set(m.uid, m);
-      return {
-        membersByServer: { ...state.membersByServer, [serverId]: Array.from(byUid.values()) },
-        memberRosterMeta: {
-          ...state.memberRosterMeta,
-          [serverId]: {
-            revision: meta.revision,
-            totalMembers: meta.totalMembers,
-            hasMore: meta.hasMore,
-            nextAfter: meta.nextAfter,
-            loadingMore: false,
-          },
+  applyMemberPage: (serverId, page) => {
+    const state = get();
+    const prev = state.memberRosterMeta[serverId];
+    if (!page.firstPage) {
+      // A later page of a roster being replaced: the first page on its way
+      // starts over.
+      if (!prev || prev.refetching) return true;
+      if (page.revision !== prev.revision) return false;
+    }
+    const existing = page.firstPage ? [] : state.membersByServer[serverId] ?? [];
+    const byUid = new Map(existing.map((m) => [m.uid, m]));
+    for (const m of page.members) byUid.set(m.uid, m);
+    for (const m of page.extra) byUid.set(m.uid, m);
+    // The page runs in roster order, online members first: its last
+    // member of each part is how far that part is loaded now.
+    let onlineEdge = page.firstPage ? null : prev!.onlineEdge;
+    let offlineEdge = page.firstPage ? null : prev!.offlineEdge;
+    for (const m of page.members) {
+      if (m.isOnline) onlineEdge = rosterKey(m);
+      else offlineEdge = rosterKey(m);
+    }
+    set({
+      membersByServer: { ...state.membersByServer, [serverId]: Array.from(byUid.values()) },
+      memberRosterMeta: {
+        ...state.memberRosterMeta,
+        [serverId]: {
+          revision: page.revision,
+          totalMembers: page.totalMembers,
+          onlineCount: page.onlineCount,
+          onlineComplete: page.onlineComplete,
+          onlineEdge,
+          offlineEdge,
+          hasMore: page.hasMore,
+          nextAfter: page.nextAfter,
+          loadingMore: false,
+          generation: page.firstPage ? ++rosterGeneration : prev!.generation,
+          refetching: false,
         },
-      };
+      },
+    });
+    return true;
+  },
+
+  applyMemberLookup: (serverId, found, revision) =>
+    set((state) => {
+      const meta = state.memberRosterMeta[serverId];
+      // Not as current as the roster (a first page is on its way, or a
+      // delta went missing and one will be): that page's generation asks
+      // again.
+      if (!meta || meta.refetching || revision !== meta.revision || found.length === 0) return state;
+      const byUid = new Map((state.membersByServer[serverId] ?? []).map((m) => [m.uid, m]));
+      for (const m of found) byUid.set(m.uid, m);
+      return { membersByServer: { ...state.membersByServer, [serverId]: Array.from(byUid.values()) } };
     }),
 
-  upsertMember: (serverId, member, revision) => {
+  upsertMember: (serverId, member, revision, counts) => {
     const state = get();
     const meta = state.memberRosterMeta[serverId];
-    // No page loaded yet → nothing to patch; the page fetch will carry it.
-    if (!meta) return true;
+    // No page loaded yet, or a first page on its way: nothing to patch,
+    // that page carries it.
+    if (!meta || meta.refetching) return true;
     if (revision !== meta.revision + 1) return false;
+    // Held whether or not the sidebar has reached its place (visibleRoster
+    // decides that): every view can use the record, and the deltas keep it
+    // current either way.
     const list = state.membersByServer[serverId] ?? [];
     const idx = list.findIndex((m) => m.uid === member.uid);
     const next = idx >= 0 ? list.map((m, i) => (i === idx ? member : m)) : [...list, member];
@@ -635,20 +699,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       membersByServer: { ...state.membersByServer, [serverId]: next },
       memberRosterMeta: {
         ...state.memberRosterMeta,
-        [serverId]: {
-          ...meta,
-          revision,
-          totalMembers: idx >= 0 ? meta.totalMembers : meta.totalMembers + 1,
-        },
+        [serverId]: { ...meta, revision, onlineCount: counts.onlineCount, totalMembers: counts.totalMembers },
       },
     });
     return true;
   },
 
-  removeMember: (serverId, uid, revision) => {
+  removeMember: (serverId, uid, revision, counts) => {
     const state = get();
     const meta = state.memberRosterMeta[serverId];
-    if (!meta) return true;
+    if (!meta || meta.refetching) return true;
     if (revision !== meta.revision + 1) return false;
     const list = state.membersByServer[serverId] ?? [];
     const next = list.filter((m) => m.uid !== uid);
@@ -656,11 +716,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       membersByServer: { ...state.membersByServer, [serverId]: next },
       memberRosterMeta: {
         ...state.memberRosterMeta,
-        [serverId]: {
-          ...meta,
-          revision,
-          totalMembers: Math.max(0, meta.totalMembers - (next.length === list.length ? 0 : 1)),
-        },
+        [serverId]: { ...meta, revision, onlineCount: counts.onlineCount, totalMembers: counts.totalMembers },
       },
     });
     return true;
@@ -669,8 +725,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setMembersLoadingMore: (serverId, loading) =>
     set((state) => {
       const meta = state.memberRosterMeta[serverId];
-      if (!meta) return state;
+      if (!meta || meta.loadingMore === loading) return state;
       return { memberRosterMeta: { ...state.memberRosterMeta, [serverId]: { ...meta, loadingMore: loading } } };
+    }),
+
+  setRosterRefetching: (serverId, refetching) =>
+    set((state) => {
+      const meta = state.memberRosterMeta[serverId];
+      if (!meta || meta.refetching === refetching) return state;
+      return { memberRosterMeta: { ...state.memberRosterMeta, [serverId]: { ...meta, refetching } } };
     }),
 
   setBansForServer: (serverId, bans, truncated = false) =>
