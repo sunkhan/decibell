@@ -4288,3 +4288,40 @@ password (the saved one no longer works); B's community connections close within
 then "Sign out of all other devices" on A; (4) Change password on A: B lands on the sign-in page saying the
 password changed; A stays connected, and after an app restart A signs in with the new password automatically;
 (5) Log out on A: B's Devices list no longer shows A.
+
+### Feature: Go Live redesign: quality presets, sound and cursor up front, encoder settings under Advanced (2026-10-19)
+
+Owner: the stream-start dialog was "probably too complicated for the average user". It opened on nine controls in
+encoder terms (resolution, frame rate, a bitrate step, codec, cursor, audio, audio bitrate, an audio mode, an app
+list), and on Linux / macOS the app list sat below the fold of an 800 px window. The owner approved the proposal
+page (https://claude.ai/artifact/VdQzRZRBArjsU4FBCfgq8d) and answered its three questions.
+
+- **Quality presets** (`features/voice/goLive/QualityPresets.tsx`, `presets.ts`): **Smooth** 1080p · 60 fps ·
+  10 Mbps (today's default, so no stream changes on update), **Sharp** Source · 30 fps · 12 Mbps, **Data saver**
+  720p · 30 fps · 3 Mbps. Owner: these numbers, and these names (by look, not by use). A preset is only a name for
+  a resolution + frame rate + bitrate step; nothing new is stored. Settings that match none show "Custom" and open
+  Advanced.
+- **Options rows** (channel settings' `Group` / `Row`): Share sound, with the app chooser inside the row, and Show
+  my cursor. **Owner: where sound can't be captured** (macOS, the software-encoding fallback:
+  `canPickStreamAudioApps()` false) **the switch shows off with the reason**, and the dialog sends
+  `shareAudio: false`. Before, Audio turned on there and the stream was announced with sound that never arrived.
+- **Advanced** (`goLive/AdvancedSettings.tsx`), folded, with the exact numbers as its summary: resolution, frame
+  rate, a 1–30 Mbps bitrate slider (moving it sets `quality: "custom"`), codec (the old `CodecPicker`, same Auto /
+  forced rule and warning) and sound bitrate.
+- **Windows source grid** (`goLive/SourceGrid.tsx`, polling unchanged): radio tiles with an accent wash and a check,
+  screen thumbnails requested at 640 × 360 (windows stay 320 × 180), placeholder tiles while loading, an empty-state
+  hint, a "share one window to keep notifications out of view" tip, and the pick (thumbnail, name, quality) in the
+  footer. Linux / macOS show a "you'll pick a screen or window next" card instead.
+- **Header** names the destination: the voice channel and community, or "In your call with <peer>". Start errors
+  sit in a banner; Go Live shows a spinner while starting and the choices are disabled meanwhile.
+- **Stream sound picker** (`StreamAudioAppPicker.tsx`, also the live popover, now titled "Stream sound"): All apps
+  first, the list only in Only these / All except, "Playing now: …" in All apps, theme-drawn checkboxes and green
+  playing bars instead of the browser's white checkboxes.
+
+Renderer only; the start path (`startActiveStream`, `start_screen_share`) is unchanged apart from the sound gate.
+No proto, native or server change. Nine icons added to the shared settings set. Verified: tsc web 0; offscreen
+harness captures of the real components in all seven themes (Windows at 1280 × 800 and 1000 × 700, Linux, macOS,
+a DM call, presets, Custom, Advanced, the three sound modes, the live popover, loading, starting, a failed start);
+the rejected alternative (Discord-style resolution / frame-rate rows) is on the proposal page. Live test pending:
+Go Live on Windows (screen and window sources, sound Only these with "this window"), Linux (portal picker after
+Go Live) and macOS (sound row off), and that the larger screen thumbnails don't stall the main process's poll.

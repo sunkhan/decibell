@@ -25,8 +25,8 @@ export function StreamAudioButton({ className, size = 16 }: { className?: string
           e.stopPropagation();
           setOpen((o) => !o);
         }}
-        title="Stream audio apps"
-        aria-label="Stream audio apps"
+        title="Stream sound"
+        aria-label="Stream sound"
         aria-expanded={open}
         className={className}
       >
@@ -93,7 +93,7 @@ export function StreamAudioPopover({ anchorEl, onClose }: { anchorEl: HTMLElemen
       ref={ref}
       style={style}
       role="dialog"
-      aria-label="Stream audio apps"
+      aria-label="Stream sound"
       className="fixed z-[100] flex flex-col gap-2 rounded-lg border border-border bg-bg-secondary p-3 shadow-modal"
       // The card / row that hosts the button may have its own click and key
       // handlers (CallStage's StreamCard opens the preview); React events
@@ -102,7 +102,7 @@ export function StreamAudioPopover({ anchorEl, onClose }: { anchorEl: HTMLElemen
       onKeyDown={(e) => e.stopPropagation()}
     >
       <div className="text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted">
-        Stream audio
+        Stream sound
       </div>
       <StreamAudioAppPicker dense sourceId={activeStreamSourceId()} />
     </div>,

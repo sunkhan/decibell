@@ -692,7 +692,10 @@ Also open, lower priority:
   VideoEncoder. Module-level singleton via `startActiveStream` /
   `stopActiveStream` / `activeStreamCapture`.
 - `src/features/voice/CaptureSourcePicker.tsx` — Go Live UI. Calls
-  `start_screen_share` then `startActiveStream`.
+  `start_screen_share` then `startActiveStream`. Its parts live in
+  `features/voice/goLive/`: `SourceGrid` (Windows sources), `QualityPresets` +
+  `presets.ts` (Smooth / Sharp / Data saver, derived from the stored
+  settings), `AdvancedSettings` (resolution, frame rate, bitrate, codec).
 - `src/features/channels/UserPanel.tsx` — Stop sharing button. Calls
   `stopActiveStream` then `stop_screen_share`.
 - `src/features/voice/StreamAudioAppPicker.tsx` + `StreamAudioPopover.tsx` +
