@@ -95,7 +95,9 @@ export interface StreamCaptureOptions {
   /// native resolution (e.g. 2560×1440 on a 1440p monitor). The
   /// encoder is then configured with the negotiated dimensions read
   /// off the track. When false, width/height are passed through as
-  /// hard constraints and Chromium scales the surface to match.
+  /// hard constraints and Chromium scales the surface to match. On the
+  /// native path it asks start_screen_share for 0×0, the source's own
+  /// size within the encoder's ceiling.
   useNativeSize?: boolean;
   /// Pre-picked capture source id from desktopCapturer.getSources (set
   /// by the renderer's custom picker on platforms without a native
@@ -130,6 +132,8 @@ export class StreamCapture {
   /// tear the native engine down via stop_screen_share regardless of which
   /// caller invoked stop, so no error path can orphan a running encoder.
   private usedNative = false;
+  /// What the native pipeline encodes at (start_screen_share's answer).
+  private nativeSize: { width: number; height: number } | null = null;
   private encoderConfig: VideoEncoderConfig | null = null;
   private buildEncoder: (() => VideoEncoder) | null = null;
   private preferHardwareTried = false;
@@ -190,13 +194,14 @@ export class StreamCapture {
         throw new Error("sourceId required on Windows");
       }
       try {
-        await invoke("start_screen_share", {
+        const size = await invoke<{ width: number; height: number }>("start_screen_share", {
           serverId: this.opts.serverId,
           channelId: this.opts.channelId,
           sourceId: this.opts.sourceId,
           fps: this.opts.fps,
-          width: this.opts.width,
-          height: this.opts.height,
+          // 0×0 = "Source": native encodes the source's own size.
+          width: this.opts.useNativeSize ? 0 : this.opts.width,
+          height: this.opts.useNativeSize ? 0 : this.opts.height,
           videoBitrateKbps: this.opts.bitrateKbps,
           shareAudio: this.opts.shareAudio,
           audioBitrateKbps: this.opts.audioBitrateKbps,
@@ -210,10 +215,11 @@ export class StreamCapture {
           nativeEncode: true,
           includeCursor: this.opts.includeCursor,
         });
+        this.nativeSize = { width: size.width, height: size.height };
         console.log(
-          `[StreamCapture/native] pipeline started at ${this.opts.width}x${this.opts.height}@${this.opts.fps} (codec=${this.codec}, platform=${window.decibell.platform})`,
+          `[StreamCapture/native] pipeline started at ${size.width}x${size.height}@${this.opts.fps} (codec=${this.codec}, platform=${window.decibell.platform})`,
         );
-        return { width: this.opts.width, height: this.opts.height };
+        return this.nativeSize;
       } catch (e) {
         // Session-state refusals ("Already sharing screen", not in voice,
         // connection lost, send timed out) say nothing about the GPU
@@ -899,11 +905,10 @@ export class StreamCapture {
   async retarget(serverId: string, channelId: string): Promise<void> {
     if (this.stopping) return;
 
-    // Use the negotiated encoder dims when we have them (WebCodecs path);
-    // fall back to the requested dims for the native path (encoderConfig is
-    // null there — native owns the real dimensions).
-    const width = this.encoderConfig?.width ?? this.opts.width;
-    const height = this.encoderConfig?.height ?? this.opts.height;
+    // What the stream really encodes at: the WebCodecs encoder's config, or
+    // the size start_screen_share answered on the native path.
+    const width = this.encoderConfig?.width ?? this.nativeSize?.width ?? this.opts.width;
+    const height = this.encoderConfig?.height ?? this.nativeSize?.height ?? this.opts.height;
 
     await invoke("move_stream_to_channel", {
       serverId,

@@ -81,6 +81,8 @@ pub struct Capture {
     stop: Arc<AtomicBool>,
     frames_dropped: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
+    /// The source's size when the capture started.
+    size: (u32, u32),
 }
 
 impl Capture {
@@ -103,7 +105,7 @@ impl Capture {
 
         // The thread reports whether the session came up (or the exact
         // setup failure), mirroring capture_dxgi.
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(u32, u32), String>>(1);
 
         let thread = std::thread::Builder::new()
             .name("decibell-wgc-capture".to_string())
@@ -138,10 +140,11 @@ impl Capture {
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(READY_TIMEOUT) {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(size)) => Ok(Self {
                 stop,
                 frames_dropped,
                 thread: Some(thread),
+                size,
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -165,6 +168,12 @@ impl Capture {
 
     pub fn frames_dropped(&self) -> u32 {
         self.frames_dropped.load(Ordering::Relaxed)
+    }
+
+    /// The source's size when the capture started: what a "Source" stream
+    /// encodes at (later size changes are scaled into it).
+    pub fn size(&self) -> (u32, u32) {
+        self.size
     }
 }
 
@@ -306,7 +315,7 @@ fn run_capture_thread(
     drops: Arc<AtomicU32>,
     include_cursor: bool,
     fps: u32,
-    ready_tx: &mpsc::SyncSender<Result<(), String>>,
+    ready_tx: &mpsc::SyncSender<Result<(u32, u32), String>>,
 ) -> Result<(), String> {
     let hwnd = match target {
         CaptureTarget::Window(h) => Some(HWND(h as *mut _)),
@@ -395,7 +404,7 @@ fn run_capture_thread(
         .map_err(|e| format!("StartCapture: {e:?}"))?;
 
     log::info!("[capture_wgc] StartCapture OK; entering poll loop ({fps} fps)");
-    let _ = ready_tx.try_send(Ok(()));
+    let _ = ready_tx.try_send(Ok((item_size.Width as u32, item_size.Height as u32)));
 
     poll_loop(
         d3d11_device,

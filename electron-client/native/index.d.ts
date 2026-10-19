@@ -1213,7 +1213,16 @@ export interface StartScreenShareArgs {
   audioMode?: string
   audioApps?: Array<string>
 }
-export declare function startScreenShare(args: StartScreenShareArgs): Promise<void>
+/**
+ * What `start_screen_share` encodes at: the requested size, or for
+ * "Source" (0×0 on the native paths) the captured source's own size within
+ * the encoder's ceiling. The renderer announces these to a DM-call peer.
+ */
+export interface StartScreenShareResult {
+  width: number
+  height: number
+}
+export declare function startScreenShare(args: StartScreenShareArgs): Promise<StartScreenShareResult>
 export interface StopScreenShareArgs {
   /** Absent during a DM call (no community to notify). */
   serverId?: string
@@ -1392,11 +1401,6 @@ export interface NativeEncoderCap {
   encoderName: string
 }
 /**
- * Linux native FFmpeg encoder probe. Test-opens each codec's candidate
- * encoders (NVENC → VAAPI → software) and reports which work. Hardware
- * codecs advertise a 4K/60 ceiling; software libx264 is capped lower
- * since CPU 4K encoding isn't realtime.
- *
  * Async + spawn_blocking for the same reason as the Windows variant: the
  * test-opens must not run on the Electron main thread.
  */

@@ -87,13 +87,11 @@ export default function CaptureSourcePicker({
   // dialog when StreamCapture.start() runs, so the picker no longer needs
   // its own source list. Settings + Go Live only.
   //
-  // For "source", the actual dimensions are read off the negotiated
-  // track inside StreamCapture (useNativeSize flag below). The numbers
-  // returned here are only used for the StartStreamReq packet to the
-  // server, the bitrate-preset table, and the encoder's pre-flight
-  // bitrate check. Use a generous 1440p stand-in so the bitrate ceiling
-  // covers most native-resolution sources without bottlenecking; the
-  // encoder reconfigures with the real numbers once Chromium negotiates.
+  // For "source" the real size comes from the capture (useNativeSize flag
+  // below): the native pipeline encodes the source's own size within its
+  // encoder's ceiling and reports it back; the WebCodecs path reads it off
+  // the negotiated track. The 1440p stand-in here only feeds the WebCodecs
+  // encoder's pre-flight bitrate check, before Chromium has negotiated.
   const resolveDimensions = (): { width: number; height: number } => {
     switch (streamSettings.resolution) {
       case "720p":

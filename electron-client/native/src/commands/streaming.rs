@@ -62,8 +62,35 @@ pub struct StartScreenShareArgs {
     pub audio_apps: Option<Vec<String>>,
 }
 
+/// What `start_screen_share` encodes at: the requested size, or for
+/// "Source" (0×0 on the native paths) the captured source's own size within
+/// the encoder's ceiling. The renderer announces these to a DM-call peer.
+#[napi(object)]
+pub struct StartScreenShareResult {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The StartStreamReq announcing this stream, with the size it encodes at.
+fn start_stream_packet(args: &StartScreenShareArgs, channel_id: String, width: u32, height: u32) -> Vec<u8> {
+    build_packet(
+        packet::Type::StartStreamReq,
+        packet::Payload::StartStreamReq(StartStreamRequest {
+            channel_id,
+            target_fps: args.fps as i32,
+            target_bitrate_kbps: args.video_bitrate_kbps as i32,
+            has_audio: args.share_audio,
+            resolution_width: width,
+            resolution_height: height,
+            chosen_codec: args.initial_codec as i32,
+            enforced_codec: args.enforced_codec as i32,
+        }),
+        None,
+    )
+}
+
 #[napi]
-pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> {
+pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<StartScreenShareResult> {
     let state_arc = state::shared();
     // Linux-only: renderer opted into native encoding. Drives whether we
     // defer engine storage to attach the capture pipeline after the lock.
@@ -82,7 +109,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
     } else {
         None
     };
-    let (announce, deferred_engine, session_id) = {
+    let (announce, deferred_engine, session_id, size) = {
         let mut s = state_arc.lock().await;
         if s.video_engine.is_some() {
             return Err(napi::Error::from_reason("Already sharing screen"));
@@ -125,8 +152,10 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
 
         // Community announcement (StartStreamReq). Skipped in a DM call:
         // the P2P peer learns about the stream via CALL_SIGNAL from the
-        // renderer, and there is no community session to tell.
-        let announce: Option<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = if in_call {
+        // renderer, and there is no community session to tell. The packet
+        // itself is built once the encoded size is known (a "Source"
+        // stream's size comes from the capture).
+        let announce: Option<(tokio::sync::mpsc::Sender<Vec<u8>>, String)> = if in_call {
             None
         } else {
             let server_id = args.server_id.as_deref().ok_or_else(|| {
@@ -141,22 +170,12 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             let tx = client.connection_write_tx().ok_or_else(|| {
                 napi::Error::from_reason("Community connection lost")
             })?;
-            let pkt = build_packet(
-                packet::Type::StartStreamReq,
-                packet::Payload::StartStreamReq(StartStreamRequest {
-                    channel_id,
-                    target_fps: args.fps as i32,
-                    target_bitrate_kbps: args.video_bitrate_kbps as i32,
-                    has_audio: args.share_audio,
-                    resolution_width: args.width,
-                    resolution_height: args.height,
-                    chosen_codec: args.initial_codec as i32,
-                    enforced_codec: args.enforced_codec as i32,
-                }),
-                None,
-            );
-            Some((tx, pkt))
+            Some((tx, channel_id))
         };
+        // Overwritten by the native Windows start below; the Linux native
+        // start resolves its own after the lock.
+        #[allow(unused_mut)]
+        let mut size = (args.width, args.height);
 
         let mut engine = VideoEngine::start(media_socket, sender_id, self_key, mls_ring.clone());
         let session_id = engine.session_id();
@@ -210,13 +229,14 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
                     },
                 )?
             };
-            engine
+            size = engine
                 .start_windows(
                     source_id,
                     &pick.encoder_name,
                     pick.codec as u8,
                     args.width,
                     args.height,
+                    (pick.max_width, pick.max_height),
                     args.fps,
                     args.video_bitrate_kbps,
                     args.include_cursor.unwrap_or(true),
@@ -266,10 +286,10 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         // the portal dialog blocks on the user — so defer storing the
         // engine. Every other path stores it here under the lock.
         if native_linux {
-            (announce, Some(engine), session_id)
+            (announce, Some(engine), session_id, size)
         } else {
             s.video_engine = Some(engine);
-            (announce, None, session_id)
+            (announce, None, session_id, size)
         }
     };
 
@@ -283,13 +303,16 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
     #[cfg(target_os = "linux")]
     if let Some(mut engine) = deferred_engine {
         let (target_codec, wire_byte) = resolve_linux_codec(args.initial_codec);
-        engine
+        let (max_w, max_h, _) =
+            linux_encode_ceiling(target_codec != crate::media::caps::CodecKind::H264Sw);
+        let (width, height) = engine
             .start_linux(
                 args.source_id.as_deref().unwrap_or(""),
                 target_codec,
                 wire_byte,
                 args.width,
                 args.height,
+                (max_w, max_h),
                 args.fps,
                 args.video_bitrate_kbps,
                 args.include_cursor.unwrap_or(true),
@@ -345,7 +368,8 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
             None
         };
 
-        if let Some((write_tx, data)) = announce {
+        if let Some((write_tx, channel_id)) = announce {
+            let data = start_stream_packet(&args, channel_id, width, height);
             match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => return Err(napi::Error::from_reason("Connection closed")),
@@ -357,18 +381,20 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<()> 
         if let Some(a) = audio_engine {
             s.audio_stream_engine = Some(a);
         }
-        return Ok(());
+        return Ok(StartScreenShareResult { width, height });
     }
     #[cfg(not(target_os = "linux"))]
     let _ = deferred_engine;
 
     // Renderer-WebCodecs path (Linux without native, macOS) and Windows
     // native (engine already stored under the lock): announce now.
-    let Some((write_tx, data)) = announce else {
-        return Ok(());
+    let (width, height) = size;
+    let Some((write_tx, channel_id)) = announce else {
+        return Ok(StartScreenShareResult { width, height });
     };
+    let data = start_stream_packet(&args, channel_id, width, height);
     let announce_err = match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => return Ok(()),
+        Ok(Ok(())) => return Ok(StartScreenShareResult { width, height }),
         Ok(Err(_)) => "Connection closed",
         Err(_) => "Send timed out",
     };
@@ -1122,6 +1148,17 @@ pub async fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
 /// codecs advertise a 4K/60 ceiling; software libx264 is capped lower
 /// since CPU 4K encoding isn't realtime.
 ///
+/// Largest (width, height, fps) a Linux native encoder is offered at: the
+/// probe advertises it, and a "Source" stream is kept within it.
+#[cfg(target_os = "linux")]
+fn linux_encode_ceiling(hardware: bool) -> (u32, u32, u32) {
+    if hardware {
+        (3840, 2160, 60)
+    } else {
+        (1920, 1080, 30)
+    }
+}
+
 /// Async + spawn_blocking for the same reason as the Windows variant: the
 /// test-opens must not run on the Electron main thread.
 #[cfg(target_os = "linux")]
@@ -1136,11 +1173,7 @@ pub async fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
     Ok(probed
         .into_iter()
         .map(|(kind, name, hardware)| {
-            let (max_width, max_height, max_fps) = if hardware {
-                (3840, 2160, 60)
-            } else {
-                (1920, 1080, 30)
-            };
+            let (max_width, max_height, max_fps) = linux_encode_ceiling(hardware);
             NativeEncoderCap {
                 codec: kind as i32,
                 max_width,

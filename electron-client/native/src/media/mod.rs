@@ -915,6 +915,13 @@ impl WinCapture {
             WinCapture::Dxgi(c) => c.stop(),
         }
     }
+
+    fn size(&self) -> (u32, u32) {
+        match self {
+            WinCapture::Wgc(c) => c.size(),
+            WinCapture::Dxgi(c) => c.size(),
+        }
+    }
 }
 
 /// The community (server_id, channel_id) a stream is announced in, shared by
@@ -1022,8 +1029,9 @@ impl VideoEngine {
     /// Windows-only: spin up the native capture + encoder pipeline.
     /// Source id is the Chromium desktopCapturer id ("screen:N:0" or
     /// "window:HWND:0"). Encoder name comes from probe_native_encoders.
-    /// Returns (width, height) — same shape the renderer-encoded path
-    /// returned, so JS can keep its existing announcement to the server.
+    /// `width`×`height` 0×0 means "Source": the captured source's own size,
+    /// kept within `ceiling` (the encoder's advertised maximum). Returns
+    /// the encoded (width, height), which is what gets announced.
     #[cfg(target_os = "windows")]
     pub fn start_windows(
         &mut self,
@@ -1032,6 +1040,7 @@ impl VideoEngine {
         codec_wire_byte: u8,
         width: u32,
         height: u32,
+        ceiling: (u32, u32),
         fps: u32,
         bitrate_kbps: u32,
         include_cursor: bool,
@@ -1086,6 +1095,14 @@ impl VideoEngine {
                 include_cursor,
                 fps,
             )?),
+        };
+        let (width, height) = if width == 0 || height == 0 {
+            let (src_w, src_h) = capture.size();
+            let size = encode_util::source_encode_size(src_w, src_h, ceiling.0, ceiling.1);
+            log::info!("[stream] source {src_w}x{src_h} encodes at {}x{}", size.0, size.1);
+            size
+        } else {
+            (width, height)
         };
         let encoder_thread = match encoder_thread::EncoderThread::start(
             gpu,
@@ -1159,8 +1176,9 @@ impl VideoEngine {
     /// Linux-only: spin up the native PipeWire/portal capture + FFmpeg
     /// (NVENC/VAAPI/libx264) encode pipeline. `source_id` is forwarded to
     /// the capture backend; the portal path ignores it (its own dialog
-    /// picks the source), the wlr path parses it. Returns the encoded
-    /// (width, height) the renderer announces to the server.
+    /// picks the source), the wlr path parses it. `width`×`height` 0×0
+    /// means "Source": the negotiated capture size, kept within `ceiling`.
+    /// Returns the encoded (width, height), which is what gets announced.
     #[cfg(target_os = "linux")]
     pub async fn start_linux(
         &mut self,
@@ -1169,6 +1187,7 @@ impl VideoEngine {
         codec_wire_byte: u8,
         width: u32,
         height: u32,
+        ceiling: (u32, u32),
         fps: u32,
         bitrate_kbps: u32,
         include_cursor: bool,
@@ -1191,6 +1210,16 @@ impl VideoEngine {
         } else {
             log::info!("[video-linux] capture via xdg-desktop-portal");
             capture_pipewire::start_capture(source_id, &config).await?
+        };
+        let (width, height) = if width == 0 || height == 0 {
+            let size = encode_util::source_encode_size(capture.width, capture.height, ceiling.0, ceiling.1);
+            log::info!(
+                "[video-linux] source {}x{} encodes at {}x{}",
+                capture.width, capture.height, size.0, size.1
+            );
+            size
+        } else {
+            (width, height)
         };
 
         // Thumbnail drain task, as on Windows: posts to the channel the

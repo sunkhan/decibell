@@ -74,6 +74,8 @@ pub struct Capture {
     stop: Arc<AtomicBool>,
     frames_dropped: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
+    /// The source's size when the capture started.
+    size: (u32, u32),
 }
 
 impl Capture {
@@ -97,7 +99,7 @@ impl Capture {
 
         // The thread signals whether duplication came up (or the exact
         // failure) so monitor capture can degrade to WGC.
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(u32, u32), String>>(1);
 
         let thread = std::thread::Builder::new()
             .name("decibell-dxgi-capture".to_string())
@@ -130,10 +132,11 @@ impl Capture {
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(READY_TIMEOUT) {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(size)) => Ok(Self {
                 stop,
                 frames_dropped,
                 thread: Some(thread),
+                size,
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -157,6 +160,12 @@ impl Capture {
 
     pub fn frames_dropped(&self) -> u32 {
         self.frames_dropped.load(Ordering::Relaxed)
+    }
+
+    /// The source's size when the capture started: what a "Source" stream
+    /// encodes at (later size changes are scaled into it).
+    pub fn size(&self) -> (u32, u32) {
+        self.size
     }
 }
 
@@ -404,9 +413,10 @@ fn run_capture_thread(
     drops: Arc<AtomicU32>,
     include_cursor: bool,
     fps: u32,
-    ready_tx: &mpsc::SyncSender<Result<(), String>>,
+    ready_tx: &mpsc::SyncSender<Result<(u32, u32), String>>,
 ) -> Result<(), String> {
     let first = open_duplication(device, monitor_idx)?;
+    let start_size = (first.width, first.height);
     let mut surfaces = Surfaces::new(device, first.width, first.height)?;
     log::info!(
         "[capture_dxgi] duplication started: monitor {} {}x{} (borderless)",
@@ -451,7 +461,7 @@ fn run_capture_thread(
     let mut need_full = true;
     let mut next_due = Instant::now();
     let mut signalled_ready = false;
-    let signal_ready = |ok: Result<(), String>, flag: &mut bool| {
+    let signal_ready = |ok: Result<(u32, u32), String>, flag: &mut bool| {
         if !*flag {
             *flag = true;
             let _ = ready_tx.try_send(ok);
@@ -491,7 +501,7 @@ fn run_capture_thread(
 
             match hr {
                 Ok(()) => {
-                    signal_ready(Ok(()), &mut signalled_ready);
+                    signal_ready(Ok(start_size), &mut signalled_ready);
                     if frame_info.LastMouseUpdateTime != 0 {
                         cursor.visible = frame_info.PointerPosition.Visible.as_bool();
                         cursor.pos_x = frame_info.PointerPosition.Position.x;
@@ -533,7 +543,7 @@ fn run_capture_thread(
                 Err(e) => {
                     let code = e.code();
                     if code == DXGI_ERROR_WAIT_TIMEOUT {
-                        signal_ready(Ok(()), &mut signalled_ready);
+                        signal_ready(Ok(start_size), &mut signalled_ready);
                         tele_timeouts += 1;
                     } else if !signalled_ready {
                         // Before the first frame the caller falls back

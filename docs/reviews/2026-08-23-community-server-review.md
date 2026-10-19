@@ -4325,3 +4325,26 @@ a DM call, presets, Custom, Advanced, the three sound modes, the live popover, l
 the rejected alternative (Discord-style resolution / frame-rate rows) is on the proposal page. Live test pending:
 Go Live on Windows (screen and window sources, sound Only these with "this window"), Linux (portal picker after
 Go Live) and macOS (sound row off), and that the larger screen thumbnails don't stall the main process's poll.
+
+### Fix: "Source" streams the source's own size on the native paths (2026-10-19)
+
+Found while checking a 5 fps option for the Sharp preset. On the native capture paths (Windows always, Linux
+with a hardware encoder) "Source" never meant the source's size: the dialog passed a 2560 × 1440 stand-in, native
+opened the encoder at it and scaled every frame into it. A 1080p screen was stretched up to 1440p, H.265 / AV1
+streams of a 4K screen stopped at 1440p, and on Linux any size mismatch takes the CPU `sws_scale` route
+(`ScaleToBgra`) on every frame instead of the direct BGRA copy. Only the WebCodecs path used the real size.
+
+- The renderer asks `start_screen_share` for 0 × 0 when "Source" is picked on the native path.
+- Native resolves it from the capture: WGC's item size or the DXGI output size (both captures now report their
+  starting size through the ready handshake), or the PipeWire-negotiated size on Linux (the 0 × 0 target was
+  already supported there; `start_linux` passed the stand-in instead). `encode_util::source_encode_size` keeps
+  the size within the encoder's advertised ceiling (Windows: H.264 2560 × 1440, H.265 / AV1 3840 × 2160; Linux
+  hardware 3840 × 2160), aspect kept, never scaled up, even sides; a portrait source is held against the
+  ceiling on its side. A window resized mid-stream keeps the starting size and is letterboxed into it, as before.
+- `StartStreamReq` is built after that, with the size really encoded, and `start_screen_share` returns it
+  (`StartScreenShareResult`), so the DM-call announcement and `move_stream_to_channel` carry it too.
+
+Verified: `cargo test --lib` 308 (+4: kept within the ceiling, scaled down with aspect, portrait, odd / zero
+sizes); `napi build`; tsc web 0. The Windows half goes through the Windows Native Check. Live test pending: a
+Source stream from a 1080p and a 4K screen on Windows (H.264 and H.265) and Linux, checking the resolution
+badge watchers see and that a resized window letterboxes.

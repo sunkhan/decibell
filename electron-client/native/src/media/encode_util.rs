@@ -111,6 +111,28 @@ pub fn insert_parameter_sets(packet: &[u8], param_sets: &[u8], codec: NalCodec) 
     out
 }
 
+/// Encode size for a "Source" stream: the captured source's own size,
+/// scaled down (aspect kept) when it exceeds the encoder's ceiling and
+/// never scaled up. The ceiling is a landscape box (2560×1440 for H.264);
+/// a portrait source is held against it on its side. Both sides come out
+/// even, as NV12's 2×2 chroma needs. A 0×0 ceiling means none.
+pub fn source_encode_size(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let (w, h) = (src_w.max(2) as u64, src_h.max(2) as u64);
+    let (long, short) = (w.max(h), w.min(h));
+    let (long_max, short_max) = (max_w.max(max_h) as u64, max_w.min(max_h) as u64);
+    // The scale is the tighter of long_max/long and short_max/short, as a
+    // fraction num/den; at or above 1 the source already fits.
+    let (num, den) = if short_max == 0 {
+        (1, 1)
+    } else if long_max * short <= short_max * long {
+        (long_max, long)
+    } else {
+        (short_max, short)
+    };
+    let (out_w, out_h) = if num >= den { (w, h) } else { (w * num / den, h * num / den) };
+    ((out_w as u32 & !1).max(2), (out_h as u32 & !1).max(2))
+}
+
 /// Destination rect `(left, top, right, bottom)` that fits a `src_w`×`src_h`
 /// image inside a `dst_w`×`dst_h` target without distorting it, centred.
 /// Edges that don't touch the target border are even-aligned: NV12 chroma
@@ -267,5 +289,40 @@ mod tests {
         assert_eq!(aspect_fit_rect(0, 0, 1280, 720), (0, 0, 1280, 720));
         let (l, t, r, b) = aspect_fit_rect(1, 5000, 1280, 720);
         assert!(r - l >= 2 && b - t == 720 && l >= 0 && r <= 1280);
+    }
+
+    #[test]
+    fn source_size_within_the_ceiling_is_kept() {
+        // A 1080p screen under the H.264 ceiling stays 1080p (it used to be
+        // stretched to the 1440p stand-in).
+        assert_eq!(source_encode_size(1920, 1080, 2560, 1440), (1920, 1080));
+        assert_eq!(source_encode_size(1366, 768, 2560, 1440), (1366, 768));
+        assert_eq!(source_encode_size(2560, 1440, 2560, 1440), (2560, 1440));
+        assert_eq!(source_encode_size(3840, 2160, 3840, 2160), (3840, 2160));
+    }
+
+    #[test]
+    fn source_size_above_the_ceiling_scales_down_keeping_aspect() {
+        assert_eq!(source_encode_size(3840, 2160, 2560, 1440), (2560, 1440));
+        assert_eq!(source_encode_size(5120, 2880, 3840, 2160), (3840, 2160));
+        // Super-ultrawide: the long side binds.
+        assert_eq!(source_encode_size(5120, 1440, 3840, 2160), (3840, 1080));
+        // 3440×1440 into 2560×1440: 1071.6 rows, rounded down to even.
+        assert_eq!(source_encode_size(3440, 1440, 2560, 1440), (2560, 1070));
+    }
+
+    #[test]
+    fn source_size_portrait_uses_the_ceiling_on_its_side() {
+        assert_eq!(source_encode_size(1440, 2560, 2560, 1440), (1440, 2560));
+        assert_eq!(source_encode_size(2160, 3840, 2560, 1440), (1440, 2560));
+    }
+
+    #[test]
+    fn source_size_is_even_and_never_zero() {
+        // An odd-sized window.
+        assert_eq!(source_encode_size(1237, 811, 2560, 1440), (1236, 810));
+        assert_eq!(source_encode_size(0, 0, 2560, 1440), (2, 2));
+        // No ceiling known.
+        assert_eq!(source_encode_size(7681, 4321, 0, 0), (7680, 4320));
     }
 }
