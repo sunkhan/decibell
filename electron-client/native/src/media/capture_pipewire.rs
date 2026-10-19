@@ -417,9 +417,8 @@ struct CaptureData {
     gpu_tx: SyncSender<DmaBufFrame>,
     target_width: u32,
     target_height: u32,
-    target_fps: u32,
     frame_count: u64,
-    last_capture_us: u64,
+    pacer: FramePacer,
     start: Instant,
     quit_mainloop: pw::main_loop::MainLoopWeak,
     /// Oneshot sender for resolved dimensions (used when target is 0x0 "source" quality).
@@ -429,6 +428,40 @@ struct CaptureData {
     diag_rate_limited: u64,
     diag_empty_datas: u64,
     diag_zero_chunk: u64,
+}
+
+/// Thins captured frames to the target rate on a schedule. A frame is taken
+/// once it is at most half an interval ahead of its slot: a producer pacing to
+/// our max framerate runs on its own clock, and a strict "a full interval
+/// since the last frame" test dropped its frames whenever they landed a
+/// little early. That loses the last frame of a burst for good (on a still
+/// screen nothing follows it), so a slide could stay mid-transition. A
+/// faster producer is still thinned to the target on average. After a gap
+/// longer than an interval the schedule restarts at the next frame.
+#[derive(Debug, Clone, Copy)]
+struct FramePacer {
+    interval_us: u64,
+    next_due_us: u64,
+}
+
+impl FramePacer {
+    fn new(fps: u32) -> Self {
+        FramePacer { interval_us: 1_000_000 / fps.max(1) as u64, next_due_us: 0 }
+    }
+
+    /// Whether a frame arriving at `now_us` should be sent.
+    fn is_due(&self, now_us: u64) -> bool {
+        now_us + self.interval_us / 2 >= self.next_due_us
+    }
+
+    /// Book a frame sent at `now_us`.
+    fn sent(&mut self, now_us: u64) {
+        self.next_due_us = if now_us > self.next_due_us + self.interval_us {
+            now_us + self.interval_us
+        } else {
+            self.next_due_us + self.interval_us
+        };
+    }
 }
 
 /// Build an EnumFormat param describing what we accept from the producer.
@@ -505,6 +538,21 @@ fn build_format_pod(
             spa::utils::Fraction { num: target_fps, denom: 1 },
             spa::utils::Fraction { num: 0, denom: 1 },
             spa::utils::Fraction { num: 1000, denom: 1 }
+        ),
+        // Ask the producer itself to stay under the target rate, as
+        // Chromium's PipeWire capturer does. Producers that honour it
+        // (mutter, KWin) hold extra damage back and send the newest frame
+        // once the interval is up, so a still screen still gets its final
+        // frame, and we don't copy frames out only to drop them. One that
+        // ignores it sends every damage as before and FramePacer thins it.
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoMaxFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction { num: target_fps.max(1), denom: 1 },
+            spa::utils::Fraction { num: 1, denom: 1 },
+            spa::utils::Fraction { num: target_fps.max(1), denom: 1 }
         ),
     );
 
@@ -874,9 +922,8 @@ fn pipewire_capture_loop(
         gpu_tx,
         target_width,
         target_height,
-        target_fps: config.target_fps,
         frame_count: 0,
-        last_capture_us: 0,
+        pacer: FramePacer::new(config.target_fps),
         start: Instant::now(),
         quit_mainloop: mainloop.downgrade(),
         dim_tx: Some(dim_tx),
@@ -980,11 +1027,13 @@ fn pipewire_capture_loop(
                 let _ = dim_tx.send((data.target_width, data.target_height));
             }
 
+            let max_framerate = data.format.max_framerate();
             log::info!(
-                "[capture] Negotiated format: {:?} {}x{} -> {}x{} @ {}/{} (modifier=0x{:x}, dmabuf={}, fixate={})",
+                "[capture] Negotiated format: {:?} {}x{} -> {}x{} @ {}/{} max {}/{} (modifier=0x{:x}, dmabuf={}, fixate={})",
                 fmt, w, h,
                 data.target_width, data.target_height,
                 framerate.num, framerate.denom,
+                max_framerate.num, max_framerate.denom,
                 modifier, uses_dmabuf, needs_fixation,
             );
 
@@ -1044,10 +1093,9 @@ fn pipewire_capture_loop(
                 return;
             };
 
-            // Rate-limit: skip frames arriving faster than target FPS
+            // Rate-limit to the target FPS (see FramePacer).
             let now_us = data.start.elapsed().as_micros() as u64;
-            let frame_interval_us = 1_000_000 / data.target_fps.max(1) as u64;
-            if now_us.saturating_sub(data.last_capture_us) < frame_interval_us {
+            if !data.pacer.is_due(now_us) {
                 data.diag_rate_limited = data.diag_rate_limited.saturating_add(1);
                 drop(buffer);
                 return;
@@ -1198,7 +1246,7 @@ fn pipewire_capture_loop(
             };
 
             match data.tx.try_send(frame) {
-                Ok(()) => { data.last_capture_us = now_us; }
+                Ok(()) => data.pacer.sent(now_us),
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {}
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     log::info!("[capture] Frame channel closed, stopping");
@@ -1278,6 +1326,45 @@ fn pipewire_capture_loop(
 mod tests {
     use super::*;
     use pw::stream::StreamState;
+
+    /// Feed arrival times (ms) through a pacer; return the ones it sends.
+    fn paced(fps: u32, arrivals_ms: &[u64]) -> Vec<u64> {
+        let mut p = FramePacer::new(fps);
+        let mut sent = Vec::new();
+        for &t in arrivals_ms {
+            let us = t * 1000;
+            if p.is_due(us) {
+                p.sent(us);
+                sent.push(t);
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn pacer_keeps_a_producer_paced_to_the_target() {
+        // A compositor honouring max framerate at 5 fps, its clock running a
+        // few ms ahead of ours: the old strict test dropped 397 and 794.
+        assert_eq!(paced(5, &[0, 199, 397, 599, 794, 1001]), vec![0, 199, 397, 599, 794, 1001]);
+    }
+
+    #[test]
+    fn pacer_thins_a_fast_producer_to_the_target_on_average() {
+        // 60 Hz damage at a 5 fps target for 2 s.
+        let arrivals: Vec<u64> = (0..120).map(|i| i * 1000 / 60).collect();
+        let sent = paced(5, &arrivals);
+        assert!((10..=11).contains(&sent.len()), "sent {} frames: {sent:?}", sent.len());
+        for pair in sent.windows(2) {
+            assert!(pair[1] - pair[0] >= 100, "{pair:?} closer than half an interval");
+        }
+    }
+
+    #[test]
+    fn pacer_restarts_after_a_still_screen() {
+        // Nothing for 3 s, then a change: sent at once, and the schedule
+        // doesn't let a backlog of slots through in a burst.
+        assert_eq!(paced(5, &[0, 3000, 3017, 3033, 3200]), vec![0, 3000, 3200]);
+    }
 
     /// Review B9: a broken or disconnected stream ends the capture; the
     /// normal start-up transitions and a pause don't.

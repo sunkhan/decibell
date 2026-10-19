@@ -107,13 +107,16 @@ export default function AdvancedSettings({
               }
             />
           </Field>
-          <Field label="Frame rate">
+          {/* Numbers only: five "120 fps"-style labels wrap in the 400 px
+              settings column of the Windows layout. */}
+          <Field label="Frame rate (fps)">
             <SegmentedControl
               options={[
-                { value: 15 as const, label: "15 fps" },
-                { value: 30 as const, label: "30 fps" },
-                { value: 60 as const, label: "60 fps" },
-                { value: 120 as const, label: "120 fps" },
+                { value: 5 as const, label: "5", title: "For still content: slides, documents" },
+                { value: 15 as const, label: "15" },
+                { value: 30 as const, label: "30" },
+                { value: 60 as const, label: "60" },
+                { value: 120 as const, label: "120" },
               ]}
               value={settings.fps}
               onChange={(v) => setStreamSettings({ fps: v })}

@@ -1015,6 +1015,11 @@ impl VideoEngine {
         self.session_id
     }
 
+    /// The stream's frame rate, which large frames are paced by.
+    pub fn set_frame_rate(&self, fps: u32) {
+        self.sender.set_frame_rate(fps);
+    }
+
     /// Record the community channel the stream is announced in (start, and
     /// again on move_stream_to_channel). None for a DM-call stream.
     pub fn set_announce_target(&mut self, target: Option<(String, String)>) {

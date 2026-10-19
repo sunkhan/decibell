@@ -594,8 +594,8 @@ impl H264Encoder {
                 } else {
                     opts.set("tune", "ull");
                 }
-                // VBV buffer: ~4 frames of headroom for rate control
-                let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
+                // VBV buffer: four frames of headroom for rate control, at most 400 ms
+                let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, config.fps);
                 unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
             }
             // ── AMF family (AMD) ──
@@ -1143,8 +1143,8 @@ impl H264Encoder {
             let ctx_ptr = context.as_mut_ptr();
             (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
             (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
-            // VBV buffer: ~4 frames of headroom for rate control
-            let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
+            // VBV buffer: four frames of headroom for rate control, at most 400 ms
+            let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, config.fps);
             (*ctx_ptr).rc_buffer_size = vbv_bits;
         }
 
@@ -1418,8 +1418,8 @@ impl H264Encoder {
             (*ctx_ptr).pix_fmt = encoder_pix_fmt;
             (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
             (*ctx_ptr).hw_frames_ctx = av_buffer_ref(encoder_frames_ref);
-            // VBV buffer: ~4 frames of headroom for rate control
-            let vbv_bits = (config.bitrate_kbps as i32) * 1000 / (config.fps as i32) * 4;
+            // VBV buffer: four frames of headroom for rate control, at most 400 ms
+            let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, config.fps);
             (*ctx_ptr).rc_buffer_size = vbv_bits;
 
             // AV1: same GLOBAL_HEADER trick as the CPU constructor — without

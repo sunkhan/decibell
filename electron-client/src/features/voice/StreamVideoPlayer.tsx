@@ -149,8 +149,12 @@ export default function StreamVideoPlayer({ streamerUid, className }: Props) {
       // also fail outright on Linux + NVIDIA without nvidia-vaapi-driver
       // because Chromium can't allocate any decoder. Letting Chromium
       // pick lets it transparently fall back to software.
+      // optimizeForLatency: a live stream wants every frame out as soon as
+      // it decodes. Without it a decoder may hold a few frames back (frame
+      // threading in software decode), which costs 200 ms a frame at 5 fps.
       const config: VideoDecoderConfig = {
         codec: videoCodecToWebCodecsString(activeCodecRef.current),
+        optimizeForLatency: true,
       };
       if (description) {
         config.description = description;

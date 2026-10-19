@@ -4348,3 +4348,43 @@ Verified: `cargo test --lib` 308 (+4: kept within the ceiling, scaled down with 
 sizes); `napi build`; tsc web 0. The Windows half goes through the Windows Native Check. Live test pending: a
 Source stream from a 1080p and a 4K screen on Windows (H.264 and H.265) and Linux, checking the resolution
 badge watchers see and that a resized window letterboxes.
+
+### Feature: 5 fps streams, and a media path that holds up at low frame rates (2026-10-19)
+
+Owner asked for a 5 fps setting for the Sharp preset. An audit of everything that assumes a frame cadence found
+that 5 fps would run but behave badly: still slides could stay on an old picture, frames grew to ~300 KB (keyframes
+past 1 MB) and went out in one burst, and viewers asked for the tail of a frame while it was still arriving until
+those requests forced a keyframe. Owner decision: fix those first and offer 5 fps under Advanced; Sharp stays at
+30 fps (it also covers code and scrolling, where 5 fps looks like a slideshow and the cursor jumps).
+
+- **Still screens keep their last change.** Linux portal capture asks the producer for a maximum framerate
+  (`VideoMaxFramerate`, as Chromium's PipeWire capturer does): mutter and KWin then hold extra damage back and
+  send the newest frame once the interval is up. Our own thinning (`FramePacer`) takes a frame up to half an
+  interval early; the old strict "a full interval since the last frame" test dropped the producer's frames
+  whenever they landed slightly early, and the last frame of a burst never comes back on a still screen. The
+  in-app (WebCodecs) path holds an early `VideoFrame` instead of closing it and sends it when its slot comes up,
+  unless a newer one replaces it. Windows WGC / DXGI already held the latest frame.
+- **Frames stay small enough.** The encoder's rate-control buffer is four frames but at most 400 ms
+  (`encode_util::vbv_bits`, Windows NVENC/AMF and the three Linux sites): unchanged from 10 fps up, two frames
+  instead of four at 5 fps.
+- **Big frames are spread out.** `VideoSender::send_frame_paced` (the encoder threads and the renderer path's
+  sender thread) sends 32 packets at a time over half the frame interval, for streams at 20 fps and below; the
+  schedule runs from the first packet, so a Windows sleep that overruns makes the next groups go together, never
+  the frame late. Inline fallback sends stay unpaced.
+- **Viewers wait for frames still arriving.** A missing fragment above the highest one received is only asked
+  for once the frame has gone quiet for the NACK timeout; gaps behind it as before. Incomplete frames expire 500
+  ms after their latest fragment (2 s after the first at most), not 500 ms after the first.
+- **A restarted stream is picked up at once.** A keyframe behind the delivery cursor used to count as a late
+  duplicate unless 512 frames behind, so a stream stopped and started again within the 10 s idle timeout was
+  dropped by viewers until its ids passed the old ones (up to 100 s at 5 fps, 17 s at 30). Keyframe 0, and a
+  keyframe after a second of silence from that sender, now always start a new chain.
+- **5 fps under Advanced** (frame rate labels are numbers now, so five fit the Windows settings column), saved
+  and restored like the others. Viewers' decoders are configured with `optimizeForLatency`, so none holds frames
+  back (200 ms each at 5 fps).
+
+Verified: `cargo test --lib` 321 (+13: the pacer keeps a producer-paced stream, thins a fast one, restarts after a
+still screen; VBV caps; pacing rules and a paced frame's timing; the receiver's tail, gap, stall, slow-frame,
+quiet-frame and two restart cases); `napi build`; tsc web 0. Live test pending: a 5 fps Source stream of slides
+on Linux (KDE and GNOME: the log's "Negotiated format … max 5/1" line, a slide change showing its final state
+with the mouse still) and Windows, viewers on a slow connection, and stopping and starting a stream within a few
+seconds.

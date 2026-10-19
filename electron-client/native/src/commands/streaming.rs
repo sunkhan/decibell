@@ -178,6 +178,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<Star
         let mut size = (args.width, args.height);
 
         let mut engine = VideoEngine::start(media_socket, sender_id, self_key, mls_ring.clone());
+        engine.set_frame_rate(args.fps);
         let session_id = engine.session_id();
         // Remember where the stream is announced so a later stop without
         // ids (main process, after a renderer reload/crash) can still tell

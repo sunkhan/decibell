@@ -622,6 +622,60 @@ export class StreamCapture {
     // alternation) and a faster source is thinned to the target rate.
     const intervalUs = 1_000_000 / Math.max(1, this.opts.fps);
     let nextDueUs = 0;
+    // A frame that came in too early is held, not dropped: a source that
+    // sends only on change (a still slide) may send nothing after it, and
+    // dropping it would leave watchers on the frame before. A newer frame
+    // replaces it; otherwise a timer sends it when its slot comes up.
+    let held: { frame: VideoFrame; tsUs: number } | null = null;
+    let heldTimer: number | undefined;
+    const dropHeld = () => {
+      if (heldTimer !== undefined) window.clearTimeout(heldTimer);
+      heldTimer = undefined;
+      held?.frame.close();
+      held = null;
+    };
+    const send = (frame: VideoFrame, tsUs: number) => {
+      nextDueUs =
+        tsUs > nextDueUs + intervalUs * 2 ? tsUs + intervalUs : nextDueUs + intervalUs;
+      framesSinceLastReport += 1;
+      try {
+        // Encoder backpressure protection: drop frames if the queue
+        // is too deep. The queue check has to gate `wantKeyframe`
+        // consumption too — otherwise a requested keyframe can be
+        // silently swallowed during a spike and watchers stay stuck
+        // on the previous GOP until the next natural IDR.
+        // A closed encoder is mid-recovery (handleEncoderError swaps in
+        // a prefer-software one) — skip the frame instead of throwing out
+        // of the loop, which used to end the pump with the stream still
+        // announced.
+        if (this.encoder && this.encoder.state === "configured" && this.encoder.encodeQueueSize < 4) {
+          const encodeOpts: VideoEncoderEncodeOptions = {};
+          if (this.wantKeyframe) {
+            encodeOpts.keyFrame = true;
+            this.wantKeyframe = false;
+          }
+          this.encoder.encode(frame, encodeOpts);
+        }
+        // Periodic thumbnail. drawImage on a VideoFrame is sync,
+        // so the bitmap is baked into the canvas before frame.close()
+        // in the finally below races ahead. The async convertToBlob
+        // works on the canvas alone — it doesn't need the frame.
+        this.maybeCaptureThumbnail(frame);
+      } finally {
+        frame.close();
+      }
+    };
+    const sendHeld = () => {
+      heldTimer = undefined;
+      const h = held;
+      held = null;
+      if (!h) return;
+      if (this.stopping) {
+        h.frame.close();
+        return;
+      }
+      send(h.frame, h.tsUs);
+    };
     try {
       while (!this.stopping) {
         const { value: frame, done } = await this.reader.read();
@@ -638,39 +692,18 @@ export class StreamCapture {
           firstFrameLogged = true;
         }
         const tsUs = frame.timestamp ?? performance.now() * 1000;
-        if (tsUs < nextDueUs - intervalUs / 2) {
-          frame.close();
+        const dueAtUs = nextDueUs - intervalUs / 2;
+        if (tsUs < dueAtUs) {
+          held?.frame.close();
+          held = { frame, tsUs };
+          if (heldTimer === undefined) {
+            heldTimer = window.setTimeout(sendHeld, (dueAtUs - tsUs) / 1000);
+          }
           continue;
         }
-        nextDueUs =
-          tsUs > nextDueUs + intervalUs * 2 ? tsUs + intervalUs : nextDueUs + intervalUs;
-        framesSinceLastReport += 1;
-        try {
-          // Encoder backpressure protection: drop frames if the queue
-          // is too deep. The queue check has to gate `wantKeyframe`
-          // consumption too — otherwise a requested keyframe can be
-          // silently swallowed during a spike and watchers stay stuck
-          // on the previous GOP until the next natural IDR.
-          // A closed encoder is mid-recovery (handleEncoderError swaps in
-          // a prefer-software one) — skip the frame instead of throwing out
-          // of the loop, which used to end the pump with the stream still
-          // announced.
-          if (this.encoder.state === "configured" && this.encoder.encodeQueueSize < 4) {
-            const encodeOpts: VideoEncoderEncodeOptions = {};
-            if (this.wantKeyframe) {
-              encodeOpts.keyFrame = true;
-              this.wantKeyframe = false;
-            }
-            this.encoder.encode(frame, encodeOpts);
-          }
-          // Periodic thumbnail. drawImage on a VideoFrame is sync,
-          // so the bitmap is baked into the canvas before frame.close()
-          // in the finally below races ahead. The async convertToBlob
-          // works on the canvas alone — it doesn't need the frame.
-          this.maybeCaptureThumbnail(frame);
-        } finally {
-          frame.close();
-        }
+        // Due: anything held is older than this frame.
+        dropHeld();
+        send(frame, tsUs);
         const now = Date.now();
         if (now - lastReportAt > 5000) {
           console.log(
@@ -690,6 +723,8 @@ export class StreamCapture {
         this.opts.onCaptureEnded?.();
         this.stop().catch(() => {});
       }
+    } finally {
+      dropHeld();
     }
   }
 

@@ -325,7 +325,7 @@ fn emit_encoded(
     } else {
         &ef.data
     };
-    cfg.video_sender.send_frame(codec, ef.is_keyframe, wire);
+    cfg.video_sender.send_frame_paced(codec, ef.is_keyframe, wire);
 
     // Self-preview: same encoded bytes to the renderer keyed by local
     // username (StreamVideoPlayer renders the user's own tile via the

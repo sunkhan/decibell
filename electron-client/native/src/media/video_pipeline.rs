@@ -44,6 +44,28 @@ pub struct VideoSender {
     /// retarget: the frame counter keeps advancing, so (salt, frame id)
     /// never repeats under whichever key the stream seals with.
     stream_salt: u32,
+    /// The stream's frame interval (0 = not known), for `send_frame_paced`.
+    frame_interval_us: AtomicU32,
+}
+
+/// Packets `send_frame_paced` sends together before it pauses.
+const PACE_BURST: usize = 32;
+/// Pacing only applies to frame intervals at least this long (20 fps and
+/// below). Faster streams have small frames and no time to spare, and a
+/// Windows sleep can last 15 ms.
+const PACE_MIN_INTERVAL_US: u32 = 50_000;
+
+/// The pause between groups of `PACE_BURST` packets that spreads a frame of
+/// `total` packets over half the frame interval, or None to send it at once.
+/// At 5 fps and 12 Mbps a frame is ~250 packets and a keyframe can pass
+/// 1000; sent at line rate, a burst that size overflows the queue of a home
+/// router or uplink, and there is no retransmission to recover the loss.
+fn pace_gap(total: usize, interval_us: u32) -> Option<Duration> {
+    if interval_us < PACE_MIN_INTERVAL_US || total <= PACE_BURST {
+        return None;
+    }
+    let groups = total.div_ceil(PACE_BURST) as u64;
+    Some(Duration::from_micros(interval_us as u64 / 2 / groups))
 }
 
 impl VideoSender {
@@ -57,7 +79,13 @@ impl VideoSender {
             sender_id,
             next_frame_id: AtomicU32::new(0),
             stream_salt: super::frame_crypto::next_stream_salt(),
+            frame_interval_us: AtomicU32::new(0),
         }
+    }
+
+    /// The stream's frame rate, which `send_frame_paced` paces by.
+    pub fn set_frame_rate(&self, fps: u32) {
+        self.frame_interval_us.store(1_000_000 / fps.max(1), Ordering::Relaxed);
     }
 
     /// Re-point the sender at a new media socket and key ring in one swap.
@@ -75,6 +103,28 @@ impl VideoSender {
         codec_byte: u8,
         is_keyframe: bool,
         data: &[u8],
+    ) -> (u32, u32) {
+        self.send(codec_byte, is_keyframe, data, None)
+    }
+
+    /// `send_frame`, spreading a large frame of a slow stream over half its
+    /// interval (see `pace_gap`). Sleeps, so only for threads that own the
+    /// stream's sending: the encoder threads and the renderer path's sender.
+    pub fn send_frame_paced(
+        &self,
+        codec_byte: u8,
+        is_keyframe: bool,
+        data: &[u8],
+    ) -> (u32, u32) {
+        self.send(codec_byte, is_keyframe, data, Some(self.frame_interval_us.load(Ordering::Relaxed)))
+    }
+
+    fn send(
+        &self,
+        codec_byte: u8,
+        is_keyframe: bool,
+        data: &[u8],
+        pace_interval_us: Option<u32>,
     ) -> (u32, u32) {
         let frame_id = self.next_frame_id.fetch_add(1, Ordering::Relaxed);
         // One route snapshot per frame (an atomic load), so a frame is never
@@ -104,9 +154,23 @@ impl VideoSender {
         };
         let chunks: Vec<&[u8]> = data.chunks(UDP_MAX_PAYLOAD).collect();
         let total = chunks.len() as u16;
+        let gap = pace_interval_us.and_then(|interval| pace_gap(chunks.len(), interval));
+        let started = Instant::now();
         let mut ok = 0u32;
         let mut err = 0u32;
         for (i, chunk) in chunks.iter().enumerate() {
+            // Group k goes out no earlier than k gaps after the first packet:
+            // a sleep that overruns (Windows timer steps) makes the next
+            // groups go together, never the frame later than its window.
+            if let Some(gap) = gap {
+                if i > 0 && i % PACE_BURST == 0 {
+                    let due = started + gap * (i / PACE_BURST) as u32;
+                    let now = Instant::now();
+                    if due > now {
+                        std::thread::sleep(due - now);
+                    }
+                }
+            }
             let mut pkt = UdpVideoPacket::new_with_codec(
                 &self.sender_id,
                 frame_id,
@@ -192,7 +256,7 @@ fn spawn_send_thread(sender: Arc<VideoSender>) -> Option<SyncSender<QueuedFrame>
         .name("decibell-video-send".to_string())
         .spawn(move || {
             while let Ok(f) = rx.recv() {
-                sender.send_frame(f.codec, f.keyframe, &f.data);
+                sender.send_frame_paced(f.codec, f.keyframe, &f.data);
             }
         });
     match spawned {
@@ -340,6 +404,37 @@ mod tests {
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         sock.connect(sock.local_addr().unwrap()).unwrap();
         Arc::new(VideoSender::new(Arc::new(MediaSocket::plain(sock, "me")), "me".into(), None))
+    }
+
+    #[test]
+    fn pacing_only_for_big_frames_of_slow_streams() {
+        // 60 / 30 / 25 fps: never paced.
+        assert_eq!(pace_gap(500, 16_666), None);
+        assert_eq!(pace_gap(500, 33_333), None);
+        assert_eq!(pace_gap(500, 40_000), None);
+        // A small frame at 5 fps goes in one burst.
+        assert_eq!(pace_gap(PACE_BURST, 200_000), None);
+        // 5 fps, ~250 packets: 8 groups over 100 ms.
+        assert_eq!(pace_gap(250, 200_000), Some(Duration::from_micros(12_500)));
+        // 15 fps keyframe of 170 packets: 6 groups over 33 ms.
+        assert_eq!(pace_gap(170, 66_666), Some(Duration::from_micros(5_555)));
+    }
+
+    #[test]
+    fn a_paced_frame_takes_about_half_its_interval() {
+        let s = sender();
+        s.set_frame_rate(5);
+        let frame = vec![0u8; UDP_MAX_PAYLOAD * 250];
+        let t0 = Instant::now();
+        s.send_frame_paced(1, false, &frame);
+        let took = t0.elapsed();
+        // 7 pauses of 12.5 ms after the first group.
+        assert!(took >= Duration::from_micros(87_000), "took {took:?}");
+        assert!(took < Duration::from_millis(150), "took {took:?}");
+        // The unpaced path doesn't wait.
+        let t0 = Instant::now();
+        s.send_frame(1, false, &frame);
+        assert!(t0.elapsed() < Duration::from_millis(50));
     }
 
     // The sink slot is process-global and cargo runs tests in parallel.

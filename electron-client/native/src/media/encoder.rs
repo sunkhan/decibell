@@ -239,9 +239,8 @@ impl Encoder {
             (*ctx_ptr).pix_fmt = AVPixelFormat::AV_PIX_FMT_D3D11;
             (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref.as_ptr());
             (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref.as_ptr());
-            // VBV ~4 frames of headroom for rate control.
-            let vbv_bits = (bitrate_kbps as i32) * 1000 / (fps as i32) * 4;
-            (*ctx_ptr).rc_buffer_size = vbv_bits;
+            // VBV: four frames of headroom for rate control, at most 400 ms.
+            (*ctx_ptr).rc_buffer_size = super::encode_util::vbv_bits(bitrate_kbps, fps);
 
             // AV1 GLOBAL_HEADER: NVENC then also fills extradata with the
             // sequence header (nvenc_setup_extradata). It does NOT move the

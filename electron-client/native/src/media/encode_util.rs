@@ -6,8 +6,11 @@
 //!    its SPS/PPS (+VPS), whatever the encoder driver's defaults are.
 //!  - The aspect-fit destination rect the D3D11 video processor scales the
 //!    captured texture into.
+//!  - Encode sizing shared by both platforms: a "Source" stream's size and
+//!    the rate-control buffer.
 
-// Linux uses only the Annex B half (H.264 parameter-set safety net).
+// Linux skips the HEVC and aspect-fit parts (no HEVC parameter-set net, no
+// D3D11 video processor).
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
 /// NAL header layout of an Annex B bitstream.
@@ -109,6 +112,18 @@ pub fn insert_parameter_sets(packet: &[u8], param_sets: &[u8], codec: NalCodec) 
     out.extend_from_slice(param_sets);
     out.extend_from_slice(&packet[at..]);
     out
+}
+
+/// Rate-control buffer (VBV) size in bits: four frames of the bitrate, but
+/// at most 400 ms of it. The buffer is how far one frame, a keyframe above
+/// all, may outgrow the average. Four frames is 67 ms at 60 fps, and at 5 fps
+/// it was 800 ms: keyframes of over a megabyte, sent in one burst, that the
+/// receiver gave up on before they had arrived. Unchanged from 10 fps up.
+pub fn vbv_bits(bitrate_kbps: u32, fps: u32) -> i32 {
+    let bps = bitrate_kbps as u64 * 1000;
+    let four_frames = bps * 4 / fps.max(1) as u64;
+    let cap = bps * 2 / 5;
+    four_frames.min(cap).min(i32::MAX as u64) as i32
 }
 
 /// Encode size for a "Source" stream: the captured source's own size,
@@ -289,6 +304,18 @@ mod tests {
         assert_eq!(aspect_fit_rect(0, 0, 1280, 720), (0, 0, 1280, 720));
         let (l, t, r, b) = aspect_fit_rect(1, 5000, 1280, 720);
         assert!(r - l >= 2 && b - t == 720 && l >= 0 && r <= 1280);
+    }
+
+    #[test]
+    fn vbv_is_four_frames_up_to_400_ms() {
+        assert_eq!(vbv_bits(10_000, 60), 666_666);
+        assert_eq!(vbv_bits(10_000, 30), 1_333_333);
+        assert_eq!(vbv_bits(12_000, 15), 3_200_000);
+        // 10 fps: four frames is exactly the cap.
+        assert_eq!(vbv_bits(12_000, 10), 4_800_000);
+        // 5 fps: 400 ms (two frames), not 800 ms.
+        assert_eq!(vbv_bits(12_000, 5), 4_800_000);
+        assert_eq!(vbv_bits(30_000, 5), 12_000_000);
     }
 
     #[test]

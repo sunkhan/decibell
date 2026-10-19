@@ -107,7 +107,7 @@ interface VoiceState {
   isStreaming: boolean;
   streamSettings: {
     resolution: "1080p" | "720p" | "source";
-    fps: 120 | 60 | 30 | 15;
+    fps: 120 | 60 | 30 | 15 | 5;
     quality: "high" | "medium" | "low" | "custom";
     videoBitrateKbps: number;
     shareAudio: boolean;

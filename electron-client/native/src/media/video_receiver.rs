@@ -21,8 +21,12 @@ const MAX_SENDERS: usize = 8;
 /// One lifetime for incomplete assemblies, shared by every cleanup path.
 /// (There used to be two — 150ms inside check_missing and 500ms in
 /// cleanup_stale — which made the effective NACK window depend on which
-/// ran first.)
+/// ran first.) It runs from the frame's latest fragment, not its first: a
+/// big frame of a slow stream is paced over ~100 ms by the sender and can
+/// take longer than this on a slow link while its fragments keep coming.
+/// MAX_FRAME_AGE bounds an assembly however it trickles in.
 const STALE_FRAME_TIMEOUT: Duration = Duration::from_millis(500);
+const MAX_FRAME_AGE: Duration = Duration::from_secs(2);
 
 /// How long a completed-but-out-of-order frame may wait for its
 /// predecessor (in flight via NACK/FEC) before the gap is declared lost.
@@ -33,8 +37,13 @@ const MAX_PENDING_DELIVERY: usize = 32;
 
 /// A keyframe behind the delivery cursor by less than this is a late
 /// retransmit (drop); by this much or more it's a stream restart with
-/// frame ids re-zeroed (accept). ~8s of frames at 60fps.
+/// frame ids re-zeroed (accept). ~8s of frames at 60fps. A restart is also
+/// any keyframe 0 (every stream starts there) and any keyframe that ends a
+/// silence of RESTART_SILENCE: a stream stopped and started again quickly
+/// is otherwise "behind" by however long it ran, which at 5 fps is 100 s of
+/// frames before the threshold catches it.
 const RESTART_THRESHOLD: u32 = 512;
+const RESTART_SILENCE: Duration = Duration::from_secs(1);
 
 /// FEC bookkeeping cap: one group per FEC_GROUP_SIZE fragments, plus one.
 /// Without this a peer could push unlimited FEC packets into one frame's
@@ -96,6 +105,13 @@ struct FrameAssembly {
     received_count: u16,
     is_keyframe: bool,
     created_at: Instant,
+    /// When the latest fragment arrived, and the highest index received:
+    /// fragments go out in index order, so anything above it may still be
+    /// on its way.
+    last_packet_at: Instant,
+    highest_index: u16,
+    /// The sender had been silent for RESTART_SILENCE when this frame began.
+    after_silence: bool,
     /// Codec byte from the first packet of the frame. Plan B: drives
     /// WebCodecs decoder configuration on the viewer side.
     codec: u8,
@@ -103,14 +119,18 @@ struct FrameAssembly {
 }
 
 impl FrameAssembly {
-    fn new(total_packets: u16, is_keyframe: bool, codec: u8) -> Self {
+    fn new(total_packets: u16, is_keyframe: bool, codec: u8, after_silence: bool) -> Self {
+        let now = Instant::now();
         FrameAssembly {
             total_packets,
             buf: vec![0u8; total_packets as usize * UDP_MAX_PAYLOAD],
             sizes: vec![None; total_packets as usize],
             received_count: 0,
             is_keyframe,
-            created_at: Instant::now(),
+            created_at: now,
+            last_packet_at: now,
+            highest_index: 0,
+            after_silence,
             codec,
             fec_groups: Vec::new(),
         }
@@ -125,6 +145,8 @@ impl FrameAssembly {
         }
         let start = index as usize * UDP_MAX_PAYLOAD;
         self.buf[start..start + payload.len()].copy_from_slice(payload);
+        self.last_packet_at = Instant::now();
+        self.highest_index = self.highest_index.max(index);
         if self.sizes[index as usize]
             .replace(payload.len() as u16)
             .is_none()
@@ -315,16 +337,23 @@ impl SenderState {
     /// order completions (NACK/FEC finishing an older frame after a
     /// newer one) used to be handed to the decoder as-is, which fed it
     /// deltas with missing references — corruption until the next PLI.
-    fn accept_completed(&mut self, frame: ReassembledFrame, now: Instant) -> Vec<ReassembledFrame> {
+    fn accept_completed(
+        &mut self,
+        frame: ReassembledFrame,
+        now: Instant,
+        after_silence: bool,
+    ) -> Vec<ReassembledFrame> {
         let fid = frame.frame_id;
         if frame.is_keyframe {
             // A keyframe *slightly* behind the cursor is a late NACK
             // retransmit of one we already moved past — delivering it
-            // would rewind the chain. A keyframe *far* behind is a
-            // stream restart (ids reset to 0) and must be accepted.
+            // would rewind the chain. A keyframe *far* behind, keyframe 0,
+            // or one after a silence is a stream restart (ids reset to 0)
+            // and must be accepted (see RESTART_THRESHOLD).
             if let Some(next) = self.next_delivery {
                 let behind = next.wrapping_sub(fid);
-                if behind > 0 && behind < RESTART_THRESHOLD {
+                let restarted = fid == 0 || after_silence;
+                if behind > 0 && behind < RESTART_THRESHOLD && !restarted {
                     return Vec::new();
                 }
             }
@@ -407,6 +436,9 @@ impl SenderState {
 pub struct VideoReceiver {
     senders: HashMap<[u8; SENDER_ID_SIZE], SenderState>,
     nack_timeout: Duration,
+    /// STALE_FRAME_TIMEOUT and MAX_FRAME_AGE (fields so tests can shorten them).
+    stale_timeout: Duration,
+    max_frame_age: Duration,
     max_nack_retries: u32,
     /// Minimum spacing between PLIs to one sender, by keyframe state.
     pli_interval_cold: Duration,
@@ -418,6 +450,8 @@ impl VideoReceiver {
         VideoReceiver {
             senders: HashMap::new(),
             nack_timeout: Duration::from_millis(50),
+            stale_timeout: STALE_FRAME_TIMEOUT,
+            max_frame_age: MAX_FRAME_AGE,
             max_nack_retries: 3,
             pli_interval_cold: Duration::from_millis(500),
             pli_interval_warm: Duration::from_secs(1),
@@ -465,6 +499,7 @@ impl VideoReceiver {
 
         let now = Instant::now();
         let sender = self.sender_entry(&pkt.sender_id, || pkt.sender_id_str(), now);
+        let after_silence = now.duration_since(sender.last_activity) >= RESTART_SILENCE;
         sender.last_activity = now;
 
         // Skip fragments for frames the delivery cursor has already
@@ -495,7 +530,7 @@ impl VideoReceiver {
         let frame = sender
             .frames_in_progress
             .entry(frame_id)
-            .or_insert_with(|| FrameAssembly::new(total_packets, is_keyframe, pkt_codec));
+            .or_insert_with(|| FrameAssembly::new(total_packets, is_keyframe, pkt_codec, after_silence));
 
         frame.insert(packet_index, pkt.payload_data());
 
@@ -505,6 +540,7 @@ impl VideoReceiver {
         if complete {
             let assembly = sender.frames_in_progress.remove(&frame_id).unwrap();
             sender.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
+            let after_silence = assembly.after_silence;
             let reassembled = ReassembledFrame {
                 frame_id,
                 is_keyframe: assembly.is_keyframe,
@@ -513,7 +549,7 @@ impl VideoReceiver {
                 description: None,
                 data: assembly.into_data(),
             };
-            return sender.accept_completed(reassembled, now);
+            return sender.accept_completed(reassembled, now, after_silence);
         }
 
         Vec::new()
@@ -547,6 +583,7 @@ impl VideoReceiver {
         if frame.try_fec_recovery() {
             let assembly = sender.frames_in_progress.remove(&frame_id).unwrap();
             sender.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
+            let after_silence = assembly.after_silence;
             let reassembled = ReassembledFrame {
                 frame_id,
                 is_keyframe: assembly.is_keyframe,
@@ -555,7 +592,7 @@ impl VideoReceiver {
                 description: None,
                 data: assembly.into_data(),
             };
-            return sender.accept_completed(reassembled, now);
+            return sender.accept_completed(reassembled, now, after_silence);
         }
 
         Vec::new()
@@ -576,10 +613,18 @@ impl VideoReceiver {
 
             for (&frame_id, assembly) in &sender.frames_in_progress {
                 // Find missing packet indices once the frame has had a
-                // chance to arrive in full.
+                // chance to arrive in full. A fragment above the highest
+                // one received only counts once the frame has gone quiet:
+                // that tail may still be on its way (a big paced frame
+                // takes ~100 ms), and asking for it early only spent NACK
+                // retries until they forced a keyframe request.
                 if assembly.created_at.elapsed() > self.nack_timeout {
+                    let stalled = assembly.last_packet_at.elapsed() > self.nack_timeout;
                     let mut missing = Vec::new();
                     for i in 0..assembly.total_packets {
+                        if i > assembly.highest_index && !stalled {
+                            break;
+                        }
                         if assembly.sizes[i as usize].is_none() {
                             let key = (frame_id, i);
                             // Initial entry uses a past timestamp so the first
@@ -628,13 +673,17 @@ impl VideoReceiver {
         (nacks, plis)
     }
 
-    /// Drop incomplete assemblies older than STALE_FRAME_TIMEOUT and
-    /// forget senders that have gone quiet.
+    /// Drop incomplete assemblies that got no fragment for
+    /// STALE_FRAME_TIMEOUT (or are MAX_FRAME_AGE old) and forget senders
+    /// that have gone quiet.
     pub fn cleanup_stale(&mut self) {
         let mut dropped = 0u32;
+        let (stale_timeout, max_frame_age) = (self.stale_timeout, self.max_frame_age);
         for sender in self.senders.values_mut() {
             sender.frames_in_progress.retain(|_frame_id, assembly| {
-                if assembly.created_at.elapsed() >= STALE_FRAME_TIMEOUT {
+                if assembly.last_packet_at.elapsed() >= stale_timeout
+                    || assembly.created_at.elapsed() >= max_frame_age
+                {
                     dropped += 1;
                     false
                 } else {
@@ -823,6 +872,113 @@ mod tests {
         assert_eq!(nacks[0].target, "streamer1");
         assert_eq!(nacks[0].frame_id, 1);
         assert_eq!(nacks[0].missing, vec![1]); // missing index 1
+    }
+
+    #[test]
+    fn tail_of_a_frame_still_arriving_is_not_nacked() {
+        let mut receiver = VideoReceiver::new();
+        receiver.nack_timeout = Duration::from_millis(5);
+        seed_keyframe(&mut receiver, "streamer1");
+        for i in 0..3 {
+            receiver.process_packet(&make_packet(1, i, 10, false, b"x"));
+        }
+        std::thread::sleep(Duration::from_millis(7));
+        // The frame is past nack_timeout, but fragment 3 has just come in.
+        receiver.process_packet(&make_packet(1, 3, 10, false, b"x"));
+        let (nacks, plis) = receiver.check_missing();
+        assert!(nacks.is_empty(), "{:?}", nacks.iter().map(|n| &n.missing).collect::<Vec<_>>());
+        assert!(plis.is_empty());
+    }
+
+    #[test]
+    fn gap_behind_the_newest_fragment_is_nacked_but_not_the_tail() {
+        let mut receiver = VideoReceiver::new();
+        receiver.nack_timeout = Duration::from_millis(5);
+        seed_keyframe(&mut receiver, "streamer1");
+        for i in [0, 1, 3] {
+            receiver.process_packet(&make_packet(1, i, 10, false, b"x"));
+        }
+        std::thread::sleep(Duration::from_millis(7));
+        receiver.process_packet(&make_packet(1, 4, 10, false, b"x"));
+        let (nacks, _) = receiver.check_missing();
+        assert_eq!(nacks.len(), 1);
+        assert_eq!(nacks[0].missing, vec![2]);
+    }
+
+    #[test]
+    fn a_stalled_frame_nacks_its_tail() {
+        let mut receiver = VideoReceiver::new();
+        receiver.nack_timeout = Duration::from_millis(5);
+        seed_keyframe(&mut receiver, "streamer1");
+        receiver.process_packet(&make_packet(1, 0, 4, false, b"x"));
+        receiver.process_packet(&make_packet(1, 1, 4, false, b"x"));
+        std::thread::sleep(Duration::from_millis(7));
+        let (nacks, _) = receiver.check_missing();
+        assert_eq!(nacks.len(), 1);
+        assert_eq!(nacks[0].missing, vec![2, 3]);
+    }
+
+    #[test]
+    fn a_slow_frame_is_kept_while_its_fragments_keep_coming() {
+        let mut receiver = VideoReceiver::new();
+        receiver.stale_timeout = Duration::from_millis(15);
+        seed_keyframe(&mut receiver, "streamer1");
+        // Five fragments 8 ms apart: 32 ms in all, twice the stale timeout.
+        for i in 0..4 {
+            assert!(receiver.process_packet(&make_packet(1, i, 5, false, b"x")).is_empty());
+            std::thread::sleep(Duration::from_millis(8));
+            receiver.cleanup_stale();
+        }
+        let out = receiver.process_packet(&make_packet(1, 4, 5, false, b"x"));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].frame_id, 1);
+    }
+
+    #[test]
+    fn a_frame_that_goes_quiet_is_dropped() {
+        let mut receiver = VideoReceiver::new();
+        receiver.stale_timeout = Duration::from_millis(5);
+        seed_keyframe(&mut receiver, "streamer1");
+        receiver.process_packet(&make_packet(1, 0, 2, false, b"x"));
+        std::thread::sleep(Duration::from_millis(7));
+        receiver.cleanup_stale();
+        // Its last fragment now starts a fresh assembly that can't complete.
+        assert!(receiver.process_packet(&make_packet(1, 1, 2, false, b"x")).is_empty());
+    }
+
+    /// Deliver frames 1..=n after the seed keyframe; the cursor ends at n + 1.
+    fn run_frames(receiver: &mut VideoReceiver, n: u32) {
+        for fid in 1..=n {
+            assert_eq!(receiver.process_packet(&make_packet(fid, 0, 1, false, b"d")).len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_restarted_stream_is_accepted_at_once() {
+        // Stopped after 50 frames and started again within the idle timeout:
+        // the new stream's keyframe 0 is "behind" the cursor.
+        let mut receiver = VideoReceiver::new();
+        seed_keyframe(&mut receiver, "streamer1");
+        run_frames(&mut receiver, 50);
+        let out = receiver.process_packet(&make_packet(0, 0, 1, true, b"idr"));
+        assert_eq!(out.len(), 1);
+        assert_eq!(receiver.process_packet(&make_packet(1, 0, 1, false, b"d")).len(), 1);
+    }
+
+    #[test]
+    fn a_keyframe_behind_the_cursor_after_a_silence_is_a_restart() {
+        // The new stream's keyframe 0 was lost; its first keyframe is 3.
+        let mut receiver = VideoReceiver::new();
+        seed_keyframe(&mut receiver, "streamer1");
+        run_frames(&mut receiver, 50);
+        // Without a silence it's a late duplicate.
+        assert!(receiver.process_packet(&make_packet(3, 0, 1, true, b"old")).is_empty());
+        for s in receiver.senders.values_mut() {
+            s.last_activity -= RESTART_SILENCE;
+        }
+        let out = receiver.process_packet(&make_packet(3, 0, 1, true, b"idr"));
+        assert_eq!(out.len(), 1);
+        assert_eq!(receiver.process_packet(&make_packet(4, 0, 1, false, b"d")).len(), 1);
     }
 
     #[test]

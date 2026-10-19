@@ -229,7 +229,7 @@ fn run_encode_loop(
     // send_bgra does when the encoder input is full — goes through here.
     let mut on_packet = |data: &[u8], is_key: bool, pkt_pts: i64| {
         // Wire: packetise + UDP send.
-        cfg.video_sender.send_frame(cfg.codec_wire_byte, is_key, data);
+        cfg.video_sender.send_frame_paced(cfg.codec_wire_byte, is_key, data);
         // Self-preview: ship same encoded bytes to renderer via per-
         // stream Buffer TSFN keyed by local username. Convert
         // packet pts (in time_base = 1/fps units) back to microseconds.

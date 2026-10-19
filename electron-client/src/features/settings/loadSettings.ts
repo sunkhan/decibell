@@ -181,7 +181,7 @@ export async function loadSettings(): Promise<void> {
   // enforcedCodec gets re-validated once codec caps probe completes,
   // because hardware support can change between launches.
   const validResolutions = ["1080p", "720p", "source"] as const;
-  const validFps = [120, 60, 30, 15] as const;
+  const validFps = [120, 60, 30, 15, 5] as const;
   const validQuality = ["high", "medium", "low", "custom"] as const;
   const validAudioBitrate = [128, 192] as const;
   const restored: Partial<{
