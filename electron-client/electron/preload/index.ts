@@ -334,6 +334,13 @@ contextBridge.exposeInMainWorld("decibell", {
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke("decibell:shell:openExternal", url) as Promise<void>,
   },
+  clipboard: {
+    /// PNG or JPEG bytes onto the system clipboard as an image.
+    writeImage: (bytes: Uint8Array): Promise<void> =>
+      ipcRenderer.invoke("decibell:clipboard:writeImage", bytes) as Promise<void>,
+    writeText: (text: string): Promise<void> =>
+      ipcRenderer.invoke("decibell:clipboard:writeText", text) as Promise<void>,
+  },
   linkPreview: {
     /// Unfurl a URL from main (the renderer's fetch is CORS- and
     /// CSP-bound). Resolves null when there is nothing to show; never

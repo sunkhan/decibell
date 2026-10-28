@@ -9,6 +9,7 @@ import {
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { thumbHashToDataUrl } from "./thumbhash";
 import {
+  clampScale,
   clampView,
   fitArea,
   fitScale,
@@ -180,11 +181,17 @@ function Session({
 
   const apply = useCallback(
     (next: View, anim: number) => {
-      const s = Math.max(fitScale(nat, next.rot, area), Math.min(MAX_SCALE, next.scale));
+      const s = clampScale(next.scale, nat, next.rot, area);
       setView({ ...clampView({ ...next, scale: s }, nat, stage, area), anim });
     },
     [nat.w, nat.h, area, stage], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  /// Zoom toward a point, by the zoom that can actually happen.
+  const zoomToward = (v: View, scale: number, p: { x: number; y: number }, anim: number) => {
+    const s = clampScale(scale, nat, v.rot, area);
+    if (Math.abs(s - v.scale) < 1e-6) return;
+    apply(zoomAt(v, s, p), anim);
+  };
 
   const centre = { x: area.left + area.w / 2, y: area.top + area.h / 2 };
   const toArea = (clientX: number, clientY: number) => {
@@ -336,7 +343,7 @@ function Session({
   const chromeOn = phase === "open" && !idle;
 
   // ── actions ────────────────────────────────────────────────────
-  const zoomTo = (scale: number, p = { x: 0, y: 0 }) => apply(zoomAt(view, scale, p), 220);
+  const zoomTo = (scale: number, p = { x: 0, y: 0 }) => zoomToward(view, scale, p, 220);
   const toggleZoom = (p = { x: 0, y: 0 }) => {
     if (!atFit) apply({ ...view, scale: fit, x: 0, y: 0 }, 260);
     // A big picture goes to its actual pixels; one already at (or near)
@@ -404,7 +411,7 @@ function Session({
       const r = el.getBoundingClientRect();
       const p = { x: e.clientX - r.left - centre.x, y: e.clientY - r.top - centre.y };
       // A wheel notch eases; a trackpad's stream of small deltas tracks.
-      apply(zoomAt(v, v.scale * k, p), Math.abs(dy) >= 40 ? 120 : 0);
+      zoomToward(v, v.scale * k, p, Math.abs(dy) >= 40 ? 120 : 0);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);

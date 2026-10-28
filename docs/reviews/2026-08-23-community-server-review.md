@@ -4595,3 +4595,24 @@ frame-exact motion); a smoke run of the ported tree: single image without strip 
 slide intact after the original lands, End → 4 / 4, close returns focus to the thumbnail, a reopen 80 ms into a
 close opens the new image with no thumbnail left hidden, reduced motion runs no flight. Live test pending: the real
 app with large and encrypted attachments, a trackpad pinch, and DPR 1.25 / 1.5.
+
+### Fix: the image viewer's wheel at 800%, and Copy image (2026-10-28)
+
+Reported by the owner after the redesign:
+
+- **Wheeling past 800% moved the picture.** The wheel computed the pan for the zoom it asked for, then the scale
+  was clamped, so at the cap each notch slid the picture toward or away from the pointer. Zoom now clamps first
+  (`clampScale`) and pans only by the zoom that happens; at 800% or at fit a wheel does nothing. Same path for the
+  zoom buttons and keys.
+- **Copy image failed with "ReferenceError: ClipboardItem is not defined"** (toolbar and right-click menu, owner's
+  `npm run dev`). Not reproduced here: this Electron build exposes `ClipboardItem` under the app's switches and
+  `webPreferences`, on `http://localhost` and `file://`. Copy no longer depends on it: the renderer fetches the
+  bytes, turns anything but PNG / JPEG into PNG on a canvas, and main writes the clipboard with `nativeImage`
+  (`electron/main/clipboard.ts`, `decibell.clipboard.writeImage` / `writeText`; Copy link uses the latter). Found on
+  the way: Copy on a link image (a GIF send) could never work, since main's `netFetch` refuses raw URLs (SSRF
+  guard); the renderer now fetches it the way its `<img>` did.
+
+Verified: tsc web + node 0. Harness: 40 wheel notches to 800%, then ten more at another point leave the transform
+unchanged; wheeling out at fit at three points leaves it at 0, 0. In Electron: JPEG and PNG go through unchanged,
+WebP converts to PNG, all three decode in `nativeImage` (sizes match); junk bytes are refused. Live test pending:
+Copy into another app from the dev and packaged builds, a link GIF and an encrypted-channel attachment.

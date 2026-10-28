@@ -22,6 +22,7 @@ import { registerAttachmentKeyHandlers } from "./attachmentKeys";
 import { registerDownloadLimitHandler } from "./downloadPacer";
 import { registerDownloadHandlers, pauseAllForQuit } from "./downloads";
 import { registerLinkPreviewHandlers } from "./linkPreview";
+import { registerClipboardHandlers } from "./clipboard";
 import { registerGifHandlers } from "./gifs";
 import { injectHotkey, parseHotkeyArg, registerHotkeyIpc } from "./hotkeys";
 import { startMediaServer, stopMediaServer } from "./mediaServer";
@@ -692,6 +693,7 @@ app.whenReady().then(async () => {
   registerFsHandlers();
   registerNetHandlers();
   registerLinkPreviewHandlers();
+  registerClipboardHandlers();
   registerGifHandlers();
   registerHotkeyIpc();
 

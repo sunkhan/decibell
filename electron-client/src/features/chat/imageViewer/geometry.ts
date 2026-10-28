@@ -51,6 +51,11 @@ export function fitScale(nat: Size, rot: number, area: Area): number {
 }
 
 export const MAX_SCALE = 8;
+
+/// A scale the picture can take: no smaller than fit, no larger than 800%.
+export function clampScale(scale: number, nat: Size, rot: number, area: Area): number {
+  return Math.max(fitScale(nat, rot, area), Math.min(MAX_SCALE, scale));
+}
 const LEVELS = [0.1, 0.25, 0.33, 0.5, 0.67, 1, 1.5, 2, 3, 4, 6, 8];
 
 export function stepScale(current: number, fit: number, dir: 1 | -1): number {
@@ -79,7 +84,9 @@ export function clampView(v: View, nat: Size, stage: Size, area: Area): View {
 }
 
 /// Zoom to `scale` keeping the stage point `p` (relative to the fit
-/// area's centre) over the same spot of the picture.
+/// area's centre) over the same spot of the picture. `scale` must already
+/// be clamped: the pan follows the zoom that actually happens, so a wheel
+/// pushed past 800% (or below fit) doesn't slide the picture.
 export function zoomAt(v: View, scale: number, p: { x: number; y: number }): View {
   const k = scale / v.scale;
   return { ...v, scale, x: p.x - (p.x - v.x) * k, y: p.y - (p.y - v.y) * k };

@@ -112,6 +112,10 @@ declare global {
       shell: {
         openExternal: (url: string) => Promise<void>;
       };
+      clipboard: {
+        writeImage: (bytes: Uint8Array) => Promise<void>;
+        writeText: (text: string) => Promise<void>;
+      };
       linkPreview: {
         fetch: (url: string) => Promise<LinkPreview | null>;
       };
