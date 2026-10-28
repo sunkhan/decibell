@@ -159,6 +159,9 @@ export default function DmChatPanel() {
   // When a jump target isn't loaded, we request an around-window and stash the
   // target here; the landing effect lands on it once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
+  // A new epoch per jump, never derived from the cleared target (see
+  // ChatPanel's jumpEpochRef).
+  const jumpEpochRef = useRef(0);
   // True while the user has scrolled more than JUMP_PILL_ROWS above the live
   // bottom — shows the jump-to-present pill even without a jump window.
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -692,11 +695,11 @@ export default function DmChatPanel() {
       const pos = list.findIndex((m) => m.id === id);
       // Set the target now, loaded or not — see ChatPanel's jumpToMessage.
       const anchor = positionsRef.current[peer]?.anchorId ?? 0;
-      setJumpTarget((prev) => ({
+      setJumpTarget({
         id,
-        epoch: (prev?.epoch ?? 0) + 1,
+        epoch: ++jumpEpochRef.current,
         dir: anchor > 0 && id > anchor ? "down" : "up",
-      }));
+      });
       if (pos >= 0) return;
       // Not loaded — fetch a window centered on it. Already requesting this
       // exact target? Wait for the landing effect.

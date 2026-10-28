@@ -4539,3 +4539,21 @@ harness captures of the real components in seven themes (Windows 1280 × 800 / 1
 800 × 600, macOS, sound with Only these, Advanced open, Slides); a live resize 1280 → 1100 → 1280 driven in the
 harness; a click in the gap lands on the backdrop. Live test pending: the real app on Windows and Linux at
 several window widths, and a screen-reader pass over the two cards.
+
+### Fix: every jump lands, not every other one (2026-10-28)
+
+Reported by the owner: jumping from search results, the first jump landed, but the next one went to the wrong place
+and only a second press reached the message. Every jump carries an epoch, and `RealMessageList` lands only on an
+epoch it hasn't landed on yet. Both panels made the epoch from the current target (`prev.epoch + 1`), but a landed
+target is cleared, so after a landing the next jump restarted at epoch 1. When the list had last landed epoch 1, it
+skipped the jump; the around-window still replaced the slice and the list fell back to the bottom of it. Which
+jumps failed depended on what had landed before, so it looked random (two out of six in a row in the test). It has
+been there since the real-DOM list (2026-08-27) and hit every jump source: search, replies, Go to message, in
+channels and DMs alike.
+
+Each panel now counts epochs in a ref that only goes up (`jumpEpochRef`), independent of the target.
+
+Verified: tsc web 0. Harness with the real `ChatPanel` and a server stand-in that answers around / after / before
+pages like the community: six jumps in a row (to rows 40, 120, 10, 170, 60, 140 of 200). HEAD lands four, with
+the 2nd and 5th left 369 px off centre at the bottom of the new window; the fix lands all six centred, including
+the 5th, which was already loaded. Live test pending: consecutive search jumps on the real server.

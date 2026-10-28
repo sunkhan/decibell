@@ -185,6 +185,11 @@ export default function ChatPanel() {
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
   const pendingJumpIdRef = useRef<number | null>(null);
+  // Every jump gets a new epoch from here, never from the current target:
+  // a landed target is cleared, so "previous epoch + 1" restarted at 1 and
+  // RealMessageList, having landed epoch 1 already, skipped every other jump
+  // (it then fell back to the bottom of the new window).
+  const jumpEpochRef = useRef(0);
   const listRef = useRef<RealMessageListHandle>(null);
   // Real-DOM list: latest viewport state per channel key (anchor message +
   // offset, atBottom, visible range). Written by onScrollState — whose
@@ -879,11 +884,11 @@ export default function ChatPanel() {
       // position first. The flash fires from onJumpLanded.
       const anchor =
         positionsRef.current[channelKey(serverId, channelId)]?.anchorId ?? 0;
-      setJumpTarget((prev) => ({
+      setJumpTarget({
         id,
-        epoch: (prev?.epoch ?? 0) + 1,
+        epoch: ++jumpEpochRef.current,
         dir: anchor > 0 && id > anchor ? "down" : "up",
-      }));
+      });
       if (pos >= 0) return;
       // Not loaded — fetch a window centered on it. Already requesting this
       // exact target? Wait for the landing effect.
