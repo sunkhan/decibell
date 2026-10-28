@@ -1,6 +1,6 @@
 // Auto-away (docs/superpowers/specs/2026-10-11-user-status-design.md): Away
-// after the user's threshold without keyboard / mouse input, or on screen
-// lock or sleep; back on activity. Idle comes from native's system_idle
+// after the user's threshold without keyboard / mouse input or talking in
+// voice, or on screen lock or sleep; back on activity. Idle comes from native's system_idle
 // (Wayland idle-notify, GNOME's idle monitor, the screensaver's lock flag)
 // or, where native has no source, Electron's powerMonitor. Central applies it only while the
 // chosen status is Online, and keeps it per session (native re-reports it
@@ -10,12 +10,28 @@ import { useEffect } from "react";
 import { invoke } from "../../lib/ipc";
 import { useUiStore } from "../../stores/uiStore";
 import { usePresenceStore } from "../../stores/presenceStore";
+import { useVoiceStore } from "../../stores/voiceStore";
+import { useAuthStore } from "../../stores/authStore";
 
 /// The OS has no "input resumed" event, so the idle state is polled: slowly
 /// while active (going Away may lag the threshold by this much), fast while
 /// away so coming back shows within a second.
 const ACTIVE_POLL_MS = 15_000;
 const AWAY_POLL_MS = 1_000;
+
+/// Talking in a voice channel or a DM call counts as activity (owner,
+/// 2026-10-28): the engine's own speaking flag, which is set only while our
+/// voice goes out (unmuted and over the gate's threshold, or push-to-talk
+/// held over a real signal), never for the silence frames. Away then needs
+/// the threshold without input and without speech. Lock and sleep still
+/// mean Away at once.
+function speaking(s: ReturnType<typeof useVoiceStore.getState>): boolean {
+  if (!s.connectedChannelId && !s.callPeer) return false;
+  return s.speakingUsers.has(useAuthStore.getState().uid);
+}
+/// When we last stopped (or started) speaking. Kept across threshold
+/// changes, which restart the effect.
+let lastSpokeAt = 0;
 
 function report(idle: boolean) {
   if (usePresenceStore.getState().idle === idle) return;
@@ -46,7 +62,9 @@ export function useAutoAway() {
           () => "unsupported",
         );
         const state = native === "unsupported" ? await window.decibell.idle.getState(threshold) : native;
-        if (!cancelled) report(locked || state === "idle" || state === "locked");
+        const spoke =
+          speaking(useVoiceStore.getState()) || Date.now() - lastSpokeAt < threshold * 1000;
+        if (!cancelled) report(locked || state === "locked" || (state === "idle" && !spoke));
       } catch (e) {
         console.error("[auto-away] idle state:", e);
       }
@@ -61,10 +79,19 @@ export function useAutoAway() {
       if (away) report(true);
       void poll();
     });
+    const offVoice = useVoiceStore.subscribe((s, prev) => {
+      const now = speaking(s);
+      if (now === speaking(prev)) return;
+      // Either edge: speech starts now, or the threshold runs from here.
+      lastSpokeAt = Date.now();
+      // Talking brings an Away user back at once, as input does.
+      if (now && usePresenceStore.getState().idle) void poll();
+    });
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
       off();
+      offVoice();
     };
   }, [minutes, supported]);
 }

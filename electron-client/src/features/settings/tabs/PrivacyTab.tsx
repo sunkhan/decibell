@@ -54,7 +54,7 @@ export default function PrivacyTab() {
         <div className="pr-4">
           <div className="text-[14px] font-medium text-text-primary">Show me as Away</div>
           <div className="mt-1 text-[12px] leading-[1.55] text-text-muted">
-            After this long without keyboard or mouse input, and right away when your screen locks or the computer sleeps. Only while your status is Online.
+            After this long without keyboard or mouse input or talking in voice, and right away when your screen locks or the computer sleeps. Only while your status is Online.
           </div>
         </div>
         <div className="w-36 shrink-0">

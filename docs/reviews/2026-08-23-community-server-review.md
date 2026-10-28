@@ -4415,3 +4415,20 @@ with replies after 60 ms: HEAD shows the preview row for 5 frames, then the page
 sidebar reordered for a frame, two requests (older first); the fix sends one request and goes blank → messages,
 the sidebar unmoved; with 700 ms replies the text fades in from 300 ms. Live test pending: switching to DMs and
 channels not opened since sign-in, on the real servers.
+
+### Feature: talking in voice keeps you from going Away (2026-10-28)
+
+Owner request: someone talking in a voice channel without touching the keyboard or mouse went Away after their
+threshold. Talking now counts as activity, in voice channels and DM calls (one engine): `useAutoAway` reports idle
+only when the system has seen no input for the threshold *and* we haven't spoken for it. "Spoken" is the engine's
+own local speaking flag (our uid in `voiceStore.speakingUsers`, counted only while in a channel or call): set
+while our voice goes out — unmuted and over the gate's threshold, or push-to-talk held over a real signal — and
+never for the silence frames. Starting to talk brings an Away user back at once, as input does. Screen lock and
+sleep still mean Away right away (my default: locking is a deliberate "I'm gone"; the owner may want speech to
+override that too). The Privacy tab's description says so; the user-status spec and CLAUDE.md are updated.
+
+Verified: tsc web 0. In the UI harness (the real hook, the system reporting idle, a 3 s threshold): speaking
+holds the user online, Away comes on the first poll after 3 s of silence (polls run every 15 s while active, as
+before), speaking again sets them back within the same frame, and the next silence sends them Away again; HEAD
+stays Away throughout. Live test pending: a voice channel and a DM call with no input past the threshold, with VAD
+and with push-to-talk.

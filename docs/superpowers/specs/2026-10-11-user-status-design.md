@@ -12,6 +12,10 @@ Status: implemented 2026-10-12 (client, central, community). Owner decisions are
   hollow ring (`components/StatusDot.tsx`, ring + cut-outs in the surface colour, like every avatar dot).
 - **Away is automatic** after a user-chosen idle time (Settings → Privacy, default 10 minutes, or
   Never) **(owner)**, and right away on screen lock or sleep. Only while the chosen status is Online.
+  Talking in voice (a channel or a DM call) counts as activity **(owner, 2026-10-28)**: idle means the
+  threshold without input *and* without our voice going out (the engine's local speaking flag: unmuted,
+  over the gate's threshold or push-to-talk over a real signal, never silence frames); starting to talk
+  brings an Away user back at once. Lock and sleep still mean Away at once.
 - **Do Not Disturb** silences incoming DM calls: the call still appears, without the ring or taskbar
   flash, and becomes a missed call if unanswered **(owner)**. (The client has no desktop notifications
   or message sounds yet; when it gets them, DND should silence those too.)

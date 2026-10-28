@@ -299,7 +299,7 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   the exception (owner, 2026-10-15): renames, avatar changes and E2EE key changes are announced even
   while invisible, because clients need them; that they reveal activity is accepted. Statuses stay
   visible to every signed-in user, so rename notices aren't narrowed to friends either. Auto-away is a
-  per-device idle flag (user threshold, default 10 min, + lock/sleep), and the account shows Away only while
+  per-device idle flag (user threshold without input or speaking in voice, default 10 min, + lock/sleep), and the account shows Away only while
   every device is idle (our own dot follows `accountIdle`, as others see it); DND only silences the call ring /
   flash. A member list's Online / Offline sections follow the community's own view (connected there and
   not invisible), because the community pages and counts the roster by it (owner, 2026-10-18,
