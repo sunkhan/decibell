@@ -1,10 +1,13 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "../../../lib/ipc";
 import { endCall } from "../../../features/call/callActions";
 import { useAuthStore } from "../../../stores/authStore";
 import { useAvatarStore } from "../../../stores/avatarStore";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { AvatarCropperModal } from "../AvatarCropperModal";
+import { AVATAR_RADIUS } from "../../../components/LetterAvatar";
+import { DropVeil, PictureButton, usePictureDrop } from "../../../components/pictureEditor/PictureButton";
+import { userGradient } from "../../../utils/colors";
 import RenameUsernameModal from "../RenameUsernameModal";
 import ChangePasswordModal from "../ChangePasswordModal";
 
@@ -30,13 +33,8 @@ export default function AccountTab() {
   };
 
   const handlePickClick = () => fileInputRef.current?.click();
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) setPickedFile(f);
-    // Reset the input so picking the same file twice still fires onChange.
-    e.target.value = "";
-  };
+  // Drop a picture anywhere on the card.
+  const drop = usePictureDrop(setPickedFile);
 
   const handleRemove = async () => {
     if (!username) return;
@@ -59,74 +57,99 @@ export default function AccountTab() {
     }
   };
 
-  const handleCropperSave = () => {
-    setPickedFile(null);
-    // The avatar_changed event (native, on success) drives the store update;
-    // nothing to do here besides closing the modal.
-  };
-
   // Subscribe so the preview re-renders the moment the broadcast +
   // re-fetch lands.
   const entry = useAvatarStore((s) => s.entries.get(selfUid));
   const hasAvatar = entry?.status === "loaded";
 
+  // The picture just saved, shown until the store has fetched it (the
+  // editor's flight lands on it), so the old one never flashes back.
+  const [justSaved, setJustSaved] = useState<{ url: string; version: string | undefined } | null>(null);
+  useEffect(() => {
+    if (!justSaved) return;
+    const fetched = entry?.status === "loaded" && entry.version !== justSaved.version;
+    const t = window.setTimeout(() => setJustSaved(null), fetched ? 0 : 10_000);
+    return () => window.clearTimeout(t);
+  }, [justSaved, entry?.status, entry?.version]);
+  useEffect(() => () => {
+    if (justSaved) URL.revokeObjectURL(justSaved.url);
+  }, [justSaved]);
+
   return (
     <div>
-      {/* User card */}
-      <div className="flex items-center gap-4 rounded-md border border-border-divider bg-bg-light px-5 py-4">
-        {username ? (
-          <UserAvatar uid={selfUid} name={username} size={64} />
-        ) : (
-          <div className="h-16 w-16 rounded-sm bg-bg-darkest" />
-        )}
-        <div className="flex-1">
-          <div className="text-[14px] font-medium text-text-primary">{username}</div>
-          <div className="mt-0.5 flex items-center gap-2 text-[12px] text-text-muted">
-            <span>Logged in</span>
-            {renames && <span aria-hidden>·</span>}
-            {renames && (
-              <button
-                onClick={() => setRenaming(true)}
-                className="text-text-secondary underline-offset-2 hover:text-text-primary hover:underline"
+      {/* Profile card: you as the profile popup shows you (banner, picture,
+          name). The picture is the way to change it: click it, or drop a
+          picture anywhere on the card. */}
+      <div
+        {...drop.handlers}
+        className="relative overflow-hidden rounded-lg border border-border-divider bg-bg-light"
+      >
+        <div className="h-20" style={{ background: userGradient(selfUid, username ?? "") }} />
+        <div className="flex items-end gap-4 px-5 pb-4">
+          <div className="-mt-10 flex shrink-0 bg-bg-light ring-4 ring-bg-light" style={{ borderRadius: AVATAR_RADIUS }}>
+            {username ? (
+              <PictureButton
+                onPick={setPickedFile}
+                radius={AVATAR_RADIUS}
+                label="Change picture"
+                target="avatar"
+                badge
+                inputRef={fileInputRef}
               >
-                Change username
-              </button>
-            )}
-            {devices && <span aria-hidden>·</span>}
-            {devices && (
-              <button
-                onClick={() => setChangingPassword(true)}
-                className="text-text-secondary underline-offset-2 hover:text-text-primary hover:underline"
-              >
-                Change password
-              </button>
+                {justSaved ? (
+                  <img src={justSaved.url} alt="" className="size-20 object-cover" style={{ borderRadius: AVATAR_RADIUS }} />
+                ) : (
+                  <UserAvatar uid={selfUid} name={username} size={80} />
+                )}
+              </PictureButton>
+            ) : (
+              <div className="size-20 bg-bg-darkest" style={{ borderRadius: AVATAR_RADIUS }} />
             )}
           </div>
+          <div className="min-w-0 flex-1 pt-3">
+            <div className="truncate font-display text-[18px] font-semibold text-text-primary">{username}</div>
+            <div className="mt-0.5 flex items-center gap-2 text-[12px] text-text-muted">
+              <span>Logged in</span>
+              {renames && <span aria-hidden>·</span>}
+              {renames && (
+                <button
+                  onClick={() => setRenaming(true)}
+                  className="text-text-secondary underline-offset-2 hover:text-text-primary hover:underline"
+                >
+                  Change username
+                </button>
+              )}
+              {devices && <span aria-hidden>·</span>}
+              {devices && (
+                <button
+                  onClick={() => setChangingPassword(true)}
+                  className="text-text-secondary underline-offset-2 hover:text-text-primary hover:underline"
+                >
+                  Change password
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            {hasAvatar && (
+              <button
+                onClick={handleRemove}
+                disabled={removing}
+                className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
+              >
+                {removing ? "Removing…" : "Remove"}
+              </button>
+            )}
+            <button
+              onClick={handlePickClick}
+              className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover"
+            >
+              {hasAvatar ? "Change picture" : "Add a picture"}
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-2">
-          <button
-            onClick={handlePickClick}
-            className="rounded-sm border border-border bg-bg-darkest px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-dark"
-          >
-            Change picture
-          </button>
-          <button
-            onClick={handleRemove}
-            disabled={removing || !hasAvatar}
-            className="rounded-sm border border-border px-3 py-1.5 text-[12px] text-text-muted hover:text-text-secondary disabled:opacity-40"
-          >
-            {removing ? "Removing…" : "Remove"}
-          </button>
-        </div>
+        {drop.over && <DropVeil label="Drop to use as your picture" />}
       </div>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
-        onChange={handleFileChange}
-        className="hidden"
-      />
 
       <RenameUsernameModal open={renaming} onClose={() => setRenaming(false)} />
       <ChangePasswordModal open={changingPassword} onClose={() => setChangingPassword(false)} />
@@ -134,8 +157,8 @@ export default function AccountTab() {
       {pickedFile && (
         <AvatarCropperModal
           file={pickedFile}
-          onSave={handleCropperSave}
-          onCancel={() => setPickedFile(null)}
+          onSaved={(url) => setJustSaved({ url, version: entry?.version })}
+          onClose={() => setPickedFile(null)}
         />
       )}
 

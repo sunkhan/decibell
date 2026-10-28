@@ -4647,3 +4647,40 @@ Reported by the owner as "No handler registered for 'decibell:clipboard:copyAtta
 (17:16:35.29) before `tsc --watch` had written the new main (clipboard.js at .72, index.js at .82): an old main
 under a new preload, whose new IPC channel had no handler. Any main-process change could hit it. `dev` now
 compiles main and preload once (`tsc -p tsconfig.node.json`, ~1.5 s) before starting the watchers and Electron.
+
+### Feature: the picture editor, for profile and server pictures (2026-10-28)
+
+Owner request: a modern, smooth profile picture picker and cropper, and the same for the server picture, fitting
+every theme. The owner approved the proposal page (https://claude.ai/artifact/4TbLmAKE12RvwCGdat5d5U) and answered
+its three decisions. Design: `docs/superpowers/specs/2026-10-28-picture-editor-design.md`.
+
+- **One editor for both** (`components/pictureEditor/`): the frame is cut in the shape people see (the theme's
+  avatar shape, or the tile's corners scaled up), the rest of the picture stays visible under a veil, and live
+  previews follow every drag: your profile card, a chat row and a member row; the real server bar tiles (resting
+  and selected) and an invite card's band. **Owner: the veil is the theme's own stage colour** (light in the light
+  themes) **and the square's corners outside the shape are half-lit**, since other themes show them.
+- **Smooth input**: drag with give past the edges and a spring back, proportional wheel / pinch zoom toward the
+  pointer (a notch glides, a trackpad tracks), a log slider, ± and keys, reset, a thirds grid while moving. The
+  picture is an `<img>` moved by transforms, so the stage is sharp on HiDPI.
+- **Owner: profile pictures stop at "fills the frame"**; server pictures may zoom out to the whole picture so a
+  square logo sits whole on the tile. A gap or a transparent picture gets a Background (the picture blurred, its
+  colours, white, black) baked into the export.
+- **Export**: one high-quality resample of the visible part, JPEG 0.9 stepped down under the 1 MB cap. Profile
+  pictures stay 256 px; server pictures are 880 × 303 (was 440 × 151) for sharp invite banners on HiDPI.
+- **Saves settle on the server's answer**: "Saving…" until central / the community replies, a refusal shows in the
+  editor with the crop kept, then the picture flies into the Settings card, which shows it until the store has it.
+- **Entry points**: the Account card is a profile header (banner, picture, name) where the picture is the button
+  and the card a drop target. Server Overview previews the picture in the tile's shape, right after the identity
+  block, takes any image size and format Chromium decodes, and confirms Remove with `ConfirmModal`.
+
+Fixed on the way, each reproduced in the harness: the avatar cropper closed on a drag released over the backdrop;
+Esc closed Settings under the cropper (SettingsModal now ignores an Esc a dialog handled, which also fixes the
+rename and password dialogs); black was uploaded for gaps and transparent pixels; server pictures over 1 MB were
+refused before cropping; the canvas was soft at 200% and the 256 px export stair-stepped; the server cropper closed
+before the server answered.
+
+Renderer only. Verified: tsc web + node 0; harness captures of the real app in seven themes (before / after, eleven
+states, real-time motion, the uploaded bytes, a 200% pair); a run of the ported tree: a photo as profile picture
+stops at filling the frame with no Background, a transparent logo as profile picture shows Background, a server
+logo zooms out to the whole picture. Live test pending: real uploads to central and a community, a trackpad pinch,
+DPR 1.25 / 1.5, and an iPhone HEIC (should show the export-as-JPEG message).

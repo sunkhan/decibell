@@ -1267,6 +1267,45 @@ input[type="password"]::-webkit-caps-lock-indicator {
   cursor: pointer;
 }
 
+/* Picture editor (components/pictureEditor). Outside the frame the picture
+ * recedes into the stage, the theme's chrome colour: dark in the dark
+ * themes, a light veil in the light ones. The square's corners outside
+ * the theme's shape are half veiled, because other themes show them. */
+.picture-editor {
+  --crop-veil: color-mix(in srgb, var(--color-bg-darkest) 78%, transparent);
+  --crop-corner: color-mix(in srgb, var(--color-bg-darkest) 42%, transparent);
+  --crop-edge: color-mix(in srgb, var(--color-text-primary) 80%, transparent);
+  --crop-grid: color-mix(in srgb, var(--color-text-primary) 30%, transparent);
+}
+/* The zoom slider: the accent fills the track up to the thumb. The rest is
+ * a tint of the muted text, which shows on the dialog in every theme
+ * (bg-lighter vanishes into the light themes' dialogs). */
+.picture-zoom {
+  background: linear-gradient(
+    to right,
+    var(--color-accent) var(--fill, 0%),
+    color-mix(in srgb, var(--color-text-muted) 32%, transparent) var(--fill, 0%)
+  );
+}
+.picture-zoom::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-bg-light);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent-mid);
+  transition: transform 150ms;
+}
+.picture-zoom:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+.picture-zoom:disabled::-webkit-slider-thumb {
+  border-color: var(--color-text-muted);
+  box-shadow: none;
+}
+
 html, body, #root {
   height: 100%;
 }

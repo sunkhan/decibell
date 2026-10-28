@@ -34,6 +34,7 @@ import type {
   CommunityAuthRespondedPayload,
   ServerRole,
 } from "../../types";
+import { pictureSavesInFlight } from "./ServerPictureCropperModal";
 
 interface ModActionRespondedPayload {
   serverId: string;
@@ -780,13 +781,14 @@ export function useServerEvents() {
       version: string;
     }>("server_picture_update_responded", (event) => {
       const p = event.payload;
-      if (!p.success) {
+      // An open picture editor shows its own refusal.
+      if (!p.success && !pictureSavesInFlight.has(p.serverId)) {
         toast.error("Couldn't update server picture", p.message);
         return;
       }
       // Success: the broadcast (server_picture_changed) updates the
       // version + invalidates cached bytes; next tile render lazy-
-      // fetches. Modal closes implicitly via the upload handler.
+      // fetches. The editor closes on this answer.
     });
 
     const unlistenServerPictureChanged = listen<{

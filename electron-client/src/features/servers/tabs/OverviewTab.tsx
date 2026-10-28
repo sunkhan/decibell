@@ -4,8 +4,10 @@ import { clampLine } from "../../../lib/utf8";
 import { useChatStore } from "../../../stores/chatStore";
 import { useAuthStore } from "../../../stores/authStore";
 import { toast } from "../../../stores/toastStore";
-import { stringToGradient } from "../../../utils/colors";
 import { ServerPictureCropperModal } from "../ServerPictureCropperModal";
+import ConfirmModal from "../../../components/ConfirmModal";
+import { DropVeil, PictureButton, usePictureDrop } from "../../../components/pictureEditor/PictureButton";
+import { ImageIcon } from "../../../components/pictureEditor/icons";
 import { PERM, usePermission } from "../permissions";
 import Switch from "../../../components/Switch";
 import { SELECT_TRIGGER_CLASS, SelectChevron } from "../../../components/Select";
@@ -20,9 +22,10 @@ import { SERVER_DESCRIPTION_MAX_BYTES, SERVER_NAME_MAX_BYTES } from "../limits";
 import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
 import { useMember } from "../../../hooks/useDisplayName";
 
-const MAX_BYTES = 1024 * 1024;
-
 type Meta = { name: string; description: string };
+
+/// The preview is the tile at 2×: its corner too.
+const PREVIEW_RADIUS = "calc(var(--radius-md) * 2)";
 
 /// Overview: server identity (name/description — editable with
 /// MANAGE_SERVER since the DB became the source of truth), picture
@@ -45,6 +48,19 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cropperFile, setCropperFile] = useState<File | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  // Any picture: the editor crops it to the tile and the export always fits
+  // the server's 1 MB cap, so there is nothing to check here.
+  const drop = usePictureDrop(setCropperFile, canManageServer);
+  // The picture just saved, shown until the tile's copy arrives.
+  const [justSaved, setJustSaved] = useState<string | null>(null);
+  const savedFrom = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (justSaved && pictureDataUrl && pictureDataUrl !== savedFrom.current) setJustSaved(null);
+  }, [justSaved, pictureDataUrl]);
+  useEffect(() => () => {
+    if (justSaved) URL.revokeObjectURL(justSaved);
+  }, [justSaved]);
 
   const serverName = meta?.name ?? server?.name ?? "Server";
   const serverDescription = meta?.description ?? server?.description ?? "";
@@ -152,34 +168,8 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
     }
   };
 
-  const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-select of the same file
-    if (!file) return;
-    if (file.size > MAX_BYTES) {
-      toast.error("Image too large", "Maximum size is 1 MB.");
-      return;
-    }
-    // Sniff JPEG/PNG magic bytes.
-    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
-    const isPng =
-      head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
-    const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
-    if (!isPng && !isJpeg) {
-      toast.error("Unsupported format", "Only JPEG and PNG are supported.");
-      return;
-    }
-    setCropperFile(file);
-  };
-
-  const onRemove = () => {
-    if (
-      !window.confirm(
-        "Remove the server picture? The default gradient and letter will be used instead.",
-      )
-    ) {
-      return;
-    }
+  const removePicture = () => {
+    setConfirmRemove(false);
     invoke("update_server_picture", {
       serverId,
       data: new Uint8Array(0),
@@ -277,6 +267,71 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
           )}
         </div>
 
+        {/* Picture. The preview is the tile's shape at twice its size; click
+            it or drop a picture on the card. */}
+        <div className="flex flex-col gap-2">
+          <h3 className="text-[14px] font-semibold text-text-primary">Server picture</h3>
+          <div
+            {...drop.handlers}
+            className="relative flex items-center gap-5 rounded-md border border-border-divider bg-bg-light p-3.5"
+          >
+            <PictureButton
+              onPick={setCropperFile}
+              radius={PREVIEW_RADIUS}
+              label={hasPicture ? "Change picture" : "Upload picture"}
+              target="server-picture"
+              disabled={!canManageServer}
+              inputRef={fileInputRef}
+            >
+              {justSaved || (hasPicture && pictureDataUrl) ? (
+                <img
+                  src={justSaved ?? pictureDataUrl}
+                  alt={serverName}
+                  className="h-22 w-64 object-cover"
+                  style={{ borderRadius: PREVIEW_RADIUS }}
+                />
+              ) : (
+                <div
+                  className="flex h-22 w-64 flex-col items-center justify-center gap-1.5 border-2 border-dashed border-border text-[12px] font-medium text-text-muted"
+                  style={{ borderRadius: PREVIEW_RADIUS }}
+                >
+                  <ImageIcon size={18} />
+                  {canManageServer ? "Drop a picture or click" : "No picture"}
+                </div>
+              )}
+            </PictureButton>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-medium text-text-primary">
+                On the server bar, invite cards and Discover
+              </div>
+              <div className="mt-0.5 text-[12px] leading-[1.45] text-text-muted">
+                {canManageServer
+                  ? "Any JPEG, PNG, WebP or GIF. You'll crop it to the bar's shape next."
+                  : "Members with Manage Server can change it."}
+              </div>
+              {canManageServer && (
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover"
+                  >
+                    {hasPicture ? "Change picture" : "Upload picture"}
+                  </button>
+                  {hasPicture && (
+                    <button
+                      onClick={() => setConfirmRemove(true)}
+                      className="rounded-sm px-4 py-2 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {drop.over && <DropVeil label="Drop to use as the server picture" />}
+          </div>
+        </div>
+
         {isOwner && (
           <div className="flex flex-col gap-3">
             <h3 className="text-[14px] font-semibold text-error">Transfer ownership</h3>
@@ -349,70 +404,28 @@ export default function OverviewTab({ serverId }: { serverId: string }) {
           </div>
         )}
 
-        {/* Picture */}
-        <div className="flex flex-col gap-3">
-          <h3 className="text-[14px] font-semibold text-text-primary">
-            Server picture
-          </h3>
-          <p className="text-[13px] text-text-secondary">
-            Shown in the server bar in place of the default gradient and letter.
-            Square images work best; JPEG or PNG, max 1 MB.
-          </p>
-          <div className="flex items-center gap-6">
-            {hasPicture && pictureDataUrl ? (
-              <img
-                src={pictureDataUrl}
-                alt={serverName}
-                className="h-[120px] w-[120px] rounded-lg object-cover"
-              />
-            ) : (
-              <div
-                className="flex h-[120px] w-[120px] items-center justify-center rounded-lg text-[44px] font-semibold text-white"
-                style={{ background: stringToGradient(serverName) }}
-              >
-                {serverName.charAt(0).toUpperCase()}
-              </div>
-            )}
-            {canManageServer ? (
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-hover"
-                >
-                  Upload picture
-                </button>
-                {hasPicture && (
-                  <button
-                    onClick={onRemove}
-                    className="rounded-md border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
-                  >
-                    Remove picture
-                  </button>
-                )}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png"
-                  className="hidden"
-                  onChange={onFileSelected}
-                />
-              </div>
-            ) : (
-              <p className="max-w-[280px] text-[12px] leading-[1.5] text-text-muted">
-                You need the Manage Server permission to change the picture.
-              </p>
-            )}
-          </div>
-        </div>
-
         {cropperFile && (
           <ServerPictureCropperModal
             serverId={serverId}
             file={cropperFile}
-            onSave={() => setCropperFile(null)}
-            onCancel={() => setCropperFile(null)}
+            onSaved={(url) => {
+              savedFrom.current = pictureDataUrl;
+              setJustSaved(url);
+            }}
+            onClose={() => setCropperFile(null)}
           />
         )}
+        <ConfirmModal
+          open={confirmRemove}
+          title="Remove the server picture?"
+          confirmLabel="Remove"
+          onConfirm={removePicture}
+          onCancel={() => setConfirmRemove(false)}
+        >
+          <p className="mt-2 text-[13px] leading-[1.55] text-text-secondary">
+            Members will see the server's letter and colour on the server bar again.
+          </p>
+        </ConfirmModal>
       </div>
       {canManageServer && (
         <SaveBar

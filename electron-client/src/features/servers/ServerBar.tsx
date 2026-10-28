@@ -109,33 +109,13 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
           isPending ? "cursor-wait opacity-60" : "cursor-pointer"
         }`}
       >
-        <img
-          src={pictureDataUrl ?? PLACEHOLDER_DATA_URL}
-          alt={server.name}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-        {/* Dim overlay + name sit on inactive tiles and fade out to
-            reveal the picture — on hover, and when the tile becomes
-            active (so the click-to-activate transition animates too).
-            Always mounted: an unmount can't animate. Pending tiles are
-            inert, so they don't react to hover. Image fills the
-            rectangle via object-cover; tile width is fixed via
-            TILE_WIDTH, so the name doesn't drive sizing. */}
-        <div
-          className={`absolute inset-0 bg-black/45 transition-opacity duration-150 ${
-            isActive ? "opacity-0" : isPending ? "" : "group-hover:opacity-0"
-          }`}
-        />
-        <span
-          className={`relative max-w-full truncate font-tile text-[13px] font-semibold text-white transition-opacity duration-150 ${
-            isActive ? "opacity-0" : isPending ? "" : "group-hover:opacity-0"
-          }`}
-        >
-          {server.name}
-        </span>
-        {!isPending && isActive && (
-          <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
-        )}
+        <TilePictureLayers name={server.name} active={isActive} inert={isPending}>
+          <img
+            src={pictureDataUrl ?? PLACEHOLDER_DATA_URL}
+            alt={server.name}
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        </TilePictureLayers>
       </button>
     </div>
   );
@@ -150,7 +130,46 @@ function ServerTile({ server, isActive, isPending, onClick }: ServerTileProps) {
 // Chromium auto-promotes to a composited layer — so the shadow is
 // rasterized once and the per-frame cost collapses to an alpha blend
 // on the GPU. Replaces the ~3-5 % idle CPU draw of the original.
-function ActiveTileGlow() {
+/// The picture tile's face: the picture, and on inactive tiles a dim
+/// overlay + name that fade out to reveal it — on hover, and when the
+/// tile becomes active (so the click-to-activate transition animates
+/// too). Always mounted: an unmount can't animate. Inert (pending) tiles
+/// don't react to hover. Shared with the picture editor's preview, so the
+/// preview is the tile.
+export function TilePictureLayers({
+  name,
+  active,
+  inert = false,
+  children,
+}: {
+  name: string;
+  active: boolean;
+  inert?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      {children}
+      <div
+        className={`absolute inset-0 bg-black/45 transition-opacity duration-150 ${
+          active ? "opacity-0" : inert ? "" : "group-hover:opacity-0"
+        }`}
+      />
+      <span
+        className={`relative max-w-full truncate font-tile text-[13px] font-semibold text-white transition-opacity duration-150 ${
+          active ? "opacity-0" : inert ? "" : "group-hover:opacity-0"
+        }`}
+      >
+        {name}
+      </span>
+      {!inert && active && (
+        <div className="absolute -bottom-[9px] left-1/2 h-[3px] w-5 -translate-x-1/2 rounded-t bg-accent" />
+      )}
+    </>
+  );
+}
+
+export function ActiveTileGlow() {
   return (
     <div
       className="pointer-events-none absolute inset-0 rounded-md shadow-[0_0_0_1.5px_color-mix(in_srgb,var(--color-accent)_60%,transparent),0_0_22px_4px_color-mix(in_srgb,var(--color-accent)_22%,transparent)] animate-[breathe_2.4s_ease-in-out_infinite] will-change-[opacity]"

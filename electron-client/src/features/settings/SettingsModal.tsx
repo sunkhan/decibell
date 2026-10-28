@@ -159,8 +159,10 @@ export default function SettingsModal() {
 
   useEffect(() => {
     if (!mounted) return;
+    // A dialog over the window (the picture editor, rename, password) takes
+    // its own Esc and marks it handled.
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeModal();
+      if (e.key === "Escape" && !e.defaultPrevented) closeModal();
     };
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);

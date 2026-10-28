@@ -1,218 +1,94 @@
-// Square-crop modal for profile pictures.
+// Profile picture editor: the shared picture editor with a square frame in
+// the theme's avatar shape and previews of where the picture shows.
 //
-// Flow: AccountTab picks a File → opens this modal → user pans + zooms
-// the image inside a 320×320 viewport → Save draws the visible region
-// onto a 256×256 OffscreenCanvas, JPEG-encodes at quality 0.85, ships
-// bytes via the upload_avatar napi command → server validates magic +
-// 1 MB cap → stores → broadcasts AvatarChanged → avatarStore on this
-// renderer invalidates → UserAvatar across the app re-renders.
-//
-// Inline implementation, no external crop library (~200 LOC).
+// Save renders the crop at 256×256 (JPEG, components/pictureEditor) and
+// ships it through upload_avatar → central checks the magic and the 1 MB cap,
+// stores it, answers, and pushes AvatarChanged → avatarStore refetches →
+// UserAvatar across the app re-renders.
 
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "../../lib/ipc";
+import { useAuthStore } from "../../stores/authStore";
+import { AVATAR_RADIUS } from "../../components/LetterAvatar";
+import { StatusDot } from "../../components/StatusDot";
+import { Crop, PictureEditor, PreviewLabel } from "../../components/pictureEditor/PictureEditor";
+import { userGradient } from "../../utils/colors";
+import { useOwnDisplayStatus } from "../../stores/presenceStore";
 
 interface Props {
   file: File;
-  onSave: () => void;
-  onCancel: () => void;
+  /// The saved picture, shown in Settings until the store has fetched it.
+  onSaved: (url: string) => void;
+  onClose: () => void;
 }
 
-const VIEWPORT = 320;
-const OUTPUT = 256;
-const JPEG_QUALITY = 0.85;
+const OUTPUT = { w: 256, h: 256 };
 
-export function AvatarCropperModal({ file, onSave, onCancel }: Props) {
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const [scale, setScale] = useState(1);
-  const [dragging, setDragging] = useState(false);
-  const dragStart = useRef<{ x: number; y: number } | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function AvatarCropperModal({ file, onSaved, onClose }: Props) {
+  return (
+    <PictureEditor
+      file={file}
+      kind="avatar"
+      title="Edit profile picture"
+      aspect={1}
+      fit={false}
+      radius={() => AVATAR_RADIUS}
+      output={OUTPUT}
+      target="avatar"
+      previews={<AvatarPreviews />}
+      onSave={async (jpeg) => {
+        const result = (await invoke("upload_avatar", { jpeg })) as { success: boolean; message: string } | null;
+        if (!result?.success) throw new Error(result?.message || "Couldn't save your picture.");
+      }}
+      onSaved={onSaved}
+      onClose={onClose}
+    />
+  );
+}
 
-  // Load the picked file as an HTMLImageElement; centre + fit-to-cover
-  // it inside the viewport on first paint.
-  //
-  // Revoke is deferred to onload/onerror (not the effect cleanup) so
-  // React 18 StrictMode's double-invoke can't kill the blob URL
-  // mid-load. The `cancelled` flag guards against state updates after
-  // unmount.
-  useEffect(() => {
-    let cancelled = false;
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      if (cancelled) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      imgRef.current = img;
-      const initial = Math.max(
-        VIEWPORT / img.width,
-        VIEWPORT / img.height,
-      );
-      setScale(initial);
-      setPos({
-        x: (VIEWPORT - img.width * initial) / 2,
-        y: (VIEWPORT - img.height * initial) / 2,
-      });
-      setImgLoaded(true);
-      URL.revokeObjectURL(url);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      if (!cancelled) setError("Couldn't load that file as an image.");
-    };
-    img.src = url;
-    return () => {
-      cancelled = true;
-    };
-  }, [file]);
-
-  // Repaint preview canvas on every state change.
-  useEffect(() => {
-    if (!imgLoaded || !imgRef.current || !canvasRef.current) return;
-    const ctx = canvasRef.current.getContext("2d");
-    if (!ctx) return;
-    ctx.fillStyle = "#0a0a0a";
-    ctx.fillRect(0, 0, VIEWPORT, VIEWPORT);
-    ctx.drawImage(
-      imgRef.current,
-      pos.x,
-      pos.y,
-      imgRef.current.width * scale,
-      imgRef.current.height * scale,
-    );
-  }, [imgLoaded, pos, scale]);
-
-  // React attaches wheel listeners as passive by default, which makes
-  // preventDefault a silent no-op (and lets the modal's wheel events
-  // scroll the page underneath). Bind manually with passive:false.
-  // Zooms toward the cursor: the image-coordinate point under the
-  // pointer stays under the pointer after the scale change.
-  useEffect(() => {
-    const el = canvasRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      const rect = el.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      setScale((s) => {
-        const next = Math.max(0.1, Math.min(10, s * factor));
-        if (next === s) return s;
-        const realFactor = next / s;
-        setPos((p) => ({
-          x: cx - (cx - p.x) * realFactor,
-          y: cy - (cy - p.y) * realFactor,
-        }));
-        return next;
-      });
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
-  const onMouseDown = (e: React.MouseEvent) => {
-    setDragging(true);
-    dragStart.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
-  };
-  const onMouseMove = (e: React.MouseEvent) => {
-    if (!dragging || !dragStart.current) return;
-    setPos({
-      x: e.clientX - dragStart.current.x,
-      y: e.clientY - dragStart.current.y,
-    });
-  };
-  const onMouseUp = () => {
-    setDragging(false);
-    dragStart.current = null;
-  };
-
-  const handleSave = async () => {
-    if (!imgLoaded || !imgRef.current) return;
-    setUploading(true);
-    setError(null);
-    try {
-      // Draw the current viewport view onto a 256×256 OffscreenCanvas,
-      // scaling pos + size by OUTPUT/VIEWPORT so the produced JPEG
-      // matches exactly what the user sees in the modal.
-      const out = new OffscreenCanvas(OUTPUT, OUTPUT);
-      const octx = out.getContext("2d");
-      if (!octx) throw new Error("OffscreenCanvas 2d context unavailable");
-      const ratio = OUTPUT / VIEWPORT;
-      octx.drawImage(
-        imgRef.current,
-        pos.x * ratio,
-        pos.y * ratio,
-        imgRef.current.width * scale * ratio,
-        imgRef.current.height * scale * ratio,
-      );
-      const blob = await out.convertToBlob({
-        type: "image/jpeg",
-        quality: JPEG_QUALITY,
-      });
-      const buf = await blob.arrayBuffer();
-      const result = (await invoke("upload_avatar", {
-        jpeg: new Uint8Array(buf),
-      })) as { success: boolean; message: string; version: string };
-      if (!result.success) {
-        throw new Error(result.message || "Upload failed");
-      }
-      onSave();
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={(e) => e.target === e.currentTarget && !uploading && onCancel()}
-    >
-      <div className="rounded-xl border border-border bg-bg-dark p-6 shadow-modal">
-        <p className="mb-1 font-display text-[16px] font-semibold text-text-primary">
-          Crop your picture
-        </p>
-        <p className="mb-3 text-[12px] text-text-muted">
-          Drag to position. Scroll to zoom.
-        </p>
-        <canvas
-          ref={canvasRef}
-          width={VIEWPORT}
-          height={VIEWPORT}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
-          className={`rounded-sm bg-bg-darkest ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-          style={{ width: VIEWPORT, height: VIEWPORT }}
-        />
-        {error && <p className="mt-3 max-w-[320px] text-[12px] text-error">{error}</p>}
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            disabled={uploading}
-            className="rounded-sm border border-border px-4 py-2 text-[13px] text-text-secondary hover:bg-bg-light disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={uploading || !imgLoaded}
-            className="rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent hover:bg-accent-hover disabled:opacity-50"
-          >
-            {uploading ? "Saving…" : "Save"}
-          </button>
+/// The picture where people meet it: your profile card, a message, the
+/// member list. Same sizes, rings and status cut-outs as the real ones.
+function AvatarPreviews() {
+  const uid = useAuthStore((s) => s.uid);
+  const name = useAuthStore((s) => s.username) ?? "";
+  const status = useOwnDisplayStatus();
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <PreviewLabel>Profile</PreviewLabel>
+        <div className="overflow-hidden rounded-lg border border-border bg-bg-light">
+          <div className="h-12" style={{ background: userGradient(uid, name) }} />
+          <div className="relative mx-3.5 h-7">
+            <div className="absolute -top-8 left-0 flex bg-bg-light ring-4 ring-bg-light" style={{ borderRadius: AVATAR_RADIUS }}>
+              <Crop width={64} height={64} radius={AVATAR_RADIUS} />
+              <StatusDot status={status} ring="var(--color-bg-light)" ringWidth={3} className="absolute -bottom-px -right-px h-4 w-4" />
+            </div>
+          </div>
+          <div className="truncate px-3.5 pb-3 pt-2 font-display text-[16px] font-semibold text-text-primary">{name}</div>
         </div>
       </div>
-    </div>,
-    document.body,
+      <div>
+        <PreviewLabel>Chat</PreviewLabel>
+        <div className="flex gap-3 rounded-lg bg-bg-mid px-3 py-2.5">
+          <Crop width={40} height={40} radius={AVATAR_RADIUS} />
+          <div className="min-w-0">
+            <div className="flex items-baseline gap-2">
+              <span className="truncate font-channel text-sender font-emphasis text-text-primary">{name}</span>
+              <span className="shrink-0 font-meta text-meta tabular-nums text-text-muted">18:24</span>
+            </div>
+            <div className="text-body leading-body text-text-primary">new picture, who dis</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <PreviewLabel>Member list</PreviewLabel>
+        <div className="flex h-11 items-center gap-2.5 rounded-lg bg-bg-tertiary px-2.5">
+          <div className="relative flex">
+            <Crop width={34} height={34} radius={AVATAR_RADIUS} />
+            <StatusDot status={status} ring="var(--color-bg-tertiary)" className="avatar-dot absolute -bottom-px -right-px" />
+          </div>
+          <span className="min-w-0 truncate font-channel text-member font-medium text-text-secondary">{name}</span>
+        </div>
+      </div>
+    </div>
   );
 }
