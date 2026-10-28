@@ -4684,3 +4684,19 @@ states, real-time motion, the uploaded bytes, a 200% pair); a run of the ported 
 stops at filling the frame with no Background, a transparent logo as profile picture shows Background, a server
 logo zooms out to the whole picture. Live test pending: real uploads to central and a community, a trackpad pinch,
 DPR 1.25 / 1.5, and an iPhone HEIC (should show the export-as-JPEG message).
+
+### Fix: a sideways-stored phone photo uploaded the wrong area (2026-10-28)
+
+Raised by a side agent after the picture editor shipped: every test picture was generated, none with an EXIF
+orientation tag. Reproduced with the owl photo stored sideways plus `Orientation = 6` (as phones save portraits):
+the editor showed it upright and framed right, but the uploaded file differed from the upright photo's by 29% RMSE
+(profile, centred), 34% (zoomed) and 14% (server picture, zoomed out): the wrong area. Cause, probed in the app's
+Chromium: `createImageBitmap(img, sx, sy, sw, sh)` takes the rectangle in the stored layout and turns the result
+afterwards (a 3024 × 1000 strip came back 1000 × 3024). An ImageBitmap of the whole `<img>` is upright but keeps the
+tag, so cropping it fails the same way. `renderCrop` now copies the crop's part upright onto a canvas with
+`drawImage` (source rectangle in the upright layout; a canvas has no orientation) and resamples that. The old
+croppers didn't have this bug (plain `drawImage`); the new editor introduced it.
+
+Verified: tsc web 0. Harness on the real tree, sideways vs upright photo: 0.65% / 0.53% / 0.36% RMSE (the JPEG
+re-encode of the rotated test file), the same picture by eye; edges stay as smooth as before. Live test pending: a
+real iPhone and Android portrait photo.

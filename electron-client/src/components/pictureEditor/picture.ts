@@ -134,11 +134,8 @@ export async function renderCrop(p: Picture, view: View, frame: Size, out: Size,
   if (dw > 0 && dh > 0) {
     const sx = (dx0 - view.x * k) / s;
     const sy = (dy0 - view.y * k) / s;
-    const bitmap = await createImageBitmap(p.img, sx, sy, (dx1 - dx0) / s, (dy1 - dy0) / s, {
-      resizeWidth: dw,
-      resizeHeight: dh,
-      resizeQuality: "high",
-    });
+    const crop = cropUpright(p, sx, sy, (dx1 - dx0) / s, (dy1 - dy0) / s);
+    const bitmap = await createImageBitmap(crop, { resizeWidth: dw, resizeHeight: dh, resizeQuality: "high" });
     ctx.drawImage(bitmap, Math.round(dx0), Math.round(dy0));
     bitmap.close();
   }
@@ -147,6 +144,22 @@ export async function renderCrop(p: Picture, view: View, frame: Size, out: Size,
     if (blob.size <= 1000 * 1024 || quality === 0.66) return new Uint8Array(await blob.arrayBuffer());
   }
   throw new Error("unreachable");
+}
+
+/// The crop's part of the picture at about its natural size, upright.
+/// createImageBitmap can't cut it: from an <img>, or from an ImageBitmap of
+/// one, it takes the rectangle in the file's stored pixel layout and turns
+/// the result afterwards, so a phone photo stored sideways (EXIF
+/// orientation) gave the wrong area (seen in the app's Chromium: a
+/// 3024 × 1000 strip of a sideways 3024 × 4032 photo came back 1000 × 3024).
+/// drawImage takes its source rectangle in the upright layout the <img>
+/// shows, and a canvas carries no orientation.
+function cropUpright(p: Picture, sx: number, sy: number, sw: number, sh: number): OffscreenCanvas {
+  const canvas = new OffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas unavailable");
+  ctx.drawImage(p.img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
 }
 
 /// A picture file, from a file input or a drop. Anything the browser

@@ -67,8 +67,9 @@ theme sees the same picture.
 
 ## Saving
 
-`renderCrop` crops in frame pixels, paints the fill, then resamples only the visible part of the picture once with
-`createImageBitmap(…, { resizeQuality: "high" })` and encodes JPEG at 0.9, stepping down to 0.66 if a file would
+`renderCrop` crops in frame pixels, paints the fill, copies only the visible part of the picture upright onto a
+canvas at about its natural size (`drawImage`, whose source rectangle is in the upright layout), resamples that once
+with `createImageBitmap(…, { resizeQuality: "high" })` and encodes JPEG at 0.9, stepping down to 0.66 if a file would
 pass the 1 MB cap. Profile pictures stay 256 × 256 (the avatar cache holds up to 400 decoded pictures; the largest
 avatar is 96 px). Server pictures are 880 × 303, twice the old 440 × 151, so a 432 px invite banner is sharp on
 HiDPI; a photo is about 30 KB.
@@ -79,6 +80,11 @@ timeout), and `useServerEvents` skips its toast while an editor is waiting (`pic
 in the editor and keeps the crop. On success the wrapper gets the JPEG as a blob URL (`onSaved`), which the Settings
 card shows until the store has fetched the new picture, and the crop flies (560 ms) from the frame into the element
 with the matching `data-picture-target`.
+
+**EXIF orientation**: never cut the crop with `createImageBitmap`'s source rectangle from the `<img>` (or from an
+ImageBitmap made from it). In the app's Chromium that rectangle is taken in the file's stored pixel layout and the
+result turned afterwards, so a phone photo stored sideways uploaded the wrong area while the editor showed it right
+(a 3024 × 1000 strip of a sideways 3024 × 4032 photo came back 1000 × 3024). A canvas carries no orientation.
 
 Accepted files: anything Chromium decodes (JPEG, PNG, WebP, GIF, AVIF, BMP), up to 80 megapixels. GIFs keep their
 first frame (the editor says so). HEIC gets its own message (export it as JPEG).
