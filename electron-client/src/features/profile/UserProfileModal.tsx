@@ -14,6 +14,7 @@ import { usePeerE2ee } from "../e2ee/usePeerE2ee";
 import { formatJoined } from "../servers/tabs/helpers";
 import { userGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
+import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
 import {
   STATUS_LABEL,
@@ -134,7 +135,12 @@ function ProfileScreen({
 
       {/* Identity row: avatar overlapping the banner, actions on the right */}
       <div className="relative shrink-0 px-6">
-        <div className="absolute -top-12 left-6 rounded-2xl border-[6px] border-bg-dark bg-bg-dark">
+        {/* The cut-out is a ring on the avatar's own box, concentric with
+            the picture in every theme (see UserProfilePopup). */}
+        <div
+          className="absolute -top-10.5 left-7.5 flex bg-bg-dark ring-6 ring-bg-dark"
+          style={{ borderRadius: AVATAR_RADIUS }}
+        >
           <UserAvatar uid={uid} name={username} size={96} />
           <StatusDot
             status={presence}

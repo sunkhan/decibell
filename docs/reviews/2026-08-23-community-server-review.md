@@ -4465,3 +4465,23 @@ interaction run (Nocturne and Matinee) where a click on the focused video unfocu
 player host moves into mira's stream tile and the mini player stays hidden. Live test pending: a real two-machine
 call (ringing → answer, share both ways, focus ↔ tile ↔ mini player with the DM left and reopened, fullscreen,
 theater, right-click volume).
+
+### Fix: the profile picture's cut-out into the banner follows the picture (2026-10-28)
+
+Reported by the owner: in the user popup and on the profile page the frame around the picture, where it cuts into
+the banner, didn't line up with the picture. Both drew the frame as a border on a wrapper with its own fixed
+corner (`rounded-xl` with 4 px in the popup, `rounded-2xl` with 6 px on the profile page, the latter not even a
+theme radius) around a picture whose corner is `--radius-avatar` (26 % of its size in nocturne / matinee /
+graphite, a flat 4 px in console). In the popup the frame's inner corner (14 px) was tighter than the picture's
+(16.6 px), so banner showed between them at the top corners; on the profile page the frame bulged at the corners,
+and in console a round frame sat around a square picture.
+
+The frame is now a `ring-4` / `ring-6` (box-shadow) on a box exactly the picture's size with the picture's
+radius: a shadow's corner is the box's radius plus its spread, so the frame is concentric in every theme and at
+every avatar scale. The box is filled with the frame colour (the picture's anti-aliased edge blends into it, not
+the banner) and is a flex box (no line-height gap under the image). Positions are unchanged.
+
+Verified: tsc web 0. UI harness, real components with a photo avatar, captured at 2× in nocturne / console /
+matinee / graphite (before and after) and at 1.25× in nocturne / console: no banner slivers, an even frame, no
+seams. Noticed, not changed: on console's square avatars a pixel of the picture's corner shows beside the status
+dot.

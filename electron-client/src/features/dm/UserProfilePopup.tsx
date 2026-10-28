@@ -11,6 +11,7 @@ import { useCodecSettingsStore } from "../../stores/codecSettingsStore";
 import { canWatchStream } from "../../utils/canWatchStream";
 import { userGradient } from "../../utils/colors";
 import { UserAvatar } from "../../components/UserAvatar";
+import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import { StatusDot, StatusPill } from "../../components/StatusDot";
 import { usePresence, useStatusMessage } from "../../stores/presenceStore";
 import { StatusMessageText } from "../../components/StatusMessageText";
@@ -273,17 +274,24 @@ export default function UserProfilePopup() {
         <div className="relative h-7 mx-4">
           {/* The avatar is the door to the full profile (Discord's idiom);
               the hover scrim says so, since nothing else about a picture
-              suggests it is a button. */}
+              suggests it is a button.
+              The cut-out into the banner is a ring (box-shadow) on the
+              avatar's own box: a shadow's corner is the box's radius plus
+              its spread, so it stays concentric with the picture in every
+              theme. A border on a wrapper with its own rounded-* left banner
+              showing between the two corners. The fill is the ring colour,
+              so the picture's anti-aliased edge blends into it. */}
           <button
             type="button"
             onClick={() => openUserProfile(uid, serverId)}
             title="View full profile"
-            className="group absolute -top-9 left-0 cursor-pointer rounded-xl border-[4px] border-bg-light"
+            className="group absolute -top-8 left-1 flex cursor-pointer bg-bg-light ring-4 ring-bg-light"
+            style={{ borderRadius: AVATAR_RADIUS }}
           >
             <UserAvatar uid={uid} name={username} size={64} />
             <span
               className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 text-center text-[9px] font-semibold uppercase leading-tight tracking-[0.06em] text-white opacity-0 transition-opacity group-hover:opacity-100"
-              style={{ borderRadius: "var(--radius-avatar)" }}
+              style={{ borderRadius: AVATAR_RADIUS }}
             >
               View
               <br />
