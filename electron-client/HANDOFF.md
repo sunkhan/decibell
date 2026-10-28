@@ -694,8 +694,11 @@ Also open, lower priority:
 - `src/features/voice/CaptureSourcePicker.tsx` — Go Live UI. Calls
   `start_screen_share` then `startActiveStream`. Its parts live in
   `features/voice/goLive/`: `SourceGrid` (Windows sources), `QualityPresets` +
-  `presets.ts` (Smooth / Sharp / Data saver, derived from the stored
-  settings), `AdvancedSettings` (resolution, frame rate, bitrate, codec).
+  `presets.ts` (Smooth / Sharp / Slides / Data saver, derived from the
+  stored settings), `AdvancedSettings` (resolution, frame rate, bitrate,
+  codec). On a window ≥ 880 px (≥ 1184 px on Windows, with the source grid)
+  the dialog is two cards: the main one and an Options panel beside it
+  (sound, cursor, Advanced); narrower windows get the one-card layout.
 - `src/features/channels/UserPanel.tsx` — Stop sharing button. Calls
   `stopActiveStream` then `stop_screen_share`.
 - `src/features/voice/StreamAudioAppPicker.tsx` + `StreamAudioPopover.tsx` +

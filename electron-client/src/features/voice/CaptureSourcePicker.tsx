@@ -23,6 +23,7 @@ import SourceGrid from "./goLive/SourceGrid";
 import QualityPresets from "./goLive/QualityPresets";
 import AdvancedSettings from "./goLive/AdvancedSettings";
 import { matchPreset, resolutionLabel } from "./goLive/presets";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 interface Props {
   /// Community voice channel to announce in. Both absent inside a P2P DM
@@ -239,10 +240,12 @@ export default function CaptureSourcePicker({
     }
   };
 
-  // Windows gets the source grid too: side by side with the settings on a
-  // wide window (one fixed-height dialog, each column scrolls on its own),
-  // stacked below `lg`. Either way the header and footer are pinned — the
-  // body scrolls, never the Go Live button.
+  // Two layouts. Where the window has room (withPanel, below), the dialog is
+  // a main card (what to share, quality, Go Live) with an Options panel
+  // beside it (sound, cursor, Advanced). Otherwise it's one card holding
+  // everything; on Windows its source grid sits side by side with the
+  // settings from `lg`, stacked below. Either way the header and footer are
+  // pinned — the body scrolls, never the Go Live button.
   const split = NEEDS_CUSTOM_PICKER;
   const platform = window.decibell.platform;
   // "Smooth · 1080p · 60 fps · with sound", beside the Go Live button.
@@ -255,6 +258,100 @@ export default function CaptureSourcePicker({
     .filter(Boolean)
     .join(" · ");
 
+  // Room for the options panel beside the dialog: the main card, the 336 px
+  // panel and their gap, inside the backdrop's padding. Narrower windows keep
+  // everything in one card.
+  const withPanel = useMediaQuery(split ? "(width >= 74rem)" : "(width >= 55rem)");
+
+  const optionRows = (
+    <>
+      <Row
+        icon="speaker"
+        title="Share sound"
+        description={
+          !soundAvailable
+            ? platform === "darwin"
+              ? "Not available on macOS yet."
+              : "Needs hardware video encoding, which isn't available here."
+            : streamSettings.shareAudio
+              ? "Your apps, never your voice chat."
+              : "Viewers get video only."
+        }
+        control={
+          <Switch
+            checked={shareAudio}
+            disabled={!soundAvailable || starting}
+            label="Share sound"
+            onToggle={() =>
+              setStreamSettings({ shareAudio: !streamSettings.shareAudio })
+            }
+          />
+        }
+        below={
+          shareAudio ? (
+            <div className="mt-3.5">
+              <StreamAudioAppPicker sourceId={picked?.id} />
+            </div>
+          ) : undefined
+        }
+      />
+      <Row
+        icon="pointer"
+        title="Show my cursor"
+        description="Viewers see where you point."
+        control={
+          <Switch
+            checked={streamSettings.includeCursor}
+            disabled={starting}
+            label="Show my cursor"
+            onToggle={() =>
+              setStreamSettings({
+                includeCursor: !streamSettings.includeCursor,
+              })
+            }
+          />
+        }
+      />
+    </>
+  );
+
+  const advanced = (
+    <AdvancedSettings
+      open={advancedOpen}
+      onToggle={() => setAdvancedOpen((o) => !o)}
+      showSoundBitrate={shareAudio}
+      disabled={starting}
+      flat={withPanel}
+    />
+  );
+
+  const sourceArea = NEEDS_CUSTOM_PICKER ? (
+    <SourceGrid picked={picked} onPick={setPicked} disabled={starting} />
+  ) : (
+    <div className="mx-5 mb-5 flex shrink-0 items-center gap-4 rounded-lg border border-border-divider bg-bg-light px-4 py-3">
+      <SystemPickerArt />
+      <div className="min-w-0">
+        <p className="text-[14px] font-medium text-text-primary">
+          You'll pick a screen or window next
+        </p>
+        <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
+          After you press Go Live, {platform === "darwin" ? "macOS" : "your system"} asks what to share.
+        </p>
+      </div>
+    </div>
+  );
+
+  // The main card's size: beside the panel it's narrower (Windows: the
+  // grid over a row of quality cards); alone it's the one-card dialog,
+  // side by side with its settings column on a wide Windows window.
+  const cardSize = withPanel
+    ? split
+      ? "w-[760px] h-[min(720px,calc(100vh-3rem))]"
+      : "w-[460px]"
+    : split
+      ? "w-full max-w-[560px] lg:h-[min(760px,calc(100vh-3rem))] lg:max-w-[1040px]"
+      : "w-full max-w-[520px]";
+
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-6 transition-colors duration-300"
@@ -264,192 +361,180 @@ export default function CaptureSourcePicker({
       onClick={(e) => e.target === e.currentTarget && handleClose()}
       onTransitionEnd={handleTransitionEnd}
     >
+      {/* The two cards are one dialog. The row between them lets clicks
+          through to the backdrop, so a click in the gap closes it too. */}
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="go-live-title"
-        className={`flex max-h-full w-full flex-col overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-modal transition-all duration-300 ${
-          split ? "max-w-[560px] lg:h-full lg:max-h-[760px] lg:max-w-[1040px]" : "max-w-[520px]"
-        }`}
+        className="pointer-events-none flex w-full items-start justify-center gap-3 transition-all duration-300"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? "scale(1)" : "scale(0.95)",
         }}
       >
-        <div className="flex shrink-0 items-center gap-3.5 px-5 pt-5 pb-4">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
-            <Icon name="screenShare" size={19} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h2
-              id="go-live-title"
-              className="font-display text-[16px] font-semibold text-text-bright"
-            >
-              Go live
-            </h2>
-            <Destination serverId={serverId} channelId={channelId} />
-          </div>
-          <button
-            onClick={handleClose}
-            aria-label="Close"
-            className="flex h-8 w-8 shrink-0 items-center justify-center self-start rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
-          >
-            <Icon name="x" size={16} />
-          </button>
-        </div>
-
         <div
-          className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${
-            split ? "lg:flex-row lg:overflow-hidden lg:border-t lg:border-border-divider" : ""
-          }`}
+          className={`pointer-events-auto flex max-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-modal ${cardSize}`}
         >
-          {NEEDS_CUSTOM_PICKER ? (
-            <SourceGrid picked={picked} onPick={setPicked} disabled={starting} />
+          <div className="flex shrink-0 items-center gap-3.5 px-5 pt-5 pb-4">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
+              <Icon name="screenShare" size={19} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2
+                id="go-live-title"
+                className="font-display text-[16px] font-semibold text-text-bright"
+              >
+                Go live
+              </h2>
+              <Destination serverId={serverId} channelId={channelId} />
+            </div>
+            <button
+              onClick={handleClose}
+              aria-label="Close"
+              className="flex h-8 w-8 shrink-0 items-center justify-center self-start rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+            >
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+
+          {withPanel ? (
+            split ? (
+              <div className="flex min-h-0 flex-1 flex-col border-t border-border-divider">
+                {sourceArea}
+                <div className="shrink-0 border-t border-border-divider px-5 pt-4 pb-5">
+                  <Field label="Quality">
+                    <QualityPresets row disabled={starting} />
+                  </Field>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                {sourceArea}
+                <div className="shrink-0 px-5 pb-5">
+                  <Field label="Quality">
+                    <QualityPresets disabled={starting} />
+                  </Field>
+                </div>
+              </div>
+            )
           ) : (
-            <div className="mx-5 mb-5 flex shrink-0 items-center gap-4 rounded-lg border border-border-divider bg-bg-light px-4 py-3">
-              <SystemPickerArt />
-              <div className="min-w-0">
-                <p className="text-[14px] font-medium text-text-primary">
-                  You'll pick a screen or window next
-                </p>
-                <p className="mt-0.5 text-[12px] leading-[1.55] text-text-muted">
-                  After you press Go Live, {platform === "darwin" ? "macOS" : "your system"} asks what to share.
-                </p>
+            <div
+              className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${
+                split ? "lg:flex-row lg:overflow-hidden lg:border-t lg:border-border-divider" : ""
+              }`}
+            >
+              {sourceArea}
+              <div
+                className={`flex shrink-0 flex-col gap-5 px-5 pb-5 ${
+                  split ? "lg:w-[400px] lg:overflow-y-auto lg:border-l lg:border-border-divider lg:pt-5" : ""
+                }`}
+              >
+                <Field label="Quality">
+                  <QualityPresets disabled={starting} />
+                </Field>
+                <Group label="Options">{optionRows}</Group>
+                {advanced}
               </div>
             </div>
           )}
 
-          <div
-            className={`flex shrink-0 flex-col gap-5 px-5 pb-5 ${
-              split ? "lg:w-[400px] lg:overflow-y-auto lg:border-l lg:border-border-divider lg:pt-5" : ""
+          <div className="shrink-0 border-t border-border-divider px-5 py-3.5">
+            {error && (
+              <div
+                role="alert"
+                className="mb-3 flex items-start gap-2 rounded-md bg-error/10 px-3 py-2 text-[12px] text-error"
+              >
+                <Icon name="alert" size={14} className="mt-px" />
+                <span className="line-clamp-3 break-words" title={error}>
+                  {error}
+                </span>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                {!NEEDS_CUSTOM_PICKER ? (
+                  <p className="truncate text-[12px] text-text-muted">
+                    {qualitySummary}
+                  </p>
+                ) : picked ? (
+                  <>
+                    {picked.thumbnail && (
+                      <img
+                        src={picked.thumbnail}
+                        alt=""
+                        draggable={false}
+                        className="h-7 w-12 shrink-0 rounded-sm bg-bg-darkest object-contain"
+                      />
+                    )}
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13px] font-medium text-text-primary" title={picked.name}>
+                        {picked.name}
+                      </span>
+                      <span className="block truncate text-[12px] tabular-nums text-text-muted">
+                        {qualitySummary}
+                      </span>
+                    </span>
+                  </>
+                ) : (
+                  <p className="truncate text-[12px] text-text-muted">
+                    Pick a screen or window to share.
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={handleClose}
+                className="rounded-sm border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleGoLive}
+                disabled={starting || (NEEDS_CUSTOM_PICKER && !picked)}
+                className="inline-flex items-center gap-2 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50 disabled:hover:bg-accent"
+              >
+                {starting ? (
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-on-accent/30 border-t-on-accent" />
+                ) : (
+                  <Icon name="broadcast" size={15} />
+                )}
+                {starting ? "Starting…" : "Go Live"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {withPanel && (
+          <section
+            aria-labelledby="go-live-options-title"
+            className={`pointer-events-auto flex w-84 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-float transition-[opacity,transform] duration-300 ${
+              // Never taller than the Windows card beside it.
+              split ? "max-h-[min(720px,calc(100vh-3rem))]" : "max-h-[calc(100vh-3rem)]"
             }`}
+            style={{
+              opacity: visible ? 1 : 0,
+              // Settles in beside the dialog a moment after it opens.
+              transform: visible ? "none" : "translateX(-8px)",
+              transitionDelay: visible ? "80ms" : "0ms",
+            }}
           >
-            <Field label="Quality">
-              <QualityPresets disabled={starting} />
-            </Field>
-
-            <Group label="Options">
-              <Row
-                icon="speaker"
-                title="Share sound"
-                description={
-                  !soundAvailable
-                    ? platform === "darwin"
-                      ? "Not available on macOS yet."
-                      : "Needs hardware video encoding, which isn't available here."
-                    : streamSettings.shareAudio
-                      ? "Your apps, never your voice chat."
-                      : "Viewers get video only."
-                }
-                control={
-                  <Switch
-                    checked={shareAudio}
-                    disabled={!soundAvailable || starting}
-                    label="Share sound"
-                    onToggle={() =>
-                      setStreamSettings({ shareAudio: !streamSettings.shareAudio })
-                    }
-                  />
-                }
-                below={
-                  shareAudio ? (
-                    <div className="mt-3.5">
-                      <StreamAudioAppPicker sourceId={picked?.id} />
-                    </div>
-                  ) : undefined
-                }
-              />
-              <Row
-                icon="pointer"
-                title="Show my cursor"
-                description="Viewers see where you point."
-                control={
-                  <Switch
-                    checked={streamSettings.includeCursor}
-                    disabled={starting}
-                    label="Show my cursor"
-                    onToggle={() =>
-                      setStreamSettings({
-                        includeCursor: !streamSettings.includeCursor,
-                      })
-                    }
-                  />
-                }
-              />
-            </Group>
-
-            <AdvancedSettings
-              open={advancedOpen}
-              onToggle={() => setAdvancedOpen((o) => !o)}
-              showSoundBitrate={shareAudio}
-              disabled={starting}
-            />
-          </div>
-        </div>
-
-        <div className="shrink-0 border-t border-border-divider px-5 py-3.5">
-          {error && (
-            <div
-              role="alert"
-              className="mb-3 flex items-start gap-2 rounded-md bg-error/10 px-3 py-2 text-[12px] text-error"
-            >
-              <Icon name="alert" size={14} className="mt-px" />
-              <span className="line-clamp-3 break-words" title={error}>
-                {error}
-              </span>
+            <div className="shrink-0 px-4 pt-4 pb-3">
+              <h3
+                id="go-live-options-title"
+                className="font-display text-[14px] font-semibold text-text-bright"
+              >
+                Options
+              </h3>
+              <p className="mt-0.5 text-[12px] text-text-muted">
+                Optional. The defaults suit most streams.
+              </p>
             </div>
-          )}
-          <div className="flex items-center gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
-              {!NEEDS_CUSTOM_PICKER ? (
-                <p className="truncate text-[12px] text-text-muted">
-                  {qualitySummary}
-                </p>
-              ) : picked ? (
-                <>
-                  {picked.thumbnail && (
-                    <img
-                      src={picked.thumbnail}
-                      alt=""
-                      draggable={false}
-                      className="h-7 w-12 shrink-0 rounded-sm bg-bg-darkest object-contain"
-                    />
-                  )}
-                  <span className="min-w-0">
-                    <span className="block truncate text-[13px] font-medium text-text-primary" title={picked.name}>
-                      {picked.name}
-                    </span>
-                    <span className="block truncate text-[12px] tabular-nums text-text-muted">
-                      {qualitySummary}
-                    </span>
-                  </span>
-                </>
-              ) : (
-                <p className="truncate text-[12px] text-text-muted">
-                  Pick a screen or window to share.
-                </p>
-              )}
+            <div className="min-h-0 overflow-y-auto border-t border-border-divider">
+              <div className="divide-y divide-border-divider">{optionRows}</div>
+              <div className="border-t border-border-divider">{advanced}</div>
             </div>
-            <button
-              onClick={handleClose}
-              className="rounded-sm border border-border bg-transparent px-4 py-2 text-[13px] font-medium text-text-primary transition-colors hover:bg-surface-hover"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleGoLive}
-              disabled={starting || (NEEDS_CUSTOM_PICKER && !picked)}
-              className="inline-flex items-center gap-2 rounded-sm bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50 disabled:hover:bg-accent"
-            >
-              {starting ? (
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-on-accent/30 border-t-on-accent" />
-              ) : (
-                <Icon name="broadcast" size={15} />
-              )}
-              {starting ? "Starting…" : "Go Live"}
-            </button>
-          </div>
-        </div>
+          </section>
+        )}
       </div>
     </div>,
     document.body,

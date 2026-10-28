@@ -8,16 +8,17 @@ import {
   resolutionLabel,
 } from "./presets";
 
-/// Four named quality cards, two by two. Settings that match none of them
-/// (changed under Advanced) leave every card unpicked and say so underneath.
-export default function QualityPresets({ disabled }: { disabled?: boolean }) {
+/// Four named quality cards, two by two (or in one row where the dialog is
+/// wide). Settings that match none of them (changed under Advanced) leave
+/// every card unpicked and say so underneath.
+export default function QualityPresets({ disabled, row }: { disabled?: boolean; row?: boolean }) {
   const settings = useVoiceStore((s) => s.streamSettings);
   const setStreamSettings = useVoiceStore((s) => s.setStreamSettings);
   const active = matchPreset(settings);
 
   return (
     <div>
-      <div role="radiogroup" aria-label="Stream quality" className="grid grid-cols-2 gap-2">
+      <div role="radiogroup" aria-label="Stream quality" className={`grid gap-2 ${row ? "grid-cols-4" : "grid-cols-2"}`}>
         {STREAM_PRESETS.map((p) => {
           const on = active?.id === p.id;
           return (

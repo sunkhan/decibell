@@ -4513,3 +4513,29 @@ Verified: `cargo test --lib` 322 (+1: the detail overrides keep the presets' IDR
 harness captures of the dialog in five themes, Windows / Linux / 1000 × 700. Live test pending: a 5 fps stream
 from NVIDIA and AMD on Windows and Linux (the encoder opens with `p7` / `hq`; a forced keyframe on joining; a 4K
 screen announced at 3840 × 2160 with H.264), and a still slide watched for a minute without a soft pulse.
+
+### Feature: Go Live's options in a panel beside the dialog (2026-10-28)
+
+Owner: sound and cursor in a second floating panel next to the dialog, to make it feel more approachable. They
+approved the proposal page (https://claude.ai/artifact/8X8hEcPqAuXZwKiecMVzdX) with its three recommendations.
+
+- **Two cards where the window has room** (`CaptureSourcePicker.tsx`, `hooks/useMediaQuery.ts`): the main card
+  keeps what to share, the quality cards and the footer with Go Live (460 px on Linux / macOS; 760 px on
+  Windows, where the four quality cards sit in one row under the source grid); an **Options** panel (336 px,
+  "Optional. The defaults suit most streams.") holds Share sound with its app chooser, Show my cursor and,
+  **owner: Advanced at its foot** (flat, summary wrapping). Sound's list and Advanced grow and scroll inside the
+  panel, never moving the main card (before, opening both scrolled the whole Linux dialog and the Windows
+  settings column).
+- **One dialog**: tops aligned 12 px apart, the panel on `shadow-float` beside the dialog's `shadow-modal`, the
+  panel settling in 80 ms after it. Esc, ✕ and a click outside close both; the row between them lets a click in
+  the gap through to the backdrop. Tab runs through the main card (Go Live included) into the panel.
+- **Owner: smaller windows keep today's single card** (below 880 px, or 1184 px on Windows). A live resize
+  across the line moves the options between the two and keeps the pick and Advanced's open state.
+- **Owner: the panel always shows** when there's room (no hide button).
+
+Renderer only; settings, stream start and the 5 fps tuning unchanged. The rejected alternative (an Options
+button with a popover: hides Share sound, covers the quality cards) is on the proposal page. Verified: tsc web 0;
+harness captures of the real components in seven themes (Windows 1280 × 800 / 1100 × 760, Linux 1280 × 800 /
+800 × 600, macOS, sound with Only these, Advanced open, Slides); a live resize 1280 → 1100 → 1280 driven in the
+harness; a click in the gap lands on the backdrop. Live test pending: the real app on Windows and Linux at
+several window widths, and a screen-reader pass over the two cards.

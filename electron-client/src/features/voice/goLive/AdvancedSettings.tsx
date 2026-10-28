@@ -33,11 +33,14 @@ export default function AdvancedSettings({
   onToggle,
   showSoundBitrate,
   disabled,
+  flat,
 }: {
   open: boolean;
   onToggle: () => void;
   showSoundBitrate: boolean;
   disabled?: boolean;
+  /// Inside the options panel: a section of the panel, not a card of its own.
+  flat?: boolean;
 }) {
   const settings = useVoiceStore((s) => s.streamSettings);
   const setStreamSettings = useVoiceStore((s) => s.setStreamSettings);
@@ -68,7 +71,7 @@ export default function AdvancedSettings({
   ].join(" · ");
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border-divider bg-bg-light">
+    <div className={flat ? "" : "overflow-hidden rounded-lg border border-border-divider bg-bg-light"}>
       <button
         type="button"
         aria-expanded={open}
@@ -80,7 +83,7 @@ export default function AdvancedSettings({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-[14px] font-medium text-text-primary">Advanced</span>
-          <span className="mt-0.5 block truncate text-[12px] tabular-nums text-text-muted">{summary}</span>
+          <span className={`mt-0.5 block text-[12px] tabular-nums text-text-muted ${flat ? "" : "truncate"}`}>{summary}</span>
         </span>
         <Icon
           name="chevronDown"
