@@ -335,6 +335,13 @@ contextBridge.exposeInMainWorld("decibell", {
       ipcRenderer.invoke("decibell:shell:openExternal", url) as Promise<void>,
   },
   clipboard: {
+    /// Fetch an attachment in main and put it on the clipboard as an image.
+    /// A format main can't decode comes back as `convert` (its bytes) for
+    /// the renderer to turn into PNG and pass to `writeImage`.
+    copyAttachment: (serverId: string, attachmentId: number): Promise<{ copied: true } | { convert: Uint8Array }> =>
+      ipcRenderer.invoke("decibell:clipboard:copyAttachment", serverId, attachmentId) as Promise<
+        { copied: true } | { convert: Uint8Array }
+      >,
     /// PNG or JPEG bytes onto the system clipboard as an image.
     writeImage: (bytes: Uint8Array): Promise<void> =>
       ipcRenderer.invoke("decibell:clipboard:writeImage", bytes) as Promise<void>,

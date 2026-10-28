@@ -113,6 +113,7 @@ declare global {
         openExternal: (url: string) => Promise<void>;
       };
       clipboard: {
+        copyAttachment: (serverId: string, attachmentId: number) => Promise<{ copied: true } | { convert: Uint8Array }>;
         writeImage: (bytes: Uint8Array) => Promise<void>;
         writeText: (text: string) => Promise<void>;
       };

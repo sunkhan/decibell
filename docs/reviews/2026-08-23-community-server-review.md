@@ -4616,3 +4616,26 @@ Verified: tsc web + node 0. Harness: 40 wheel notches to 800%, then ten more at 
 unchanged; wheeling out at fit at three points leaves it at 0, 0. In Electron: JPEG and PNG go through unchanged,
 WebP converts to PNG, all three decode in `nativeImage` (sizes match); junk bytes are refused. Live test pending:
 Copy into another app from the dev and packaged builds, a link GIF and an encrypted-channel attachment.
+
+### Change: Copy image in one trip, with a "Copying…" notice (2026-10-28)
+
+Owner-approved follow-up to the clipboard fix. An attachment's copy was: main downloads it, sends every byte to the
+renderer, the renderer sends them back, main decodes and writes (measured: ~30 ms of IPC for 5 MB, ~100 ms for
+20 MB, on top of the download).
+
+- **One trip** (`electron/main/clipboard.ts`, `decibell.clipboard.copyAttachment`): main fetches the attachment
+  (`fetchAttachmentBytes` in `netFetch.ts`: decrypted for encrypted channels, held to the download cap, `no-store`
+  like every attachment fetch), and a PNG or JPEG is decoded and written there; its bytes never reach the renderer.
+  Only a format `nativeImage` can't read (WebP, AVIF, GIF) comes back once as `convert`, becomes a PNG on a
+  canvas and returns through `writeImage`. Link images are unchanged (the renderer fetches them).
+- **"Copying image…"** appears if a copy takes over 300 ms (attachments aren't cached, so a copy downloads the
+  original again) and is replaced by "Image copied" or "Copy failed — …"; the failure text drops Electron's
+  "Error invoking remote method" wrapper.
+- Not done, by owner choice for now: keeping the viewer's last originals in memory so Copy / Save skip the second
+  download.
+
+Verified: tsc web + node 0. In Electron against a local HTTPS stand-in for the community server (clipboard writes
+captured, not the real clipboard): JPEG (1918×1080) and PNG copied in main, WebP converted in the renderer
+(800×450), a 404 and an unknown server refused with clean messages, the bearer token sent. The real `copyImage`
+bundled and run with real timers: a 50 ms copy shows only "Image copied"; a 900 ms one shows "Copying image…" at
+300 ms, then the result. Live test pending: an encrypted-channel attachment and a large file on the real server.

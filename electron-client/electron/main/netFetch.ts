@@ -1,6 +1,7 @@
 import { app, ipcMain, net } from "electron";
 import { fetchDecryptedAttachment } from "./attachmentFetch";
 import { readPaced } from "./downloadPacer";
+import { NO_STORE } from "./noStore";
 import {
   setAttachmentTarget,
   clearAttachmentTarget,
@@ -22,6 +23,26 @@ interface FetchResult {
   statusText: string;
   headers: Record<string, string>;
   body: ArrayBuffer;
+}
+
+/// A whole attachment's content, fetched by main for main's own use (Copy
+/// image): decrypted when its channel is encrypted, held to the download
+/// speed cap, kept out of the disk cache like every attachment fetch.
+export async function fetchAttachmentBytes(
+  serverId: string,
+  attachmentId: string,
+): Promise<{ status: number; body: Uint8Array }> {
+  const dec = await fetchDecryptedAttachment(serverId, attachmentId, "");
+  if (dec) return { status: dec.status, body: dec.body };
+  const target = getAttachmentTarget(serverId);
+  if (!target) throw new Error("Not connected to that server");
+  const response = await net.fetch(`https://${target.host}:${target.port}/attachments/${attachmentId}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${target.jwt}` },
+    ...NO_STORE,
+  });
+  if (!response.ok) return { status: response.status, body: new Uint8Array(0) };
+  return { status: response.status, body: await readPaced(response, serverId, attachmentId) };
 }
 
 // Renderer-driven HTTP through Electron's main-process `net` module.
