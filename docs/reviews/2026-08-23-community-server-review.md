@@ -4557,3 +4557,41 @@ Verified: tsc web 0. Harness with the real `ChatPanel` and a server stand-in tha
 pages like the community: six jumps in a row (to rows 40, 120, 10, 170, 60, 140 of 200). HEAD lands four, with
 the 2nd and 5th left 369 px off centre at the bottom of the new window; the fix lands all six centred, including
 the 5th, which was already loaded. Live test pending: consecutive search jumps on the real server.
+
+### Feature: the image viewer, redesigned (2026-10-28)
+
+Owner request: a modern, smooth image viewer that fits every theme. The owner approved the proposal page
+(https://claude.ai/artifact/Ttg5dAVKTFsoZdN2BvdRKe) and answered its three decisions.
+
+- **Opens out of the thumbnail, closes back into it** (`features/chat/ImageViewer.tsx`): a 300 ms flight from the
+  thumbnail's box (grid cells uncrop through `clip-path` on the way), starting from the thumbnail the chat already
+  decoded, so there's no empty frame; the original fades in over it once decoded ("Loading original" in the header
+  after 400 ms, "Couldn't load the original · Retry" on failure). Closing unwinds zoom, pan and turns while it flies
+  to wherever the thumbnail is now (`data-viewer-key`), or fades if it's off screen; clicks pass through while it
+  closes. Reduced motion: fades only.
+- **A stage in each theme's colours**: the theme's chrome colour (`.chrome-scope`, so Console Split is its dark
+  chrome) washed with the picture's ThumbHash blurred past recognition; header, tools, arrows, strip and minimap on
+  the theme's raised cards, accent and radii. **Owner: the light themes keep a light stage.**
+- **Owner: the arrows walk the clicked message's images only, as on Discord** (`imageViewer/gallery.ts`): ← → Home
+  End, a strip with "n / N" when the message has several. The two neighbours preload.
+- **Zoom in actual pixels** (`imageViewer/geometry.ts`): the label is the picture's real scale; **owner: a click
+  zooms** to 100% under the pointer (a picture already near actual size doubles), again to fit; the wheel and a
+  pinch zoom toward the pointer; drag pans with a short glide; past 300% pixels draw hard; a minimap shows and moves
+  the visible part. Rotate (R), Copy (Ctrl+C), Save (Ctrl+S, through the Transfers panel), Open in browser for link
+  images (`imageViewer/imageActions.ts`, shared with the right-click menu, which now also serves link images: Copy
+  image, Copy link, Open in browser).
+- Header: sender (server nickname), the chat's time phrasing, channel, file name, dimensions, size. The chrome and
+  cursor hide after 2.5 s without movement, as the voice view's overlays do.
+
+Fixed on the way, each reproduced in the harness against the old viewer: the right-click menu (z-80) opened behind
+the viewer (z-200), as did toasts, the incoming-call card and the Transfers panel; the viewer is now `z-[55]` and
+starts under the title bar, so window controls and Transfers stay usable. A drag that started on the black closed
+it. `+ = 0` also typed into the message box behind it (type-to-focus; the viewer now keeps every key). A zoomed
+picture painted over the close button and the zoom label. The cursor promised zoom on a click that did nothing.
+
+Renderer only. The proposal's "Jump to message" was dropped with the message-only gallery (the message is the one
+on screen). Verified: tsc web 0; harness captures of the real app in seven themes (before / after, seven states,
+frame-exact motion); a smoke run of the ported tree: single image without strip or arrows, 2 / 4 → 3 / 4 with the
+slide intact after the original lands, End → 4 / 4, close returns focus to the thumbnail, a reopen 80 ms into a
+close opens the new image with no thumbnail left hidden, reduced motion runs no flight. Live test pending: the real
+app with large and encrypted attachments, a trackpad pinch, and DPR 1.25 / 1.5.

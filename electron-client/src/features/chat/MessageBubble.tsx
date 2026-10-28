@@ -477,11 +477,11 @@ function MessageBubble({
               blocks, display math) and a block inside <p> is invalid
               HTML — the browser force-closes the paragraph around it. */}
           {renderContent("")}
-          <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
+          <AttachmentList attachments={message.attachments} serverId={serverId ?? null} source={message} />
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
-          {!editing && <LinkEmbeds content={message.content} senderUid={message.senderUid} suppressed={message.suppressEmbeds} />}
+          {!editing && <LinkEmbeds content={message.content} senderUid={message.senderUid} suppressed={message.suppressEmbeds} serverId={serverId} source={message} />}
         </div>
         {renderActions("top-0")}
       </div>
@@ -532,11 +532,11 @@ function MessageBubble({
           </div>
           {/* div, not p — see the grouped branch above. */}
           {renderContent("mt-0.5")}
-          <AttachmentList attachments={message.attachments} serverId={serverId ?? null} />
+          <AttachmentList attachments={message.attachments} serverId={serverId ?? null} source={message} />
           {message.pendingAttachmentIds && message.pendingAttachmentIds.length > 0 && (
             <BubbleInflightAttachments pendingIds={message.pendingAttachmentIds} />
           )}
-          {!editing && <LinkEmbeds content={message.content} senderUid={message.senderUid} suppressed={message.suppressEmbeds} />}
+          {!editing && <LinkEmbeds content={message.content} senderUid={message.senderUid} suppressed={message.suppressEmbeds} serverId={serverId} source={message} />}
         </div>
       </div>
       {renderActions("top-1")}

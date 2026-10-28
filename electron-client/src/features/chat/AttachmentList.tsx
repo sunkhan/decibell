@@ -17,6 +17,7 @@ import { previewUrlFor } from "./attachmentPreviewUrl";
 import { thumbHashToDataUrl } from "./thumbhash";
 import { retainImage, thumbnailBytes } from "./imageRetention";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
+import { attachmentViewerKey, galleryFor, type ViewerSource } from "./imageViewer/gallery";
 import { useImageContextMenuStore } from "../../stores/imageContextMenuStore";
 import { useActiveAudioStore } from "../../stores/activeAudioStore";
 import { useActiveVideoStore } from "../../stores/activeVideoStore";
@@ -43,6 +44,9 @@ import { startDownload } from "../transfers/downloads";
 interface Props {
   attachments: Attachment[];
   serverId: string | null;
+  /// The message they're in: who posted it, when and where, for the
+  /// image viewer's header.
+  source?: ViewerSource;
 }
 
 /// Inline attachment renderer. Image grid uses native <img>; video and
@@ -52,7 +56,7 @@ interface Props {
 ///
 /// The persistent video/audio layer that survives channel switches
 /// (PR-extra polish) isn't ported; for now players are bubble-local.
-export default function AttachmentList({ attachments, serverId }: Props) {
+export default function AttachmentList({ attachments, serverId, source }: Props) {
   if (attachments.length === 0) return null;
   // Sort by `position` (server-assigned ordering field) so the grid
   // layout below matches send-time ordering rather than wire arrival
@@ -85,9 +89,9 @@ export default function AttachmentList({ attachments, serverId }: Props) {
           mediaMarginTop={useGrid || gridable[0].kind === "video"}
         >
           {useGrid ? (
-            <MediaGrid items={gridable} serverId={serverId} />
+            <MediaGrid items={gridable} serverId={serverId} source={source} siblings={attachments} />
           ) : (
-            <LiveAttachment key={gridable[0].id} attachment={gridable[0]} serverId={serverId} />
+            <LiveAttachment key={gridable[0].id} attachment={gridable[0]} serverId={serverId} source={source} siblings={attachments} />
           )}
         </MediaWithDownload>
       )}
@@ -95,7 +99,7 @@ export default function AttachmentList({ attachments, serverId }: Props) {
         a.purgedAt > 0 ? (
           <PurgedTombstone key={a.id} attachment={a} />
         ) : (
-          <LiveAttachment key={a.id} attachment={a} serverId={serverId} />
+          <LiveAttachment key={a.id} attachment={a} serverId={serverId} source={source} siblings={attachments} />
         ),
       )}
     </div>
@@ -177,10 +181,14 @@ function MediaWithDownload({
 function LiveAttachment({
   attachment,
   serverId,
+  source,
+  siblings,
   fillCell = false,
 }: {
   attachment: Attachment;
   serverId: string | null;
+  source?: ViewerSource;
+  siblings: Attachment[];
   /// When true, render in grid-cell mode: fill the parent box, crop
   /// with object-cover, drop the standalone-card chrome (the grid
   /// container provides the rounded corners + gaps). When false the
@@ -190,7 +198,7 @@ function LiveAttachment({
   fillCell?: boolean;
 }) {
   if (attachment.kind === "image") {
-    return <ImageItem attachment={attachment} serverId={serverId} fillCell={fillCell} />;
+    return <ImageItem attachment={attachment} serverId={serverId} source={source} siblings={siblings} fillCell={fillCell} />;
   }
   if (attachment.kind === "video") {
     return <VideoItem attachment={attachment} serverId={serverId} fillCell={fillCell} />;
@@ -204,9 +212,13 @@ function LiveAttachment({
 function MediaGrid({
   items,
   serverId,
+  source,
+  siblings,
 }: {
   items: Attachment[];
   serverId: string | null;
+  source?: ViewerSource;
+  siblings: Attachment[];
 }) {
   // Container width tracks the chat viewport (sqrt-scaled max),
   // clamped to the grid's own min/max so cells stay readable on
@@ -234,7 +246,7 @@ function MediaGrid({
         >
           {row.map((att) => (
             <div key={att.id} className="min-w-0 flex-1 overflow-hidden">
-              <LiveAttachment attachment={att} serverId={serverId} fillCell />
+              <LiveAttachment attachment={att} serverId={serverId} source={source} siblings={siblings} fillCell />
             </div>
           ))}
         </div>
@@ -246,10 +258,14 @@ function MediaGrid({
 function ImageItem({
   attachment,
   serverId,
+  source,
+  siblings,
   fillCell = false,
 }: {
   attachment: Attachment;
   serverId: string | null;
+  source?: ViewerSource;
+  siblings: Attachment[];
   fillCell?: boolean;
 }) {
   const open = useImageViewerStore((s) => s.open);
@@ -304,18 +320,17 @@ function ImageItem({
   return (
     <button
       type="button"
-      onClick={() =>
-        fullUrl &&
-        open({
-          url: fullUrl,
-          filename: attachment.filename,
-          width: attachment.width,
-          height: attachment.height,
-          serverId: serverId ?? undefined,
-          attachmentId: Number(attachment.id),
-          mime: attachment.mime,
-        })
-      }
+      data-viewer-key={serverId ? attachmentViewerKey(serverId, Number(attachment.id)) : undefined}
+      onClick={(e) => {
+        if (!fullUrl || !serverId) return;
+        const { items, index } = galleryFor(serverId, source, siblings, Number(attachment.id));
+        if (items.length === 0) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        open(items, index, {
+          rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+          fit: fillCell ? "cover" : "contain",
+        });
+      }}
       onContextMenu={(e) => {
         if (!serverId) return;
         e.preventDefault();

@@ -15,14 +15,19 @@ interface ImageContextMenuState {
   filename: string | null;
   mime: string | null;
   kind: ContextMenuKind;
+  /// Link images (no attachment): the image and the page it came from.
+  url: string | null;
+  pageUrl: string | null;
   show: (opts: {
     x: number;
     y: number;
-    serverId: string;
-    attachmentId: number;
+    serverId?: string;
+    attachmentId?: number;
     filename?: string;
     mime?: string;
     kind?: ContextMenuKind;
+    url?: string;
+    pageUrl?: string;
   }) => void;
   close: () => void;
 }
@@ -36,16 +41,20 @@ export const useImageContextMenuStore = create<ImageContextMenuState>((set) => (
   filename: null,
   mime: null,
   kind: "image",
-  show: ({ x, y, serverId, attachmentId, filename, mime, kind }) =>
+  url: null,
+  pageUrl: null,
+  show: ({ x, y, serverId, attachmentId, filename, mime, kind, url, pageUrl }) =>
     set({
       open: true,
       x,
       y,
-      serverId,
-      attachmentId,
+      serverId: serverId ?? null,
+      attachmentId: attachmentId ?? null,
       filename: filename ?? null,
       mime: mime ?? null,
       kind: kind ?? "image",
+      url: url ?? null,
+      pageUrl: pageUrl ?? null,
     }),
   close: () => set({ open: false }),
 }));

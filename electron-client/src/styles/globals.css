@@ -1643,3 +1643,53 @@ html, body, #root {
 .rich-math-display .katex-display > .katex {
   text-align: left;
 }
+
+/* ─── Image viewer (features/chat/ImageViewer.tsx) ──────────────────
+   The stage is the theme's chrome colour (console-split: its dark
+   chrome, via .chrome-scope on the viewer), washed with the picture's
+   own colours: its ThumbHash, blurred far past recognition, so every
+   picture brings its own light. Light themes get a paler, brighter
+   wash — a dark photo must not leave a grey smudge on a light stage. */
+.image-viewer {
+  --viewer-stage: var(--color-bg-darkest);
+  --viewer-wash: 0.5;
+  --viewer-wash-filter: blur(64px) saturate(1.35);
+}
+:root[data-theme="matinee"] .image-viewer,
+:root[data-theme="graphite-light"] .image-viewer,
+:root[data-theme="console-light"] .image-viewer {
+  --viewer-wash: 0.34;
+  --viewer-wash-filter: blur(64px) saturate(1.5) brightness(1.2);
+}
+.viewer-wash {
+  opacity: var(--viewer-wash);
+  filter: var(--viewer-wash-filter);
+  animation: viewerWashIn 0.45s ease both;
+}
+@keyframes viewerWashIn {
+  from { opacity: 0; }
+  to   { opacity: var(--viewer-wash); }
+}
+.viewer-vignette {
+  background: radial-gradient(ellipse 80% 75% at 50% 50%, transparent 45%, color-mix(in oklab, var(--viewer-stage) 75%, transparent) 100%);
+}
+/* Behind the header, so its text still reads over a zoomed picture. */
+.viewer-head {
+  background: linear-gradient(to bottom, color-mix(in oklab, var(--viewer-stage) 80%, transparent) 0%, color-mix(in oklab, var(--viewer-stage) 45%, transparent) 60%, transparent 100%);
+}
+/* Stepping through the gallery: the next picture slides in from its side. */
+.viewer-step-in {
+  animation: viewerStepIn 0.24s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes viewerStepIn {
+  from { opacity: 0; translate: calc(var(--viewer-dir, 0) * 32px) 0; }
+  to   { opacity: 1; translate: 0 0; }
+}
+/* Reduced motion: the next picture fades in where it will sit. */
+@keyframes viewerFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .viewer-step-in { animation-name: viewerFadeIn; }
+}

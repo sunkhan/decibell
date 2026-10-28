@@ -1,19 +1,15 @@
 import { useEffect, useMemo } from "react";
 import { useImageContextMenuStore } from "../stores/imageContextMenuStore";
-import { toast } from "../stores/toastStore";
 import { useMenuPosition } from "../hooks/useMenuPosition";
-import { startDownload } from "../features/transfers/downloads";
+import { copyImage, copyLink, openInBrowser, saveImage } from "../features/chat/imageViewer/imageActions";
 
-// Right-click menu for chat image and video attachments.
+// Right-click menu for chat images and videos, inline and in the viewer.
 //
-//   - Copy → fetch the attachment bytes through main's netFetch, make
-//     a Blob, hand it to the Web Clipboard API.
+//   - Copy image → the bytes through main's netFetch, as PNG, onto the
+//     clipboard (imageActions.copyImage).
 //   - Save as… → the download manager in main, with its save dialog;
-//     the transfer shows in the Transfers panel.
-//
-// The decibell-attachment:// custom protocol handles auth and the
-// HTTP round-trip transparently — the renderer treats attachments as
-// fetch()-able URLs.
+//     the transfer shows in the Transfers panel (attachments).
+//   - Copy link / Open in browser → link images.
 export default function ImageContextMenu() {
   const open = useImageContextMenuStore((s) => s.open);
   const x = useImageContextMenuStore((s) => s.x);
@@ -23,6 +19,8 @@ export default function ImageContextMenu() {
   const filename = useImageContextMenuStore((s) => s.filename);
   const kind = useImageContextMenuStore((s) => s.kind);
   const mime = useImageContextMenuStore((s) => s.mime);
+  const url = useImageContextMenuStore((s) => s.url);
+  const pageUrl = useImageContextMenuStore((s) => s.pageUrl);
   const close = useImageContextMenuStore((s) => s.close);
 
   // Keep the menu inside the viewport (measured, flips above the cursor
@@ -49,72 +47,24 @@ export default function ImageContextMenu() {
     };
   }, [open, close]);
 
-  if (!open || !serverId || attachmentId === null) return null;
+  const isAttachment = serverId !== null && attachmentId !== null;
+  if (!open || (!isAttachment && !url)) return null;
 
-  // Fetch the attachment via the main-process net.fetch helper rather
-  // than renderer-side fetch(decibell-attachment://...). The custom
-  // protocol works for `<img src>` (image loads aren't CORS-checked)
-  // but renderer fetch() against a non-renderer origin is rejected by
-  // Chromium even with webSecurity off. netFetch goes straight
-  // through main, sidesteps CORS, and the attachmentTarget shorthand
-  // builds the upstream URL + adds the Bearer token automatically.
-  const fetchAttachmentBytes = async (): Promise<{
-    bytes: ArrayBuffer;
-    mime: string;
-  }> => {
-    const res = await window.decibell.netFetch("", {
-      method: "GET",
-      attachmentTarget: {
-        serverId,
-        path: `/attachments/${attachmentId}`,
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return {
-      bytes: res.body,
-      mime: res.headers["content-type"] ?? "application/octet-stream",
-    };
+  const image = {
+    key: "",
+    url: url ?? "",
+    filename: filename ?? (kind === "video" ? "video" : "image"),
+    width: 0,
+    height: 0,
+    mime: mime ?? undefined,
+    serverId: serverId ?? undefined,
+    attachmentId: attachmentId ?? undefined,
+    pageUrl: pageUrl ?? undefined,
   };
-
-  const handleCopy = async (e: React.MouseEvent) => {
+  const run = (fn: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     close();
-    try {
-      const { bytes, mime } = await fetchAttachmentBytes();
-      let blob = new Blob([bytes], { type: mime });
-      // Chromium's Clipboard API only accepts a small whitelist of
-      // image MIME types (image/png is universally supported; some
-      // builds also accept jpeg/gif). Convert anything else to PNG via
-      // a canvas round-trip so the paste lands in any client.
-      if (blob.type !== "image/png") {
-        const bitmap = await createImageBitmap(blob);
-        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("Canvas 2D unavailable");
-        ctx.drawImage(bitmap, 0, 0);
-        blob = await canvas.convertToBlob({ type: "image/png" });
-        bitmap.close();
-      }
-      await navigator.clipboard.write([
-        new ClipboardItem({ "image/png": blob }),
-      ]);
-      toast.success("Image copied", filename ?? undefined);
-    } catch (err) {
-      toast.error("Copy failed", String(err));
-    }
-  };
-
-  const handleSave = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    close();
-    void startDownload(serverId, attachmentId, {
-      saveAs: true,
-      fallback: {
-        filename: filename ?? (kind === "video" ? "video" : "image"),
-        mime: mime ?? undefined,
-        kind,
-      },
-    });
+    fn();
   };
 
   return (
@@ -126,7 +76,7 @@ export default function ImageContextMenu() {
     >
       {kind === "image" && (
         <MenuItem
-          onClick={handleCopy}
+          onClick={run(() => void copyImage(image))}
           icon={
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
@@ -137,18 +87,47 @@ export default function ImageContextMenu() {
           Copy image
         </MenuItem>
       )}
-      <MenuItem
-        onClick={handleSave}
-        icon={
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-        }
-      >
-        Save as…
-      </MenuItem>
+      {isAttachment && (
+        <MenuItem
+          onClick={run(() => saveImage(image, true, kind))}
+          icon={
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          }
+        >
+          Save as…
+        </MenuItem>
+      )}
+      {!isAttachment && (
+        <>
+          <MenuItem
+            onClick={run(() => void copyLink(image))}
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            }
+          >
+            Copy link
+          </MenuItem>
+          <MenuItem
+            onClick={run(() => openInBrowser(image))}
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            }
+          >
+            Open in browser
+          </MenuItem>
+        </>
+      )}
     </div>
   );
 }

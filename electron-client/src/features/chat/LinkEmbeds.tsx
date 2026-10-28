@@ -4,6 +4,7 @@ import { useLinkPreviewStore } from "../../stores/linkPreviewStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useImageViewerStore } from "../../stores/imageViewerStore";
+import { urlViewerKey, type ViewerSource } from "./imageViewer/gallery";
 import {
   GIF_MAX_H,
   GIF_MAX_W,
@@ -58,11 +59,16 @@ function LinkEmbeds({
   content,
   senderUid,
   suppressed,
+  serverId,
+  source,
 }: {
   content: string;
   senderUid: number;
   /// The sender lacked EMBED_LINKS in this channel (server-marked).
   suppressed?: boolean;
+  /// Where the message is: the image viewer's header.
+  serverId?: string | null;
+  source?: ViewerSource;
 }) {
   const previewsOn = useUiStore((s) => s.linkPreviewsEnabled);
   const enabled = previewsOn && !suppressed;
@@ -76,7 +82,7 @@ function LinkEmbeds({
         isInviteLink(url) ? (
           <InviteEmbed key={url} href={url} senderUid={senderUid} />
         ) : enabled ? (
-          <LinkEmbed key={url} url={url} />
+          <LinkEmbed key={url} url={url} serverId={serverId} source={source} />
         ) : null,
       )}
     </>
@@ -85,7 +91,7 @@ function LinkEmbeds({
 
 export default memo(LinkEmbeds);
 
-function LinkEmbed({ url }: { url: string }) {
+function LinkEmbed({ url, serverId, source }: { url: string; serverId?: string | null; source?: ViewerSource }) {
   const entry = useLinkPreviewStore((s) => s.entries[url]);
   useEffect(() => {
     useLinkPreviewStore.getState().request(url);
@@ -93,9 +99,9 @@ function LinkEmbed({ url }: { url: string }) {
   const preview = entry?.status === "done" ? entry.preview : null;
   if (!preview) return null;
   return preview.kind === "image" ? (
-    <ImageEmbed image={preview} standalone gif={preview.gif || isGifUrl(preview.url)} />
+    <ImageEmbed image={preview} standalone gif={preview.gif || isGifUrl(preview.url)} pageUrl={url} serverId={serverId} source={source} />
   ) : (
-    <SiteCard preview={preview} />
+    <SiteCard preview={preview} serverId={serverId} source={source} />
   );
 }
 
@@ -118,7 +124,14 @@ function ImageEmbed({
   standalone,
   gif = false,
   onError,
+  pageUrl,
+  serverId,
+  source,
 }: {
+  /// The link the message carries (the page, or the image itself).
+  pageUrl: string;
+  serverId?: string | null;
+  source?: ViewerSource;
   image: LinkPreviewImage;
   /// Standalone = the message's link *is* the image: attachment
   /// styling (border, rounded-lg). Inside a card: rounded-md, no
@@ -134,8 +147,29 @@ function ImageEmbed({
   if (failed) return null;
 
   const filename = filenameOf(image.url);
-  const onOpen = () =>
-    open({ url: image.url, filename, width: image.width, height: image.height });
+  const key = urlViewerKey(image.url, source?.id);
+  const onOpen = (e: React.MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    open(
+      [
+        {
+          key,
+          url: image.url,
+          filename,
+          width: image.width,
+          height: image.height,
+          pageUrl,
+          serverId: serverId ?? undefined,
+          channelId: source?.channelId,
+          senderUid: source?.senderUid,
+          sender: source?.sender,
+          timestamp: source?.timestamp,
+        },
+      ],
+      0,
+      { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, fit: "contain" },
+    );
+  };
   const fail = () => {
     setFailed(true);
     onError?.();
@@ -173,7 +207,7 @@ function ImageEmbed({
     // the box; capped at natural size the image sits centred in the space
     // it was promised instead.
     return (
-      <button type="button" onClick={onOpen} className={frameClass} style={{ width, height }}>
+      <button type="button" data-viewer-key={key} onClick={onOpen} className={frameClass} style={{ width, height }}>
         <img {...imgProps} className="max-h-full max-w-full object-contain" />
       </button>
     );
@@ -186,7 +220,7 @@ function ImageEmbed({
     ? maxImageHeight(chatViewSize.height, kind)
     : gif ? GIF_MAX_H : PREVIEW_FALLBACK_MAX_H;
   return (
-    <button type="button" onClick={onOpen} className={frameClass}>
+    <button type="button" data-viewer-key={key} onClick={onOpen} className={frameClass}>
       <img
         {...imgProps}
         className="block max-w-full object-contain"
@@ -196,7 +230,15 @@ function ImageEmbed({
   );
 }
 
-function SiteCard({ preview }: { preview: SitePreview }) {
+function SiteCard({
+  preview,
+  serverId,
+  source,
+}: {
+  preview: SitePreview;
+  serverId?: string | null;
+  source?: ViewerSource;
+}) {
   const [imageFailed, setImageFailed] = useState(false);
   const image = imageFailed ? null : preview.image;
   const large = image !== null && preview.largeImage;
@@ -232,7 +274,14 @@ function SiteCard({ preview }: { preview: SitePreview }) {
           </div>
         )}
         {large && (
-          <ImageEmbed image={image} standalone={false} onError={() => setImageFailed(true)} />
+          <ImageEmbed
+            image={image}
+            standalone={false}
+            onError={() => setImageFailed(true)}
+            pageUrl={preview.url}
+            serverId={serverId}
+            source={source}
+          />
         )}
       </div>
       {thumb && (
