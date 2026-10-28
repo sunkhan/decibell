@@ -4388,3 +4388,30 @@ quiet-frame and two restart cases); `napi build`; tsc web 0. Live test pending: 
 on Linux (KDE and GNOME: the log's "Negotiated format … max 5/1" line, a slide change showing its final state
 with the mouse still) and Windows, viewers on a slow connection, and stopping and starting a stream within a few
 seconds.
+
+### Fix: opening an unloaded DM or channel goes straight to its messages (2026-10-28)
+
+Reported by the owner: switching to a conversation not opened yet made the DM list swap rows for an instant, and
+both DMs and text channels flashed something before their messages showed.
+
+- **The DM list swap.** A conversation not opened yet holds one row, synthesized from its sidebar preview, so the
+  message list mounted at once with that row, found itself at the top and asked for the page *older* than it,
+  before the panel's newest-page request (layout effects run before the load effect). That page landed first,
+  in a slice whose only row it drops, and `appendHistory` recomputed `lastMessageTime` from the slice: older than
+  the real last message, so the conversation sank down the list until the newest page landed a frame later. The
+  same recomputation sank a conversation while it was scrolled up (the tail trimmed, then an older page). Now
+  only the newest page sets the time (a deleted last message takes its time with it); any other page never moves
+  it back. Older pages also wait for the newest one in both panels (`historyLoaded` / `historyFetched`).
+- **The flash.** A DM showed its lone preview row, then the older page without its newest message, then the
+  conversation; a channel showed "Loading history…" for the length of the request (and, depending on timing, the
+  channel welcome for the frame before the load starts). Both panels now wait for the first page instead of
+  showing what the slice holds meanwhile, and the loading text fades in only after 300 ms, so a normal load goes
+  from blank straight to the messages. A first page that couldn't be loaded shows Retry, also when live rows
+  arrived meanwhile. DM jump-to-present uses the same wait (its `presentLoading` state is gone).
+
+Verified: tsc web 0. The real `dmStore` replays the race and the scrolled-up case: the order swaps and swaps back
+on HEAD and holds with the fix. A harness of the real panels with a stubbed IPC, recording every frame of a switch
+with replies after 60 ms: HEAD shows the preview row for 5 frames, then the page without its newest row and the
+sidebar reordered for a frame, two requests (older first); the fix sends one request and goes blank → messages,
+the sidebar unmoved; with 700 ms replies the text fades in from 300 ms. Live test pending: switching to DMs and
+channels not opened since sign-in, on the real servers.

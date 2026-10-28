@@ -164,10 +164,6 @@ export default function DmChatPanel() {
   const [scrolledUp, setScrolledUp] = useState(false);
   // Real-DOM list: the pending/landed jump target — see ChatPanel.
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
-  // True while jump-to-present has cleared the slice and is awaiting the newest
-  // page — shows a loading placeholder instead of the "beginning of
-  // conversation" welcome during the brief refetch.
-  const [presentLoading, setPresentLoading] = useState(false);
 
   // Fire the delete flow for a DM message. Optimistic: snapshot
   // into pendingDmDeletions, remove from the view, fire the native
@@ -256,6 +252,11 @@ export default function DmChatPanel() {
   useTypeToFocusComposer(editorRef, editLatestOwn);
 
   const messages = conversation?.messages ?? [];
+  // Until the newest page is in, the slice holds at most the sidebar's
+  // preview row and live arrivals. Showing those and then the page a moment
+  // later is a visible jump, so the panel waits for the page; a load that
+  // got no answer shows Retry.
+  const awaitingFirstPage = !conversation?.historyLoaded && failedPeer !== activeDmUser;
   // "Windowed" = viewing a jumped slice with newer messages below (not at the
   // live bottom). Drives the jump-to-present pill, followOutput gating, and
   // downward pagination.
@@ -292,7 +293,6 @@ export default function DmChatPanel() {
     setEditingMessageId(null);
     setJumpTarget(null);
     setScrolledUp(false);
-    setPresentLoading(false);
     pendingJumpIdRef.current = null;
     lastRequestedAfterIdRef.current = 0;
   }, [activeDmUser]);
@@ -311,11 +311,6 @@ export default function DmChatPanel() {
     if (!restoredDm || restoredDm.peer !== activeDmUser) return;
     editorRef.current?.setValue(useDraftsStore.getState().dmDrafts[restoredDm.peer] ?? "");
   }, [restoredDm, activeDmUser]);
-
-  // Clear the jump-to-present loading placeholder once the reloaded page lands.
-  useEffect(() => {
-    if (presentLoading && messages.length > 0) setPresentLoading(false);
-  }, [presentLoading, messages.length]);
 
   // Optimistic rows key by their send nonce; legacy id-less rows carry a
   // synthetic nonce (see toBubble).
@@ -399,7 +394,10 @@ export default function DmChatPanel() {
   const maybeLoadOlderHistory = () => {
     if (!activeDmUser) return;
     const conv = useDmStore.getState().conversations[activeDmUser];
-    if (!conv?.hasMoreHistory) return;
+    // Older pages wait for the newest: asked for first (the list mounts
+    // before the panel's load effect runs), one lands in a slice that
+    // holds only the sidebar's preview row, and shows without it.
+    if (!conv?.historyLoaded || !conv.hasMoreHistory) return;
     const oldest = conv.messages.find(
       (m): m is typeof m & { id: number } => typeof m.id === "number" && m.id > 0,
     );
@@ -445,11 +443,8 @@ export default function DmChatPanel() {
     pendingJumpIdRef.current = null;
     lastRequestedBeforeIdRef.current = 0;
     lastRequestedAfterIdRef.current = 0;
-    setPresentLoading(true);
     useDmStore.getState().resetDmForJump(peer);
-    void loadLatestDm(peer).then((ok) => {
-      if (!ok) setPresentLoading(false);
-    });
+    void loadLatestDm(peer);
   };
 
   // Persist the outgoing peer's scroll state at the moment we leave
@@ -954,11 +949,14 @@ export default function DmChatPanel() {
       <>
       {/* Messages */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-      {messages.length === 0 && presentLoading ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
+      {awaitingFirstPage ? (
+        // Shows only for a slow load: most pages land within the delay,
+        // and the panel goes straight from blank to the conversation. Keyed
+        // so each conversation's wait starts blank.
+        <div key={activeDmUser} className="flex flex-1 animate-[fadeUp_0.3s_ease_0.3s_both] items-center justify-center text-sm text-text-muted">
           Loading…
         </div>
-      ) : messages.length === 0 && failedPeer === activeDmUser ? (
+      ) : (messages.length === 0 || !conversation?.historyLoaded) && failedPeer === activeDmUser ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-text-muted">
           Couldn't load messages.
           <button

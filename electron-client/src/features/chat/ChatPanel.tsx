@@ -114,6 +114,9 @@ export default function ChatPanel() {
     activeKey ? s.messagesByChannel[activeKey] ?? EMPTY_LIST : EMPTY_LIST,
   );
   const loading = useChatStore((s) => (activeKey ? s.historyLoading[activeKey] === true : false));
+  // The channel's newest page (or a jump window) is in. Before that the
+  // slice holds at most live arrivals from while the channel was unseen.
+  const firstPageIn = useChatStore((s) => (activeKey ? s.historyFetched[activeKey] === true : false));
   const dragActive = useUiStore((s) => s.dragActive);
   const dragHoveredKey = useUiStore((s) => s.dragHoveredKey);
   const activeModal = useUiStore((s) => s.activeModal);
@@ -174,6 +177,10 @@ export default function ChatPanel() {
   // The channel whose newest page couldn't be loaded: shows a retry
   // instead of "Loading history…" forever or the empty-channel welcome.
   const [failedKey, setFailedKey] = useState<ChannelKey | null>(null);
+  // Until the first page is in, the panel waits for it instead of showing
+  // the welcome (for the frame before the load effect runs) or live rows
+  // that the page then lands around; a load that got no answer shows Retry.
+  const awaitingFirstPage = !firstPageIn && failedKey !== activeKey;
   // When a jump target isn't in the loaded slice, we request an around-window
   // and stash the target here; the effect that watches `messages` lands on it
   // once the window arrives.
@@ -377,7 +384,8 @@ export default function ChatPanel() {
   const maybeLoadOlderHistory = () => {
     if (!activeServerId || !activeChannelId || !activeKey) return;
     const chat = useChatStore.getState();
-    if (!chat.hasMoreHistory[activeKey]) return;
+    // Older pages wait for the newest (see DmChatPanel's twin).
+    if (!chat.historyFetched[activeKey] || !chat.hasMoreHistory[activeKey]) return;
     // messages are sorted by id ascending, so the first real-id entry is
     // the oldest loaded message. None yet: the newest-page load's job.
     const oldest = (chat.messagesByChannel[activeKey] ?? []).find((m) => m.id > 0);
@@ -910,7 +918,6 @@ export default function ChatPanel() {
   // in, so the around-window fetch can't race the initial load; a request
   // nobody picked up within 15 s is dropped rather than firing later.
   const jumpRequest = useChatStore((s) => s.jumpRequest);
-  const firstPageIn = useChatStore((s) => (activeKey ? s.historyFetched[activeKey] === true : false));
   useEffect(() => {
     if (!jumpRequest) return;
     if (Date.now() - jumpRequest.at > 15_000) {
@@ -1053,11 +1060,14 @@ export default function ChatPanel() {
   return (
     <div ref={panelRef} className="flex min-w-0 flex-1 flex-col bg-bg-mid">
       <div className="relative flex flex-1 flex-col overflow-hidden">
-        {loading && messages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
+        {awaitingFirstPage || (loading && messages.length === 0) ? (
+          // Shows only for a slow load: most pages land within the delay,
+          // and the panel goes straight from blank to the channel. Keyed so
+          // each channel's wait starts blank.
+          <div key={activeKey} className="flex flex-1 animate-[fadeUp_0.3s_ease_0.3s_both] items-center justify-center text-sm text-text-muted">
             Loading history…
           </div>
-        ) : messages.length === 0 && failedKey === activeKey ? (
+        ) : (messages.length === 0 || !firstPageIn) && failedKey === activeKey ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-text-muted">
             Couldn't load messages.
             <button

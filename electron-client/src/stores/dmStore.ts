@@ -470,8 +470,15 @@ export const useDmStore = create<DmState>((set, get) => ({
       const r = mergeStoredPage(existing, incoming, useAuthStore.getState().uid, 0, deletingDmIds(state, peer), latest);
       // A re-sync's newest page: what arrived meanwhile goes in with it.
       const merged = conv?.resyncing && r.reachedNewest ? releaseHeldDms(peer, r.list) : r.list;
-      const lastMessageTime =
-        merged.length > 0 ? Math.max(...merged.map(timeOf)) : conv?.lastMessageTime ?? 0;
+      // The sidebar's sort key. The newest page answers for the last
+      // message (a deleted one takes its time with it). Any other page only
+      // adds older rows, to a slice a trim may have cut the newest ones
+      // from, so it never moves the time back: the conversation would sink
+      // down the list while being scrolled up.
+      const sliceTime = merged.length > 0 ? Math.max(...merged.map(timeOf)) : 0;
+      const lastMessageTime = latest
+        ? sliceTime || (conv?.lastMessageTime ?? 0)
+        : Math.max(conv?.lastMessageTime ?? 0, sliceTime);
       return {
         conversations: {
           ...state.conversations,
