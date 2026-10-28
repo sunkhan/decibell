@@ -140,11 +140,10 @@ export default function MiniStreamPlayer() {
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
   const connectedServerId = useVoiceStore((s) => s.connectedServerId);
   const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
-  // P2P DM call: the full view lives inside the peer's DM panel, so the
-  // mini hides while that DM is showing the focused stream, and expanding
-  // navigates to the DM rather than the (nonexistent) voice view.
+  // P2P DM call: the stream lives inside the peer's DM panel, so the mini
+  // hides while that DM is open, and expanding navigates to the DM rather
+  // than the (nonexistent) voice view.
   const callPeer = useVoiceStore((s) => s.callPeer);
-  const fullscreenStream = useVoiceStore((s) => s.fullscreenStream);
   const activeDmUser = useDmStore((s) => s.activeDmUser);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -156,12 +155,10 @@ export default function MiniStreamPlayer() {
     pipStream != null &&
     watchingStreams.includes(pipStream) &&
     activeStreams.some((s) => s.ownerUid === pipStream);
-  const dmShowsFullView =
-    callPeer != null &&
-    activeView === "dm" &&
-    activeDmUser === callPeer &&
-    fullscreenStream === pipStream;
-  const visible = streamLive && activeView !== "voice" && !dmShowsFullView;
+  // The call's DM shows the stream itself: on its stage, focused or in the
+  // stream's tile (where backing out of the focused view leaves it playing).
+  const dmShowsStream = callPeer != null && activeView === "dm" && activeDmUser === callPeer;
+  const visible = streamLive && activeView !== "voice" && !dmShowsStream;
 
   const stopSpring = useCallback(() => {
     if (rafRef.current != null) {

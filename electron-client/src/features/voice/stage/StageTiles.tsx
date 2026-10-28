@@ -138,6 +138,76 @@ export function QualityPill({
   );
 }
 
+// ── controls over video ──────────────────────────────────────────
+
+/// Square icon button over video: fixed dark scrim, white glyph.
+export function OverlayButton({
+  title,
+  onClick,
+  active,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`flex h-8 w-8 items-center justify-center rounded-sm border border-white/10 ${
+        active ? "bg-accent text-on-accent" : "bg-black/70 text-white hover:bg-black/85"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/// Stream volume on a scrim: mute toggle, slider (accent fill), percent.
+export function VolumeControl({
+  volume,
+  onChange,
+  onToggleMute,
+}: {
+  volume: number;
+  onChange: (v: number) => void;
+  onToggleMute: () => void;
+}) {
+  return (
+    <div className={`${SCRIM_BASE} h-8 gap-2.5 px-2.5`} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={onToggleMute}
+        title={volume > 0 ? "Mute stream" : "Unmute stream"}
+        aria-label={volume > 0 ? "Mute stream" : "Unmute stream"}
+        className={volume === 0 ? "text-error" : "text-white hover:text-white/80"}
+      >
+        <SpeakerIcon muted={volume === 0} size={15} />
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={volume}
+        onChange={(e) => onChange(Number(e.target.value))}
+        title={`Stream volume: ${volume}%`}
+        className="custom-slider h-1 w-21 cursor-pointer appearance-none rounded-full [--slider-ring:#000]"
+        style={{
+          background: `linear-gradient(to right, var(--color-accent) ${volume}%, rgb(255 255 255 / 0.22) ${volume}%)`,
+        }}
+      />
+      <span className="w-8 text-white/70">{volume}%</span>
+    </div>
+  );
+}
+
 // ── participant tile ─────────────────────────────────────────────
 
 interface ParticipantTileProps {
@@ -273,9 +343,9 @@ interface StreamTileProps {
 }
 
 /// Primary actions over a video tile: solid white / outlined white.
-const ACTION_PRIMARY =
+export const ACTION_PRIMARY =
   "inline-flex h-9 items-center gap-2 rounded-md bg-white px-3.5 text-[13px] font-semibold text-black hover:bg-white/90";
-const ACTION_SECONDARY =
+export const ACTION_SECONDARY =
   "inline-flex h-9 items-center gap-2 rounded-md border border-white/30 bg-white/15 px-3.5 text-[13px] font-semibold text-white hover:bg-white/25";
 
 export const StreamTile = memo(function StreamTile({

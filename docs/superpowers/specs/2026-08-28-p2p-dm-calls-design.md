@@ -145,19 +145,28 @@ component that used to gate on `connectedChannelId` gates on "in a session").
 `features/call/`: `callActions.ts` (start / accept / decline / end, ringtone
 loop, 45 s timeout, `leaveCommunityVoiceIfAny`, stream announce/watch),
 `useCallEvents.ts` (signal state machine incl. BUSY and glare — the lower
-username's INVITE wins), `IncomingCallModal`, `CallStage` (the top of the DM — "Direction A" of the
-DM Call Stage canvas, 2026-08-28): voice → two tiles on a dark stage with a
-status pill (duration · RTT · LAN/direct) and one floating control dock
-(mute · deafen · share ┃ stream volume ┃ hang up); a focused stream takes
-the stage over (the persistent `StreamVideoPlayer` is reparented into the
-stage's slot exactly like the community full view / mini player do), tiles
-shrink to chips, LIVE + quality pills, stats / theater / fullscreen buttons;
-**theater** (`callStore.theater`) makes the stage fill the panel and folds
-the conversation into a header toggle with an unread badge; window
-fullscreen is the stage's own `fixed` root with auto-hiding overlays and
-Esc. `MiniStreamPlayer` hides while the DM shows the focused stream and
-expands back into the DM. The peer's local mute + volume sit under their
-tile and in the right-click menu.
+username's INVITE wins), `IncomingCallModal`, `CallStage` (the top of the DM). Since 2026-10-28 the
+stage is the community voice view at DM size (`2026-10-04-voice-view-redesign.md`), built from its
+pieces in `features/voice/stage/`: a slim **call bar** stands in for the voice header (call state and
+duration, the Verified / Not verified badge, ping toned like the voice header's plus Direct / LAN, the
+theater toggle); you and the peer are voice **participant tiles** (16:9, avatar-coloured, state in the
+name chip, instant speaking outline), one row preferred unless stacking is >15 % bigger; while it rings
+the peer's tile is dimmed under a breathing accent outline and brightens in place on answer; a live
+share is a voice-style **stream tile** (Watch stream / Preview; once watched, Watching + Focus / Stop);
+the voice **dock** floats below (mic, deafen │ share, stream audio │ end call; only Cancel / Hang up
+until live). **Focused stream** (owner's call: the old layout, the video keeps all the room): the video
+fills the stage edge to edge and everything floats over it on the voice view's scrims, fading after
+2.5 s still — LIVE / owner / quality top left, duration · ping · lock and stats / theater / fullscreen /
+stop top right, the dock with the stream volume in it, the two people as chips bottom right (dropped
+below 940 px). A click on the video (or Esc) goes **back to the tiles** with the stream still playing in
+its tile: the tile claims the persistent `StreamVideoPlayer` host like the voice grid tile does. The
+peer's volume / local mute are in the right-click menu only, as in voice channels. **Theater**
+(`callStore.theater`) makes the stage fill the panel; the DM header then shows only "Show chat" with an
+unread badge (the theater toggle lives in the call bar / video overlay). Window fullscreen is the
+stage's own `fixed` root with the same overlays and Esc. `MiniStreamPlayer` hides whenever the call's DM
+is open (the stage shows the stream there, focused or in its tile) and expands back into the DM.
+`IncomingCallModal` is drawn like a participant tile (caller's colour, breathing ring, the dock's red
+and a green to answer).
 
 ## Security notes
 

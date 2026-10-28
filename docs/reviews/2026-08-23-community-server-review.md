@@ -4432,3 +4432,36 @@ holds the user online, Away comes on the first poll after 3 s of silence (polls 
 before), speaking again sets them back within the same frame, and the next silence sends them Away again; HEAD
 stays Away throughout. Live test pending: a voice channel and a DM call with no input past the threshold, with VAD
 and with push-to-talk.
+
+### Feature: the DM call in the voice view's design (2026-10-28)
+
+Owner request: redesign the P2P call UI to match the voice view (2026-10-04) in every theme. Proposal page with
+before/after captures of six states in all seven themes (https://claude.ai/artifact/GUBPnxdQvS8F7peNktTASU);
+the owner approved it with three decisions and one change.
+
+- **Tiles**: you and the peer are voice participant tiles (16:9, avatar-coloured, mute / deafen in the name chip,
+  instant speaking outline), one row unless stacking is more than 15 % bigger, so theater keeps you side by side.
+  Ringing dims the peer's tile under a breathing accent outline; it brightens in place when they answer (the old
+  `animate-ping` burst is gone). A share is a voice-style stream tile.
+- **Call bar** in place of the black pills on a themed surface: state and duration, the Verified badge in the voice
+  badge's shape, ping toned like the voice header's, Direct / LAN, theater.
+- **Dock**: the voice dock (mic, deafen │ share, stream audio │ end call in the solid red), Cancel / Hang up until
+  live.
+- **Watching** (owner: keep the old layout, the stream gets more room): the video fills the stage, and every overlay
+  floats over it on the voice view's scrims and fades after 2.5 s still — LIVE / owner / quality, duration · ping ·
+  lock, stats / theater / fullscreen / stop, the dock with the stream volume in it, the two of you as chips. This
+  also fixes a light-theme bug: the old overlays drew the theme's text colour on black pills, dark on black in
+  Matinee, Graphite Light and Console Light.
+- **Decisions**: the peer's volume is right-click only, as in voice channels (the slider under their tile is gone);
+  a click on the video (or Esc) goes back to the tiles with the stream playing in its tile, which claims the
+  persistent player host like the voice grid tile (`MiniStreamPlayer` now hides whenever the call's DM is open);
+  the theater toggle lives in the call bar / video overlay only, and the DM header keeps "Show chat" with its
+  unread badge in theater.
+- `OverlayButton` and `VolumeControl` moved from StreamViewPanel into `stage/StageTiles.tsx` so both stages share
+  them; the incoming-call card takes the tile look.
+
+Verified: tsc web 0. UI harness on the real tree: captures of every state in all themes for the proposal, and an
+interaction run (Nocturne and Matinee) where a click on the focused video unfocuses but keeps watching, the
+player host moves into mira's stream tile and the mini player stays hidden. Live test pending: a real two-machine
+call (ringing → answer, share both ways, focus ↔ tile ↔ mini player with the DM left and reopened, fullscreen,
+theater, right-click volume).

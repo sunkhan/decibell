@@ -13,48 +13,68 @@ import {
 } from "../../stores/uiStore";
 import { useVoiceStore } from "../../stores/voiceStore";
 import { UserAvatar } from "../../components/UserAvatar";
+import { AVATAR_RADIUS } from "../../components/LetterAvatar";
 import { playSound } from "../../utils/sounds";
-import { VideoCodec, type StreamInfo } from "../../types";
+import type { StreamInfo } from "../../types";
 import CaptureSourcePicker from "../voice/CaptureSourcePicker";
 import { StreamAudioButton } from "../voice/StreamAudioPopover";
-import { CodecBadge } from "../voice/CodecBadge";
 import StreamStatsOverlay from "../voice/StreamStatsOverlay";
+import StreamVideoPlayer from "../voice/StreamVideoPlayer";
 import { toggleDeafen, toggleMute } from "../voice/voiceActions";
 import { getStreamPipHost, placeStreamPip, recordFullViewRect } from "../voice/streamPipHost";
-import { saveSettings } from "../settings/saveSettings";
+import { MAX_TILE_W, TILE_ASPECT, TILE_GAP, fitGrid, useElementSize } from "../voice/stage/stageLayout";
 import {
-  DEFAULT_DB,
-  MAX_DB,
-  MIN_DB,
-  dbToPercent,
-  formatDb,
-  pushUserGain,
-} from "../voice/userGain";
+  ACTION_PRIMARY,
+  ACTION_SECONDARY,
+  LivePill,
+  OverlayButton,
+  ParticipantTile,
+  QualityPill,
+  SCRIM,
+  SCRIM_LG,
+  VolumeControl,
+} from "../voice/stage/StageTiles";
 import {
-  announceCallStreamStop,
-  endCall,
-  unwatchCallStream,
-  watchCallStream,
-} from "./callActions";
-import { nameOf, useUserName, type Uid } from "../../stores/usersStore";
+  CloseIcon,
+  CollapseIcon,
+  ExpandIcon,
+  EyeIcon,
+  HeadphonesIcon,
+  HeadphonesOffIcon,
+  LeaveIcon,
+  MicIcon,
+  MicOffIcon,
+  PlayIcon,
+  ScreenIcon,
+  SignalIcon,
+  StatsIcon,
+  StopShareIcon,
+} from "../voice/stage/icons";
+import { announceCallStreamStop, endCall, unwatchCallStream, watchCallStream } from "./callActions";
+import { useUserName, type Uid } from "../../stores/usersStore";
 
 /// The P2P call "stage": the top of the DM conversation while a call with
-/// `peer` is ringing / connecting / active (design: Direction A,
-/// docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md + the DM Call
-/// Stage canvas).
+/// `peer` is ringing / connecting / active. It is the community voice view
+/// at DM size (docs/superpowers/specs/2026-10-04-voice-view-redesign.md):
+/// the same 16:9 tiles, stream tiles, scrims and dock, under a slim call
+/// bar (status, encryption, ping, theater) that stands in for the voice
+/// header, since the DM header is already above it.
 ///
-///   voice   → two tiles on a dark stage, status pill, one control dock
-///   stream  → the focused stream takes the stage over; tiles shrink to
-///             chips; LIVE + quality pills; stats / theater / fullscreen
+///   tiles   → you and the peer as participant tiles, best-fit to the
+///             stage, a stream tile per live screen share beside them (a
+///             watched one plays in its tile)
+///   focused → the stream fills the stage edge to edge; everything else
+///             floats over it and fades with a still cursor (owner's call:
+///             the video keeps all the room). A click goes back to the tiles
 ///   theater → the stage fills the DM panel (DmChatPanel hides the chat)
-///   full    → window fullscreen, black, auto-hiding overlays, Esc exits
+///   full    → window fullscreen, black, the same overlays, Esc exits
 ///
 /// The video is the ONE persistent StreamVideoPlayer that StreamPipManager
 /// owns: this component only claims its host node into a slot (the same
 /// reparenting StreamViewPanel and the mini player do), so focusing a
-/// stream here, minimising it to the mini player and coming back never
-/// re-decodes. Which stream is "focused" is `voiceStore.fullscreenStream`
-/// (the peer's, or our own self-preview).
+/// stream here, backing out to its tile, minimising it to the mini player
+/// and coming back never re-decodes. Which stream is "focused" is
+/// `voiceStore.fullscreenStream` (the peer's, or our own self-preview).
 export default function CallStage({ peer }: { peer: Uid }) {
   const status = useCallStore((s) => s.status);
   const callPeer = useCallStore((s) => s.peer);
@@ -62,14 +82,34 @@ export default function CallStage({ peer }: { peer: Uid }) {
   return <Stage peer={peer} />;
 }
 
+/// The overlays over the video hide after the cursor has been still this
+/// long (the voice view's focused stream does the same).
 const OVERLAY_HIDE_MS = 2500;
 // Chat keeps at least this much room under the compact stage.
 const CHAT_MIN = 180;
+/// One row of tiles wins unless the best-fit grid's tiles are this much
+/// bigger (see CallTiles).
+const ROW_PREFERENCE = 0.85;
+/// Below these stage widths the focused view drops what would collide:
+/// the people chips beside the dock, then the call status and the quality
+/// pill in the top row.
+const CHIPS_MIN_W = 940;
+const STATUS_MIN_W = 700;
+const QUALITY_MIN_W = 560;
 
 // One handle for the module: getCurrentWindow() builds a fresh object per
 // call, which made the fullscreen callbacks (and the effects keyed on them)
 // change identity on every render.
 const appWindow = getCurrentWindow();
+
+/// The controls over the video swallow clicks and double-clicks, so using
+/// them never reaches the video underneath (back to the tiles / exit
+/// fullscreen).
+const stopClick = (e: React.MouseEvent) => e.stopPropagation();
+
+/// Fixed colours for things drawn over video, in every theme (the
+/// CodecBadge / scrim rule): the theme's green can be too dark on black.
+const ON_VIDEO_GREEN = "#65d097";
 
 function formatDuration(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -81,44 +121,16 @@ function formatDuration(ms: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function codecLabel(codec: number): string | null {
-  switch (codec) {
-    case VideoCodec.H264_HW:
-    case VideoCodec.H264_SW:
-      return "H.264";
-    case VideoCodec.H265:
-      return "HEVC";
-    case VideoCodec.AV1:
-      return "AV1";
-    default:
-      return null;
-  }
-}
-
-function qualityLabel(info: StreamInfo | undefined): string {
-  if (!info) return "";
-  return [
-    info.resolutionHeight > 0 ? `${info.resolutionHeight}p` : null,
-    info.fps > 0 ? `${info.fps} fps` : null,
-    codecLabel(info.currentCodec),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+/// Back from the focused stream to the tiles; it keeps playing in its tile.
+function backToTiles() {
+  useVoiceStore.getState().setFullscreenStream(null);
 }
 
 function Stage({ peer }: { peer: Uid }) {
   const me = useAuthStore((s) => s.uid);
   const status = useCallStore((s) => s.status);
-  const verified = useCallStore((s) => s.verified);
-  // Only whether there IS a start time — the ticking duration, ping and
-  // path live in <CallStatusText>, so the 1 s tick and the 3 s ping
-  // re-render that text node instead of the whole stage.
-  const hasStartedAt = useCallStore((s) => !!s.startedAt);
   const theater = useCallStore((s) => s.theater);
   const setTheater = useCallStore((s) => s.setTheater);
-  const isMuted = useVoiceStore((s) => s.isMuted);
-  const isDeafened = useVoiceStore((s) => s.isDeafened);
-  const error = useVoiceStore((s) => s.error);
   const isStreaming = useVoiceStore((s) => s.isStreaming);
   const activeStreams = useVoiceStore((s) => s.activeStreams);
   const watchingStreams = useVoiceStore((s) => s.watchingStreams);
@@ -132,7 +144,7 @@ function Stage({ peer }: { peer: Uid }) {
 
   const live = status === "active";
   const peerStream = activeStreams.find((st) => st.ownerUid === peer);
-  const ownStream = activeStreams.find((st) => st.ownerUid === me);
+  const ownStream = isStreaming ? activeStreams.find((st) => st.ownerUid === me) : undefined;
   // The stream shown on the stage: the peer's, or our own preview.
   const focused =
     fullscreenStream != null &&
@@ -151,14 +163,15 @@ function Stage({ peer }: { peer: Uid }) {
   const overlayTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const slotRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const { width: stageWidth } = useElementSize(rootRef);
   const [resizing, setResizing] = useState(false);
 
   // Claim the persistent player into our slot whenever a stream is focused
-  // here (re-runs on focus change so we reclaim it from the mini player).
-  // On the way out, detach the host from our slot explicitly: it was
-  // appended by hand, not by React, so if it ever stayed behind inside a
-  // container React later reused for the tiles it would sit in the flex
-  // row as a stray full-width child and squeeze the avatars.
+  // here (re-runs on focus change so we reclaim it from the mini player or
+  // the stream's tile). On the way out, detach the host from our slot
+  // explicitly: it was appended by hand, not by React, so if it ever stayed
+  // behind inside a container React later reused for the tiles it would
+  // sit in the flex row as a stray full-width child and squeeze the tiles.
   useLayoutEffect(() => {
     const slot = slotRef.current;
     if (focused && slot) {
@@ -183,35 +196,45 @@ function Stage({ peer }: { peer: Uid }) {
     await appWindow.setFullscreen(false).catch(() => {});
   }, [setStreamFullscreen]);
 
+  // Esc steps back one level: fullscreen → the focused stream → the tiles
+  // (as in the voice view) → out of theater.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (isFullscreen) void exitFullscreen();
+      else if (focused) backToTiles();
       else if (theater) setTheater(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isFullscreen, exitFullscreen, theater, setTheater]);
+  }, [isFullscreen, exitFullscreen, focused, theater, setTheater]);
 
   // The focused stream ended (or was unwatched) while fullscreen → come back.
   useEffect(() => {
     if (isStreamFullscreen && !focused) void exitFullscreen();
   }, [isStreamFullscreen, focused, exitFullscreen]);
 
-  // Fullscreen overlays auto-hide after a still cursor.
+  // The overlays over the video show on mouse move, hide after a still
+  // cursor or when it leaves, and stay while it rests on a control.
   const pokeOverlay = useCallback(() => {
     setOverlayVisible(true);
     if (overlayTimer.current) clearTimeout(overlayTimer.current);
-    if (isFullscreen) {
-      overlayTimer.current = setTimeout(() => setOverlayVisible(false), OVERLAY_HIDE_MS);
-    }
-  }, [isFullscreen]);
+    overlayTimer.current = setTimeout(() => setOverlayVisible(false), OVERLAY_HIDE_MS);
+  }, []);
+  const holdOverlay = useCallback(() => {
+    if (overlayTimer.current) clearTimeout(overlayTimer.current);
+    setOverlayVisible(true);
+  }, []);
+  const hideOverlay = useCallback(() => {
+    if (overlayTimer.current) clearTimeout(overlayTimer.current);
+    setOverlayVisible(false);
+  }, []);
   useEffect(() => {
     pokeOverlay();
     return () => {
       if (overlayTimer.current) clearTimeout(overlayTimer.current);
     };
-  }, [isFullscreen, pokeOverlay]);
+  }, [focused, isFullscreen, pokeOverlay]);
 
   // ── handlers ──
   const handleHangUp = () => {
@@ -236,12 +259,6 @@ function Stage({ peer }: { peer: Uid }) {
     void unwatchCallStream(focused);
   };
   const toggleTheater = () => setTheater(!theater, msgCount);
-
-  // Non-empty exactly when <CallStatusText> renders something (the live
-  // branch always has at least the duration).
-  const hasStatus =
-    status === "outgoing" || status === "connecting" || (live && hasStartedAt);
-  const statusNode = hasStatus ? <CallStatusText /> : null;
 
   // ── resize (compact stage only): drag the bottom edge ──
   // Imperative during the drag (no per-frame React state), committed to
@@ -295,169 +312,124 @@ function Stage({ peer }: { peer: Uid }) {
 
   // ── root ──
   const rootClass = isFullscreen
-    ? `fixed inset-0 z-50 flex flex-col bg-black ${overlayVisible ? "cursor-default" : "cursor-none"}`
+    ? "fixed inset-0 z-50 flex flex-col bg-black"
     : theater
-      ? "relative flex min-h-0 flex-1 flex-col border-b border-border bg-bg-darkest"
-      : "relative flex shrink-0 flex-col border-b border-border bg-bg-darkest";
+      ? "relative flex min-h-0 flex-1 flex-col border-b border-border bg-bg-dark"
+      : "relative flex shrink-0 flex-col border-b border-border bg-bg-dark";
   const rootStyle = compact
     ? { height: Math.min(stageHeight, maxCompactHeight), userSelect: resizing ? ("none" as const) : undefined }
     : undefined;
-  const overlayClass = `transition-opacity duration-300 ${overlayVisible ? "opacity-100" : "opacity-0"}`;
+  const overlayClass = `transition-opacity duration-150 ${
+    overlayVisible ? "opacity-100" : "pointer-events-none opacity-0"
+  }`;
+  const peerVolume =
+    focused != null && focused !== me ? (
+      <VolumeControl
+        volume={streamVolume}
+        onChange={handleStreamVolume}
+        onToggleMute={() => handleStreamVolume(streamVolume > 0 ? 0 : 100)}
+      />
+    ) : null;
 
   return (
-    <div ref={rootRef} className={rootClass} style={rootStyle} onMouseMove={pokeOverlay}>
-      {/* ── centre: video or tiles ── */}
+    <div ref={rootRef} className={rootClass} style={rootStyle}>
       {/* Distinct keys: the video and tiles containers are both a <div> in the
           same position, so without keys React would reuse one DOM node for the
           other and the hand-parented player host could survive the switch. */}
-      {focused ? (
-        <div key="video" className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
+      {focused && focusedInfo ? (
+        <div
+          key="video"
+          className={`relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-black ${
+            isFullscreen ? (overlayVisible ? "cursor-default" : "cursor-none") : "cursor-pointer"
+          }`}
+          onClick={isFullscreen ? undefined : backToTiles}
+          onDoubleClick={isFullscreen ? () => void exitFullscreen() : undefined}
+          onMouseMove={pokeOverlay}
+          onMouseLeave={hideOverlay}
+        >
           <div ref={slotRef} className="h-full w-full" />
-          {showStats && <StreamStatsOverlay uid={focused} />}
-          <div className={`absolute bottom-4 right-4 flex gap-1.5 ${overlayClass}`}>
-            <PeerChip uid={me} muted={isMuted} />
-            <PeerChip uid={peer} />
+          {showStats && <StreamStatsOverlay uid={focused} className="left-3 top-14" />}
+
+          {/* top-left: what this is */}
+          <div className={`pointer-events-none absolute left-3 top-3 flex gap-1.5 ${overlayClass}`}>
+            <LivePill size="lg" />
+            <StreamOwnerChip info={focusedInfo} own={focused === me} />
+            {stageWidth >= QUALITY_MIN_W && <QualityPill stream={focusedInfo} large />}
           </div>
+
+          {/* top-right: the call, then the view controls */}
+          <div
+            className={`absolute right-3 top-3 flex items-center gap-1.5 ${overlayClass}`}
+            onMouseEnter={holdOverlay}
+            onClick={stopClick}
+            onDoubleClick={stopClick}
+          >
+            {isFullscreen && <span className="mr-1.5 text-[11px] text-white/50">Esc to exit</span>}
+            {live && stageWidth >= STATUS_MIN_W && <CallStatusOnVideo peer={peer} />}
+            <OverlayButton title="Stream stats" active={showStats} onClick={() => setShowStats((v) => !v)}>
+              <StatsIcon size={16} />
+            </OverlayButton>
+            {!isFullscreen && (
+              <OverlayButton title={theater ? "Exit theater" : "Theater"} active={theater} onClick={toggleTheater}>
+                {theater ? <CollapseIcon size={16} /> : <TheaterIcon size={16} />}
+              </OverlayButton>
+            )}
+            <OverlayButton
+              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              onClick={() => void (isFullscreen ? exitFullscreen() : enterFullscreen())}
+            >
+              {isFullscreen ? <CollapseIcon size={16} /> : <ExpandIcon size={16} />}
+            </OverlayButton>
+            <OverlayButton title={focused === me ? "Close preview" : "Stop watching"} onClick={handleStopWatching}>
+              <CloseIcon size={16} />
+            </OverlayButton>
+          </div>
+
+          {/* bottom: the dock on a scrim, the stream volume in it */}
+          <div className={`pointer-events-none absolute inset-x-0 bottom-4 flex justify-center ${overlayClass}`}>
+            <div className="pointer-events-auto" onMouseEnter={holdOverlay} onClick={stopClick} onDoubleClick={stopClick}>
+              <CallDock
+                status={status}
+                overVideo
+                volume={peerVolume}
+                onShare={() => setShowPicker(true)}
+                onStopShare={() => void handleStopSharing()}
+                onHangUp={handleHangUp}
+              />
+            </div>
+          </div>
+
+          {/* bottom-right: who's talking */}
+          {stageWidth >= CHIPS_MIN_W && (
+            <div
+              className={`absolute bottom-6.5 right-3 flex gap-1.5 ${overlayClass}`}
+              onMouseEnter={holdOverlay}
+              onClick={stopClick}
+              onDoubleClick={stopClick}
+            >
+              <PeerChip uid={me} isLocal />
+              <PeerChip uid={peer} isLocal={false} />
+            </div>
+          )}
         </div>
       ) : (
-        <div key="tiles" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 pb-14 pt-10">
-          {/* Tiles row: the two people, then a card per live screen share —
-              a share is presented like another participant, not a banner
-              competing with the peer's volume row. */}
-          <div className="flex items-start justify-center gap-8">
-            <CallTile uid={me} muted={isMuted} dim={!live} />
-            <div className="flex flex-col items-center">
-              <CallTile uid={peer} muted={false} dim={!live} pulse={!live} />
-              {live && <PeerAudioControls uid={peer} />}
+        <>
+          <CallBar peer={peer} live={live} theater={theater} onToggleTheater={toggleTheater} />
+          <CallTiles key="tiles" peer={peer} me={me} live={live} peerStream={peerStream} ownStream={ownStream} />
+          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
+            <div className="pointer-events-auto">
+              <CallDock
+                status={status}
+                overVideo={false}
+                volume={null}
+                onShare={() => setShowPicker(true)}
+                onStopShare={() => void handleStopSharing()}
+                onHangUp={handleHangUp}
+              />
             </div>
-            {live && peerStream && (
-              <StreamCard info={peerStream} owner={peer} own={false} />
-            )}
-            {live && isStreaming && ownStream && (
-              <StreamCard info={ownStream} owner={me} own />
-            )}
           </div>
-          {error && live && (
-            <div className="rounded-sm bg-error/10 px-2 py-1 text-[11px] text-error">{error}</div>
-          )}
-        </div>
+        </>
       )}
-
-      {/* ── top-left: status / LIVE + quality ── */}
-      <div className={`pointer-events-none absolute left-4 top-3.5 flex gap-1.5 ${overlayClass}`}>
-        {focused ? (
-          <>
-            <Pill live>
-              {focused === me ? "Your screen" : `${nameOf(focused, "Unknown user")}'s screen`}
-            </Pill>
-            {(qualityLabel(focusedInfo) || hasStatus) && (
-              <Pill>
-                {qualityLabel(focusedInfo)}
-                {qualityLabel(focusedInfo) && hasStatus ? " · " : null}
-                {statusNode}
-              </Pill>
-            )}
-          </>
-        ) : (
-          hasStatus && <Pill dot={live}>{statusNode}</Pill>
-        )}
-        {/* E2EE: the peer's call key was signed by their identity and checked
-            against the pinned one (native, before any media key existed). */}
-        {live && verified !== null && (
-          <Pill>
-            <span className={verified ? "text-success" : "text-text-muted"}>
-              <LockGlyph size={10} />
-            </span>
-            {verified ? "Verified" : "Not verified"}
-          </Pill>
-        )}
-      </div>
-
-      {/* ── top-right: stats / theater / fullscreen / stop watching ── */}
-      <div className={`absolute right-4 top-3 flex gap-1 ${overlayClass}`}>
-        {isFullscreen && (
-          <span className="mr-2 self-center text-[11px] text-white/45">Esc to exit</span>
-        )}
-        {focused && (
-          <OverlayButton title="Stream stats" active={showStats} onClick={() => setShowStats((v) => !v)}>
-            <StatsIcon />
-          </OverlayButton>
-        )}
-        {!isFullscreen && live && (
-          <OverlayButton title={theater ? "Exit theater" : "Theater"} active={theater} onClick={toggleTheater}>
-            {theater ? <CollapseIcon /> : <TheaterIcon />}
-          </OverlayButton>
-        )}
-        {focused && (
-          <OverlayButton
-            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-            onClick={() => void (isFullscreen ? exitFullscreen() : enterFullscreen())}
-          >
-            {isFullscreen ? <CollapseIcon /> : <FullscreenIcon />}
-          </OverlayButton>
-        )}
-        {focused && !isFullscreen && (
-          <OverlayButton title="Stop watching" onClick={handleStopWatching}>
-            <CloseIcon />
-          </OverlayButton>
-        )}
-      </div>
-
-      {/* ── bottom: control dock ── */}
-      <div className={`pointer-events-none absolute inset-x-0 bottom-4 flex justify-center ${overlayClass}`}>
-        <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-border bg-bg-light p-1.5 shadow-float">
-          {live && (
-            <>
-              <DockButton title={isMuted ? "Unmute" : "Mute"} onClick={toggleMute} tone={isMuted ? "danger" : "soft"}>
-                {isMuted ? <MicOffIcon /> : <MicIcon />}
-              </DockButton>
-              <DockButton title={isDeafened ? "Undeafen" : "Deafen"} onClick={toggleDeafen} tone={isDeafened ? "danger" : "soft"}>
-                {isDeafened ? <DeafenOffIcon /> : <DeafenIcon />}
-              </DockButton>
-              <DockButton
-                title={isStreaming ? "Stop sharing" : "Share your screen"}
-                onClick={isStreaming ? () => void handleStopSharing() : () => setShowPicker(true)}
-                tone={isStreaming ? "active" : "soft"}
-              >
-                {isStreaming ? <StopShareIcon /> : <ShareIcon />}
-              </DockButton>
-              {focused && focused !== me && (
-                <>
-                  <DockDivider />
-                  <div className="flex items-center gap-2 px-1.5 text-text-secondary">
-                    <button
-                      onClick={() => handleStreamVolume(streamVolume > 0 ? 0 : 100)}
-                      title={streamVolume > 0 ? "Mute stream" : "Unmute stream"}
-                      className="flex h-6 w-6 items-center justify-center rounded-sm hover:text-text-bright"
-                    >
-                      <VolumeIcon muted={streamVolume === 0} />
-                    </button>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={streamVolume}
-                      onChange={(e) => handleStreamVolume(Number(e.target.value))}
-                      title="Stream volume"
-                      className="h-[4px] w-20 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent [&::-webkit-slider-thumb]:h-[12px] [&::-webkit-slider-thumb]:w-[12px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light"
-                    />
-                    <span className="w-8 text-[10.5px] tabular-nums text-text-muted">{streamVolume}%</span>
-                  </div>
-                </>
-              )}
-              <DockDivider />
-            </>
-          )}
-          <button
-            onClick={handleHangUp}
-            title={status === "outgoing" ? "Cancel" : "Hang up"}
-            className="flex h-10 items-center gap-2 rounded-md bg-error px-4 text-[13px] font-semibold text-text-bright transition-opacity hover:opacity-90"
-          >
-            <HangUpIcon />
-            {status === "outgoing" ? "Cancel" : "Hang up"}
-          </button>
-        </div>
-      </div>
 
       {/* ── bottom edge: drag to resize (compact only) ── */}
       {compact && (
@@ -465,7 +437,7 @@ function Stage({ peer }: { peer: Uid }) {
           onPointerDown={onResizeStart}
           onDoubleClick={onResizeReset}
           title="Drag to resize · double-click to reset"
-          className="group absolute inset-x-0 -bottom-1 z-10 flex h-2.5 cursor-ns-resize items-center justify-center"
+          className="group absolute inset-x-0 -bottom-1 z-20 flex h-2.5 cursor-ns-resize items-center justify-center"
         >
           <div
             className={`h-1 w-12 rounded-full transition-colors ${
@@ -480,458 +452,515 @@ function Stage({ peer }: { peer: Uid }) {
   );
 }
 
-// ── pieces ────────────────────────────────────────────────────────
+// ── call bar ─────────────────────────────────────────────────────
 
-/// The call status readout ("Calling…", "Ringing…", "Connecting…", or
-/// "mm:ss · 42 ms · direct" once live). Owns the 1 s duration tick and the
-/// ping / path subscriptions, so neither re-renders the whole stage.
-function CallStatusText() {
-  const status = useCallStore((s) => s.status);
-  const ringingAcked = useCallStore((s) => s.ringingAcked);
-  const startedAt = useCallStore((s) => s.startedAt);
-  const connectedPath = useCallStore((s) => s.connectedPath);
-  const latencyMs = useVoiceStore((s) => s.latencyMs);
-  const live = status === "active";
-
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!live) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [live]);
-
-  const text =
-    status === "outgoing"
-      ? ringingAcked
-        ? "Ringing…"
-        : "Calling…"
-      : status === "connecting"
-        ? "Connecting…"
-        : live && startedAt
-          ? [
-              formatDuration(now - startedAt),
-              latencyMs != null ? `${latencyMs} ms` : null,
-              connectedPath === "host" ? "LAN" : connectedPath === "srflx" ? "direct" : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")
-          : "";
-  return <>{text}</>;
-}
-
-function Pill({ children, live, dot }: { children: React.ReactNode; live?: boolean; dot?: boolean }) {
+/// The voice header at DM size: call state and duration, the encryption
+/// badge, the voice ping and path, and the theater toggle. Same type as the
+/// voice header's stats (font-meta, tabular digits).
+function CallBar({
+  peer,
+  live,
+  theater,
+  onToggleTheater,
+}: {
+  peer: Uid;
+  live: boolean;
+  theater: boolean;
+  onToggleTheater: () => void;
+}) {
+  const verified = useCallStore((s) => s.verified);
+  const error = useVoiceStore((s) => s.error);
+  const peerName = useUserName(peer, "Unknown user");
   return (
-    <div className="flex h-6 items-center gap-1.5 whitespace-nowrap rounded-sm border border-white/10 bg-black/70 px-2.5 text-[11px] tabular-nums text-text-primary">
-      {live && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-error" />}
-      {!live && dot && <span className="h-1.5 w-1.5 rounded-full bg-success" />}
-      {children}
+    <div className="flex h-11 shrink-0 items-center gap-2.5 px-4">
+      <CallStatus />
+      {live && verified !== null && (
+        <span
+          title={verifiedTitle(verified, peerName)}
+          className={`flex h-5.5 shrink-0 items-center gap-1.5 rounded-sm px-2 font-meta text-micro font-medium ${
+            verified ? "bg-success/15 text-success" : "bg-text-muted/15 text-text-muted"
+          }`}
+        >
+          <LockGlyph size={11} />
+          {verified ? "Verified" : "Not verified"}
+        </span>
+      )}
+      {error && live && (
+        <span className="truncate rounded-sm bg-error/15 px-2 py-0.5 font-meta text-micro text-error">{error}</span>
+      )}
+      <div className="flex-1" />
+      {live && <CallStats />}
+      {live && (
+        <button
+          type="button"
+          onClick={onToggleTheater}
+          title={theater ? "Exit theater (Esc)" : "Theater"}
+          aria-label={theater ? "Exit theater" : "Theater"}
+          aria-pressed={theater}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors ${
+            theater ? "bg-accent-soft text-accent" : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+          }`}
+        >
+          {theater ? <CollapseIcon size={15} /> : <TheaterIcon size={15} />}
+        </button>
+      )}
     </div>
   );
 }
 
-function OverlayButton({
-  title,
-  onClick,
-  active,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  active?: boolean;
-  children: React.ReactNode;
-}) {
+function verifiedTitle(verified: boolean, peerName: string): string {
+  return verified
+    ? `End-to-end encrypted. ${peerName}'s call key matches their verified identity.`
+    : `End-to-end encrypted, but ${peerName} hasn't set up encryption, so their identity can't be checked.`;
+}
+
+/// The running duration, ticking once a second. Its own component so the
+/// tick re-renders only this text.
+function CallDuration() {
+  const startedAt = useCallStore((s) => s.startedAt);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return <>{startedAt ? formatDuration(now - startedAt) : ""}</>;
+}
+
+/// "Calling…" / "Ringing…" / "Connecting…" with a breathing dot, or the
+/// green dot, "Voice call" and the running duration once live.
+function CallStatus() {
+  const status = useCallStore((s) => s.status);
+  const ringingAcked = useCallStore((s) => s.ringingAcked);
+  const live = status === "active";
+  const pending = status === "outgoing" ? (ringingAcked ? "Ringing…" : "Calling…") : "Connecting…";
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`flex h-8 w-8 items-center justify-center rounded-sm border border-white/10 transition-colors ${
-        active ? "bg-accent-soft text-accent" : "bg-black/70 text-text-primary hover:bg-black/85 hover:text-text-bright"
-      }`}
-    >
-      {children}
-    </button>
+    <span className="flex shrink-0 items-center gap-2 font-meta text-meta font-medium tabular-nums text-text-secondary">
+      {live ? (
+        <span className="h-2 w-2 rounded-full bg-success" />
+      ) : (
+        <span className="h-2 w-2 animate-[breathe_1.6s_ease-in-out_infinite] rounded-full bg-accent" />
+      )}
+      {live ? "Voice call" : pending}
+      {live && (
+        <>
+          <span className="h-3.5 w-px bg-border-divider" />
+          <span className="text-text-muted">
+            <CallDuration />
+          </span>
+        </>
+      )}
+    </span>
   );
 }
 
-function DockButton({
-  title,
-  onClick,
-  tone,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  tone: "soft" | "active" | "danger";
-  children: React.ReactNode;
-}) {
-  const tones = {
-    soft: "bg-surface-hover text-text-secondary hover:bg-surface-active hover:text-text-bright",
-    active: "bg-accent-soft text-accent hover:bg-accent-mid",
-    danger: "bg-error/15 text-error hover:bg-error/25",
-  } as const;
+/// Ping (toned like the voice header's) and how the call is connected.
+/// Owns the 3 s ping subscription.
+function CallStats() {
+  const latencyMs = useVoiceStore((s) => s.latencyMs);
+  const connectedPath = useCallStore((s) => s.connectedPath);
+  const tone =
+    latencyMs == null ? "" : latencyMs <= 70 ? "text-success" : latencyMs < 175 ? "text-warning" : "text-error";
+  const path = connectedPath === "host" ? "LAN" : connectedPath === "srflx" ? "Direct" : null;
+  if (latencyMs == null && !path) return null;
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`flex h-10 w-10 items-center justify-center rounded-md transition-colors ${tones[tone]}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function DockDivider() {
-  return <div className="mx-0.5 h-6 w-px bg-border-divider" />;
-}
-
-interface CallTileProps {
-  uid: Uid;
-  muted: boolean;
-  dim: boolean;
-  pulse?: boolean;
-}
-
-const CallTile = memo(function CallTile({ uid, muted, dim, pulse }: CallTileProps) {
-  // Per-tile speaking subscription so the other tile's events are no-ops.
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
-  const peerMuted = useVoiceStore(
-    (s) => s.participants.find((p) => p.uid === uid)?.isMuted ?? false,
-  );
-  const username = useUserName(uid, "Unknown user");
-  const openProfilePopup = useUiStore((s) => s.openProfilePopup);
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
-  const showMuted = muted || peerMuted;
-  return (
-    <div
-      className={`flex cursor-pointer flex-col items-center gap-2.5 rounded-lg px-4 py-2 transition-all hover:bg-surface-hover ${
-        dim ? "opacity-70" : ""
-      }`}
-      onClick={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        openProfilePopup(uid, { x: rect.right + 8, y: rect.top }, null);
-      }}
-      onContextMenu={(e) => {
-        // Same menu as a voice-channel tile: local mute + user volume.
-        e.preventDefault();
-        openContextMenu(uid, { x: e.clientX, y: e.clientY }, null);
-      }}
-    >
-      <div className="relative">
-        {pulse && <div className="absolute inset-0 animate-ping rounded-lg bg-accent/20" />}
-        {/* Instant ring (no transition), like UserPanel's — an animated
-            box-shadow repaints for 150 ms on every speaking flip. */}
-        <div
-          className={`relative rounded-lg ${
-            isSpeaking
-              ? "shadow-[0_0_0_3px_var(--color-bg-darkest),0_0_0_5px_var(--color-success)]"
-              : ""
-          }`}
+    <div className="flex shrink-0 items-center gap-1 font-meta text-meta tabular-nums text-text-muted">
+      {latencyMs != null && (
+        <span className={`flex h-7 items-center gap-1.5 px-1.5 ${tone}`} title="Voice latency">
+          <SignalIcon />
+          {latencyMs} ms
+        </span>
+      )}
+      {latencyMs != null && path && <span className="h-4 w-px bg-border-divider" />}
+      {path && (
+        <span
+          className="flex h-7 items-center px-1.5"
+          title={path === "LAN" ? "Connected over your local network" : "Connected directly, peer to peer"}
         >
-          <UserAvatar uid={uid} name={username} size={88} />
-        </div>
-        {showMuted && (
-          <div className="absolute -bottom-1 -right-1 flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2.5px] border-bg-darkest bg-bg-light">
-            <svg className="h-3 w-3 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="1" y1="1" x2="23" y2="23" />
-              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
+          {path}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/// The call bar's facts on a video scrim, for the focused view (which gives
+/// the video the whole stage): duration, ping, and the lock, green when
+/// verified.
+function CallStatusOnVideo({ peer }: { peer: Uid }) {
+  const verified = useCallStore((s) => s.verified);
+  const latencyMs = useVoiceStore((s) => s.latencyMs);
+  const peerName = useUserName(peer, "Unknown user");
+  return (
+    <span className={`${SCRIM_LG} tabular-nums`}>
+      <span className="h-2 w-2 rounded-full" style={{ background: ON_VIDEO_GREEN }} />
+      <CallDuration />
+      {latencyMs != null && <span className="text-white/60">{latencyMs} ms</span>}
+      {verified !== null && (
+        <span
+          title={verifiedTitle(verified, peerName)}
+          aria-label={verified ? "Verified" : "Not verified"}
+          className={verified ? "" : "text-white/45"}
+          style={verified ? { color: ON_VIDEO_GREEN } : undefined}
+        >
+          <LockGlyph size={11} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+// ── tiles ────────────────────────────────────────────────────────
+
+/// You, the peer and any live screen share as one row of 16:9 tiles,
+/// kept clear of the floating dock (pb-20: the dock's 52 px, the 16 px it
+/// floats above the edge, and air, as VoicePanel's pb-24 does).
+function CallTiles({
+  peer,
+  me,
+  live,
+  peerStream,
+  ownStream,
+}: {
+  peer: Uid;
+  me: Uid;
+  live: boolean;
+  peerStream: StreamInfo | undefined;
+  ownStream: StreamInfo | undefined;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { width, height } = useElementSize(ref);
+  const streams = live ? [peerStream, ownStream].filter((s): s is StreamInfo => !!s) : [];
+  const n = 2 + streams.length;
+  const best = fitGrid(n, width, height, TILE_GAP, MAX_TILE_W);
+  // Side by side reads as a conversation: one row unless stacking gives
+  // clearly bigger tiles (a tall theater panel otherwise stacks the two of
+  // you for a few percent).
+  const rowW = Math.floor(Math.min((width - TILE_GAP * (n - 1)) / n, height * TILE_ASPECT, MAX_TILE_W));
+  const fit = rowW >= best.tileW * ROW_PREFERENCE ? { cols: n, tileW: rowW } : best;
+  const measured = width > 0 && height > 0;
+  return (
+    <div ref={ref} className="relative min-h-0 flex-1 px-6 pb-20 pt-1">
+      {measured && (
+        <div className="flex h-full items-center justify-center">
+          <div
+            className="flex flex-wrap justify-center gap-3"
+            style={{ maxWidth: fit.cols * fit.tileW + (fit.cols - 1) * TILE_GAP }}
+          >
+            <CallParticipant uid={me} isLocal live={live} width={fit.tileW} />
+            <CallParticipant uid={peer} isLocal={false} live={live} width={fit.tileW} />
+            {streams.map((s) => (
+              <CallStreamTile key={s.streamId} info={s} own={s.ownerUid === me} width={fit.tileW} />
+            ))}
           </div>
-        )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// A voice-view participant tile for one side of the call (right-click →
+/// the user menu: volume, mute for you, as in voice channels). While the
+/// call rings or connects, the peer's tile is dimmed under a breathing
+/// accent outline; once live it brightens in place.
+const CallParticipant = memo(function CallParticipant({
+  uid,
+  isLocal,
+  live,
+  width,
+}: {
+  uid: Uid;
+  isLocal: boolean;
+  live: boolean;
+  width: number;
+}) {
+  const p = useVoiceStore((s) => s.participants.find((x) => x.uid === uid));
+  const username = useUserName(uid, p?.username ?? "Unknown user");
+  const waiting = !isLocal && !live;
+  return (
+    <div className="relative shrink-0" style={{ width }}>
+      <div className={`transition-opacity duration-300 ${waiting ? "opacity-55" : ""}`}>
+        <ParticipantTile
+          uid={uid}
+          username={username}
+          isLocal={isLocal}
+          rosterMuted={p?.isMuted ?? false}
+          rosterDeafened={p?.isDeafened ?? false}
+          connectedServerId={null}
+          width={width}
+        />
       </div>
-      <div className="max-w-[10rem] truncate text-center text-[13px] font-medium text-text-primary">
-        {username}
-      </div>
+      {waiting && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 animate-[breathe_1.6s_ease-in-out_infinite] rounded-lg outline-2 -outline-offset-2 outline-accent"
+        />
+      )}
     </div>
   );
 });
 
-/// A live screen share as a card in the tile row: 16:9 poster (the owner's
-/// avatar — P2P calls have no thumbnails), LIVE pill, codec badge, and the
-/// owner caption. Click → watch (the peer's) or preview (your own). Mirrors
-/// the community voice view's stream cards so the two read the same.
-function StreamCard({ info, owner, own }: { info: StreamInfo; owner: Uid; own: boolean }) {
+/// "mira's screen" with the owner's avatar, on the video scrim.
+function StreamOwnerChip({ info, own }: { info: StreamInfo; own: boolean }) {
+  const name = useUserName(info.ownerUid, info.ownerUsername);
+  return (
+    <span className={SCRIM_LG}>
+      <UserAvatar uid={info.ownerUid} name={name} size={18} />
+      {own ? "Your screen" : `${name}'s screen`}
+    </span>
+  );
+}
+
+/// A live screen share as a voice-view stream tile: LIVE, quality, the
+/// owner on a scrim, and the actions on hover. Not watched: Watch stream
+/// (or Preview for your own), which opens it on the stage. Watched (backed
+/// out of the focused view): it plays here, through the persistent player
+/// when that's the stream it holds, with Focus and Stop. P2P calls carry no
+/// thumbnails, so an unwatched tile shows the owner's avatar.
+const CallStreamTile = memo(function CallStreamTile({
+  info,
+  own,
+  width,
+}: {
+  info: StreamInfo;
+  own: boolean;
+  width: number;
+}) {
+  const owner = info.ownerUid;
   const ownerName = useUserName(owner, info.ownerUsername);
+  const isWatching = useVoiceStore((s) => s.watchingStreams.includes(owner));
+  const isPip = useVoiceStore((s) => s.pipStream === owner);
   const label = own ? "Your screen" : `${ownerName}'s screen`;
-  const open = () => void watchCallStream(owner);
+
+  // The stream the persistent player already decodes is shown by moving that
+  // player's host in here (as the focused view and the mini player do)
+  // rather than starting a second decoder for the same stream.
+  const slotRef = useRef<HTMLDivElement>(null);
+  const hostsPip = isWatching && isPip;
+  useLayoutEffect(() => {
+    const slot = slotRef.current;
+    if (!hostsPip || !slot) return;
+    placeStreamPip(slot);
+    return () => {
+      const host = getStreamPipHost();
+      if (host.parentElement === slot) host.remove();
+    };
+  }, [hostsPip]);
+
+  const focus = () => useVoiceStore.getState().setFullscreenStream(owner);
+  const primary = () => (isWatching ? focus() : void watchCallStream(owner));
+  const act = (run: () => void) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    run();
+  };
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={open}
+      aria-label={label}
+      title={label}
+      onClick={primary}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          open();
+          primary();
         }
       }}
-      title={own ? "Preview what you're sharing" : `Watch ${ownerName}'s screen`}
-      className="group mt-2 w-44 cursor-pointer overflow-hidden rounded-lg border border-border bg-bg-light transition-all duration-150 ease-out hover:border-accent/30 hover:shadow-float"
+      className={`group relative aspect-video shrink-0 cursor-pointer overflow-hidden rounded-lg border border-border bg-black shadow-raised ${
+        isWatching ? "outline-2 -outline-offset-2 outline-accent" : ""
+      }`}
+      style={{ width }}
     >
-      <div className="relative aspect-video w-full bg-bg-darkest">
-        <CodecBadge
-          codec={info.currentCodec}
-          width={info.resolutionWidth}
-          height={info.resolutionHeight}
-          fps={info.fps}
-          enforced={false}
-          size="small"
-        />
-        <div className="flex h-full w-full items-center justify-center">
-          <UserAvatar uid={owner} name={ownerName} size={40} />
-        </div>
-        <div className="absolute left-2 top-2 flex items-center gap-[5px] rounded-sm bg-error/90 px-1.5 py-0.5">
-          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-          <span className="text-[10px] font-semibold text-white">LIVE</span>
-        </div>
-        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/40">
-          <span className="text-[12px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
-            {own ? "Preview" : "Watch"}
-          </span>
-        </div>
-      </div>
-      <div className="flex items-center gap-2 px-2.5 py-2">
-        <UserAvatar uid={owner} name={ownerName} size={20} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-medium text-text-primary">{label}</div>
-          {qualityLabel(info) && (
-            <div className="truncate font-meta text-[10.5px] text-text-muted">{qualityLabel(info)}</div>
-          )}
-        </div>
-        {own && (
-          <StreamAudioButton
-            size={14}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
-          />
+      <div className="absolute inset-0 flex items-center justify-center">
+        {hostsPip ? (
+          <div ref={slotRef} className="h-full w-full" />
+        ) : isWatching ? (
+          <StreamVideoPlayer streamerUid={owner} className="h-full w-full object-cover" />
+        ) : (
+          <UserAvatar uid={owner} name={ownerName} size={56} />
         )}
       </div>
-    </div>
-  );
-}
-
-/// Small avatar + name chip over the video (bottom-right). Speaking ring,
-/// mute glyph, right-click → the user menu.
-const PeerChip = memo(function PeerChip({ uid, muted }: { uid: Uid; muted?: boolean }) {
-  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
-  const peerMuted = useVoiceStore(
-    (s) => s.participants.find((p) => p.uid === uid)?.isMuted ?? false,
-  );
-  const username = useUserName(uid, "Unknown user");
-  const openContextMenu = useUiStore((s) => s.openContextMenu);
-  return (
-    <div
-      className="flex h-8 items-center gap-2 rounded-md border border-white/10 bg-black/70 pl-1 pr-2.5 text-[12px] font-medium text-text-primary"
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openContextMenu(uid, { x: e.clientX, y: e.clientY }, null);
-      }}
-    >
-      <div
-        className={`rounded-md ${
-          isSpeaking ? "shadow-[0_0_0_2px_rgba(0,0,0,0.9),0_0_0_4px_var(--color-success)]" : ""
-        }`}
-      >
-        <UserAvatar uid={uid} name={username} size={24} />
+      <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/45 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+        {isWatching ? (
+          <>
+            <button type="button" className={ACTION_PRIMARY} onClick={act(focus)}>
+              <ExpandIcon size={14} />
+              Focus
+            </button>
+            <button type="button" className={ACTION_SECONDARY} onClick={act(() => void unwatchCallStream(owner))}>
+              <CloseIcon size={14} bold />
+              Stop
+            </button>
+          </>
+        ) : (
+          <button type="button" className={ACTION_PRIMARY} onClick={act(() => void watchCallStream(owner))}>
+            <PlayIcon />
+            {own ? "Preview" : "Watch stream"}
+          </button>
+        )}
       </div>
-      {username}
-      {(muted || peerMuted) && (
-        <svg className="h-3 w-3 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-          <line x1="1" y1="1" x2="23" y2="23" />
-          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-        </svg>
-      )}
+      <div className="absolute left-2 top-2 flex gap-1.5">
+        <LivePill />
+        {isWatching && (
+          <span className="flex h-5 items-center gap-1 rounded-sm bg-accent px-1.5 font-meta text-micro font-semibold leading-none text-on-accent">
+            <EyeIcon size={12} bold />
+            Watching
+          </span>
+        )}
+      </div>
+      <QualityPill stream={info} className="absolute right-2 top-2" />
+      <div className="absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)]">
+        <span className={`${SCRIM} min-w-0`}>
+          <UserAvatar uid={owner} name={ownerName} size={16} />
+          <span className="truncate">{label}</span>
+        </span>
+      </div>
     </div>
   );
 });
 
-/// Local mute + volume for the peer, inline under their tile (the same
-/// controls the right-click menu offers, made discoverable).
-function PeerAudioControls({ uid }: { uid: Uid }) {
-  const username = useUserName(uid, "Unknown user");
-  const isLocallyMuted = useVoiceStore((s) => s.localMutedUsers.has(uid));
-  const currentDb = useVoiceStore((s) => s.userVolumes[uid] ?? DEFAULT_DB);
-  const setUserVolume = useVoiceStore((s) => s.setUserVolume);
-  const toggleLocalMute = useVoiceStore((s) => s.toggleLocalMute);
-
-  const sliderValue = ((currentDb - MIN_DB) / (MAX_DB - MIN_DB)) * 100;
-  const handleSlider = (val: number) => {
-    const raw = MIN_DB + (val / 100) * (MAX_DB - MIN_DB);
-    const db = Math.abs(raw) < 0.8 ? 0 : Math.round(raw * 10) / 10;
-    setUserVolume(uid, Math.max(MIN_DB, Math.min(MAX_DB, db)));
-    pushUserGain(uid);
-    saveSettings();
-  };
-  const handleToggleMute = () => {
-    toggleLocalMute(uid);
-    pushUserGain(uid);
-    saveSettings();
-  };
-
+/// One side of the call over the video: avatar with the speaking ring,
+/// name, mute / deafen. Right-click → the user menu.
+const PeerChip = memo(function PeerChip({ uid, isLocal }: { uid: Uid; isLocal: boolean }) {
+  const isSpeaking = useVoiceStore((s) => s.speakingUsers.has(uid));
+  const p = useVoiceStore((s) => s.participants.find((x) => x.uid === uid));
+  const selfMuted = useVoiceStore((s) => isLocal && s.isMuted);
+  const selfDeafened = useVoiceStore((s) => isLocal && s.isDeafened);
+  const username = useUserName(uid, p?.username ?? "Unknown user");
+  const muted = isLocal ? selfMuted : (p?.isMuted ?? false);
+  const deafened = isLocal ? selfDeafened : (p?.isDeafened ?? false);
   return (
-    <div className="mt-0.5 flex w-[10rem] items-center gap-1.5">
+    <span
+      className={`${SCRIM_LG} pl-1`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        useUiStore.getState().openContextMenu(uid, { x: e.clientX, y: e.clientY }, null);
+      }}
+    >
+      {/* Instant ring, no transition (the voice tiles' rule). */}
+      <span
+        className={isSpeaking ? "outline-2 outline-offset-1" : ""}
+        style={{ borderRadius: AVATAR_RADIUS, outlineColor: isSpeaking ? ON_VIDEO_GREEN : undefined }}
+      >
+        <UserAvatar uid={uid} name={username} size={22} />
+      </span>
+      {username}
+      {deafened ? (
+        <span title="Deafened" className="text-error">
+          <HeadphonesOffIcon size={13} bold />
+        </span>
+      ) : muted ? (
+        <span title="Muted" className="text-error">
+          <MicOffIcon size={13} bold />
+        </span>
+      ) : null}
+    </span>
+  );
+});
+
+// ── dock ─────────────────────────────────────────────────────────
+
+const DOCK_BUTTON = "flex h-10 w-10 items-center justify-center rounded-md";
+/// Themed tones (VoicePanel's dock) and their over-video twins (the voice
+/// view's fullscreen dock).
+const DOCK_TONES = {
+  soft: "bg-surface-hover text-text-secondary hover:bg-surface-active hover:text-text-bright",
+  danger: "bg-error/15 text-error hover:bg-error/25",
+  on: "bg-accent text-on-accent hover:bg-accent-hover",
+} as const;
+const VIDEO_TONES = {
+  soft: "text-white/80 hover:bg-white/10 hover:text-white",
+  danger: "bg-error/20 text-error hover:bg-error/30",
+  on: "bg-accent text-on-accent hover:bg-accent-hover",
+} as const;
+
+/// The voice dock with the call's ending: mic and headphones │ screen share
+/// (+ the stream-audio app picker) │ the watched stream's volume, over video
+/// │ end call. Until the call is live it is only the red button, labelled
+/// Cancel / Hang up.
+function CallDock({
+  status,
+  overVideo,
+  volume,
+  onShare,
+  onStopShare,
+  onHangUp,
+}: {
+  status: string;
+  overVideo: boolean;
+  volume: React.ReactNode;
+  onShare: () => void;
+  onStopShare: () => void;
+  onHangUp: () => void;
+}) {
+  const isMuted = useVoiceStore((s) => s.isMuted);
+  const isDeafened = useVoiceStore((s) => s.isDeafened);
+  const isStreaming = useVoiceStore((s) => s.isStreaming);
+  const live = status === "active";
+  const tones = overVideo ? VIDEO_TONES : DOCK_TONES;
+  const divider = <div className={`mx-0.5 h-6 w-px ${overVideo ? "bg-white/10" : "bg-border-divider"}`} />;
+  const button = (title: string, tone: keyof typeof DOCK_TONES, onClick: () => void, icon: React.ReactNode) => (
+    <button type="button" title={title} aria-label={title} onClick={onClick} className={`${DOCK_BUTTON} ${tones[tone]}`}>
+      {icon}
+    </button>
+  );
+  const endLabel = status === "outgoing" ? "Cancel" : "Hang up";
+  return (
+    <div
+      className={`flex items-center gap-1.5 rounded-lg border p-1.5 shadow-float ${
+        overVideo ? "border-white/10 bg-black/70" : "border-border bg-bg-light"
+      }`}
+    >
+      {live && (
+        <>
+          {button(isMuted ? "Unmute" : "Mute", isMuted ? "danger" : "soft", toggleMute, isMuted ? <MicOffIcon /> : <MicIcon />)}
+          {button(
+            isDeafened ? "Undeafen" : "Deafen",
+            isDeafened ? "danger" : "soft",
+            toggleDeafen,
+            isDeafened ? <HeadphonesOffIcon /> : <HeadphonesIcon />,
+          )}
+          {divider}
+          {button(
+            isStreaming ? "Stop sharing" : "Share your screen",
+            isStreaming ? "on" : "soft",
+            isStreaming ? onStopShare : onShare,
+            isStreaming ? <StopShareIcon /> : <ScreenIcon />,
+          )}
+          <StreamAudioButton size={18} className={`${DOCK_BUTTON} ${tones.soft}`} />
+          {divider}
+          {volume && (
+            <>
+              {volume}
+              {divider}
+            </>
+          )}
+        </>
+      )}
       <button
-        onClick={handleToggleMute}
-        title={isLocallyMuted ? `Unmute ${username} for you` : `Mute ${username} for you`}
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors ${
-          isLocallyMuted
-            ? "bg-error/15 text-error hover:bg-error/25"
-            : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+        type="button"
+        title={endLabel}
+        aria-label={endLabel}
+        onClick={onHangUp}
+        className={`flex h-10 items-center justify-center gap-2 rounded-md bg-error text-on-error hover:bg-error/85 ${
+          live ? "w-14" : "px-4 font-channel text-[13px] font-semibold"
         }`}
       >
-        <VolumeIcon muted={isLocallyMuted} size={13} />
+        <LeaveIcon />
+        {!live && endLabel}
       </button>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={sliderValue}
-        disabled={isLocallyMuted}
-        onChange={(e) => handleSlider(Number(e.target.value))}
-        title={`${formatDb(currentDb)} · ${dbToPercent(currentDb)}`}
-        className="h-[3px] min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-bg-lighter accent-accent disabled:cursor-not-allowed disabled:opacity-40 [&::-webkit-slider-thumb]:h-[10px] [&::-webkit-slider-thumb]:w-[10px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-accent [&::-webkit-slider-thumb]:bg-bg-light"
-      />
-      <span className="w-9 shrink-0 text-right font-meta text-[10.5px] tabular-nums text-text-muted">
-        {isLocallyMuted ? "Muted" : dbToPercent(currentDb)}
-      </span>
     </div>
   );
 }
 
-// ── icons (Feather-style, stroke) ────────────────────────────────
-
-const svgProps = {
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 2,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-
-function MicIcon() {
+/// Theater: the stage takes the whole DM panel (maximize-2).
+function TheaterIcon({ size }: { size: number }) {
   return (
-    <svg width="18" height="18" {...svgProps}>
-      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-      <line x1="12" y1="19" x2="12" y2="23" />
-      <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-  );
-}
-function MicOffIcon() {
-  return (
-    <svg width="18" height="18" {...svgProps}>
-      <line x1="1" y1="1" x2="23" y2="23" />
-      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-      <line x1="12" y1="19" x2="12" y2="23" />
-      <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-  );
-}
-function DeafenIcon() {
-  return (
-    <svg width="18" height="18" {...svgProps}>
-      <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
-    </svg>
-  );
-}
-function DeafenOffIcon() {
-  return (
-    <svg width="18" height="18" {...svgProps}>
-      <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
-      <line x1="1" y1="1" x2="23" y2="23" />
-    </svg>
-  );
-}
-function ShareIcon() {
-  return (
-    <svg width="18" height="18" {...svgProps}>
-      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-      <line x1="8" y1="21" x2="16" y2="21" />
-      <line x1="12" y1="17" x2="12" y2="21" />
-    </svg>
-  );
-}
-function StopShareIcon() {
-  return (
-    <svg width="18" height="18" {...svgProps}>
-      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-      <rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-function HangUpIcon() {
-  return (
-    <svg width="16" height="16" {...svgProps}>
-      <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" />
-      <line x1="23" y1="1" x2="1" y2="23" />
-    </svg>
-  );
-}
-function TheaterIcon() {
-  return (
-    <svg width="16" height="16" {...svgProps}>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
       <polyline points="15 3 21 3 21 9" />
       <polyline points="9 21 3 21 3 15" />
       <line x1="21" y1="3" x2="14" y2="10" />
       <line x1="3" y1="21" x2="10" y2="14" />
-    </svg>
-  );
-}
-function CollapseIcon() {
-  return (
-    <svg width="16" height="16" {...svgProps}>
-      <polyline points="4 14 10 14 10 20" />
-      <polyline points="20 10 14 10 14 4" />
-      <line x1="14" y1="10" x2="21" y2="3" />
-      <line x1="3" y1="21" x2="10" y2="14" />
-    </svg>
-  );
-}
-function FullscreenIcon() {
-  return (
-    <svg width="16" height="16" {...svgProps}>
-      <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-    </svg>
-  );
-}
-function StatsIcon() {
-  return (
-    <svg width="16" height="16" {...svgProps}>
-      <line x1="18" y1="20" x2="18" y2="10" />
-      <line x1="12" y1="20" x2="12" y2="4" />
-      <line x1="6" y1="20" x2="6" y2="14" />
-    </svg>
-  );
-}
-function CloseIcon() {
-  return (
-    <svg width="16" height="16" {...svgProps}>
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  );
-}
-function VolumeIcon({ muted, size = 16 }: { muted: boolean; size?: number }) {
-  return (
-    <svg width={size} height={size} {...svgProps}>
-      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-      {muted ? (
-        <>
-          <line x1="23" y1="9" x2="17" y2="15" />
-          <line x1="17" y1="9" x2="23" y2="15" />
-        </>
-      ) : (
-        <>
-          <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-          <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-        </>
-      )}
     </svg>
   );
 }
