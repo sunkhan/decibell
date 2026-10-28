@@ -4639,3 +4639,11 @@ captured, not the real clipboard): JPEG (1918×1080) and PNG copied in main, Web
 (800×450), a 404 and an unknown server refused with clean messages, the bearer token sent. The real `copyImage`
 bundled and run with real timers: a 50 ms copy shows only "Image copied"; a 900 ms one shows "Copying image…" at
 300 ms, then the result. Live test pending: an encrypted-channel attachment and a large file on the real server.
+
+### Fix: `npm run dev` could start Electron on the previous session's main process (2026-10-28)
+
+Reported by the owner as "No handler registered for 'decibell:clipboard:copyAttachment'" after a full restart.
+`dev:electron` waits for `dist/electron/main/index.js`, which the last session left on disk, so Electron started
+(17:16:35.29) before `tsc --watch` had written the new main (clipboard.js at .72, index.js at .82): an old main
+under a new preload, whose new IPC channel had no handler. Any main-process change could hit it. `dev` now
+compiles main and preload once (`tsc -p tsconfig.node.json`, ~1.5 s) before starting the watchers and Electron.
