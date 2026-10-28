@@ -1205,6 +1205,13 @@ export interface StartScreenShareArgs {
    */
   includeCursor?: boolean
   /**
+   * A 5 fps stream (the Slides preset, or 5 fps under Advanced): tune the
+   * native encoder for detail over motion (quality preset, a keyframe a
+   * minute, a 4K ceiling for H.264; see bitrate_preset::detail_opts).
+   * Absent = false; streams at other frame rates are unchanged.
+   */
+  detail?: boolean
+  /**
    * Share-audio application filter: mode (`selected` | `all_except` |
    * `all`) and the ticked app identities. Both absent → the filter last
    * stored on AppState (`set_stream_audio_filter`) applies; otherwise

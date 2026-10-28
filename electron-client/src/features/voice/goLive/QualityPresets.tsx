@@ -8,8 +8,8 @@ import {
   resolutionLabel,
 } from "./presets";
 
-/// Three named quality cards. Settings that match none of them (changed
-/// under Advanced) leave every card unpicked and say so underneath.
+/// Four named quality cards, two by two. Settings that match none of them
+/// (changed under Advanced) leave every card unpicked and say so underneath.
 export default function QualityPresets({ disabled }: { disabled?: boolean }) {
   const settings = useVoiceStore((s) => s.streamSettings);
   const setStreamSettings = useVoiceStore((s) => s.setStreamSettings);
@@ -17,7 +17,7 @@ export default function QualityPresets({ disabled }: { disabled?: boolean }) {
 
   return (
     <div>
-      <div role="radiogroup" aria-label="Stream quality" className="grid grid-cols-3 gap-2">
+      <div role="radiogroup" aria-label="Stream quality" className="grid grid-cols-2 gap-2">
         {STREAM_PRESETS.map((p) => {
           const on = active?.id === p.id;
           return (
@@ -28,7 +28,7 @@ export default function QualityPresets({ disabled }: { disabled?: boolean }) {
               aria-checked={on}
               disabled={disabled}
               onClick={() => setStreamSettings(presetSettings(p))}
-              className={`flex min-w-0 flex-col items-start gap-3 rounded-lg border px-3 pt-3 pb-2.5 text-left disabled:opacity-60 ${
+              className={`flex min-w-0 items-center gap-3 rounded-lg border px-3 py-2.5 text-left disabled:opacity-60 ${
                 on
                   ? "border-accent bg-accent-soft"
                   : "border-border-divider bg-bg-light enabled:hover:bg-bg-lighter"

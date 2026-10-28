@@ -81,6 +81,10 @@ export interface StreamCaptureOptions {
   /// it via the portal/WGC cursor option). Passed through to
   /// start_screen_share.
   includeCursor: boolean;
+  /// A 5 fps stream (Slides, or 5 fps under Advanced): the native encoder
+  /// tunes for detail over motion (start_screen_share's `detail`). The
+  /// WebCodecs path ignores it.
+  detail?: boolean;
   /// Routing for the periodic JPEG thumbnail the streamer broadcasts
   /// to non-watching voice-channel participants (so they see a poster
   /// image on the participant tile instead of a black square). The
@@ -214,6 +218,7 @@ export class StreamCapture {
           // below re-invokes via CaptureSourcePicker with false.
           nativeEncode: true,
           includeCursor: this.opts.includeCursor,
+          detail: this.opts.detail ?? false,
         });
         this.nativeSize = { width: size.width, height: size.height };
         console.log(

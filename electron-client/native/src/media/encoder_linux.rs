@@ -486,6 +486,8 @@ pub struct EncoderConfig {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub keyframe_interval_secs: u32,
+    /// A 5 fps stream: the encoder's quality preset (bitrate_preset::detail_opts).
+    pub detail: bool,
 }
 
 #[derive(Debug)]
@@ -626,6 +628,11 @@ impl H264Encoder {
             }
             _ => {
                 // h264_vaapi / hevc_vaapi / av1_vaapi — use defaults
+            }
+        }
+        if config.detail {
+            for (k, v) in super::bitrate_preset::detail_opts(&codec_name) {
+                opts.set(k, v);
             }
         }
 
@@ -2257,7 +2264,7 @@ mod tests {
         use crate::media::caps::CodecKind;
         const W: u32 = 640;
         const H: u32 = 360;
-        let cfg = EncoderConfig { width: W, height: H, fps: 30, bitrate_kbps: 4000, keyframe_interval_secs: 2 };
+        let cfg = EncoderConfig { width: W, height: H, fps: 30, bitrate_kbps: 4000, keyframe_interval_secs: 2, detail: false };
         for (label, is_bgra, src_w, src_h) in [
             ("bgra", true, W, H),
             ("rgba", false, W, H),

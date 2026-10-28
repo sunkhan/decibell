@@ -24,7 +24,7 @@ export function stepBitrate(resolution: StreamResolution, quality: QualityStep):
 }
 
 export interface StreamPreset {
-  id: "smooth" | "sharp" | "saver";
+  id: "smooth" | "sharp" | "slides" | "saver";
   label: string;
   icon: IconName;
   /// The card's second line.
@@ -52,9 +52,23 @@ export const STREAM_PRESETS: StreamPreset[] = [
     label: "Sharp",
     icon: "text",
     spec: "Full res · 30 fps",
-    blurb: "Your screen's full resolution at 30 fps, so text, code and slides stay crisp.",
+    blurb: "Your screen's full resolution at 30 fps, so text and code stay crisp.",
     resolution: "source",
     fps: 30,
+    quality: "medium",
+  },
+  // Its 5 fps also tunes the native encoder for detail (start_screen_share's
+  // `detail`): the quality preset, a keyframe a minute, 4K for H.264. That
+  // follows the frame rate, so a Slides stream adjusted under Advanced keeps
+  // it; streams at any other frame rate are encoded as before.
+  {
+    id: "slides",
+    label: "Slides",
+    icon: "presentation",
+    spec: "Full res · 5 fps",
+    blurb: "Your screen's full resolution at 5 fps, with every frame encoded for detail. Best for presentations.",
+    resolution: "source",
+    fps: 5,
     quality: "medium",
   },
   {

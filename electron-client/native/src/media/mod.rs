@@ -1035,8 +1035,9 @@ impl VideoEngine {
     /// Source id is the Chromium desktopCapturer id ("screen:N:0" or
     /// "window:HWND:0"). Encoder name comes from probe_native_encoders.
     /// `width`×`height` 0×0 means "Source": the captured source's own size,
-    /// kept within `ceiling` (the encoder's advertised maximum). Returns
-    /// the encoded (width, height), which is what gets announced.
+    /// kept within `ceiling` (the encoder's advertised maximum). `detail`
+    /// tunes the encoder for a 5 fps stream. Returns the encoded (width,
+    /// height), which is what gets announced.
     #[cfg(target_os = "windows")]
     pub fn start_windows(
         &mut self,
@@ -1048,6 +1049,7 @@ impl VideoEngine {
         ceiling: (u32, u32),
         fps: u32,
         bitrate_kbps: u32,
+        detail: bool,
         include_cursor: bool,
     ) -> Result<(u32, u32), String> {
         let target = source_id::parse(source_id)
@@ -1118,6 +1120,7 @@ impl VideoEngine {
                 height,
                 fps,
                 bitrate_kbps,
+                detail,
                 local_username: self.self_username.clone(),
                 video_sender: self.sender.clone(),
                 thumbnail_tx: thumb_tx,
@@ -1183,7 +1186,8 @@ impl VideoEngine {
     /// the capture backend; the portal path ignores it (its own dialog
     /// picks the source), the wlr path parses it. `width`×`height` 0×0
     /// means "Source": the negotiated capture size, kept within `ceiling`.
-    /// Returns the encoded (width, height), which is what gets announced.
+    /// `detail` tunes the encoder for a 5 fps stream. Returns the encoded
+    /// (width, height), which is what gets announced.
     #[cfg(target_os = "linux")]
     pub async fn start_linux(
         &mut self,
@@ -1195,6 +1199,7 @@ impl VideoEngine {
         ceiling: (u32, u32),
         fps: u32,
         bitrate_kbps: u32,
+        detail: bool,
         include_cursor: bool,
     ) -> Result<(u32, u32), String> {
         let config = capture::CaptureConfig {
@@ -1239,6 +1244,7 @@ impl VideoEngine {
                 height,
                 fps,
                 bitrate_kbps,
+                detail,
                 local_username: self.self_username.clone(),
                 video_sender: self.sender.clone(),
                 thumbnail_tx: thumb_tx,

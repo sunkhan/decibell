@@ -64,6 +64,8 @@ pub struct EncoderThreadConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// A 5 fps stream: tune the encoder for detail (see bitrate_preset).
+    pub detail: bool,
     pub local_username: String,
     pub video_sender: Arc<VideoSender>,
     /// Sender for thumbnail JPEG bytes. The encoder thread produces a
@@ -98,6 +100,7 @@ impl EncoderThread {
             cfg.height,
             cfg.fps,
             cfg.bitrate_kbps,
+            cfg.detail,
         )?;
         let force_keyframe = encoder.force_keyframe_handle();
 

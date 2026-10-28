@@ -54,6 +54,11 @@ pub struct StartScreenShareArgs {
     /// native capture paths (XDG portal cursor_mode / wlr overlay_cursor /
     /// Windows WGC SetIsCursorCaptureEnabled). Defaults to true (show).
     pub include_cursor: Option<bool>,
+    /// A 5 fps stream (the Slides preset, or 5 fps under Advanced): tune the
+    /// native encoder for detail over motion (quality preset, a keyframe a
+    /// minute, a 4K ceiling for H.264; see bitrate_preset::detail_opts).
+    /// Absent = false; streams at other frame rates are unchanged.
+    pub detail: Option<bool>,
     /// Share-audio application filter: mode (`selected` | `all_except` |
     /// `all`) and the ticked app identities. Both absent → the filter last
     /// stored on AppState (`set_stream_audio_filter`) applies; otherwise
@@ -230,6 +235,12 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<Star
                     },
                 )?
             };
+            let detail = args.detail.unwrap_or(false);
+            let ceiling = if detail {
+                crate::media::encode_util::DETAIL_CEILING
+            } else {
+                (pick.max_width, pick.max_height)
+            };
             size = engine
                 .start_windows(
                     source_id,
@@ -237,9 +248,10 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<Star
                     pick.codec as u8,
                     args.width,
                     args.height,
-                    (pick.max_width, pick.max_height),
+                    ceiling,
                     args.fps,
                     args.video_bitrate_kbps,
+                    detail,
                     args.include_cursor.unwrap_or(true),
                 )
                 .map_err(napi::Error::from_reason)?;
@@ -316,6 +328,7 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> napi::Result<Star
                 (max_w, max_h),
                 args.fps,
                 args.video_bitrate_kbps,
+                args.detail.unwrap_or(false),
                 args.include_cursor.unwrap_or(true),
             )
             .await

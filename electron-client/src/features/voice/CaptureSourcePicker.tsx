@@ -135,6 +135,9 @@ export default function CaptureSourcePicker({
         audioMode: streamSettings.audioMode,
         audioApps: streamSettings.audioApps,
         includeCursor: streamSettings.includeCursor,
+        // Every 5 fps stream (Slides, or 5 fps under Advanced) is encoded
+        // for detail; see start_screen_share's `detail`.
+        detail: streamSettings.fps === 5,
         serverId,
         channelId,
         useNativeSize: streamSettings.resolution === "source",

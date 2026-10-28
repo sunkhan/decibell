@@ -126,6 +126,13 @@ pub fn vbv_bits(bitrate_kbps: u32, fps: u32) -> i32 {
     four_frames.min(cap).min(i32::MAX as u64) as i32
 }
 
+/// The size ceiling of a `detail` (5 fps) stream, whatever the codec. The
+/// Windows H.264 ceiling of 2560×1440 is for high frame rates; at 5 fps a
+/// 4K H.264 stream is cheap to encode, and every viewer's decoder takes it
+/// (the decoder probe's ceilings are 3840×2160), so a 4K screen of slides
+/// keeps its text at full size.
+pub const DETAIL_CEILING: (u32, u32) = (3840, 2160);
+
 /// Encode size for a "Source" stream: the captured source's own size,
 /// scaled down (aspect kept) when it exceeds the encoder's ceiling and
 /// never scaled up. The ceiling is a landscape box (2560×1440 for H.264);

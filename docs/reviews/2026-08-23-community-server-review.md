@@ -4485,3 +4485,31 @@ Verified: tsc web 0. UI harness, real components with a photo avatar, captured a
 matinee / graphite (before and after) and at 1.25× in nocturne / console: no banner slivers, an even frame, no
 seams. Noticed, not changed: on console's square avatars a pixel of the picture's corner shows beside the status
 dot.
+
+### Feature: the Slides preset, and 5 fps streams encoded for detail (2026-10-28)
+
+Owner: 5 fps was meant for presentations, "where clarity is way more important than smoothness". A 5 fps frame
+already carries six times a 30 fps frame's data at the same bitrate, but the encoders were still tuned for live
+motion. Owner decisions: a fourth preset, and the tuning follows the frame rate (every 5 fps stream, so Slides
+adjusted under Advanced keeps it); Smooth, Sharp and Data saver keep their numbers and encoder settings.
+Captures: https://claude.ai/artifact/S2NqbPKkeBL7tZUsy7Rudd
+
+- **Slides** card (`goLive/presets.ts`): Source · 5 fps · the medium step (12 Mbps, as Sharp). The four cards sit
+  two by two with the icon beside the text; Sharp's sentence says "text and code" now that slides have a card.
+- **`StartScreenShareArgs.detail`**, set for every 5 fps stream, on both native encoders:
+  - each encoder's quality preset over its fastest (`bitrate_preset::detail_opts`: NVENC `p7` + `tune hq`, AMF
+    `quality`), on Windows and on the Linux NVENC / AMF path; no B-frames and the same rate control, so the
+    latency doesn't grow;
+  - a keyframe a minute (`DETAIL_KEYFRAME_SECS`) instead of every 2 s (Linux) / 4 s (Windows): each periodic
+    keyframe briefly softened a still slide; a viewer joining (the server's forced keyframe on WATCH) or losing
+    packets (PLI) still gets one at once;
+  - "Source" kept within `encode_util::DETAIL_CEILING` (3840 × 2160) whatever the codec, so a 4K screen stays
+    4K with H.264 on Windows (its 2560 × 1440 ceiling is for high frame rates; viewers' decoders take 4K H.264).
+- Deliberately unchanged: a slide change keeps the 400 ms rate-control budget. A larger first frame only arrives
+  later (12 Mbps on a 20 Mbps upload: ~0.25 s now, ~0.5 s with twice the budget) and the next frames finish
+  sharpening it. The WebCodecs fallback (macOS, no hardware encoder) gets the size and frame rate, not the tuning.
+
+Verified: `cargo test --lib` 322 (+1: the detail overrides keep the presets' IDR rules); `napi build`; tsc web 0;
+harness captures of the dialog in five themes, Windows / Linux / 1000 × 700. Live test pending: a 5 fps stream
+from NVIDIA and AMD on Windows and Linux (the encoder opens with `p7` / `hq`; a forced keyframe on joining; a 4K
+screen announced at 3840 × 2160 with H.264), and a still slide watched for a minute without a soft pulse.

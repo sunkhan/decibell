@@ -12,7 +12,7 @@
 //!    the renderer's WebCodecs path.
 //!
 //! Not cfg(windows) only so the tests below run on every platform; the
-//! Windows encoder is the only consumer.
+//! Windows encoder uses all of it, the Linux encoder `detail_opts`.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
@@ -20,6 +20,25 @@ pub struct PresetOptions {
     /// Key/value pairs forwarded to AVDictionary at avcodec_open2 time.
     pub opts: &'static [(&'static str, &'static str)],
 }
+
+/// Overrides for a 5 fps stream (`detail`: Slides, or 5 fps under Advanced),
+/// laid over `preset_for` here and over the Linux encoder's own options: each
+/// encoder's quality preset in place of its fastest. At 5 fps a frame has
+/// 200 ms to encode; zero B-frames and the low-latency rate control stay.
+pub fn detail_opts(encoder_name: &str) -> &'static [(&'static str, &'static str)] {
+    match encoder_name {
+        "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => &[("preset", "p7"), ("tune", "hq")],
+        "h264_amf" | "hevc_amf" | "av1_amf" => &[("quality", "quality")],
+        _ => &[],
+    }
+}
+
+/// A `detail` stream's keyframe interval. Every keyframe briefly softens a
+/// still slide (it has to fit the rate-control buffer, while the frames
+/// before it had refined the picture), and the usual 2 to 4 s made that a
+/// pulse. A viewer joining or losing packets asks for a keyframe anyway;
+/// this is only the safety net.
+pub const DETAIL_KEYFRAME_SECS: u32 = 60;
 
 pub fn preset_for(encoder_name: &str) -> PresetOptions {
     match encoder_name {
@@ -216,5 +235,18 @@ mod tests {
     fn unknown_encoder_empty_opts() {
         assert!(preset_for("unknown_x").opts.is_empty());
         assert!(dynamic_opts("unknown_x", 240).is_empty());
+    }
+
+    #[test]
+    fn detail_uses_the_quality_presets_and_keeps_low_latency() {
+        for name in ["h264_nvenc", "hevc_nvenc", "av1_nvenc"] {
+            assert_eq!(detail_opts(name), &[("preset", "p7"), ("tune", "hq")], "{name}");
+            // Overrides only: the B-frame and IDR rules underneath stay.
+            assert!(preset_for(name).opts.iter().any(|(k, v)| *k == "forced-idr" && *v == "1"));
+        }
+        for name in ["h264_amf", "hevc_amf", "av1_amf"] {
+            assert_eq!(detail_opts(name), &[("quality", "quality")], "{name}");
+        }
+        assert!(detail_opts("libx264").is_empty());
     }
 }

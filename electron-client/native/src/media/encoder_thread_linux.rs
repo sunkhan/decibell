@@ -140,6 +140,8 @@ pub struct LinuxEncoderThreadConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// A 5 fps stream: tune the encoder for detail (see bitrate_preset).
+    pub detail: bool,
     pub local_username: String,
     pub video_sender: Arc<VideoSender>,
     /// Bounded depth=1 drop-newest (via try_send) — a slow server never
@@ -157,7 +159,12 @@ impl LinuxEncoderThread {
             height: cfg.height,
             fps: cfg.fps,
             bitrate_kbps: cfg.bitrate_kbps,
-            keyframe_interval_secs: KEYFRAME_INTERVAL_SECS,
+            keyframe_interval_secs: if cfg.detail {
+                super::bitrate_preset::DETAIL_KEYFRAME_SECS
+            } else {
+                KEYFRAME_INTERVAL_SECS
+            },
+            detail: cfg.detail,
         };
         let CaptureOutput { receiver, gpu_receiver, end, stopper, .. } = capture;
         // Open the encoder up front so a failure surfaces here in start()

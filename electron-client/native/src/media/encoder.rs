@@ -90,6 +90,7 @@ impl Encoder {
         height: u32,
         fps: u32,
         bitrate_kbps: u32,
+        detail: bool,
     ) -> Result<Self, String> {
         if !(encoder_name.contains("nvenc") || encoder_name.contains("_amf")) {
             return Err(format!(
@@ -220,8 +221,9 @@ impl Encoder {
             .video()
             .map_err(|e| format!("encoder().video(): {e:?}"))?;
 
-        // GOP: keyframe every 4 seconds plus on-demand via force_keyframe.
-        let gop = fps * 4;
+        // GOP: keyframe every 4 seconds plus on-demand via force_keyframe
+        // (a `detail` stream: once a minute, see DETAIL_KEYFRAME_SECS).
+        let gop = fps * if detail { super::bitrate_preset::DETAIL_KEYFRAME_SECS } else { 4 };
         context.set_width(width);
         context.set_height(height);
         context.set_frame_rate(Some(ff::Rational::new(fps as i32, 1)));
@@ -270,6 +272,11 @@ impl Encoder {
         }
         for (k, v) in dynamic_opts(encoder_name, gop) {
             opts.set(k, &v);
+        }
+        if detail {
+            for (k, v) in super::bitrate_preset::detail_opts(encoder_name) {
+                opts.set(k, v);
+            }
         }
         // On failure `context` is freed inside open_with (dropping its hw
         // refs); our own refs drop with the BufferRef guards.
