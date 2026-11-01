@@ -4754,3 +4754,42 @@ join, expiry, the auth snapshot, moderator move, the reset streams / rings / e2e
 0 failed, with the new `test_switch_keeps_mute` (LEAVE, mute, JOIN → the new channel's first roster shows the
 member muted, no extra broadcast). Live test pending: switching with someone else in both channels, while muted, while streaming, rapid
 clicks, and a leave.
+
+### Change: others see a voice switch as soon as the server can; encryption is ready sooner (2026-11-01)
+
+Follow-up to the entry above, flagged by a side agent: the fix moved us at once on our own screen only. Everyone
+else still saw us stay in the old channel until native had set up the new session, since the LEAVE / JOIN went
+out after it. Owner: a Discord-like "connecting" moment in the new channel is fine, but as short as possible.
+
+What a join waited on, by reading it: under the state lock, two config reads, the engine start (two blocking DNS
+lookups of the community host for the UDP sockets, three threads; the audio devices open later on the engine's
+own thread) and the MLS group setup, then the packets. After the JOIN, media flows once the engine runs **and**
+the first epoch's keys are in: GroupInfo (one community round trip), the external commit (another), then
+`after_merge` checks every member's identity against central one after another, a central round trip per person
+not looked up this sign-in (the `verified` map lives in the driver, recreated per join; `e2ee.fresh` is the
+session-wide cache). Members already in the channel check the newcomer the same way once its commit reaches them.
+
+- **JOIN first** (`join_voice_channel`): every check that can refuse the join runs before the old session is
+  touched (community, encryption keys, config, read once now), then LEAVE → mute / deafen → JOIN →
+  MLS_GROUP_INFO_REQ go out (`join_outbox`), then the MLS driver and the engine start. One lock acquisition for
+  all of it, as before. If either fails to start, a LEAVE takes the JOIN back (others see us appear and leave:
+  accepted).
+- **The GroupInfo request rides behind the JOIN**: `group::start(.., info_requested)` makes the driver wait
+  for the reply instead of sending its own. Before, the spawned driver sent it whenever it first ran. It came after
+  the JOIN only because tokio runs a just-spawned task after the spawning one yields; now it doesn't depend on
+  that, and it's on the wire at once.
+- **Identities are prefetched from the roster** (`Driver::prefetch_identities`): every roster member not yet
+  verified, and not cached this session, is looked up in the background when the roster shows them. A joiner's
+  lookups overlap its two community round trips; the members already there start on the newcomer at its JOIN
+  broadcast, before its commit arrives. `after_merge` awaits a lookup still in flight, then decides as before.
+  Same requests to central as the sequential check (its key bucket is 20 / 5 per s), only earlier.
+
+Not changed: a stream being ended by a switch is still torn down before the JOIN (renderer), and the community's
+read loop still waits on the state lock while the engine starts (the GroupInfo reply can't arrive sooner than a
+round trip anyway).
+
+Verified: native napi build + `cargo test --lib` (324 passed), with `join_outbox` order tests (a muted cross-community
+switch: each connection gets LEAVE before the mute; the target gets LEAVE, mute, JOIN, GroupInfo; a first join
+gets only JOIN, GroupInfo); community e2e 780 passed, 0 failed, `test_switch_keeps_mute` now also sends GroupInfo right
+behind the JOIN and gets it answered. Live test pending: how long "Securing…" lasts on a switch, with people not
+yet seen this session in the channel, as the joiner and as a member already there.

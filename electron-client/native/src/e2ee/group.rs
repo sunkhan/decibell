@@ -120,6 +120,20 @@ struct Driver {
     unverified: Vec<String>,
     ghost_since: HashMap<i64, Instant>,
     last_state: String,
+    /// Key-directory lookups started from the roster (`prefetch_identities`).
+    prefetches: HashMap<i64, tokio::task::JoinHandle<()>>,
+}
+
+/// The GroupInfo request a driver opens with. A join sends it itself, right
+/// behind its JOIN, and starts the driver with `info_requested`: on the wire
+/// at once (the server answers only once it has the JOIN), instead of
+/// whenever the spawned driver first runs.
+pub fn group_info_request(channel_id: &str) -> Vec<u8> {
+    build_packet(
+        packet::Type::MlsGroupInfoReq,
+        packet::Payload::MlsGroupInfoReq(MlsGroupInfoReq { channel_id: channel_id.to_string() }),
+        None,
+    )
 }
 
 pub fn start(
@@ -130,6 +144,7 @@ pub fn start(
     identity: &IdentityKeys,
     write_tx: mpsc::Sender<Vec<u8>>,
     ring: SharedKeyRing,
+    info_requested: bool,
 ) -> Result<GroupHandle, String> {
     let provider = OpenMlsRustCrypto::default();
     let sign_pub = identity.sign_public()?.to_vec();
@@ -165,8 +180,9 @@ pub fn start(
         unverified: Vec::new(),
         ghost_since: HashMap::new(),
         last_state: String::new(),
+        prefetches: HashMap::new(),
     };
-    let task = tokio::spawn(driver.run(rx));
+    let task = tokio::spawn(driver.run(rx, info_requested));
     Ok(GroupHandle { tx, ring, server_id, channel_id, task })
 }
 
@@ -227,8 +243,12 @@ fn leaves(group: &MlsGroup) -> Vec<Leaf> {
 }
 
 impl Driver {
-    async fn run(mut self, mut rx: mpsc::UnboundedReceiver<GroupCmd>) {
-        self.request_group_info().await;
+    async fn run(mut self, mut rx: mpsc::UnboundedReceiver<GroupCmd>, info_requested: bool) {
+        if info_requested {
+            self.begin_fetch();
+        } else {
+            self.request_group_info().await;
+        }
         let mut tick = tokio::time::interval(TICK);
         loop {
             tokio::select! {
@@ -263,15 +283,20 @@ impl Driver {
     }
 
     async fn request_group_info(&mut self) {
-        self.phase = Phase::FetchingInfo;
-        self.pending = Pending::None;
-        self.sent_at = Instant::now();
-        self.emit("joining");
+        self.begin_fetch();
         self.send(
             packet::Type::MlsGroupInfoReq,
             packet::Payload::MlsGroupInfoReq(MlsGroupInfoReq { channel_id: self.channel_id.clone() }),
         )
         .await;
+    }
+
+    /// Waiting for GroupInfo: from a request just sent (ours or the join's).
+    fn begin_fetch(&mut self) {
+        self.phase = Phase::FetchingInfo;
+        self.pending = Pending::None;
+        self.sent_at = Instant::now();
+        self.emit("joining");
     }
 
     fn emit(&mut self, state: &str) {
@@ -546,6 +571,11 @@ impl Driver {
             } else if self.verified.get(&leaf.uid) == Some(&leaf.key) {
                 true
             } else {
+                // A lookup the roster started may still be on its way: let
+                // it land in the session cache rather than ask twice.
+                if let Some(h) = self.prefetches.remove(&leaf.uid) {
+                    let _ = h.await;
+                }
                 let ok = match e2ee::resolve_peer_current(&self.state, leaf.uid, "").await {
                     Ok(Some(b)) => b.sign_pub == leaf.key,
                     Ok(None) => false,
@@ -647,8 +677,41 @@ impl Driver {
 
     async fn on_presence(&mut self, roster: Vec<i64>) {
         self.roster = roster.into_iter().collect();
+        self.prefetch_identities().await;
         if self.phase == Phase::Operational {
             self.reconcile_roster().await;
+        }
+    }
+
+    /// Look up the roster's identities in the background as soon as the
+    /// roster shows them. `after_merge` checks every leaf against central's
+    /// key directory, one after another, before any media key is ready: a
+    /// round trip to central per person not seen this session. Started here,
+    /// a joiner's lookups overlap its GroupInfo and commit round trips, and
+    /// the members already in the channel look a newcomer up when its JOIN
+    /// shows on the roster, before its commit reaches them. Only warms the
+    /// session cache; `after_merge` still decides.
+    async fn prefetch_identities(&mut self) {
+        self.prefetches.retain(|_, h| !h.is_finished());
+        let wanted: Vec<i64> = self
+            .roster
+            .iter()
+            .copied()
+            .filter(|&u| {
+                u > 0 && u != self.uid && !self.verified.contains_key(&u) && !self.prefetches.contains_key(&u)
+            })
+            .collect();
+        for uid in wanted {
+            if !e2ee::needs_lookup(&self.state, uid).await {
+                continue;
+            }
+            let state = self.state.clone();
+            let task = tokio::spawn(async move {
+                if let Err(e) = e2ee::resolve_peer_current(&state, uid, "").await {
+                    log::debug!("[mls] prefetch of uid {uid}'s keys failed: {e}");
+                }
+            });
+            self.prefetches.insert(uid, task);
         }
     }
 

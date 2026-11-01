@@ -452,9 +452,11 @@ def test_ghost_stream():
 
 def test_switch_keeps_mute():
     print("[voice switch] a mute sent between LEAVE and JOIN is in the JOIN's roster")
-    # The client switches channels as LEAVE, VOICE_STATE_NOTIFY, JOIN (the
-    # leave resets mute / deafen). Out of voice the state is only recorded,
-    # so the new channel's first roster already shows the member muted.
+    # The client switches channels as LEAVE, VOICE_STATE_NOTIFY, JOIN, then
+    # MLS_GROUP_INFO_REQ right behind it (the leave resets mute / deafen).
+    # Out of voice the state is only recorded, so the new channel's first
+    # roster already shows the member muted; the GroupInfo request, read
+    # after the JOIN, is answered.
     owner = Client("alice"); assert auth_ok(owner)[0]
     sam = join("switcher", owner)
     sam_uid = uid_of("switcher")
@@ -464,6 +466,10 @@ def test_switch_keeps_mute():
     sam.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
     sam.send(pb.Packet.VOICE_STATE_NOTIFY, voice_state_notify=pb.VoiceStateNotify(is_muted=True, is_deafened=False))
     sam.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge-2"))
+    sam.send(pb.Packet.MLS_GROUP_INFO_REQ, mls_group_info_req=pb.MlsGroupInfoReq(channel_id="voice-lounge-2"))
+    info = sam.wait(pb.Packet.MLS_GROUP_INFO_RES, timeout=2,
+                    pred=lambda p: p.mls_group_info_res.channel_id == "voice-lounge-2")
+    check("GroupInfo request right behind the JOIN is answered", info is not None)
     rosters = []
     deadline = time.time() + 2
     while time.time() < deadline:

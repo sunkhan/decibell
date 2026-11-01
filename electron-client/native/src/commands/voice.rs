@@ -46,26 +46,86 @@ pub struct JoinVoiceChannelArgs {
     pub voice_bitrate_kbps: Option<i32>,
 }
 
-/// Packets that put us into the new channel, sent once the state lock is
-/// released.
-struct ChannelJoin {
-    join_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
-    join_data: Vec<u8>,
-    state_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)>,
-    is_muted: bool,
-    is_deafened: bool,
+fn leave_voice_packet() -> Vec<u8> {
+    build_packet(
+        packet::Type::LeaveVoiceReq,
+        packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
+        None,
+    )
 }
 
-/// Start the voice engine and MLS group for `channel_id` and build the
-/// JOIN (plus our mute / deafen) for it. Runs under the state lock, after
-/// the old session's engine was taken out.
-fn start_channel_session(
-    s: &mut state::AppState,
-    state_arc: &std::sync::Arc<tokio::sync::Mutex<state::AppState>>,
-    server_id: String,
-    channel_id: String,
-    bitrate_bps: i32,
-) -> napi::Result<ChannelJoin> {
+/// What a join sends, in order: when switching, our LEAVE to every
+/// community; then our mute / deafen to every community; then the JOIN and
+/// the MLS group's GroupInfo request on the target's connection. The server
+/// forgets mute / deafen on a leave and, out of a channel, only records them,
+/// so the JOIN's roster already shows them (sent after it, others saw a muted
+/// user unmuted for a moment). The GroupInfo request rides right behind the
+/// JOIN: the server answers it only for a member of the channel.
+fn join_outbox(
+    connections: &[tokio::sync::mpsc::Sender<Vec<u8>>],
+    join_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    channel_id: &str,
+    join_data: Vec<u8>,
+    switching: bool,
+    is_muted: bool,
+    is_deafened: bool,
+) -> Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> {
+    let mut out = Vec::new();
+    if switching {
+        for tx in connections {
+            out.push((tx.clone(), leave_voice_packet()));
+        }
+    }
+    if is_muted || is_deafened {
+        for tx in connections {
+            let data = build_packet(
+                packet::Type::VoiceStateNotify,
+                packet::Payload::VoiceStateNotify(VoiceStateNotify {
+                    is_muted,
+                    is_deafened,
+                }),
+                None,
+            );
+            out.push((tx.clone(), data));
+        }
+    }
+    out.push((join_tx.clone(), join_data));
+    out.push((join_tx.clone(), crate::e2ee::group::group_info_request(channel_id)));
+    out
+}
+
+#[napi]
+pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> {
+    let JoinVoiceChannelArgs {
+        server_id,
+        channel_id,
+        voice_bitrate_kbps,
+    } = args;
+
+    let bitrate_bps = match voice_bitrate_kbps {
+        Some(k) if k > 0 => k * 1000,
+        _ => crate::media::codec::OpusEncoder::DEFAULT_BITRATE_BPS,
+    };
+
+    let state_arc = state::shared();
+
+    // The whole switch under one lock acquisition, so no other command sees
+    // it half done. The server hears first: the JOIN goes out before the new
+    // engine and MLS group start, so everyone sees us move without waiting
+    // for them, and the group's handshake is under way while the engine
+    // starts. (Started first, they held the JOIN back: two DNS lookups, the
+    // engine's threads, the group setup.) The old engine's thread joins run
+    // off this worker.
+    let mut s = state_arc.lock().await;
+
+    // A DM call owns the single VoiceEngine; the renderer hangs up
+    // (call_end) before joining a channel. Refuse rather than silently
+    // stealing the engine from under the call.
+    if s.active_call.is_some() {
+        return Err(napi::Error::from_reason("Hang up the call first"));
+    }
+
+    // Everything that can refuse the join, before the old session is touched.
     let client = s
         .communities
         .get(&server_id)
@@ -73,21 +133,30 @@ fn start_channel_session(
     let join_tx = client
         .connection_write_tx()
         .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
+    let host = client.host.clone();
+    let port = client.port;
+    // The UDP key is the tail of the token this connection authenticated
+    // with, not of a later refresh.
+    let udp_jwt = client.auth_jwt.clone();
+    // The codec toggles and the saved audio devices. The devices let the
+    // pipeline start on them instead of on the system defaults and then
+    // hot-swapping; unset, `build_*_stream` tries the OS default, and
+    // `get_default_device` falls back to the first device there is.
+    let settings = config::load()
+        .map_err(|e| napi::Error::from_reason(e))?
+        .settings;
     // Plan C: ship encode + decode caps with the join request so the
     // server can drive watch-button gating and the LCD picker. Both
     // encode + decode caps come from the renderer's WebCodecs probes
     // (PR8 — FFmpeg-in-Rust encoding was removed). User toggles for
     // AV1/H.265 are applied here so peers don't see a codec we
     // refuse to encode with.
-    let codec_settings = config::load()
-        .map_err(|e| napi::Error::from_reason(e))?
-        .settings;
     let encode_caps_filtered: Vec<_> = s
         .encoder_caps
         .iter()
         .filter(|c| match c.codec {
-            CodecKind::Av1 => codec_settings.use_av1,
-            CodecKind::H265 => codec_settings.use_h265,
+            CodecKind::Av1 => settings.use_av1,
+            CodecKind::H265 => settings.use_h265,
             _ => true,
         })
         .cloned()
@@ -102,13 +171,6 @@ fn start_channel_session(
         }),
         None,
     );
-    let host = client.host.clone();
-    let port = client.port;
-    // The UDP key is the tail of the token this connection authenticated
-    // with, not of a later refresh.
-    let udp_jwt = client.auth_jwt.clone();
-    let mls_write_tx = join_tx.clone();
-
     // Strict E2EE: community voice is MLS-encrypted, so this device needs
     // its identity keys loaded. The renderer checks first and opens the
     // set-up / unlock prompt; this is the backstop.
@@ -128,56 +190,82 @@ fn start_channel_session(
         .and_then(|st| st.current())
         .cloned()
         .ok_or_else(|| napi::Error::from_reason("Encryption keys not loaded"))?;
-    // A previous session's group driver dies with its engine.
+
+    // The old session ends here. Forget its watches now (not in the
+    // deferred engine stop) so they can't wipe the new channel's; its MLS
+    // group driver goes with it.
+    let switching = s.voice_engine.is_some();
+    if switching {
+        crate::media::watched_streams_clear();
+    }
+    stop_voice_engine_background(s.voice_engine.take());
     s.voice_mls = None;
+    s.connected_voice_server = None;
+    s.connected_voice_channel = None;
+
+    // Our persisted mute / deafen, as the engine below will hold them
+    // (deafening mutes too: VoiceEngine::set_deafen).
+    let saved_muted = s.voice_muted;
+    let saved_deafened = s.voice_deafened;
+    let saved_muted_before_deafen = s.voice_muted_before_deafen;
+    let is_muted = saved_muted || saved_deafened;
+    let is_deafened = saved_deafened;
+
+    let connections: Vec<_> = s
+        .communities
+        .values()
+        .filter_map(|c| c.connection_write_tx())
+        .collect();
+    let outbox = join_outbox(&connections, &join_tx, &channel_id, join_data, switching, is_muted, is_deafened);
+    let join_at = outbox.len() - 2;
+    for (i, (tx, data)) in outbox.into_iter().enumerate() {
+        let sent = send_raw(&tx, data).await;
+        if i == join_at {
+            sent.map_err(napi::Error::from_reason)?;
+        }
+    }
+
+    // The server lists us in the channel now. The MLS group for it joins
+    // (or creates) on the GroupInfo already requested and feeds epoch keys
+    // into `ring` — the engine sends nothing until the first epoch lands.
     // Media keys are per sender, named by uid (the media identity).
     let ring = crate::media::frame_crypto::new_shared(&uid.to_string());
-
-    // Load the user's saved audio-device preferences from disk so the
-    // pipeline starts with them on the first build attempt instead of
-    // hitting system defaults first and then hot-swapping. Falls back
-    // to None on missing/corrupt config — `build_*_stream` then tries
-    // the OS default, and `get_default_device` has its own final
-    // fallback (first available device) so the pipeline survives
-    // most pathological audio states.
-    let (saved_input, saved_output) = match crate::config::load() {
-        Ok(loaded) => (
-            loaded.settings.input_device.clone(),
-            loaded.settings.output_device.clone(),
-        ),
-        Err(_) => (None, None),
-    };
-
-    let mut engine = VoiceEngine::start(
-        &host,
-        port,
-        &udp_jwt,
-        bitrate_bps,
-        saved_input,
-        saved_output,
-        ring.clone(),
-    )
-    .map_err(napi::Error::from_reason)?;
-    // The MLS group for this channel: joins (or creates) on the server's
-    // GroupInfo and feeds epoch keys into `ring` — the engine sends
-    // nothing until the first epoch lands.
-    let handle = crate::e2ee::group::start(
+    let started = crate::e2ee::group::start(
         state_arc.clone(),
         server_id.clone(),
         channel_id.clone(),
         uid,
         &identity,
-        mls_write_tx,
-        ring,
+        join_tx.clone(),
+        ring.clone(),
+        true,
     )
-    .map_err(napi::Error::from_reason)?;
+    .and_then(|handle| {
+        VoiceEngine::start(
+            &host,
+            port,
+            &udp_jwt,
+            bitrate_bps,
+            settings.input_device.clone(),
+            settings.output_device.clone(),
+            ring,
+        )
+        .map(|engine| (handle, engine))
+    });
+    let (handle, mut engine) = match started {
+        Ok(x) => x,
+        Err(e) => {
+            // Take the JOIN back, or everyone keeps seeing us in a channel
+            // we have no session for.
+            drop(s);
+            let _ = send_raw(&join_tx, leave_voice_packet()).await;
+            return Err(napi::Error::from_reason(e));
+        }
+    };
     s.voice_mls = Some(handle);
 
     // Restore persisted mute/deafen so the user's preference is
     // sticky across voice sessions.
-    let saved_muted = s.voice_muted;
-    let saved_deafened = s.voice_deafened;
-    let saved_muted_before_deafen = s.voice_muted_before_deafen;
     if saved_deafened {
         if saved_muted_before_deafen {
             engine.set_mute(true);
@@ -187,123 +275,12 @@ fn start_channel_session(
         engine.set_mute(true);
     }
     engine.set_muted_before_deafen(saved_muted_before_deafen);
-    let is_muted = engine.is_muted();
-    let is_deafened = engine.is_deafened();
+    debug_assert_eq!((engine.is_muted(), engine.is_deafened()), (is_muted, is_deafened));
 
     s.voice_engine = Some(engine);
     s.connected_voice_server = Some(server_id);
     s.connected_voice_channel = Some(channel_id);
-
-    let mut state_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
-    if is_muted || is_deafened {
-        for client_val in s.communities.values() {
-            if let Some(tx) = client_val.connection_write_tx() {
-                let data = build_packet(
-                    packet::Type::VoiceStateNotify,
-                    packet::Payload::VoiceStateNotify(VoiceStateNotify {
-                        is_muted,
-                        is_deafened,
-                    }),
-                    None,
-                );
-                state_sends.push((tx, data));
-            }
-        }
-    }
-
-    Ok(ChannelJoin {
-        join_tx,
-        join_data,
-        state_sends,
-        is_muted,
-        is_deafened,
-    })
-}
-
-#[napi]
-pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> {
-    let JoinVoiceChannelArgs {
-        server_id,
-        channel_id,
-        voice_bitrate_kbps,
-    } = args;
-
-    let bitrate_bps = match voice_bitrate_kbps {
-        Some(k) if k > 0 => k * 1000,
-        _ => crate::media::codec::OpusEncoder::DEFAULT_BITRATE_BPS,
-    };
-
-    let state_arc = state::shared();
-
-    // Take the old engine and start the new session under one lock
-    // acquisition, then release it before any awaiting work or thread::join.
-    let (old_voice, leave_sends, started) = {
-        let mut s = state_arc.lock().await;
-
-        // A DM call owns the single VoiceEngine; the renderer hangs up
-        // (call_end) before joining a channel. Refuse rather than silently
-        // stealing the engine from under the call.
-        if s.active_call.is_some() {
-            return Err(napi::Error::from_reason("Hang up the call first"));
-        }
-
-        let mut leave_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
-        let old_voice = if s.voice_engine.is_some() {
-            for client in s.communities.values() {
-                if let Some(tx) = client.connection_write_tx() {
-                    let data = build_packet(
-                        packet::Type::LeaveVoiceReq,
-                        packet::Payload::LeaveVoiceReq(LeaveVoiceRequest {}),
-                        None,
-                    );
-                    leave_sends.push((tx, data));
-                }
-            }
-            // Forget the old session's watches now (not in the deferred
-            // engine stop) so they can't wipe the new channel's.
-            crate::media::watched_streams_clear();
-            s.voice_engine.take()
-        } else {
-            None
-        };
-
-        let started = start_channel_session(&mut s, &state_arc, server_id, channel_id, bitrate_bps);
-        if started.is_err() && old_voice.is_some() {
-            // The old session ends whether or not the new one started: its
-            // engine is stopped and the server told below, as a leave would.
-            // (Dropped here instead, the engine joined its threads on this
-            // worker under the lock, and the server kept listing us in the
-            // old channel.)
-            s.voice_mls = None;
-            s.connected_voice_server = None;
-            s.connected_voice_channel = None;
-        }
-        (old_voice, leave_sends, started)
-    };
-
-    stop_voice_engine_background(old_voice);
-
-    for (tx, data) in leave_sends {
-        let _ = send_raw(&tx, data).await;
-    }
-    let ChannelJoin {
-        join_tx,
-        join_data,
-        state_sends,
-        is_muted,
-        is_deafened,
-    } = started?;
-
-    // Mute / deafen before the JOIN: the server forgets them on a leave, so
-    // sent after it, the join's roster showed us unmuted to everyone until
-    // the state caught up a moment later. Out of a channel the server only
-    // records them.
-    for (tx, data) in state_sends {
-        let _ = send_raw(&tx, data).await;
-    }
-    send_raw(&join_tx, join_data)
-        .await
-        .map_err(napi::Error::from_reason)?;
+    drop(s);
 
     events::emit_voice_state_changed(is_muted, is_deafened);
     Ok(())
@@ -414,6 +391,7 @@ pub(crate) fn rebind_voice_group(
         &identity,
         write_tx,
         ring,
+        false,
     )?;
     let tx = handle.tx.clone();
     s.voice_mls = Some(handle);
@@ -728,4 +706,67 @@ pub struct SetInputLevelReportingArgs {
 #[napi]
 pub fn set_input_level_reporting(args: SetInputLevelReportingArgs) {
     events::set_input_level_reporting(args.enabled);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    fn kinds(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> Vec<packet::Type> {
+        let mut out = Vec::new();
+        while let Ok(data) = rx.try_recv() {
+            let p = Packet::decode(data.as_slice()).expect("a packet");
+            out.push(packet::Type::try_from(p.r#type).expect("a known type"));
+        }
+        out
+    }
+
+    fn send_all(outbox: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)>) {
+        for (tx, data) in outbox {
+            tx.try_send(data).expect("room in the test channel");
+        }
+    }
+
+    /// A muted switch from one community's channel to another's: each
+    /// connection hears LEAVE before the mute, and the target hears both
+    /// before its JOIN, with the GroupInfo request right behind the JOIN.
+    #[test]
+    fn a_switch_leaves_then_mutes_then_joins() {
+        let (old_tx, mut old_rx) = tokio::sync::mpsc::channel(16);
+        let (target_tx, mut target_rx) = tokio::sync::mpsc::channel(16);
+        let join = build_packet(
+            packet::Type::JoinVoiceReq,
+            packet::Payload::JoinVoiceReq(JoinVoiceRequest { channel_id: "lounge".into(), capabilities: None }),
+            None,
+        );
+        let connections = vec![old_tx, target_tx.clone()];
+        send_all(join_outbox(&connections, &target_tx, "lounge", join, true, true, false));
+        use packet::Type::*;
+        assert_eq!(kinds(&mut old_rx), vec![LeaveVoiceReq, VoiceStateNotify]);
+        assert_eq!(
+            kinds(&mut target_rx),
+            vec![LeaveVoiceReq, VoiceStateNotify, JoinVoiceReq, MlsGroupInfoReq]
+        );
+    }
+
+    /// A first join, unmuted: no LEAVE, no state, just the JOIN and the
+    /// GroupInfo request (for the channel joined).
+    #[test]
+    fn a_first_join_sends_only_the_join() {
+        let (target_tx, mut target_rx) = tokio::sync::mpsc::channel(16);
+        let join = build_packet(
+            packet::Type::JoinVoiceReq,
+            packet::Payload::JoinVoiceReq(JoinVoiceRequest { channel_id: "lounge".into(), capabilities: None }),
+            None,
+        );
+        let outbox = join_outbox(&[target_tx.clone()], &target_tx, "lounge", join, false, false, false);
+        let info = outbox.last().map(|(_, d)| Packet::decode(d.as_slice()).unwrap());
+        match info.and_then(|p| p.payload) {
+            Some(packet::Payload::MlsGroupInfoReq(r)) => assert_eq!(r.channel_id, "lounge"),
+            other => panic!("expected a GroupInfo request, got {other:?}"),
+        }
+        send_all(outbox);
+        assert_eq!(kinds(&mut target_rx), vec![packet::Type::JoinVoiceReq, packet::Type::MlsGroupInfoReq]);
+    }
 }
