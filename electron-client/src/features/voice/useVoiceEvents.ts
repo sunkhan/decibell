@@ -106,16 +106,21 @@ export function useVoiceEvents() {
         if (uids.length !== participants.length) return;
         const names = new Map(uids.map((u, i) => [u, participants[i]] as const));
         const states = (userStates ?? []).map((st) => ({ ...st, uid: toUid(st.uid) }));
-        const store = useVoiceStore.getState();
         const me = useAuthStore.getState().uid;
-        store.setChannelPresence(serverId, channelId, uids, states, userCapabilities);
+        useVoiceStore.getState().setChannelPresence(serverId, channelId, uids, states, userCapabilities);
+        // Read back: the store corrects the roster for our own join / leave
+        // the server hasn't caught up with yet (voiceStore's SelfMove).
+        const store = useVoiceStore.getState();
+        const key = voiceKey(serverId, channelId);
+        const roster = store.channelPresence[key] ?? [];
+        const stateMap = store.channelUserStates[key] ?? {};
 
         const isConnected =
           serverId === store.connectedServerId && channelId === store.connectedChannelId;
         if (isConnected) {
-          const current = new Set(uids);
+          const current = new Set(roster);
           if (prevParticipants) {
-            for (const u of uids) {
+            for (const u of roster) {
               if (!prevParticipants.has(u) && u !== me) playSound("user_join");
             }
             for (const u of prevParticipants) {
@@ -123,19 +128,16 @@ export function useVoiceEvents() {
             }
           }
           prevParticipants = current;
-        }
 
-        if (isConnected) {
-          const stateMap = new Map(states.map((st) => [st.uid, st]));
           store.setParticipants(
-            uids.map((u) => ({
+            roster.map((u) => ({
               uid: u,
               username: names.get(u) ?? nameOf(u),
-              isMuted: stateMap.get(u)?.isMuted ?? false,
-              isDeafened: stateMap.get(u)?.isDeafened ?? false,
-              isServerMuted: stateMap.get(u)?.isServerMuted ?? false,
-              isServerDeafened: stateMap.get(u)?.isServerDeafened ?? false,
-              isSuppressed: stateMap.get(u)?.isSuppressed ?? false,
+              isMuted: stateMap[u]?.isMuted ?? false,
+              isDeafened: stateMap[u]?.isDeafened ?? false,
+              isServerMuted: stateMap[u]?.isServerMuted ?? false,
+              isServerDeafened: stateMap[u]?.isServerDeafened ?? false,
+              isSuppressed: stateMap[u]?.isSuppressed ?? false,
               isSpeaking: store.speakingUsers.has(u),
               audioLevel: 0,
             })),
@@ -144,7 +146,7 @@ export function useVoiceEvents() {
           // Re-apply saved per-user volume / local-mute on every roster
           // change so peers picked up after the user's muted them stay
           // muted, and so volume tweaks survive churn.
-          applySavedUserGains(uids);
+          applySavedUserGains(roster);
         }
       }),
     );

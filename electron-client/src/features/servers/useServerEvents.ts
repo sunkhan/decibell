@@ -412,31 +412,23 @@ export function useServerEvents() {
           }
           // Our watcher entries were dropped server-side on leaving the
           // old channel; clear the local mirror so no ghost players linger.
-          // Native has rebound the MLS group to the new channel — its
-          // state events repaint e2ee from "joining".
           useVoiceStore.setState({
             watchingStreams: [],
             fullscreenStream: null,
             pipStream: null,
-            e2ee: null,
           });
-          voice.setConnectedChannel(serverId, channelId);
           // The destination's presence broadcast arrived BEFORE this
           // notify, while connectedChannelId still pointed at the old
-          // channel, so the roster handler skipped it. Rebuild the
-          // connected-channel roster and stream list from the per-channel
-          // caches — otherwise the stage keeps the old channel's roster
-          // (users appear under two channels at once) and a move back to
-          // a channel shows an empty room.
-          const st = useVoiceStore.getState();
-          st.seedParticipants(serverId, channelId);
-          const roster = useVoiceStore.getState().participants.map((p) => p.uid);
-          st.setActiveStreams(
-            [...st.streamsByUser.values()]
-              .filter((loc) => loc.serverId === serverId && loc.channelId === channelId)
-              .map((loc) => loc.streamInfo),
-          );
-          applySavedUserGains(roster);
+          // channel, so the roster handler skipped it. enterChannel rebuilds
+          // the connected-channel roster and stream list from the
+          // per-channel caches — otherwise the stage keeps the old channel's
+          // roster (users appear under two channels at once) and a move back
+          // to a channel shows an empty room. It also resets e2ee: native
+          // has rebound the MLS group to the new channel, and its state
+          // events repaint it from "joining". Not optimistic: the server
+          // already moved us, and its rosters say so.
+          useVoiceStore.getState().enterChannel(serverId, channelId);
+          applySavedUserGains(useVoiceStore.getState().participants.map((p) => p.uid));
           const name =
             useChatStore.getState().channelsByServer[serverId]?.find((c) => c.id === channelId)?.name ?? channelId;
           toast.info("Moved", `${actor} moved you to ${name}.`);

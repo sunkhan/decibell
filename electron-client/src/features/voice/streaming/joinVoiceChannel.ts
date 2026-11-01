@@ -3,8 +3,11 @@
 // user clicks a live stream thumbnail).
 //
 // Responsibilities:
-//   1. Play the connect sound + optimistically update voiceStore.connectedChannel
-//      so the sidebar shows the pending-join immediately.
+//   1. Play the connect sound and switch voiceStore to the new channel with
+//      the click (voiceStore.enterChannel): connected channel, roster, streams
+//      and our own row in the sidebar, before the server's broadcasts confirm
+//      it. Nothing is awaited before that unless a DM call has to end first,
+//      so no frame shows the old channel under the new view.
 //   2. Call `join_voice_channel` via napi with the channel's voice bitrate.
 //   3. Re-apply persisted audio device + DSP preferences against the
 //      newly-spawned pipeline.
@@ -28,6 +31,8 @@ import { playSound } from "../../../utils/sounds";
 import { flushSaveSettings } from "../../settings/saveSettings";
 import { applyVoicePrefs } from "./applyVoicePrefs";
 import { endCall } from "../../call/callActions";
+import { useCallStore } from "../../../stores/callStore";
+import { PERM, hasBits } from "../../servers/permissions";
 import { useE2eeStore } from "../../../stores/e2eeStore";
 import { toast } from "../../../stores/toastStore";
 import { nameOf } from "../../../stores/usersStore";
@@ -56,7 +61,10 @@ export async function joinVoiceChannel(
 
   // A DM call and a voice channel are mutually exclusive (one native
   // VoiceEngine, one mic). Hang up first; native refuses the join otherwise.
-  await endCall("Joined a voice channel");
+  // Awaited only when there is a call: the sidebar sets the voice view right
+  // after calling this, and an await here drew that view over the old
+  // channel first.
+  if (useCallStore.getState().status !== "idle") await endCall("Joined a voice channel");
 
   // Capture the stream state BEFORE the optimistic channel update below.
   const voice = useVoiceStore.getState();
@@ -75,6 +83,22 @@ export async function joinVoiceChannel(
     switchingChannel &&
     prevServerId === serverId &&
     useUiStore.getState().takeStreamOnChannelSwitch;
+
+  const channel = useChatStore
+    .getState()
+    .channelsByServer[serverId]?.find((ch) => ch.id === channelId);
+
+  // Switch now — sidebar, stage and our own row — rather than after the
+  // stream teardown below and native's engine start: the server's rosters
+  // list us in the new channel only a round trip after that, and showed us
+  // in the old one until then. The store keeps the move up until each
+  // channel's roster confirms it. Without SPEAK there, the server shows a
+  // "No speak" badge on us; predict it from our resolved permissions.
+  playSound("connect");
+  useVoiceStore.getState().enterChannel(serverId, channelId, {
+    optimistic: true,
+    suppressed: channel?.myPermissions !== undefined && !hasBits(channel.myPermissions, PERM.SPEAK),
+  });
 
   // Stop watching any streams from the OLD channel before switching. The flow
   // previously reconciled only our own stream, so watch subscriptions leaked on
@@ -119,18 +143,6 @@ export async function joinVoiceChannel(
       useVoiceStore.getState().setIsStreaming(false);
     }
   }
-
-  // Optimistic update — sidebar reflects the pending-join immediately. The
-  // roster comes from the presence cache until the server's update for the
-  // new channel lands; left as is, the old channel's members showed under
-  // the new one in the meantime.
-  playSound("connect");
-  useVoiceStore.getState().setConnectedChannel(serverId, channelId);
-  useVoiceStore.getState().seedParticipants(serverId, channelId);
-
-  const channel = useChatStore
-    .getState()
-    .channelsByServer[serverId]?.find((ch) => ch.id === channelId);
 
   // Flush any debounced settings write first: native's VoiceEngine::start
   // reads the on-disk config to pick the initial input/output device, so a

@@ -450,6 +450,38 @@ def test_ghost_stream():
     frank.close(); grace.close(); owner.close()
 
 
+def test_switch_keeps_mute():
+    print("[voice switch] a mute sent between LEAVE and JOIN is in the JOIN's roster")
+    # The client switches channels as LEAVE, VOICE_STATE_NOTIFY, JOIN (the
+    # leave resets mute / deafen). Out of voice the state is only recorded,
+    # so the new channel's first roster already shows the member muted.
+    owner = Client("alice"); assert auth_ok(owner)[0]
+    sam = join("switcher", owner)
+    sam_uid = uid_of("switcher")
+    sam.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge"))
+    sam.wait(pb.Packet.VOICE_PRESENCE_UPDATE, pred=lambda p: p.voice_presence_update.channel_id == "voice-lounge")
+    owner.flush(0.5)
+    sam.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    sam.send(pb.Packet.VOICE_STATE_NOTIFY, voice_state_notify=pb.VoiceStateNotify(is_muted=True, is_deafened=False))
+    sam.send(pb.Packet.JOIN_VOICE_REQ, join_voice_req=pb.JoinVoiceRequest(channel_id="voice-lounge-2"))
+    rosters = []
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        p = owner.wait(pb.Packet.VOICE_PRESENCE_UPDATE, timeout=max(0.05, deadline - time.time()),
+                       pred=lambda p: p.voice_presence_update.channel_id in ("voice-lounge", "voice-lounge-2"))
+        if p is None:
+            break
+        rosters.append(p.voice_presence_update)
+    left = [r for r in rosters if r.channel_id == "voice-lounge"]
+    check("old channel broadcast without the member", any(sam_uid not in r.active_uids for r in left))
+    joined = [r for r in rosters if r.channel_id == "voice-lounge-2" and sam_uid in r.active_uids]
+    first = next((st for st in joined[0].user_states if st.uid == sam_uid), None) if joined else None
+    check("new channel's first roster shows the member muted", first is not None and first.is_muted)
+    check("no extra roster for the mute", len([r for r in rosters if r.channel_id == "voice-lounge-2"]) == 1)
+    sam.send(pb.Packet.LEAVE_VOICE_REQ, leave_voice_req=pb.LeaveVoiceRequest())
+    sam.close(); owner.close()
+
+
 def test_offline_kick_roster():
     print("[offline kick] kicking/banning an offline member must refresh rosters")
     owner = Client("alice"); assert auth_ok(owner)[0]
@@ -5247,6 +5279,7 @@ if __name__ == "__main__":
         test_role_assign_guard()
         test_c2_username_reuse()
         test_ghost_stream()
+        test_switch_keeps_mute()
         test_offline_kick_roster()
         test_no_ghost_after_leave_or_ban()
         test_b11_rate_limit()

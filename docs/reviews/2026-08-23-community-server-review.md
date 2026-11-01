@@ -4700,3 +4700,57 @@ croppers didn't have this bug (plain `drawImage`); the new editor introduced it.
 Verified: tsc web 0. Harness on the real tree, sideways vs upright photo: 0.65% / 0.53% / 0.36% RMSE (the JPEG
 re-encode of the rotated test file), the same picture by eye; edges stay as smooth as before. Live test pending: a
 real iPhone and Android portrait photo.
+
+### Fix: switching voice channels showed the old channel for a moment (2026-11-01)
+
+Owner report: on a channel switch you still showed in the old channel for a moment, then jumped to the new one,
+plus other short glitches. Causes, by reading the switch end to end:
+
+- **Rosters waited for the server.** The sidebar draws every channel but the connected one from the server's
+  rosters, which move us only once native has started the new engine (audio devices, MLS driver) and the
+  LEAVE / JOIN broadcasts are back a round trip later. The old channel kept us until then, and the new one's
+  seeded roster lacked us. A plain leave left us in the channel the same way.
+- **The stage and header kept the old channel's session.** `activeStreams` stayed the old channel's until the
+  new one's stream presence arrived (stream tiles of people not in the room). `e2ee` stayed the old group's
+  "Encrypted" instead of "Securing…". Speaking rings from the old engine stayed lit, so a ring could stick
+  (a new engine never announces a stop for a voice it never heard). The moderator-move path already reset most of
+  this; the switch didn't.
+- **The view could open on the old channel.** `joinVoiceChannel` awaited `endCall` (even with no call) and, while
+  streaming, the stream teardown before switching the store, so the sidebar's `setActiveView("voice")` drew the
+  old channel's stage first.
+- **Others saw us unmuted for a moment.** The server resets mute / deafen on LEAVE, and native sent the state after
+  the JOIN, so the new channel's first roster showed a muted user unmuted.
+- **A failed switch left a ghost.** If the new engine failed to start, native had already taken the old one: it
+  was dropped under the state lock (joining its threads on a tokio worker) and the server never got the LEAVE, so
+  everyone kept seeing us in the old channel.
+
+Fixes:
+
+- `voiceStore.enterChannel` makes a channel the connected one in one update: roster and streams seeded from the
+  per-channel caches, `e2ee` reset, speaking rings cleared (a moderator's move keeps ours: the engine carries on).
+  Used by the switch and by the moderator-move handler (replaces `seedParticipants` + the hand-rolled reset).
+- **Our own move is shown before the server confirms it** (`SelfMove` in `voiceStore.ts`): per channel, a queue
+  of what we asked for (`in` / `out`). Native sends LEAVEs and JOINs in order and the server broadcasts each as
+  that channel's roster, in order, so a roster that shows the queue's front answers it; one that doesn't was sent
+  before the server got to us (someone else joined, a mute) and is corrected instead. A rapid A → B → A
+  holds through every intermediate broadcast. Unanswered entries (a refused join) expire after 10 s to the server's
+  roster. `disconnect()` queues the leave, so leaving drops us from the row at once; it's a no-op when the server
+  already took us out. A predicted "No speak" badge comes from `ChannelInfo.myPermissions`, a moderator's mute
+  follows us from the old channel's row.
+- `joinVoiceChannel` switches the store synchronously with the click (awaits `endCall` only when a call exists),
+  before the stream teardown.
+- Native `join_voice_channel` sends LEAVE, then the mute / deafen state, then JOIN (out of voice the server only
+  records the state, so the JOIN's roster is right). The session setup moved into `start_channel_session`; when it
+  fails mid-switch, the old engine is stopped in the background and the LEAVE still goes out.
+
+Not changed: other members see us leave and join as two broadcasts, so for a frame we can be in neither channel on
+their screens. The MLS driver's first GROUP_INFO_REQ is spawned before the JOIN is sent. The server drops one that
+arrives first, but tokio runs the spawned task only after the join command yields, which it doesn't before
+sending, so the order holds in practice.
+
+Verified: tsc web 0; native napi build + `cargo test --lib` (322 passed); a scratch esbuild run of the real store
+through 38 checks (switch with stale rosters both ways, rapid A → B → A, leave, a moderator's disconnect, a failed
+join, expiry, the auth snapshot, moderator move, the reset streams / rings / e2ee); community e2e 779 passed,
+0 failed, with the new `test_switch_keeps_mute` (LEAVE, mute, JOIN → the new channel's first roster shows the
+member muted, no extra broadcast). Live test pending: switching with someone else in both channels, while muted, while streaming, rapid
+clicks, and a leave.

@@ -46,6 +46,180 @@ pub struct JoinVoiceChannelArgs {
     pub voice_bitrate_kbps: Option<i32>,
 }
 
+/// Packets that put us into the new channel, sent once the state lock is
+/// released.
+struct ChannelJoin {
+    join_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    join_data: Vec<u8>,
+    state_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)>,
+    is_muted: bool,
+    is_deafened: bool,
+}
+
+/// Start the voice engine and MLS group for `channel_id` and build the
+/// JOIN (plus our mute / deafen) for it. Runs under the state lock, after
+/// the old session's engine was taken out.
+fn start_channel_session(
+    s: &mut state::AppState,
+    state_arc: &std::sync::Arc<tokio::sync::Mutex<state::AppState>>,
+    server_id: String,
+    channel_id: String,
+    bitrate_bps: i32,
+) -> napi::Result<ChannelJoin> {
+    let client = s
+        .communities
+        .get(&server_id)
+        .ok_or_else(|| napi::Error::from_reason(format!("Not connected to community {}", server_id)))?;
+    let join_tx = client
+        .connection_write_tx()
+        .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
+    // Plan C: ship encode + decode caps with the join request so the
+    // server can drive watch-button gating and the LCD picker. Both
+    // encode + decode caps come from the renderer's WebCodecs probes
+    // (PR8 — FFmpeg-in-Rust encoding was removed). User toggles for
+    // AV1/H.265 are applied here so peers don't see a codec we
+    // refuse to encode with.
+    let codec_settings = config::load()
+        .map_err(|e| napi::Error::from_reason(e))?
+        .settings;
+    let encode_caps_filtered: Vec<_> = s
+        .encoder_caps
+        .iter()
+        .filter(|c| match c.codec {
+            CodecKind::Av1 => codec_settings.use_av1,
+            CodecKind::H265 => codec_settings.use_h265,
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    let capabilities =
+        caps::build_client_capabilities(&encode_caps_filtered, &s.decoder_caps);
+    let join_data = build_packet(
+        packet::Type::JoinVoiceReq,
+        packet::Payload::JoinVoiceReq(JoinVoiceRequest {
+            channel_id: channel_id.clone(),
+            capabilities: Some(capabilities),
+        }),
+        None,
+    );
+    let host = client.host.clone();
+    let port = client.port;
+    // The UDP key is the tail of the token this connection authenticated
+    // with, not of a later refresh.
+    let udp_jwt = client.auth_jwt.clone();
+    let mls_write_tx = join_tx.clone();
+
+    // Strict E2EE: community voice is MLS-encrypted, so this device needs
+    // its identity keys loaded. The renderer checks first and opens the
+    // set-up / unlock prompt; this is the backstop.
+    if s.e2ee.status != crate::e2ee::session::Status::Ready {
+        return Err(napi::Error::from_reason(
+            "Set up encryption (Settings → Privacy) to join voice channels",
+        ));
+    }
+    let uid = s.uid;
+    if uid <= 0 {
+        return Err(napi::Error::from_reason("Not signed in"));
+    }
+    let identity = s
+        .e2ee
+        .store
+        .as_ref()
+        .and_then(|st| st.current())
+        .cloned()
+        .ok_or_else(|| napi::Error::from_reason("Encryption keys not loaded"))?;
+    // A previous session's group driver dies with its engine.
+    s.voice_mls = None;
+    // Media keys are per sender, named by uid (the media identity).
+    let ring = crate::media::frame_crypto::new_shared(&uid.to_string());
+
+    // Load the user's saved audio-device preferences from disk so the
+    // pipeline starts with them on the first build attempt instead of
+    // hitting system defaults first and then hot-swapping. Falls back
+    // to None on missing/corrupt config — `build_*_stream` then tries
+    // the OS default, and `get_default_device` has its own final
+    // fallback (first available device) so the pipeline survives
+    // most pathological audio states.
+    let (saved_input, saved_output) = match crate::config::load() {
+        Ok(loaded) => (
+            loaded.settings.input_device.clone(),
+            loaded.settings.output_device.clone(),
+        ),
+        Err(_) => (None, None),
+    };
+
+    let mut engine = VoiceEngine::start(
+        &host,
+        port,
+        &udp_jwt,
+        bitrate_bps,
+        saved_input,
+        saved_output,
+        ring.clone(),
+    )
+    .map_err(napi::Error::from_reason)?;
+    // The MLS group for this channel: joins (or creates) on the server's
+    // GroupInfo and feeds epoch keys into `ring` — the engine sends
+    // nothing until the first epoch lands.
+    let handle = crate::e2ee::group::start(
+        state_arc.clone(),
+        server_id.clone(),
+        channel_id.clone(),
+        uid,
+        &identity,
+        mls_write_tx,
+        ring,
+    )
+    .map_err(napi::Error::from_reason)?;
+    s.voice_mls = Some(handle);
+
+    // Restore persisted mute/deafen so the user's preference is
+    // sticky across voice sessions.
+    let saved_muted = s.voice_muted;
+    let saved_deafened = s.voice_deafened;
+    let saved_muted_before_deafen = s.voice_muted_before_deafen;
+    if saved_deafened {
+        if saved_muted_before_deafen {
+            engine.set_mute(true);
+        }
+        engine.set_deafen(true);
+    } else if saved_muted {
+        engine.set_mute(true);
+    }
+    engine.set_muted_before_deafen(saved_muted_before_deafen);
+    let is_muted = engine.is_muted();
+    let is_deafened = engine.is_deafened();
+
+    s.voice_engine = Some(engine);
+    s.connected_voice_server = Some(server_id);
+    s.connected_voice_channel = Some(channel_id);
+
+    let mut state_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
+    if is_muted || is_deafened {
+        for client_val in s.communities.values() {
+            if let Some(tx) = client_val.connection_write_tx() {
+                let data = build_packet(
+                    packet::Type::VoiceStateNotify,
+                    packet::Payload::VoiceStateNotify(VoiceStateNotify {
+                        is_muted,
+                        is_deafened,
+                    }),
+                    None,
+                );
+                state_sends.push((tx, data));
+            }
+        }
+    }
+
+    Ok(ChannelJoin {
+        join_tx,
+        join_data,
+        state_sends,
+        is_muted,
+        is_deafened,
+    })
+}
+
 #[napi]
 pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> {
     let JoinVoiceChannelArgs {
@@ -61,17 +235,9 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
 
     let state_arc = state::shared();
 
-    // Take old engine + collect packets under one lock acquisition,
-    // then release before any awaiting work or thread::join.
-    let (
-        old_voice,
-        leave_sends,
-        join_tx,
-        join_data,
-        state_sends,
-        is_muted,
-        is_deafened,
-    ) = {
+    // Take the old engine and start the new session under one lock
+    // acquisition, then release it before any awaiting work or thread::join.
+    let (old_voice, leave_sends, started) = {
         let mut s = state_arc.lock().await;
 
         // A DM call owns the single VoiceEngine; the renderer hangs up
@@ -101,160 +267,18 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
             None
         };
 
-        let client = s
-            .communities
-            .get(&server_id)
-            .ok_or_else(|| napi::Error::from_reason(format!("Not connected to community {}", server_id)))?;
-        let join_tx = client
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
-        // Plan C: ship encode + decode caps with the join request so the
-        // server can drive watch-button gating and the LCD picker. Both
-        // encode + decode caps come from the renderer's WebCodecs probes
-        // (PR8 — FFmpeg-in-Rust encoding was removed). User toggles for
-        // AV1/H.265 are applied here so peers don't see a codec we
-        // refuse to encode with.
-        let codec_settings = config::load()
-            .map_err(|e| napi::Error::from_reason(e))?
-            .settings;
-        let encode_caps_filtered: Vec<_> = s
-            .encoder_caps
-            .iter()
-            .filter(|c| match c.codec {
-                CodecKind::Av1 => codec_settings.use_av1,
-                CodecKind::H265 => codec_settings.use_h265,
-                _ => true,
-            })
-            .cloned()
-            .collect();
-        let capabilities =
-            caps::build_client_capabilities(&encode_caps_filtered, &s.decoder_caps);
-        let join_data = build_packet(
-            packet::Type::JoinVoiceReq,
-            packet::Payload::JoinVoiceReq(JoinVoiceRequest {
-                channel_id: channel_id.clone(),
-                capabilities: Some(capabilities),
-            }),
-            None,
-        );
-        let host = client.host.clone();
-        let port = client.port;
-        // The UDP key is the tail of the token this connection authenticated
-        // with, not of a later refresh.
-        let udp_jwt = client.auth_jwt.clone();
-        let mls_write_tx = join_tx.clone();
-
-        // Strict E2EE: community voice is MLS-encrypted, so this device needs
-        // its identity keys loaded. The renderer checks first and opens the
-        // set-up / unlock prompt; this is the backstop.
-        if s.e2ee.status != crate::e2ee::session::Status::Ready {
-            return Err(napi::Error::from_reason(
-                "Set up encryption (Settings → Privacy) to join voice channels",
-            ));
+        let started = start_channel_session(&mut s, &state_arc, server_id, channel_id, bitrate_bps);
+        if started.is_err() && old_voice.is_some() {
+            // The old session ends whether or not the new one started: its
+            // engine is stopped and the server told below, as a leave would.
+            // (Dropped here instead, the engine joined its threads on this
+            // worker under the lock, and the server kept listing us in the
+            // old channel.)
+            s.voice_mls = None;
+            s.connected_voice_server = None;
+            s.connected_voice_channel = None;
         }
-        let uid = s.uid;
-        if uid <= 0 {
-            return Err(napi::Error::from_reason("Not signed in"));
-        }
-        let identity = s
-            .e2ee
-            .store
-            .as_ref()
-            .and_then(|st| st.current())
-            .cloned()
-            .ok_or_else(|| napi::Error::from_reason("Encryption keys not loaded"))?;
-        // A previous session's group driver dies with its engine.
-        s.voice_mls = None;
-        // Media keys are per sender, named by uid (the media identity).
-        let ring = crate::media::frame_crypto::new_shared(&uid.to_string());
-
-        // Load the user's saved audio-device preferences from disk so the
-        // pipeline starts with them on the first build attempt instead of
-        // hitting system defaults first and then hot-swapping. Falls back
-        // to None on missing/corrupt config — `build_*_stream` then tries
-        // the OS default, and `get_default_device` has its own final
-        // fallback (first available device) so the pipeline survives
-        // most pathological audio states.
-        let (saved_input, saved_output) = match crate::config::load() {
-            Ok(loaded) => (
-                loaded.settings.input_device.clone(),
-                loaded.settings.output_device.clone(),
-            ),
-            Err(_) => (None, None),
-        };
-
-        let mut engine = VoiceEngine::start(
-            &host,
-            port,
-            &udp_jwt,
-            bitrate_bps,
-            saved_input,
-            saved_output,
-            ring.clone(),
-        )
-        .map_err(napi::Error::from_reason)?;
-        // The MLS group for this channel: joins (or creates) on the server's
-        // GroupInfo and feeds epoch keys into `ring` — the engine sends
-        // nothing until the first epoch lands.
-        let handle = crate::e2ee::group::start(
-            state_arc.clone(),
-            server_id.clone(),
-            channel_id.clone(),
-            uid,
-            &identity,
-            mls_write_tx,
-            ring,
-        )
-        .map_err(napi::Error::from_reason)?;
-        s.voice_mls = Some(handle);
-
-        // Restore persisted mute/deafen so the user's preference is
-        // sticky across voice sessions.
-        let saved_muted = s.voice_muted;
-        let saved_deafened = s.voice_deafened;
-        let saved_muted_before_deafen = s.voice_muted_before_deafen;
-        if saved_deafened {
-            if saved_muted_before_deafen {
-                engine.set_mute(true);
-            }
-            engine.set_deafen(true);
-        } else if saved_muted {
-            engine.set_mute(true);
-        }
-        engine.set_muted_before_deafen(saved_muted_before_deafen);
-        let is_muted = engine.is_muted();
-        let is_deafened = engine.is_deafened();
-
-        s.voice_engine = Some(engine);
-        s.connected_voice_server = Some(server_id);
-        s.connected_voice_channel = Some(channel_id);
-
-        let mut state_sends: Vec<(tokio::sync::mpsc::Sender<Vec<u8>>, Vec<u8>)> = Vec::new();
-        if is_muted || is_deafened {
-            for client_val in s.communities.values() {
-                if let Some(tx) = client_val.connection_write_tx() {
-                    let data = build_packet(
-                        packet::Type::VoiceStateNotify,
-                        packet::Payload::VoiceStateNotify(VoiceStateNotify {
-                            is_muted,
-                            is_deafened,
-                        }),
-                        None,
-                    );
-                    state_sends.push((tx, data));
-                }
-            }
-        }
-
-        (
-            old_voice,
-            leave_sends,
-            join_tx,
-            join_data,
-            state_sends,
-            is_muted,
-            is_deafened,
-        )
+        (old_voice, leave_sends, started)
     };
 
     stop_voice_engine_background(old_voice);
@@ -262,13 +286,24 @@ pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> 
     for (tx, data) in leave_sends {
         let _ = send_raw(&tx, data).await;
     }
-    send_raw(&join_tx, join_data)
-        .await
-        .map_err(napi::Error::from_reason)?;
+    let ChannelJoin {
+        join_tx,
+        join_data,
+        state_sends,
+        is_muted,
+        is_deafened,
+    } = started?;
 
+    // Mute / deafen before the JOIN: the server forgets them on a leave, so
+    // sent after it, the join's roster showed us unmuted to everyone until
+    // the state caught up a moment later. Out of a channel the server only
+    // records them.
     for (tx, data) in state_sends {
         let _ = send_raw(&tx, data).await;
     }
+    send_raw(&join_tx, join_data)
+        .await
+        .map_err(napi::Error::from_reason)?;
 
     events::emit_voice_state_changed(is_muted, is_deafened);
     Ok(())
