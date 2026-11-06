@@ -52,6 +52,12 @@ export const ROW_SCALE_MIN = 0.85;
 export const ROW_SCALE_MAX = 1.3;
 export const DEFAULT_ROW_SCALE = 1;
 
+/// Clock style for times of day (Settings → Appearance → Time format).
+/// "auto" follows the app's language, as before the setting existed;
+/// formatting lives in lib/timeFormat.ts.
+export type TimeFormat = "auto" | "12h" | "24h";
+export const TIME_FORMATS: readonly TimeFormat[] = ["auto", "12h", "24h"];
+
 export const TEXT_SIZE_STORAGE_KEY = "decibell.textSizePx";
 export const ROW_SCALE_STORAGE_KEY = "decibell.rowScale";
 
@@ -298,6 +304,8 @@ interface UiState {
   rowScale: number;
   setTextSizePx: (value: number) => void;
   setRowScale: (value: number) => void;
+  timeFormat: TimeFormat;
+  setTimeFormat: (value: TimeFormat) => void;
   setInputDevice: (device: string | null) => void;
   setOutputDevice: (device: string | null) => void;
   setSeparateStreamOutput: (value: boolean) => void;
@@ -455,6 +463,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     applyUiScale(get().textSizePx, rowScale);
     set({ rowScale });
   },
+  timeFormat: "auto",
+  setTimeFormat: (value) => set({ timeFormat: value }),
   setInputDevice: (device) => set({ inputDevice: device }),
   setOutputDevice: (device) => set({ outputDevice: device }),
   setSeparateStreamOutput: (value) => set({ separateStreamOutput: value }),

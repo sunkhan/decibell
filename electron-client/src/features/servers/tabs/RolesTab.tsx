@@ -29,6 +29,7 @@ import { useLeaveGuard } from "../leaveGuard";
 import { ROLE_NAME_MAX_BYTES } from "../limits";
 import { useUsersStore, type Uid } from "../../../stores/usersStore";
 import { findMember } from "../../../hooks/useDisplayName";
+import { formatClock, useTimeFormat } from "../../../lib/timeFormat";
 
 /// The editable fields of a role. A new role is a draft with id null.
 interface RoleFields {
@@ -583,6 +584,7 @@ function DisplaySection({
   const myUid = useAuthStore((s) => s.uid);
   const myNick = useChatStore((s) => findMember(s.membersByServer, serverId, myUid)?.nickname);
   const previewName = myNick || me;
+  const timeFormat = useTimeFormat();
   return (
     <div className="flex flex-col gap-7">
       <Field label="Role name">
@@ -645,7 +647,7 @@ function DisplaySection({
                 {previewName}
               </span>
               <span className="font-meta text-meta text-text-muted">
-                Today at {new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+                Today at {formatClock(new Date(), timeFormat)}
               </span>
             </div>
             <div className="text-body leading-body text-text-primary">This is how my name looks in chat.</div>

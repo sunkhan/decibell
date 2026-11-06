@@ -1,7 +1,13 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { AttachmentKind, Message } from "../../types";
 import { userColor } from "../../utils/colors";
-import { useUiStore } from "../../stores/uiStore";
+import { useUiStore, type TimeFormat } from "../../stores/uiStore";
+import {
+  formatClock,
+  formatClockCompact,
+  formatFullDateTime,
+  useTimeFormat,
+} from "../../lib/timeFormat";
 import { useLinkPreviewStore } from "../../stores/linkPreviewStore";
 import { loneLink } from "./richText";
 import { useDisplayName } from "../../hooks/useDisplayName";
@@ -71,23 +77,17 @@ function parseTimestamp(ts: string): Date {
   return isNaN(asEpoch) ? new Date(ts) : new Date(asEpoch * 1000);
 }
 
-// Shared formatters. toLocale*String with options builds a fresh ICU
+// Shared formatter. toLocale*String with options builds a fresh ICU
 // formatter per call (~40 µs) — paid twice per row render, so a 150-row
 // mount or a history page spent milliseconds just formatting times.
-const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+// The clock ones are cached in lib/timeFormat.
 const DATE_FMT = new Intl.DateTimeFormat();
 
-function formatTime(ts: string): string {
-  const date = parseTimestamp(ts);
-  // format() throws on an Invalid Date where toLocaleTimeString didn't.
-  return isNaN(date.getTime()) ? "" : TIME_FMT.format(date);
-}
-
-function formatTimestamp(ts: string): string {
+function formatTimestamp(ts: string, timeFormat: TimeFormat): string {
   const date = parseTimestamp(ts);
   if (isNaN(date.getTime())) return ts;
   const now = new Date();
-  const time = TIME_FMT.format(date);
+  const time = formatClock(date, timeFormat);
   if (date.toDateString() === now.toDateString()) return time;
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -336,6 +336,7 @@ function MessageBubble({
   const lone = useMemo(() => loneLink(message.content), [message.content]);
   const loneEntry = useLinkPreviewStore((s) => (lone ? s.entries[lone] : undefined));
   const previewsOn = useUiStore((s) => s.linkPreviewsEnabled);
+  const timeFormat = useTimeFormat();
   const textHidden =
     lone !== null &&
     previewsOn &&
@@ -468,8 +469,11 @@ function MessageBubble({
         style={{ paddingLeft }}
       >
         <div className="flex w-[38px] shrink-0 items-baseline justify-end">
-          <span className="font-meta text-meta font-normal leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100">
-            {formatTime(message.timestamp)}
+          <span
+            className="whitespace-nowrap font-meta text-meta font-normal leading-none tabular-nums text-text-muted opacity-0 group-hover:opacity-100"
+            title={formatFullDateTime(parseTimestamp(message.timestamp), timeFormat)}
+          >
+            {formatClockCompact(parseTimestamp(message.timestamp), timeFormat)}
           </span>
         </div>
         <div className={`select-text min-w-0 flex-1${message.pending ? " opacity-50" : ""}`}>
@@ -526,8 +530,11 @@ function MessageBubble({
             >
               {displayName}
             </span>
-            <span className="font-meta text-meta font-normal tabular-nums text-text-muted">
-              {formatTimestamp(message.timestamp)}
+            <span
+              className="font-meta text-meta font-normal tabular-nums text-text-muted"
+              title={formatFullDateTime(parseTimestamp(message.timestamp), timeFormat)}
+            >
+              {formatTimestamp(message.timestamp, timeFormat)}
             </span>
           </div>
           {/* div, not p — see the grouped branch above. */}

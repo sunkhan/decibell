@@ -6,11 +6,13 @@ import { UserAvatar } from "../../../components/UserAvatar";
 import { PERM, usePermission } from "../permissions";
 import { formatJoined } from "./helpers";
 import { useUsersStore, type Uid } from "../../../stores/usersStore";
+import { formatDateTime, useTimeFormat } from "../../../lib/timeFormat";
 
 /// Bans: the ban list (only BAN_MEMBERS holders receive it from the
 /// server) with reason / moderator / expiry and unban. The list refresh
 /// after a successful unban arrives via the pushed ban_list_received.
 export default function BansTab({ serverId }: { serverId: string }) {
+  const timeFormat = useTimeFormat();
   const bans = useChatStore((s) => s.bansByServer[serverId] ?? EMPTY_LIST);
   const truncated = useChatStore((s) => s.bansTruncated[serverId] === true);
   const canBan = usePermission(serverId, PERM.BAN_MEMBERS);
@@ -67,7 +69,7 @@ export default function BansTab({ serverId }: { serverId: string }) {
                   {b.bannedBy ? `by ${names.get(b.bannedByUid) ?? b.bannedBy}` : ""}
                   {b.bannedAt ? ` · ${formatJoined(b.bannedAt)}` : ""}
                   {b.expiresAt
-                    ? ` · until ${new Date(b.expiresAt * 1000).toLocaleString()}`
+                    ? ` · until ${formatDateTime(new Date(b.expiresAt * 1000), timeFormat)}`
                     : " · permanent"}
                   {b.reason ? ` · ${b.reason}` : ""}
                 </div>

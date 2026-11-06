@@ -28,6 +28,7 @@ import { EmptyState } from "./AuditLogTab";
 import { ECHO_WAIT_MS, useEchoSave } from "../saveEcho";
 import { NICKNAME_MAX_BYTES } from "../limits";
 import { useUserName, useUsersStore, type Uid } from "../../../stores/usersStore";
+import { formatDateTime, useTimeFormat } from "../../../lib/timeFormat";
 
 /// Visible role chips per row before the rest fold into "+N".
 const MAX_CHIPS = 3;
@@ -47,6 +48,7 @@ type Acts = { nick: boolean; roles: boolean; timeout: boolean; endTimeout: boole
 /// every moderation action lives behind the row's ⋯ menu (or a right
 /// click), so rows stay quiet. Hierarchy gates mirror the server.
 export default function MembersTab({ serverId }: { serverId: string }) {
+  const timeFormat = useTimeFormat();
   // The header counts are the server's, carried by every roster packet (the
   // roster itself pages in, so it can't be counted). The table itself is a
   // server search.
@@ -439,7 +441,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                         )}
                         {timedOut && (
                           <span
-                            title={`Timed out until ${new Date((m.timedOutUntil ?? 0) * 1000).toLocaleString()}`}
+                            title={`Timed out until ${formatDateTime(new Date((m.timedOutUntil ?? 0) * 1000), timeFormat)}`}
                             className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-warning/12 px-1.5 py-px text-[11px] font-semibold tabular-nums text-warning"
                           >
                             <Icon name="clock" size={11} strokeWidth={2.5} />
@@ -509,7 +511,7 @@ export default function MembersTab({ serverId }: { serverId: string }) {
                 </div>
 
                 {/* Joined */}
-                <div className="truncate font-meta text-meta tabular-nums text-text-secondary" title={new Date(m.joinedAt * 1000).toLocaleString()}>
+                <div className="truncate font-meta text-meta tabular-nums text-text-secondary" title={formatDateTime(new Date(m.joinedAt * 1000), timeFormat)}>
                   {formatDate(m.joinedAt)}
                 </div>
 

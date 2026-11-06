@@ -9,8 +9,11 @@ import {
   DEFAULT_TEXT_SIZE_PX,
   DEFAULT_ROW_SCALE,
   type ThemeId,
+  type TimeFormat,
 } from "../../../stores/uiStore";
 import { saveSettings } from "../saveSettings";
+import SegmentedControl from "../../../components/SegmentedControl";
+import { formatClock } from "../../../lib/timeFormat";
 import { LetterAvatar } from "../../../components/LetterAvatar";
 import { StatusDot } from "../../../components/StatusDot";
 import { UserAvatar } from "../../../components/UserAvatar";
@@ -144,6 +147,15 @@ const THEMES: ThemeOption[] = [
   },
 ];
 
+/// An afternoon time, so the 12- and 24-hour samples differ.
+const SAMPLE_TIME = new Date(2026, 0, 1, 14, 32);
+
+const TIME_FORMAT_OPTIONS: { value: TimeFormat; label: string }[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "12h", label: "12-hour" },
+  { value: "24h", label: "24-hour" },
+];
+
 const SAMPLE_ROWS = [
   { name: "sunkhan", online: true },
   { name: "nova", online: false },
@@ -253,6 +265,8 @@ export default function AppearanceTab() {
   const rowScale = useUiStore((s) => s.rowScale);
   const setTextSizePx = useUiStore((s) => s.setTextSizePx);
   const setRowScale = useUiStore((s) => s.setRowScale);
+  const timeFormat = useUiStore((s) => s.timeFormat);
+  const setTimeFormat = useUiStore((s) => s.setTimeFormat);
   const username = useAuthStore((s) => s.username);
   const selfUid = useAuthStore((s) => s.uid);
 
@@ -436,7 +450,7 @@ export default function AppearanceTab() {
                 {username ?? "You"}
               </span>
               <span className="font-meta text-meta font-normal tabular-nums text-text-muted">
-                Today at 14:32
+                Today at {formatClock(SAMPLE_TIME, timeFormat)}
               </span>
             </div>
             <p
@@ -496,6 +510,24 @@ export default function AppearanceTab() {
           ))}
         </div>
       </ScaleSlider>
+
+      <div className="mt-6">
+        <SectionLabel>Time format</SectionLabel>
+        <SegmentedControl<TimeFormat>
+          options={TIME_FORMAT_OPTIONS}
+          value={timeFormat}
+          onChange={(v) => {
+            if (v === timeFormat) return;
+            setTimeFormat(v);
+            saveSettings();
+          }}
+        />
+        <p className="mt-2 text-[12px] leading-[1.55] text-text-muted">
+          {timeFormat === "auto"
+            ? `Follows your system language: ${formatClock(SAMPLE_TIME, "auto")}.`
+            : `Times show as ${formatClock(SAMPLE_TIME, timeFormat)}.`}
+        </p>
+      </div>
     </div>
   );
 }

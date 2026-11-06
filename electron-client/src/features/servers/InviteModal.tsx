@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { invoke } from "../../lib/ipc";
 import { useChatStore } from "../../stores/chatStore";
-import { useUiStore } from "../../stores/uiStore";
+import { useUiStore, type TimeFormat } from "../../stores/uiStore";
 import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import type { ServerInvite } from "../../types";
 import { PERM, usePermission } from "./permissions";
 import { buildInviteLink } from "./inviteLink";
 import Select from "../../components/Select";
 import { useUsersStore } from "../../stores/usersStore";
+import { formatDateTime, useTimeFormat } from "../../lib/timeFormat";
 
 const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
   { label: "1 hour", seconds: 3600 },
@@ -17,10 +18,9 @@ const EXPIRY_OPTIONS: { label: string; seconds: number }[] = [
   { label: "Never", seconds: 0 },
 ];
 
-function formatAbsolute(epoch: number): string {
+function formatAbsolute(epoch: number, timeFormat: TimeFormat): string {
   if (epoch === 0) return "Never";
-  const d = new Date(epoch * 1000);
-  return d.toLocaleString();
+  return formatDateTime(new Date(epoch * 1000), timeFormat);
 }
 
 function formatUses(invite: ServerInvite): string {
@@ -31,6 +31,7 @@ function formatUses(invite: ServerInvite): string {
 export default function InviteModal() {
   const activeModal = useUiStore((s) => s.activeModal);
   const closeModal = useUiStore((s) => s.closeModal);
+  const timeFormat = useTimeFormat();
   useEscapeToClose(closeModal, activeModal === "invite-manage");
   const activeServerId = useChatStore((s) => s.activeServerId);
   const invitesByServer = useChatStore((s) => s.invitesByServer);
@@ -392,7 +393,7 @@ export default function InviteModal() {
                         <circle cx="12" cy="12" r="10" />
                         <polyline points="12 6 12 12 16 14" />
                       </svg>
-                      {formatAbsolute(invite.expiresAt)}
+                      {formatAbsolute(invite.expiresAt, timeFormat)}
                     </span>
                   </div>
                 </div>

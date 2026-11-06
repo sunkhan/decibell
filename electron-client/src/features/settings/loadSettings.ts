@@ -19,7 +19,9 @@ import {
   DEFAULT_THEME,
   DEFAULT_TEXT_SIZE_PX,
   DEFAULT_ROW_SCALE,
+  TIME_FORMATS,
   type ThemeId,
+  type TimeFormat,
 } from "../../stores/uiStore";
 import { useDmStore } from "../../stores/dmStore";
 import { useVoiceStore } from "../../stores/voiceStore";
@@ -66,6 +68,7 @@ interface LoadedConfigShape {
     theme: string;
     text_size_px: number;
     list_density: number;
+    time_format?: string;
     crash_reporting_enabled: boolean;
     crash_reporting_install_id: string | null;
     crash_reporting_consent_shown: boolean;
@@ -107,6 +110,13 @@ export async function loadSettings(): Promise<void> {
   // max rather than rendering the app at nine thousand pixels.
   useUiStore.getState().setTextSizePx(settings.text_size_px || DEFAULT_TEXT_SIZE_PX);
   useUiStore.getState().setRowScale(settings.list_density || DEFAULT_ROW_SCALE);
+  useUiStore
+    .getState()
+    .setTimeFormat(
+      (TIME_FORMATS as readonly string[]).includes(settings.time_format ?? "")
+        ? (settings.time_format as TimeFormat)
+        : "auto",
+    );
 
   // Privacy
   useDmStore.getState().setFriendsOnlyDms(settings.friends_only_dms);

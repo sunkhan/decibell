@@ -11,6 +11,8 @@ import { EDITABLE_PERMISSIONS, hasBits } from "../permissions";
 import { roleColor } from "./helpers";
 import { Icon, SearchField, SectionLabel, type IconName } from "./settingsUi";
 import { nameOf, useUserName } from "../../../stores/usersStore";
+import type { TimeFormat } from "../../../stores/uiStore";
+import { formatClock, formatFullDateTime, hourOptions, useTimeFormat } from "../../../lib/timeFormat";
 
 type Tone = "danger" | "warning" | "success" | "neutral";
 type Category = "moderation" | "members" | "roles" | "channels" | "invites" | "server";
@@ -76,12 +78,13 @@ function parseUtc(s: string): number | null {
   return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) / 1000;
 }
 
-function shortDateTime(epoch: number): string {
+function shortDateTime(epoch: number, timeFormat: TimeFormat): string {
   return new Date(epoch * 1000).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    ...hourOptions(timeFormat),
   });
 }
 
@@ -182,6 +185,7 @@ interface Ctx {
   channel: (id: string) => ChannelInfo | undefined;
   roleById: (id: number) => ServerRole | undefined;
   roleByName: (name: string) => ServerRole | undefined;
+  timeFormat: TimeFormat;
 }
 
 /// One entry → icon, tone, a readable sentence and detail chips. Parses
@@ -203,8 +207,10 @@ function describe(e: AuditEntry, ctx: Ctx): Described {
     else if (p.startsWith("until ") && parseUtc(p.slice(6)) !== null) {
       const until = parseUtc(p.slice(6))!;
       out.chips.push(
-        <Chip key="until" icon="clock" title={`Until ${new Date(until * 1000).toLocaleString()}`}>
-          {e.action === "timeout" ? `${duration(until - e.timestamp)} · until ${shortDateTime(until)}` : `Until ${shortDateTime(until)}`}
+        <Chip key="until" icon="clock" title={`Until ${formatFullDateTime(new Date(until * 1000), ctx.timeFormat)}`}>
+          {e.action === "timeout"
+            ? `${duration(until - e.timestamp)} · until ${shortDateTime(until, ctx.timeFormat)}`
+            : `Until ${shortDateTime(until, ctx.timeFormat)}`}
         </Chip>,
       );
     } else if (/^\d+ messages purged$/.test(p)) {
@@ -535,14 +541,16 @@ export default function AuditLogTab({ serverId }: { serverId: string }) {
     };
   }, [serverId]);
 
+  const timeFormat = useTimeFormat();
   const ctx = useMemo<Ctx>(
     () => ({
       serverId,
       channel: (id) => channels.find((c) => c.id === id),
       roleById: (id) => (id === -1 ? roles.find((r) => r.isDefault) : roles.find((r) => r.id === id)),
       roleByName: (name) => roles.find((r) => !r.isDefault && r.name === name),
+      timeFormat,
     }),
-    [serverId, channels, roles],
+    [serverId, channels, roles, timeFormat],
   );
 
   const days = useMemo(() => {
@@ -685,10 +693,10 @@ function AuditRow({ entry: e, ctx }: { entry: AuditEntry; ctx: Ctx }) {
       </div>
       <time
         dateTime={when.toISOString()}
-        title={when.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })}
+        title={when.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium", ...hourOptions(ctx.timeFormat) })}
         className="shrink-0 pt-1.5 font-meta text-meta leading-5 tabular-nums text-text-muted"
       >
-        {when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+        {formatClock(when, ctx.timeFormat)}
       </time>
     </div>
   );

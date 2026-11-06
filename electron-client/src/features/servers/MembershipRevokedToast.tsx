@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { useUiStore } from "../../stores/uiStore";
 import { useChatStore } from "../../stores/chatStore";
+import { formatDateTime, useTimeFormat } from "../../lib/timeFormat";
 
 export default function MembershipRevokedToast() {
+  const timeFormat = useTimeFormat();
   const notice = useUiStore((s) => s.membershipRevocationNotice);
   const clearNotice = useUiStore((s) => s.setMembershipRevocationNotice);
   const serverMeta = useChatStore((s) => s.serverMeta);
@@ -52,7 +54,7 @@ export default function MembershipRevokedToast() {
           {notice.action === "ban" && (
             <p className="mt-0.5 text-xs text-text-muted">
               {notice.expiresAt
-                ? `Until ${new Date(notice.expiresAt * 1000).toLocaleString()}`
+                ? `Until ${formatDateTime(new Date(notice.expiresAt * 1000), timeFormat)}`
                 : "This ban is permanent."}
             </p>
           )}

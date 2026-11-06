@@ -7,6 +7,8 @@ import SegmentedControl from "../../components/SegmentedControl";
 import { useDisplayName } from "../../hooks/useDisplayName";
 import { userColor } from "../../utils/colors";
 import { useUserName } from "../../stores/usersStore";
+import type { TimeFormat } from "../../stores/uiStore";
+import { formatClock, useTimeFormat } from "../../lib/timeFormat";
 import MessageText from "../chat/MessageText";
 import { LockGlyph } from "../chat/MessageBubble";
 import { buildAttachmentUrl, formatFileSize, pickThumbnailSize } from "../chat/attachmentHelpers";
@@ -22,14 +24,13 @@ import { matchesInside, searchFragments, searchWords, type SearchSort } from "./
 /// a result) opens the message in its channel.
 
 const COUNT_FMT = new Intl.NumberFormat();
-const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 const DATE_FMT = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
 
-function when(ts: string): string {
+function when(ts: string, timeFormat: TimeFormat): string {
   const d = new Date(Number(ts) * 1000);
   if (Number.isNaN(d.getTime())) return "";
   const now = new Date();
-  const time = TIME_FMT.format(d);
+  const time = formatClock(d, timeFormat);
   if (d.toDateString() === now.toDateString()) return `Today at ${time}`;
   const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   if (d.toDateString() === y.toDateString()) return `Yesterday at ${time}`;
@@ -329,6 +330,7 @@ const SearchResult = memo(function SearchResult({
   const senderName = useUserName(message.senderUid, message.sender);
   const name = useDisplayName(serverId, message.senderUid, senderName);
   const replyName = useDisplayName(serverId, message.replyToSenderUid ?? 0, message.replyToSender ?? "");
+  const timeFormat = useTimeFormat();
   return (
     <div
       role="button"
@@ -376,7 +378,7 @@ const SearchResult = memo(function SearchResult({
             >
               {name}
             </span>
-            <span className="shrink-0 font-meta text-[12px] tabular-nums text-text-muted">{when(message.timestamp)}</span>
+            <span className="shrink-0 font-meta text-[12px] tabular-nums text-text-muted">{when(message.timestamp, timeFormat)}</span>
           </div>
           {message.decryptError ? (
             <div className="mt-0.5 flex items-center gap-1.5 text-body italic leading-body text-text-muted">

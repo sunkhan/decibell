@@ -28,6 +28,7 @@ import { RoleChips } from "./RoleChips";
 import type { FriendInfo, ServerMember, ServerRole } from "../../types";
 import { useUserName, type Uid } from "../../stores/usersStore";
 import { useMember } from "../../hooks/useDisplayName";
+import { formatDateTime, useTimeFormat } from "../../lib/timeFormat";
 
 // The full profile screen: a centred modal reached by clicking the avatar
 // in the anchored popup (UserProfilePopup), the way Discord's popout opens
@@ -395,6 +396,7 @@ function PeerEncryption({
   // The safety number needs both identities: only asked for once ours is
   // unlocked. usePeerE2ee re-fetches on our status and on key changes.
   const info = usePeerE2ee(status === "ready" ? peer : null);
+  const timeFormat = useTimeFormat();
 
   if (!supported || status === "unavailable") {
     return (
@@ -461,7 +463,7 @@ function PeerEncryption({
         </p>
         {info.changedAt > 0 && (
           <div className="mt-2.5 rounded-sm border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] leading-[1.5] text-warning">
-            Keys changed {new Date(info.changedAt * 1000).toLocaleString()}. {peerName} reset their
+            Keys changed {formatDateTime(new Date(info.changedAt * 1000), timeFormat)}. {peerName} reset their
             encryption or signed in from a new device. Compare the safety number again before you
             trust what they send.
           </div>

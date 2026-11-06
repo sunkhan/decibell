@@ -75,6 +75,7 @@ function doSave(): void {
     theme: ui.theme,
     text_size_px: ui.textSizePx,
     list_density: ui.rowScale,
+    time_format: ui.timeFormat,
     crash_reporting_enabled: ui.crashReportingEnabled,
     crash_reporting_install_id: ui.crashReportingInstallId,
     crash_reporting_consent_shown: ui.crashReportingConsentShown,

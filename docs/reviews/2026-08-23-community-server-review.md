@@ -4793,3 +4793,26 @@ switch: each connection gets LEAVE before the mute; the target gets LEAVE, mute,
 gets only JOIN, GroupInfo); community e2e 780 passed, 0 failed, `test_switch_keeps_mute` now also sends GroupInfo right
 behind the JOIN and gets it answered. Live test pending: how long "Securing…" lasts on a switch, with people not
 yet seen this session in the channel, as the joiner and as a member already there.
+
+### Feature: a 12- / 24-hour time format setting (2026-11-06)
+
+Owner request: choose the clock used for message timestamps. Before, every time followed the app's language, so an
+en-US system always got "02:32 PM" (the message formatter asked for a 2-digit hour) and there was no way to get 14:32.
+
+- **Settings → Appearance → Time format**: Automatic (the app language's clock, the default and the old behaviour),
+  12-hour, 24-hour. Saved as `time_format` in the native config (`"auto"` / `"12h"` / `"24h"`, a string so an
+  unknown value round-trips; the renderer falls back to Automatic). The Text size preview row shows the chosen clock.
+- **One formatter for every time of day** (`lib/timeFormat.ts`, cached `Intl.DateTimeFormat`s per clock):
+  messages, the image viewer, search results, the audit log, ban / timeout / invite expiries, the profile's "Keys
+  changed" notice and the role preview. 24-hour is `hourCycle: "h23"`, not `hour12: false` (Chromium has drawn the
+  latter as "24:05" after midnight); 12-hour drops the leading zero ("2:32 PM"). Inline date-times ("until …") are
+  now "Nov 13, 2026, 14:32" (medium date, no seconds) instead of the locale's "11/13/2026, 2:32:05 PM". Dates
+  without a time are unchanged.
+- **The grouped-message gutter** is 38 px; "12:59 PM" measures 47 px in Mona Sans at the default size (55 px at the
+  largest), so in 12-hour mode it shows "12:59" without AM / PM, as Slack does. The group's first message has the
+  full time, and both timestamps now carry a tooltip with the full date and time.
+
+Verified: renderer typecheck (0 errors); native napi build + `cargo test --lib` (`time_format` defaults to
+`"auto"`); the formatters in Electron's Chromium for en-US, en-GB, tr, ja, ko, zh, de (`auto` resolves to 12-hour
+under `LANG=en_US`, 24-hour under `LANG=tr_TR`; the compact gutter form drops the day period wherever the locale
+puts it). Ships with the next client release; no server change.

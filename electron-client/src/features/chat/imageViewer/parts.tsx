@@ -4,6 +4,8 @@ import { useChatStore } from "../../../stores/chatStore";
 import { useDisplayName } from "../../../hooks/useDisplayName";
 import { UserAvatar } from "../../../components/UserAvatar";
 import { formatFileSize } from "../attachmentHelpers";
+import { formatClock, useTimeFormat } from "../../../lib/timeFormat";
+import type { TimeFormat } from "../../../stores/uiStore";
 import { LinkIcon, Spinner } from "./icons";
 
 // The viewer's chrome. It sits on the theme (raised cards, theme text and
@@ -39,17 +41,16 @@ export function ToolDivider() {
   return <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />;
 }
 
-const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 const DATE_FMT = new Intl.DateTimeFormat();
 
 /// The chat's own phrasing ("Yesterday, at 14:32"), with "Today" spelled
 /// out: a bare time reads oddly once it's away from the message.
-function postedAt(ts: string | undefined): string {
+function postedAt(ts: string | undefined, timeFormat: TimeFormat): string {
   if (!ts) return "";
   const epoch = parseInt(ts, 10);
   const date = isNaN(epoch) ? new Date(ts) : new Date(epoch * 1000);
   if (isNaN(date.getTime())) return "";
-  const time = TIME_FMT.format(date);
+  const time = formatClock(date, timeFormat);
   const now = new Date();
   if (date.toDateString() === now.toDateString()) return `Today, at ${time}`;
   const y = new Date(now);
@@ -86,6 +87,7 @@ export function ViewerHeader({
   const uid = item.senderUid ?? 0;
   const name = useDisplayName(item.serverId, uid, item.sender ?? "");
   const hasSender = item.sender !== undefined;
+  const timeFormat = useTimeFormat();
   const dims = item.width > 0 && item.height > 0 ? `${item.width} × ${item.height}` : null;
   const size = item.sizeBytes ? formatFileSize(item.sizeBytes) : null;
 
@@ -105,7 +107,7 @@ export function ViewerHeader({
           </span>
           {hasSender && (
             <span className="shrink-0 font-meta text-[12px] tabular-nums text-text-muted">
-              {postedAt(item.timestamp)}
+              {postedAt(item.timestamp, timeFormat)}
               {channelName && <span className="font-channel"> · #{channelName}</span>}
             </span>
           )}

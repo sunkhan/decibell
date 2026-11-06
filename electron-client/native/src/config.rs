@@ -137,6 +137,11 @@ pub struct AppSettings {
     /// List-row scale multiplier. 0 = never set; client falls back to 1.
     #[serde(default)]
     pub list_density: f64,
+    /// Clock for times of day: "auto" (the app language's), "12h" or
+    /// "24h". A string so an unknown value round-trips; the client
+    /// falls back to "auto" for anything it doesn't recognise.
+    #[serde(default = "default_time_format")]
+    pub time_format: String,
 
     /// Crash reporting (Sentry) opt-out. Defaults to `true` (opt-out
     /// posture). Existing 0.6.5 configs without this field deserialize
@@ -224,6 +229,10 @@ fn default_away_after_minutes() -> u32 {
 
 fn default_theme() -> String {
     "nocturne".to_string()
+}
+
+fn default_time_format() -> String {
+    "auto".to_string()
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -754,6 +763,7 @@ mod tests {
         assert!(d.link_previews_enabled);
         assert_eq!(d.away_after_minutes, 10);
         assert_eq!(d.theme, "nocturne");
+        assert_eq!(d.time_format, "auto");
         assert!(!d.aec_enabled);
         assert!(d.input_device.is_none());
     }
