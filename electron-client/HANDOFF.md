@@ -692,6 +692,10 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   with recommendations. Port to the real tree only after approval.
 - **Releases**: the workflow's `release` job runs only after all three platform builds (~40 min); a
   macOS job that never gets a runner ("job was not acquired") is fixed with `gh run rerun <id> --failed`.
+  One cancelled within a second with "The configuration '<image>' is not supported" means GitHub retired
+  that runner image (macos-14, 2026-11-06): a rerun runs the tag's own workflow and fails again, so bump
+  `runs-on` on `main` and move the unreleased tag onto that commit (`git push origin :refs/tags/ev<VER>`,
+  then `git tag -f` + push).
   The AUR `git push` can hang in `git-receive-pack`: wrap it in `timeout 90`, retry, confirm with
   `git ls-remote origin master`.
 
