@@ -1,34 +1,35 @@
 # Decibell Electron Client — Resume Handoff
 
-**Read this entire document before touching anything.** It's a complete
-hand-off so a fresh conversation can resume client work without inheriting
-any false assumptions from a previous session. Written 2026-05-08 at the end
-of PR8 (the Tauri-to-Electron migration); the release table in §2, the
-gotchas in §5, the file table in §8 and the commit list in §9 are kept
-current — last refreshed 2026-10-04.
+**Read this entire document before touching the client.** It's the hand-off that lets a fresh
+conversation resume client work without inheriting false assumptions. First written 2026-05-08 at the
+end of PR8 (the Tauri-to-Electron migration). Kept current: the release table (§2), the gotchas (§5),
+how to build and test (§6), the open items (§7), the file map (§8) and the recent commits (§9) —
+**last refreshed 2026-11-07 (0.9.4)**.
 
-The companion auto-memory file
-`~/.claude/projects/-home-sun-Desktop-decibell-decibell/memory/project_electron_migration.md`
-also records this state but is condensed; **this file is the canonical
-human-readable hand-off**.
+Companions: `ARCHITECTURE.md` (system + wire reference, and §7.3 on reusing the native crate in a
+native client), `docs/FEATURES.md` (every feature and where it lives), `CLAUDE.md` (rules + the owner's
+standing decisions), and the running feature log `docs/reviews/2026-08-23-community-server-review.md`.
+
+The owner's Claude Code auto-memory on the Linux dev box
+(`~/.claude/projects/-home-sun-Desktop-decibell/memory/`) held a condensed copy of much of this plus a
+set of gotchas; on 2026-11-07 every durable note from it was folded into this file (§5.13–§5.15, §6, §7)
+and CLAUDE.md, so a checkout on another machine loses nothing.
 
 ---
 
 ## 1. What Decibell is
 
-Decibell is a self-hosted, federated Discord-like app:
-- **C++ community server** (`server/`) — text/voice/streaming
-- **C++ central server** (also `server/`) — auth, server discovery, friends
-- **Shared protobuf wire** in `proto/messages.proto`
-- **Client** — currently being migrated
+Decibell is a self-hostable, Discord-like app (see CLAUDE.md for the tier table):
+- **Central server** (`src/server/`, C++, PostgreSQL): accounts, sign-in, devices, DMs, friends,
+  presence, the community directory and invites, E2EE key directory, call signalling.
+- **Community server** (`src/community/`, C++, SQLite): one per hosted community: channels, messages,
+  roles, voice relay, streams, search, attachments.
+- **Shared protobuf wire** in `proto/messages.proto`.
+- **Client**: this Electron app (`electron-client/`): React renderer + Rust napi-rs native addon.
 
-The **only** client that ships is the Electron one being built in
-`electron-client/`. The QML reference client and `tauri-client/` are
-historical reference only — do not modify them, do not consider them
-for compat. (See `feedback_electron_only_client.md` in auto-memory.)
-
-The C++ server is **not changing**. Wire compatibility with it is
-mandatory.
+The **only** client that ships is this one. The QML client (`src/client/`) and `tauri-client/` are
+historical; don't modify them or keep compatibility with them. The servers do change, usually together
+with the client (wire changes go through all three sides; CLAUDE.md, "Wire-contract rule").
 
 ---
 
@@ -93,8 +94,25 @@ read them as "how streaming got here", not as current open work.
 | **0.8.6** | Nocturne / Matinee become the default look (Mona Sans UI, brass on plum, plum accent in light). A Transfers panel in the title bar: a downloads manager (pause / resume over Range, encrypted files included, Show in folder) and an Uploads tab (pause, Go to message, taskbar progress, a quit guard while uploads run). The Settings → Network speed caps now actually apply to attachments (downloads paced in main, uploads in the PATCH loop). Chat: a download button beside image / video attachments, day dividers between dates, a members-list toggle in text-channel headers; click a focused stream to go back to the grid; channel / DM lists end above the user panel, bigger channel-type icons, offline members light up on hover. Fix: **Linux native H.264 streams showed nothing to watchers** (AVCC with no description on the wire) — now Annex B like every other path. No proto change; the **community server** rebuild (schema v10, `attachments.last_activity_at`) makes the abandoned-upload sweep idle-based — until then an upload paused for over an hour fails as "expired" |
 | **0.8.7** | Global hotkeys: toggle mute / deafen, push to talk, push to mute, leave voice / hang up, answer / decline a DM call — Settings → Keybinds (recorder, per-platform notes, a "Games won't see it" badge where the key is taken from the app in front) and Settings → Audio → Input Mode (voice activity / push to talk, release delay; the bound key shown). Listeners learn only about bound keys: the GlobalShortcuts portal on Wayland (KDE confirm dialog; mouse side buttons get a remap guide), exact passive grabs on X11 / XWayland, `GetAsyncKeyState` on the bound keys on Windows, accelerators on macOS (holds focused-only); `decibell --hotkey=<action>[:down|:up]` for window managers. Push to talk gates the mic in native (`media/voice_gate.rs`). Permissions v3 client (Create Invite, Change Nickname, Embed Links, Speak, Mute / Deafen / Move split, peer management, opt-in category sync with a Sync / Keep / Cancel prompt; channel permission edits go through Save). Settings windows float clear of the edges and shrink on small windows; one shared on/off `Switch` (Public listing's knob sat off the track); no wordmark under the members list; mouse back / forward no longer walk between screens (or back to login). Windows / macOS: "Default" audio devices follow the OS default device (`media/default_device_watch.rs`); the separate-stream toggle keeps the chosen voice output. Proto (permissions v3): `CHANNEL_PERMISSIONS_SYNC_REQ` (147) + `ChannelPermissionsSyncRequest`, `ChannelInfo.permissions_synced` (13) / `suppress_embeds` (15), `is_suppressed`, the new permission bits — the **community server** must run permissions v3 first (an older one lacks SPEAK, so the mic reads as blocked) |
 | **0.8.8** | Voice fixes + themed pickers. A member moved to another voice channel now joins that channel's MLS group (native rebinds the group on `VOICE_FORCE_NOTIFY{MOVED}`: same engine and key ring, new driver seeded with the cached roster) — before, nobody in the destination could hear them. Sidebar voice rosters: leaving voice no longer blanks every other channel's members (presence is community state, kept across voice sessions), presence is keyed by server + channel (slug ids collided across communities), other channels' rows use their own server (nicknames, the context menu's Move / Mute when not in voice) and show LIVE, join / leave sounds re-baseline per channel, a switch shows the cached roster at once, stale rosters are cleared at auth / connection loss / channel-list pushes. Drag a voice member onto another voice channel to move them (MOVE_MEMBERS + hierarchy; `voice/memberDrag.ts`); right-clicking a voice participant opens only the user menu. Every dropdown is a themed `components/Select.tsx` (lacquer / crisp / terminal per theme family, keyboard parity, filter past 10 options); the user menu's "Move to…" unfolds in place. Recently shown attachment images stay in memory across channel switches (`chat/imageRetention.ts`, 128 MB est. — GC used to drop them); the Network → Channel cache setting is gone (fixed at 10); dead cache code removed and attachment fetches use `cache: "no-store"`. No proto change; the **community server** rebuild re-sends the presence snapshot after a channel-list push (until then a channel that becomes visible shows no members until it changes) |
+| **0.8.9** | **User statuses**: online / away / do not disturb / invisible, owned by central and shown to every signed-in user; auto-away (adjustable threshold + lock), Wayland idle through native `ext-idle-notify`; DND silences the call ring. **Reply redesign** (spine line, name → profile, line → jump). Custom status messages (emoji + 128 chars, clear-after). Server settings redesign: Members / Roles / Audit Log with server-side search (`MEMBER_SEARCH_REQ`, audit `query` / `actions`, `RoleInfo.member_count`), custom role colours. Channel settings window (one draft, Roles-style permissions), saves settle on the server's echo, unsaved edits hold the window. Welcome banner actions (Invite friends with personal invites, Manage channel), channel topics. Slowmode pill + countdown. **Message search** (community FTS5 index + worker, header box + chips + results panel; ı ↔ i, "inside words"). Encrypted text channels chosen at creation, fixed for life. Channel header spans the members list |
+| **0.9.0** | **Users by uid** (stages 1–5): every backend keys users on the uid, every wire user reference carries `*_uid`, encryption binds the uid (bundles `binding` 2, DM envelopes `0x03`, channel envelopes `0x04`, call auth v2, MLS credentials `"<uid>"`), the renderer keys every user store on the uid (`usersStore`). **Username changes** (two a day, 14-day reservation, live: `SESSION_TOKEN_UPDATE` renames the community session in place, `TOKEN_REFRESH_REQ`). **Central ready to scale**: io threads + strands, PgPool, `SessionManager`, presence by subscription (`PRESENCE_SUBSCRIBE`, watchers only). Offline people's pictures. **Central hardening**: resume tokens on reconnect (no bcrypt storm), abuse limits (paced, never dropped), fd limits; `load.py` |
+| **0.9.1** | **Pre-1.0 review fixes** (all of §1 of `docs/reviews/2026-10-17-pre-1.0-review.md`: S1–S17 security incl. the UDP bind challenge S11, A1–A4 availability, B1–B13 bugs: reconnect re-sync, paged online roster + windowed member sidebar, community requests paced instead of dropped, encrypted channels of any size keyed). **Several devices per account** (device ids, up to 8 online, own actions synced, calls ring every device). **Device list**, per-device / all-others sign-out (reaches communities via the heartbeat), **password change** |
+| **0.9.2** | **Go Live redesign**: quality presets (Smooth / Sharp / Data saver), sound and cursor up front, encoder settings under Advanced; "Source" encodes the source's own size on the native paths; 5 fps under Advanced with a media path that holds up at low frame rates. The DM call in the voice view's design (tiles, call bar, dock). Talking in voice keeps you from going Away. Opening an unloaded DM / channel goes straight to its messages; the avatar cut-out follows the picture |
+| **0.9.3** | **Image viewer** redesigned (themed stage, fly-in / out, real-pixel zoom + minimap, gallery = the clicked message, Copy image through main) and the **picture editor** for avatars and server pictures (`components/pictureEditor/`; EXIF-safe crop). The **Slides** preset (full res, 5 fps encoded for detail). Go Live's Options panel beside the dialog on wide windows. Every jump lands (not every other one). `npm run dev` compiles main first |
+| **0.9.4** | A **12- / 24-hour time format** setting (Appearance; `lib/timeFormat.ts`). Switching voice channels shows you in the new one at once: a SelfMove queue corrects rosters for our own join / leave, `enterChannel` does the switch in one update, native sends LEAVE / mute / JOIN / GroupInfo before starting the engine, and the MLS identity is prefetched |
 
-0.8.8 is the current release: moved voice members can be heard in their new channel (MLS group rebind), the sidebar's voice rosters survive leaving voice and stay per server, drag-to-move for voice members, themed dropdown pickers everywhere, and images that stay loaded across channel switches — no proto change; the community server rebuild re-sends presence when a channel becomes visible; see the 2026-10-10 entries in docs/reviews/2026-08-23-community-server-review.md. 0.8.7 was the release before it: global hotkeys (mute / deafen / push to talk / push to mute / leave / answer / decline; bound keys only on every platform — design in docs/superpowers/specs/2026-10-10-global-hotkeys-design.md), the permissions v3 client (needs the community server running v3), floating settings windows, one on/off switch, mouse back / forward no longer navigating, and "Default" audio devices following the OS default on Windows / macOS; see the 2026-10-09 / 2026-10-10 entries in docs/reviews/2026-08-23-community-server-review.md. 0.8.6 was the release before it: the Nocturne / Matinee look as the default, the Transfers panel (downloads + uploads with pause / resume), attachment speed caps that actually apply, day dividers / download buttons / a members-list toggle in chat, and the Linux native H.264 fix (watchers saw nothing) — no proto change; the community server rebuild (schema v10) makes the abandoned-upload sweep idle-based. 0.8.5 was the release before it: the voice view redesign (tiled stage, floating dock, "+N more" with hidden-speaker swap-in, Switch / Watch too for several streams) and 960 px stream thumbnails every 15 s — no proto change, but the community server needs the rebuild for the 256 KB thumbnail cap; see the 2026-10-04 entries in docs/reviews/2026-08-23-community-server-review.md and docs/superpowers/specs/2026-10-04-voice-view-redesign.md. 0.8.4 was the release before it: the smoothness pass (bounded background channels, no list re-render per keystroke, composited animations, frames only where displayed) and the Windows/AMD streaming fixes (real IDRs and in-band parameter sets on AMF, a correctly sized D3D11 video processor, capture recovery, a working WebCodecs fallback) — no wire change; see the 2026-10-02 entries in docs/reviews/2026-08-23-community-server-review.md. 0.8.3 was the 0.8.2 client with a Go Live dialog that always keeps its button on-screen (pinned header / footer, scrolling body, two columns on wide Windows windows) — no wire change. 0.8.2 was the 0.8.1 client with AGC on by default, context menus that stay inside the window, the full profile screen (Privacy tab = the E2EE details) and the 550 × 350 / 440 × 280 inline-media caps — no wire change. 0.8.1 added the E2EE channel-header pill, dropped the per-message lock glyph and reworded the encryption copy. 0.8.0 was the encryption release (see §5.12 for how it hangs together). Proto additions: `E2EE_*` (129–135) + `LoginResponse.e2ee_keys`, `CallSignal.pub_key_sig`/`key_id`, `MLS_*` (136–141) + sealed UDP types 7/8/9, `ChannelInfo.encrypted` (12) + `ChannelUpdateRequest.encrypted`, `envelope` fields on channel / DM messages, edits and reply previews, `CHANNEL_KEYS_*` (142–146), `Attachment.encrypted` (17) + `EncryptedMessageBody`. All additive on the wire, but the features need the **community-server release** (MLS delivery service, channel key escrow, attachment flag — against an older community server voice channels don't work at all: the client sends only sealed media and ignores plaintext, by decision) and a **central rebuild** (key directory, passphrase backup, signed call keys — until then DMs stay plaintext and calls run unauthenticated).
+**0.9.4 is the current release** (2026-11-06). No proto change since 0.9.1, whose wire additions were
+the multi-device / devices packets (168–178), `LoginRequest.device_id` / `automatic` / device fields and
+`LoginResponse.device_limit` / `signed_out` / `devices`, `ServerHeartbeatRes.revoked`, and the UDP
+`BIND_CHALLENGE` / `BIND_ECHO` (10 / 11). Releases ship the client first; the owner rebuilds central (Hetzner)
+and the community server afterwards, so a new client runs against the previous servers for days (never act
+destructively on a field an older server omits — §5.13). Which server build is live isn't recorded in the
+repo: ask the owner. Deploy to-do carried since 0.9.1: **rotate central's signing key** when the
+pre-1.0-review build goes live (review S1 leaked session tokens in relays).
+
+### Per-release wire and deploy notes, 0.7.14 – 0.8.8 (history)
+
+0.8.8 (current at the time): moved voice members can be heard in their new channel (MLS group rebind), the sidebar's voice rosters survive leaving voice and stay per server, drag-to-move for voice members, themed dropdown pickers everywhere, and images that stay loaded across channel switches — no proto change; the community server rebuild re-sends presence when a channel becomes visible; see the 2026-10-10 entries in docs/reviews/2026-08-23-community-server-review.md. 0.8.7 was the release before it: global hotkeys (mute / deafen / push to talk / push to mute / leave / answer / decline; bound keys only on every platform — design in docs/superpowers/specs/2026-10-10-global-hotkeys-design.md), the permissions v3 client (needs the community server running v3), floating settings windows, one on/off switch, mouse back / forward no longer navigating, and "Default" audio devices following the OS default on Windows / macOS; see the 2026-10-09 / 2026-10-10 entries in docs/reviews/2026-08-23-community-server-review.md. 0.8.6 was the release before it: the Nocturne / Matinee look as the default, the Transfers panel (downloads + uploads with pause / resume), attachment speed caps that actually apply, day dividers / download buttons / a members-list toggle in chat, and the Linux native H.264 fix (watchers saw nothing) — no proto change; the community server rebuild (schema v10) makes the abandoned-upload sweep idle-based. 0.8.5 was the release before it: the voice view redesign (tiled stage, floating dock, "+N more" with hidden-speaker swap-in, Switch / Watch too for several streams) and 960 px stream thumbnails every 15 s — no proto change, but the community server needs the rebuild for the 256 KB thumbnail cap; see the 2026-10-04 entries in docs/reviews/2026-08-23-community-server-review.md and docs/superpowers/specs/2026-10-04-voice-view-redesign.md. 0.8.4 was the release before it: the smoothness pass (bounded background channels, no list re-render per keystroke, composited animations, frames only where displayed) and the Windows/AMD streaming fixes (real IDRs and in-band parameter sets on AMF, a correctly sized D3D11 video processor, capture recovery, a working WebCodecs fallback) — no wire change; see the 2026-10-02 entries in docs/reviews/2026-08-23-community-server-review.md. 0.8.3 was the 0.8.2 client with a Go Live dialog that always keeps its button on-screen (pinned header / footer, scrolling body, two columns on wide Windows windows) — no wire change. 0.8.2 was the 0.8.1 client with AGC on by default, context menus that stay inside the window, the full profile screen (Privacy tab = the E2EE details) and the 550 × 350 / 440 × 280 inline-media caps — no wire change. 0.8.1 added the E2EE channel-header pill, dropped the per-message lock glyph and reworded the encryption copy. 0.8.0 was the encryption release (see §5.12 for how it hangs together). Proto additions: `E2EE_*` (129–135) + `LoginResponse.e2ee_keys`, `CallSignal.pub_key_sig`/`key_id`, `MLS_*` (136–141) + sealed UDP types 7/8/9, `ChannelInfo.encrypted` (12) + `ChannelUpdateRequest.encrypted`, `envelope` fields on channel / DM messages, edits and reply previews, `CHANNEL_KEYS_*` (142–146), `Attachment.encrypted` (17) + `EncryptedMessageBody`. All additive on the wire, but the features need the **community-server release** (MLS delivery service, channel key escrow, attachment flag — against an older community server voice channels don't work at all: the client sends only sealed media and ignores plaintext, by decision) and a **central rebuild** (key directory, passphrase backup, signed call keys — until then DMs stay plaintext and calls run unauthenticated).
 
 0.7.14 was the release before it (0.7.13 GPU cursor compositing + fps pacing on every capture path; 0.7.14 the multi-app audio picker + Linux self-leak fix). It carries **four proto additions** —
 `InviteResolveResponse` preview fields (7–11), `CHANNEL_MSG_REJECTED`
@@ -112,7 +130,11 @@ running feature log is `docs/reviews/2026-08-23-community-server-review.md`.
 
 ---
 
-## 3. PR8 architecture — what we changed and why
+## 3. PR8 architecture — what we changed and why (history, 2026-05)
+
+> §3 and §4 record the PR8 migration. The architecture they describe still holds for the WebCodecs
+> path, but native capture + hardware encode came back later for Windows and Linux (ARCHITECTURE §7.2),
+> and §4's "open issue" is long past: streaming has shipped and been used since 0.6.
 
 ### Why PR8 exists
 
@@ -175,7 +197,7 @@ support + Widevine. AV1 (libaom) was always available.
 
 ---
 
-## 4. Current state of PR8 — what works, what doesn't
+## 4. State of PR8 when it landed (history)
 
 ### ✅ Working
 
@@ -548,6 +570,131 @@ Design: `docs/superpowers/specs/2026-09-03-e2ee-dms-design.md`. The short versio
   contains a digit needs an explicit `#[napi(js_name = "…")]` matching the normaliser
   (`commands/e2ee.rs` does this); check `native/index.js` after `npx napi build`.
 
+### 5.13 Renderer / Chromium gotchas
+
+Each of these cost a debugging round; most were recorded in the owner's Claude memory before 2026-11-07.
+
+- **zustand selectors return stable references.** `s.x[id] ?? []` or a `.filter` inside a selector makes
+  a fresh value per call → "getSnapshot should be cached" → render loop → blank screen. Fall back to
+  `EMPTY_LIST` (`lib/empty.ts`) and derive with `useMemo` outside the selector.
+- **Never combine hooks with `&&` / `??` / `?:`.** `useA() && useB()` skips the second hook when the first
+  is falsy → "Rendered fewer hooks than expected" → black screen. Bind each hook to its own `const`.
+- **A no-op `set()` must `return state`.** zustand 5 skips notifying only when `Object.is(next, state)`;
+  `return {}` merges into a new object and re-runs every selector (a 150-row list pays for it).
+- **i64 event fields can arrive as `BigInt`** once they leave the 32-bit range (byte counts, disk sizes);
+  `Math.max` / division then throw → blank screen. `Number(x)` at the listener. The TS type says
+  `number`; it lies for big values.
+- **napi `Option<T>` rejects `null`.** Send `undefined` (omit the key), e.g. `deviceId ?? undefined`,
+  never `?? null` ("Failed to convert Null into String"). Same for `Option<Buffer>` (§5.1).
+- **`visibility: hidden` makes the whole subtree unfocusable** (`autoFocus`, `.focus()` silently fail).
+  To hide before measuring, use `opacity: 0` + `pointer-events: none`.
+- **Hover must not `scrollIntoView` the active row.** Chromium fires a synthetic mousemove after the
+  scroll, the next row becomes active, and the list runs away to the end. Only keyboard / open / filter
+  scroll (`components/Select.tsx`, `activeBy`). The offscreen harness doesn't send that mousemove.
+- **Setting `video.src` fires a synthetic `timeupdate` at 0** before `loadedmetadata` (twice in Strict
+  Mode). An initial seek target is one-shot; never let `timeupdate` overwrite it.
+- **`HTMLMediaElement.duration` can be `Infinity`** (CBR MP3s without a Xing header);
+  `JSON.stringify(Infinity)` is `null` and the server's init then 400s. Guard with
+  `Number.isFinite(d) && d > 0`.
+- **`[ERROR:ffmpeg_common.cc] Unsupported pixel format: -1` is noise** (decoder negotiation). Gate
+  `v.load()` recoveries on `v.error != null`, never on log lines.
+- **Image decode is a separate cache from the fetch.** `decoding="async"` guarantees a one-frame pop on
+  every mount; prefetch with `img.decode()` and use `decoding="sync"` for bounded thumbnails.
+- **Blink holds unreferenced custom-protocol images weakly.** `decibell-attachment://` responses never
+  enter the disk cache; after a few channel switches a GC drops them and they refetch.
+  `chat/imageRetention.ts` (`retainImage`, LRU, ~128 MB) keeps recent ones; any new place showing
+  attachment images should feed it. Test with `--js-flags=--expose-gc` + `gc()` and a control build.
+  Images are not persisted across restarts (owner decision).
+- **`createImageBitmap(img, sx, sy, sw, sh)` crops EXIF-rotated photos in the stored layout.** Crop with
+  `drawImage` onto a canvas, then `createImageBitmap(canvas)`. Test with a real Orientation = 6 file
+  (`exiv2 -M"set Exif.Image.Orientation Short 6" f.jpg`).
+- **Message-row chrome gets whole-pixel, content-independent heights** (reply line, badges); fractional
+  rows turn into ±1 px anchor nudges on prepends. Scale inline emoji with `uiStore.textSizePx`.
+- **Draw tiny glyphs with holes as one SVG** in a fixed viewBox (status dots); %-inset child boxes snap
+  off-centre. Reproduce at DPR 1.25 with `--ui-row-scale` 0.85.
+- **Tailwind v4**: `@theme` variables no utility uses are pruned (tokens read only via `var()` from JS go
+  in a plain `:root` block); `shadow-*` resolves statically past the `--shadow-*` layer (override
+  `--t-shadow-*`). Grep the built CSS after touching tokens.
+- **WebCodecs AV1 and Annex B H.264 emit no `description`.** On a codec change, `reset()` +
+  `configure({codec})` unconditionally; reconfigure again only if a description arrives (HEVC).
+- **OpenH264's "Actual input framerate … is different" warning is meaningless.** Trust
+  `StreamCapture`'s `last 5s: N frames` counter and the encoder `queueSize`.
+- **`npm run dev` never restarts Electron for main / preload changes** (and main keeps its 30-min
+  link-preview cache). Say so after touching `electron/main/**` or `electron/preload/**`. "No handler
+  registered for '…'" = an old main under a new preload (window reload only, or a stale
+  `dist/electron/main`; `dev` now compiles main once before starting).
+- **Server skew is real.** Releases ship before the servers are rebuilt, so a new client meets old
+  servers for days. Degrade, but never act destructively on a field an old server omits (proto3 reads
+  it as 0): on 2026-10-28 reading `before_id == 0` as "newest page" made every scroll-up page wipe the
+  loaded rows against the old servers.
+
+### 5.14 Native gotchas
+
+- **`eprintln!` / `println!` can panic under Electron** (`failed printing to stderr: … os error 11`):
+  Electron makes stdio non-blocking, a burst fills the pipe, the print macros panic and a worker thread
+  dies silently (it killed the HEVC encode thread). `lib.rs` `on_load` clears `O_NONBLOCK` on unix; still
+  prefer `log::` macros and never log per frame.
+- **napi-rs 2 leaks a TSFN value on `QueueFull`.** `ThreadsafeFunction::call` boxes the value before the
+  call and never frees it on a failed enqueue; a bounded "drop when full" TSFN leaks every dropped item.
+  Cap in-flight items yourself (`events.rs` `reserve_stream_slot`).
+- **`cargo test` can't link the event bus** (`napi_call_threadsafe_function` exists only inside Node).
+  Keep emits reachable from tests behind a `#[cfg(not(test))]` wrapper with a no-op twin
+  (`hotkeys/mod.rs`, `e2ee/session.rs`), not a global change to `events.rs`.
+- **No CPU↔GPU sync in capture loops.** A per-send staging `Map` waited out the game's GPU queue and
+  held a 60 fps DXGI share at ~32 fps. Keep capture / composite fully asynchronous on the GPU
+  (`cursor_gpu.rs`); readbacks only on the encoder thread at low rate. The tell is a large `send_max` in
+  `[capture_dxgi] 1s:` telemetry.
+- **zbus bodies need their real signature.** Deserializing `oa(sa{sv})` into `(OwnedObjectPath, Value)`
+  fails as `SignatureMismatch` and the handler silently never fires; use concrete types and unit-test
+  with `zbus::Message::signal(..).build(&body)` round trips.
+- **Electron `powerMonitor` idle is dead on Wayland** (0 s forever, KDE measured, native and XWayland;
+  KDE's `GetSessionIdleTime` is unsupported). Idle comes from `system_idle.rs` (`ext_idle_notifier_v1`;
+  Mutter IdleMonitor on GNOME); powerMonitor only on Windows / macOS / X11.
+- **Audio devices**: open each device in its reported sample format (virtual devices like Sonar /
+  Voicemeeter refuse forced f32); guard 0-channel / 0-rate configs; a `devicechange` must never hot-swap
+  the live pipeline (wireless headsets fire it constantly: pops). The jitter buffer ignores inter-arrival
+  gaps ≥ 150 ms (keepalives) and re-buffers instead of concealing on underrun. Record a session with
+  `DECIBELL_AUDIO_DUMP=<dir>` and read it with `native/scripts/analyze_audio_dump.py`.
+- **Server-mute vs stream audio**: the relay drops AUDIO from a server-muted member but relays
+  STREAM_AUDIO. Intentional (owner decision); don't "fix" it.
+
+### 5.15 Process and tooling
+
+- **Windows code from Linux**: `cargo test --lib` on Linux never compiles `cfg(windows)`. Push, let
+  **Windows Native Check** (`.github/workflows/win-native-check.yml`, `cargo check --all-targets` on
+  windows-latest; log on the orphan branch `ci/win-native-check-log`: `git fetch origin
+  ci/win-native-check-log && git show FETCH_HEAD:cargo-check.log`) go green, *then* tag `ev*` (a blind
+  Windows API mismatch failed the ev0.7.11 release). Select a run by head sha, not by time:
+  `gh run list --workflow "Windows Native Check" --json databaseId,headSha`. On a Windows machine, just
+  build and test natively (§6.1): that also runs the Windows-only unit tests CI never runs
+  (`gpu_pipeline`, `encoder_probe`, `thumbnail`).
+- **Native builds from a git worktree (Linux)**: `native/vendor/` (the static FFmpeg) is gitignored. Symlink
+  main's `vendor` into the worktree and export main's **absolute** `PKG_CONFIG_PATH`
+  (`…/native/vendor/ffmpeg/lib/pkgconfig`) and `CARGO_TARGET_DIR`, or ffmpeg-sys binds the system FFmpeg 8
+  and ffmpeg-next fails to build. Don't `git add` the symlink.
+- **Shared working tree**: other sessions edit the same tree. Commit only your own hunks (stage `HEAD +
+  your hunk` via `git hash-object -w` + `git update-index --cacheinfo`, verify the staged diff in a
+  detached worktree); never `git stash`, `git add -A`, or overwrite files you didn't touch.
+- **`tsc` through a pipe**: read `${PIPESTATUS[0]}`; `| tail` hides a failing exit code.
+- **UI preview harness** (screenshots / interaction tests of real components without a live server): a
+  scratch Vite build with an `@app` alias to `electron-client/src`, `globals.css` imported plus an
+  `@source` line, a Proxy stub for `window.decibell` (`invoke` resolves null, `listen` / `subscribe`
+  return unsubscribers; record calls camel-cased), stores seeded with `setState`, captured by an
+  offscreen `BrowserWindow` (`loadFile`, `executeJavaScript`, `sendInputEvent`, `capturePage`). Keep it on
+  a side branch: crashes and reboots wipe the scratchpad. Lessons: `localStorage.clear()` before seeding
+  (it persists across runs); drags need `modifiers: ["leftButtonDown"]`; offscreen `focus()` fires no
+  focus events (dispatch `focusin`); `sendInputEvent` wheel deltas have the opposite sign; selectors for
+  before / after jobs must exist in both builds; Electron 33 logs a harmless "No component available"
+  rejection at startup; `pkill -f <pattern>` matching your own command kills the shell.
+- **Redesign proposals (owner-approved format)**: build in a scratch copy, capture the real components
+  with the harness, publish one page: before / after per theme, "what's off today", annotated anatomy,
+  per-state pairs, the rejected alternative with reasons, files that will change, 2–3 numbered decisions
+  with recommendations. Port to the real tree only after approval.
+- **Releases**: the workflow's `release` job runs only after all three platform builds (~40 min); a
+  macOS job that never gets a runner ("job was not acquired") is fixed with `gh run rerun <id> --failed`.
+  The AUR `git push` can hang in `git-receive-pack`: wrap it in `timeout 90`, retry, confirm with
+  `git ls-remote origin master`.
+
 ## 6. How to test from a fresh checkout
 
 ```bash
@@ -592,30 +739,98 @@ same community server in the same voice channel — one streamer, one
 watcher. The C++ community server must be running. The user knows how
 to start the server; ask them rather than guessing.
 
+Local secrets: GIF search needs `resources/gifs.json` (`{"provider":"klipy","key":"…"}`, gitignored) or
+env `GIF_API_KEY` + `GIF_API_PROVIDER` (§5.9a). Crash reporting runs only in packaged builds, with the DSN
+from `resources/sentry.json`; release builds bake both files from repository secrets. `npm run build:twemoji` generates the gitignored `src/components/emoji/twemoji-data.json` (the
+`dev` / `build` scripts run it for you).
+
+### 6.1 Building on Windows
+
+Everything client-side builds natively on Windows (CI's Windows job is the reference:
+`.github/workflows/electron-release.yml`, `win-native-check.yml`). One-time setup:
+
+- **Node 20** (what CI uses) and npm.
+- **Rust stable, MSVC toolchain** (`rustup default stable-x86_64-pc-windows-msvc`).
+- **Visual Studio 2022** "Desktop development with C++" (MSVC + Windows SDK) and **CMake** (audiopus
+  builds its vendored libopus with it).
+- **protoc** on `PATH` (CI pins 27.x); `native/build.rs` runs prost over `proto/messages.proto`.
+- **LLVM / libclang** for ffmpeg-sys-next's bindgen (preinstalled on the CI image; on a fresh machine
+  install LLVM and set `LIBCLANG_PATH` to its `bin` if the build can't find `libclang.dll`).
+- **FFmpeg through vcpkg, at CI's pinned commit** (newer FFmpeg 8 ports broke the d3d11va + NVENC path):
+  ```powershell
+  git clone https://github.com/microsoft/vcpkg C:\dev\vcpkg
+  git -C C:\dev\vcpkg checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+  C:\dev\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+  C:\dev\vcpkg\vcpkg.exe install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
+  ```
+- In every dev shell:
+  ```powershell
+  $env:VCPKG_ROOT = "C:\dev\vcpkg"            # ffmpeg-sys-next finds FFmpeg through vcpkg (or set FFMPEG_DIR)
+  $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"    # audiopus_sys's libopus vs CMake 4
+  npm run dev
+  ```
+  `copy-dlls.cjs` (run by the native build) copies the FFmpeg DLLs next to the `.node`;
+  `electron/main/addon.ts` puts that folder on `PATH` while loading it.
+
+What runs where:
+
+| Check | Linux | Windows |
+|---|---|---|
+| Renderer typecheck `npx tsc -p tsconfig.web.json --noEmit` (+ `npm run typecheck` for main) | yes | yes |
+| `npx napi build --platform --js index.js --dts index.d.ts` (in `native/`) | yes | yes |
+| `cargo test --lib` (in `native/`) | host cfg only | host cfg, incl. the Windows-only tests CI never runs |
+| Community / central e2e harnesses (`src/*/tests/`: bash, g++, Python, a bundled PostgreSQL) | yes | Linux only: use WSL2 or the Linux box |
+| Linux-only native code (PipeWire, portal, X11 hotkeys, `system_idle`) | yes | no: rely on the Linux box or CI |
+
+The native addon's `cfg(windows)` paths (WGC / DXGI capture, D3D11, AMF / NVENC through FFmpeg, WASAPI
+loopback, `GetAsyncKeyState` hotkeys, default-device watching) can finally be run and debugged directly
+on that machine; several of their live tests are still open (§7).
+
 ---
 
-## 7. Suggested next steps in priority order
+## 7. Open items (as of 2026-11-07)
 
-**Freshly shipped, lightly tested (2026-08-27) — worth an eyeball before the
-next release:** link-preview cards against a narrow side panel and a bubble
-that also has attachments; the pending fade in DMs (channels verified live,
-DMs only by construction); invite cards against the *rebuilt* central
-(name/picture/description — degrades to host:port until then); the send
-pacer under a real flood on a fresh server (the e2e covers the server side
-only). GIF search is verified live with a KLIPY test key; request production
-access before a release.
+**Live tests pending.** Built, unit / e2e tested, not yet exercised by real people on real networks or
+hardware. Windows-side items are marked (W); they're the natural ones to run on a Windows box.
 
-**P2P DM calls (2026-08-28) — shipped, verified only by construction.** All
-four milestones are on `main` (relay, sealed transport + STUN/punch, call
-lifecycle, in-call screen share) with the transport unit-tested on loopback,
-but the two-machine matrix has not been run: same LAN (expect `path: host`),
-two networks (expect `srflx`), a symmetric-NAT pair (clean "couldn't connect"),
-community voice regression, mutual exclusion both ways, central reconnect
-mid-call, stream both ways incl. Linux PipeWire tap / Windows WASAPI, PLI
-round trip, mini player while browsing. Central must be rebuilt first
-(§5.10). Start from the spec's Verification section.
+- **P2P DM calls**: the two-machine matrix has never been run: same LAN (`path: host`), two networks
+  (`srflx`), a symmetric-NAT pair (clean "couldn't connect"), mutual exclusion with voice both ways,
+  central reconnect mid-call, stream both ways (PipeWire tap / WASAPI), keyframe round trip, mini-player
+  while browsing. Start from the spec's Verification section. The call stage redesign (0.9.2) rides on it.
+- **Encryption**: E2EE DMs across two accounts and two devices of one account; MLS voice + streams on
+  the live community; encrypted channels with attachments.
+- **Multi-device + devices**: two machines on one account (status, read sync, calls ringing both,
+  answered elsewhere), device sign-out reaching a community, password change.
+- **Streaming**: (W) Win10 DXGI share incl. the cursor-still case; (W) AMD AMF encode; (W) multi-app audio
+  picker on Win10 and Linux; Go Live presets incl. Slides / 5 fps; two watched streams at once
+  (the preload's per-user stream-frame dispatch, "R9").
+- **Audio**: (W) "Default" devices following a Windows default change mid-call (both Sound-settings
+  defaults, unplug); Linux `PULSE_SOURCE` / `PULSE_SINK` device routing.
+- **Hotkeys**: (W) push to talk / mute via `GetAsyncKeyState`; KDE portal (do stale shortcut ids pile
+  up?); Wayland mouse-button remap guide.
+- **UI shipped since 0.8.5** with only harness verification: voice view, Transfers panel and speed caps,
+  reply redesign, user statuses + status messages, server / channel settings redesigns, welcome-banner
+  actions, slowmode pill, message search, image viewer, picture editor, voice switch (0.9.4). The
+  real-DOM message list in DMs is verified only by construction.
 
-**The one older live thread: the attachment scroll glitch.** Start by reading
+**Deploys.** The servers lag the client (§2). Carried to-dos: rebuild central (Hetzner) and the community
+server with the pre-1.0-review build, then **rotate central's signing key** (review S1).
+
+**Before the "big launch"** (owner, 2026-10-15): off-machine PostgreSQL backups or a replica (central is
+one box); on the new box run `pg_test_fsync` (the DM rate is flush-bound), check `max_connections` ≥ io +
+CPU + 64 DB threads + ~10, copy the JWT key and TLS cert / key, switch the client from the hard-coded IP
+to a hostname, and point communities' `DECIBELL_CENTRAL_HOST` at it. Deferred until usage demands:
+avatars to object storage + CDN, an ECDSA central cert (clients pin it, so ship with a release), TLS
+termination outside central (82 KB / connection floor; needs PROXY protocol so per-address limits keep
+working), central across machines (message bus at `deliver_to_user`), sign-up CAPTCHA / email
+verification if spam appears.
+
+**Pre-1.0 review leftovers** (`docs/reviews/2026-10-17-pre-1.0-review.md`): §1 is all fixed; §2–§6
+(cross-cutting themes, medium / low findings, dead code, harness gaps, doc drift) are not started. The
+dead-code list there (and ARCHITECTURE §7.3) is the place to start a cleanup; pre-1.0 compat cruft can
+go (no backward compatibility before 1.0, owner rule).
+
+**Older thread: the attachment scroll glitch.** Start by reading
 `docs/reviews/2026-07-27-frontend-review.md` — its header is written as
 a handoff for exactly this, listing what is fixed *and verified*, what
 has been **ruled out with measurements** (don't redo those), and the
@@ -650,7 +865,25 @@ Also open, lower priority:
 
 ## 8. Files you'll touch most
 
-### Chat rendering + scroll (the live work — see §7)
+### Where the newer features live
+
+| Area | Renderer | Native / main |
+|---|---|---|
+| Sign-in, devices, password, rename | `features/auth/`, `features/settings/{DevicesTab,AccountTab}.tsx`, `ChangePasswordModal.tsx`, `RenameUsernameModal.tsx`, `stores/{authStore,devicesStore}.ts` | `commands/{auth,devices}.rs`, `net/central.rs` (`ThisDevice`, resume, reconnect), `config.rs` |
+| Users, names, presence, statuses | `stores/usersStore.ts`, `features/users/userDirectory.ts`, `hooks/useDisplayName.ts`, `features/presence/` (`presenceInterest.ts`, `useAutoAway.ts`, `StatusMenu.tsx`), `stores/{presenceStore,avatarStore}.ts` | `commands/presence.rs`, `presence.rs`, `system_idle.rs`, `electron/main/idle.ts` |
+| DMs, read sync | `features/dm/` (`DmChatPanel.tsx`, `readSync.ts`, `useDmEvents.ts`), `stores/dmStore.ts` | `commands/dm.rs`, `e2ee/session.rs` (DM worker) |
+| Calls | `features/call/` (`CallStage.tsx`, `callActions.ts`, `IncomingCallModal.tsx`), `stores/callStore.ts` | `commands/call.rs`, `media/{media_socket,call_crypto,stun,punch}.rs` |
+| Encryption UI | `features/e2ee/` (setup / unlock / passphrase, `E2eeSection.tsx`), `stores/e2eeStore.ts` | `e2ee/`, `commands/e2ee.rs`, `electron/main/e2eeLocalKey.ts` |
+| Server + channel settings | `features/servers/{ServerSettingsModal,ChannelSettingsModal}.tsx`, `tabs/`, `channelSettings/`, `saveEcho.ts`, `leaveGuard.ts`, `components/SettingsWindow.tsx` | `commands/{community,channels}.rs` |
+| Members / roster | `features/members/`, `tabs/useMemberSearch.ts` | `commands/community.rs` (`list_members`, `search_members`) |
+| Message search | `features/search/` | `commands/channels.rs` (`search_messages`) |
+| Voice + stage | `features/voice/` (`VoicePanel.tsx`, `stage/`, `voiceActions.ts`, `memberDrag.ts`), `stores/voiceStore.ts` | `commands/voice.rs`, `media/{pipeline,audio_device,jitter,voice_gate}.rs`, `e2ee/group.rs` |
+| Go Live | `features/voice/CaptureSourcePicker.tsx`, `goLive/` (`presets.ts`, `QualityPresets`, `AdvancedSettings`, `SourceGrid`) | `commands/streaming.rs`, `media/capture_*.rs`, `encoder*.rs` |
+| Hotkeys | `features/hotkeys/`, `features/settings/tabs/KeybindsTab.tsx` | `hotkeys/`, `commands/hotkeys.rs`, `electron/main/hotkeys.ts` |
+| Image viewer, picture editor | `features/chat/imageViewer/`, `ImageViewer.tsx`, `components/pictureEditor/` | `electron/main/clipboard.ts` (Copy image) |
+| Transfers | `features/transfers/`, `stores/transfersStore.ts` | `electron/main/{downloads,downloadPacer}.ts` |
+
+### Chat rendering + scroll
 | File | Role |
 |------|------|
 | `src/features/chat/RealMessageList.tsx` | real-DOM sliding-window list: placement pass, pixel trims, anchor/position reporting |
@@ -772,17 +1005,22 @@ Also open, lower priority:
 ## 9. Recent commits
 
 ```
-ae40b8c feat(client): pending messages render faded until the server echoes them
-9a5b3f9 fix: spam bursts no longer leave ghost bubbles — typed rejection, client pacing, 10/3 bucket
-95a122c fix(client): opening a server from an invite card lands on its first text channel
-bcae97d feat(client): invite links are code-only — decibell://invite/<CODE>
-e6ef534 feat(client): invite card in the browse-card shape — banner on top, details + Join below
-0a8675f feat: invite cards in chat — decibell://invite links preview the server
-010d350 feat(client): "Unfiltered GIF search" toggle in the Privacy tab
-1bc5a16 fix(client): GIF search over KLIPY / GIPHY — Tenor's API is gone
-ac6fe2d feat(client): GIFs — picker tab, animated GIF attachments
-106386e feat(client): hyperlinks + link previews
-79587ea aur: bump decibell-bin to 0.7.7
+9f78136 ci(release): build macOS on macos-15
+871a232 chore(release): 0.9.4 — a 12- / 24-hour time format setting; switching voice channels shows you in the new one at once
+6434f43 feat(client): a 12- / 24-hour time format setting
+5d85a29 fix(native): others see a voice switch at once; encryption is ready sooner
+a6d22b1 fix(client): switching voice channels no longer shows you in the old one
+caf319d aur: bump decibell-bin to 0.9.3
+1695514 chore(release): 0.9.3 — the image viewer and the picture editor, redesigned; the Slides preset and Go Live's options panel; Copy image and jump fixes
+e606355 fix(client): a sideways-stored phone photo uploaded the wrong area
+18fc371 feat(client): the picture editor, for profile and server pictures
+abc8064 fix(dev): compile main before npm run dev starts Electron
+56e40c1 perf(client): copy an attachment in one trip, and say when it's slow
+46fd485 fix(client): the viewer's wheel at 800%, and Copy image through main
+7c30d4f feat(client): the image viewer, redesigned
+b38fb01 fix(client): every jump lands, not every other one
+b836778 feat(client): Go Live's options in a panel beside the dialog
+7c8d06a feat(stream): the Slides preset, and 5 fps streams encoded for detail
 ```
 
 `main` is the working branch; feature-sized commits go straight to it
@@ -795,7 +1033,12 @@ is bumped *after* a release builds, because makepkg needs the published
 
 ## 10. To start a new conversation
 
-For the open scroll-glitch work:
+For client work, this file plus CLAUDE.md is the starting pair; `docs/FEATURES.md` says where any feature
+lives and `ARCHITECTURE.md` how it talks to the servers. For a new native client (the GPUI exploration),
+start from ARCHITECTURE §7.3 (what of `native/` is reusable and what the Electron side does that a native
+client must replace) and `docs/FEATURES.md` §10 (what isn't built, so don't look for it on the wire).
+
+For the old scroll-glitch thread:
 
 > Read `electron-client/HANDOFF.md` and
 > `docs/reviews/2026-07-27-frontend-review.md`. I want to fix the
@@ -803,17 +1046,13 @@ For the open scroll-glitch work:
 > list — everything before it is already done and verified, so don't
 > redo it.
 
-For anything else, this file plus the auto-memory at
-`~/.claude/projects/-home-sun-Desktop-decibell/memory/MEMORY.md` is the
-right starting pair. The memory is condensed; this has the detail.
-
 Two things worth saying out loud to a fresh session, because both cost
-real time this round:
+real time:
 
 - **Verify library behaviour by experiment, not by reading.**
-  `firstItemIndex` silently changes what `itemContent` and
-  `rangeChanged` mean but not `initialTopMostItemIndex`; that broke
-  message grouping and scroll restore in ways that typecheck cleanly.
+  `firstItemIndex` silently changed what `itemContent` and
+  `rangeChanged` meant in react-virtuoso (since removed); that broke
+  message grouping and scroll restore in ways that typechecked cleanly.
 - **Don't let failures be silent.** A cosmetic fallback that swallows
   its cause (the ThumbHash encoder returning `""`) turned a one-line CSP
   problem into three debugging rounds.

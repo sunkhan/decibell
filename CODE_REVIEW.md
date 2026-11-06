@@ -1,5 +1,10 @@
 # Decibell Codebase Review
 
+> **Historical (2026-07-19 review; fix batches through 2026-08-22).** Kept for its findings and
+> rationale. Current state: `ARCHITECTURE.md`, `docs/FEATURES.md`, and the running feature log
+> `docs/reviews/2026-08-23-community-server-review.md`; the latest whole-codebase review is
+> `docs/reviews/2026-10-17-pre-1.0-review.md`.
+
 **Date:** 2026-07-19 (fix pass started 2026-07-22)
 **Reviewer:** Claude (11 parallel deep-read agents, findings de-duplicated and cross-corroborated)
 

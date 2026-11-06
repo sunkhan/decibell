@@ -13,8 +13,12 @@ deeper docs are linked at the bottom.
 | Client | `electron-client/` | Electron; React + zustand + Tailwind v4 renderer; Rust napi-rs native backend (`electron-client/native/`, tokio, prost) |
 | Wire contract | `proto/messages.proto` | Shared by C++ (protoc) and Rust (prost via `native/build.rs`) |
 | Community e2e harness | `src/community/tests/` | Standalone build + Python black-box tests (see its README) |
+| Central e2e + load harness | `src/server/tests/` | Standalone build against a bundled PostgreSQL 16 + Python tests, `load.py` (see its README) |
 
 `tauri-client/` and `src/client/` are the retired Tauri-era client — don't build on them.
+A native desktop client (GPUI, developed on Windows) is being explored; `ARCHITECTURE.md` §7.3 maps
+what of `electron-client/native/` it can reuse and what the Electron side does that it would have to
+replace, and `docs/FEATURES.md` is the parity checklist.
 `.github/workflows/release.yml` is the dead Tauri workflow (fires on `v*` tags); the live
 one is `electron-release.yml` on `ev*` tags.
 
@@ -63,6 +67,13 @@ generic lambda (`const auto&`) calling `row[i].as<T>()` needs the `template` key
 range-for loops instead. New community e2e checks go in `e2e.py`; per-session message rate
 limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`.
 
+**On Windows** (setup: `electron-client/HANDOFF.md` §6.1): the typecheck, `npx napi build` and
+`cargo test --lib` run natively (and `cargo test` then covers the `cfg(windows)` code CI only
+compile-checks). The server harnesses are bash + g++ + Python + a bundled PostgreSQL: run them in WSL2
+or on the Linux box. Native code that is Linux-only (PipeWire, portal, X11, Wayland idle) can't be built
+there. **On Linux**, a change to `cfg(windows)` code is verified by the Windows Native Check workflow:
+push, wait for it to go green, then tag (HANDOFF §5.15).
+
 ## Workflow conventions
 
 - Commit and push straight to `main` after the verification bar passes (feature-sized
@@ -76,16 +87,40 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   to `ssh://aur@aur.archlinux.org/decibell-bin.git` (`master`). Git identity is not set
   globally — pass `-c user.name='sunkhan' -c user.email='gunhanserhat@gmail.com'`.
   Release builds bake two secrets into `resources/`: `SENTRY_DSN` → `sentry.json` and
-  `GIF_API_KEY` (+ the `GIF_API_PROVIDER` variable, default `klipy`) → `gifs.json`; a dev
-  checkout uses the same gitignored files or env vars (HANDOFF §5.9a).
+  `GIF_API_KEY` (+ the `GIF_API_PROVIDER` variable, default `klipy`) → `gifs.json`. A dev
+  checkout uses a gitignored `resources/gifs.json` or the two env vars for GIF search (HANDOFF
+  §5.9a); crash reporting only runs in packaged builds.
+- Durable knowledge goes in the repo (gotchas in HANDOFF §5, owner decisions in this file), not only
+  in Claude's auto-memory: the owner works from more than one machine (Linux and Windows), and the
+  memory folder stays on the machine that wrote it.
 - Wire changes that add a **community→client** packet or field ship client-first safely
   (older clients ignore them); anything central must *populate* (e.g. the invite preview
   fields) waits for the Hetzner rebuild — the client degrades gracefully until then.
+- **Pre-1.0: no backward compatibility** (owner, 2026-10-04): the owner hosts the only community
+  server, so wire and limit changes move client and servers together without version-skew fallbacks or
+  capability negotiation. Two limits: releases ship the client days before the servers are rebuilt, so a
+  new client must degrade against the previous servers and **never act destructively on a field an
+  older server omits** (proto3 reads it as 0; the 2026-10-28 `before_id == 0` incident wiped loaded
+  history); and from the 1.0.0 tag on, mixed versions are real again.
 
 ## Standing decisions (don't "fix" these)
 
 - Server-mute stops a member talking but their stream keeps its audio — intentional. Same for
   a member without SPEAK.
+- **Global hotkeys see bound keys only** (owner, 2026-10-10: listening to every key "gives keylogger
+  vibes"). Never propose keyboard hooks (`WH_KEYBOARD_LL`, Raw Input, CGEventTap, XInput2 raw, XRecord,
+  evdev). Allowed: desktop shortcut services (the GlobalShortcuts portal, macOS accelerators), passive
+  grabs on exactly the bound combos, per-key state queries (`GetAsyncKeyState`) for the watched keys;
+  listener threads exist only while a binding does, and the UI says what each platform reads (X11
+  polls `XQueryKeymap` while an ordinary-key push-to-talk is held). Design:
+  `docs/superpowers/specs/2026-10-10-global-hotkeys-design.md`.
+- **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
+  `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native
+  what holds sockets, speaks the wire, hooks the voice capture loop (AEC / AGC / NS) or owns files. The
+  exception is measured need: hardware screen encode is native on Windows / Linux because WebCodecs
+  can't reach NVENC on Linux and caps at 30 fps in this Electron build on Windows. (A GPUI client has
+  no Chromium, so this doesn't carry over to it.)
+- Attachment images are not cached across restarts, and nothing about a search is stored (owner).
 - **Permissions v3** (`docs/superpowers/specs/2026-10-09-permissions-v3-design.md`): voice moves
   check only the mover (MOVE_MEMBERS in the target's channel + VIEW on the destination); a target
   who can't view / join it gets a runtime voice pass, by owner decision. "Members with this role
@@ -109,7 +144,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   credentials `"<uid>"`, the keystore `e2ee/u<uid>.json` with uid-keyed pins. New envelopes
   are always v2; v1 (`0x01` / `0x02`) opens with the `sealed_*` names. Renames (Settings → Account):
   password-confirmed, two a day; the old name is reserved for the account for 14 days and still signs
-  it in meanwhile. `USER_RENAMED {uid, username}` (no old name) goes to every signed-in session, and
+  it in meanwhile. `USER_RENAMED {uid, username}` (no old name) goes to the account's watchers
+  (presence subscribers) and its own other sessions, and
   `name_changes` rows are deleted once the 14-day reservation ends. **The renderer keys every user store on the uid**
   (owner, 2026-10-15): names come from `stores/usersStore.ts` (`useUserName(uid, fallback)` /
   `nameOf`), fed by `features/users/userDirectory.ts`, so a rename re-labels without moving state.
@@ -159,6 +195,8 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
   **paced** (an over-rate request waits, never dropped); renames and token renewals are refused with an
   answer. Tests bind a fresh loopback source
   address per connection. `src/server/tests/load.py` is the load test (results in the review log).
+  The per-address limits key on the TCP peer: anything put in front of central (proxy, load balancer,
+  TLS terminator) must pass the real client address (PROXY protocol v2), trusted only from the proxy.
 - **Several devices per account** (`docs/superpowers/specs/2026-10-18-multi-device-design.md`, owner
   2026-10-18, review B3): all online together, as on Discord, never "last sign-in wins". Each install sends
   a random `LoginRequest.device_id` (native config); the same id replaces its own earlier connection
@@ -352,7 +390,12 @@ limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`
 
 ## Deeper docs
 
-- `ARCHITECTURE.md` — system overview.
-- `electron-client/HANDOFF.md` — canonical Electron client hand-off (read when resuming client work).
-- `src/community/tests/README.md` — e2e harness usage.
+- `ARCHITECTURE.md` — the system reference: servers, tokens, the wire protocol per feature, encryption,
+  the UDP media plane, the client's layers, and (§7.3) reusing the native crate in another client.
+- `docs/FEATURES.md` — every user-visible feature, its rules, where it lives, and what isn't built.
+- `electron-client/HANDOFF.md` — canonical Electron client hand-off: release history, gotchas (§5),
+  building on Linux and Windows (§6), open items and pending live tests (§7). Read when resuming client work.
+- `electron-client/PACKAGING.md` — packaging, CI, AUR.
+- `docs/README.md` — index of the design records (`docs/superpowers/specs/`) and reviews.
+- `src/community/tests/README.md`, `src/server/tests/README.md` — e2e harness usage.
 - `docs/reviews/2026-08-23-community-server-review.md` — review findings + everything shipped since, with rationale.

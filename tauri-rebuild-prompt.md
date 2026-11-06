@@ -1,5 +1,8 @@
 # Tauri Client Rebuild — CLI Agent Prompt
 
+> **Obsolete (2026-03).** The Tauri client this prompt set up is retired; the shipping client is
+> `electron-client/` (see `electron-client/HANDOFF.md`). Kept as history only — don't act on it.
+
 ## Context
 
 You are rebuilding the frontend client of a decentralized Discord-like application. The existing codebase has:

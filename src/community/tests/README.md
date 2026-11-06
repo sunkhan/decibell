@@ -17,10 +17,15 @@ with it and migrating with the new binary. For v15 (users by uid) that is any bu
 `e2e.py` starts its own server on 8082–8085 (and short-lived extra instances
 with `DECIBELL_AUTH_TIMEOUT_SECONDS` / `DECIBELL_IDLE_TIMEOUT_SECONDS` /
 `DECIBELL_RETENTION_INTERVAL_SECONDS` for the deadline and sweep checks) (self-signed cert generated into
-the run dir), mints Ed25519 JWTs with a test key, and exercises the
-2026-08-21 fix batches 13 + 14 permissions v2 (batch 15), roster deltas (batch 16) and
-server management + moderation (batch 17), relay / keep-alive / FTS (batch 18) and
-Theme A — Ed25519 JWTs / uid bans (batch 19) (see `docs/reviews/2026-08-21-community-server-review.md`).
+the run dir), mints Ed25519 JWTs with a test key, and drives it as clients over TLS, UDP and the
+attachment HTTPS listener: auth and memberships, channels and messages (history paging, edits, replies,
+nonces, rejections, retention, wipes), roles and permissions v3, roster paging and deltas, moderation
+and the audit log, invites (personal ones too), search, the UDP relay with its bind challenge,
+MLS delivery and channel key escrow, uid identity and renames, device revocations, request pacing, and
+the deadlines. Each fix batch in `docs/reviews/2026-08-21-community-server-review.md` and each feature
+in the running log `docs/reviews/2026-08-23-community-server-review.md` added its checks (567 at the
+2026-10-17 review). It builds against the system `-lsqlite3`, not the pinned amalgamation production
+links (`cmake/DecibellSQLite.cmake`); the system SQLite must be ≥ 3.43 with FTS5.
 Requires `python3` with `protobuf`, and `protoc`, `g++`, `openssl`, `sqlite3`.
 
 **Sanitizers.** The community server has threads (the search worker, the central-sync worker), so a

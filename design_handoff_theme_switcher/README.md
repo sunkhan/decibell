@@ -1,5 +1,8 @@
 # Handoff: Theme switcher (Appearance settings tab) + media audio player parity
 
+> **Implemented in 0.6.10 and since restyled** (the Nocturne / Matinee look became the default in
+> 0.8.6; tokens live in `electron-client/src/styles/globals.css`). Kept as history.
+
 ## Overview
 Decibell currently ships one hard-coded dark palette. This handoff adds **five selectable themes**, a new **Appearance** tab in the settings modal to switch between them at runtime, persistence of the choice across restarts, and two missing controls on the media **audio attachment player** (volume cluster + download button) so the mock matches the shipped component.
 

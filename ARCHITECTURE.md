@@ -1,684 +1,694 @@
 # Decibell Architecture
 
-Reference document for the Decibell codebase.
+The system reference: what runs where, how the pieces talk, and what a client has to do to be a
+Decibell client. Written to be read by someone building a **new** client (e.g. a native GPUI one) as
+much as by someone changing the existing ones.
 
-> **Document status (2026-07-28).** Sections 1–6 are current: they
-> describe the C++ servers, the wire protocols, and the audio/video
-> pipelines, all of which are still authoritative.
->
-> **Sections 7–10 are historical.** They document the retired Qt/QML
-> client and a Tauri rebuild plan that has itself been superseded — the
-> shipping client is Electron + React + a napi-rs native module, living
-> in `electron-client/`. `tauri-client/` is legacy and unmaintained.
-> They're kept because §7–§9 record the original UI inventory and the
-> backend↔frontend command/event contract, which the Electron client
-> still mirrors.
->
-> For anything client-side, start at `electron-client/HANDOFF.md`.
-
-## 1. System Overview
-
-Decibell is a decentralized Discord-like application with three components:
-
-### Central Server (`src/server/`)
-- Handles user registration, login, JWT issuance
-- Manages friend system (add, remove, block, accept, reject)
-- Routes and persists direct messages between users (echoes the sender's
-  packet back with the persisted id and the client's `nonce`)
-- Tracks user presence (online/offline)
-- Maintains server directory (`community_servers` table in PostgreSQL) and
-  the invite registry (`community_invites`): communities register every
-  invite code, and `INVITE_RESOLVE` turns a bare code into host:port plus
-  the community's directory row (name, description, member count, picture
-  version) — which is why invite links are code-only
-  (`decibell://invite/<CODE>`) and invite cards can preview a private server
-- Runs on port **8080** with TLS/SSL (TLSv1.2+)
-
-### Community Servers (`src/community/`)
-- User-hosted servers for group communication
-- Authenticates users via JWT from central server (HS256, issuer `decibell_central_auth`)
-- Manages text channels and voice channels
-- Relays UDP audio/video packets between voice channel participants
-- Handles screen sharing signaling (start/stop/watch)
-- Rate-limits each session with per-class token buckets (`rate_limit.hpp`):
-  chat messages + edits **10 burst / 3 per s**, presence 10/2, queries 20/4,
-  admin 20/2. An exhausted bucket drops the packet; a dropped `CHANNEL_MSG`
-  is answered with `CHANNEL_MSG_REJECTED {channel_id, nonce, reason}` (plus
-  the legacy `MOD_ACTION_RES(action="message")`), the same reply every other
-  refusal uses (permission, slowmode, attachment cap, persist failure). The
-  Electron client mirrors the message bucket and paces its sends, so a human
-  never hits it
-- Runs on port **8082** (TCP/TLS) + port **8083** (UDP relay, i.e. `port + 1`)
-- Hardcoded channels on auth: `general` (text), `announcements` (text), `voice-lounge` (voice)
-- Environment (all optional unless noted):
-  `DECIBELL_JWT_SECRET` (required), `DECIBELL_CENTRAL_HOST` (127.0.0.1),
-  `DECIBELL_SERVER_NAME`, `DECIBELL_SERVER_DESC` (seed a fresh DB only —
-  the name/description are edited in-app afterwards), `DECIBELL_PUBLIC_IP`,
-  `DECIBELL_JWT_PUBLIC_KEY_FILE` (required — central's `jwt_ed25519.pem.pub`),
-  `DECIBELL_COMMUNITY_SECRET` (required — shared with central; authenticates
-  heartbeats / sync; NOT a signing key),
-  `DECIBELL_CENTRAL_CERT_FINGERPRINT` (optional — pins central's TLS cert;
-  otherwise trust-on-first-use),
-  `DECIBELL_OWNER_USERNAME` (required on first boot), `DECIBELL_DB_PATH`,
-  `DECIBELL_ATTACHMENTS_ROOT`, `DECIBELL_MAX_ATTACHMENT_BYTES` (100 MiB),
-  `DECIBELL_AUTH_TIMEOUT_SECONDS` (10 — TLS+auth deadline for a new
-  connection), `DECIBELL_IDLE_TIMEOUT_SECONDS` (90 — authenticated session
-  with no frames; clients ping every 30 s),
-  `DECIBELL_RETENTION_INTERVAL_SECONDS` (600 — retention sweep period).
-
-### Client (`electron-client/`)
-- Electron desktop application: React + zustand renderer, Rust (napi-rs)
-  native backend for the wire protocol and media. `src/client/` (Qt/QML) and
-  `tauri-client/` are retired predecessors — see `electron-client/HANDOFF.md`
-- Connects to central server for auth, friends, DMs
-- Connects to community servers for channels, voice, video
-- Video encode/decode via WebCodecs in the renderer; audio via the native
-  backend; sends/receives UDP packets for real-time media
-- Some features are deliberately **client-side only** — no server involvement:
-  link previews (OpenGraph unfurl in the Electron main process, behind a
-  privacy toggle), GIF search (KLIPY/GIPHY from main with a baked key; a sent
-  GIF is just its https URL as message text), optimistic "pending" bubbles
-  reconciled by the `nonce` both servers echo back
-
-### Data Flow
-```
-Client <--TCP/TLS--> Central Server (auth, friends, DMs, presence, discovery)
-Client <--TCP/TLS--> Community Server (channels, voice signaling, stream signaling)
-Client <--UDP-----> Community Server (audio/video relay to other clients)
-```
+> **Status: current as of 0.9.4 (2026-11-07).** Rewritten from the 2026-07 version, whose sections
+> on the retired Qt/QML client and the Tauri rebuild plan are gone (read them with
+> `git show 871a232:ARCHITECTURE.md`). Companions:
+> - `docs/FEATURES.md`: every user-visible feature, where it lives, and its design record.
+> - `CLAUDE.md`: working rules and the owner's standing decisions.
+> - `electron-client/HANDOFF.md`: the shipping client's internals, gotchas and open items.
+> - `proto/messages.proto`: the wire contract; its comments are authoritative for field semantics.
+> - `docs/superpowers/specs/`: one design record per feature (index: `docs/README.md`).
 
 ---
 
-## 2. Network Protocols
+## 1. System overview
 
-### TCP Protocol
-All TCP communication uses length-prefix framing with Protobuf serialization:
-- **Frame format:** `[4-byte big-endian length][Protobuf Packet bytes]`
-- **Helper:** `chatproj::create_framed_packet()` in `src/common/net_utils.hpp`
-- **Max body size enforced:** 2 MB (server drops packets larger than this)
-- **TLS/SSL:** All TCP connections use TLS 1.2+. Self-signed certificates are **pinned by sha256 fingerprint** (Theme A): central is trust-on-first-use; communities are pinned to the fingerprint central reports for them (fallback TOFU). `verify_none` is gone.
+```
+                         ┌────────────────────────────┐
+                         │ Central  (src/server/)      │  accounts, sign-in, devices,
+                         │ C++20 · Boost.Asio · TLS    │  DMs, friends, presence, avatars,
+                         │ PostgreSQL (libpqxx 7)      │  community directory + invites,
+                         │ :8080                       │  E2EE key directory, call signalling
+                         └──────▲──────────────▲───────┘
+                     TLS/TCP    │              │  TLS/TCP (heartbeats, memberships,
+              (session token)   │              │  invites; shared community secret)
+┌───────────────────────────┐   │   ┌──────────┴─────────────────┐
+│ Client (electron-client/) │───┘   │ Community (src/community/)  │  one process per hosted
+│ Electron + React renderer │──────▶│ C++20 · single io thread    │  community: channels,
+│ Rust napi-rs native       │ TLS   │ SQLite (WAL, FTS5)          │  messages, roles, voice
+│                           │ :8082 │ :8082 chat  :8085 HTTPS     │  relay, streams, search,
+│                           │◀─────▶│ :8083 voice UDP :8084 media │  attachments
+└──────────┬────────────────┘  UDP  └─────────────────────────────┘
+           │ UDP (sealed, STUN + hole punch) — DM calls only
+           ▼
+        another client
+```
 
-### Connection Details
-- Central server: port **8080** (hardcoded in server `main.cpp`)
-- Community servers: host/port from `ServerListResponse`; default 8082 TCP + 8083 UDP
-- UDP audio/video: Client binds ephemeral port, sends to community server's `port + 1`
-- UDP socket buffers: 2 MB send + 2 MB receive (configured by community server)
+| Tier | Path | Build |
+|---|---|---|
+| Central server | `src/server/` | Production: root `CMakeLists.txt` target `decibell_server`, built on the owner's Hetzner box. Tests: `src/server/tests/` (own deps, bundled PostgreSQL 16). |
+| Community server | `src/community/` | Production: root `CMakeLists.txt` target `decibell_community` (pinned SQLite 3.53.4 via `cmake/DecibellSQLite.cmake`). Tests: `src/community/tests/`. |
+| Shared C++ | `src/common/` | `net_utils.hpp` (framing), `udp_packet.hpp` (UDP layouts), `ed25519_keys.hpp`. `src/common/proto/messages.pb.*` are stale; protoc regenerates them at build time. |
+| Wire contract | `proto/messages.proto` | protoc (C++), prost via `electron-client/native/build.rs` (Rust). |
+| Client | `electron-client/` | Electron (castlabs fork, v33) + React 18 / zustand / Tailwind v4 renderer + napi-rs native addon (`native/`, tokio, prost). See §7. |
+| Retired | `src/client/` (Qt/QML), `tauri-client/`, `.github/workflows/release.yml`, `CMakeLists-{linux,windows}.txt` | Nothing builds against them. Don't build on them. |
 
-### Authentication Flow
-1. Client connects to central server over TCP/TLS
-2. Client sends `LoginRequest` (username, password)
-3. Central server verifies credentials against PostgreSQL, returns `LoginResponse` with JWT
-4. JWT: **Ed25519 (EdDSA)**, issuer `"decibell_central_auth"`, subject = username, `uid` claim = stable user id. Central signs with a private key (`DECIBELL_JWT_KEY_FILE`, generated on first boot); community servers verify with the public key only (`DECIBELL_JWT_PUBLIC_KEY_FILE`) and cannot forge tokens. The community↔central channel uses a separate `DECIBELL_COMMUNITY_SECRET`.
-5. Client presents JWT in `CommunityAuthRequest.jwt_token` when connecting to community server
-6. Community server verifies JWT signature and issuer, returns channel list in `CommunityAuthResponse`
-7. Subsequent TCP packets from the client to the central server include `auth_token` (field 16 of `Packet`)
-8. UDP packets use the last 31 chars of the JWT as a compact `sender_id` to identify the session
+Deployment today: central runs on the owner's server; the owner hosts the only community server.
+Pre-1.0, so client and servers change together, but releases ship the client first and rebuild the
+servers days later: a new client must never act destructively on a field an older server doesn't send
+(proto3 reads a missing field as 0).
 
-### Security Notes (Known Issues)
-- JWT secret: hardcoded `"super_secret_decibell_key_change_in_production"` in both server `main.cpp` files
-- DB connection string: hardcoded in `src/server/main.cpp` `main()`
-- SSL cert paths: hardcoded to `C:/dev/chatproj-core/server.{crt,key}`
-- Password hashing: `auth_manager.hpp` declares `hashPassword`/`verifyPassword` (implementation in `.cpp`)
+### 1.1 Central server (`src/server/`)
+
+- **Port 8080**, TLS 1.2+ (`server.crt` / `server.key` in the working directory), hard-coded.
+- **Threads** (`docs/superpowers/specs/2026-10-15-central-scaling-design.md`): `DECIBELL_IO_THREADS`
+  io threads (default = cores) with a strand per connection; handlers that touch PostgreSQL run on a
+  database pool (`DECIBELL_DB_THREADS`, default 64, capped to fit Postgres's `max_connections`; commits
+  share disk flushes, which is what bounds the DM rate); bcrypt on a CPU pool (`DECIBELL_CPU_THREADS`,
+  default cores / 2). A session stops reading while one of its handlers is away, so its packets stay in
+  order. `PgPool` hands out a connection per operation.
+- **Directory**: `SessionManager` (`session_manager.hpp`) owns everything shared (connections, signed-in
+  accounts with their devices and presence, the presence-watch index, the call registry) behind one
+  mutex. `deliver_to_user` is the only way to reach an account (every device of it).
+- **Database**: PostgreSQL; schema version in `central_schema` (currently **6**; migrations in
+  `auth_manager.cpp`). Main tables: `users`, `devices`, `revoked_devices`, `name_changes`, `friendships`,
+  `dm_messages`, `dm_conversations` (kept by triggers), `dm_read_cursors`, `community_servers`,
+  `community_memberships`, `community_invites`, `e2ee_keys`, `e2ee_backups`. A schema change bumps
+  `central_schema` and gets a migration check in the e2e harness.
+- **Abuse limits** (`abuse_limits.hpp`, `docs/superpowers/specs/2026-10-15-central-hardening-design.md`):
+  per address: 256 open connections, 60 new connections then 10/s, 30 password sign-ins then 1 per 2 s,
+  10 sign-ups then 1 per 2 min; failed sign-ins per account **and** address (burst 10, then 1/min), with
+  an account-wide cap of 100; a server-wide connection cap from the open-file limit. Per connection,
+  DMs / reads / writes / sign-in attempts / status and presence changes / presence subscriptions / call
+  signals / key requests are **paced** (an over-rate request waits; nothing is dropped); renames and token
+  renewals are refused with an answer. Limits key on the TCP peer address, so anything put in front of
+  central must pass the real address (PROXY protocol) first.
+- **Response caps** (`wire_limits.hpp`): every response is budgeted to fit the client's 2 MiB frame cap
+  (DM conversations are paged, strings are capped).
+
+| Central env | Meaning |
+|---|---|
+| `DECIBELL_DB_CONN` | **Required.** libpq connection string. |
+| `DECIBELL_COMMUNITY_SECRET` | **Required.** Shared with community servers; authenticates heartbeats / membership / invite sync. Not a signing key. |
+| `DECIBELL_JWT_KEY_FILE` | Ed25519 signing key (default `jwt_ed25519.pem`, generated on first boot; `.pub` written beside it for communities). |
+| `DECIBELL_STUN_SERVERS` | Comma-separated `host:port` list handed to clients for DM calls (unset: clients use a built-in list). |
+| `DECIBELL_IO_THREADS` / `DECIBELL_DB_THREADS` / `DECIBELL_CPU_THREADS` | Thread pools (above). |
+| `DECIBELL_MAX_CONNECTIONS` | Server-wide connection cap (clamped to the open-file limit). |
+| `DECIBELL_JWT_SECRET` | Retired (HS256 era); ignored with a warning. |
+
+### 1.2 Community server (`src/community/`)
+
+- **Ports**, all derived from 8082 (hard-coded): **8082** TLS chat, **8083** voice UDP (port + 1),
+  **8084** media UDP (port + 2), **8085** attachment HTTPS (port + 3). TLS cert / key: `server.crt` /
+  `server.key` in the working directory; the cert's sha256 fingerprint is reported to central so clients
+  can pin it.
+- **Threads**: one `io_context` thread runs everything on the hot path (sessions, UDP relay, attachment
+  HTTP); a **search worker** (own read-only SQLite connection, `search.cpp`) and a **central-sync worker**
+  (`central_sync.hpp`) keep blocking work off it.
+- **Database**: SQLite in WAL mode, `schema_version` in `server_meta` (currently **17**; migrations in
+  `db.cpp`). Tables: `server_meta`, `members`, `roles`, `member_roles`, `bans`, `channels`,
+  `channel_overwrites`, `messages` (+ an FTS5 contentless-delete index kept by triggers), `attachments`,
+  `invites`, `audit_log`, `channel_key_epochs`, `channel_key_blobs`, `channel_key_rotations`,
+  `channel_key_refusals`. Users are keyed by **uid** everywhere (`members.uid`, `messages.sender_uid`);
+  a name from before uids reached the server (a member who hasn't connected since, a name-only ban)
+  holds a negative placeholder uid in `legacy_claims` until a token with that name claims it (legacy
+  claims end 2026-10-29).
+- **First boot** seeds the owner from `DECIBELL_OWNER_USERNAME` and the name / description from
+  `DECIBELL_SERVER_NAME` / `DECIBELL_SERVER_DESC`; after that they're edited in-app.
+- **Central sync**: a heartbeat every 60 s (`SERVER_HEARTBEAT`: name, description, public host, port,
+  member count, cert fingerprint, public listing) answered by `SERVER_HEARTBEAT_RES {server_id,
+  revoked}` (central's id for this community, and device sessions central signed out, which the
+  community closes and refuses for 25 h). Also `MEMBERSHIP_REGISTER/REVOKE_REQ`,
+  `INVITE_REGISTER/UNREGISTER_REQ`, `SYNC_SERVER_PICTURE_REQ`, all authenticated with the community
+  secret in `Packet.auth_token`. Central's TLS cert is pinned (`DECIBELL_CENTRAL_CERT_FINGERPRINT` or
+  trust-on-first-use stored in `server_meta`).
+- **Sessions**: TLS + `COMMUNITY_AUTH_REQ` within `DECIBELL_AUTH_TIMEOUT_SECONDS` (10); an
+  authenticated session with no frames for `DECIBELL_IDLE_TIMEOUT_SECONDS` (90) is closed (clients ping
+  every 30 s); at most 8 sessions per account; a session whose token expires without a
+  `SESSION_TOKEN_UPDATE` ends.
+- **Rate buckets** per session (`main.cpp`, `rate_limit.hpp`; review B13): messages + edits 10 burst /
+  3 per s, voice / stream signalling 10 / 2, history and list queries 20 / 4, search 6 / 1, management
+  and moderation 20 / 2, MLS relay + channel key escrow 20 / 5, stream thumbnails 3 / 0.2. Over a bucket
+  the request **waits** and the session stops reading, so order holds and nothing is dropped. Two
+  exceptions: a search is refused with `retry_after_ms`; thumbnails keep only the newest in a one-packet
+  slot. A refused `CHANNEL_MSG` (slowmode, permission, attachment cap, persist failure) is answered with
+  `CHANNEL_MSG_REJECTED {channel_id, nonce, reason}`. The client mirrors the message bucket
+  (`sendPacing.ts`: 10 / 2.7 per s), so people never hit it.
+- **Retention sweep** every `DECIBELL_RETENTION_INTERVAL_SECONDS` (600): per-channel retention for text
+  and per attachment kind; purged attachments keep a tombstone row (`purged_at`).
+
+| Community env | Meaning |
+|---|---|
+| `DECIBELL_JWT_PUBLIC_KEY_FILE` | **Required.** Central's `jwt_ed25519.pem.pub`. Tokens are verified, never minted. |
+| `DECIBELL_COMMUNITY_SECRET` | **Required.** Same value as central's. |
+| `DECIBELL_OWNER_USERNAME` | **Required on first boot.** Seeds the owner. |
+| `DECIBELL_CENTRAL_HOST` / `DECIBELL_CENTRAL_PORT` | Central's address (127.0.0.1 / 8080). |
+| `DECIBELL_CENTRAL_CERT_FINGERPRINT` | Pins central's TLS cert (else trust-on-first-use). |
+| `DECIBELL_PUBLIC_IP` | The host clients should dial (reported in heartbeats). |
+| `DECIBELL_SERVER_NAME` / `DECIBELL_SERVER_DESC` | Seed a fresh database only. |
+| `DECIBELL_DB_PATH` / `DECIBELL_ATTACHMENTS_ROOT` | Storage locations. |
+| `DECIBELL_MAX_ATTACHMENT_BYTES` | Per-upload cap (100 MiB). |
+| `DECIBELL_MIN_FREE_BYTES` | Free-space headroom kept before accepting uploads (also set in-app, Storage tab). No per-user quota by decision. |
+| `DECIBELL_MAX_CONNECTIONS` | Chat connection cap (attachments get half), clamped to the open-file limit. |
+| `DECIBELL_AUTH_TIMEOUT_SECONDS` / `DECIBELL_IDLE_TIMEOUT_SECONDS` / `DECIBELL_RETENTION_INTERVAL_SECONDS` / `DECIBELL_HEARTBEAT_INTERVAL_SECONDS` | Deadlines and periods (10 / 90 / 600 / 60). |
+| `DECIBELL_JWT_SECRET` | Retired; ignored with a warning. |
 
 ---
 
-## 3. Protobuf Message Catalog
+## 2. Identity, tokens and trust
 
-All messages are wrapped in a `Packet` with a `type` field and optional `auth_token`.
-Source: `proto/messages.proto`.
+**The uid is the identity; the username is a label.** Every backend keys stored rows, filters, ownership
+checks and purges on the account uid (int64), so a rename never breaks a feature. Every wire user
+reference carries `*_uid` next to the name; requests to a community target by uid only; central accepts a
+typed *name* only on `DIRECT_MSG`, friend `ADD`, call `INVITE` and E2EE key fetch. Payload names are the
+current names. Clients never show uids (fallback: the payload's name, else "Unknown user"). Design:
+`docs/superpowers/specs/2026-10-15-uid-identity-design.md`.
 
-### Packet Envelope
-```protobuf
-message Packet {
-  Type type = 1;
-  int64 timestamp = 2;
-  string auth_token = 16;   // JWT, sent by client on all post-login requests
-  oneof payload { ... }
-}
-```
+### 2.1 Tokens
 
-### Packet Types
-| Type ID | Name | Direction | Purpose |
-|---------|------|-----------|---------|
-| 0 | UNKNOWN | — | Default/unset |
-| 1 | HANDSHAKE | Client→Server | Protocol version negotiation (not enforced by server) |
-| 2 | REGISTER_REQ | Client→Central | Register new account (username, email, password) |
-| 3 | REGISTER_RES | Central→Client | Registration result (success, message) |
-| 4 | LOGIN_REQ | Client→Central | Login (username, password) |
-| 5 | LOGIN_RES | Central→Client | Login result (success, message, jwt_token) |
-| 6 | DIRECT_MSG | Bidirectional | Private message (sender, recipient, content, timestamp) |
-| 7 | PRESENCE_UPDATE | Central→Client | List of online users |
-| 8 | SERVER_LIST_REQ | Client→Central | Request public server directory |
-| 9 | SERVER_LIST_RES | Central→Client | List of CommunityServerInfo |
-| 10 | COMMUNITY_AUTH_REQ | Client→Community | Present JWT for authentication |
-| 11 | COMMUNITY_AUTH_RES | Community→Client | Auth result + channel list |
-| 12 | CHANNEL_MSG | Bidirectional | Text channel message (sender, channel_id, content, timestamp) |
-| 13 | JOIN_CHANNEL_REQ | Client→Community | Join a text channel |
-| 14 | JOIN_CHANNEL_RES | Community→Client | Join result + active_users |
-| 15 | FRIEND_ACTION_REQ | Client→Central | Friend action (ADD/REMOVE/BLOCK/ACCEPT/REJECT) |
-| 16 | FRIEND_ACTION_RES | Central→Client | Friend action result |
-| 17 | FRIEND_LIST_REQ | Client→Central | Request friend list |
-| 18 | FRIEND_LIST_RES | Central→Client | List of FriendInfo with status |
-| 19 | JOIN_VOICE_REQ | Client→Community | Join a voice channel |
-| 20 | LEAVE_VOICE_REQ | Client→Community | Leave voice channel |
-| 21 | VOICE_PRESENCE_UPDATE | Community→Client | Users in a voice channel |
-| 22 | STREAM_PRESENCE_UPDATE | Community→Client | Active streams in voice channel |
-| 23 | START_STREAM_REQ | Client→Community | Start screen sharing (fps, bitrate, has_audio) |
-| 24 | STOP_STREAM_REQ | Client→Community | Stop screen sharing |
-| 25 | WATCH_STREAM_REQ | Client→Community | Subscribe to a stream |
-| 26 | STOP_WATCHING_REQ | Client→Community | Unsubscribe from a stream |
-| 32–37 | INVITE_CREATE/LIST/REVOKE_REQ/RES | Client↔Community | Invite management (MANAGE_INVITES) |
-| 46–49 | INVITE_REGISTER/UNREGISTER_REQ, INVITE_RESOLVE_REQ/RES | Community→Central, Client↔Central | Invite registry; RESOLVE returns host:port + cert fingerprint + the community's directory row for pre-join previews |
-| 127 | CHANNEL_MSG_REJECTED | Community→Sender | A CHANNEL_MSG was refused (rate limit, slowmode, permission, attachment cap, persist failure); carries the request's `nonce` and a reason |
+| Token | Format | Lifetime | Used for |
+|---|---|---|---|
+| **Session token** | Ed25519 (EdDSA) JWT, `iss = decibell_central_auth`, `sub` = username, `uid`, `sid` = the device row, no audience | 24 h, renewed every 6 h (`TOKEN_REFRESH_REQ`) | `Packet.auth_token` on every central request; `CommunityAuthRequest.jwt_token`; the attachment HTTPS `Authorization` header; its last 31 characters are the session's **UDP key** |
+| **Resume token** | Same key, `aud = decibell_central_resume`, `uid`, `did` = device id, `iat` = the password sign-in | 30 days from the password sign-in, never extended | `LoginRequest.resume_token` after a dropped connection (no password, no bcrypt storm after a restart). Central-only: central refuses any token with an audience on a packet, communities refuse any token with an audience. |
 
-The table lists the original core plus the types touched by recent work;
-`proto/messages.proto` is the source of truth for the full set (attachments,
-roles/permissions v2, moderation, message edit/delete/reply, server pictures,
-stream negotiation — 127 types as of 2026-08-27).
+Central signs with its private key; communities hold only the public key. `users.sessions_valid_after`
+cancels an account's older resume tokens (a password change sets it); signing a device out deletes its
+`devices` row, which every resume token of it names.
 
-### Key Message Structures
+### 2.2 Signing in to central
 
-```protobuf
-message CommunityServerInfo {
-  int32 id = 1; string name = 2; string description = 3;
-  string host_ip = 4; int32 port = 5; int32 member_count = 6;
-  string picture_version = 7;      // sha256 of the server picture; '' = none
-  string cert_fingerprint = 8;     // community TLS cert, from its heartbeats
-}
+1. TLS to central:8080 (pinned, §2.4), then `LOGIN_REQ` (`LoginRequest`): `username` + `password`
+   (typed: `automatic = false`; saved password: `automatic = true`, allowed only on a device the account
+   still has) **or** `resume_token`. Always `device_id` (random per install), `device_name` (the OS name,
+   never the hostname), `device_platform`, `app_version`. A password sign-in without a device id is
+   refused.
+2. `LOGIN_RES` (`LoginResponse`): session token, resume token, `uid`, `username`, `memberships` (up to
+   200 communities: id, name, host, port, picture version, cert fingerprint), `stun_servers`, own status /
+   status message / clear-in, `dm_friends_only`, and refusal flags (`device_limit` above 8 devices,
+   `signed_out` for a device that was signed out). The capability booleans (`call_signaling`, `e2ee_keys`,
+   `presence_statuses`, `e2ee_uid_binding`, `renames`, `devices`) are always true on current centrals.
+3. The client then connects to every membership's community (§2.3), sends its presence subscription
+   (`PRESENCE_SUBSCRIBE`, §4.8), bootstraps E2EE (§5) and pings (`CLIENT_PING`) every 30 s.
 
-message DirectMessage {
-  string sender = 1; string recipient = 2; string content = 3; int64 timestamp = 4;
-  int64 id = 5; int64 edited_at = 6; int64 reply_to = 7;
-  string reply_to_sender = 8; string reply_to_content = 9;
-  string nonce = 10;               // client-set per send; central echoes it (and sets it on its error replies)
-}
+Several devices are online at once (up to 8 per account). The same `device_id` connecting again replaces
+its own older connection (`SESSION_CLOSED {REPLACED}`; a live client receiving it is a copied install and
+renews its id). `SESSION_CLOSED {SIGNED_OUT | PASSWORD_CHANGED}` means sign out fully and forget the saved
+sign-in. Design: `2026-10-18-multi-device-design.md`, `2026-10-19-devices-and-password-design.md`.
 
-message InviteResolveResponse {
-  bool success = 1; string message = 2; string host = 3; uint32 port = 4; string code = 5;
-  string cert_fingerprint = 6;
-  int64 server_id = 7; string server_name = 8; string server_description = 9;   // pre-join preview
-  int32 member_count = 10; string picture_version = 11;                       // 0 / '' from older centrals
-}
+### 2.3 Signing in to a community
 
-message ChannelMessageRejected { string channel_id = 1; string nonce = 2; string reason = 3; }
+TLS to the community's host:8082 (pinned), then `COMMUNITY_AUTH_REQ` (`jwt_token`, optional
+`invite_code` to join, `presence_hidden` when invisible). `COMMUNITY_AUTH_RES` carries the channel list
+**built for this recipient** (only channels they can view, each with `my_permissions` already resolved),
+server name / description, `owner_uid`, `max_attachment_bytes`, `attachment_port`, central's `server_id`
+for this community (re-key an invite-joined connection onto it), `public_listing`, or an `error_code`
+(`not_member`, `invalid_invite`, `banned`, `auth`). The role list, voice presence for every visible
+voice channel and (for BAN_MEMBERS holders) the ban list follow as pushes; the client pages the roster
+itself (§4.3). Token renewals reach each community as `SESSION_TOKEN_UPDATE` (no reply; a
+rename updates the live session in place; `members.name_iat` stops an older token renaming a member
+back). `PRESENCE_VISIBILITY` toggles "show me offline" mid-session.
 
-message ChannelInfo {
-  string id = 1; string name = 2;
-  enum Type { TEXT = 0; VOICE = 1; }
-  Type type = 3;
-}
+### 2.4 TLS trust
 
-message FriendInfo {
-  string username = 1;
-  enum Status { ONLINE=0; OFFLINE=1; PENDING_INCOMING=2; PENDING_OUTGOING=3; BLOCKED=4; }
-  Status status = 2;
-}
-
-enum FriendActionType { ADD=0; REMOVE=1; BLOCK=2; ACCEPT=3; REJECT=4; }
-
-message VideoStreamInfo { string stream_id=1; string owner_username=2; bool has_audio=3; }
-
-message StartStreamRequest { string channel_id=1; int32 target_fps=2; int32 target_bitrate_kbps=3; bool has_audio=4; }
-```
-
-### Attachments
-
-Attachment *bytes* never travel over the protobuf/TCP path — they move
-over the community server's HTTPS endpoints (`POST /attachments/init`,
-`PATCH /attachments/<id>`, `POST /attachments/<id>/complete`, and
-`POST /attachments/<id>/thumbnail?size=N`). What TCP carries is the
-metadata row attached to a `ChannelMessage`:
-
-```protobuf
-message Attachment {
-  int64 id=1; int64 message_id=2; Kind kind=3;      // IMAGE|VIDEO|DOCUMENT|AUDIO
-  string filename=4; string mime=5; int64 size_bytes=6;
-  string url=7; int32 position=8; int64 created_at=9;
-  int64 purged_at=10;                                // 0 = present; else retention removed the blob
-  uint32 width=11; uint32 height=12;                 // intrinsic px; 0 = unknown
-  uint32 thumbnail_size_bytes=13;                    // >0 = server has thumbnails
-  uint32 thumbnail_sizes_mask=14;                    // bit0=320px, bit1=640, bit2=1280
-  uint32 duration_ms=15;                             // audio/video; 0 = unknown
-  string placeholder=16;                             // base64 ThumbHash, ~28 chars; "" = none
-}
-```
-
-Three of these are computed **client-side at upload** and shipped in the
-`/attachments/init` JSON body, because the client has already decoded
-the media and the server has no image pipeline: `width`/`height`,
-`duration_ms`, and `placeholder`. Thumbnails likewise are generated by
-the uploader (OffscreenCanvas) and POSTed afterwards.
-
-`placeholder` is a ThumbHash — a ~25-byte blurred preview, carried as
-base64 so it stays opaque to both the C++ server and the Rust client;
-only the renderer decodes it. It lets a viewer paint an approximation of
-the image with zero requests, so a message scrolling into view is never
-an empty box. Added in 0.6.10; rows uploaded before that have `""` and
-clients fall back to a flat surface fill.
+Servers use self-signed certificates, so clients pin by sha256 fingerprint: central is trust-on-first-use;
+each community is pinned to the `cert_fingerprint` central reports for it (directory rows, memberships,
+invite resolution), falling back to trust-on-first-use. A mismatch is surfaced to the user with a
+deliberate re-trust (the client's `CERT_MISMATCH:` contract), never silently accepted. The attachment
+HTTPS host is pinned to the same fingerprint.
 
 ---
 
-## 4. UDP Packet Formats
+## 3. TCP wire protocol
 
-All structs use `#pragma pack(push, 1)` (1-byte alignment, no padding). Source: `src/common/udp_packet.hpp`.
+- **Framing**: `[u32 big-endian length][protobuf Packet]` (`src/common/net_utils.hpp`,
+  `native/src/net/framing.rs`). Frames are capped at **2 MiB**; servers budget every response to fit, and
+  the client reads and skips (rather than disconnects on) a slightly larger frame.
+- **Envelope**: `Packet { Type type = 1; int64 timestamp = 2; string auth_token = 16; oneof payload }`.
+  Central checks `auth_token` (the session token) on every post-login packet; community sessions are
+  authenticated once at `COMMUNITY_AUTH_REQ` and the client sends no per-packet token there.
+  Community↔central packets carry the community secret in `auth_token`.
+- **Replies**: most requests have a typed `*_RES`. Shared result packets carry an `action` string:
+  `MOD_ACTION_RES` (kick, ban, unban, leave, nickname, timeout, voice_mod, transfer, message),
+  `CHANNEL_ACTION_RES` (create, rename, delete, reorder, overwrite, sync, category_sync),
+  `ROLE_ACTION_RES`. Where several requests can be in flight, the request carries an id the reply echoes
+  (`request_id`, `seq`, `nonce`).
+- **Optimistic sends**: `ChannelMessage.nonce` / `DirectMessage.nonce` are client-minted; the server
+  echoes them on the broadcast (never persisted), and a channel history page carries the requester's own
+  nonces from the last 30 minutes so a send whose echo a reconnect swallowed still settles.
+- **Packet types**: 178, numbered in `Packet.Type`. By area:
 
-### Constants
-| Name | Value | Description |
-|------|-------|-------------|
-| `SENDER_ID_SIZE` | 32 | Bytes reserved for sender identifier in all packets |
-| `UDP_MAX_PAYLOAD` | 1200 | Max payload bytes per packet — audio, video and FEC (MTU-safe incl. PPPoE/VPN; matches `packet.rs` / `video_packet.rs`; was 1400 through 0.7.8). Voice bitrates are clamped to 320 kbps on both ends so a 20 ms Opus frame stays ≤ ~800 B |
-| `NACK_MAX_ENTRIES` | 64 | Max missing packet indices per NACK packet |
-| `FEC_GROUP_SIZE` | 5 | Data packets per FEC group |
-
-### Packet Type Enum (`UdpPacketType : uint8_t`)
-| Value | Name | Purpose |
-|-------|------|---------|
-| 0 | AUDIO | Voice audio data |
-| 1 | VIDEO | Video/screen share frame fragment |
-| 2 | KEYFRAME_REQUEST | Viewer requests I-frame from streamer (PLI) |
-| 3 | NACK | Report missing video packets for retransmission |
-| 4 | FEC | Forward error correction data |
-| 5 | PING | RTT probe; echoed by the relay to a bound endpoint only |
-| 6 | STREAM_AUDIO | Stream audio (voice socket) |
-| 7–9 | AUDIO_SEALED / STREAM_AUDIO_SEALED / VIDEO_SEALED | MLS-sealed twins of 0 / 6 / 1 |
-| 10 | BIND_CHALLENGE | Relay → client: prove you receive at this address (41 B: type, 32 zero bytes, 8-byte cookie) |
-| 11 | BIND_ECHO | Client → relay: the challenge with type 11 and the UDP key in bytes 1–32 |
-
-### VideoCodec Enum (`VideoCodec : uint8_t`)
-| Value | Name | Description |
-|-------|------|-------------|
-| 0 | CODEC_VP9 | VP9 software (libvpx) |
-| 1 | CODEC_H264 | H.264 hardware (Media Foundation Transform) |
-
-### UdpAudioPacket — 1237 bytes total
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| packet_type | 0 | 1 | uint8 | Always 0 (AUDIO) |
-| sender_id | 1 | 32 | char[32] | Last 31 chars of JWT (compact identifier); upstream=token hash, downstream=username |
-| sequence | 33 | 2 | uint16 | Monotonic counter — drop out-of-order packets |
-| payload_size | 35 | 2 | uint16 | Exact byte count of Opus-encoded audio |
-| payload | 37 | 1200 | uint8[1200] | Opus-encoded audio data |
-
-### UdpVideoPacket — 1245 bytes total
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| packet_type | 0 | 1 | uint8 | Always 1 (VIDEO) |
-| sender_id | 1 | 32 | char[32] | JWT hash (upstream) / username (downstream) |
-| frame_id | 33 | 4 | uint32 | Incrementing frame counter |
-| packet_index | 37 | 2 | uint16 | Fragment index within the frame |
-| total_packets | 39 | 2 | uint16 | Total fragments for this frame |
-| payload_size | 41 | 2 | uint16 | Encoded chunk byte count |
-| is_keyframe | 43 | 1 | bool | True if this fragment belongs to a keyframe (I-frame) |
-| codec | 44 | 1 | uint8 | VideoCodec: 0=VP9, 1=H.264 |
-| payload | 45 | 1200 | uint8[1200] | Encoded video chunk |
-
-### UdpFecPacket — 1243 bytes total
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| packet_type | 0 | 1 | uint8 | Always 4 (FEC) |
-| sender_id | 1 | 32 | char[32] | Same as corresponding video packets |
-| frame_id | 33 | 4 | uint32 | Frame this FEC group covers |
-| group_start | 37 | 2 | uint16 | packet_index of first packet in FEC group |
-| group_count | 39 | 2 | uint16 | Number of data packets in group (typically FEC_GROUP_SIZE=5) |
-| payload_size_xor | 41 | 2 | uint16 | XOR of all payload_sizes in the group |
-| payload | 43 | 1200 | uint8[1200] | XOR of all payloads in the group (zero-padded) |
-
-### UdpNackPacket — 199 bytes total
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| packet_type | 0 | 1 | uint8 | Always 3 (NACK) |
-| sender_id | 1 | 32 | char[32] | Viewer's JWT hash (requester) |
-| target_username | 33 | 32 | char[32] | Streamer username to request retransmit from |
-| frame_id | 65 | 4 | uint32 | Frame containing missing packets |
-| nack_count | 69 | 2 | uint16 | Number of valid entries in missing_indices |
-| missing_indices | 71 | 128 | uint16[64] | Up to 64 missing packet indices |
-
-### UdpKeyframeRequest — 65 bytes total
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| packet_type | 0 | 1 | uint8 | Always 2 (KEYFRAME_REQUEST) |
-| sender_id | 1 | 32 | char[32] | Token hash or username of requester |
-| target_username | 33 | 32 | char[32] | Username of the streamer to send PLI to |
-
-### Audio Payload Flags Byte (Electron client ↔ client)
-The Electron client prepends one flags byte to the Opus data inside
-`UdpAudioPacket.payload` (the server relays the payload untouched, so this
-is a client↔client contract; unknown bits are ignored by older clients):
-
-| Bit | Name | Meaning |
-|-----|------|---------|
-| 0x01 | `FLAG_MUTED` | Sender is muted |
-| 0x02 | `FLAG_DEAFENED` | Sender is deafened |
-| 0x04 | `FLAG_SILENCE` | Frame carries no voice: a gate-closed tail frame or a keepalive. Receivers treat a following gap as a pause (no PLC) and keep the sparse keepalive cadence out of their jitter estimate. Added 0.7.4. |
-
-Since 0.7.1 the client silence-gates transmission: while the VAD gate is
-closed it sends one keepalive per 500 ms instead of 50 pps. Since 0.7.4 the
-gate closing is followed by 3 frames of encoded silence at normal cadence
-(so the listener's decoder renders the fade itself) and all non-voice
-frames carry `FLAG_SILENCE`.
-
-### UDP Identity Matching
-The community server uses `find_session_by_token(udp_id)`: it checks whether the session's full JWT token **ends with** the `sender_id` string from the UDP packet. On broadcast, `sender_id` is overwritten with the authenticated username before forwarding to other clients.
-
-### Endpoint binding (return-routability, 2026-10-17, review S11)
-The key names the sender; it never decides where the relay *sends*. Each
-session has one bound endpoint per socket (voice, media), set only by a
-challenge round trip (`src/community/udp_path.hpp`): a keyed datagram (PING,
-AUDIO, VIDEO, …) from an address that isn't the bound one gets a
-`BIND_CHALLENGE` with a random 8-byte cookie sent there (at most one per
-session per socket per 250 ms, only in reply to a datagram ≥ 41 B, a new
-address draws a fresh cookie, which lives 10 s and is single-use), and only a
-`BIND_ECHO` of that cookie from the same address binds it. Until then the
-relay sends that session nothing on that socket (its own upstream packets
-still relay). PINGs are echoed only to the bound endpoint; a PING without a
-live key gets nothing. Native answers challenges inside `MediaSocket::recv`
-(Plain mode only) and pings at once on joining, then every 500 ms until the
-first echo, so joining binds in one round trip and a NAT rebinding re-binds
-on the next datagram from the new address.
+| Area | Types (number) | Tier |
+|---|---|---|
+| Accounts, sign-in | `REGISTER_*` (2–3), `LOGIN_*` (4–5), `CLIENT_PING` (31), `RENAME_REQ/RES` (158–159), `USER_RENAMED` (160), `TOKEN_REFRESH_REQ/RES` (161–162), `SESSION_CLOSED` (171), `DEVICE_LIST_*` (172–173), `DEVICE_SIGN_OUT_*` (174–175), `DEVICES_CHANGED` (176), `PASSWORD_CHANGE_*` (177–178) | central |
+| Presence, profile | `PRESENCE_UPDATE` (7), `PRESENCE_DELTA` (149), `SET_STATUS_REQ` (150), `SET_IDLE_REQ` (151), `SET_STATUS_MESSAGE_REQ` (153), `PRESENCE_SUBSCRIBE` (164), `OWN_PRESENCE` (169), `UPDATE/FETCH_AVATAR_*` (61–64), `AVATAR_CHANGED` (65), `DM_PRIVACY` (28) | central |
+| Friends | `FRIEND_ACTION_*` (15–16), `FRIEND_LIST_*` (17–18), `FRIENDS_IN_COMMUNITY_*` (166–167) | central |
+| DMs | `DIRECT_MSG` (6), `DM_CONVERSATIONS_*` (68–69), `DM_HISTORY_*` (70–71), `DM_MARK_READ_REQ` (72), `DM_DELETE_*` (76–77), `DM_MESSAGE_DELETED` (78), `DM_EDIT_*` (121–122), `DM_MESSAGE_EDITED` (123), `DM_READ_SYNC` (168) | central |
+| Calls | `CALL_SIGNAL` (128) | central relay |
+| E2EE keys | `E2EE_PUBLISH_KEYS_*` (129–130), `E2EE_FETCH_KEYS_*` (131–132), `E2EE_FETCH_BACKUP_*` (133–134), `E2EE_KEYS_CHANGED` (135) | central |
+| Directory, memberships, invites | `SERVER_LIST_*` (8–9), `INVITE_RESOLVE_*` (48–49), `MEMBERSHIP_REVOKE_REQ` (74, also client→central for stale cleanup), `MEMBERSHIP_ADDED` (170), `FETCH_SERVER_PICTURE_*` (85–86), `SERVER_PICTURE_CHANGED` (87) | central |
+| Community↔central | `SERVER_HEARTBEAT` (30), `SERVER_HEARTBEAT_RES` (75), `INVITE_REGISTER/UNREGISTER_REQ` (46–47), `MEMBERSHIP_REGISTER/REVOKE_REQ` (73–74), `SYNC_SERVER_PICTURE_REQ` (84) | both servers |
+| Community session | `COMMUNITY_AUTH_*` (10–11), `SERVER_META_UPDATE` (44), `MEMBERSHIP_REVOKED` (45), `LEAVE_SERVER_REQ` (43), `SESSION_TOKEN_UPDATE` (163), `PRESENCE_VISIBILITY` (152) | community |
+| Messages | `CHANNEL_MSG` (12), `CHANNEL_MSG_REJECTED` (127), `CHANNEL_HISTORY_*` (50–51), `MESSAGE_EDIT_*` (124–125), `CHANNEL_MESSAGE_EDITED` (126), `MESSAGE_DELETE_*` (79–80), `CHANNEL_MESSAGE_DELETED` (81), `CHANNEL_PRUNED` (54), `CHANNEL_WIPE_*` (55–56), `CHANNEL_WIPED` (57), `MESSAGE_SEARCH_*` (156–157) | community |
+| Channels | `CHANNEL_UPDATE_*` (52–53), `CHANNEL_CREATE/DELETE/RENAME_REQ` (96–98), `CHANNEL_ACTION_RES` (99), `CHANNEL_LIST_UPDATE` (100), `CHANNEL_REORDER_REQ` (102), `CHANNEL_OVERWRITE_SET_REQ` (103), `CHANNEL_OVERWRITES_*` (104–105), `CHANNEL_PERMISSIONS_SYNC_REQ` (147), `CATEGORY_SYNC_SET_REQ` (148) | community |
+| Members, roles, moderation | `MEMBER_LIST_*` (38–39), `MEMBER_UPSERT` (106), `MEMBER_REMOVE` (107), `MEMBER_SEARCH_*` (154–155), `ROLE_LIST_*` (88–89), `ROLE_CREATE/UPDATE/DELETE_REQ` (90–92), `ROLE_ACTION_RES` (93), `MEMBER_ROLES_UPDATE_REQ` (94), `SET_NICKNAME_REQ` (101), `KICK/BAN_MEMBER_REQ` (40–41), `UNBAN_MEMBER_REQ` (95), `MOD_ACTION_RES` (42), `BAN_LIST_*` (108–109), `TIMEOUT_MEMBER_REQ` (114), `VOICE_MOD_REQ` (115), `VOICE_FORCE_NOTIFY` (116), `TRANSFER_OWNERSHIP_REQ` (117), `AUDIT_LOG_*` (112–113) | community |
+| Server settings | `SERVER_UPDATE_*` (110–111), `UPDATE_SERVER_PICTURE_*` (82–83), `STORAGE_INFO_*` (118–119), `STORAGE_CONFIG_SET_REQ` (120), `INVITE_CREATE/LIST/REVOKE_*` (32–37) | community |
+| Voice | `JOIN_VOICE_REQ` (19), `LEAVE_VOICE_REQ` (20), `VOICE_PRESENCE_UPDATE` (21), `VOICE_STATE_NOTIFY` (27) | community |
+| Streams | `STREAM_PRESENCE_UPDATE` (22), `START/STOP_STREAM_REQ` (23–24), `WATCH_STREAM_REQ` (25), `STOP_WATCHING_REQ` (26), `STREAM_THUMBNAIL_UPDATE` (29), `FETCH_STREAM_THUMBNAIL_*` (66–67), `STREAM_CODEC_CHANGED_NOTIFY` (58), `UPDATE_CAPABILITIES_REQ` (59), `STREAM_WATCHER_NOTIFY` (60) | community |
+| Voice encryption (MLS) | `MLS_GROUP_INFO_*` (136–137), `MLS_GROUP_CREATE_REQ` (138), `MLS_COMMIT_*` (139–140), `MLS_COMMIT_BROADCAST` (141) | community |
+| Channel encryption | `CHANNEL_KEYS_*` (142–143), `CHANNEL_KEYS_PUBLISH_*` (144–145), `CHANNEL_KEYS_CHANGED` (146), `CHANNEL_KEYS_REJECT` (165) | community |
+| Retired / unused | `HANDSHAKE` (1, never enforced); 13–14 reserved; 58–60 exist but no client sends or acts on them | — |
 
 ---
 
-### P2P DM calls — sealed transport (2026-08-28)
+## 4. Feature protocols
 
-DM calls carry the **same datagrams** peer-to-peer with no server in the media
-path. Both UDP sockets are wrapped in `MediaSocket::Sealed`
-(`electron-client/native/src/media/media_socket.rs`); the community path uses
-`MediaSocket::Plain`, a byte-identical passthrough.
+What a client must do per feature. Field-level detail is in the proto comments; rationale in the
+named design records.
+
+### 4.1 Channels and messages (community)
+
+- **Channel list**: one flat ordered list of `ChannelInfo` (id, name, type TEXT / VOICE / CATEGORY; a
+  channel's category is the nearest CATEGORY row above it, categories don't nest), `voice_bitrate_kbps`, retention per kind, `my_permissions`, `slowmode_seconds`, `encrypted`,
+  `permissions_synced`, `category_sync`, `topic`). Pushed whole as `CHANNEL_LIST_UPDATE` after any
+  change, again built per recipient. Gate composer / attach / join / history UI on `my_permissions`; the
+  server stays authoritative.
+- **History**: `CHANNEL_HISTORY_REQ {channel_id, before_id | around_id | after_id, limit}`; the response
+  echoes which page it is (`before_id`, `around_id`, `after_id`) with `has_more` / `has_more_after`.
+  `before_id = 0` means "newest page" — and since an older server omitted the echo, a client must not
+  treat a missing echo as "newest" destructively. After a reconnect the client re-syncs from history and
+  holds live messages until it reaches the present.
+- **Send**: `CHANNEL_MSG {channel_id, content, nonce, reply_to, attachments (completed upload ids), envelope}` →
+  broadcast to the channel's viewers with `id`, `sender_uid`, `timestamp` and the echoed `nonce`, or
+  `CHANNEL_MSG_REJECTED {nonce, reason, retry_after_seconds}` to the sender. Message ids are 64-bit and
+  increase over time (no other promise).
+- **Edit / delete**: `MESSAGE_EDIT_REQ` (own only) → `CHANNEL_MESSAGE_EDITED`; `MESSAGE_DELETE_REQ`
+  (own, or MANAGE_MESSAGES) → `CHANNEL_MESSAGE_DELETED`. Replies carry `reply_to` plus a denormalised
+  preview (`reply_to_sender_uid`, `reply_to_content`, attachment kinds, envelope).
+- **Slowmode**: per channel; the sender's own echo starts the window, a refusal's `retry_after_seconds`
+  corrects it; owner and MANAGE_MESSAGES bypass.
+- **Retention / wipe**: `CHANNEL_PRUNED` (rows removed by the sweep or a ban purge), `CHANNEL_WIPED`
+  (drop all local state for the channel).
+
+### 4.2 Attachments (community HTTPS, port 8085)
+
+Bytes never travel over the TCP protocol. HTTP/1.1 over TLS with keep-alive; every request carries
+`Authorization: Bearer <session token>`.
+
+| Method + path | Purpose |
+|---|---|
+| `POST /attachments/init` | JSON: channel, kind, filename, mime, size, `width` / `height` / `duration_ms` / `placeholder` (computed by the uploader), `encrypted`. Returns the attachment id. Refused over the per-file cap or the free-space headroom. |
+| `PATCH /attachments/<id>` | Append a chunk at `Upload-Offset` (tus.io semantics, **not** `Content-Range`); resumable. |
+| `HEAD /attachments/<id>` | Upload status (current offset). |
+| `POST /attachments/<id>/complete` | Finish; the id can now be bound to a `CHANNEL_MSG`. |
+| `POST /attachments/<id>/thumbnail?size=N` | Uploader-made thumbnail (320 / 640 / 1280 px → `thumbnail_sizes_mask` bits 0–2). |
+| `GET /attachments/<id>` | Download (Range supported; `?variant=thumb&size=N` for a thumbnail). VIEW_CHANNEL + READ_HISTORY. |
+| `DELETE /attachments/<id>` | Abandon an upload. |
+
+`Attachment` rows on messages: id, kind (IMAGE / VIDEO / DOCUMENT / AUDIO), filename, mime, size, url,
+position, `purged_at` (retention removed the blob), `width` / `height`, thumbnail size + mask,
+`duration_ms`, `placeholder` (base64 ThumbHash, decoded only by the renderer), `encrypted`. In encrypted
+channels the server stores stand-ins; the real metadata and the per-file key ride the message envelope
+(§5.3). Abandoned uploads are swept by idle time (`last_activity_at`, schema v10).
+
+### 4.3 Roster, roles and moderation (community)
+
+- **Roster**: `MEMBER_LIST_REQ {after, limit}` pages members by username (online members page too);
+  `{uids}` looks specific members up. Live changes arrive as `MEMBER_UPSERT` / `MEMBER_REMOVE`; every
+  roster packet carries online / total counts. Online vs offline follows the community's own view
+  (connected and not `presence_hidden`). `MEMBER_SEARCH_REQ` (name and / or role, paged) serves server
+  settings and pickers; its results never feed the roster. Spec `2026-10-18-roster-paging-design.md`.
+- **Roles**: `ROLE_LIST_RES` is pushed after auth and to everyone on any role change (it is the delta).
+  Role CRUD, `MEMBER_ROLES_UPDATE_REQ` (replace a member's set), with hierarchy checks; `RoleInfo` has
+  colour, position, permission bits, `is_default` (@everyone), `manage_each_other`, `member_count`.
+- **Permissions**: `PERM_*` bits in the proto; resolution = server-wide role bits, then the channel's
+  overwrites (role, then member); owner and ADMINISTRATOR get everything (`src/community/authz.hpp`).
+  Permissions v3 decisions in CLAUDE.md (voice moves check only the mover; the peer flag covers
+  nicknames + voice moderation only; category sync is opt-in and only an explicit sync changes a
+  channel). Specs `2026-08-22-permissions-v2-design.md`, `2026-10-09-permissions-v3-design.md`.
+- **Moderation**: kick, ban (`reason`, `expires_at`, `delete_message_seconds`), unban, timeout,
+  `VOICE_MOD_REQ` (server mute / deafen, move, disconnect; the target gets `VOICE_FORCE_NOTIFY`), slowmode,
+  ownership transfer; all audited (`AUDIT_LOG_REQ` with `query` / `actions` filters, searched on the
+  server). A kicked / banned member gets `MEMBERSHIP_REVOKED`. Server-mute stops talking but not stream
+  audio (decision).
+
+### 4.4 Directory, invites, memberships
+
+- Public directory: `SERVER_LIST_REQ` (central) lists communities with `public_listing` on.
+- Invites are created on the community (`INVITE_CREATE_REQ {expires_at, max_uses, for_uid,
+  request_id}`; `for_uid` = a personal, single-use invite only that user can redeem) and registered with
+  central. Links are code-only, `decibell://invite/<CODE>`; `INVITE_RESOLVE_REQ` (central) turns a code
+  into host:port + cert fingerprint + a preview (name, description, member count, picture version). The
+  client joins by `COMMUNITY_AUTH_REQ` with `invite_code`.
+- Communities register memberships with central (`MEMBERSHIP_REGISTER_REQ`), which is how sign-in
+  returns them and how `MEMBERSHIP_ADDED` reaches the account's other devices. `FRIENDS_IN_COMMUNITY_REQ`
+  asks central which friends are already members (the friend list is never sent to a community).
+
+### 4.5 Message search (community)
+
+`MESSAGE_SEARCH_REQ {seq, query, channel_ids, author_uids, before, after, has (bitmask), sort, cursor /
+offset, limit, match_within_words}` → `MESSAGE_SEARCH_RES` (results, approximate total "N+",
+skipped encrypted channels). One search per session; a new one supersedes; over the bucket it is refused
+with `retry_after_ms`. Runs on the search worker over the FTS5 index (plaintext channels only;
+encrypted channels get filters only). Spec `2026-10-14-message-search-design.md`.
+
+### 4.6 Direct messages (central)
+
+- `DIRECT_MSG {recipient_uid (or a typed name), content, nonce, reply_to, envelope}` → persisted, echoed
+  to every device of both people with `id`, uids and the `nonce`. A refusal comes back as a `DIRECT_MSG`
+  with no id, the refusal text as content, and the request's nonce.
+- `DM_CONVERSATIONS_REQ` (paged list with last-message preview + `unread_count`), `DM_HISTORY_REQ`,
+  `DM_MARK_READ_REQ` (→ `DM_READ_SYNC` to the reader's other devices), edit / delete (own only).
+- The DM gate (`check_dm_allowed`) applies blocks and friends-only DMs (saved on the account).
+- Encrypted DMs put the body in `envelope` and a fixed placeholder in `content` (§5.1).
+
+### 4.7 Friends (central)
+
+`FRIEND_ACTION_REQ {action: ADD (by name) | REMOVE (also unblocks) | BLOCK | ACCEPT | REJECT, target}` →
+`FRIEND_ACTION_RES`; `FRIEND_LIST_REQ/RES` with statuses (online status only for visible users). Friend
+list changes reach all the account's devices.
+
+### 4.8 Presence, statuses, profiles (central)
+
+- **By subscription**: the client sends `PRESENCE_SUBSCRIBE {uids}` with every user it is showing (and
+  re-sends the set after each sign-in); central answers newly watched users with a `PRESENCE_UPDATE`
+  (`covered_uids` + `avatars` for those not visible) and then pushes `PRESENCE_DELTA` and profile pushes
+  (`AVATAR_CHANGED`, `USER_RENAMED`, `E2EE_KEYS_CHANGED`) to watchers only. There is no login snapshot.
+  A client never watches itself: its own state comes from `LoginResponse` and `OWN_PRESENCE` (any of its
+  devices' change, echoed).
+- **Status**: `SET_STATUS_REQ` (online / away / dnd / invisible, saved), `SET_IDLE_REQ` (per-device idle
+  flag; the account is Away only while every device idles), `SET_STATUS_MESSAGE_REQ` (emoji + 128 chars +
+  clear-in). Invisible users are *absent* on the wire, exactly like offline ones; profile pushes are the
+  one exception (announced even while invisible, by decision).
+- **Avatars**: `UPDATE_AVATAR_REQ` (bytes to central), `FETCH_AVATAR_REQ` by uid; each presence entry
+  carries `avatar_version`, and a subscription answer includes the pictures of covered users who aren't
+  visible. **Server pictures**: uploaded to the community, synced to central, fetched from central.
+- Communities learn only "hide me" (`presence_hidden` / `PRESENCE_VISIBILITY`). Specs
+  `2026-10-11-user-status-design.md`, `2026-10-12-status-messages-design.md`.
+
+### 4.9 Voice channels (community)
+
+1. `JOIN_VOICE_REQ {channel_id, capabilities}` (CONNECT_VOICE; a moved member gets a runtime voice pass).
+   The server broadcasts `VOICE_PRESENCE_UPDATE {channel_id, active_uids, user_states, capabilities}`
+   for every voice channel the recipient can see (sidebar rosters), and `STREAM_PRESENCE_UPDATE`.
+2. The client binds its two UDP sockets (§6.2), then joins the channel's MLS group (§5.4); no keys →
+   no voice.
+3. `VOICE_STATE_NOTIFY {is_muted, is_deafened}` on self mute / deafen (the relay skips deafened
+   listeners). `LEAVE_VOICE_REQ` to leave; switching sends LEAVE then JOIN.
+4. A moderator move / disconnect arrives as `VOICE_FORCE_NOTIFY {MOVED | DISCONNECTED}`; the client
+   rebinds its MLS group to the new channel.
+
+### 4.10 Streams (community)
+
+- `START_STREAM_REQ {channel_id, target_fps, target_bitrate_kbps, has_audio, resolution, chosen_codec,
+  enforced_codec}` (STREAM permission) → everyone gets `STREAM_PRESENCE_UPDATE` (`VideoStreamInfo`:
+  stream id `<uid>_screen`, owner uid, audio flag, resolution, fps, codec, watcher count).
+- `WATCH_STREAM_REQ {target_uid}` / `STOP_WATCHING_REQ`; the relay forwards the streamer's media only to
+  watchers. Watchers ask for keyframes / retransmits over UDP (§6).
+- Thumbnails: the streamer uploads `STREAM_THUMBNAIL_UPDATE` (960 px JPEG ≤ 256 KB at start, +2 s, then
+  every 15 s; plaintext by decision); late joiners fetch `FETCH_STREAM_THUMBNAIL_REQ`.
+- `VideoCodec` values: 0 unknown (retired VP9 slot), 1 H.264 (hardware), 2 H.264 (software), 3 H.265 /
+  HEVC, 4 AV1. Capabilities ride `JOIN_VOICE_REQ`; mid-stream renegotiation (58–60) is not wired.
+
+### 4.11 DM calls (central signalling, P2P media)
+
+`CALL_SIGNAL {kind, call_id, to_uid, pub_key, pub_key_sig, key_id, candidates, stream}`, relayed by
+central (never persisted, `from` / `from_uid` stamped by central, INVITE gated by the DM rules and by
+invisibility → `PEER_OFFLINE`). Kinds: INVITE, RINGING, ACCEPT, REJECT, BUSY, CANCEL, HANGUP,
+PEER_OFFLINE, NOT_ALLOWED, STREAM_START, STREAM_STOP, ANSWERED_ELSEWHERE, DECLINED_ELSEWHERE. An INVITE
+rings every device of the callee; the first ACCEPT takes the call; later signals go only between the two
+connections in it. Media: STUN (server list from `LoginResponse.stun_servers`) + simultaneous hole punch,
+IPv4, no relay; the sealed UDP transport of §6.4. Ephemeral X25519 keys are signed by the E2EE identity
+and verified before use (fail closed when the peer has keys). Specs `2026-08-28-p2p-dm-calls-design.md`,
+`2026-09-03-authenticated-p2p-calls-design.md`.
+
+### 4.12 Several devices (central)
+
+What one device does reaches the account's others: `OWN_PRESENCE`, DM echoes / edits / deletes,
+`DM_READ_SYNC`, friend list changes, profile pushes, `MEMBERSHIP_ADDED`, `DEVICES_CHANGED`,
+`E2EE_KEYS_CHANGED` (another device made a new identity: lock), calls (§4.11).
+
+---
+
+## 5. End-to-end encryption
+
+All client crypto lives in the native crate (`electron-client/native/src/e2ee/`); servers store and
+relay opaque bytes and never hold a private key.
+
+### 5.1 DMs (`2026-09-03-e2ee-dms-design.md`)
+
+- **Identity**: static X25519 (agreement) + Ed25519 (`sign_pub`, identity) per account, published to
+  central as a bundle bound to the uid (`binding` 2). No forward secrecy, deliberately: history is
+  server-fetched and there's no local message store. Every old private key is kept (locally and in the
+  backup) so old history opens; envelopes name `key_id`s.
+- **Envelope**: per-message HKDF + AES-256-GCM. Version byte `0x03` for new DMs (binds uids); `0x01`
+  (v1) still opens with the `sealed_*` names. Content tags inside: `0x02` raw bytes (key-escrow blobs),
+  `0x03` message body with attachments (`EncryptedMessageBody`).
+- **Backup**: the private keys wrapped under an Argon2id passphrase key (64 MiB), stored on central
+  (`E2EE_PUBLISH_KEYS_REQ` / `E2EE_FETCH_BACKUP_REQ`). Another device gets the identity only from the
+  backup (it reports *locked* until the passphrase is entered; setup never publishes over a backup).
+- **Trust**: trust-on-first-use pins keyed by uid, safety numbers / fingerprints over `sign_pub`; a
+  pinned peer is never downgraded to plaintext; a changed `sign_pub` is a "keys changed" notice + re-pin.
+- **Send policy**: ready and peer has keys → sealed; peer never had keys and was never pinned →
+  plaintext (shown as such); peer pinned but keys missing / we're locked → refuse.
+- **Local store**: `e2ee/u<uid>.json`, encrypted at rest under a key from the OS keychain.
+
+### 5.2 Calls
+
+The ephemeral call key is signed with the identity (call auth v2); see §4.11 and §6.4.
+
+### 5.3 Encrypted text channels (`2026-09-04-encrypted-text-channels-design.md`)
+
+Chosen at channel creation, fixed for life, default off. Per-channel **epoch keys**, escrowed to each
+member as an identity-sealed blob (a DM-style envelope, content tag `0x02`) on the community server; the
+server sequences epochs and names a **filler** (a member holding the key) when someone lacks it
+(`CHANNEL_KEYS_CHANGED`); a member drops blobs it can't open (`CHANNEL_KEYS_REJECT`) so a holder seals
+them again. Messages are channel envelopes `0x04` (v2; binds uids). The server refuses plaintext in an
+encrypted channel and envelopes elsewhere. Attachments are sealed client-side: random key per file,
+64 KiB AES-256-GCM chunks, sealed thumbnails; the real metadata + key ride the message envelope (tag
+`0x03`); the server learns only kind, ciphertext size and thumbnail sizes. Names and topics stay in the
+clear (decision). Search sees filters only.
+
+### 5.4 Voice channels and streams (`2026-09-03-mls-voice-channel-encryption-design.md`)
+
+One MLS group (OpenMLS, ciphersuite of `e2ee/group.rs`) per voice-channel session; the community server
+is the delivery service: it keeps the current GroupInfo for external joins (`MLS_GROUP_INFO_REQ`),
+sequences commits (`MLS_COMMIT_REQ` must be epoch + 1; `MLS_GROUP_CREATE_REQ` for epoch 0) and forwards
+them (`MLS_COMMIT_BROADCAST`). Credentials are `"<uid>"`, checked against central's identity keys (a
+mismatch quarantines the epoch). After every merge each member derives per-sender media keys; UDP
+payloads are sealed per sender per epoch (`media/frame_crypto.rs`) and sent as the sealed packet types
+(7–9); video is sealed per frame before chunking, so FEC / NACK work unchanged. Strict: no keys → no
+voice; plaintext media in a channel session is ignored. Stream thumbnails stay plaintext (decision).
+
+---
+
+## 6. UDP media plane
+
+### 6.1 Sockets and identity
+
+Each voice session uses **two UDP sockets** to the community: **voice** (port + 1 = 8083: `AUDIO`,
+`STREAM_AUDIO` and their sealed twins, `PING`, `BIND_ECHO`) and **media** (port + 2 = 8084: `VIDEO`,
+`VIDEO_SEALED`, `FEC`, `NACK`, `KEYFRAME_REQUEST`, `PING`, `BIND_ECHO`). Upstream, `sender_id` is the
+session's **UDP key** (the last 31 characters of its session token); the relay identifies the session by
+it and, before forwarding, rewrites `sender_id` to the sender's **uid in decimal** (NUL-padded).
+Keyframe requests and NACKs name the streamer in `target_id` (decimal uid) and have their `sender_id`
+zeroed when relayed. Streams are named `<uid>_screen`. Native media state keys on the uid string.
+
+### 6.2 Endpoint binding (return routability, review S11)
+
+The key names the sender; it never decides where the relay sends. Each session has one bound endpoint
+per socket, set only by a challenge round trip (`src/community/udp_path.hpp`): a keyed datagram from an
+address that isn't the bound one gets a `BIND_CHALLENGE` (41 B: type 10, 32 zero bytes, an 8-byte random
+cookie; at most one per session per socket per 250 ms, only in reply to a datagram ≥ 41 B; a cookie
+lives 10 s and is single-use), and only a `BIND_ECHO` (type 11, the UDP key in bytes 1–32, the cookie)
+from that address binds it. Until then the relay sends that session nothing on that socket. PINGs are
+echoed only to the bound endpoint. The client answers challenges inside its socket wrapper and pings at
+once on joining, then every 500 ms until the first echo; a NAT rebinding re-binds on the next datagram.
+
+### 6.3 Packet layouts
+
+Packed (`#pragma pack(1)`), little-endian host order as written by both sides (`src/common/udp_packet.hpp`
+and `native/src/media/{packet,video_packet}.rs` are the source of truth and agree).
+`SENDER_ID_SIZE` 32, `UDP_MAX_PAYLOAD` 1200 (MTU-safe incl. PPPoE / VPN), `NACK_MAX_ENTRIES` 64,
+`FEC_GROUP_SIZE` 5. Clients send header + actual payload (not the full struct); the relay forwards the
+received length and drops audio / FEC / NACK datagrams larger than their structs.
+
+| Type | Value | Layout (offset: field) |
+|---|---|---|
+| AUDIO / STREAM_AUDIO | 0 / 6 | 0 type · 1 sender_id[32] · 33 sequence u16 · 35 payload_size u16 · 37 payload (flags byte + Opus) |
+| VIDEO | 1 | 0 type · 1 sender_id[32] · 33 frame_id u32 · 37 packet_index u16 · 39 total_packets u16 · 41 payload_size u16 · 43 is_keyframe u8 · 44 codec u8 · 45 payload |
+| KEYFRAME_REQUEST | 2 | 0 type · 1 sender_id[32] · 33 target_id[32] |
+| NACK | 3 | 0 type · 1 sender_id[32] · 33 target_id[32] · 65 frame_id u32 · 69 nack_count u16 · 71 missing_indices u16[64] |
+| FEC | 4 | 0 type · 1 sender_id[32] · 33 frame_id u32 · 37 group_start u16 · 39 group_count u16 · 41 payload_size_xor u16 · 43 XOR of the group's payloads |
+| PING | 5 | RTT probe / keepalive; echoed by the relay to the bound endpoint |
+| AUDIO_SEALED / STREAM_AUDIO_SEALED / VIDEO_SEALED | 7 / 8 / 9 | Same headers as 0 / 6 / 1; the payload is sealed under the sender's MLS media key for the epoch (video: the whole frame is sealed, then chunked) |
+| BIND_CHALLENGE / BIND_ECHO | 10 / 11 | §6.2 |
+
+**Audio payload flags** (first payload byte, client↔client; the relay doesn't read it): `0x01` muted,
+`0x02` deafened, `0x04` silence (a gate-closed tail frame or a keepalive: receivers treat the following
+gap as a pause, no concealment, and keep keepalives out of the jitter estimate). While the voice gate is
+closed the client sends one keepalive per 500 ms instead of 50 packets/s, preceded by 3 frames of encoded
+silence so the listener's decoder renders the fade. Voice is 48 kHz Opus, 20 ms frames, bitrate per
+channel clamped to 320 kbps on both ends.
+
+**Video**: an encoded frame is split into ≤ 1200-byte chunks with one XOR FEC packet per 5 data packets;
+the sender keeps recent frames for NACK retransmission; a receiver that can't rebuild a frame asks for a
+keyframe (throttled). Keyframes of codecs that need out-of-band configuration carry the decoder
+description in-band after a `WIRE_DESCRIPTION_MAGIC` prefix (`video_packet.rs`); H.264 travels as Annex B
+on every path.
+
+### 6.4 P2P DM calls: the sealed transport
+
+DM calls carry the **same datagrams** peer to peer with no server in the media path. Both sockets are
+wrapped in `MediaSocket::Sealed` (the community path uses `MediaSocket::Plain`, a byte-identical
+passthrough):
 
 | Outer field | Size | Notes |
 |---|---|---|
-| type | 1 | `0xE5` (top bits set — never collides with a STUN message) |
-| counter | 8 | u64 LE, per direction; nonce = 4-byte salt ‖ counter (BE) |
-| ciphertext | n | AES-256-GCM of the unchanged inner datagram (this section's formats) |
+| type | 1 | `0xE5` (top bits set; never collides with STUN) |
+| counter | 8 | u64 LE per direction; nonce = 4-byte salt ‖ counter (BE); replay window |
+| ciphertext | n | AES-256-GCM of the unchanged inner datagram |
 | tag | 16 | AAD = the 9-byte outer header |
 
-Keys: ephemeral X25519 per call, HKDF-SHA256 with `salt = call_id`,
-`info = "decibell-call-v1|<lower user>|<higher user>"` → voice/media × a→b/b→a.
-`sender_id` is the own username (no relay rewrite). Peer address is learned
-from the last authenticated datagram; peer PINGs are reflected re-sealed, so
-the RTT / keepalive logic above is unchanged. Signaling (`CALL_SIGNAL`),
-STUN and the hole punch are described in
-`docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
-
-> The fixed-size packet lengths quoted in this section (1237 / 1245 / 1243
-> bytes) are the struct sizes; the Electron client sends compact
-> header+payload datagrams (a 20 ms voice packet is ~37 + 100 bytes), and
-> the relay forwards `bytes_recvd`. `src/common/udp_packet.hpp` and
-> `native/src/media/{packet,video_packet}.rs` are the source of truth and
-> agree since 0.7.9 (`UDP_MAX_PAYLOAD` = 1200 for every type; the client's
-> Opus output buffer is 1199 so a frame can never overflow it).
-
-## 5. Audio Pipeline
-
-Current implementation: `src/client/audio_engine.hpp/.cpp`
-
-### Configuration
-- Sample rate: 48 kHz
-- Format: 16-bit signed PCM, mono
-- Frame size: 960 samples = 20 ms
-- Buffer size: 3840 bytes (4 frames)
-- Codec: Opus (libopus)
-- UDP identification: last 31 chars of JWT stored as `udp_id_`
-
-### Encoding (Sender Side)
-1. `QAudioSource` captures from default microphone at 48 kHz / 16-bit / mono
-2. Audio accumulates in `input_buffer_`; when ≥ 3840 bytes, process in 960-sample chunks
-3. Per chunk: calculate peak amplitude → emit `localAudioLevelChanged(level)`
-4. If muted: substitute 960 samples of silence
-5. If system audio capture is active: mix in WASAPI loopback signal (clamp to int16 range)
-6. `opus_encode()` compresses 960 PCM samples → variable-length Opus frame (~40–80 bytes typically)
-7. Pack into `UdpAudioPacket` with incrementing `sequence_number_`
-8. Emit `sendUdpData(data, host, port)` → `ChatBackend` sends via `QUdpSocket`
-
-### Decoding (Receiver Side)
-1. `ChatBackend` receives UDP datagram, calls `audio_engine_->processDatagram(data)`
-2. Packet type check: if `AUDIO`, cast to `UdpAudioPacket`
-3. Extract `sender_id` as username, drop out-of-order packets by sequence number
-4. `opus_decode()` → 960 PCM samples (16-bit signed, mono)
-5. Calculate peak amplitude → emit `remoteUserSpeaking(username, level)`
-6. Write PCM to `QAudioSink` (default speaker output device)
-
-### System Audio Capture (Windows — WASAPI Loopback)
-- Method: WASAPI loopback capture — records all system audio output
-- Runs on a dedicated `std::thread` (`system_audio_thread_`)
-- Output buffered in `sys_audio_fifo_` (thread-safe via `sys_audio_mutex_`)
-- Drained during encoding: mixed sample-by-sample with microphone signal
-- Use case: screen share with audio — enables broadcasting system audio alongside video
+Keys: ephemeral X25519 per call (signed, §4.11), HKDF-SHA256 with `salt = call_id` → voice / media ×
+a→b / b→a. `sender_id` is the own uid (no relay to rewrite it). A sealed socket never `connect()`s: the
+peer address is learned from the last authenticated datagram; peer PINGs are reflected re-sealed.
 
 ---
 
-## 6. Video Pipeline
+## 7. The client
 
-Current implementation: `src/client/video_engine.hpp/.cpp`
+The shipping client is `electron-client/`. Its internals, gotchas and open items are in
+`electron-client/HANDOFF.md`; this section is the overview plus what a different client would reuse.
 
-### Configuration
-- Default resolution: 1280×720 (configurable via `StreamConfigDialog`)
-- Default FPS: 30 (configurable: 5, 30, or 60)
-- Default bitrate: 2500 kbps (configurable: 1500–10000 kbps)
-- Adaptive bitrate: enabled by default; range 300 kbps to user-selected max
-- UDP identification: last 31 chars of JWT stored as `udp_id_`
+### 7.1 Layers
 
-### Screen Capture Methods (Windows, priority order)
-1. **DXGI Desktop Duplication** (`initDxgiCapture`) — hardware-accelerated, zero-copy GPU capture. Uses `IDXGIOutputDuplication` to obtain GPU textures directly. Captures entire screen or selected monitor.
-2. **Windows Graphics Capture (WGC)** (`initWgcCapture`) — modern WinRT API for per-window capture. Targets a specific `HWND`. Implemented via PIMPL (`WgcState`).
-3. **QScreen::grabWindow()** (`grabScreen`) — software fallback. CPU-based, slow at high resolutions.
+| Layer | Path | Owns |
+|---|---|---|
+| Renderer | `src/` (React 18, zustand, Tailwind v4) | All UI and view state; video encode (WebCodecs fallback) and **all video decode** (WebCodecs); ThumbHash + thumbnails for uploads; attachment encryption before upload; voice-view / stream UI; message list. Stores keyed by uid (`stores/usersStore.ts` is the only name source). |
+| Electron main | `electron/main/` | Window, deep links, auto-update, Sentry, the attachment protocol (`decibell-attachment://`, decrypting encrypted attachments) and a loopback media server for Range playback, downloads + pacing, link-preview unfurling, GIF search, clipboard, global-hotkey glue, idle, the E2EE local key from `safeStorage`, IPC routing to the addon. |
+| Native addon | `native/` (Rust, napi-rs 2, tokio, prost) | Every server connection (TLS, framing, pins, reconnect, resume), the protocol state machines, voice capture / processing / playback, UDP send / receive / relay protocol, native screen capture + hardware encode, stream-audio capture, STUN / punch / sealed transport, all E2EE (identities, envelopes, backup, MLS, channel keys), global hotkeys, system idle on Wayland, settings (`config.json`). |
 
-Capture sources (screen index or window HWND) are selected by the user in `StreamConfigDialog` via `backend.getCaptureSources()`.
+### 7.2 Media pipelines in the client
 
-### Color Conversion (GPU, zero-copy)
-- D3D11 Video Processor (`ID3D11VideoProcessor`) converts BGRA→NV12 on the GPU
-- Uses persistent GPU textures: `gpu_bgra_texture_`, `nv12_texture_`
-- No CPU readback required in the DXGI path
+- **Voice** (`media/pipeline.rs`, own threads): cpal capture (device's native format) → resample to 48 kHz → AEC3 echo cancellation,
+  RNNoise noise suppression, AGC2 → voice gate (activity threshold or push-to-talk, `voice_gate.rs`) →
+  Opus → UDP. Receive: per-peer adaptive jitter buffer (`jitter.rs`, concealment only for real loss) →
+  Opus decode → per-peer gain → soft-clip mixer → cpal output paced by the device clock. "Default" devices
+  follow the OS default (`default_device_watch.rs`).
+- **Screen capture + encode** (sender). Sources are listed by Electron's `desktopCapturer` (Chromium
+  ids `screen:N:0` / `window:HWND:0`, parsed natively by `source_id.rs`).
+  - **Windows** (native by default; `localStorage["decibell.win_native_encode"] = "0"` opts out): WGC
+    (Win11, borderless) or DXGI Desktop Duplication with GPU cursor compositing (Win10 monitors) →
+    D3D11 video processor (BGRA → NV12, sized from the input) → FFmpeg NVENC or AMF (vendor order by
+    adapter; QSV is left out of the probe), dynamically linked LGPL FFmpeg from vcpkg. No CPU↔GPU sync in
+    the capture loop.
+  - **Linux** (native when a hardware encoder probes; `decibell.linux_native_encode = "0"` opts out):
+    xdg-desktop-portal ScreenCast + PipeWire SHM → static LGPL FFmpeg NVENC (BGRA in, converted on the
+    GPU). VAAPI's probe is unreliable, so AMD / Intel normally take the fallback.
+  - **Fallback, and always on macOS**: `getDisplayMedia` → `MediaStreamTrackProcessor` → WebCodecs
+    `VideoEncoder` (the castlabs Electron build adds H.264 / HEVC encoders) → chunks to native for
+    packetising.
+  - Codecs offered = encode caps (native probe or WebCodecs probe) ∩ local decode caps.
+- **Stream audio**: Linux PipeWire tap of the selected apps (never Decibell's own nodes); Windows one
+  WASAPI process-loopback client per allowed app, summed (`ProcessLoopbackMixer`); none on macOS. Sent as
+  STREAM_AUDIO on the voice socket.
+- **Watching**: native receive thread reassembles frames (FEC, NACK, keyframe requests) and decrypts
+  them, then hands whole encoded frames to the renderer, which decodes with WebCodecs `VideoDecoder` into
+  a canvas (self-preview too).
+- **Thumbnails**: native paths encode JPEGs on a worker (`thumb_encode.rs`); the WebCodecs path sends a
+  renderer-made JPEG (`send_stream_thumbnail`).
+- **Renderer-side audio**: the mic test outside a call and UI sounds (`src/utils/sounds.ts`) use Web
+  Audio; auto-away is a renderer timer over Electron `powerMonitor` (native `system_idle.rs` covers only
+  Wayland).
 
-### Encoding
-- **VP9 (software):** `vpx_codec_vp9_cx()` from libvpx. `codec = CODEC_VP9 (0)`. CPU-bound.
-- **H.264 (hardware):** Media Foundation Transform (MFT). `codec = CODEC_H264 (1)`. GPU-accelerated. Uses `IMFTransform` with `IMFDXGIDeviceManager` for D3D11-aware texture-backed encoding (no CPU buffer copy).
-- **Adaptive bitrate:** tracks NACK-to-packets-sent ratio each evaluation interval; adjusts codec bitrate between `min_bitrate_` (300 kbps) and `configured_bitrate_` (user max). Applied via `applyBitrate()`.
+### 7.3 Reusing the native crate in another client
 
-### Fragmentation and Transport
-1. Encoded frame split into 1200-byte chunks
-2. Each chunk → `UdpVideoPacket` (frame_id, packet_index, total_packets, is_keyframe, codec)
-3. Sent via `sendUdpData` signal → `ChatBackend` QUdpSocket
-4. FEC: XOR parity packet (`UdpFecPacket`) emitted every `FEC_GROUP_SIZE` (5) data packets
-5. Retransmission (sender): ring buffer of `RETX_BUFFER_MAX_FRAMES` (30) frames of sent packets; resent on `UdpNackPacket`
+The native crate (`electron-client/native/`) is where the protocol knowledge lives: connections, every
+packet router, voice, UDP media, native capture / encode, and all E2EE. A native (e.g. GPUI) client
+should reuse it rather than re-implement it. What stands in the way today (mapped 2026-11-07):
 
-### Decoding (Receiver Side)
-- Per-user `DecoderState` map keyed by username
-- Supports both VP9 (libvpx software) and H.264 (MFT hardware) decoders
-- Frame reassembly: collects all `total_packets` fragments for a `frame_id`
-- When complete: decode → emit `remoteFrameReceived(username, QVideoFrame)`
-- `QVideoFrame` is pushed to registered `QVideoSink*` objects (one per viewer)
-- If fragments missing and FEC cannot recover: send `UdpKeyframeRequest` → server relays PLI to streamer
+- **It is not a library.** `crate-type = ["cdylib"]` only and every module in `lib.rs` is a private
+  `mod`. Step one is a workspace split: a plain `decibell-core` lib crate (net, media, e2ee, hotkeys,
+  config, presence, system_idle, state) and a thin napi crate on top.
+- **napi lives only in `lib.rs`, `events.rs` and `commands/`.** `net/`, `media/`, `e2ee/`, `hotkeys/`,
+  `config.rs`, `presence.rs`, `system_idle.rs` and `state.rs` have no napi types. Exceptions to move out
+  of `commands/` first: `net/central.rs` calls `commands::…::connect_with_invite` (returns
+  `napi::Result`), `signed_out_elsewhere` and `apply_hidden`; `net/community.rs` calls
+  `rebind_voice_group`.
+- **Events have one seam, but no trait.** Everything reaches the UI through `events.rs`: `send(name,
+  payload)` (a `{name, payload}` JSON envelope; ~77 named events, payload structs `Serialize` in
+  camelCase), `send_stream_frame` (encoded video frames, a queue capped at 8 with a discontinuity flag)
+  and `emit_stream_thumbnail_updated`. They sit on three `OnceLock` ThreadsafeFunctions installed by
+  `init`. Replacing them with a `dyn Fn(&'static str, serde_json::Value)` plus two binary callbacks is
+  the whole UI coupling. (`STREAM_FRAME_SINKS` and input-level reporting state live there too.) Tests
+  can't reach an emit today because the TSFN symbols only link inside Node, hence the `cfg(not(test))`
+  wrappers (`hotkeys/mod.rs`, `e2ee/session.rs`, `video_pipeline.rs`, `encoder_thread_linux.rs`).
+- **Commands**: 132 `#[napi]` functions in `commands/*.rs` (auth 7, call 6, channels 15, community 23,
+  devices 3, dm 5, e2ee 6, friends 3, hotkeys 6, messaging 1, presence 5, servers 11, settings 4,
+  stream_audio 2, streaming 18, voice 17), each taking one args struct; plus `init` / `shutdown` / `ping`
+  in `lib.rs`. They are thin: lock `AppState`, build a packet or call into `media` / `e2ee`. A native
+  client calls the same functions directly.
+- **Runtime**: the crate never builds a tokio runtime; it relies on napi's `tokio_rt`. A native client
+  must own a multi-thread runtime and call in from inside it (e.g. `media/mod.rs` `tokio::spawn`s from
+  stream start). State is one global `AppState` (`state.rs`, `OnceLock<Arc<tokio::Mutex<…>>>`) plus a few
+  globals (`WATCHED_STREAMS`, the voice gate, the hotkeys hub).
+- **`InitOptions`**: `user_data_dir`, `app_version`, `e2ee_local_key` (32 bytes, base64; from the OS
+  keychain), `local_key_protected`.
+- **Dead code to leave behind**: `capture_wlr_screencopy.rs` (unreachable), `gpu_interop.rs` and the
+  DMA-BUF / CUDA / VAAPI encode branches (never fed), `codec_selection.rs` (tests only),
+  `emit_stream_gpu_fallback`, `emit_caps_refreshed`, `watcher_event_tx` (no subscriber). Several file
+  headers still claim "FFmpeg removed entirely" (`lib.rs`, `media/mod.rs`, `video_pipeline.rs`) — false.
 
-### Keyframe and NACK Flow
-- **Viewer → Server:** `UdpKeyframeRequest` (UDP, type=2)
-- **Server → Streamer:** server calls `relay_keyframe_request(target_username, udp_socket)` and sends the PLI packet to the streamer's UDP endpoint
-- **NACK:** `UdpNackPacket` sent by viewer; server calls `relay_nack(target_username)` to forward to streamer
-- **PLI cooldown:** `last_pli_time` tracked per decoder to avoid flooding the streamer
+What the Electron side does today that a native client must replace:
 
----
+| Responsibility | Today | Native-client note |
+|---|---|---|
+| Video **decode** + render (remote and self-preview) | Renderer, WebCodecs `VideoDecoder` (`StreamVideoPlayer.tsx`) | Needs a decoder: Media Foundation / D3D11VA on Windows (or FFmpeg hwaccel), rendering into a GPU texture. Native already hands over whole, decrypted, Annex B / OBU frames. |
+| Encode **fallback** + macOS encode | Renderer, WebCodecs `VideoEncoder` | Windows / Linux native paths already exist; macOS would need VideoToolbox. |
+| Capture source list | Electron `desktopCapturer` | Enumerate monitors / windows (DXGI outputs, `EnumWindows`) and produce the same ids. |
+| Attachment upload | Renderer (`uploadAttachment.ts`: init / PATCH / complete / thumbnails, pacing); native only returns `{host, port, jwt, maxBytes, certFingerprint}` (`get_attachment_target`) | HTTP client with the pinned cert (§4.2). |
+| Attachment download, Range playback, save-as, Transfers | Electron main (`protocol.ts`, `mediaServer.ts`, `netFetch.ts`, `downloads.ts`, `downloadPacer.ts`) | Same HTTP client. |
+| Attachment encryption | Renderer encrypts (`features/chat/attachmentCrypto.ts`, WebCrypto); main decrypts (`electron/main/attachmentCrypto.ts`, `attachmentFetch.ts`) | Re-implement the 64 KiB AES-256-GCM chunk format byte-for-byte (or move it into native). |
+| Upload thumbnails + ThumbHash, image decode, EXIF orientation | Renderer (canvas, `thumbhash.ts`) | Image crate + a ThumbHash port. |
+| Link previews, GIF search | Electron main (`linkPreview.ts` + `publicNet.ts` SSRF guard, `gifs.ts`) | Port; keep the private-network guard. |
+| E2EE at-rest key | Electron main `safeStorage` (`e2eeLocalKey.ts`) | Windows DPAPI / Credential Manager, macOS Keychain, libsecret. |
+| Auto-away, lock / sleep | Renderer timer + `powerMonitor` | `GetLastInputInfo`, session-lock notifications. |
+| UI sounds, mic test outside a call | Web Audio | Play through the native audio stack. |
+| Notifications / attention | `flashFrame`, taskbar progress (`window.ts`) | `FlashWindowEx`, `ITaskbarList3`. |
+| Auto-update, crash reports | electron-updater, Sentry | Own updater; `sentry` crate. |
+| Settings | Mostly native `config.json`; ~18 `localStorage` keys (layout, codec-cap caches, native-encode opt-outs) | Move those into `config.json`. |
+| Global hotkeys | Native listeners; main forwards `--hotkey=` and does macOS `globalShortcut` | Bindings use DOM `KeyboardEvent.code` names (`hotkeys/keys.rs`). |
+| Message rendering | Renderer: markdown subset, code highlighting, KaTeX, twemoji | Whole UI layer. |
 
-## 7. QML UI Inventory
+## 8. Client-side-only features
 
-18 QML files in `src/client/`. The active entry point is `App.qml`. `Main.qml` is an older prototype bundled in the QML module but not used.
+No server involvement, on purpose:
 
-### Screens
-| File | Type | Description |
-|------|------|-------------|
-| `App.qml` | Root Window | `Window` shell (420×520 login / 1280×720 main). Loads LoginScreen initially, switches on `loginSucceeded` / `loggedOut` signals. Loads Font Awesome. |
-| `LoginScreen.qml` | Controller | Login/register logic. Handles button clicks, calls `backend.attemptLogin` and `backend.attemptRegister`. Animates between login and register states. |
-| `LoginScreenForm.ui.qml` | Layout | Login form: username, email, password, confirm-password fields; Log In / Register buttons; error text. Animated state transition (400ms InOutQuad). |
-| `MainScreen.qml` | Controller | All backend signal connections. Manages `activeServerId`, `activeChannelId`, `activeVoiceChannelId`, `activeStreamsMap`. Owns `ProfilePopup`, `StreamConfigDialog`, fullscreen window. |
-| `MainScreenForm.ui.qml` | Layout | Root layout: left DM sidebar (72px) + top server bar (64px) + `ChannelsSidebarForm` (240px) + `StackLayout` (chat/voice) + right friends panel (280px). |
-
-### Views
-| File | Type | Description |
-|------|------|-------------|
-| `ChannelsSidebarForm.ui.qml` | Layout | Channel list (`channelsListView`). Text channels prefix `# `, voice channels prefix `🔊`. Voice participant list with speaking indicator (blue border, `isSpeaking` toggled by `userSpeakingSignal`). Voice connection status panel at bottom with audio level meter. |
-| `ChatViewForm.ui.qml` | Layout | Header with channel name. `ListView` (id: `messageList`) with `BottomToTop` layout direction (newest at bottom). `TextInput` (id: `inputField`) for sending messages. Emits `usernameClicked` for profile popup. |
-| `VoiceChannelViewForm.ui.qml` | Layout | 320×240 `GridView` of participant tiles. Each tile: `VideoOutput` (Qt Multimedia), speaking border (`#2CA3E8`), username plate, LIVE indicator, fullscreen button. Expanded focused-stream view (click tile to focus). Bottom toolbar: mute, camera, screen share, disconnect buttons. |
-
-### Dialogs and Popups
-| File | Type | Description |
-|------|------|-------------|
-| `StreamConfigDialog.qml` | Modal Popup | 420×580 modal. ComboBoxes: capture source, resolution (720p/1080p/1440p/native), FPS (5/30/60), bitrate (1500–10000 kbps). Switches: include system audio, adaptive bitrate. Emits `startStream(fps, bitrateKbps, includeAudio, sourceType, sourceId, resWidth, resHeight, adaptiveBitrate)`. |
-| `ProfilePopup.qml` | Non-modal Popup | 300×350. Avatar circle (color derived from username hash). Username + online dot. Inline message `TextInput` → emits `messageSent(username, message)`. Positioned near click point, clamped to parent bounds. |
-
-### Reusable Components
-| File | Type | Dimensions | Description |
-|------|------|-----------|-------------|
-| `DecibellButton.ui.qml` | Button | 116×40 | Blue accent (`#2CA3E8`), hover (`#4DB8F0`), pressed (`#1E8BC3`). Open Sans Regular 14px. Border-radius 6px. |
-| `DecibellTextField.ui.qml` | Input | 300×40 | Dark background (`#0c0f16`), border highlights on hover/focus. Open Sans Italic 14px. Exposes `highlightColor` property. Border-radius 8px. |
-| `MessageDelegate.ui.qml` | List Item | variable height | 40×40 rounded avatar (left gutter). Username + timestamp header. Message text (color `#DCDDDE`). `showHeader` collapses avatar/header for consecutive messages from same user within 5 min. Hover: `#242528` bg. Clicking username emits `usernameClicked`. |
-| `ServerCard.ui.qml` | Card | 260×180 | Server name (bold white), description (muted), member count with green dot. Border highlights `#2CA3E8` on hover. Border-radius 8px. |
-| `ServerIcon.ui.qml` | Icon | 120×48 | Server initials (2 chars), `#2D3245` bg, hover `#3A405A` (animated 150ms). Border-radius 8px. |
-| `UserDelegate.ui.qml` | List Item | 248×44 | Rounded-rect avatar (32×32, radius 8) + status dot (12×12 circle). Username text. Hover: `#2D3245` bg, white text. |
-| `DmDelegate.ui.qml` | Icon | 48×48 | User initials squircle, `#2D3245` bg, hover `#3A405A`. Border-radius 8px. |
-
----
-
-## 8. Backend ↔ Frontend Integration Points
-
-All networking is mediated by `ChatBackend : QObject` (`src/client/backend.hpp`).
-In the Tauri rebuild, `public slots` become Tauri **commands**, and Qt `signals` become Tauri **events**.
-
-### Internal Architecture of ChatBackend
-- One `boost::asio::io_context` + dedicated `network_thread_`
-- `central_connection_`: `ConnectionState` holding the TLS socket to the central server
-- `community_connections_`: `unordered_map<int, ConnectionState>` — one per joined community server
-- `QUdpSocket* udp_socket_`: shared for all voice/video UDP traffic
-- `AudioEngine` and `VideoEngine` owned as `unique_ptr`; emit `sendUdpData` connected to `udp_socket_`
-- `video_sinks_`: `unordered_map<QString, vector<QVideoSink*>>` — maps username → registered sinks
-
-### Commands (Public Slots / Q_INVOKABLE → Tauri Commands)
-| Method | Args | Purpose | Rebuild Phase |
-|--------|------|---------|---------------|
-| `attemptLogin` | username, password | Connect to central server + send `LOGIN_REQ` | 2 |
-| `attemptRegister` | username, email, password | Send `REGISTER_REQ` | 2 |
-| `logout` | — | Disconnect from central + community servers | 2 |
-| `requestServerList` | — | Send `SERVER_LIST_REQ` | 2 |
-| `connectToCommunityServer` | serverId, host, port | Connect + send `COMMUNITY_AUTH_REQ` | 2 |
-| `joinChannel` | serverId, channelId | Send `JOIN_CHANNEL_REQ` | 2 |
-| `sendChannelMessage` | serverId, channelId, message | Send `CHANNEL_MSG` | 2 |
-| `sendPrivateMessage` | recipient, message | Send `DIRECT_MSG` | 2 |
-| `disconnectFromCommunityServer` | serverId | Close community TCP connection | 2 |
-| `requestFriendList` | — | Send `FRIEND_LIST_REQ` | 2 |
-| `sendFriendAction` | action (int), targetUsername | Send `FRIEND_ACTION_REQ` | 2 |
-| `joinVoiceChannel` | serverId, channelId | Send `JOIN_VOICE_REQ`; start UDP | 4 |
-| `leaveVoiceChannel` | — | Send `LEAVE_VOICE_REQ`; stop audio | 4 |
-| `toggleMute` *(Q_INVOKABLE)* | — | Toggle `AudioEngine::setMuted` | 4 |
-| `isMuted` *(Q_INVOKABLE)* | — | Returns bool | 4 |
-| `startVideoStream` | serverId, channelId, fps, bitrateKbps, includeAudio, sourceType, sourceId, resWidth, resHeight, adaptiveBitrate | Send `START_STREAM_REQ`; start `VideoEngine` | 5 |
-| `getCaptureSources` *(Q_INVOKABLE)* | — | Returns `QVariantList` of available screens/windows | 5 |
-| `registerVideoSink` *(Q_INVOKABLE)* | username, sink (QObject*) | Register a `QVideoSink` to receive decoded frames for a user | 5 |
-| `unregisterVideoSink` *(Q_INVOKABLE)* | username, sink (QObject*) | Deregister a video sink | 5 |
-
-### Events (Qt Signals → Tauri Events)
-| Signal | Payload | Purpose | Rebuild Phase |
-|--------|---------|---------|---------------|
-| `loginSucceeded` | — | Triggers navigation to main screen | 2 |
-| `registerResponded` | success (bool), message (string) | Registration outcome | 2 |
-| `loggedOut` | — | Triggers navigation back to login | 2 |
-| `statusMessageChanged` | message (string) | Generic status text (login feedback) | 2 |
-| `connectionLost` | errorMsg (string) | TCP connection dropped | 2 |
-| `serverListReceived` | servers (QVariantList of CommunityServerInfo) | Populate server directory grid | 2 |
-| `communityAuthResponded` | serverId (int), success (bool), message (string), channels (QVariantList) | Auth result + channel list | 2 |
-| `messageReceived` | context (string), sender (string), content (string), timestamp (int64) | New chat/DM message | 2 |
-| `friendListReceived` | friends (QVariantList of {usernameLabel, status, statusColor}) | Populate friends panel | 2 |
-| `friendActionResponded` | success (bool), message (string) | Friend action result | 2 |
-| `userListUpdated` | users (QStringList) | Presence update — triggers friend list refresh | 2 |
-| `voicePresenceUpdated` | channelId (string), users (QStringList) | Who is in a voice channel | 4 |
-| `streamPresenceUpdated` | channelId (string), streams (QVariantList of VideoStreamInfo) | Active screen shares in channel | 5 |
-| `localAudioLevelChanged` | level (qreal, 0.0–1.0) | Own microphone level for VU meter | 4 |
-| `remoteUserSpeaking` | username (string), level (qreal) | Remote user speaking indicator | 4 |
-| `muteChanged` | muted (bool) | Mute state changed | 4 |
+- **Link previews**: unfurled in the Electron main process (OpenGraph / Twitter / `<title>` + oEmbed,
+  image dimension probe, private-network guard, caps, cache), behind the Privacy toggle. Invite links
+  resolve against our central and ignore the toggle.
+- **GIF search**: KLIPY (or GIPHY) from main with a key baked into release builds (`resources/gifs.json`);
+  a sent GIF is just its https URL. Tenor's API is gone (2026-06-30); never use it.
+- **Optimistic bubbles**: faded until the `nonce` echo; a 30 s watchdog backs them up.
+- **Send pacing and slowmode mirroring**, so a person never hits the server's limits.
+- **Drafts, scroll positions, layout memory, theme**: local only. Nothing about searches is stored, and
+  attachment images are not kept across restarts (decisions).
 
 ---
 
-## 9. Color Palette & Typography
+## 9. Repository map
 
-All colors verified against QML source files.
-
-### Colors
-| Token | Hex | ARGB (QML) | Usage |
-|-------|-----|-----------|-------|
-| bg-primary | `#0C0D0F` | — | Main background, left sidebar, server bar, bottom voice controls |
-| bg-titlebar | `#0C0E13` | — | Darkest accent (right sidebar border, profile popup banner, expanded view bg) |
-| bg-secondary | `#1A1B1E` | — | Content area (chat view bg, voice view bg, stream config bg) |
-| bg-tertiary | `#242528` | — | Containers, input fields, cards, message hover, voice status panel |
-| bg-input | `#0c0f16` | — | Text field background (DecibellTextField) |
-| border | `#2D3245` | — | Borders, server icon bg, avatar bg, disabled states, scrollbars |
-| border-hover | `#3A405A` | — | Server icon / DM avatar hover state |
-| accent | `#2CA3E8` | — | Buttons, speaking indicator border, links, home icon |
-| accent-hover | `#4DB8F0` | — | Button hover state |
-| accent-pressed | `#1E8BC3` | — | Button pressed state |
-| success | `#43B581` | — | Online status dot, success messages |
-| warning | `#FAA61A` | — | Pending friend requests |
-| error | `#FF4C4C` | — | Error messages, muted mic button, disconnect button, error red |
-| error-hover | `#FF6B6B` | — | Disconnect/mute button hover |
-| text-primary | `#FFFFFF` / `white` | — | Headers, bold labels, button text |
-| text-content | `#DCDDDE` | — | Message body text |
-| text-muted | `#4f6a86` @ ~53% alpha | `#884f6a86` | Timestamps, secondary labels, placeholder text, channel names |
-| login-accent | `#1FB2FF` | — | Login screen "Decibell" title text |
-
-### Typography
-- **Primary font:** Open Sans family
-  - `OpenSans-Regular.ttf` — body text, buttons (weight 400)
-  - `OpenSans-Bold.ttf` — headers, labels (weight 700)
-  - `OpenSans-Italic.ttf` — text field input font
-  - `OpenSans-LightItalic.ttf` — bundled, not directly referenced in QML
-- **Icon font:** Font Awesome 7 Free Solid 900 (`FontAwesome7Free-Solid-900.otf`)
-  - Used in `VoiceChannelViewForm` for mute (`\uf130`/`\uf131`), expand (`\uf065`), back (`\uf060`) icons
-- **Font files location:** `src/client/assets/`
-
-### Component Dimensions
-| Component | Dimensions | Notes |
-|-----------|-----------|-------|
-| Login window | 420×520 | Fixed (non-resizable) |
-| Main window | 1280×720 | Minimum 960×540 |
-| Left DM sidebar | 72px wide | |
-| Top server bar | 64px tall | (ListView 48px centered) |
-| Channel sidebar | 240px wide | |
-| Right friends panel | 280px wide | |
-| Chat header | 48px tall | |
-| Chat input area | 76px tall | |
-| Voice bottom controls | 80px tall | |
-| Button (DecibellButton) | 116×40 | border-radius 6px |
-| Text field (DecibellTextField) | 300×40 | border-radius 8px |
-| Message avatar | 40×40 | border-radius 8px |
-| Server card | 260×180 | border-radius 8px |
-| Server icon (top bar) | 120×48 | border-radius 8px |
-| User delegate (friends) | 248×44 | avatar 32×32, radius 8 |
-| DM avatar | 48×48 | border-radius 8px |
-| Voice tile | 300×220 | within 320×240 grid cell, border-radius 8px |
-| Profile popup | 300×350 | non-modal |
-| Stream config dialog | 420×580 | modal |
-
----
-
-## 10. Tauri Rebuild Strategy
-
-### Phased Plan
-| Phase | Scope |
-|-------|-------|
-| 1 | Architecture doc + Tauri scaffold (this document + `tauri-client/`) |
-| 2 | Rust networking — TCP/TLS + Protobuf for auth, friends, DMs, server list |
-| 3 | Core UI — login screen, server discovery, channels sidebar, text chat |
-| 4 | Voice — Opus encode/decode in Rust, voice channel UI, mute, speaking indicators |
-| 5 | Video/screen sharing — DXGI capture, hardware H.264 encode, WebCodecs decode in React |
-| 6 | Polish — settings, notifications, system tray, accessibility |
-
-### Key Decisions for the Rebuild
-- **No C++ FFI** — all networking and media pipelines reimplemented in Rust
-- **Codec compatibility** — UDP packet format is fixed by the existing community server; the Tauri client must produce identical `UdpAudioPacket` and `UdpVideoPacket` structs
-- **JWT passthrough** — community servers only verify the JWT received in `CommunityAuthRequest.jwt_token`; the same JWT is used as the `sender_id` source (last 31 chars) for UDP identification
-- **Video decode in browser** — `VideoEngine.remoteFrameReceived` → use WebCodecs API or a WASM VP9/H.264 decoder; frames pushed to `<video>` or `<canvas>`
-- **Tauri events for media** — audio/video level meters and speaking indicators are high-frequency; consider batching or using SharedArrayBuffer
-- **Target quality:** 1440p60 streaming with minimal CPU usage (hardware paths only)
-
-### Protocol Compatibility Requirements
-The Tauri client must interoperate with the existing C++ community server without any server changes:
-- TCP framing: `[4-byte big-endian length][Protobuf bytes]`
-- Protobuf schema: `proto/messages.proto` — exact field numbers must match
-- UDP packet structs: packed, no padding, exact byte layout per Section 4
-- JWT: HS256, issuer `"decibell_central_auth"`, sent as `community_auth_req.jwt_token` and as the last 31-char `sender_id` in UDP packets
+```
+proto/messages.proto            wire contract (C++ via protoc, Rust via prost)
+src/server/                     central (main.cpp, auth_manager.*, session_manager.hpp, pg_pool.hpp,
+                                abuse_limits.hpp, wire_limits.hpp) + tests/ (e2e, load.py)
+src/community/                  community (main.cpp, db.*, authz.hpp, attachment_http.*, search.*,
+                                central_sync.hpp, udp_path.hpp, rate_limit.hpp, connection_limits.hpp) + tests/
+src/common/                     framing, UDP layouts, Ed25519 helpers
+cmake/DecibellSQLite.cmake      pinned SQLite amalgamation with FTS5 for the community build
+CMakeLists.txt                  production build of both servers
+electron-client/                the client (HANDOFF.md, PACKAGING.md)
+  src/                          renderer: features/, stores/, components/, layouts/, lib/, hooks/, utils/
+  electron/main, electron/preload
+  native/                       Rust addon: net/, media/, e2ee/, hotkeys/, commands/, events.rs, state.rs
+aur/                            decibell-bin PKGBUILD + .SRCINFO
+.github/workflows/              electron-release.yml (ev* tags), win-native-check.yml; release.yml is dead
+docs/FEATURES.md                feature catalogue
+docs/superpowers/specs|plans/   design records (index: docs/README.md)
+docs/reviews/                   reviews + the running feature log (2026-08-23-community-server-review.md)
+src/client/, tauri-client/      retired clients
+```
