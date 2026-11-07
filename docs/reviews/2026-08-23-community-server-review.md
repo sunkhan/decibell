@@ -4841,3 +4841,30 @@ built yet; the spike is next.
   switches / s (p50); idle with DailyGaming #general open and another window focused 246 MB private working set
   (716 MB private bytes, 7 processes, 213 threads), 0.58 % of one core, 153 context switches / s (p50), 240 MB GPU
   memory. Watching 1 / 2 streams at 1440p60 / 120 waits for the owner to stream.
+
+### Change: Windows hotkeys stop polling for press actions (2026-11-07)
+
+Measured during the Qt client work (`tools/perf/threads.ps1`): Electron's busiest thread at idle was our own
+`hotkeys-poll`, **287 wakeups a second** whenever any hotkey was bound. It asked `GetAsyncKeyState` for every
+watched key every 10 ms, and any press binding added the eight sided modifiers to the watch (for the exact-modifier
+match). Owner decision (option c of the Qt client design's D13):
+
+- **Press actions** (mute, deafen, leave, answer, decline) on a combo with Ctrl / Alt / Win, or on a key that types
+  nothing (F1–F24, Pause, Scroll Lock, media / volume / browser / launch keys), are `RegisterHotKey` system hotkeys
+  (`MOD_NOREPEAT`) on a `hotkeys-system` thread blocked in `GetMessage`: nothing wakes until one is pressed. As
+  with the X11 grabs, that combo no longer reaches the focused app; `Status.registered` names them and the
+  Keybinds tab marks them (`isSwallowed`), with the Windows explanation rewritten.
+- **Push to talk / push to mute**, and press bindings Windows can't take (mouse buttons, modifier-only combos, a key
+  that types without Ctrl / Alt / Win, a combo another app already registered), stay polled, now every **20 ms**
+  (one voice frame), and still reach apps. The matcher holds only the polled bindings.
+- Recording a keybind drops the registrations until it ends, so the recorder sees a bound combo.
+
+Benchmark of the poll loop alone (default timer resolution): 9 keys every 10 ms 165 wakeups/s, every 20 ms 74,
+1 key every 20 ms 57, the sleep alone 52 — the cadence is the cost, so the watch list wasn't trimmed further.
+Spec amended (`2026-10-10-global-hotkeys-design.md`), CLAUDE.md's hotkey decision updated.
+
+Verified (Windows): `cargo test --lib` 315 passed, the 2 known Windows-only failures (HANDOFF §6.1); new tests
+for which bindings register and for the hotkey thread end to end (a real registration of
+Ctrl+Alt+Shift+Win+F24, a posted `WM_HOTKEY`, the action dispatched, no keyboard input); `npx napi build`;
+renderer typecheck 0 errors. Live test pending (W): a registered combo in a game, PTT at 20 ms. Linux untouched
+(`cfg(windows)`). Ships with the next client release; no server change.

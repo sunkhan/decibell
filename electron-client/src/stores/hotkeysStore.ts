@@ -23,6 +23,10 @@ export interface HotkeysStatus {
   /// Binding ids the listener couldn't register (X11: another app
   /// already grabs that combo).
   failed: string[];
+  /// Windows: binding ids registered as system hotkeys (their combo no longer
+  /// reaches other apps); the rest are checked by polling and still do.
+  /// Absent from an older native build.
+  registered?: string[];
 }
 
 interface HotkeysState {

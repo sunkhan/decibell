@@ -112,7 +112,10 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   evdev). Allowed: desktop shortcut services (the GlobalShortcuts portal, macOS accelerators), passive
   grabs on exactly the bound combos, per-key state queries (`GetAsyncKeyState`) for the watched keys;
   listener threads exist only while a binding does, and the UI says what each platform reads (X11
-  polls `XQueryKeymap` while an ordinary-key push-to-talk is held). Design:
+  polls `XQueryKeymap` while an ordinary-key push-to-talk is held). On Windows (owner, 2026-11-07): press
+  actions (mute, deafen, leave, answer, decline) are `RegisterHotKey` system hotkeys on exactly the bound combo, so
+  that combo no longer reaches other apps (as on X11); push to talk / mute stay `GetAsyncKeyState`-polled every 20 ms
+  and still reach apps; bare typing keys, mouse buttons and modifier-only combos stay polled. Design:
   `docs/superpowers/specs/2026-10-10-global-hotkeys-design.md`.
 - **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
   `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native

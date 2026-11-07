@@ -77,7 +77,7 @@ Accepted by the owner (§14, D8). Ratios are against §2 on the same machine and
 |---|---|
 | Idle private working set (busy channel open) | ≤ 1/3 of Electron: **≤ 82 MB** (Electron 246 MB) |
 | Idle CPU | ≤ 1/10 of Electron: **≤ 0.06 % of one core** (Electron 0.58 %); no timer of ours firing at idle (only the 30 s central / community pings) |
-| Idle context switches / s | ≤ 1/5 of Electron: **≤ 30 / s** p50 (Electron 153) |
+| Idle context switches / s | **≤ 30 / s from our own threads** (owner, D12): the GPU driver's threads are reported beside it, not counted. NVIDIA's D3D11 driver keeps one thread waking ~80 times a second in any process with a D3D11 swap chain (Electron has it twice, ~110–130 each); see `tools/perf/threads.ps1` |
 | Render loop at idle | 0 frames rendered while nothing on screen changes |
 | Startup to first frame (warm) | ≤ 1/3 of Electron: **≤ 300 ms** to a visible window (Electron 904 ms) |
 | Install size (Windows, with FFmpeg) | ≤ 1/4 of Electron: **≤ 109 MB** (Electron 436 MB) |
@@ -463,6 +463,8 @@ Each step gets a review-log entry with its numbers against §2.
 | D9 | Windows snap layouts on the maximise button | Electron's frameless window doesn't show them; matching Electron means not showing them either. Recommend **match Electron** now, offer it as a separate improvement later. |
 | D10 | Linux Qt | **System Qt** for the AUR package (Arch ships current Qt 6; much smaller package), bundled Qt for any AppImage. |
 | D11 | Qt version | **Track the latest minor; spike on 6.12.0.** The public 6.8 LTS line stops at 6.8.3 on download.qt.io (later 6.8 patches are commercial), dynamic LGPL linking lets us move minors freely, and 6.12 has everything the brief asks for. |
+| D12 | What the wakeup target counts (raised by the spike's measurements) | **Only our own threads** (owner, 2026-11-07). GPU driver threads are reported separately. |
+| D13 | The Windows hotkey poller: 287 wakeups/s in Electron while any hotkey is bound (`hotkeys-poll`, `GetAsyncKeyState` per key every 10 ms) | **Option (c)** (owner, 2026-11-07): press actions (mute, deafen, leave, answer, decline) become system hotkeys (`RegisterHotKey`) on exactly the bound combo, event-driven, so those combos no longer reach other apps (as on X11); push to talk / push to mute stay polled, every 20 ms, only while such a binding exists, and still reach apps. Shipped in the shared native code, so Electron gets it too. |
 
 ## 15. Risks
 
