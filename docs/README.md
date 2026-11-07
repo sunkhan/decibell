@@ -62,6 +62,7 @@ deltas); **partly** = some of it shipped; **history** = superseded or never buil
 | `2026-10-18-roster-paging-design.md` | live |
 | `2026-10-19-devices-and-password-design.md` | live |
 | `2026-10-28-picture-editor-design.md` | live |
+| `2026-11-07-qt-native-client-design.md` | approved, not built: the native Qt 6 Quick + Rust client (core split, zero-copy video, theming, spike plan, Electron baseline) |
 
 `superpowers/plans/` holds the step-by-step implementation plans for the 2026-03 … 2026-05 specs (same
 names). They're history: useful for why code is shaped the way it is, never as a to-do list. The

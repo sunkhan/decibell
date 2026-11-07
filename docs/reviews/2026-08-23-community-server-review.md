@@ -4816,3 +4816,28 @@ Verified: renderer typecheck (0 errors); native napi build + `cargo test --lib` 
 `"auto"`); the formatters in Electron's Chromium for en-US, en-GB, tr, ja, ko, zh, de (`auto` resolves to 12-hour
 under `LANG=en_US`, 24-hour under `LANG=tr_TR`; the compact gutter form drops the day period wherever the locale
 puts it). Ships with the next client release; no server change.
+
+### Design: a native Qt client; the Electron baseline; building on Windows (2026-11-07)
+
+Owner brief: a native desktop client for Windows and Linux in Qt 6 Quick + Rust, judged first by resource use,
+then parity, then visual fidelity; Electron keeps shipping until then. Design record
+`docs/superpowers/specs/2026-11-07-qt-native-client-design.md`; the owner accepted all eleven recommendations
+(D1–D11: replay dumped real streams for the spike, CMake + cxx-qt-cmake, no root Cargo workspace yet, a typed
+`CoreEvent` enum behind an `EventSink` trait, a synthetic chat fixture, one D3D11 device of ours handed to Qt,
+Vulkan first on Linux, the §3 targets, no snap layouts, system Qt for the AUR, Qt 6.12). Nothing of the client is
+built yet; the spike is next.
+
+- **Windows build set up** on the owner's machine (i7-12700K, RTX 4080; the Linux box is the same machine
+  dual-booted): `tools/windows/setup-dev.ps1` installs everything per user except VS Build Tools, including Qt
+  through `tools/qt/fetch_qt.py` (aqtinstall 3.3.0 can't read Qt 6.12's per-arch repository). cxx-qt 0.10's
+  minimal QML example builds and runs against Qt 6.12.0. Electron on Windows: npm, `npx napi build`, both
+  typechecks pass; `cargo test --lib` 309 passed, **2 failed** (deterministic, first run ever on Windows; see
+  `electron-client/HANDOFF.md` §6.1: `WSAEMSGSIZE` in a `media_socket` test, one starve in a voice simulation case).
+- **Measurement harness** `tools/perf/` (`measure.ps1`: process-tree CPU, memory, context switches as the wakeup
+  proxy, GPU engines and memory from one PDH stream; `startup.ps1`; `open-channel.mjs` to open a channel through
+  CDP without clicking).
+- **Electron 0.9.4 baseline** (release install, saved sign-in): install 436.4 MB; startup to a visible window
+  904 ms median, settled 1.95 s; idle on Home 262 MB private working set, 0.56 % of one core, 161 context
+  switches / s (p50); idle with DailyGaming #general open and another window focused 246 MB private working set
+  (716 MB private bytes, 7 processes, 213 threads), 0.58 % of one core, 153 context switches / s (p50), 240 MB GPU
+  memory. Watching 1 / 2 streams at 1440p60 / 120 waits for the owner to stream.

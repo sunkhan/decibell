@@ -776,6 +776,23 @@ Everything client-side builds natively on Windows (CI's Windows job is the refer
   `copy-dlls.cjs` (run by the native build) copies the FFmpeg DLLs next to the `.node`;
   `electron/main/addon.ts` puts that folder on `PATH` while loading it.
 
+`tools/windows/setup-dev.ps1` does all of the above per user into `C:\dev` (only the Build Tools need admin)
+and also installs Qt for the Qt client; first run on the owner's machine, 2026-11-07, FFmpeg took 11 min.
+Seen on that first run:
+
+- **A fresh checkout's typecheck fails on `twemoji-data.json`** (gitignored, generated): run
+  `npm run build:twemoji` once (`dev` / `build` run it for you).
+- **`npx napi build` on Windows rewrites the tracked `native/index.js` / `index.d.ts`**: line endings, and
+  `probeNativeEncoders`'s doc comment comes from its `cfg(windows)` variant. Not a change; restore them
+  (`git checkout -- native/index.js native/index.d.ts`), don't commit them from Windows.
+- **Two native tests fail on Windows, deterministically** (they never ran there before; CI only compile-checks):
+  `media_socket::tests::oversized_and_junk_datagrams_are_skipped` (Windows fails `recv_from` with `WSAEMSGSIZE`
+  (10040) for a datagram larger than the buffer, where Linux truncates; `MediaSocket::recv` propagates it instead
+  of skipping. Production is unaffected: the receive loops treat every error as transient, and Windows has
+  already dropped the datagram) and `voice_sim_tests::tests::ring_paced_receiver_never_starves` (case
+  "GatedTail / clean link, +15dB gain, +40ppm": one starve, 960 spliced zeros; deterministic, so presumably a
+  numeric difference of the MSVC build). Open in §7.
+
 What runs where:
 
 | Check | Linux | Windows |
@@ -793,6 +810,9 @@ on that machine; several of their live tests are still open (§7).
 ---
 
 ## 7. Open items (as of 2026-11-07)
+
+**Windows `cargo test --lib`**: two deterministic failures on the first Windows run (§6.1); everything else
+(309 tests) passes. Neither has been looked into beyond the diagnosis there.
 
 **Live tests pending.** Built, unit / e2e tested, not yet exercised by real people on real networks or
 hardware. Windows-side items are marked (W); they're the natural ones to run on a Windows box.
