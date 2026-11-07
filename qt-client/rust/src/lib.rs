@@ -2,3 +2,5 @@
 //! model and the video hub; after the core split it becomes the Qt layer over `decibell-core`.
 
 pub mod app_info;
+pub mod fixture;
+pub mod models;

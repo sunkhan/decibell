@@ -14,6 +14,8 @@
 #include <QTimer>
 #include <QtQml/qqmlextensionplugin.h>
 
+#include "gpu_device.h"
+
 Q_IMPORT_QML_PLUGIN(Decibell_ThemePlugin)
 Q_IMPORT_QML_PLUGIN(Decibell_AppPlugin)
 
@@ -41,6 +43,11 @@ int main(int argc, char *argv[])
 {
     // Glyph-cache text through the platform engine (DirectWrite on Windows): the closest to Chromium's text.
     QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
+    // Qt's DXGI vblank thread waits on every vertical blank even when nothing renders: 279 wakeups a second on a
+    // 279 Hz panel. The threaded render loop paces itself on Present without it. Measured at idle with a channel
+    // open: 310 → 79 context switches per second.
+    if (!qEnvironmentVariableIsSet("QT_D3D_NO_VBLANK_THREAD"))
+        qputenv("QT_D3D_NO_VBLANK_THREAD", "1");
 
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("Decibell"));
@@ -49,7 +56,10 @@ int main(int argc, char *argv[])
     const QCommandLineOption themeOpt(QStringLiteral("theme"), QStringLiteral("Theme name."), QStringLiteral("name"));
     const QCommandLineOption captureOpt(QStringLiteral("capture"), QStringLiteral("Save the first screen and quit."), QStringLiteral("file"));
     const QCommandLineOption delayOpt(QStringLiteral("capture-delay"), QStringLiteral("Delay before capturing."), QStringLiteral("ms"), QStringLiteral("400"));
-    cli.addOptions({themeOpt, captureOpt, delayOpt});
+    const QCommandLineOption screenOpt(QStringLiteral("screen"), QStringLiteral("chat | gallery."), QStringLiteral("name"), QStringLiteral("chat"));
+    const QCommandLineOption fixtureOpt(QStringLiteral("fixture"), QStringLiteral("Fixture folder (tools/gen-fixture.mjs)."),
+                                        QStringLiteral("dir"), QStringLiteral(DECIBELL_FIXTURE_DIR));
+    cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt});
     cli.addHelpOption();
     cli.process(app);
 
@@ -59,15 +69,20 @@ int main(int argc, char *argv[])
     QVariantMap initial;
     if (cli.isSet(themeOpt))
         initial.insert(QStringLiteral("themeName"), cli.value(themeOpt));
-    // A capture never shows the window: grabWindow() renders an unexposed window through the same RHI backend
-    // and platform font engine (D3D11 + DirectWrite on Windows), so the image matches the screen without
-    // flashing a window. QT_QPA_PLATFORM=offscreen would swap in FreeType and a different rasteriser.
-    if (cli.isSet(captureOpt))
-        initial.insert(QStringLiteral("visible"), false);
+    initial.insert(QStringLiteral("screenName"), cli.value(screenOpt));
+    initial.insert(QStringLiteral("fixtureDir"), cli.value(fixtureOpt));
+    // The window starts hidden so our graphics device is in place before Qt creates one (gpu_device.h). A capture
+    // never shows it: grabWindow() renders the unexposed window through the same RHI backend and platform font
+    // engine (D3D11 + DirectWrite), so nothing flashes on screen; QT_QPA_PLATFORM=offscreen would swap in FreeType.
+    initial.insert(QStringLiteral("visible"), false);
     engine.setInitialProperties(initial);
     engine.loadFromModule("Decibell.App", "Main");
     if (engine.rootObjects().isEmpty())
         return 1;
+    auto *mainWindow = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+    decibell::installGraphicsDevice(mainWindow);
+    if (mainWindow && !cli.isSet(captureOpt))
+        mainWindow->show();
 
     if (cli.isSet(captureOpt)) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());

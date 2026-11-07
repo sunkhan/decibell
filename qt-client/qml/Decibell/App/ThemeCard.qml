@@ -46,7 +46,7 @@ Item {
             color: card.c.colorBgTitlebar
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                x: 46
+                x: 8
                 text: "DECIBELL"
                 color: card.c.colorTextMuted
                 font.family: card.p.fontTile
@@ -57,29 +57,30 @@ Item {
             }
         }
 
-        // Server bar (chrome scope)
+        // Server bar (chrome scope): a horizontal strip of tabs under the title bar, like browser tabs
+        // (the renderer's tiles are 128 x 44; here at miniature scale).
         Rectangle {
             id: serverbar
             anchors.top: titlebar.bottom
-            width: 40
-            height: parent.height - titlebar.height
+            width: parent.width
+            height: 26
             color: card.c.colorBgPrimary
             Rectangle {
-                x: 6; y: 8; width: 28; height: 28
+                x: 8; y: 3; width: 58; height: 20
                 radius: card.p.radiusMd
                 color: card.c.colorAccent
                 Text {
                     anchors.centerIn: parent
-                    text: "DG"
+                    text: "DailyGaming"
                     color: card.c.colorOnAccent
                     font.family: card.p.fontTile
-                    font.pixelSize: 11
+                    font.pixelSize: 9
                     font.weight: 600
-                    font.variableAxes: card.axes(card.p.fontTile, 11, card.p.tTileStretchWdth)
+                    font.variableAxes: card.axes(card.p.fontTile, 9, card.p.tTileStretchWdth)
                 }
             }
             Rectangle {
-                x: 6; y: 42; width: 28; height: 28
+                x: 70; y: 3; width: 58; height: 20
                 radius: card.p.radiusMd
                 color: card.c.colorSurfaceActive
             }
@@ -88,10 +89,10 @@ Item {
         // Channel sidebar
         Rectangle {
             id: sidebar
-            anchors.top: titlebar.bottom
-            anchors.left: serverbar.right
+            anchors.top: serverbar.bottom
+            anchors.left: parent.left
             width: 92
-            height: parent.height - titlebar.height
+            height: parent.height - titlebar.height - serverbar.height
             color: card.c.colorBgSecondary
             Column {
                 x: 6; y: 8; spacing: 2
@@ -132,7 +133,7 @@ Item {
         // Content: one message
         Item {
             id: content
-            anchors.top: titlebar.bottom
+            anchors.top: serverbar.bottom
             anchors.left: sidebar.right
             anchors.right: parent.right
             anchors.bottom: parent.bottom

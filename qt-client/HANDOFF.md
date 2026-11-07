@@ -78,6 +78,33 @@ Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`).
   `tWordmarkStretchWdth`), through `font.variableAxes`.
 - **Names**: a QML property can't be called `console` (the JS global) or `layer` (`Item.layer` is FINAL).
 
+## 2b. Spike findings (measured on the owner's machine: i7-12700K, RTX 4080, 279 Hz panel)
+
+**Chat screen v1, idle with the 10k-message fixture channel open** (`tools/perf/measure.ps1`, 30 s settle + 120 s;
+Electron's row is the baseline in the design doc §2: DailyGaming #general, another window focused):
+
+| | Electron 0.9.4 | Qt spike |
+|---|---|---|
+| Private working set | 246 MB | **65 MB** (60.6 MB with our own D3D11 device, below) |
+| Private bytes | 716 MB | 142 MB |
+| GPU memory (dedicated) | 240 MB | 35 MB |
+| Processes / threads | 7 / 213 | 1 / 44 (25 with our own device) |
+| Startup to a visible window | 904 ms | **257 ms** (median of 5 warm runs) |
+
+Wakeups, and what they turned out to be (`tools/perf/threads.ps1` names each busy thread):
+
+- **`QDxgiVSyncThread`** (Qt's Windows platform plugin) waits on every vertical blank whether or not anything
+  renders: 239 wakeups/s on the 279 Hz panel. The threaded render loop paces itself on Present without it, so
+  `main.cpp` sets `QT_D3D_NO_VBLANK_THREAD=1` by default: **310 → 79 context switches/s** for the process.
+- **NVIDIA's D3D11 driver** (`nvwgf2umx.dll`) keeps one service thread waking ~80/s in any process with a D3D11
+  swap chain. `D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS` (on in `gpu_device.cpp`; off with
+  `DECIBELL_D3D_DRIVER_THREADS=1`) removes the driver's other worker threads (47 → 25 threads, −5.6 MB) but not
+  that one. Electron pays the same driver thread in its GPU process and again in a utility process.
+- The client's own threads wake ~7–9 times a second at idle.
+
+Qt's other RHI backends at idle, same screen: D3D12 119/s and 114 MB, Vulkan 201/s and 171 MB, OpenGL 32/s but
+188 MB. D3D11 stays (design D6).
+
 ## 3. Measuring
 
 `tools/perf/` (see its README): `measure.ps1` samples a client's whole process tree (CPU, memory, context

@@ -41,3 +41,11 @@ password sign-ins per address, then one per 2 s).
 `measure.sh` (to come with the Linux half of the spike): `/proc/<pid>/status` + `smaps_rollup`, `pidstat -w`
 (voluntary + involuntary context switches), and the GPU tool for the vendor (`nvidia-smi pmon`, `amdgpu_top`,
 `intel_gpu_top`).
+
+## Who wakes up
+
+`threads.ps1 -ProcessName <name> [-Seconds 10] [-Top 10]` ranks every thread of the client by context switches per
+second, with its name (`SetThreadDescription`) and the module + offset of its start address (Electron processes are
+labelled by `--type`). It found Qt's `QDxgiVSyncThread` (279 wakeups/s on a 279 Hz panel, off with
+`QT_D3D_NO_VBLANK_THREAD=1`) and NVIDIA's D3D11 driver thread (`nvwgf2umx.dll`, ~80–110/s in every process with a
+D3D11 swap chain). Rust `std` threads all start at the same trampoline, so tell them apart by name.

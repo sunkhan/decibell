@@ -11,7 +11,7 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QmlImportScanner)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes ShaderTools QmlImportScanner)
 qt_standard_project_setup(REQUIRES 6.8)
 if(MSVC)
   set_property(TARGET Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick PROPERTY MAP_IMPORTED_CONFIG_DEBUG "RELEASE")
@@ -42,11 +42,15 @@ endforeach()
 add_subdirectory(qml/Decibell/Theme)
 add_subdirectory(qml/Decibell/App)
 
-qt_add_executable(decibell-qt WIN32 src/main.cpp)
+qt_add_executable(decibell-qt WIN32 src/main.cpp src/gpu_device.cpp src/gpu_device.h)
+if(WIN32)
+  target_link_libraries(decibell-qt PRIVATE d3d11 dxgi)
+endif()
 # Fonts stay uncompressed in the binary so they are registered straight from the mapped image (no copy).
 qt_add_resources(decibell-qt "fonts" PREFIX "/fonts" BASE ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts
   FILES ${DECIBELL_FONTS} OPTIONS --no-compress)
+target_compile_definitions(decibell-qt PRIVATE DECIBELL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/fixture")
 target_link_libraries(decibell-qt PRIVATE
-  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickShapes
   decibell_core_qml decibell_themeplugin decibell_appplugin)
 qt_import_qml_plugins(decibell-qt)
