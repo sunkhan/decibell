@@ -2,8 +2,8 @@ import QtQuick
 import Decibell.Theme
 import Decibell.Core
 
-// The spike's window. `screenName` (--screen): "chat" (a busy channel, the default) or "gallery" (every theme's
-// tokens side by side). Frameless, as the Electron window is: the title bar is drawn by the app.
+// The spike's window. `screenName` (--screen): "chat" (a busy channel, the default), "gallery" (every theme's
+// tokens side by side) or "video" (watched streams, --video). Frameless, as the Electron window is: the title bar is drawn by the app.
 Window {
     id: root
     property string themeName: "nocturne"
@@ -12,6 +12,9 @@ Window {
     // --bench-scroll: the chat scrolls through history at this speed (px/s) for frame-pacing measurements.
     property real benchSpeed: 0
     property string ablate
+    // --video: test streams (.dbv) to watch; --bench-video hides the stats lines.
+    property var videoSources: []
+    property bool benchVideo: false
     width: 1280
     height: 800
     minimumWidth: 800
@@ -25,11 +28,15 @@ Window {
 
     Loader {
         anchors.fill: parent
-        sourceComponent: root.screenName === "gallery" ? gallery : chatScreen
+        sourceComponent: root.screenName === "gallery" ? gallery : root.screenName === "video" ? videoScreen : chatScreen
     }
     Component {
         id: chatScreen
         ChatScreen { fixtureDir: root.fixtureDir; window: root; benchSpeed: root.benchSpeed; ablate: root.ablate }
+    }
+    Component {
+        id: videoScreen
+        VideoScreen { sources: root.videoSources; showStats: !root.benchVideo }
     }
     Component {
         id: gallery

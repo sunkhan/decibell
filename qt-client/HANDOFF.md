@@ -191,6 +191,46 @@ smoothstep within ~1 px at every sample; three quick notches tick at 3.6 ms (Ele
 after idle ticks at ~12 ms (clocks ramping up from deep idle; Electron ~6.5 ms) — for the owner's feel review.
 Keyboard scrolling (PageUp / Down, arrows, Home / End) is not done.
 
+## 2e. Watched streams (`src/video/`, QML module `Decibell.Video`, Windows)
+
+- **Path**: FFmpeg (the vcpkg build the Electron addon links; `DECIBELL_FFMPEG_ROOT`, default
+  `C:\dev\vcpkg\installed\x64-windows`; **not** `VCPKG_ROOT`, which vcvars64 points at Visual Studio's own vcpkg)
+  decodes with D3D11VA on **the window's own device** (`gpu_device.cpp` creates it with `VIDEO_SUPPORT`), so pictures
+  stay on the GPU. At each scene-graph sync the newest picture goes through the D3D11 video processor (NV12 → RGBA and
+  the scale in one pass) into a texture the size the item is drawn at, never above the video's size (Electron's canvas
+  backing-store rule), wrapped with `QSGD3D11Texture::fromNative` (Qt wraps native textures as **RGBA8**, so the
+  processor writes RGBA, not BGRA) and drawn by a plain image node. FFmpeg's decode submissions take the device's
+  `ID3D11Multithread` lock (`AVD3D11VADeviceContext.lock`), as does the blit.
+- **Threads**: per stream a decoder thread (`decibell-video-decode`) behind a packet queue; in the spike a
+  `spike-stream-source` thread stands in for the core's receive thread (reads a `.dbv` file, feeds at the stream's
+  rate on a high-resolution waitable timer). The decoder publishes the newest picture; one the renderer never took
+  is `replaced` (what a canvas does silently).
+- **Test streams**: `tools/streamgen` encodes synthetic streams with the streamer's NVENC settings
+  (`bitrate_preset.rs`: p4, ull, CBR, no B-frames, zero latency, forced IDR) into `.dbv` (one frame per record, the
+  frame number as a barcode band at the top). Built against the same vcpkg FFmpeg; no outside download.
+- **Run**: `decibell-qt --video a.dbv[,b.dbv] [--bench-video <s>] [--maximized]`.
+- **Comparison** (`tools/perf/video-compare.ps1`): the same files in the Qt client and in `tools/perf/electron-video`
+  (the client's Electron + switches, StreamVideoPlayer's WebCodecs + canvas path, frames over IPC from main), each run
+  measured by the app itself, by `measure.ps1`, and by `tools/perf/framecount`, which reads the barcode off the
+  screen through Desktop Duplication: frames actually displayed, never displayed, and their spacing. **The apps'
+  own counters don't compare**: Electron counts `drawImage` calls, and Chromium shows only the newest canvas per
+  frame. Node timers in Electron's main process tick at 15.6 ms (77 fps for a 120 fps stream), so the harness paces
+  in the renderer and pulls each frame from main.
+- **First numbers (2026-11-07, not a quiet machine: a game held ~85% of the GPU, Discord's clip recorder ran)**:
+  1440p120 H.264, 1280 × 800 window: CPU **8–10 % of a core vs Electron 40–41 %**, private working set **43–56 MB vs
+  160–177 MB** (Electron here is a bare harness page, not the client). Every 1440p120 / 2160p120 file decodes all 120
+  frames/s on both. Frames displayed: both clients fell short under the game's load (Qt 100–111/s, Electron 84–120/s,
+  run to run); not a verdict until a quiet session. Runs after the first pair of the AV1 / 4K / two-stream set are
+  void: harness windows left running were summed in (fixed: the harness quits, `video-compare.ps1` refuses to start
+  over a leftover process).
+- **Wakeups while playing 120 fps**: GUI thread ~760/s (≈ 6 per video frame), render thread ~270/s, decoder ~230/s.
+  The GUI thread handles only ~3 events per frame (the decoder's update request, the update request, a dispatcher
+  wake); the rest is the threaded render loop's GUI ↔ render-thread handoff. The basic render loop was tried: worse
+  (11.2 % CPU vs 7.7 %, more frames replaced). Open, see §4.
+- **The renderer waits in `beginFrame`** (p95 11–15 ms) for the swap chain under the GPU load, and replaces 12–17 %
+  of the decoded frames. `QT_D3D_MAX_FRAME_LATENCY=0` moves the wait into Present, `1` is much worse, `3` is about
+  the same as the default. Re-measure on a quiet machine before tuning.
+
 ## 3. Measuring
 
 `tools/perf/` (see its README): `measure.ps1` samples a client's whole process tree (CPU, memory, context
@@ -202,9 +242,15 @@ Electron baseline lives in the design doc §2; every phase reports against it in
 - **Variable-font weights**: in the gallery, JetBrains Mono at 600 (console themes' active channel, section
   labels) looks heavier than Chromium's. Check whether DirectWrite picks the variable font's 600 instance or
   synthesises bold from 400; if the latter, set the `wght` axis explicitly with `font.variableAxes`.
-- **Spike next**: (a) the stream dump switch in native (debug only) + the D3D11 decode → `VideoItem` path,
-  developed against a synthetic NVENC bitstream until the owner streams; (b) the chat panel (fixture generator,
-  `MessageText`, the list, the member list) in Nocturne and Matinee, captured against Electron's harness.
+- **Spike (a) next**: the quiet-session comparison (nothing else using the GPU; the owner says when):
+  `tools\perf\video-compare.ps1 -Streams <file> -Runs 3 -Seconds 10 -Resources` for 1440p120 H.264 / HEVC / AV1,
+  2160p120 HEVC, two 1440p120 streams, and 1440p60, windowed and `-Maximized`. Then: the real-stream dump switch in
+  native (debug only) once the owner streams; Linux (VAAPI / Vulkan Video) in the dual-boot session.
+- **Video wakeups**: the GUI thread wakes ~6 times per video frame through the threaded loop's sync. Options if it
+  matters after the quiet measurement: a video layer outside the scene graph (DirectComposition visual / child
+  swap chain the decoder presents itself), or a custom render loop. Both cost overlay drawing on top of video.
+- **Spike (b) next**: selection across rows, link clicks, keyboard scrolling; Matinee captures against Electron's
+  harness.
 
 - The design's decisions D1–D11 are settled (owner accepted every recommendation, 2026-11-07). Next: the spike
   (design doc §12) on the `qt-spike` branch.

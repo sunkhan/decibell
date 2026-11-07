@@ -40,10 +40,12 @@ foreach(f IN LISTS DECIBELL_FONTS)
 endforeach()
 
 add_subdirectory(src/ui)
+add_subdirectory(src/video)
 add_subdirectory(qml/Decibell/Theme)
 add_subdirectory(qml/Decibell/App)
 
-qt_add_executable(decibell-qt WIN32 src/main.cpp src/gpu_device.cpp src/gpu_device.h src/frame_stats.cpp src/frame_stats.h src/crash_trace.cpp src/crash_trace.h)
+qt_add_executable(decibell-qt WIN32 src/main.cpp src/gpu_device.cpp src/gpu_device.h src/frame_stats.cpp src/frame_stats.h src/crash_trace.cpp src/crash_trace.h
+  src/event_trace.cpp src/event_trace.h)
 if(WIN32)
   target_link_libraries(decibell-qt PRIVATE d3d11 dxgi dbghelp)
 endif()
@@ -56,5 +58,9 @@ target_compile_definitions(decibell-qt PRIVATE
 target_include_directories(decibell-qt PRIVATE src)
 target_link_libraries(decibell-qt PRIVATE
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickShapes
-  decibell_core_qml decibell_themeplugin decibell_appplugin decibell_uiplugin decibell_ui Qt6::Svg)
+  decibell_core_qml decibell_themeplugin decibell_appplugin decibell_uiplugin decibell_ui
+  decibell_videoplugin decibell_video Qt6::Svg)
 qt_import_qml_plugins(decibell-qt)
+add_custom_command(TARGET decibell-qt POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DECIBELL_FFMPEG_DLLS} $<TARGET_FILE_DIR:decibell-qt>
+  VERBATIM)

@@ -43,7 +43,8 @@ $a = Snap; Start-Sleep -Seconds $Seconds; $b = Snap
 
 $rows = foreach ($pp in $procs) {
   $pp.Refresh()
-  $mods = @($pp.Modules | ForEach-Object { [pscustomobject]@{ Name = $_.ModuleName; Base = $_.BaseAddress.ToInt64(); End = $_.BaseAddress.ToInt64() + $_.ModuleMemorySize } })
+  # A module unloading mid-enumeration comes back without a base address: skip it.
+  $mods = @($pp.Modules | Where-Object { $_ -and $_.BaseAddress } | ForEach-Object { [pscustomobject]@{ Name = $_.ModuleName; Base = $_.BaseAddress.ToInt64(); End = $_.BaseAddress.ToInt64() + $_.ModuleMemorySize } })
   $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($pp.Id)").CommandLine
   $type = if ($cmd -match '--type=([a-z-]+)') { $Matches[1] } else { 'main' }
   foreach ($t in $pp.Threads) {

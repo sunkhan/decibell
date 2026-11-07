@@ -1,6 +1,7 @@
 // Decibell Qt client entry point.
 //
 //   decibell-qt [--theme <name>] [--capture <file.png> [--capture-delay <ms>]]
+//   decibell-qt --video a.dbv[,b.dbv] [--bench-video <s>] [--maximized]   (spike (a): watched streams)
 //
 // --capture renders the first screen, saves it and quits: the capture harness runs it with
 // QT_QPA_PLATFORM=offscreen and compares against the Electron harness's screenshots.
@@ -15,13 +16,16 @@
 #include <QtQml/qqmlextensionplugin.h>
 
 #include "crash_trace.h"
+#include "event_trace.h"
 #include "frame_stats.h"
 #include "gpu_device.h"
 #include "ui/emoji.h"
+#include "video/videoitem.h"
 
 Q_IMPORT_QML_PLUGIN(Decibell_ThemePlugin)
 Q_IMPORT_QML_PLUGIN(Decibell_AppPlugin)
 Q_IMPORT_QML_PLUGIN(Decibell_UiPlugin)
+Q_IMPORT_QML_PLUGIN(Decibell_VideoPlugin)
 
 namespace {
 
@@ -78,10 +82,20 @@ int main(int argc, char *argv[])
                                       QStringLiteral("3000"));
     const QCommandLineOption ablateOpt(QStringLiteral("ablate"), QStringLiteral("Debug: hide parts of message rows (avatar,header,body,images,divider)."),
                                        QStringLiteral("parts"));
-    cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt, benchOpt, speedOpt, ablateOpt});
+    const QCommandLineOption videoOpt(QStringLiteral("video"),
+                                      QStringLiteral("Watch test streams (.dbv, tools/streamgen), comma-separated."),
+                                      QStringLiteral("files"));
+    const QCommandLineOption benchVideoOpt(
+        QStringLiteral("bench-video"),
+        QStringLiteral("With --video: record N seconds, print frame + stream stats (JSON) and quit."),
+        QStringLiteral("seconds"));
+    const QCommandLineOption maximizedOpt(QStringLiteral("maximized"), QStringLiteral("Show the window maximized."));
+    cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt, benchOpt, speedOpt, ablateOpt, videoOpt,
+                    benchVideoOpt, maximizedOpt});
     cli.addHelpOption();
     cli.process(app);
 
+    decibell::installEventTrace();
     registerFonts();
     decibell::Emoji::instance().setDirectory(QStringLiteral(DECIBELL_ASSETS_DIR "/twemoji"));
 
@@ -89,7 +103,10 @@ int main(int argc, char *argv[])
     QVariantMap initial;
     if (cli.isSet(themeOpt))
         initial.insert(QStringLiteral("themeName"), cli.value(themeOpt));
-    initial.insert(QStringLiteral("screenName"), cli.value(screenOpt));
+    initial.insert(QStringLiteral("screenName"), cli.isSet(videoOpt) ? QStringLiteral("video") : cli.value(screenOpt));
+    if (cli.isSet(videoOpt))
+        initial.insert(QStringLiteral("videoSources"), cli.value(videoOpt).split(QLatin1Char(','), Qt::SkipEmptyParts));
+    initial.insert(QStringLiteral("benchVideo"), cli.isSet(benchVideoOpt));
     initial.insert(QStringLiteral("fixtureDir"), cli.value(fixtureOpt));
     initial.insert(QStringLiteral("ablate"), cli.value(ablateOpt));
     if (cli.isSet(benchOpt))
@@ -104,17 +121,29 @@ int main(int argc, char *argv[])
         return 1;
     auto *mainWindow = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
     decibell::installGraphicsDevice(mainWindow);
-    if (mainWindow && !cli.isSet(captureOpt))
-        mainWindow->show();
+    if (mainWindow && !cli.isSet(captureOpt)) {
+        if (cli.isSet(maximizedOpt))
+            mainWindow->showMaximized();
+        else
+            mainWindow->show();
+    }
 
-    if (cli.isSet(benchOpt) && mainWindow) {
+    const bool benchVideo = cli.isSet(benchVideoOpt);
+    if ((cli.isSet(benchOpt) || benchVideo) && mainWindow) {
         // 2 s for the fixture to load and the first screen to settle, then N s of recording while QML scrolls.
         auto *stats = new decibell::FrameStats(mainWindow);
-        const int seconds = cli.value(benchOpt).toInt();
-        QTimer::singleShot(2000, &app, [stats] { stats->start(); });
-        QTimer::singleShot(2000 + seconds * 1000, &app, [stats] {
+        const int seconds = cli.value(benchVideo ? benchVideoOpt : benchOpt).toInt();
+        QTimer::singleShot(2000, &app, [stats, benchVideo] {
+            stats->start();
+            if (benchVideo)
+                decibell::video::VideoItem::benchStart();
+        });
+        QTimer::singleShot(2000 + seconds * 1000, &app, [stats, benchVideo] {
+            const QString report = benchVideo ? QStringLiteral("{\"frames\":%1,\"video\":%2}")
+                                                    .arg(stats->report(), decibell::video::VideoItem::benchReport())
+                                              : stats->report();
             // A WIN32 app has no console: write the report next to nothing else, to a file when asked for.
-            const QByteArray line = stats->report().toUtf8() + '\n';
+            const QByteArray line = report.toUtf8() + '\n';
             if (const QByteArray out = qgetenv("DECIBELL_BENCH_OUT"); !out.isEmpty()) {
                 if (FILE *f = fopen(out.constData(), "ab")) {
                     fwrite(line.constData(), 1, size_t(line.size()), f);

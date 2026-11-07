@@ -49,3 +49,21 @@ second, with its name (`SetThreadDescription`) and the module + offset of its st
 labelled by `--type`). It found Qt's `QDxgiVSyncThread` (279 wakeups/s on a 279 Hz panel, off with
 `QT_D3D_NO_VBLANK_THREAD=1`) and NVIDIA's D3D11 driver thread (`nvwgf2umx.dll`, ~80–110/s in every process with a
 D3D11 swap chain). Rust `std` threads all start at the same trampoline, so tell them apart by name.
+
+## Watched streams (Qt client spike (a))
+
+`video-compare.ps1 -Streams <a.dbv>[,<b.dbv>] [-Runs 2] [-Seconds 10] [-Resources] [-Maximized]` plays the same test
+streams in the Qt client (`--video`) and in `electron-video/` (the client's Electron and Chromium switches,
+StreamVideoPlayer's WebCodecs + canvas path, each frame sent from main over IPC), alternating, and measures every run
+with the app's own report, `measure.ps1` (`-Resources`) and `framecount`. Results append as JSON lines to `-Out`
+(default `results/video-compare.jsonl`). It refuses to start while a `decibell-qt` or `electron` process runs
+(`measure.ps1` would sum it in). Each run puts a window on top for ~15 s: measure on a quiet machine.
+
+- Test streams: `qt-client/tools/streamgen` (synthetic, the streamer's NVENC settings, the frame number as a
+  barcode band). Build it and `framecount/` with CMake + Ninja inside vcvars64 (see each `CMakeLists.txt`).
+- `framecount <window title part> <seconds> [--fps=120] [--tiles=N]` reads the barcode off the screen through DXGI
+  Desktop Duplication on every DWM composition: frames displayed per second, frames never displayed, and the time
+  between new frames, per tile. It is the only number that compares the two clients: Electron's own counter counts
+  `drawImage` calls, and Chromium shows only the newest canvas per frame.
+- Electron's main-process (Node) timers tick at Windows' 15.6 ms granularity (77 frames/s for a 120 fps stream), so
+  the harness paces in the renderer (Chromium's timers are high-resolution) and pulls each frame from main.
