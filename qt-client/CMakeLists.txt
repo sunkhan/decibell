@@ -45,7 +45,7 @@ add_subdirectory(qml/Decibell/Theme)
 add_subdirectory(qml/Decibell/App)
 
 qt_add_executable(decibell-qt WIN32 src/main.cpp src/gpu_device.cpp src/gpu_device.h src/frame_stats.cpp src/frame_stats.h src/crash_trace.cpp src/crash_trace.h
-  src/event_trace.cpp src/event_trace.h)
+  src/event_trace.cpp src/event_trace.h src/selftest.cpp src/selftest.h)
 if(WIN32)
   target_link_libraries(decibell-qt PRIVATE d3d11 dxgi dbghelp)
 endif()

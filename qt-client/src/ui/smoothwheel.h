@@ -29,6 +29,15 @@ public:
     QQuickItem *target() const { return m_target; }
     void setTarget(QQuickItem *t);
 
+    // Keyboard scrolling on the same curve (Chromium animates key scrolls as it does a notch). Positive: towards
+    // what is below on screen.
+    Q_INVOKABLE void scrollBy(qreal pixels);
+    // To the top (false) or the bottom (true) of what is shown.
+    Q_INVOKABLE void scrollToEdge(bool end);
+    // Blink's keys for a focused scroller: arrows, PageUp / PageDown, Space / Shift+Space, Home / End. True when
+    // the key was one of them.
+    Q_INVOKABLE bool handleKey(int key, int modifiers);
+
 signals:
     void targetChanged();
 
@@ -38,6 +47,8 @@ protected:
 private:
     void tick();
     qreal clamp(qreal y) const;
+    void animateBy(qreal delta);
+    void animateTo(qreal y);
 
     QPointer<QQuickItem> m_target;
     int m_direction = 1;

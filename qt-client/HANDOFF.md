@@ -189,7 +189,32 @@ does exactly that (a cubic Hermite from (position, velocity) to (target, 0)), on
 frames come slower (a 175 ms notch took 196 ms). Touchpads pass through unanimated. Measured: a notch matches
 smoothstep within ~1 px at every sample; three quick notches tick at 3.6 ms (Electron 6–8 ms). Open: the first gesture
 after idle ticks at ~12 ms (clocks ramping up from deep idle; Electron ~6.5 ms) — for the owner's feel review.
-Keyboard scrolling (PageUp / Down, arrows, Home / End) is not done.
+**Keys** (`SmoothWheel::handleKey`, on the message list once it has focus: a press in it gives it focus) scroll on the
+same curve with Blink's steps: arrows 40 px, PageUp / PageDown and Space / Shift+Space a page = max(87.5 % of the
+view, the view − 40 px), Home / End to the ends. The renderer has no key handling of its own here (Chromium's
+default for a focused scroller); the composer keeps its keys while it has focus.
+
+## 2f. Selection, copy, links (`src/ui/chatselection.*`)
+
+`ChatSelection` sits on the message ListView and owns the selection (anchor / focus as row + text position), since
+delegates come and go and are reused; each row's `MessageText` binds its range to `startFor` / `endFor`, re-read on
+`version`. Press and drag selects through every row between (the list autoscrolls while the pointer is past an
+edge, faster the further out), Shift+press extends, a click collapses it, a double click takes a word, Ctrl+C
+copies (`StandardKey.Copy`): bodies as displayed (markup gone, emoji as their characters, code without its padding)
+with a "name time" line before each message that starts a group. A click on an http(s) link opens it
+(`Qt.openUrlExternally`, as `lib/openExternal.ts`); the pointer is a hand over links and an I-beam over text.
+`--selftest selection [--capture f.png]` drives it with synthetic input in the hidden window and checks it (drag,
+click, double click, copy, PageUp, End).
+
+- **Gotchas**: `ListView.itemAt` with `verticalLayoutDirection: BottomToTop` answered row 0 for every point, so rows
+  are found from the delegates' own geometry. `QSGTextNode`'s built-in selection painted the highlight a few
+  characters off ([5, 22) drawn as [5, 17)), so `MessageText` draws its own rectangles (the line box high, under the
+  text) and the selected text keeps its colour. A hidden window is never polished: the ListView hasn't placed its
+  rows and bodies are laid out at width 0 until something renders it (the self-test grabs once first). A second
+  grab of a hidden window drops the Shapes (icons, avatar gradients): a capture artifact only.
+- **Open**: the highlight colour is a stand-in (`#663390ff`) until a screenshot of the Electron client with a
+  selection; in Chromium the sender name and time are selectable too (`select-text` covers the header), here only
+  bodies; dragging after a double click doesn't extend by words; no triple click (paragraph).
 
 ## 2e. Watched streams (`src/video/`, QML module `Decibell.Video`, Windows)
 
@@ -249,7 +274,7 @@ Electron baseline lives in the design doc §2; every phase reports against it in
 - **Video wakeups**: the GUI thread wakes ~6 times per video frame through the threaded loop's sync. Options if it
   matters after the quiet measurement: a video layer outside the scene graph (DirectComposition visual / child
   swap chain the decoder presents itself), or a custom render loop. Both cost overlay drawing on top of video.
-- **Spike (b) next**: selection across rows, link clicks, keyboard scrolling; Matinee captures against Electron's
+- **Spike (b) next**: the selection colour and header selection (§2f open); Matinee captures against Electron's
   harness.
 
 - The design's decisions D1–D11 are settled (owner accepted every recommendation, 2026-11-07). Next: the spike

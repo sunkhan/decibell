@@ -8,6 +8,7 @@
 #include <QFont>
 #include <QQuickItem>
 #include <QtQml/qqmlregistration.h>
+#include <climits>
 #include <memory>
 
 class QTextDocument;
@@ -31,6 +32,11 @@ class MessageText : public QQuickItem
     Q_PROPERTY(qreal blockRadius MEMBER m_blockRadius WRITE setBlockRadius NOTIFY changed)
     Q_PROPERTY(QString emojiDir READ emojiDir WRITE setEmojiDir NOTIFY changed)
     Q_PROPERTY(bool jumbo MEMBER m_jumboAllowed WRITE setJumboAllowed NOTIFY changed)
+    // Selection, in positions of the laid-out text (0 .. length): set by the list's ChatSelection. -1: none.
+    Q_PROPERTY(int selectionStart MEMBER m_selStart WRITE setSelectionStart NOTIFY selectionChanged)
+    Q_PROPERTY(int selectionEnd MEMBER m_selEnd WRITE setSelectionEnd NOTIFY selectionChanged)
+    Q_PROPERTY(QColor selectionColor MEMBER m_selColor WRITE setSelectionColor NOTIFY selectionChanged)
+    Q_PROPERTY(int length READ length NOTIFY changed)
 
 public:
     explicit MessageText(QQuickItem *parent = nullptr);
@@ -50,9 +56,29 @@ public:
     QString emojiDir() const;
     void setEmojiDir(const QString &dir);
     void setJumboAllowed(bool on);
+    void setSelectionStart(int p);
+    void setSelectionEnd(int p);
+    void setSelectionColor(const QColor &c);
+    int length() const;
+
+    // The text position nearest to a point in item coordinates (0 above the text, length() below it).
+    Q_INVOKABLE int positionAt(qreal x, qreal y) const;
+    // The link under a point, or empty.
+    Q_INVOKABLE QString linkAt(qreal x, qreal y) const;
+    // Whether a point is over text (not the empty space right of a short line): the I-beam cursor.
+    Q_INVOKABLE bool isOverText(qreal x, qreal y) const;
+    // The word around a position: {start, end}.
+    Q_INVOKABLE QPoint wordAt(int pos) const;
+    // What a copy of [from, to) gives: the text as displayed (markup gone, emoji as their characters, code without
+    // its padding, line breaks kept).
+    Q_INVOKABLE QString plainText(int from, int to) const;
+    // The same for a message that has no item on screen: lays `content` out without drawing it.
+    static QString plainTextOf(const QString &content, int from = 0, int to = INT_MAX);
+    static int lengthOf(const QString &content);
 
 signals:
     void changed();
+    void selectionChanged();
 
 protected:
     QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
@@ -75,6 +101,8 @@ private:
     qreal m_codeRadius = 6;
     qreal m_blockRadius = 10;
     bool m_jumboAllowed = true;
+    int m_selStart = -1, m_selEnd = -1;
+    QColor m_selColor = QColor(0x33, 0x90, 0xff, 0x66);
 
     std::unique_ptr<QTextDocument> m_doc;
     qreal m_emojiSize = 24;

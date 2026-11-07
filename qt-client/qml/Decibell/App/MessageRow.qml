@@ -36,6 +36,8 @@ Item {
     required property int image2H
 
     property string ablate
+    // The list's ChatSelection: this row's body asks it for its selected range.
+    property ChatSelection selection
     property real viewWidth: 683
     property real viewHeight: 574
     readonly property real contentX: 62     // 12 padding + 38 avatar / gutter + 12 gap
@@ -155,7 +157,11 @@ Item {
         // subset, inline code chips, fenced blocks and twemoji (src/ui/messagetext.h).
         Item { width: 1; height: !row.grouped && row.content !== "" ? 2 : 0 }
         MessageText {
+            id: body
             visible: row.content !== "" && !row.ablate.includes("body")
+            // Re-read whenever the selection changes (its version) or the delegate is reused for another row.
+            selectionStart: row.selection && row.selection.version >= 0 ? row.selection.startFor(row.index) : -1
+            selectionEnd: row.selection && row.selection.version >= 0 ? row.selection.endFor(row.index, body.length) : -1
             width: parent.width
             height: visible ? implicitHeight : 0
             text: row.content

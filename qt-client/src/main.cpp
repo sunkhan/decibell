@@ -19,6 +19,7 @@
 #include "event_trace.h"
 #include "frame_stats.h"
 #include "gpu_device.h"
+#include "selftest.h"
 #include "ui/emoji.h"
 #include "video/videoitem.h"
 
@@ -90,8 +91,12 @@ int main(int argc, char *argv[])
         QStringLiteral("With --video: record N seconds, print frame + stream stats (JSON) and quit."),
         QStringLiteral("seconds"));
     const QCommandLineOption maximizedOpt(QStringLiteral("maximized"), QStringLiteral("Show the window maximized."));
+    const QCommandLineOption selfTestOpt(QStringLiteral("selftest"),
+                                         QStringLiteral("Run a self-test in the hidden window (selection); --capture "
+                                                        "saves the window mid-test."),
+                                         QStringLiteral("name"));
     cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt, benchOpt, speedOpt, ablateOpt, videoOpt,
-                    benchVideoOpt, maximizedOpt});
+                    benchVideoOpt, maximizedOpt, selfTestOpt});
     cli.addHelpOption();
     cli.process(app);
 
@@ -121,6 +126,10 @@ int main(int argc, char *argv[])
         return 1;
     auto *mainWindow = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
     decibell::installGraphicsDevice(mainWindow);
+    if (cli.isSet(selfTestOpt) && mainWindow) {
+        decibell::runSelfTest(mainWindow, cli.value(selfTestOpt), cli.value(captureOpt));
+        return app.exec();
+    }
     if (mainWindow && !cli.isSet(captureOpt)) {
         if (cli.isSet(maximizedOpt))
             mainWindow->showMaximized();

@@ -85,19 +85,69 @@ bool SmoothWheel::eventFilter(QObject *watched, QEvent *event)
     const qreal notches = we->angleDelta().y() / 120.0;
     if (qFuzzyIsNull(notches))
         return QObject::eventFilter(watched, event);
+    animateBy(-m_direction * notches * kPixelsPerNotch);
+    event->accept();
+    return true;
+}
+
+void SmoothWheel::animateBy(qreal delta)
+{
+    if (!m_target)
+        return;
+    const qreal current = m_target->property("contentY").toReal();
     const bool running = m_anim.state() == QAbstractAnimation::Running;
     // Retarget from where we are, keeping the speed; from rest, start at the current position.
+    animateTo((running ? m_p1 : current) + delta);
+}
+
+void SmoothWheel::animateTo(qreal y)
+{
+    if (!m_target)
+        return;
+    const qreal current = m_target->property("contentY").toReal();
+    const bool running = m_anim.state() == QAbstractAnimation::Running;
     m_p0 = running ? m_lastPos : current;
     m_v0 = running ? m_lastVel : 0;
-    const qreal base = running ? m_p1 : current;
-    m_p1 = clamp(base - m_direction * notches * kPixelsPerNotch);
+    m_p1 = clamp(y);
     m_durationMs = kDurationMs;
     m_lastPos = m_p0;
     m_anim.stop();
     m_segment.start();
     m_anim.start();
-    event->accept();
-    return true;
+}
+
+void SmoothWheel::scrollBy(qreal pixels)
+{
+    animateBy(m_direction * pixels);
+}
+
+void SmoothWheel::scrollToEdge(bool end)
+{
+    if (!m_target)
+        return;
+    const qreal origin = m_target->property("originY").toReal();
+    const qreal content = m_target->property("contentHeight").toReal();
+    // `end` is the bottom of what's shown (the newest messages in the chat), whichever way the list grows.
+    animateTo(end == (m_direction > 0) ? origin + content - m_target->height() : origin);
+}
+
+bool SmoothWheel::handleKey(int key, int modifiers)
+{
+    if (!m_target)
+        return false;
+    const qreal h = m_target->height();
+    // Blink's steps: a line is 40 px; a page is 87.5 % of the view, or the view less 40 px if that's more.
+    const qreal page = qMax(h * 0.875, h - 40);
+    switch (key) {
+    case Qt::Key_Up: scrollBy(-40); return true;
+    case Qt::Key_Down: scrollBy(40); return true;
+    case Qt::Key_PageUp: scrollBy(-page); return true;
+    case Qt::Key_PageDown: scrollBy(page); return true;
+    case Qt::Key_Space: scrollBy(modifiers & Qt::ShiftModifier ? -page : page); return true;
+    case Qt::Key_Home: scrollToEdge(false); return true;
+    case Qt::Key_End: scrollToEdge(true); return true;
+    default: return false;
+    }
 }
 
 } // namespace decibell

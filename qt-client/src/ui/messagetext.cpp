@@ -8,6 +8,7 @@
 #include <QQuickWindow>
 #include <QRegularExpression>
 #include <QSGImageNode>
+#include <QSGRectangleNode>
 #include <QSGNinePatchNode>
 #include <QSGTextNode>
 #include <QTextBlock>
@@ -101,6 +102,10 @@ void MessageText::setCodeBackground(const QColor &c) { if (m_codeBg == c) return
 void MessageText::setCodeRadius(qreal r) { if (qFuzzyCompare(m_codeRadius, r)) return; m_codeRadius = r; update(); emit changed(); }
 void MessageText::setBlockRadius(qreal r) { if (qFuzzyCompare(m_blockRadius, r)) return; m_blockRadius = r; update(); emit changed(); }
 void MessageText::setJumboAllowed(bool on) { if (m_jumboAllowed == on) return; m_jumboAllowed = on; m_dirtyDoc = true; relayout(); emit changed(); }
+void MessageText::setSelectionStart(int p) { if (m_selStart == p) return; m_selStart = p; update(); emit selectionChanged(); }
+void MessageText::setSelectionEnd(int p) { if (m_selEnd == p) return; m_selEnd = p; update(); emit selectionChanged(); }
+void MessageText::setSelectionColor(const QColor &c) { if (m_selColor == c) return; m_selColor = c; update(); emit selectionChanged(); }
+int MessageText::length() const { return m_doc ? m_doc->characterCount() - 1 : 0; }
 QString MessageText::emojiDir() const { return QString(); }
 void MessageText::setEmojiDir(const QString &dir) { Emoji::instance().setDirectory(dir); m_dirtyDoc = true; relayout(); emit changed(); }
 
@@ -166,12 +171,15 @@ void MessageText::rebuild()
         if (s.strike) f.setFontStrikeOut(true);
         return f;
     };
-    auto placeholder = [&](qreal w, qreal h, const QString &name) {
+    // An inline box: emoji (`original`: the characters it stands for, what a copy gives) or code padding.
+    auto placeholder = [&](qreal w, qreal h, const QString &name, const QString &original = QString()) {
         QTextImageFormat img;
         img.setName(kBlank.toString());
         img.setWidth(w);
         img.setHeight(h);
         img.setProperty(QTextFormat::UserProperty, name);
+        if (!original.isEmpty())
+            img.setProperty(QTextFormat::UserProperty + 3, original);
         cur.insertImage(img);
     };
     const qreal emojiAscent = m_emojiSize - 0.2 * m_px; // the box's part above the baseline (align -0.2em)
@@ -185,7 +193,7 @@ void MessageText::rebuild()
             const qsizetype n = Emoji::instance().match(s, i, &key);
             if (n) {
                 if (i > last) cur.insertText(s.mid(last, i - last).toString().replace(u'\n', QChar::LineSeparator), f);
-                placeholder(m_emojiSize, emojiAscent, u"emoji:" + key);
+                placeholder(m_emojiSize, emojiAscent, u"emoji:" + key, s.mid(i, n).toString());
                 i += n;
                 last = i;
             } else {
@@ -405,6 +413,28 @@ QSGNode *MessageText::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
             }
         }
     }
+    // The selection: one rectangle per line it covers, the full line box high (as Chromium paints it), under the
+    // text. Drawn here rather than by QSGTextNode's own selection, which put the highlight a few characters off
+    // (a selection of [5, 22) painted [5, 17); [0, 1) painted [0, 2)).
+    const int selFrom = qBound(0, m_selStart, length()), selTo = qBound(0, m_selEnd, length());
+    if (m_selStart >= 0 && m_selEnd >= 0 && selTo > selFrom) {
+        for (QTextBlock b = m_doc->findBlock(selFrom); b.isValid() && b.position() < selTo; b = b.next()) {
+            const QTextLayout *lay = b.layout();
+            const QPointF origin = lay->position();
+            for (int i = 0; i < lay->lineCount(); ++i) {
+                const QTextLine line = lay->lineAt(i);
+                const int ls = b.position() + line.textStart(), le = ls + line.textLength();
+                const int s = qMax(selFrom, ls), e = qMin(selTo, le);
+                if (s >= e)
+                    continue;
+                const qreal x0 = line.cursorToX(s - b.position()), x1 = line.cursorToX(e - b.position());
+                QSGRectangleNode *r = w->createRectangleNode();
+                r->setColor(m_selColor);
+                r->setRect(QRectF(origin.x() + qMin(x0, x1), origin.y() + line.y(), qAbs(x1 - x0), line.height()));
+                root->appendChildNode(r);
+            }
+        }
+    }
     QSGTextNode *text = w->createTextNode();
     text->setColor(m_color);
     text->setLinkColor(m_linkColor);
@@ -431,6 +461,82 @@ QSGNode *MessageText::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
         root->appendChildNode(n);
     }
     return root;
+}
+
+// ── selection, links, copy ──────────────────────────────────────────────────────────────────────────────
+int MessageText::positionAt(qreal x, qreal y) const
+{
+    if (!m_doc)
+        return 0;
+    const qreal docY = y - m_halfLeading;
+    if (docY < 0)
+        return 0;
+    if (docY >= m_doc->size().height())
+        return length();
+    return qMax(0, m_doc->documentLayout()->hitTest(QPointF(x, docY), Qt::FuzzyHit));
+}
+
+QString MessageText::linkAt(qreal x, qreal y) const
+{
+    return m_doc ? m_doc->documentLayout()->anchorAt(QPointF(x, y - m_halfLeading)) : QString();
+}
+
+bool MessageText::isOverText(qreal x, qreal y) const
+{
+    return m_doc && m_doc->documentLayout()->hitTest(QPointF(x, y - m_halfLeading), Qt::ExactHit) >= 0;
+}
+
+QPoint MessageText::wordAt(int pos) const
+{
+    if (!m_doc)
+        return {};
+    QTextCursor c(m_doc.get());
+    c.setPosition(qBound(0, pos, length()));
+    c.select(QTextCursor::WordUnderCursor);
+    return {c.selectionStart(), c.selectionEnd()};
+}
+
+QString MessageText::plainText(int from, int to) const
+{
+    QString out;
+    if (!m_doc)
+        return out;
+    for (QTextBlock b = m_doc->begin(); b.isValid(); b = b.next()) {
+        if (b.position() > from && b.position() <= to && b != m_doc->begin())
+            out += QChar(QChar::LineFeed); // the paragraph break before this block is inside the range
+        for (QTextBlock::iterator f = b.begin(); !f.atEnd(); ++f) {
+            const QTextFragment frag = f.fragment();
+            const int s = qMax(from, frag.position()), e = qMin(to, frag.position() + frag.length());
+            if (s >= e)
+                continue;
+            const QTextCharFormat cf = frag.charFormat();
+            if (cf.isImageFormat()) {
+                // One object character per inline box: emoji copy as their characters, code padding as nothing.
+                out += cf.property(QTextFormat::UserProperty + 3).toString().repeated(e - s);
+                continue;
+            }
+            QString t = frag.text().mid(s - frag.position(), e - s);
+            t.replace(QChar::LineSeparator, QChar(QChar::LineFeed));
+            out += t;
+        }
+    }
+    return out;
+}
+
+QString MessageText::plainTextOf(const QString &content, int from, int to)
+{
+    MessageText t;
+    t.m_text = content;
+    t.rebuild(); // parse only: a copy needs the characters, not a layout
+    return t.plainText(qMax(0, from), qMin(to, t.length()));
+}
+
+int MessageText::lengthOf(const QString &content)
+{
+    MessageText t;
+    t.m_text = content;
+    t.rebuild();
+    return t.length();
 }
 
 } // namespace decibell

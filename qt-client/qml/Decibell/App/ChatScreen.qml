@@ -17,9 +17,24 @@ Item {
     RosterModel { id: roster; Component.onCompleted: load(screen.fixtureDir) }
     ChannelModel { id: channels; Component.onCompleted: load(screen.fixtureDir) }
     // Chromium's wheel feel (src/ui/smoothwheel.h) on every scrolling list.
-    SmoothWheel { target: list }
+    SmoothWheel { id: listWheel; target: list }
     SmoothWheel { target: channelList }
     SmoothWheel { target: memberList }
+    // Text selection across messages, link clicks (src/ui/chatselection.h). Links go to the OS browser, http(s) only,
+    // as lib/openExternal.ts does.
+    property alias chatSelection: chatSelection
+    ChatSelection {
+        id: chatSelection
+        objectName: "chatSelection"
+        target: list
+        model: chat
+        onLinkActivated: (url) => Qt.openUrlExternally(url)
+    }
+    Shortcut {
+        sequences: [StandardKey.Copy]
+        enabled: chatSelection.hasSelection
+        onActivated: chatSelection.copy()
+    }
 
     // ── title bar (chrome scope) ──────────────────────────────────────────────────────────────────────
     Rectangle {
@@ -409,6 +424,7 @@ Item {
 
                     ListView {
                         id: list
+                        objectName: "messageList"
                         width: parent.width
                         height: parent.height - composer.height
                         clip: true
@@ -419,6 +435,9 @@ Item {
                         // Newest at the bottom (the model is newest-first): the view opens at the present, and
                         // history pages append at the far end of the model, above the viewport, moving nothing.
                         verticalLayoutDirection: ListView.BottomToTop
+                        // Keyboard scrolling once the list has focus (a press in it gives it focus), as a focused
+                        // Chromium scroller does; the composer keeps its keys while it has focus.
+                        Keys.onPressed: (event) => { if (listWheel.handleKey(event.key, event.modifiers)) event.accepted = true }
                         // Benchmark driver: a constant scroll into history, the distance per frame from the frame's
                         // own time so the speed doesn't depend on the frame rate.
                         FrameAnimation {
@@ -426,6 +445,7 @@ Item {
                             onTriggered: list.contentY -= screen.benchSpeed * frameTime
                         }
                         delegate: MessageRow {
+                            selection: chatSelection
                             ablate: screen.ablate
                             viewWidth: list.width
                             viewHeight: list.height
