@@ -123,10 +123,15 @@ Wakeups, and what they turned out to be (`tools/perf/threads.ps1` names each bus
   `DECIBELL_D3D_DRIVER_THREADS=1`) removes the driver's other worker threads (47 → 25 threads, −5.6 MB) but not
   that one. Electron pays the same driver thread in its GPU process and again in a utility process.
 - The client's own threads wake ~7–9 times a second at idle.
+- **What the target counts** (owner, 2026-11-07, design D12): only our own threads (≤ 30/s); GPU driver threads
+  are reported beside it. On that count the spike's chat screen is at ~8/s.
 - **Electron, settled, same machine** (`threads.ps1`, 2 min after launch): 534–618 wakeups/s. The biggest is
   **our own core**: the `hotkeys-poll` thread (`native/src/hotkeys/windows.rs`, `GetAsyncKeyState` per watched
   key, then `sleep(10 ms)`) at **287/s** while any hotkey is bound, about 2.9 switches per pass, so each key query
-  costs one. The Qt client inherits it at the core split. NVIDIA's driver thread wakes ~130/s in Electron's GPU
+  costs one. The Qt client inherits it at the core split. **Changed on main 2026-11-07** (owner, D13 option c): press actions
+  are now `RegisterHotKey` system hotkeys (no wakeups until pressed); push to talk / mute and keys Windows can't
+  take are polled every 20 ms (standalone benchmark: 74/s with 9 keys, 52/s for the sleep alone). A press
+  binding on a key that types without Ctrl / Alt / Win (e.g. the owner's mute on `;`) stays polled by design. NVIDIA's driver thread wakes ~130/s in Electron's GPU
   process and again in a utility process; Chromium's own threads ~10/s each.
 
 Qt's other RHI backends at idle, same screen: D3D12 119/s and 114 MB, Vulkan 201/s and 171 MB, OpenGL 32/s but
