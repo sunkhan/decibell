@@ -14,6 +14,7 @@
 #include <QTimer>
 #include <QtQml/qqmlextensionplugin.h>
 
+#include "frame_stats.h"
 #include "gpu_device.h"
 
 Q_IMPORT_QML_PLUGIN(Decibell_ThemePlugin)
@@ -43,11 +44,18 @@ int main(int argc, char *argv[])
 {
     // Glyph-cache text through the platform engine (DirectWrite on Windows): the closest to Chromium's text.
     QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
-    // Qt's DXGI vblank thread waits on every vertical blank even when nothing renders: 279 wakeups a second on a
-    // 279 Hz panel. The threaded render loop paces itself on Present without it. Measured at idle with a channel
-    // open: 310 → 79 context switches per second.
+    // Frame pacing without idle wakeups (both measured on a 280 Hz panel, qt-client/HANDOFF.md §2b):
+    // - Qt's DXGI vblank thread waits on every vertical blank whether or not anything renders (279 wakeups a
+    //   second here) and delivers window update requests on it. Off.
+    // - Without it, a window's update request falls back to a 5 ms timer, which Windows' 15.6 ms timer granularity
+    //   turns into ~65 frames a second. QT_QPA_UPDATE_IDLE_TIME=0 delivers the request at once instead, and the
+    //   frame is paced by the swap chain (Qt waits on its frame-latency object before each frame), so animation
+    //   runs at the refresh rate and nothing wakes while nothing changes.
+    // Scrolling at 1000 px/s: 280 frames/s with 3-8 missed vsyncs in 6 s (Electron: 45-90); idle: our threads ~0.
     if (!qEnvironmentVariableIsSet("QT_D3D_NO_VBLANK_THREAD"))
         qputenv("QT_D3D_NO_VBLANK_THREAD", "1");
+    if (!qEnvironmentVariableIsSet("QT_QPA_UPDATE_IDLE_TIME"))
+        qputenv("QT_QPA_UPDATE_IDLE_TIME", "0");
 
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("Decibell"));
@@ -59,7 +67,14 @@ int main(int argc, char *argv[])
     const QCommandLineOption screenOpt(QStringLiteral("screen"), QStringLiteral("chat | gallery."), QStringLiteral("name"), QStringLiteral("chat"));
     const QCommandLineOption fixtureOpt(QStringLiteral("fixture"), QStringLiteral("Fixture folder (tools/gen-fixture.mjs)."),
                                         QStringLiteral("dir"), QStringLiteral(DECIBELL_FIXTURE_DIR));
-    cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt});
+    const QCommandLineOption benchOpt(QStringLiteral("bench-scroll"),
+                                      QStringLiteral("Scroll the chat at a constant speed for N seconds, print frame stats (JSON) and quit."),
+                                      QStringLiteral("seconds"));
+    const QCommandLineOption speedOpt(QStringLiteral("bench-speed"), QStringLiteral("Scroll speed in px/s."), QStringLiteral("px"),
+                                      QStringLiteral("3000"));
+    const QCommandLineOption ablateOpt(QStringLiteral("ablate"), QStringLiteral("Debug: hide parts of message rows (avatar,header,body,images,divider)."),
+                                       QStringLiteral("parts"));
+    cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt, benchOpt, speedOpt, ablateOpt});
     cli.addHelpOption();
     cli.process(app);
 
@@ -71,6 +86,9 @@ int main(int argc, char *argv[])
         initial.insert(QStringLiteral("themeName"), cli.value(themeOpt));
     initial.insert(QStringLiteral("screenName"), cli.value(screenOpt));
     initial.insert(QStringLiteral("fixtureDir"), cli.value(fixtureOpt));
+    initial.insert(QStringLiteral("ablate"), cli.value(ablateOpt));
+    if (cli.isSet(benchOpt))
+        initial.insert(QStringLiteral("benchSpeed"), cli.value(speedOpt).toDouble());
     // The window starts hidden so our graphics device is in place before Qt creates one (gpu_device.h). A capture
     // never shows it: grabWindow() renders the unexposed window through the same RHI backend and platform font
     // engine (D3D11 + DirectWrite), so nothing flashes on screen; QT_QPA_PLATFORM=offscreen would swap in FreeType.
@@ -83,6 +101,26 @@ int main(int argc, char *argv[])
     decibell::installGraphicsDevice(mainWindow);
     if (mainWindow && !cli.isSet(captureOpt))
         mainWindow->show();
+
+    if (cli.isSet(benchOpt) && mainWindow) {
+        // 2 s for the fixture to load and the first screen to settle, then N s of recording while QML scrolls.
+        auto *stats = new decibell::FrameStats(mainWindow);
+        const int seconds = cli.value(benchOpt).toInt();
+        QTimer::singleShot(2000, &app, [stats] { stats->start(); });
+        QTimer::singleShot(2000 + seconds * 1000, &app, [stats] {
+            // A WIN32 app has no console: write the report next to nothing else, to a file when asked for.
+            const QByteArray line = stats->report().toUtf8() + '\n';
+            if (const QByteArray out = qgetenv("DECIBELL_BENCH_OUT"); !out.isEmpty()) {
+                if (FILE *f = fopen(out.constData(), "ab")) {
+                    fwrite(line.constData(), 1, size_t(line.size()), f);
+                    fclose(f);
+                }
+            }
+            fputs(line.constData(), stdout);
+            fflush(stdout);
+            QCoreApplication::exit(0);
+        });
+    }
 
     if (cli.isSet(captureOpt)) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());

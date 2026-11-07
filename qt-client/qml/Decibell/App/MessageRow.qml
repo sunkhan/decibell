@@ -33,6 +33,7 @@ Item {
     required property int image2W
     required property int image2H
 
+    property string ablate
     property real viewWidth: 683
     property real viewHeight: 574
     readonly property real contentX: 62     // 12 padding + 38 avatar / gutter + 12 gap
@@ -63,7 +64,7 @@ Item {
         id: divider
         width: parent.width
         height: row.dayLabel !== "" ? 41 : 0
-        visible: row.dayLabel !== ""
+        visible: row.dayLabel !== "" && !row.ablate.includes("divider")
         Text {
             id: dayText
             anchors.horizontalCenter: parent.horizontalCenter
@@ -84,7 +85,7 @@ Item {
 
     // ── avatar (first row only) ───────────────────────────────────────────────────────────────────────
     Avatar {
-        visible: !row.grouped
+        visible: !row.grouped && !row.ablate.includes("avatar")
         x: 12
         y: divider.height + 10 + (row.hasReply ? 22 : 0)
         size: 38
@@ -124,9 +125,9 @@ Item {
 
         // Header: name + time on one baseline (`flex items-baseline gap-2`).
         Item {
-            visible: !row.grouped
+            visible: !row.grouped && !row.ablate.includes("header")
             width: parent.width
-            height: visible ? 22 : 0
+            height: !row.grouped ? 22 : 0
             Text {
                 id: name
                 text: row.senderName
@@ -150,7 +151,7 @@ Item {
 
         // Body (`mt-0.5 whitespace-pre-wrap break-all text-body leading-body`)
         Text {
-            visible: row.body !== ""
+            visible: row.body !== "" && !row.ablate.includes("body")
             topPadding: row.grouped ? 0 : 2
             width: parent.width
             text: row.body
@@ -187,7 +188,7 @@ Item {
 
         // Image attachments: one sized by the renderer's caps, several in a 180 px-row grid.
         Item {
-            visible: row.imageCount > 0
+            visible: row.imageCount > 0 && !row.ablate.includes("images")
             width: parent.width
             height: visible ? imgs.height + 4 : 0
             readonly property real scale0: Math.min(1, row.maxW() / Math.max(1, row.image0W), row.maxH() / Math.max(1, row.image0H))

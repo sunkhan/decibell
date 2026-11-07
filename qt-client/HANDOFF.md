@@ -134,6 +134,23 @@ Wakeups, and what they turned out to be (`tools/perf/threads.ps1` names each bus
   binding on a key that types without Ctrl / Alt / Win (e.g. the owner's mute on `;`) stays polled by design. NVIDIA's driver thread wakes ~130/s in Electron's GPU
   process and again in a utility process; Chromium's own threads ~10/s each.
 
+**Frame pacing while scrolling** (`decibell-qt --bench-scroll <s> [--bench-speed px/s]`: a constant scroll into
+history, frame-stage timestamps on the render thread; Electron's counterpart `tools/perf/electron-scroll.mjs`, a
+requestAnimationFrame-driven scroll of the real message list over CDP):
+
+- The scene is cheap: per frame sync 0.03 ms, render 0.6–0.7 ms, Present 0.65 ms (p50). Hiding every part of the
+  rows changed nothing, so row content isn't the cost at this stage.
+- Pacing is the issue, and the vblank thread is load-bearing: Qt delivers a window's update request on it. Turned
+  off alone (what was first shipped), the request falls back to a 5 ms timer that Windows' 15.6 ms granularity
+  stretches to **~65 frames/s**. With it on, ~150 frames/s (the request waits for the next vblank, the frame then
+  misses the one after). **Off + `QT_QPA_UPDATE_IDLE_TIME=0`** (now the default in `main.cpp`): the request is
+  immediate and the swap chain paces the frame; idle wakeups from our threads stay ~0.
+- Paired runs, same conditions, 1000 px/s, 6 s: quiet machine — Qt p50 3.6 ms with 3–8 missed vsyncs, Electron p50
+  3.6 ms with 45–90; busy machine (the owner working) — Qt p50 5.4–6.1 ms, Electron 6.4–7.3 ms. Qt matched or beat
+  Electron in every pair. **Neither holds every frame at 280 Hz while the machine is in use**; the go / no-go
+  criterion needs a controlled session (nothing else running, same GPU power state for both).
+- `--ablate avatar,header,body,images,divider` (debug) hides row parts for this kind of bisection.
+
 Qt's other RHI backends at idle, same screen: D3D12 119/s and 114 MB, Vulkan 201/s and 171 MB, OpenGL 32/s but
 188 MB. D3D11 stays (design D6).
 

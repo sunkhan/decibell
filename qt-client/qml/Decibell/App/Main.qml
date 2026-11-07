@@ -9,6 +9,9 @@ Window {
     property string themeName: "nocturne"
     property string screenName: "chat"
     property string fixtureDir
+    // --bench-scroll: the chat scrolls through history at this speed (px/s) for frame-pacing measurements.
+    property real benchSpeed: 0
+    property string ablate
     width: 1280
     height: 800
     minimumWidth: 800
@@ -26,7 +29,7 @@ Window {
     }
     Component {
         id: chatScreen
-        ChatScreen { fixtureDir: root.fixtureDir; window: root }
+        ChatScreen { fixtureDir: root.fixtureDir; window: root; benchSpeed: root.benchSpeed; ablate: root.ablate }
     }
     Component {
         id: gallery

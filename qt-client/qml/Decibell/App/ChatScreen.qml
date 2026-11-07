@@ -9,6 +9,8 @@ Item {
     id: screen
     required property string fixtureDir
     property Window window
+    property real benchSpeed: 0
+    property string ablate
 
     ChatModel { id: chat; Component.onCompleted: load(screen.fixtureDir) }
     RosterModel { id: roster; Component.onCompleted: load(screen.fixtureDir) }
@@ -412,7 +414,14 @@ Item {
                         // Newest at the bottom (the model is newest-first): the view opens at the present, and
                         // history pages append at the far end of the model, above the viewport, moving nothing.
                         verticalLayoutDirection: ListView.BottomToTop
+                        // Benchmark driver: a constant scroll into history, the distance per frame from the frame's
+                        // own time so the speed doesn't depend on the frame rate.
+                        FrameAnimation {
+                            running: screen.benchSpeed > 0
+                            onTriggered: list.contentY -= screen.benchSpeed * frameTime
+                        }
                         delegate: MessageRow {
+                            ablate: screen.ablate
                             viewWidth: list.width
                             viewHeight: list.height
                         }
