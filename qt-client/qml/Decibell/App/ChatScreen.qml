@@ -1,6 +1,7 @@
 import QtQuick
 import Decibell.Theme
 import Decibell.Core
+import Decibell.Ui
 
 // Spike screen (b): the app frame with a busy channel open, laid out from the live Electron client's measured
 // boxes (MainLayout: title bar 32, server bar 64 with 44 px tiles, the workspace inset 8 px as one rounded,
@@ -15,6 +16,10 @@ Item {
     ChatModel { id: chat; Component.onCompleted: load(screen.fixtureDir) }
     RosterModel { id: roster; Component.onCompleted: load(screen.fixtureDir) }
     ChannelModel { id: channels; Component.onCompleted: load(screen.fixtureDir) }
+    // Chromium's wheel feel (src/ui/smoothwheel.h) on every scrolling list.
+    SmoothWheel { target: list }
+    SmoothWheel { target: channelList }
+    SmoothWheel { target: memberList }
 
     // ── title bar (chrome scope) ──────────────────────────────────────────────────────────────────────
     Rectangle {
@@ -481,6 +486,7 @@ Item {
                     color: Theme.t.colorBgDark
                     Rectangle { width: 1; height: parent.height; color: Theme.t.colorBorder }
                     ListView {
+                        id: memberList
                         x: 13
                         width: parent.width - 25
                         height: parent.height

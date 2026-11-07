@@ -178,6 +178,19 @@ for the documents). Not done yet: selection (across rows), hover / link clicks, 
 `decibell-qt --fixture qt-client/assets/fixture-features --capture out.png` renders a hand-written fixture with every
 feature on one screen; `src/crash_trace.cpp` prints a symbolised stack on abort / crash (build RelWithDebInfo).
 
+## 2d. Wheel scrolling (`src/ui/smoothwheel.*`)
+
+Measured on the Electron client with real `WM_MOUSEWHEEL` messages posted to its window (`tools/perf/electron-wheel.mjs`;
+**CDP-injected wheel events skip Chromium's smooth scrolling and jump**, and an occluded Electron window runs no
+requestAnimationFrame, so keep it topmost while measuring): a notch scrolls **100 px over ~175 ms on a smoothstep
+curve**; a notch mid-animation adds 100 px and restarts from the current position keeping the speed. `SmoothWheel`
+does exactly that (a cubic Hermite from (position, velocity) to (target, 0)), on wall time, ticked once per frame by a
+`QVariantAnimation`: Qt's animation driver steps one assumed vsync per rendered frame, so its own clock lags whenever
+frames come slower (a 175 ms notch took 196 ms). Touchpads pass through unanimated. Measured: a notch matches
+smoothstep within ~1 px at every sample; three quick notches tick at 3.6 ms (Electron 6–8 ms). Open: the first gesture
+after idle ticks at ~12 ms (clocks ramping up from deep idle; Electron ~6.5 ms) — for the owner's feel review.
+Keyboard scrolling (PageUp / Down, arrows, Home / End) is not done.
+
 ## 3. Measuring
 
 `tools/perf/` (see its README): `measure.ps1` samples a client's whole process tree (CPU, memory, context
