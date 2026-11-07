@@ -41,7 +41,10 @@ foreach(f IN LISTS DECIBELL_FONTS)
 endforeach()
 
 add_subdirectory(src/ui)
-add_subdirectory(src/video)
+# Watched streams: Windows (D3D11VA) so far; the Linux path (VA-API / Vulkan Video) comes with the Linux spike.
+if(WIN32)
+  add_subdirectory(src/video)
+endif()
 add_subdirectory(qml/Decibell/Theme)
 add_subdirectory(qml/Decibell/App)
 
@@ -59,9 +62,12 @@ target_compile_definitions(decibell-qt PRIVATE
 target_include_directories(decibell-qt PRIVATE src)
 target_link_libraries(decibell-qt PRIVATE
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick
-  decibell_core_qml decibell_themeplugin decibell_appplugin decibell_uiplugin decibell_ui
-  decibell_videoplugin decibell_video Qt6::Svg)
+  decibell_core_qml decibell_themeplugin decibell_appplugin decibell_uiplugin decibell_ui Qt6::Svg)
+if(TARGET decibell_video)
+  target_link_libraries(decibell-qt PRIVATE decibell_videoplugin decibell_video)
+  target_compile_definitions(decibell-qt PRIVATE DECIBELL_HAS_VIDEO)
+  add_custom_command(TARGET decibell-qt POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DECIBELL_FFMPEG_DLLS} $<TARGET_FILE_DIR:decibell-qt>
+    VERBATIM)
+endif()
 qt_import_qml_plugins(decibell-qt)
-add_custom_command(TARGET decibell-qt POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DECIBELL_FFMPEG_DLLS} $<TARGET_FILE_DIR:decibell-qt>
-  VERBATIM)

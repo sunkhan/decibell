@@ -41,7 +41,15 @@ cmake -S qt-client -B C:\b\qt -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build C:\b\qt
 ```
 
-Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`).
+Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`). `tools\build-windows.cmd [Release|Debug]
+[build dir]` does all of the above (assets, theme check, configure, build); FFmpeg for the video module comes from
+`DECIBELL_FFMPEG_ROOT` (default `C:\dev\vcpkg\installed\x64-windows`; not `VCPKG_ROOT`, which vcvars64 repoints).
+
+**Linux** (not built yet; the dual-boot session's first step): `QT_PREFIX=~/Qt/6.12.0/linux_gcc_64
+tools/build-linux.sh` (Qt through `tools/qt/fetch_qt.py --host linux_x64 --arch linux_gcc_64`, see the script).
+The video module is Windows-only so far: CMake leaves it out elsewhere, `main.cpp` guards it with
+`DECIBELL_HAS_VIDEO`, and `Main.qml` loads `VideoScreen.qml` by URL so the App module compiles without it. Only
+reviewed for portability, never compiled on Linux: expect first-build fixes.
 
 ## 2. Gotchas found so far
 

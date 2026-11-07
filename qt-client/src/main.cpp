@@ -21,14 +21,35 @@
 #include "gpu_device.h"
 #include "selftest.h"
 #include "ui/emoji.h"
+#ifdef DECIBELL_HAS_VIDEO
 #include "video/videoitem.h"
+#endif
 
 Q_IMPORT_QML_PLUGIN(Decibell_ThemePlugin)
 Q_IMPORT_QML_PLUGIN(Decibell_AppPlugin)
 Q_IMPORT_QML_PLUGIN(Decibell_UiPlugin)
+#ifdef DECIBELL_HAS_VIDEO
 Q_IMPORT_QML_PLUGIN(Decibell_VideoPlugin)
+#endif
 
 namespace {
+
+// Watched streams are built on Windows only so far (CMakeLists.txt): the bench hooks are no-ops elsewhere.
+void videoBenchStart()
+{
+#ifdef DECIBELL_HAS_VIDEO
+    decibell::video::VideoItem::benchStart();
+#endif
+}
+
+QString videoBenchReport()
+{
+#ifdef DECIBELL_HAS_VIDEO
+    return decibell::video::VideoItem::benchReport();
+#else
+    return QStringLiteral("[]");
+#endif
+}
 
 // The same three variable fonts the renderer uses (see tools/fetch-assets.mjs). Registered from the
 // uncompressed resource in the mapped executable, so Qt reads them in place instead of copying ~1.4 MB.
@@ -147,12 +168,12 @@ int main(int argc, char *argv[])
         QTimer::singleShot(2000, &app, [stats, benchVideo] {
             stats->start();
             if (benchVideo)
-                decibell::video::VideoItem::benchStart();
+                videoBenchStart();
         });
         QTimer::singleShot(2000 + seconds * 1000, &app, [stats, benchVideo] {
-            const QString report = benchVideo ? QStringLiteral("{\"frames\":%1,\"video\":%2}")
-                                                    .arg(stats->report(), decibell::video::VideoItem::benchReport())
-                                              : stats->report();
+            const QString report = benchVideo
+                ? QStringLiteral("{\"frames\":%1,\"video\":%2}").arg(stats->report(), videoBenchReport())
+                : stats->report();
             // A WIN32 app has no console: write the report next to nothing else, to a file when asked for.
             const QByteArray line = report.toUtf8() + '\n';
             if (const QByteArray out = qgetenv("DECIBELL_BENCH_OUT"); !out.isEmpty()) {

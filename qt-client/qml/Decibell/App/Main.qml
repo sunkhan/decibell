@@ -29,16 +29,23 @@ Window {
     Loader {
         anchors.fill: parent
         // "empty" (debug): no screen at all, the floor for memory measurements.
-        sourceComponent: root.screenName === "gallery" ? gallery : root.screenName === "video" ? videoScreen
-                       : root.screenName === "empty" ? null : chatScreen
+        sourceComponent: root.screenName === "gallery" ? gallery
+                       : root.screenName === "video" || root.screenName === "empty" ? null : chatScreen
+    }
+    // Watched streams, by URL: VideoScreen.qml and Decibell.Video are only built on Windows so far, and a typed
+    // reference would stop this module from compiling elsewhere.
+    Loader {
+        anchors.fill: parent
+        active: root.screenName === "video"
+        source: "VideoScreen.qml"
+        onLoaded: {
+            item.sources = Qt.binding(() => root.videoSources)
+            item.showStats = Qt.binding(() => !root.benchVideo)
+        }
     }
     Component {
         id: chatScreen
         ChatScreen { fixtureDir: root.fixtureDir; window: root; benchSpeed: root.benchSpeed; ablate: root.ablate }
-    }
-    Component {
-        id: videoScreen
-        VideoScreen { sources: root.videoSources; showStats: !root.benchVideo }
     }
     Component {
         id: gallery
