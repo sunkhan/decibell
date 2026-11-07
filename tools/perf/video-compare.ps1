@@ -32,12 +32,14 @@ function Measure-Run($client) {
     $tmp = [System.IO.Path]::GetTempFileName()
     if ($client -eq 'qt') {
         $env:DECIBELL_BENCH_OUT = $tmp
-        $args = @('--video', ($Streams -join ','), '--bench-video', "$appSeconds")
-        if ($Maximized) { $args += '--maximized' }
-        $proc = Start-Process $QtExe -ArgumentList $args -PassThru
+        $qargs = @('--video', ($Streams -join ','), '--bench-video', "$appSeconds")
+        if ($Maximized) { $qargs += '--maximized' }
+        $proc = Start-Process $QtExe -ArgumentList $qargs -PassThru
         $title = 'Decibell (Qt spike)'; $procName = 'decibell-qt'
     } else {
-        $proc = Start-Process $electron -ArgumentList $harness, "--files=$($Streams -join ',')", "--seconds=$appSeconds", "--out=$tmp" -PassThru
+        $eargs = @($harness, "--files=$($Streams -join ',')", "--seconds=$appSeconds", "--out=$tmp")
+        if ($Maximized) { $eargs += '--maximized' }
+        $proc = Start-Process $electron -ArgumentList $eargs -PassThru
         $title = 'electron-video'; $procName = 'electron'
     }
     Start-Sleep -Seconds 3
@@ -52,7 +54,7 @@ function Measure-Run($client) {
     for ($i = 0; $i -lt 30 -and @(Get-Process $procName -ErrorAction SilentlyContinue).Count; $i++) { Start-Sleep -Milliseconds 500 }
     $app = Get-Content $tmp -Raw | ConvertFrom-Json
     Remove-Item $tmp
-    [pscustomobject]@{ client = $client; streams = $Streams; framecount = $fc; app = $app; resources = $res }
+    [pscustomobject]@{ client = $client; streams = $Streams; maximized = [bool]$Maximized; framecount = $fc; app = $app; resources = $res }
 }
 
 for ($r = 1; $r -le $Runs; $r++) {

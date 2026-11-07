@@ -4868,3 +4868,19 @@ for which bindings register and for the hotkey thread end to end (a real registr
 Ctrl+Alt+Shift+Win+F24, a posted `WM_HOTKEY`, the action dispatched, no keyboard input); `npx napi build`;
 renderer typecheck 0 errors. Live test pending (W): a registered combo in a game, PTT at 20 ms. Linux untouched
 (`cfg(windows)`). Ships with the next client release; no server change.
+
+### Spike: the Qt client measured against Electron (2026-11-07, `qt-spike` branch)
+
+The design's go / no-go spike, Windows half; the report with every number is
+`docs/reviews/2026-11-07-qt-client-spike-report.md`. In short, on a quiet machine: watching streams (D3D11VA, the
+picture never leaving the GPU) shows every frame at 1440p120 / 2160p120, one or two streams, at 3–8 % of a core
+against 26–35 % for Electron's player path and 62.6 % for the installed client watching the owner's live stream;
+the chat scrolls at 279 Hz with 1 missed vsync in 6 s (Electron 14–29); history pages and new messages move what
+is being read 0 px. Open against the targets: Linux, the memory target (decided by the core's real share after the
+split), and Qt's wakeups while playing video (~1.75× Electron's player path).
+
+Electron side: a `stream-dump` cargo feature in the native addon (off in every shipped build) records watched
+streams with their arrival times for replay (`DECIBELL_STREAM_DUMP`, `native/src/media/stream_dump.rs`). Verified
+on Windows: `cargo test --lib` 315 passed plus the 2 known Windows-only failures, `cargo check --features
+stream-dump`, a release build with the feature recorded the owner's stream. The installed baseline for watching a
+live 1440p120 stream is now in the design's §2. No server or wire change.

@@ -185,8 +185,10 @@ requestAnimationFrame-driven scroll of the real message list over CDP):
   immediate and the swap chain paces the frame; idle wakeups from our threads stay ~0.
 - Paired runs, same conditions, 1000 px/s, 6 s: quiet machine — Qt p50 3.6 ms with 3–8 missed vsyncs, Electron p50
   3.6 ms with 45–90; busy machine (the owner working) — Qt p50 5.4–6.1 ms, Electron 6.4–7.3 ms. Qt matched or beat
-  Electron in every pair. **Neither holds every frame at 280 Hz while the machine is in use**; the go / no-go
-  criterion needs a controlled session (nothing else running, same GPU power state for both).
+  Electron in every pair. **Neither holds every frame at 280 Hz while the machine is in use**.
+- **Controlled session (2026-11-07, GPU idle at P8, nothing else running; `tools/perf/scroll-compare.ps1`, 3 pairs,
+  the installed client on DailyGaming #general vs the Qt 10k fixture)**: Qt **1 missed vsync in 6 s in every run**
+  (p50 3.57 ms, p99 4.8–5.3 ms); Electron 14 / 29 / 17 (p50 3.6 ms, p99 3.8–7.3 ms).
 - `--ablate avatar,header,body,images,divider` (debug) hides row parts for this kind of bisection.
 
 Qt's other RHI backends at idle, same screen: D3D12 119/s and 114 MB, Vulkan 201/s and 171 MB, OpenGL 32/s but
@@ -246,11 +248,15 @@ with a "name time" line before each message that starts a group. A click on an h
 `--selftest selection [--capture f.png]` drives it with synthetic input in the hidden window and checks it (drag,
 click, double click, copy, PageUp, End).
 
+- **Colours** (`tools/perf/electron-selection.mjs` on the live client, Nocturne): Chromium paints a selection solid
+  **#0539A4** and turns the selected text **white** (a blue sender name too). `MessageText` does the same.
 - **Gotchas**: `ListView.itemAt` with `verticalLayoutDirection: BottomToTop` answered row 0 for every point, so rows
-  are found from the delegates' own geometry. `QSGTextNode`'s built-in selection painted the highlight a few
-  characters off ([5, 22) drawn as [5, 17)), so `MessageText` draws its own rectangles (the line box high, under the
-  text) and the selected text keeps its colour. A hidden window is never polished: the ListView hasn't placed its
-  rows and bodies are laid out at width 0 until something renders it (the self-test grabs once first).
+  are found from the delegates' own geometry. **`QSGTextNode::addTextDocument`'s fourth argument is the selection's
+  last position, inclusive** (Qt 6.12), not the count its name says: passing the count painted [5, 22) as 5..17.
+  `MessageText` draws the highlight itself (one rectangle per line, the line box high, under the text) and lets the
+  text node recolour the glyphs only (transparent highlight, `end − 1` passed). A hidden window is never polished:
+  the ListView hasn't placed its rows and bodies are laid out at width 0 until something renders it (the self-test
+  grabs once first).
 - **Found on the way, fixed: no QtQuick.Shapes.** After the scene graph is re-created, `Shape` items on Qt's curve
   renderer never draw again (Qt 6.12): on the second grab of a hidden window (each renders through a new QRhi)
   every icon, avatar gradient and status dot was gone, and a lost device (driver update, TDR) re-creates the scene
@@ -260,8 +266,7 @@ click, double click, copy, PageUp, End).
   as Chromium rasterises inline SVG), shared through the per-QRhi texture cache (`src/ui/texturecache.*`, also
   MessageText's). At 4× zoom they match the curve renderer's output; memory unchanged (−0.3 MB, one DLL fewer).
   `--selftest regrab --capture f.png` checks it (three renders through new devices).
-- **Open**: the highlight colour is a stand-in (`#663390ff`) until a screenshot of the Electron client with a
-  selection; in Chromium the sender name and time are selectable too (`select-text` covers the header), here only
+- **Open**: in Chromium the sender name and time are selectable too (`select-text` covers the header), here only
   bodies; dragging after a double click doesn't extend by words; no triple click (paragraph).
 
 ## 2e. Watched streams (`src/video/`, QML module `Decibell.Video`, Windows)
@@ -289,20 +294,42 @@ click, double click, copy, PageUp, End).
   own counters don't compare**: Electron counts `drawImage` calls, and Chromium shows only the newest canvas per
   frame. Node timers in Electron's main process tick at 15.6 ms (77 fps for a 120 fps stream), so the harness paces
   in the renderer and pulls each frame from main.
-- **First numbers (2026-11-07, not a quiet machine: a game held ~85% of the GPU, Discord's clip recorder ran)**:
-  1440p120 H.264, 1280 × 800 window: CPU **8–10 % of a core vs Electron 40–41 %**, private working set **43–56 MB vs
-  160–177 MB** (Electron here is a bare harness page, not the client). Every 1440p120 / 2160p120 file decodes all 120
-  frames/s on both. Frames displayed: both clients fell short under the game's load (Qt 100–111/s, Electron 84–120/s,
-  run to run); not a verdict until a quiet session. Runs after the first pair of the AV1 / 4K / two-stream set are
-  void: harness windows left running were summed in (fixed: the harness quits, `video-compare.ps1` refuses to start
-  over a leftover process).
-- **Wakeups while playing 120 fps**: GUI thread ~760/s (≈ 6 per video frame), render thread ~270/s, decoder ~230/s.
-  The GUI thread handles only ~3 events per frame (the decoder's update request, the update request, a dispatcher
-  wake); the rest is the threaded render loop's GUI ↔ render-thread handoff. The basic render loop was tried: worse
-  (11.2 % CPU vs 7.7 %, more frames replaced). Open, see §4.
-- **The renderer waits in `beginFrame`** (p95 11–15 ms) for the swap chain under the GPU load, and replaces 12–17 %
-  of the decoded frames. `QT_D3D_MAX_FRAME_LATENCY=0` moves the wait into Present, `1` is much worse, `3` is about
-  the same as the default. Re-measure on a quiet machine before tuning.
+- **Controlled session (2026-11-07, GPU idle at P8 before each run, nothing else running; 3 paired runs each,
+  `tools/perf/results/video-quiet-2026-11-07.jsonl`)**. Shown/s = distinct frames on screen (framecount), skipped
+  per 10 s; CPU % of a core, private working set, context switches/s (measure.ps1):
+
+  | Setup | Shown/s (skipped) Qt / Electron | CPU | Memory MB | Ctx/s |
+  |---|---|---|---|---|
+  | 1440p120 H.264 | 119.9 (0.3) / 120.0 (0.7) | **7.3** / 32.7 | **69** / 169 | 987 / 573 |
+  | 1440p120 HEVC | 120.0 (0.3) / 119.8 (1.3) | **5.7** / 33.1 | **71** / 164 | 972 / 554 |
+  | 1440p120 AV1 | 120.0 (0.3) / 119.8 (1.7) | **7.8** / 31.5 | **57** / 174 | 972 / 566 |
+  | 2160p120 HEVC | 119.9 (0) / 119.9 (0) | **7.3** / 32.1 | **107** / 172 | 993 / 553 |
+  | 2 × 1440p120 | 120.0 (0.7) / 119.8 (2.7) | **18.5** / 52.6 | **98** / 203 | 1729 / 792 |
+  | 1440p60 H.264 | 60 / 60 | **3.0** / 16.5 | **68** / 161 | 515 / 346 |
+  | 1440p120, maximized | 119.9 (0.7) / 119.9 (0) | **3.3** / 29.6 | **71** / 154 | 1005 / 550 |
+  | 2160p120, maximized | 120.0 (0.7) / 119.8 (0.7) | **6.4** / 34.7 | **104** / 173 | 1053 / 551 |
+
+  Qt presented 1679–1681 of 1680 decoded frames per run: the `beginFrame` waits seen earlier (p95 11–15 ms, 12–17 %
+  replaced) were the game's GPU load, not Qt. Interval p50 7.4 vs 7.9 ms, p99 ~11.1–12 vs 11–13 ms (120 fps on a
+  280 Hz panel alternates 2- and 3-vblank gaps). GPU memory equal at 1440p; at 4K Qt 358 MB vs 277 (the decoder's
+  spare surfaces, `extra_hw_frames = 4`: a lever). Electron is the harness page (its player path only).
+- **A real stream** (the owner's, 1440p120 AV1 from another machine, 20 Mbit/s, keyframe every 4 s, sequence header
+  in-band; recorded by the client's `stream-dump` build, 60 s cut, replayed on its recorded arrival times, arrival
+  gaps p50 8.3 / p99 11 / max 27 ms; `tools/perf/results/video-real-stream-2026-11-07.jsonl`): Qt 1680/1680 shown,
+  0 errors, **5.0 % CPU windowed / 5.7 % maximized, 58 / 59 MB, GPU 130 / 150 MB**; Electron's player path 31.9 % /
+  26.7 %, 168 / 137 MB, GPU 146 / 201 MB, 1680/1680 drawn; context switches Qt 1038 vs 757. The installed client
+  watching the same stream live (the whole app: `measure.ps1`, 60 s): **62.6 % CPU (p95 85 %), 352 MB, 7 processes /
+  257 threads**, context switches p50 3,461/s (bursty, mean 17k), video decode 15 %; its own native
+  `decibell-video-recv` thread wakes ~4,100/s (one per UDP packet), which the Qt client inherits with the core.
+- **Recording a stream** (D1): build the native addon with the `stream-dump` feature (optimized; a debug addon can't
+  keep up), run the client from the checkout with the production renderer (`npm run build:renderer && npm run
+  build:tsc`, then `electron .` with `DECIBELL_STREAM_DUMP=<dir>`; the dev renderer's origin is
+  `http://localhost:5173`, whose fresh decoder probe said no AV1), watch, then `node tools/perf/dbv-cut.mjs in out 60`.
+- **Wakeups while playing 120 fps**: GUI thread ~760/s (≈ 6 per video frame), render thread ~270/s, decoder ~230/s;
+  in the controlled session the Qt process woke ~1.75× as often as Electron's harness. The GUI thread handles only ~3
+  events per frame (the decoder's update request, the update request, a dispatcher wake); the rest is the threaded
+  render loop's GUI ↔ render-thread handoff. The basic render loop was tried: worse (11.2 % CPU vs 7.7 %, more
+  frames replaced). The open item of spike (a), §4.
 
 ## 3. Measuring
 
@@ -315,20 +342,18 @@ Electron baseline lives in the design doc §2; every phase reports against it in
 - **Variable-font weights**: in the gallery, JetBrains Mono at 600 (console themes' active channel, section
   labels) looks heavier than Chromium's. Check whether DirectWrite picks the variable font's 600 instance or
   synthesises bold from 400; if the latter, set the `wght` axis explicitly with `font.variableAxes`.
-- **Spike (a) next**: the quiet-session comparison (nothing else using the GPU; the owner says when):
-  `tools\perf\video-compare.ps1 -Streams <file> -Runs 3 -Seconds 10 -Resources` for 1440p120 H.264 / HEVC / AV1,
-  2160p120 HEVC, two 1440p120 streams, and 1440p60, windowed and `-Maximized`. Then: the real-stream dump switch in
-  native (debug only) once the owner streams; Linux (VAAPI / Vulkan Video) in the dual-boot session.
-- **Video wakeups**: the GUI thread wakes ~6 times per video frame through the threaded loop's sync. Options if it
-  matters after the quiet measurement: a video layer outside the scene graph (DirectComposition visual / child
-  swap chain the decoder presents itself), or a custom render loop. Both cost overlay drawing on top of video.
-- **Spike (b) next**: the selection colour and header selection (§2f open); Matinee captures against Electron's
-  harness.
+- **The spike's Windows half is measured** (2026-11-07, the report: `docs/reviews/2026-11-07-qt-client-spike-report.md`);
+  the owner's go / no-go verdict is next. Still open from it: Linux (VA-API / Vulkan Video, the chat's frame pacing)
+  in the dual-boot session.
+- **Video wakeups**: the GUI thread wakes ~6 times per video frame through the threaded loop's sync (Qt's process
+  ~1.75× Electron's harness while playing). Options: a video layer outside the scene graph (a DirectComposition
+  visual / child swap chain the decoder presents itself), or a custom render loop. Both cost overlay drawing on top
+  of video. Also: fewer spare decoder surfaces at 4K (GPU memory 358 vs 277 MB).
+- **Chat**: sender name and time selectable as in Chromium (§2f open); the "new messages" bar / jump to present;
+  Matinee captures against the live client.
 
-- The design's decisions D1–D11 are settled (owner accepted every recommendation, 2026-11-07). Next: the spike
-  (design doc §12) on the `qt-spike` branch.
-- Baseline still to measure: watching one and two 1440p streams at 60 and 120 fps; the owner streams later from
-  another machine. The busy-channel baseline uses DailyGaming #general (the only community running).
+- The design's decisions D1–D11 are settled (owner accepted every recommendation, 2026-11-07).
+- The busy-channel baseline uses DailyGaming #general (the only community running).
 - **Linux runs on the same machine, dual-booted** (i7-12700K, RTX 4080): the spike's Linux half happens in a
   session booted into Linux, from what the branch carries. Only NVIDIA hardware is on hand; AMD / Intel decode
   paths are live tests for someone with such a GPU.

@@ -321,9 +321,13 @@ QSGNode *VideoItem::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
     if (!node)
         node = new VideoNode(window());
 
-    const QSize video(int(m_player->width()), int(m_player->height()));
+    AVFrame *frame = m_player->takeLatest();
+    // A recorded stream's file names no size: the pictures do.
+    QSize video(int(m_player->width()), int(m_player->height()));
+    if (video.isEmpty() && frame)
+        video = QSize(frame->width, frame->height);
     const QRectF rect = fitRect(boundingRect(), video);
-    if (AVFrame *frame = m_player->takeLatest()) {
+    if (frame) {
         // Draw at the on-screen size in device pixels, never above the video's own size.
         const qreal dpr = window()->effectiveDevicePixelRatio();
         const qreal scale = std::min<qreal>(1.0, rect.width() * dpr / frame->width);

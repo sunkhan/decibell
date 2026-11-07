@@ -35,7 +35,9 @@ class MessageText : public QQuickItem
     // Selection, in positions of the laid-out text (0 .. length): set by the list's ChatSelection. -1: none.
     Q_PROPERTY(int selectionStart MEMBER m_selStart WRITE setSelectionStart NOTIFY selectionChanged)
     Q_PROPERTY(int selectionEnd MEMBER m_selEnd WRITE setSelectionEnd NOTIFY selectionChanged)
+    // Chromium paints a selection #0539A4 with white text (measured on the live client, Nocturne).
     Q_PROPERTY(QColor selectionColor MEMBER m_selColor WRITE setSelectionColor NOTIFY selectionChanged)
+    Q_PROPERTY(QColor selectedTextColor MEMBER m_selTextColor WRITE setSelectedTextColor NOTIFY selectionChanged)
     Q_PROPERTY(int length READ length NOTIFY changed)
 
 public:
@@ -59,6 +61,7 @@ public:
     void setSelectionStart(int p);
     void setSelectionEnd(int p);
     void setSelectionColor(const QColor &c);
+    void setSelectedTextColor(const QColor &c);
     int length() const;
 
     // The text position nearest to a point in item coordinates (0 above the text, length() below it).
@@ -102,7 +105,8 @@ private:
     qreal m_blockRadius = 10;
     bool m_jumboAllowed = true;
     int m_selStart = -1, m_selEnd = -1;
-    QColor m_selColor = QColor(0x33, 0x90, 0xff, 0x66);
+    QColor m_selColor = QColor(0x05, 0x39, 0xa4);
+    QColor m_selTextColor = Qt::white;
 
     std::unique_ptr<QTextDocument> m_doc;
     qreal m_emojiSize = 24;

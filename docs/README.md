@@ -80,6 +80,7 @@ names). They're history: useful for why code is shaped the way it is, never as a
 | `2026-08-21-community-server-review.md` | history: the findings behind fix batches 13–19 and permissions v2 / v3; superseded by the running log |
 | `2026-08-23-community-server-review.md` | **the running feature log** (see above) |
 | `2026-10-17-pre-1.0-review.md` | §1 all fixed (2026-10-18); §2–§6 not started |
+| `2026-11-07-qt-client-spike-report.md` | the Qt client spike's Windows half, measured against Electron: awaiting the owner's go / no-go (on the `qt-spike` branch) |
 
 Elsewhere: `../CODE_REVIEW.md` (2026-07 whole-codebase review, history), `../design_handoff_theme_switcher/`
 (the five-palette theme hand-off, implemented in 0.6.10, since restyled), `../tauri-rebuild-prompt.md`

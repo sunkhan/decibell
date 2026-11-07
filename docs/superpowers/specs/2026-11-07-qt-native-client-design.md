@@ -57,8 +57,11 @@ primary display 2560 × 1440 @ 279 Hz plus a second display. Electron 0.9.4 as i
 | | Context switches per s (p50 / p95) | **153** / 270 |
 | | GPU: 3D / dedicated memory | 0 % / 240 MB (the channel's images) |
 | Same, focus not controlled (launched focused; the owner was using other apps) | Private WS / CPU mean / context switches p50 / p95 | 248 MB / 0.77 % / 150 / 518 |
-| Watching 1 × 1440p60 / 1 × 1440p120 | CPU, GPU 3D + VideoDecode, memory, frame pacing | _needs streamers on other machines_ |
-| Watching 2 × 1440p60 / 2 × 1440p120 | Same | _needs streamers on other machines_ |
+| Watching 1 × 1440p120 (the owner's live AV1 stream, 20 Mbit/s, windowed; 60 s, 2026-11-07) | CPU, % of one core (mean / p95) | **62.6 %** / 84.7 % |
+| | Private WS / processes / threads | **352 MB** / 7 / 257 |
+| | GPU: VideoDecode / 3D / dedicated memory | 14.7 % / 5.3 % / 147 MB |
+| | Context switches per s (p50; bursty, mean 17k) | 3,461 (the native receive thread alone ~4,100/s) |
+| Watching 2 × 1440p120 live | Same | _needs two streamers_; the spike compared both clients' player paths on the same files instead (`docs/reviews/2026-11-07-qt-client-spike-report.md`) |
 
 Method: 2 min settle after the scenario is reached, then 300 samples at 1 s (`tools/perf/measure.ps1`), on a
 machine with no build or download in progress. The owner uses the machine during runs, so focus is checked

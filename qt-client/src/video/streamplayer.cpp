@@ -1,6 +1,7 @@
 #include "streamplayer.h"
 
 #include <chrono>
+#include <cstring>
 
 #include <d3d11_4.h>
 #include <windows.h>
@@ -86,14 +87,12 @@ StreamPlayer::StreamPlayer(ID3D11Device *device, const QString &path, std::funct
         m_error = QStringLiteral("D3D11VA device init failed (%1)").arg(r);
         return;
     }
-    m_ctx = avcodec_alloc_context3(codec);
-    m_ctx->hw_device_ctx = hw; // takes our reference
-    m_ctx->get_format = pickD3D11;
-    m_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    m_ctx->thread_count = 1;       // frame threads would hold pictures back; the GPU does the work
-    m_ctx->extra_hw_frames = 4;    // the picture waiting for the renderer + the one being blitted, with margin
-    if (int r = avcodec_open2(m_ctx, codec, nullptr); r < 0) {
-        m_error = QStringLiteral("avcodec_open2 failed (%1)").arg(r);
+    m_codec = codec;
+    m_hw = hw;
+    // Synthetic files carry their parameter sets in-band: open now, so a failure shows as an error. A recorded
+    // stream's first keyframe may bring a description: the decoder thread opens it then.
+    if (m_file.version == 1 && !openDecoder({})) {
+        m_error = QStringLiteral("avcodec_open2 failed");
         return;
     }
     m_decoder = std::thread([this] { decodeLoop(); });
@@ -108,10 +107,11 @@ StreamPlayer::~StreamPlayer()
         m_source.join();
     if (m_decoder.joinable())
         m_decoder.join();
-    for (AVPacket *p : m_queue)
-        av_packet_free(&p);
+    for (Queued &q : m_queue)
+        av_packet_free(&q.pkt);
     av_frame_free(&m_latest);
     avcodec_free_context(&m_ctx);
+    av_buffer_unref(&m_hw);
     if (m_fenceEvent)
         CloseHandle(m_fenceEvent);
     if (m_fence)
@@ -120,6 +120,29 @@ StreamPlayer::~StreamPlayer()
         m_context4->Release();
     if (m_mt)
         m_mt->Release();
+}
+
+bool StreamPlayer::openDecoder(const std::vector<uint8_t> &extradata)
+{
+    avcodec_free_context(&m_ctx);
+    m_ctx = avcodec_alloc_context3(m_codec);
+    m_ctx->hw_device_ctx = av_buffer_ref(m_hw);
+    m_ctx->get_format = pickD3D11;
+    m_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    m_ctx->thread_count = 1;       // frame threads would hold pictures back; the GPU does the work
+    m_ctx->extra_hw_frames = 4;    // the picture waiting for the renderer + the one being blitted, with margin
+    if (!extradata.empty()) {
+        // hvcC / av1C (/ avcC): FFmpeg then reads the stream's NAL framing from it, as WebCodecs does.
+        m_ctx->extradata = static_cast<uint8_t *>(av_mallocz(extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
+        memcpy(m_ctx->extradata, extradata.data(), extradata.size());
+        m_ctx->extradata_size = int(extradata.size());
+    }
+    m_extradata = extradata;
+    if (avcodec_open2(m_ctx, m_codec, nullptr) < 0) {
+        avcodec_free_context(&m_ctx);
+        return false;
+    }
+    return true;
 }
 
 const char *StreamPlayer::codecName() const
@@ -136,32 +159,46 @@ void StreamPlayer::sourceLoop()
 {
     SetThreadDescription(GetCurrentThread(), L"spike-stream-source");
     HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    const int64_t period = 1'000'000'000LL / m_file.fps;
+    // Synthetic files play at their fps; a recorded stream on its recorded arrival times (start of file = now).
+    const int64_t period = 1'000'000'000LL / (m_file.fps ? m_file.fps : 60);
     int64_t next = nowNs();
+    int64_t origin = nowNs();
+    FrameHeader h;
     while (!m_stop) {
-        uint32_t size = 0;
-        bool key = false;
-        if (!m_file.nextHeader(size, key))
+        if (!m_file.next(h))
             break;
         AVPacket *pkt = av_packet_alloc();
-        if (av_new_packet(pkt, int(size)) < 0 || !m_file.read(pkt->data, size)) {
+        if (av_new_packet(pkt, int(h.size)) < 0 || !m_file.read(pkt->data, h.size)) {
             av_packet_free(&pkt);
             break;
         }
-        if (key)
+        if (h.atUs >= 0) {
+            if (h.wrapped)
+                origin = nowNs() - h.atUs * 1000;
+            const int64_t early = origin + h.atUs * 1000 - nowNs(); // wait for this frame's own arrival time
+            if (early > 0) {
+                LARGE_INTEGER due;
+                due.QuadPart = -(early / 100);
+                SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+                WaitForSingleObject(timer, INFINITE);
+            }
+        }
+        if (h.keyframe)
             pkt->flags |= AV_PKT_FLAG_KEY;
         pkt->pts = nowNs(); // carried through the decoder to the picture: feed -> render latency
         {
             std::lock_guard lock(m_queueMutex);
             if (m_queue.size() >= kQueueDepth) {
-                av_packet_free(&m_queue.front());
+                av_packet_free(&m_queue.front().pkt);
                 m_queue.pop_front();
                 ++queueDrops;
             }
-            m_queue.push_back(pkt);
+            m_queue.push_back({pkt, std::move(h.description)});
         }
         ++fed;
         m_queueCv.notify_one();
+        if (h.atUs >= 0)
+            continue; // paced before it was sent, above
 
         next += period;
         const int64_t wait = next - nowNs();
@@ -181,20 +218,31 @@ void StreamPlayer::decodeLoop()
 {
     SetThreadDescription(GetCurrentThread(), L"decibell-video-decode");
     AVFrame *frame = av_frame_alloc();
-    bool awaitKeyframe = false;
+    // A recording can start mid-GOP: nothing decodes before its first keyframe.
+    bool awaitKeyframe = true;
     for (;;) {
-        AVPacket *pkt = nullptr;
+        Queued q;
         {
             std::unique_lock lock(m_queueMutex);
             m_queueCv.wait(lock, [this] { return m_stop || !m_queue.empty(); });
             if (m_stop)
                 break;
-            pkt = m_queue.front();
+            q = std::move(m_queue.front());
             m_queue.pop_front();
         }
+        AVPacket *pkt = q.pkt;
         if (awaitKeyframe && !(pkt->flags & AV_PKT_FLAG_KEY)) {
             av_packet_free(&pkt);
             continue;
+        }
+        // A new or changed configuration record (a recording's first keyframe, a resolution change): reopen with
+        // it, as StreamVideoPlayer reconfigures WebCodecs.
+        if (!m_ctx || (!q.description.empty() && q.description != m_extradata)) {
+            if (!openDecoder(q.description.empty() ? m_extradata : q.description)) {
+                ++errors;
+                av_packet_free(&pkt);
+                continue;
+            }
         }
         const int64_t t0 = nowNs();
         int r = avcodec_send_packet(m_ctx, pkt);
@@ -208,6 +256,8 @@ void StreamPlayer::decodeLoop()
         awaitKeyframe = false;
         while ((r = avcodec_receive_frame(m_ctx, frame)) == 0) {
             ++decoded;
+            m_frameWidth = frame->width;
+            m_frameHeight = frame->height;
             const int64_t t1 = nowNs();
             if (m_fenceEvent) {
                 // Signalled once the GPU has run everything submitted so far, this picture's decode included.

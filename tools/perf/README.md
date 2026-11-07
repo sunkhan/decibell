@@ -67,3 +67,24 @@ with the app's own report, `measure.ps1` (`-Resources`) and `framecount`. Result
   `drawImage` calls, and Chromium shows only the newest canvas per frame.
 - Electron's main-process (Node) timers tick at Windows' 15.6 ms granularity (77 frames/s for a 120 fps stream), so
   the harness paces in the renderer (Chromium's timers are high-resolution) and pulls each frame from main.
+
+### Real streams
+
+`video-compare.ps1` also plays streams recorded from a live session (DBV2: the client's own frames with their arrival
+times; both clients replay them on those times). Recording: build the native addon with the `stream-dump` cargo
+feature (`npx napi build --platform --release --features stream-dump --js index.js --dts index.d.ts`, then
+`node copy-dlls.cjs`; restore the regenerated `index.js` / `index.d.ts`), build the production renderer
+(`npm run build:renderer && npm run build:tsc`), close the installed client (same profile) and run
+`node_modules\electron\dist\electron.exe .` from `electron-client` with `DECIBELL_STREAM_DUMP=<dir>`; watch the stream.
+`node dbv-cut.mjs <recording> <out.dbv> [seconds]` cuts a clean piece from the first keyframe and prints the
+stream's rate, keyframes, bitrate and arrival spacing. No barcode in a real stream, so framecount reads nothing
+there: compare resources and the apps' own counters.
+
+## Chat scrolling and selection against the live client
+
+- `scroll-compare.ps1 [-Runs 3] [-Seconds 6] [-Speed 1000]`: starts the installed client with a debugging port,
+  opens DailyGaming #general (open-channel.mjs), then alternates the Qt client's `--bench-scroll` and
+  `electron-scroll.mjs` (the client kept topmost while it is measured). It signs the client in: run it with the
+  owner's go-ahead, and restart the client normally afterwards (the debugging port stays open while it runs).
+- `electron-selection.mjs <port> <out.png>`: selects text across two messages in the open channel and saves a
+  screenshot with Chromium's selection colours (#0539A4 with white text in Nocturne).

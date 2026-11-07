@@ -21,6 +21,8 @@
 
 #include "streamfile.h"
 
+struct AVBufferRef;
+struct AVCodec;
 struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
@@ -41,9 +43,11 @@ public:
     bool ok() const { return m_error.isEmpty(); }
     QString error() const { return m_error; }
     const char *codecName() const;
-    uint32_t width() const { return m_file.width; }
-    uint32_t height() const { return m_file.height; }
+    // The file's numbers, or (a recorded real stream says none) the decoded pictures' size; fps 0 when unknown.
+    uint32_t width() const { return m_file.width ? m_file.width : uint32_t(m_frameWidth.load()); }
+    uint32_t height() const { return m_file.height ? m_file.height : uint32_t(m_frameHeight.load()); }
     uint32_t fps() const { return m_file.fps; }
+    bool recorded() const { return m_file.version == 2; }
 
     // Render thread: the newest decoded picture (AV_PIX_FMT_D3D11) or null. The caller frees it.
     AVFrame *takeLatest();
@@ -59,13 +63,24 @@ public:
     std::vector<float> latencySamples() const;
 
 private:
+    // A frame on its way to the decoder, with the decoder configuration record it carried (a recorded stream's
+    // HEVC / AV1 keyframes: hvcC / av1C).
+    struct Queued {
+        AVPacket *pkt = nullptr;
+        std::vector<uint8_t> description;
+    };
     void sourceLoop();
     void decodeLoop();
+    bool openDecoder(const std::vector<uint8_t> &extradata);
     void publish(AVFrame *frame);
 
     StreamFile m_file;
     QString m_error;
-    AVCodecContext *m_ctx = nullptr;
+    const AVCodec *m_codec = nullptr;
+    AVBufferRef *m_hw = nullptr;           // the D3D11VA device; each decoder context takes a reference
+    AVCodecContext *m_ctx = nullptr;       // opened on the decoder thread, again when the description changes
+    std::vector<uint8_t> m_extradata;
+    std::atomic<int> m_frameWidth{0}, m_frameHeight{0};
     ID3D11Multithread *m_mt = nullptr;
     // Diagnostic (DECIBELL_VIDEO_FENCE=1): wait until the GPU has finished each picture before publishing it, and
     // record how long that took (decode_done_ms). Off by default: it made things worse, not better (measured with a
@@ -79,7 +94,7 @@ private:
 
     std::mutex m_queueMutex;
     std::condition_variable m_queueCv;
-    std::deque<AVPacket *> m_queue;
+    std::deque<Queued> m_queue;
     std::atomic<bool> m_stop{false};
 
     std::mutex m_frameMutex;

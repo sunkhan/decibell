@@ -90,6 +90,7 @@ void MessageText::setJumboAllowed(bool on) { if (m_jumboAllowed == on) return; m
 void MessageText::setSelectionStart(int p) { if (m_selStart == p) return; m_selStart = p; update(); emit selectionChanged(); }
 void MessageText::setSelectionEnd(int p) { if (m_selEnd == p) return; m_selEnd = p; update(); emit selectionChanged(); }
 void MessageText::setSelectionColor(const QColor &c) { if (m_selColor == c) return; m_selColor = c; update(); emit selectionChanged(); }
+void MessageText::setSelectedTextColor(const QColor &c) { if (m_selTextColor == c) return; m_selTextColor = c; update(); emit selectionChanged(); }
 int MessageText::length() const { return m_doc ? m_doc->characterCount() - 1 : 0; }
 QString MessageText::emojiDir() const { return QString(); }
 void MessageText::setEmojiDir(const QString &dir) { Emoji::instance().setDirectory(dir); m_dirtyDoc = true; relayout(); emit changed(); }
@@ -423,7 +424,16 @@ QSGNode *MessageText::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
     QSGTextNode *text = w->createTextNode();
     text->setColor(m_color);
     text->setLinkColor(m_linkColor);
-    text->addTextDocument(QPointF(0, m_halfLeading), m_doc.get());
+    if (m_selStart >= 0 && m_selEnd >= 0 && selTo > selFrom) {
+        // The selected glyphs in the selected-text colour (Chromium: white). The text node's own highlight is turned
+        // off (the rectangles above draw it), and its fourth argument is the selection's last position, inclusive,
+        // whatever its name says (Qt 6.12: passing the count painted [5, 22) as [5, 17]).
+        text->setSelectionColor(Qt::transparent);
+        text->setSelectionTextColor(m_selTextColor);
+        text->addTextDocument(QPointF(0, m_halfLeading), m_doc.get(), selFrom, selTo - 1);
+    } else {
+        text->addTextDocument(QPointF(0, m_halfLeading), m_doc.get());
+    }
     root->appendChildNode(text);
     for (const Placed &e : m_emoji) {
         const int px = qCeil(e.rect.width() * dpr);
