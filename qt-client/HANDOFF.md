@@ -3,9 +3,15 @@
 The native desktop client for Windows and Linux: Qt 6 Quick (QML) over the shared Rust core. The Electron client
 (`electron-client/`) keeps shipping until this one reaches parity and is the reference for every behaviour.
 
-**Status (2026-11-07): design stage.** No client code yet. The design and its open decisions:
-`docs/superpowers/specs/2026-11-07-qt-native-client-design.md` (read it first). The toolchain is set up and
-proven on the owner's Windows machine (cxx-qt's minimal QML example builds and runs against Qt 6.12.0).
+**Status (2026-11-07): spike, day 1** (branch `qt-spike`). Design (approved):
+`docs/superpowers/specs/2026-11-07-qt-native-client-design.md` (read it first). Built so far: the CMake +
+cxx-qt skeleton (`decibell-qt`: a Rust `Decibell.Core` module, `Decibell.Theme`, `Decibell.App`), the theme
+generator (`tools/gen-theme`: 225 tokens × 7 themes from `globals.css`, `--check` for the verification bar), the
+pinned font fetch (`tools/fetch-assets.mjs`) and `--capture`. The app shows a theme gallery (all seven themes'
+surfaces, type and elevation side by side).
+
+Build: `qt-client\tools\build-windows.cmd [Release|Debug] [builddir]` (fetches assets, checks the theme is
+current, configures and builds into `C:\b\qt`). Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH.
 
 Read first: `CLAUDE.md` (rules, verification bar, owner decisions; all apply here), `ARCHITECTURE.md` (§7.3: what
 of `electron-client/native` is reusable and what Electron does that this client replaces), `docs/FEATURES.md`
@@ -51,7 +57,24 @@ Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`).
 - **PowerShell 5.1 + native stderr**: with `$ErrorActionPreference = 'Stop'`, a native tool writing to stderr
   (rustup's `info:` lines, git progress) throws and can kill the tool mid-install (a half-installed rustup with no
   toolchain). Run native tools through `cmd /c "… 2>&1"`.
-- **cxx-qt-cmake's upstream example fetches `GIT_TAG main`**; pin a tag.
+- **cxx-qt-cmake's upstream example fetches `GIT_TAG main`**; pin a tag (the tags have no `v`: `0.10.0`).
+- **Logs of a `WIN32` app go to the debugger**, not stderr: set `QT_FORCE_STDERR_LOGGING=1` to see QML errors
+  (a failed load otherwise just exits 1).
+- **Captures**: `QT_QPA_PLATFORM=offscreen` renders text with FreeType (grayscale, different advances; lines wrap
+  differently). Capture an unshown window on the real platform instead: `decibell-qt --capture out.png`.
+
+## 2a. Fidelity rules (Chromium → Qt)
+
+- **Line height**: CSS `line-height: 1.45` is 1.45 × the font size. QML's default `lineHeight` multiplies the
+  font's own line spacing, so use `lineHeightMode: Text.FixedHeight; lineHeight: px * leading`, unrounded
+  (Chromium keeps fractional line boxes).
+- **Inter's optical size**: Chromium sets `opsz` from the font size (`font-optical-sizing: auto`, clamped to
+  14–32). Qt doesn't: Inter text sets `font.variableAxes: {"opsz": Theme.opsz(px)}`.
+- **Italics are synthesised**: the renderer loads no italic face, so the client bundles none either and Qt
+  slants the upright one, as Chromium does.
+- **Mona Sans width**: server tiles and the wordmark use the `wdth` axis (`tTileStretchWdth`,
+  `tWordmarkStretchWdth`), through `font.variableAxes`.
+- **Names**: a QML property can't be called `console` (the JS global) or `layer` (`Item.layer` is FINAL).
 
 ## 3. Measuring
 

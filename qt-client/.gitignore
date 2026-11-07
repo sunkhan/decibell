@@ -1,0 +1,3 @@
+assets/
+# written by the build (qmlls import paths into the local build tree)
+rust/.qmlls.ini

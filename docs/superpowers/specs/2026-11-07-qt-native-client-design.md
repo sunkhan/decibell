@@ -407,9 +407,11 @@ visible difference, so it waits for the owner (§14, D9). Linux: client-side dec
   thumbnails; a roster; servers). Real community messages are never committed (§14, D5).
 - **Electron captures** come from the existing UI preview harness (HANDOFF §5.15: a scratch Vite build of the
   real components, stores seeded with `setState`, captured by an offscreen `BrowserWindow`), fed the fixture.
-- **Qt captures** come from the client run with `QT_QPA_PLATFORM=offscreen` and `QQuickWindow::grabWindow()` per
-  screen, theme and DPR (1.0, 1.25, 1.5, 2.0). The spike first checks that offscreen glyphs match the on-screen
-  D3D11 ones; if they don't, the harness renders through `QQuickRenderControl` on D3D11 instead.
+- **Qt captures** come from the client itself (`decibell-qt --capture <png> [--theme <name>]`): the window is
+  created but never shown, and `QQuickWindow::grabWindow()` renders it through the real platform, D3D11 +
+  DirectWrite, so nothing flashes on screen. **Not `QT_QPA_PLATFORM=offscreen`** (checked in the spike's first
+  capture): that platform swaps in Qt's FreeType font database with grayscale AA and different advance widths, so
+  lines wrap differently from the screen. Per screen, theme and DPR (1.0, 1.25, 1.5, 2.0).
 - A compare page shows each pair side by side with a difference overlay. The owner judges the feel (scrolling,
   motion, DPI) at milestones.
 
