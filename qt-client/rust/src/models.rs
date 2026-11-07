@@ -147,7 +147,7 @@ fn q(s: &str) -> QString {
 const CHAT_ROLES: &[&str] = &[
     "messageId", "senderName", "colorIndex", "avatar", "initial", "timeLabel", "dayLabel", "grouped", "body",
     "codeLang", "codeText", "hasReply", "replyName", "replyColor", "replySnippet", "imageCount", "image0",
-    "image0W", "image0H", "image1", "image1W", "image1H", "image2", "image2W", "image2H",
+    "image0W", "image0H", "image1", "image1W", "image1H", "image2", "image2W", "image2H", "content",
 ];
 
 pub struct ChatRow {
@@ -160,6 +160,8 @@ pub struct ChatRow {
     day: QString,
     grouped: bool,
     body: QString,
+    /// The raw markdown, for MessageText.
+    content: QString,
     code_lang: QString,
     code_text: QString,
     reply: Option<(QString, i32, QString)>,
@@ -194,6 +196,7 @@ impl qobject::ChatModel {
                     day: q(&r.day_label),
                     grouped: r.grouped,
                     body: q(&body),
+                    content: q(&r.content),
                     code_lang: q(&code_lang),
                     code_text: q(&code_text),
                     reply: r.reply.map(|x| (q(&x.sender_name), x.color_index as i32, q(&x.snippet))),
@@ -243,6 +246,7 @@ impl qobject::ChatModel {
             14 => r.reply.as_ref().map_or_else(|| QVariant::from(&QString::default()), |x| QVariant::from(&x.2)),
             15 => QVariant::from(&(r.images.len() as i32)),
             n @ 16..=24 => img(((n - 16) / 3) as usize, ((n - 16) % 3) as u8),
+            25 => QVariant::from(&r.content),
             _ => QVariant::default(),
         }
     }

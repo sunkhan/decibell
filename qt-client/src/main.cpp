@@ -14,11 +14,14 @@
 #include <QTimer>
 #include <QtQml/qqmlextensionplugin.h>
 
+#include "crash_trace.h"
 #include "frame_stats.h"
 #include "gpu_device.h"
+#include "ui/emoji.h"
 
 Q_IMPORT_QML_PLUGIN(Decibell_ThemePlugin)
 Q_IMPORT_QML_PLUGIN(Decibell_AppPlugin)
+Q_IMPORT_QML_PLUGIN(Decibell_UiPlugin)
 
 namespace {
 
@@ -42,6 +45,7 @@ void registerFonts()
 
 int main(int argc, char *argv[])
 {
+    decibell::installCrashTrace();
     // Glyph-cache text through the platform engine (DirectWrite on Windows): the closest to Chromium's text.
     QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
     // Frame pacing without idle wakeups (both measured on a 280 Hz panel, qt-client/HANDOFF.md §2b):
@@ -79,6 +83,7 @@ int main(int argc, char *argv[])
     cli.process(app);
 
     registerFonts();
+    decibell::Emoji::instance().setDirectory(QStringLiteral(DECIBELL_ASSETS_DIR "/twemoji"));
 
     QQmlApplicationEngine engine;
     QVariantMap initial;

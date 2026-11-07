@@ -1,5 +1,6 @@
 import QtQuick
 import Decibell.Theme
+import Decibell.Ui
 
 // One message row: an optional day divider, then either a full row (avatar, name, time) or a grouped one
 // (38 px gutter). Spacing measured from the live Electron client (MessageBubble.tsx: first row
@@ -16,6 +17,7 @@ Item {
     required property string dayLabel
     required property bool grouped
     required property string body
+    required property string content
     required property string codeLang
     required property string codeText
     required property bool hasReply
@@ -73,7 +75,7 @@ Item {
             text: row.dayLabel
             color: Theme.t.colorTextMuted
             font.family: Theme.t.fontMeta
-            font.pixelSize: Theme.t.textMeta
+            font.pointSize: 0.75 * (Theme.t.textMeta)
             font.weight: 500
             font.features: { "tnum": 1 }
             lineHeightMode: Text.FixedHeight
@@ -110,7 +112,7 @@ Item {
                 text: row.replyName
                 color: row.nameColor(row.replyColor)
                 font.family: Theme.t.fontChannel
-                font.pixelSize: Theme.t.textReply
+                font.pointSize: 0.75 * (Theme.t.textReply)
                 font.weight: 600
             }
             Text {
@@ -119,7 +121,7 @@ Item {
                 elide: Text.ElideRight
                 color: Theme.t.colorTextSecondary
                 font.family: Theme.t.fontSans
-                font.pixelSize: Theme.t.textReply
+                font.pointSize: 0.75 * (Theme.t.textReply)
             }
         }
 
@@ -133,7 +135,7 @@ Item {
                 text: row.senderName
                 color: row.nameColor(row.colorIndex)
                 font.family: Theme.t.fontChannel
-                font.pixelSize: Theme.t.textSender
+                font.pointSize: 0.75 * (Theme.t.textSender)
                 font.weight: Theme.t.fontWeightEmphasis
                 lineHeightMode: Text.FixedHeight
                 lineHeight: Theme.t.textSender * 1.5
@@ -144,46 +146,28 @@ Item {
                 text: row.timeLabel
                 color: Theme.t.colorTextMuted
                 font.family: Theme.t.fontMeta
-                font.pixelSize: Theme.t.textMeta
+                font.pointSize: 0.75 * (Theme.t.textMeta)
                 font.features: { "tnum": 1 }
             }
         }
 
-        // Body (`mt-0.5 whitespace-pre-wrap break-all text-body leading-body`)
-        Text {
-            visible: row.body !== "" && !row.ablate.includes("body")
-            topPadding: row.grouped ? 0 : 2
+        // Body (`mt-0.5 whitespace-pre-wrap break-all text-body leading-body`): MessageText draws the markdown
+        // subset, inline code chips, fenced blocks and twemoji (src/ui/messagetext.h).
+        Item { width: 1; height: !row.grouped && row.content !== "" ? 2 : 0 }
+        MessageText {
+            visible: row.content !== "" && !row.ablate.includes("body")
             width: parent.width
-            text: row.body
-            textFormat: Text.StyledText
-            wrapMode: Text.WrapAnywhere
+            height: visible ? implicitHeight : 0
+            text: row.content
+            fontFamily: Theme.t.fontSans
+            monoFamily: Theme.t.fontMono
+            pixelSize: Theme.t.textBody
+            lineHeight: Theme.t.textBody * Theme.t.leadingBody
             color: Theme.t.colorTextPrimary
             linkColor: Theme.t.colorAccentBright
-            font.family: Theme.t.fontSans
-            font.pixelSize: Theme.t.textBody
-            lineHeightMode: Text.FixedHeight
-            lineHeight: Theme.t.textBody * Theme.t.leadingBody
-        }
-
-        // Fenced code block
-        Rectangle {
-            visible: row.codeText !== ""
-            width: Math.min(parent.width, codeText.implicitWidth + 24)
-            height: visible ? codeText.implicitHeight + 16 : 0
-            radius: Theme.t.radiusMd
-            color: Theme.t.colorBgDark
-            border.width: 1
-            border.color: Theme.t.colorBorderDivider
-            Text {
-                id: codeText
-                x: 12; y: 8
-                text: row.codeText
-                color: Theme.t.colorTextPrimary
-                font.family: Theme.t.fontMono
-                font.pixelSize: 13
-                lineHeightMode: Text.FixedHeight
-                lineHeight: 20
-            }
+            codeBackground: Theme.t.colorBgDarkest
+            codeRadius: Theme.t.radiusSm
+            blockRadius: Theme.t.radiusMd
         }
 
         // Image attachments: one sized by the renderer's caps, several in a 180 px-row grid.

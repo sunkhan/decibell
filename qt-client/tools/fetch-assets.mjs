@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,54 @@ const FILES = [
   { out: 'fonts/OFL-Inter.txt', url: `${GF}/inter/OFL.txt`, sha256: '5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57' },
   { out: 'fonts/OFL-JetBrainsMono.txt', url: `${GF}/jetbrainsmono/OFL.txt`, sha256: 'b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d' },
 ];
+
+// Twemoji: the same @twemoji/svg release the renderer uses (electron-client/package.json), as its npm tarball
+// (checked against the registry's SRI integrity), unpacked to assets/twemoji/<codepoints>.svg.
+const TARBALLS = [
+  {
+    dir: 'twemoji',
+    url: 'https://registry.npmjs.org/@twemoji/svg/-/svg-15.0.0.tgz',
+    integrity: 'sha512-ZSPef2B6nBaYnfgdTbAy4jgW95o7pi2xPGwGCU+WMTxo7J6B1lMPTWwSq/wTuiMq+N0khQ90CcvYp1wFoQpo/w==',
+    keep: (name) => /^package\/[0-9a-f-]+\.svg$/.test(name) || name === 'package/license',
+  },
+];
+
+// Minimal ustar reader: regular files only, names up to 255 bytes (prefix + name).
+function* untar(buf) {
+  for (let off = 0; off + 512 <= buf.length; ) {
+    const h = buf.subarray(off, off + 512);
+    if (h.every((b) => b === 0)) return;
+    const str = (a, b) => h.subarray(a, b).toString('utf8').replace(/\0.*$/s, '');
+    const size = parseInt(str(124, 136).trim() || '0', 8);
+    const prefix = str(345, 500);
+    const name = (prefix ? prefix + '/' : '') + str(0, 100);
+    const type = String.fromCharCode(h[156] || 48);
+    if (type === '0' || type === '\0') yield { name, data: buf.subarray(off + 512, off + 512 + size) };
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+}
+
+for (const t of TARBALLS) {
+  const dir = path.join(ASSETS, t.dir);
+  const marker = path.join(dir, '.integrity');
+  if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === t.integrity) continue;
+  const r = await fetch(t.url);
+  if (!r.ok) throw new Error(`${t.url}: HTTP ${r.status}`);
+  const tgz = Buffer.from(await r.arrayBuffer());
+  const [algo, want] = t.integrity.split('-');
+  const got = crypto.createHash(algo).update(tgz).digest('base64');
+  if (got !== want) throw new Error(`${t.url}: integrity mismatch`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  let n = 0;
+  for (const e of untar(zlib.gunzipSync(tgz))) {
+    if (!t.keep(e.name)) continue;
+    fs.writeFileSync(path.join(dir, path.basename(e.name)), e.data);
+    n++;
+  }
+  fs.writeFileSync(marker, t.integrity);
+  console.log(`unpacked ${n} files into ${t.dir}/`);
+}
 
 const print = process.argv.includes('--print');
 let bad = 0;

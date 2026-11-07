@@ -272,6 +272,12 @@ mod tests {
     }
 
     #[test]
+    fn styled_body_survives_several_code_spans() {
+        let (h, _) = styled_body("Inline code: run `cargo test --lib` then `npx napi build --platform` and check `config.json` again.");
+        assert!(h.contains("config.json"));
+    }
+
+    #[test]
     fn styled_body_handles_the_subset() {
         let (h, code) = styled_body("a **b** *i* `x<y` https://e.com/z\nnext");
         assert_eq!(h, "a <b>b</b> <i>i</i> <font face=\"JetBrains Mono\">x&lt;y</font> <a href=\"https://e.com/z\">https://e.com/z</a><br>next");

@@ -50,7 +50,7 @@ Item {
             text: av.initial
             color: Theme.t.colorAvFg
             font.family: Theme.t.fontSans
-            font.pixelSize: Math.round(av.size * 0.42)
+            font.pointSize: 0.75 * (Math.round(av.size * 0.42))
             font.weight: 600
         }
     }

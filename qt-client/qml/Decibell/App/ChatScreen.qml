@@ -31,7 +31,7 @@ Item {
             text: chat.serverName
             color: Theme.chrome.colorTextSecondary
             font.family: Theme.t.fontChannel
-            font.pixelSize: 12
+            font.pointSize: 0.75 * (12)
             font.weight: 500
         }
         Row {
@@ -114,7 +114,7 @@ Item {
                 text: chat.serverName
                 color: "white"
                 font.family: Theme.chrome.fontTile
-                font.pixelSize: 13
+                font.pointSize: 0.75 * (13)
                 font.weight: 600
                 font.variableAxes: ({ "wdth": Theme.chrome.tTileStretchWdth })
             }
@@ -168,7 +168,7 @@ Item {
                             text: chat.serverName
                             color: Theme.chrome.colorTextBright
                             font.family: Theme.t.fontDisplay
-                            font.pixelSize: Theme.t.textTitle
+                            font.pointSize: 0.75 * (Theme.t.textTitle)
                             font.weight: Theme.t.fontWeightEmphasis
                             font.letterSpacing: Theme.t.trackingTitleEm * Theme.t.textTitle
                             font.variableAxes: ({ "opsz": Theme.opsz(Theme.t.textTitle) })
@@ -189,7 +189,7 @@ Item {
                             text: "PUBLIC"
                             color: Theme.t.colorSuccess
                             font.family: Theme.t.fontMeta
-                            font.pixelSize: 11
+                            font.pointSize: 0.75 * (11)
                             font.weight: 500
                             font.letterSpacing: 0.6
                         }
@@ -237,7 +237,7 @@ Item {
                                 text: "#"
                                 color: chRow.active ? Theme.chrome.colorAccentBright : Theme.chrome.colorTextMuted
                                 font.family: Theme.t.fontChannel
-                                font.pixelSize: parent.width
+                                font.pointSize: 0.75 * (parent.width)
                                 font.weight: 500
                             }
                             Icon {
@@ -258,7 +258,7 @@ Item {
                                 text: chRow.name
                                 color: chRow.active ? Theme.chrome.colorTextBright : Theme.chrome.colorTextSecondary
                                 font.family: Theme.t.fontChannel
-                                font.pixelSize: Theme.t.textChannel
+                                font.pointSize: 0.75 * (Theme.t.textChannel)
                                 font.weight: chRow.active ? 600 : 400
                                 lineHeightMode: Text.FixedHeight
                                 lineHeight: Theme.t.textChannel * 1.5
@@ -282,7 +282,7 @@ Item {
                                 text: chRow.name.toUpperCase()
                                 color: Theme.chrome.colorTextMuted
                                 font.family: Theme.t.fontSection
-                                font.pixelSize: Theme.t.textSection
+                                font.pointSize: 0.75 * (Theme.t.textSection)
                                 font.weight: 600
                                 font.letterSpacing: Theme.t.trackingSectionEm * Theme.t.textSection
                                 font.variableAxes: ({ "opsz": Theme.opsz(Theme.t.textSection) })
@@ -310,14 +310,14 @@ Item {
                             text: "sunkhan"
                             color: Theme.chrome.colorTextBright
                             font.family: Theme.t.fontChannel
-                            font.pixelSize: Theme.t.textMember
+                            font.pointSize: 0.75 * (Theme.t.textMember)
                             font.weight: Theme.t.fontWeightEmphasis
                         }
                         Text {
                             text: "Online"
                             color: Theme.chrome.colorTextMuted
                             font.family: Theme.t.fontMeta
-                            font.pixelSize: Theme.t.textMicro
+                            font.pointSize: 0.75 * (Theme.t.textMicro)
                         }
                     }
                     Row {
@@ -361,7 +361,7 @@ Item {
                                 text: modelData
                                 color: index === 0 ? Theme.t.colorTextMuted : Theme.t.colorTextBright
                                 font.family: Theme.t.fontDisplay
-                                font.pixelSize: Theme.t.textTitle
+                                font.pointSize: 0.75 * (Theme.t.textTitle)
                                 font.weight: Theme.t.fontWeightEmphasis
                                 font.letterSpacing: Theme.t.trackingTitleEm * Theme.t.textTitle
                                 font.variableAxes: ({ "opsz": Theme.opsz(Theme.t.textTitle) })
@@ -389,7 +389,7 @@ Item {
                             text: "Search"
                             color: Theme.t.colorTextMuted
                             font.family: Theme.t.fontSans
-                            font.pixelSize: 14
+                            font.pointSize: 0.75 * (14)
                         }
                         Icon { anchors.right: parent.right; anchors.rightMargin: 9; anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; path: Icons.search; color: Theme.t.colorTextMuted }
                     }
@@ -452,7 +452,7 @@ Item {
                                 text: "Message #general"
                                 color: Theme.t.colorTextMuted
                                 font.family: Theme.t.fontSans
-                                font.pixelSize: 14
+                                font.pointSize: 0.75 * (14)
                             }
                             Row {
                                 anchors.right: parent.right
@@ -510,7 +510,7 @@ Item {
                                 text: mRow.label.toUpperCase()
                                 color: Theme.t.colorTextMuted
                                 font.family: Theme.t.fontSection
-                                font.pixelSize: Theme.t.textSection
+                                font.pointSize: 0.75 * (Theme.t.textSection)
                                 font.weight: 500
                                 font.letterSpacing: Theme.t.trackingSectionEm * Theme.t.textSection
                                 font.variableAxes: ({ "opsz": Theme.opsz(Theme.t.textSection) })
@@ -548,7 +548,7 @@ Item {
                                 text: mRow.name
                                 color: mRow.online ? Theme.t.colorTextPrimary : Theme.t.colorTextSecondary
                                 font.family: Theme.t.fontChannel
-                                font.pixelSize: Theme.t.textMember
+                                font.pointSize: 0.75 * (Theme.t.textMember)
                             }
                         }
                     }

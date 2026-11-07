@@ -25,7 +25,7 @@ Item {
         text: card.themeName
         color: "#9aa0aa"
         font.family: "JetBrains Mono"
-        font.pixelSize: 11
+        font.pointSize: 0.75 * (11)
     }
 
     Rectangle {
@@ -50,7 +50,7 @@ Item {
                 text: "DECIBELL"
                 color: card.c.colorTextMuted
                 font.family: card.p.fontTile
-                font.pixelSize: 9
+                font.pointSize: 0.75 * (9)
                 font.weight: 700
                 font.letterSpacing: card.p.trackingWordmarkEm * 9
                 font.variableAxes: card.axes(card.p.fontTile, 9, card.p.tWordmarkStretchWdth)
@@ -74,7 +74,7 @@ Item {
                     text: "DailyGaming"
                     color: card.c.colorOnAccent
                     font.family: card.p.fontTile
-                    font.pixelSize: 9
+                    font.pointSize: 0.75 * (9)
                     font.weight: 600
                     font.variableAxes: card.axes(card.p.fontTile, 9, card.p.tTileStretchWdth)
                 }
@@ -101,7 +101,7 @@ Item {
                     text: "TEXT CHANNELS"
                     color: card.c.colorTextMuted
                     font.family: card.p.fontSection
-                    font.pixelSize: card.p.textSection * 0.8
+                    font.pointSize: 0.75 * (card.p.textSection * 0.8)
                     font.weight: 600
                     font.letterSpacing: card.p.trackingSectionEm * card.p.textSection * 0.8
                     font.variableAxes: card.axes(card.p.fontSection, card.p.textSection * 0.8, 0)
@@ -122,7 +122,7 @@ Item {
                             text: "# " + parent.modelData
                             color: parent.index === 0 ? card.c.colorTextBright : card.c.colorTextSecondary
                             font.family: card.p.fontChannel
-                            font.pixelSize: card.p.textChannel * 0.85
+                            font.pointSize: 0.75 * (card.p.textChannel * 0.85)
                             font.weight: parent.index === 0 ? 600 : 400
                         }
                     }
@@ -147,7 +147,7 @@ Item {
                     text: "S"
                     color: card.p.colorAvFg
                     font.family: card.p.fontSans
-                    font.pixelSize: 13
+                    font.pointSize: 0.75 * (13)
                     font.weight: 600
                 }
             }
@@ -161,7 +161,7 @@ Item {
                     text: "sunkhan"
                     color: card.p.colorName1
                     font.family: card.p.fontSans
-                    font.pixelSize: card.p.textSender * 0.9
+                    font.pointSize: 0.75 * (card.p.textSender * 0.9)
                     font.weight: card.p.fontWeightEmphasis
                 }
                 Text {
@@ -169,7 +169,7 @@ Item {
                     text: "14:32"
                     color: card.p.colorTextMuted
                     font.family: card.p.fontMeta
-                    font.pixelSize: card.p.textMeta * 0.9
+                    font.pointSize: 0.75 * (card.p.textMeta * 0.9)
                 }
             }
             Text {
@@ -184,10 +184,10 @@ Item {
                 wrapMode: Text.Wrap
                 color: card.p.colorTextPrimary
                 font.family: card.p.fontSans
-                font.pixelSize: card.p.textBody * 0.9
+                font.pointSize: 0.75 * (card.p.textBody * 0.9)
                 // CSS line-height is a multiple of the font size; QML's default multiplies the font's own leading.
                 lineHeightMode: Text.FixedHeight
-                lineHeight: font.pixelSize * card.p.leadingBody
+                lineHeight: font.pointSize / 0.75 * card.p.leadingBody
             }
             Rectangle {
                 id: chip
@@ -204,7 +204,7 @@ Item {
                     text: "cargo test --lib"
                     color: card.p.colorTextPrimary
                     font.family: card.p.fontMono
-                    font.pixelSize: card.p.textBody * 0.8
+                    font.pointSize: 0.75 * (card.p.textBody * 0.8)
                 }
             }
 
@@ -233,7 +233,7 @@ Item {
                     text: "Popover"
                     color: card.p.colorTextSecondary
                     font.family: card.p.fontSans
-                    font.pixelSize: 11
+                    font.pointSize: 0.75 * (11)
                 }
             }
 
@@ -252,7 +252,7 @@ Item {
                     text: "Message #general"
                     color: card.p.colorTextMuted
                     font.family: card.p.fontSans
-                    font.pixelSize: card.p.textBody * 0.85
+                    font.pointSize: 0.75 * (card.p.textBody * 0.85)
                 }
             }
         }

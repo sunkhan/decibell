@@ -77,6 +77,15 @@ Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`).
 - **Mona Sans width**: server tiles and the wordmark use the `wdth` axis (`tTileStretchWdth`,
   `tWordmarkStretchWdth`), through `font.variableAxes`.
 - **Names**: a QML property can't be called `console` (the JS global) or `layer` (`Item.layer` is FINAL).
+- **Fractional sizes**: QML's `font.pixelSize` (and `QFont::setPixelSize`) is an **int**, so the theme's 14.5 / 11.25 /
+  11.5 px sizes were silently truncated. Use `font.pointSize: 0.75 * px` (Qt 6's logical DPI is 96; scaling goes
+  through the device-pixel ratio); `MessageText` takes real CSS px (`pixelSize`).
+- **Emoji**: twemoji 15.0.0 SVGs (same as the renderer), a 24 px box with its bottom 0.2 em below the baseline
+  (`vertical-align: -0.2em`); an unformatted emoji-only message draws them at 56 / 44 / 38 / 32 px for 1 / 2 / 3 / more
+  (MessageText.tsx `jumboSizeFor`). File names drop U+FE0F inside multi-code-point sequences (Twemoji.tsx
+  `toCodePoints`); a single text-default symbol (©, ❤) is an emoji only with the FE0F after it.
+- **Inline code**: `bg-bg-darkest`, `rounded-sm`, 6 × 2 px padding, mono at 0.85 em, one box per line it covers
+  (`box-decoration-clone`).
 
 ## 2b. Spike findings (measured on the owner's machine: i7-12700K, RTX 4080, 279 Hz panel)
 
@@ -153,6 +162,21 @@ requestAnimationFrame-driven scroll of the real message list over CDP):
 
 Qt's other RHI backends at idle, same screen: D3D12 119/s and 114 MB, Vulkan 201/s and 171 MB, OpenGL 32/s but
 188 MB. D3D11 stays (design D6).
+
+## 2c. MessageText (`src/ui/messagetext.*`, QML module `Decibell.Ui`)
+
+The message body: the richText.ts subset (bold, italic, underline, strike, inline code, links, fenced blocks, line
+breaks) laid out once per row in a `QTextDocument` (wrap anywhere, minimum line height = the CSS line height, half
+leading added on top), drawn as one `QSGTextNode` (`addTextDocument`) plus rounded backgrounds (nine image slices of one
+rounded-square atlas texture per colour: **not `QSGNinePatchNode`, which owns and deletes its texture**, so nodes
+sharing one crashed at teardown) and twemoji as atlas textures at exactly the CSS position. `updatePaintNode` runs
+only when the text or width changes, never while scrolling. With it: scrolling the 10k fixture at 1000 and 3000 px/s
+holds 280 Hz at p50 with 1–4 missed vsyncs in 6 s (sync p95 ≤ 0.4 ms); idle private working set 68.6 MB (heap +4 MB
+for the documents). Not done yet: selection (across rows), hover / link clicks, KaTeX (MicroTeX), code highlighting
+(KSyntaxHighlighting), the CodeBlock header, emoji vertical metrics on lines that grow (checked by eye only).
+
+`decibell-qt --fixture qt-client/assets/fixture-features --capture out.png` renders a hand-written fixture with every
+feature on one screen; `src/crash_trace.cpp` prints a symbolised stack on abort / crash (build RelWithDebInfo).
 
 ## 3. Measuring
 
