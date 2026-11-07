@@ -71,6 +71,10 @@ int main(int argc, char *argv[])
 
     if (cli.isSet(captureOpt)) {
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        // Create the native window without showing it: a never-created window gets no geometry on Windows, so
+        // its content item would lay out at width 0.
+        if (window)
+            window->create();
         const QString file = cli.value(captureOpt);
         QTimer::singleShot(cli.value(delayOpt).toInt(), &app, [window, file] {
             const QImage img = window ? window->grabWindow() : QImage();

@@ -61,7 +61,9 @@ Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`).
 - **Logs of a `WIN32` app go to the debugger**, not stderr: set `QT_FORCE_STDERR_LOGGING=1` to see QML errors
   (a failed load otherwise just exits 1).
 - **Captures**: `QT_QPA_PLATFORM=offscreen` renders text with FreeType (grayscale, different advances; lines wrap
-  differently). Capture an unshown window on the real platform instead: `decibell-qt --capture out.png`.
+  differently). Capture an unshown window on the real platform instead: `decibell-qt --capture out.png`. The
+  window must still be `create()`d: a never-created window gets no geometry on Windows and its content lays out at
+  width 0.
 
 ## 2a. Fidelity rules (Chromium → Qt)
 
@@ -83,6 +85,13 @@ switches as the wakeup proxy, GPU engines and memory); `startup.ps1` times launc
 Electron baseline lives in the design doc §2; every phase reports against it in its review-log entry.
 
 ## 4. Open items
+
+- **Variable-font weights**: in the gallery, JetBrains Mono at 600 (console themes' active channel, section
+  labels) looks heavier than Chromium's. Check whether DirectWrite picks the variable font's 600 instance or
+  synthesises bold from 400; if the latter, set the `wght` axis explicitly with `font.variableAxes`.
+- **Spike next**: (a) the stream dump switch in native (debug only) + the D3D11 decode → `VideoItem` path,
+  developed against a synthetic NVENC bitstream until the owner streams; (b) the chat panel (fixture generator,
+  `MessageText`, the list, the member list) in Nocturne and Matinee, captured against Electron's harness.
 
 - The design's decisions D1–D11 are settled (owner accepted every recommendation, 2026-11-07). Next: the spike
   (design doc §12) on the `qt-spike` branch.
