@@ -11,7 +11,8 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes Svg ShaderTools QmlImportScanner)
+# GuiPrivate: the RHI headers (<rhi/qrhi.h>, semi-public), for MessageText's per-QRhi texture caches.
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui GuiPrivate Qml Quick QuickShapes Svg ShaderTools QmlImportScanner)
 qt_standard_project_setup(REQUIRES 6.8)
 if(MSVC)
   set_property(TARGET Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick PROPERTY MAP_IMPORTED_CONFIG_DEBUG "RELEASE")

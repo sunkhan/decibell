@@ -4,4 +4,4 @@ qt_add_qml_module(decibell_ui
   URI Decibell.Ui
   VERSION 1.0
   SOURCES messagetext.h messagetext.cpp emoji.h emoji.cpp smoothwheel.h smoothwheel.cpp chatselection.h chatselection.cpp)
-target_link_libraries(decibell_ui PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::Svg)
+target_link_libraries(decibell_ui PRIVATE Qt6::Core Qt6::Gui Qt6::GuiPrivate Qt6::Quick Qt6::Svg)

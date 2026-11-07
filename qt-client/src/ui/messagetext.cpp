@@ -17,6 +17,8 @@
 #include <QTextLayout>
 #include <QtMath>
 #include <functional>
+#include <mutex>
+#include <rhi/qrhi.h>
 #include <unordered_map>
 
 namespace decibell {
@@ -39,22 +41,38 @@ QFont fontPx(const QString &family, qreal px)
     return f;
 }
 
-// Render-thread texture caches (one window): emoji pictures by key@px, chip corners by colour/radius/dpr.
-std::unordered_map<QString, QSGTexture *> &emojiTextures()
+// Texture caches shared by every message (emoji pictures by key@px, chip corners by colour/radius/dpr), one per QRhi:
+// the textures belong to it. Process-wide caches crashed the second grab of a hidden window (each grab renders
+// through a new QRhi, the cache handed out the destroyed one's textures), and would do the same after any scene
+// graph invalidation (a lost device). An entry is forgotten when its QRhi is destroyed, before the address can be
+// reused; its QSGTexture wrappers are left alone then (their atlas may already be gone): a small leak, on a rare event.
+struct TextureCache {
+    std::unordered_map<QString, QSGTexture *> emoji, chips;
+};
+std::mutex g_cacheMutex;
+std::unordered_map<const QRhi *, TextureCache> g_caches;
+
+TextureCache &cacheFor(QQuickWindow *w)
 {
-    static std::unordered_map<QString, QSGTexture *> m;
-    return m;
-}
-std::unordered_map<QString, QSGTexture *> &chipTextures()
-{
-    static std::unordered_map<QString, QSGTexture *> m;
-    return m;
+    QRhi *rhi = w->rhi();
+    std::lock_guard lock(g_cacheMutex);
+    auto it = g_caches.find(rhi);
+    if (it == g_caches.end()) {
+        it = g_caches.emplace(rhi, TextureCache{}).first;
+        if (rhi) {
+            rhi->addCleanupCallback(&g_caches, [](QRhi *dying) {
+                std::lock_guard lock(g_cacheMutex);
+                g_caches.erase(dying);
+            });
+        }
+    }
+    return it->second;
 }
 
 QSGTexture *chipTexture(QQuickWindow *w, const QColor &c, qreal radius, qreal dpr)
 {
     const QString key = c.name(QColor::HexArgb) + u'/' + QString::number(radius) + u'/' + QString::number(dpr);
-    auto &m = chipTextures();
+    auto &m = cacheFor(w).chips;
     if (auto it = m.find(key); it != m.end())
         return it->second;
     const int r = qCeil(radius * dpr);
@@ -443,7 +461,7 @@ QSGNode *MessageText::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
     for (const Placed &e : m_emoji) {
         const int px = qCeil(e.rect.width() * dpr);
         const QString key = e.key + u'@' + QString::number(px);
-        auto &cache = emojiTextures();
+        auto &cache = cacheFor(w).emoji;
         QSGTexture *t = nullptr;
         if (auto it = cache.find(key); it != cache.end()) {
             t = it->second;

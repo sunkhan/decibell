@@ -176,6 +176,15 @@ void runSelfTest(QQuickWindow *window, const QString &name, const QString &captu
     QTimer::singleShot(900, window, [window, name, capture] {
         if (name == u"selection") {
             selectionTest(window, capture);
+        } else if (name == u"hold") {
+            // Memory measurement without a window on screen: render once (pictures decoded and uploaded, glyphs
+            // cached), then stay up DECIBELL_HOLD_SECONDS (default 30) for VMMap / measure.ps1.
+            window->grabWindow();
+            QTimer::singleShot(1000, window, [window] { window->grabWindow(); }); // pictures that loaded async
+            const int secs = qEnvironmentVariableIsSet("DECIBELL_HOLD_SECONDS")
+                ? qEnvironmentVariableIntValue("DECIBELL_HOLD_SECONDS") : 30;
+            report({{QStringLiteral("test"), name}, {QStringLiteral("pid"), qint64(QCoreApplication::applicationPid())}});
+            QTimer::singleShot(secs * 1000, window, [] { QCoreApplication::exit(0); });
         } else {
             report({{QStringLiteral("test"), name}, {QStringLiteral("error"), QStringLiteral("unknown test")}});
             QCoreApplication::exit(1);

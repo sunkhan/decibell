@@ -4,13 +4,16 @@ import QtQuick
 // crops to fill (CSS object-cover), otherwise the box must already have the picture's aspect (object-contain).
 Item {
     id: root
-    property alias source: img.source
+    property url source
     property real radius: 0
     property bool cover: true
     readonly property alias status: img.status
+    // Debug (--no-images): load no pictures, to measure what decoded pictures cost.
+    readonly property bool noImages: Qt.application.arguments.indexOf("--no-images") >= 0
 
     Image {
         id: img
+        source: root.noImages ? "" : root.source
         visible: false
         asynchronous: true
         // Decode at the device-pixel size the picture is drawn at (cover: the box's larger side covers it).

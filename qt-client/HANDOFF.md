@@ -110,9 +110,30 @@ Electron's row is the baseline in the design doc §2: DailyGaming #general, anot
 | **Projected Qt client = UI + core** | **≈ 82–89** | ~3× below Electron; **at or just over the 82 MB target: not met yet** |
 
 The definitive figure needs the core in-process, signed in (after the core split; a headless `decibell-core` harness
-measures the core alone). Levers already visible: decoded pictures kept in CPU memory after upload (Qt's pixmap cache;
-a texture-only image provider would drop them), and the fixture-era `QString` copies of every row (the real model keeps
-a ~150-row window).
+measures the core alone). The fixture-era `QString` copies of every row only matter for the 10k fixture (the real
+model keeps a ~150-row window).
+
+**Where the UI's memory goes** (`--selftest hold`: the hidden window rendered once, VMMap private working set after
+12 s; lower than a visible window, which adds the swap chain and the driver's per-window state, but the same way
+every time, and nothing on screen):
+
+| Hidden window, 150-message fixture | Total | Heap | Private Data | Image |
+|---|---|---|---|---|
+| no screen at all (`--screen empty`) | 33.9 | 21.5 | 7.4 | 4.7 |
+| the same on WARP (no NVIDIA driver) | 23.0 | 18.3 | 1.8 | 2.7 |
+| theme gallery | 46.0 | 32.1 | 8.9 | 4.7 |
+| chat screen, no pictures (`--no-images`) | 48.7–49.0 | 33.8–34.0 | 9.7–10.1 | 4.7 |
+| chat screen with pictures | 50.3–51.0 | 35.3–36.0 | 9.9 | 4.8 |
+
+So: NVIDIA's user-mode driver ≈ 11 MB of any D3D11 process; Qt + the QML engine + fonts + the theme ≈ 23 MB before
+any screen; the chat screen ≈ 15 MB on top, spread over the whole frame (hiding row parts *raised* memory: more rows
+fit). Decoded pictures cost only 1.3–2.1 MB (they're decoded at the drawn size), so a texture-only image provider
+isn't worth it. Without a heap profiler (none installed; the Debugging Tools' UMDH would attribute the 34 MB heap)
+the next levers are guesses; the core's real share (after the split) decides whether the 82 MB target needs them.
+- **Crash fixed on the way**: `MessageText`'s emoji / chip textures were process-wide caches; a second grab of a
+  hidden window renders through a new QRhi and was handed the destroyed one's textures (access violation in
+  `setShaderResources`). Any scene-graph invalidation (a lost device) would have done the same. The caches are now
+  per QRhi and forgotten in its cleanup callback (`<rhi/qrhi.h>`, hence `Qt6::GuiPrivate`).
 
 | | Electron 0.9.4 | Qt spike |
 |---|---|---|
@@ -210,8 +231,12 @@ click, double click, copy, PageUp, End).
   are found from the delegates' own geometry. `QSGTextNode`'s built-in selection painted the highlight a few
   characters off ([5, 22) drawn as [5, 17)), so `MessageText` draws its own rectangles (the line box high, under the
   text) and the selected text keeps its colour. A hidden window is never polished: the ListView hasn't placed its
-  rows and bodies are laid out at width 0 until something renders it (the self-test grabs once first). A second
-  grab of a hidden window drops the Shapes (icons, avatar gradients): a capture artifact only.
+  rows and bodies are laid out at width 0 until something renders it (the self-test grabs once first).
+- **Risk found on the way (not selection's)**: after the scene graph is re-created, `Shape` items on the curve
+  renderer don't draw again: on the second grab of a hidden window (each renders through a new QRhi) every icon,
+  avatar gradient and status dot is gone. A lost device (driver update, TDR) re-creates the scene graph the same
+  way, so check it with a forced device removal before shipping and, if it holds, re-dirty the shapes on
+  `sceneGraphInitialized` (or draw icons another way).
 - **Open**: the highlight colour is a stand-in (`#663390ff`) until a screenshot of the Electron client with a
   selection; in Chromium the sender name and time are selectable too (`select-text` covers the header), here only
   bodies; dragging after a double click doesn't extend by words; no triple click (paragraph).

@@ -28,7 +28,9 @@ Window {
 
     Loader {
         anchors.fill: parent
-        sourceComponent: root.screenName === "gallery" ? gallery : root.screenName === "video" ? videoScreen : chatScreen
+        // "empty" (debug): no screen at all, the floor for memory measurements.
+        sourceComponent: root.screenName === "gallery" ? gallery : root.screenName === "video" ? videoScreen
+                       : root.screenName === "empty" ? null : chatScreen
     }
     Component {
         id: chatScreen

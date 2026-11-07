@@ -95,8 +95,10 @@ int main(int argc, char *argv[])
                                          QStringLiteral("Run a self-test in the hidden window (selection); --capture "
                                                         "saves the window mid-test."),
                                          QStringLiteral("name"));
+    const QCommandLineOption noImagesOpt(QStringLiteral("no-images"),
+                                         QStringLiteral("Debug: load no pictures (RoundedImage reads the argument)."));
     cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt, benchOpt, speedOpt, ablateOpt, videoOpt,
-                    benchVideoOpt, maximizedOpt, selfTestOpt});
+                    benchVideoOpt, maximizedOpt, selfTestOpt, noImagesOpt});
     cli.addHelpOption();
     cli.process(app);
 
