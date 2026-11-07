@@ -272,6 +272,15 @@ pub fn send_stream_frame(mut frame: StreamFrame) {
     if !is_stream_frame_sink(&frame.key) {
         return;
     }
+    // The `stream-dump` feature: DECIBELL_STREAM_DUMP records the stream as it arrived (before any shedding below).
+    #[cfg(feature = "stream-dump")]
+    crate::media::stream_dump::record(
+        &frame.key,
+        frame.codec,
+        frame.keyframe,
+        &frame.data,
+        frame.description.as_deref(),
+    );
     if !reserve_stream_slot() {
         // Queue full (busy/stalled renderer): shed this frame — it is freed
         // here — and flag the streamer so its next queued frame tells the

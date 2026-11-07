@@ -186,3 +186,8 @@ prost-build = "0.13"
 lto = true
 strip = "symbols"
 codegen-units = 1
+
+[features]
+# DECIBELL_STREAM_DUMP (src/media/stream_dump.rs): record watched streams to .dbv files for the Qt client's video
+# spike. Off in every shipped build; opt in with `npx napi build --platform --release --features stream-dump`.
+stream-dump = []

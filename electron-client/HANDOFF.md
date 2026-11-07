@@ -598,6 +598,16 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   `Number.isFinite(d) && d > 0`.
 - **`[ERROR:ffmpeg_common.cc] Unsupported pixel format: -1` is noise** (decoder negotiation). Gate
   `v.load()` recoveries on `v.error != null`, never on log lines.
+- **The dev renderer probes decoders afresh** (2026-11-07): `utils/decoderProbe.ts` caches its result in
+  localStorage, per origin. `npm run dev` serves the renderer from `http://localhost:5173`, a different origin from
+  the packaged `file://`, so it probes on its own, and on the owner's machine that probe said no AV1: an AV1 stream
+  couldn't be watched in the dev client (Settings → Refresh codec capabilities re-probes). A checkout run with the
+  production renderer (`npm run build:renderer && npm run build:tsc`, then `electron .`) shares the installed
+  client's `file://` cache. A debug native addon also struggles with a 1440p120 stream; build release for that.
+- **Recording watched streams** (the Qt client's spike, design D1): the native `stream-dump` cargo feature (off
+  in every shipped build) plus `DECIBELL_STREAM_DUMP=<dir>` writes each frame the stream bus hands the renderer,
+  with its arrival time, to `<dir>/<uid>-<time>-<codec>.dbv` (`native/src/media/stream_dump.rs`;
+  `tools/perf/README.md` has the steps).
 - **Image decode is a separate cache from the fetch.** `decoding="async"` guarantees a one-frame pop on
   every mount; prefetch with `img.decode()` and use `decoding="sync"` for bounded thumbnails.
 - **Blink holds unreferenced custom-protocol images weakly.** `decibell-attachment://` responses never

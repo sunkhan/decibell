@@ -33,6 +33,9 @@ pub mod caps;
 pub mod codec;
 pub mod codec_selection;
 pub mod debug_dump;
+// DECIBELL_STREAM_DUMP: watched streams to .dbv files for the Qt client's spike (the `stream-dump` feature).
+#[cfg(feature = "stream-dump")]
+pub mod stream_dump;
 pub mod jitter;
 pub mod media_socket;
 pub mod packet;
