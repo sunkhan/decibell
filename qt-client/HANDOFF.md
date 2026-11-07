@@ -81,7 +81,29 @@ Run with `C:\Qt\6.12.0\msvc2022_64\bin` on PATH (or after `windeployqt`).
 ## 2b. Spike findings (measured on the owner's machine: i7-12700K, RTX 4080, 279 Hz panel)
 
 **Chat screen v1, idle with the 10k-message fixture channel open** (`tools/perf/measure.ps1`, 30 s settle + 120 s;
-Electron's row is the baseline in the design doc §2: DailyGaming #general, another window focused):
+Electron's row is the baseline in the design doc §2: DailyGaming #general, another window focused).
+
+> **Not like for like yet.** The Qt column is the UI alone, reading a fixture file. Electron's includes the shared
+> Rust core (connections, protocol state, E2EE / MLS, the hotkey and device threads), which the Qt client will also
+> carry. Compare against "Qt UI + core" only (core measured on its own, below), never these columns directly, and
+> don't count the memory target as met from them.
+
+**Memory, like for like (VMMap private working set, idle, a channel open):**
+
+| | MB | What it is |
+|---|---|---|
+| Electron 0.9.4, all 7 processes | 246–285 | `measure.ps1` / VMMap at another moment |
+| Electron main process | 76.4 | Heap 17.5, Private Data 52.0 (V8 + PartitionAlloc), Image 3.6, Stacks 1.0 |
+| **→ the Rust core in it, upper bound** | **≤ 19** | Rust's Windows allocator uses the process heap directly; Chromium's code doesn't, so the main process's 17.5 MB heap bounds the core's allocations (other DLLs' heap use is in it too) + its share of stacks |
+| Electron GPU process | 75.5 | where Electron keeps the NVIDIA driver's user-mode memory |
+| Qt spike UI, 10k-message fixture | 63.0 | Heap 50.6 (≈ 11 of it the fixture, held twice), Private Data 7.3, Image 4.6; includes the driver's memory (one process) |
+| Qt spike UI, 150-message fixture | 69.8 | Heap 39.8, Private Data 25.1: different rows on screen, more decoded pictures resident in CPU memory |
+| **Projected Qt client = UI + core** | **≈ 82–89** | ~3× below Electron; **at or just over the 82 MB target: not met yet** |
+
+The definitive figure needs the core in-process, signed in (after the core split; a headless `decibell-core` harness
+measures the core alone). Levers already visible: decoded pictures kept in CPU memory after upload (Qt's pixmap cache;
+a texture-only image provider would drop them), and the fixture-era `QString` copies of every row (the real model keeps
+a ~150-row window).
 
 | | Electron 0.9.4 | Qt spike |
 |---|---|---|
