@@ -12,6 +12,7 @@ Window {
     // --bench-scroll: the chat scrolls through history at this speed (px/s) for frame-pacing measurements.
     property real benchSpeed: 0
     property string ablate
+    property int pageSize: 0
     // --video: test streams (.dbv) to watch; --bench-video hides the stats lines.
     property var videoSources: []
     property bool benchVideo: false
@@ -45,7 +46,7 @@ Window {
     }
     Component {
         id: chatScreen
-        ChatScreen { fixtureDir: root.fixtureDir; window: root; benchSpeed: root.benchSpeed; ablate: root.ablate }
+        ChatScreen { fixtureDir: root.fixtureDir; window: root; benchSpeed: root.benchSpeed; ablate: root.ablate; pageSize: root.pageSize }
     }
     Component {
         id: gallery

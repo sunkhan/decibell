@@ -12,8 +12,10 @@ Item {
     property Window window
     property real benchSpeed: 0
     property string ablate
+    // --page-size: history pages in N messages at a time (0: all 10k at once, for the scroll benchmark).
+    property int pageSize: 0
 
-    ChatModel { id: chat; Component.onCompleted: load(screen.fixtureDir) }
+    ChatModel { id: chat; objectName: "chatModel"; pageSize: screen.pageSize; Component.onCompleted: load(screen.fixtureDir) }
     RosterModel { id: roster; Component.onCompleted: load(screen.fixtureDir) }
     ChannelModel { id: channels; Component.onCompleted: load(screen.fixtureDir) }
     // Chromium's wheel feel (src/ui/smoothwheel.h) on every scrolling list.
@@ -438,6 +440,9 @@ Item {
                         // Keyboard scrolling once the list has focus (a press in it gives it focus), as a focused
                         // Chromium scroller does; the composer keeps its keys while it has focus.
                         Keys.onPressed: (event) => { if (listWheel.handleKey(event.key, event.modifiers)) event.accepted = true }
+                        // Older history pages in as the top comes within 1000 px; it lands above what is on screen
+                        // (the end of a newest-first model), so nothing visible moves.
+                        onContentYChanged: if (chat.pageSize > 0 && chat.hasOlder && contentY - originY < 1000) Qt.callLater(chat.loadOlder)
                         // Benchmark driver: a constant scroll into history, the distance per frame from the frame's
                         // own time so the speed doesn't depend on the frame rate.
                         FrameAnimation {

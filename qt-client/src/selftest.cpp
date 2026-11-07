@@ -167,6 +167,106 @@ void selectionTest(QQuickWindow *w, const QString &capture)
     });
 }
 
+// History paging and new messages (run with --page-size N): what is on screen must not move.
+void historyTest(QQuickWindow *w)
+{
+    auto *list = w->findChild<QQuickItem *>(QStringLiteral("messageList"));
+    QObject *model = w->findChild<QObject *>(QStringLiteral("chatModel"));
+    QJsonObject o{{QStringLiteral("test"), QStringLiteral("history")}};
+    if (!list || !model || model->property("pageSize").toInt() <= 0) {
+        o[QStringLiteral("error")] = QStringLiteral("needs the chat screen and --page-size N");
+        report(o);
+        QCoreApplication::exit(1);
+        return;
+    }
+    auto settle = [w] {
+        QCoreApplication::processEvents(); // Qt.callLater, queued updates
+        w->grabWindow();                   // polish: the ListView places its rows
+    };
+    auto *content = list->property("contentItem").value<QQuickItem *>();
+    // The delegate for model row `index` on screen: its top in list coordinates and its height.
+    auto row = [&](int index, qreal *y, qreal *h) {
+        for (QQuickItem *r : content->childItems()) {
+            if (r->isVisible() && r->property("index").isValid() && r->property("index").toInt() == index) {
+                *y = r->mapToItem(list, QPointF(0, 0)).y();
+                *h = r->height();
+                return true;
+            }
+        }
+        return false;
+    };
+    // A row whose top is between 100 and 300 px down the list: the one being read.
+    auto readingRow = [&]() {
+        for (QQuickItem *r : content->childItems()) {
+            const qreal y = r->mapToItem(list, QPointF(0, 0)).y();
+            if (r->isVisible() && r->property("index").isValid() && y >= 100 && y <= 300)
+                return r->property("index").toInt();
+        }
+        return -1;
+    };
+    auto maxY = [&] {
+        return list->property("originY").toReal() + list->property("contentHeight").toReal() - list->height();
+    };
+    settle();
+    o[QStringLiteral("initial_rows")] = model->property("count").toInt();
+    bool pass = true;
+    qreal y0 = 0, y1 = 0, h = 0;
+
+    // A. Reading history 800 px up: the next older page lands above, the row being read stays put.
+    list->setProperty("contentY", maxY() - 800);
+    settle();
+    int k = readingRow();
+    int added = 0;
+    if (k < 0 || !row(k, &y0, &h)) {
+        o[QStringLiteral("error")] = QStringLiteral("no row on screen");
+        pass = false;
+    } else {
+        QMetaObject::invokeMethod(model, "loadOlder", Q_RETURN_ARG(int, added));
+        settle();
+        row(k, &y1, &h);
+        o[QStringLiteral("older_added")] = added;
+        o[QStringLiteral("older_shift_px")] = y1 - y0;
+        pass = pass && added > 0 && qAbs(y1 - y0) < 0.5;
+    }
+
+    // B. A new message arrives while reading history: the row being read stays put (its index moves up by one).
+    k = readingRow();
+    if (k >= 0 && row(k, &y0, &h)) {
+        QMetaObject::invokeMethod(model, "receiveNew");
+        settle();
+        const bool found = row(k + 1, &y1, &h);
+        o[QStringLiteral("new_while_reading_shift_px")] = found ? y1 - y0 : 99999.0;
+        pass = pass && found && qAbs(y1 - y0) < 0.5;
+    } else {
+        pass = false;
+    }
+
+    // C. A new message arrives at the bottom of the conversation: it shows, its bottom on the list's.
+    list->setProperty("contentY", maxY());
+    settle();
+    QMetaObject::invokeMethod(model, "receiveNew");
+    settle();
+    if (row(0, &y0, &h)) {
+        o[QStringLiteral("new_at_bottom_gap_px")] = list->height() - (y0 + h);
+        pass = pass && qAbs(list->height() - (y0 + h)) < 1;
+    } else {
+        o[QStringLiteral("new_at_bottom_gap_px")] = QStringLiteral("not on screen");
+        pass = false;
+    }
+
+    // D. Scrolling near the top pages older history in by itself.
+    const int before = model->property("count").toInt();
+    list->setProperty("contentY", list->property("originY").toReal() + 200);
+    settle();
+    settle();
+    o[QStringLiteral("auto_loaded")] = model->property("count").toInt() - before;
+    pass = pass && model->property("count").toInt() > before;
+
+    o[QStringLiteral("pass")] = pass;
+    report(o);
+    QCoreApplication::exit(pass ? 0 : 1);
+}
+
 } // namespace
 
 void runSelfTest(QQuickWindow *window, const QString &name, const QString &capture)
@@ -176,6 +276,8 @@ void runSelfTest(QQuickWindow *window, const QString &name, const QString &captu
     QTimer::singleShot(900, window, [window, name, capture] {
         if (name == u"selection") {
             selectionTest(window, capture);
+        } else if (name == u"history") {
+            historyTest(window);
         } else if (name == u"regrab") {
             // A hidden window renders each grab through a new QRhi: the scene graph is re-created every time, as
             // after a lost device. Three grabs with events processed between them, the last one saved: icons,

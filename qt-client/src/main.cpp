@@ -118,8 +118,11 @@ int main(int argc, char *argv[])
                                          QStringLiteral("name"));
     const QCommandLineOption noImagesOpt(QStringLiteral("no-images"),
                                          QStringLiteral("Debug: load no pictures (RoundedImage reads the argument)."));
+    const QCommandLineOption pageSizeOpt(QStringLiteral("page-size"),
+                                         QStringLiteral("Load history N messages at a time (default: all at once)."),
+                                         QStringLiteral("n"), QStringLiteral("0"));
     cli.addOptions({themeOpt, captureOpt, delayOpt, screenOpt, fixtureOpt, benchOpt, speedOpt, ablateOpt, videoOpt,
-                    benchVideoOpt, maximizedOpt, selfTestOpt, noImagesOpt});
+                    benchVideoOpt, maximizedOpt, selfTestOpt, noImagesOpt, pageSizeOpt});
     cli.addHelpOption();
     cli.process(app);
 
@@ -137,6 +140,7 @@ int main(int argc, char *argv[])
     initial.insert(QStringLiteral("benchVideo"), cli.isSet(benchVideoOpt));
     initial.insert(QStringLiteral("fixtureDir"), cli.value(fixtureOpt));
     initial.insert(QStringLiteral("ablate"), cli.value(ablateOpt));
+    initial.insert(QStringLiteral("pageSize"), cli.value(pageSizeOpt).toInt());
     if (cli.isSet(benchOpt))
         initial.insert(QStringLiteral("benchSpeed"), cli.value(speedOpt).toDouble());
     // The window starts hidden so our graphics device is in place before Qt creates one (gpu_device.h). A capture

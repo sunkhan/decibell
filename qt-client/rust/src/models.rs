@@ -34,6 +34,10 @@ pub mod qobject {
         #[base = QAbstractListModel]
         #[qproperty(i32, count)]
         #[qproperty(QString, server_name, cxx_name = "serverName")]
+        // 0: every message at once (the 10k scroll benchmark). N: the newest N first, then N more per loadOlder,
+        // as the client pages history in.
+        #[qproperty(i32, page_size, cxx_name = "pageSize")]
+        #[qproperty(bool, has_older, cxx_name = "hasOlder")]
         type ChatModel = super::ChatModelRust;
 
         #[qobject]
@@ -56,6 +60,12 @@ pub mod qobject {
         #[cxx_name = "endResetModel"]
         unsafe fn end_reset_model(self: Pin<&mut ChatModel>);
         #[inherit]
+        #[cxx_name = "beginInsertRows"]
+        unsafe fn begin_insert_rows(self: Pin<&mut ChatModel>, parent: &QModelIndex, first: i32, last: i32);
+        #[inherit]
+        #[cxx_name = "endInsertRows"]
+        unsafe fn end_insert_rows(self: Pin<&mut ChatModel>);
+        #[inherit]
         #[cxx_name = "beginResetModel"]
         unsafe fn begin_reset_model(self: Pin<&mut RosterModel>);
         #[inherit]
@@ -72,6 +82,15 @@ pub mod qobject {
     extern "RustQt" {
         #[qinvokable]
         fn load(self: Pin<&mut ChatModel>, fixture_dir: &QString) -> bool;
+        /// The next page of older history, appended at the model's end (above the rows on screen); the number of
+        /// rows added (0 at the start of history).
+        #[qinvokable]
+        #[cxx_name = "loadOlder"]
+        fn load_older(self: Pin<&mut ChatModel>) -> i32;
+        /// A message arriving now (a copy of an existing one, as a new message), inserted at row 0 (the bottom).
+        #[qinvokable]
+        #[cxx_name = "receiveNew"]
+        fn receive_new(self: Pin<&mut ChatModel>);
         #[qinvokable]
         #[cxx_override]
         fn data(self: &ChatModel, index: &QModelIndex, role: i32) -> QVariant;
@@ -150,6 +169,7 @@ const CHAT_ROLES: &[&str] = &[
     "image0W", "image0H", "image1", "image1W", "image1H", "image2", "image2W", "image2H", "content",
 ];
 
+#[derive(Clone)]
 pub struct ChatRow {
     id: QString,
     sender: QString,
@@ -170,9 +190,14 @@ pub struct ChatRow {
 
 #[derive(Default)]
 pub struct ChatModelRust {
+    /// Every message, newest first; the model shows the first `shown`.
     rows: Vec<ChatRow>,
+    shown: usize,
+    received: usize,
     count: i32,
     server_name: QString,
+    page_size: i32,
+    has_older: bool,
 }
 
 impl qobject::ChatModel {
@@ -207,14 +232,56 @@ impl qobject::ChatModel {
         unsafe { self.as_mut().begin_reset_model() };
         {
             let mut me = self.as_mut().rust_mut();
-            me.count = rows.len() as i32;
+            let page = me.page_size;
+            me.shown = if page > 0 { rows.len().min(page as usize) } else { rows.len() };
             me.rows = rows;
         }
         unsafe { self.as_mut().end_reset_model() };
-        let n = self.rows.len() as i32;
+        let (n, older) = (self.shown as i32, self.shown < self.rows.len());
         self.as_mut().set_count(n);
+        self.as_mut().set_has_older(older);
         self.as_mut().set_server_name(q(&f.server.name));
         true
+    }
+
+    pub fn load_older(mut self: Pin<&mut Self>) -> i32 {
+        let page = self.page_size.max(1) as usize;
+        let (first, add) = (self.shown, page.min(self.rows.len() - self.shown));
+        if add == 0 {
+            return 0;
+        }
+        let parent = QModelIndex::default();
+        unsafe { self.as_mut().begin_insert_rows(&parent, first as i32, (first + add - 1) as i32) };
+        self.as_mut().rust_mut().shown += add;
+        unsafe { self.as_mut().end_insert_rows() };
+        let (n, older) = (self.shown as i32, self.shown < self.rows.len());
+        self.as_mut().set_count(n);
+        self.as_mut().set_has_older(older);
+        add as i32
+    }
+
+    pub fn receive_new(mut self: Pin<&mut Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        // Content from the history (the k-th oldest shown), sent "now" by its author as a new group.
+        let k = self.received % self.shown.max(1);
+        let mut row = self.rows[self.shown - 1 - k].clone();
+        row.id = q(&format!("new-{}", self.received));
+        row.time = q("now");
+        row.day = QString::default();
+        row.grouped = false;
+        let parent = QModelIndex::default();
+        unsafe { self.as_mut().begin_insert_rows(&parent, 0, 0) };
+        {
+            let mut me = self.as_mut().rust_mut();
+            me.rows.insert(0, row);
+            me.shown += 1;
+            me.received += 1;
+        }
+        unsafe { self.as_mut().end_insert_rows() };
+        let n = self.shown as i32;
+        self.as_mut().set_count(n);
     }
 
     pub fn data(&self, index: &QModelIndex, role: i32) -> QVariant {
@@ -256,7 +323,7 @@ impl qobject::ChatModel {
     }
 
     pub fn row_count(&self, _parent: &QModelIndex) -> i32 {
-        self.rows.len() as i32
+        self.shown as i32
     }
 }
 

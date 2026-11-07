@@ -223,6 +223,17 @@ same curve with Blink's steps: arrows 40 px, PageUp / PageDown and Space / Shift
 view, the view − 40 px), Home / End to the ends. The renderer has no key handling of its own here (Chromium's
 default for a focused scroller); the composer keeps its keys while it has focus.
 
+## 2e½. History paging and new messages
+
+The message list runs bottom-to-top over a newest-first model, so older history is an *append* at the model's end
+(above the rows on screen) and a new message is an insert at row 0 (the bottom). With `--page-size N` the model
+shows the newest N and pages N more in (`loadOlder`) once the top comes within 1000 px; `receiveNew` simulates an
+arriving message. `--selftest history --page-size 100` measures it in the hidden window: an older page added while
+reading 800 px up moved the row being read **0 px**; a new message while reading history moved it **0 px**; a new
+message at the bottom of the conversation showed flush with the list's bottom (gap 0); scrolling near the top paged
+the next 100 in by itself. No anchoring code: ListView keeps the rows on screen where they are. (Not yet: the "new
+messages" bar and jump-to-present that the client shows while scrolled up.)
+
 ## 2f. Selection, copy, links (`src/ui/chatselection.*`)
 
 `ChatSelection` sits on the message ListView and owns the selection (anchor / focus as row + text position), since
