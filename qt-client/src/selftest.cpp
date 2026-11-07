@@ -176,6 +176,21 @@ void runSelfTest(QQuickWindow *window, const QString &name, const QString &captu
     QTimer::singleShot(900, window, [window, name, capture] {
         if (name == u"selection") {
             selectionTest(window, capture);
+        } else if (name == u"regrab") {
+            // A hidden window renders each grab through a new QRhi: the scene graph is re-created every time, as
+            // after a lost device. Three grabs with events processed between them, the last one saved: icons,
+            // avatar gradients, status dots, emoji and code chips must all be there (src/ui/texturecache.h).
+            window->grabWindow();
+            QTimer::singleShot(300, window, [window, capture] {
+                window->grabWindow();
+                QTimer::singleShot(300, window, [window, capture] {
+                    const QImage img = window->grabWindow();
+                    const bool saved = !capture.isEmpty() && img.save(capture);
+                    report({{QStringLiteral("test"), QStringLiteral("regrab")},
+                            {QStringLiteral("capture"), saved ? capture : QStringLiteral("not saved")}});
+                    QCoreApplication::exit(saved ? 0 : 1);
+                });
+            });
         } else if (name == u"hold") {
             // Memory measurement without a window on screen: render once (pictures decoded and uploaded, glyphs
             // cached), then stay up DECIBELL_HOLD_SECONDS (default 30) for VMMap / measure.ps1.

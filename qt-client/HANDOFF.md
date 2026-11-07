@@ -232,11 +232,15 @@ click, double click, copy, PageUp, End).
   characters off ([5, 22) drawn as [5, 17)), so `MessageText` draws its own rectangles (the line box high, under the
   text) and the selected text keeps its colour. A hidden window is never polished: the ListView hasn't placed its
   rows and bodies are laid out at width 0 until something renders it (the self-test grabs once first).
-- **Risk found on the way (not selection's)**: after the scene graph is re-created, `Shape` items on the curve
-  renderer don't draw again: on the second grab of a hidden window (each renders through a new QRhi) every icon,
-  avatar gradient and status dot is gone. A lost device (driver update, TDR) re-creates the scene graph the same
-  way, so check it with a forced device removal before shipping and, if it holds, re-dirty the shapes on
-  `sceneGraphInitialized` (or draw icons another way).
+- **Found on the way, fixed: no QtQuick.Shapes.** After the scene graph is re-created, `Shape` items on Qt's curve
+  renderer never draw again (Qt 6.12): on the second grab of a hidden window (each renders through a new QRhi)
+  every icon, avatar gradient and status dot was gone, and a lost device (driver update, TDR) re-creates the scene
+  graph the same way. Re-creating the Shape items didn't help (new ones don't draw either: the broken state is
+  inside Qt), and the geometry renderer has no anti-aliasing without MSAA. Icons, avatar gradients and status dots
+  are now `SvgImage` (`src/ui/svgimage.*`): the SVG rasterised once at the drawn device-pixel size (QSvgRenderer,
+  as Chromium rasterises inline SVG), shared through the per-QRhi texture cache (`src/ui/texturecache.*`, also
+  MessageText's). At 4× zoom they match the curve renderer's output; memory unchanged (−0.3 MB, one DLL fewer).
+  `--selftest regrab --capture f.png` checks it (three renders through new devices).
 - **Open**: the highlight colour is a stand-in (`#663390ff`) until a screenshot of the Electron client with a
   selection; in Chromium the sender name and time are selectable too (`select-text` covers the header), here only
   bodies; dragging after a double click doesn't extend by words; no triple click (paragraph).

@@ -1,6 +1,7 @@
 #include "messagetext.h"
 
 #include "emoji.h"
+#include "texturecache.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QGuiApplication>
@@ -9,7 +10,6 @@
 #include <QRegularExpression>
 #include <QSGImageNode>
 #include <QSGRectangleNode>
-#include <QSGNinePatchNode>
 #include <QSGTextNode>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -17,8 +17,6 @@
 #include <QTextLayout>
 #include <QtMath>
 #include <functional>
-#include <mutex>
-#include <rhi/qrhi.h>
 #include <unordered_map>
 
 namespace decibell {
@@ -41,54 +39,23 @@ QFont fontPx(const QString &family, qreal px)
     return f;
 }
 
-// Texture caches shared by every message (emoji pictures by key@px, chip corners by colour/radius/dpr), one per QRhi:
-// the textures belong to it. Process-wide caches crashed the second grab of a hidden window (each grab renders
-// through a new QRhi, the cache handed out the destroyed one's textures), and would do the same after any scene
-// graph invalidation (a lost device). An entry is forgotten when its QRhi is destroyed, before the address can be
-// reused; its QSGTexture wrappers are left alone then (their atlas may already be gone): a small leak, on a rare event.
-struct TextureCache {
-    std::unordered_map<QString, QSGTexture *> emoji, chips;
-};
-std::mutex g_cacheMutex;
-std::unordered_map<const QRhi *, TextureCache> g_caches;
-
-TextureCache &cacheFor(QQuickWindow *w)
-{
-    QRhi *rhi = w->rhi();
-    std::lock_guard lock(g_cacheMutex);
-    auto it = g_caches.find(rhi);
-    if (it == g_caches.end()) {
-        it = g_caches.emplace(rhi, TextureCache{}).first;
-        if (rhi) {
-            rhi->addCleanupCallback(&g_caches, [](QRhi *dying) {
-                std::lock_guard lock(g_cacheMutex);
-                g_caches.erase(dying);
-            });
-        }
-    }
-    return it->second;
-}
-
+// A chip's rounded square (colour / radius / dpr), sliced into nine by the paint node. Shared through the per-QRhi
+// texture cache (texturecache.h).
 QSGTexture *chipTexture(QQuickWindow *w, const QColor &c, qreal radius, qreal dpr)
 {
-    const QString key = c.name(QColor::HexArgb) + u'/' + QString::number(radius) + u'/' + QString::number(dpr);
-    auto &m = cacheFor(w).chips;
-    if (auto it = m.find(key); it != m.end())
-        return it->second;
-    const int r = qCeil(radius * dpr);
-    const int s = 2 * r + 3;
-    QImage img(s, s, QImage::Format_ARGB32_Premultiplied);
-    img.fill(Qt::transparent);
-    {
+    const QString key = u"chip:" + c.name(QColor::HexArgb) + u'/' + QString::number(radius) + u'/' + QString::number(dpr);
+    return cachedTexture(w, key, [&] {
+        const int r = qCeil(radius * dpr);
+        const int s = 2 * r + 3;
+        QImage img(s, s, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
         QPainter p(&img);
         p.setRenderHint(QPainter::Antialiasing);
         p.setPen(Qt::NoPen);
         p.setBrush(c);
         p.drawRoundedRect(QRectF(0, 0, s, s), r, r);
-    }
-    QSGTexture *t = w->createTextureFromImage(img, QQuickWindow::TextureCanUseAtlas);
-    m.emplace(key, t);
-    return t;
+        return img;
+    });
 }
 
 } // namespace
@@ -460,17 +427,10 @@ QSGNode *MessageText::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
     root->appendChildNode(text);
     for (const Placed &e : m_emoji) {
         const int px = qCeil(e.rect.width() * dpr);
-        const QString key = e.key + u'@' + QString::number(px);
-        auto &cache = cacheFor(w).emoji;
-        QSGTexture *t = nullptr;
-        if (auto it = cache.find(key); it != cache.end()) {
-            t = it->second;
-        } else {
-            const QImage img = Emoji::instance().image(e.key, px);
-            if (img.isNull()) continue;
-            t = w->createTextureFromImage(img, QQuickWindow::TextureCanUseAtlas);
-            cache.emplace(key, t);
-        }
+        QSGTexture *t = cachedTexture(w, u"emoji:" + e.key + u'@' + QString::number(px),
+                                      [&] { return Emoji::instance().image(e.key, px); });
+        if (!t)
+            continue;
         QSGImageNode *n = w->createImageNode();
         n->setTexture(t);
         n->setRect(e.rect);

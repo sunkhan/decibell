@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # GuiPrivate: the RHI headers (<rhi/qrhi.h>, semi-public), for MessageText's per-QRhi texture caches.
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui GuiPrivate Qml Quick QuickShapes Svg ShaderTools QmlImportScanner)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui GuiPrivate Qml Quick Svg ShaderTools QmlImportScanner)
 qt_standard_project_setup(REQUIRES 6.8)
 if(MSVC)
   set_property(TARGET Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick PROPERTY MAP_IMPORTED_CONFIG_DEBUG "RELEASE")
@@ -58,7 +58,7 @@ target_compile_definitions(decibell-qt PRIVATE
   DECIBELL_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_include_directories(decibell-qt PRIVATE src)
 target_link_libraries(decibell-qt PRIVATE
-  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickShapes
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick
   decibell_core_qml decibell_themeplugin decibell_appplugin decibell_uiplugin decibell_ui
   decibell_videoplugin decibell_video Qt6::Svg)
 qt_import_qml_plugins(decibell-qt)

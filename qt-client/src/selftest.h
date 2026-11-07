@@ -2,6 +2,7 @@
 // delivery, results printed as JSON lines (stdout and DECIBELL_BENCH_OUT), an optional capture of the window.
 //   --selftest selection [--capture out.png]: drags across messages, double-clicks a word, copies.
 //   --selftest hold: renders once and stays up DECIBELL_HOLD_SECONDS (default 30), for memory measurements.
+//   --selftest regrab --capture out.png: three renders through new devices (as after a lost device), the last saved.
 #pragma once
 
 #include <QString>

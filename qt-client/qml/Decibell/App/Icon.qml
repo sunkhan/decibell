@@ -1,10 +1,10 @@
 import QtQuick
-import QtQuick.Shapes
+import Decibell.Ui
 
 // An inline SVG icon as the renderer draws it: path data in the icon's own viewBox, stroked (or filled) in
-// `color`. Scaling the shape scales the stroke with it, exactly as SVG does, so `stroke` is in viewBox units
-// (the components' strokeWidth). GPU curve rendering keeps the edges anti-aliased at any size.
-Item {
+// `color`, rasterised at the drawn size (src/ui/svgimage.h). `stroke` is in viewBox units (the components'
+// strokeWidth), so it scales with the icon as SVG's does.
+SvgImage {
     id: icon
     property string path
     property real viewBox: 24
@@ -15,18 +15,13 @@ Item {
     implicitWidth: 16
     implicitHeight: 16
 
-    Shape {
-        width: icon.viewBox
-        height: icon.viewBox
-        preferredRendererType: Shape.CurveRenderer
-        transform: Scale { xScale: icon.width / icon.viewBox; yScale: icon.height / icon.viewBox }
-        ShapePath {
-            strokeColor: icon.filled ? "transparent" : icon.color
-            strokeWidth: icon.filled ? 0 : icon.stroke
-            fillColor: icon.filled ? icon.color : "transparent"
-            capStyle: ShapePath.RoundCap
-            joinStyle: icon.roundJoin ? ShapePath.RoundJoin : ShapePath.MiterJoin
-            PathSvg { path: icon.path }
-        }
+    // SVG has no #aarrggbb: rgb() plus an opacity attribute.
+    function rgb(c: color): string {
+        return "rgb(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + "," + Math.round(c.b * 255) + ")"
     }
+    svg: "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " + viewBox + " " + viewBox + "'><path d='" + path + "' "
+         + (filled ? "fill='" + rgb(color) + "' fill-opacity='" + color.a + "' stroke='none'"
+                   : "fill='none' stroke='" + rgb(color) + "' stroke-opacity='" + color.a + "' stroke-width='" + stroke
+                     + "' stroke-linecap='round' stroke-linejoin='" + (roundJoin ? "round" : "miter") + "'")
+         + "/></svg>"
 }

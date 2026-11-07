@@ -11,4 +11,4 @@ qt_add_qml_module(decibell_app
 qt_add_shaders(decibell_app "decibell_app_shaders"
   PREFIX "/qt/qml/Decibell/App"
   FILES shaders/roundedimage.frag)
-target_link_libraries(decibell_app PRIVATE decibell_themeplugin Qt6::Quick Qt6::QuickShapes)
+target_link_libraries(decibell_app PRIVATE decibell_themeplugin Qt6::Quick)
