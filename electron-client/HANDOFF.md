@@ -830,7 +830,9 @@ hardware. Windows-side items are marked (W); they're the natural ones to run on 
   (the preload's per-user stream-frame dispatch, "R9").
 - **Audio**: (W) "Default" devices following a Windows default change mid-call (both Sound-settings
   defaults, unplug); Linux `PULSE_SOURCE` / `PULSE_SINK` device routing.
-- **Hotkeys**: (W) push to talk / mute via `GetAsyncKeyState`; KDE portal (do stale shortcut ids pile
+- **Hotkeys**: (W) press actions as `RegisterHotKey` system hotkeys (since 2026-11-07: a Ctrl / Alt / Win
+  combo or an F-key fires; the combo no longer reaches the focused app; recording a keybind still sees it; a combo
+  another app owns falls back to polling); (W) push to talk / mute via `GetAsyncKeyState`, now every 20 ms; KDE portal (do stale shortcut ids pile
   up?); Wayland mouse-button remap guide.
 - **UI shipped since 0.8.5** with only harness verification: voice view, Transfers panel and speed caps,
   reply redesign, user statuses + status messages, server / channel settings redesigns, welcome-banner

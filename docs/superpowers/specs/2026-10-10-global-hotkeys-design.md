@@ -97,7 +97,7 @@ focused.
 | Linux, Wayland with the GlobalShortcuts portal | `portal` | ✓ | ✓ (`Deactivated`) | ✗ |
 | Linux, Wayland without the portal, XWayland present | `xwayland` | while an X11 app is focused (most games) | same | ✓ |
 | Linux, X11 session | `x11` (passive grabs on the bound combos) | ✓ | ✓ | ✓ |
-| Windows | `windows` (`GetAsyncKeyState` on the watched keys) | ✓ | ✓ | ✓ |
+| Windows | `windows` (`RegisterHotKey` for press actions, `GetAsyncKeyState` on the polled keys; amended 2026-11-07) | ✓ | ✓ | ✓ |
 | macOS | `electron` (main process `globalShortcut`) | ✓ | focused only | ✗ |
 
 Any backend that can't see keys while Decibell itself is focused (`xwayland`,
@@ -177,16 +177,39 @@ when the last binding goes. The trade-off of grabbing: the bound press
 doesn't also reach the focused app, so the Keybinds tab warns when a
 typing key (e.g. bare V) is bound on a grabbing backend.
 
-### Windows: polling the watched keys
+### Windows: system hotkeys for press actions, polling for holds (amended 2026-11-07)
+
+**Owner decision 2026-11-07** (Qt client design record `2026-11-07-qt-native-client-design.md`, D13). Measured:
+the poller below woke **287 times a second** in Electron while any hotkey was bound (every press binding made it
+watch the eight sided modifiers too, every 10 ms). Now:
+
+- **Press actions** (mute, deafen, leave, answer, decline) whose combo has Ctrl / Alt / Win, or whose key types
+  nothing (F1–F24, Pause, Scroll Lock, media / volume / browser / launch keys), are `RegisterHotKey` system
+  hotkeys on exactly that combo (`MOD_NOREPEAT`), on a `hotkeys-system` thread that sleeps in `GetMessage`:
+  **no wakeups** until one is pressed. Windows matches the modifiers exactly, as the matcher does. As with the
+  X11 grabs, the combo no longer reaches the focused app (`Status.registered` lists those bindings; the
+  Keybinds tab marks them).
+- **Holds** (push to talk / mute) and press bindings `RegisterHotKey` can't take (a mouse button, a
+  modifier-only combo, a key that types without Ctrl / Alt / Win, a combo another app already registered) are
+  polled as below, every **20 ms** (one voice frame), and still reach apps. The matcher holds only the polled
+  bindings, so a registered press can't also fire from the poll.
+- Recording a keybind pauses hotkeys and drops the registrations meanwhile, so the recorder sees the keys.
+
+Standalone benchmark of the poll loop at Windows' default timer resolution: 9 keys every 10 ms 165 wakeups/s,
+every 20 ms 74, 1 key every 20 ms 57, the sleep alone 52 — the cadence, not the number of keys, is the cost
+(Chromium raises the timer resolution, hence 287 in Electron).
+
+#### The poller (holds and what can't be registered)
+
 
 `GetAsyncKeyState` answers for one key, so a thread polls only the watched
-keys every 10 ms and feeds transitions to the matcher. Nothing is
+keys (every 20 ms since 2026-11-07) and feeds transitions to the matcher. Nothing is
 registered or hooked, nothing is swallowed, mouse buttons and modifier-only
 combos work. Layout-independent keys use a fixed virtual-key table
 (`keys::win_fixed_vk`); character keys go through
 `MapVirtualKey(scancode, VSC_TO_VK_EX)` under the active layout whenever the
 bindings change, so they stay the recorded physical keys. Costs: up to one
-poll of latency, a sub-10 ms tap can be missed, and both Enters share one
+poll of latency, a sub-20 ms tap can be missed, and both Enters share one
 virtual key. The thread exists only while a binding does. An elevated
 (admin) game may hide its keys from a non-elevated Decibell.
 
@@ -268,4 +291,6 @@ UI:
 - X11 end to end: `hotkeys::tests::x11_listener_end_to_end` (ignored) drives
   the real listener against a disposable X server with XTEST:
   `Xvfb :97 & DECIBELL_X11_TEST_DISPLAY=:97 cargo test --lib x11_listener -- --ignored`.
-- Windows poller: Linux-side type-check crate + Windows Native Check CI.
+- Windows: `hotkeys::windows::tests` — which bindings register (pure), and the hotkey thread end to end (a real
+  registration of Ctrl+Alt+Shift+Win+F24, a posted `WM_HOTKEY`, the action dispatched; no keyboard input).
+  Runs on Windows (`cargo test --lib`); Windows Native Check compile-checks it on Linux pushes.

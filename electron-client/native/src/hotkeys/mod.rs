@@ -98,6 +98,9 @@ pub struct Status {
     /// Binding ids the listener couldn't register (X11: another app
     /// already grabs that combo).
     pub failed: Vec<String>,
+    /// Windows: binding ids registered as system hotkeys (their combo no longer
+    /// reaches other apps); the rest are polled and still do.
+    pub registered: Vec<String>,
 }
 
 fn initial_backend() -> &'static str {
@@ -124,6 +127,7 @@ impl Status {
             can_configure: false,
             triggers: HashMap::new(),
             failed: Vec::new(),
+            registered: Vec::new(),
         }
     }
 }
@@ -255,6 +259,9 @@ pub fn set_paused(paused: bool) {
     if paused {
         release_all_bindings();
     }
+    // System hotkeys would keep the recorder from seeing a bound combo: drop them while recording.
+    #[cfg(target_os = "windows")]
+    windows::set_paused(paused);
 }
 
 pub fn status() -> Status {

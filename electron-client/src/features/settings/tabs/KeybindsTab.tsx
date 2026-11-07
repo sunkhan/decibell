@@ -326,7 +326,7 @@ function backendSummary(status: HotkeysStatus | null): string {
     case "xwayland":
       return "Your desktop has no global shortcut service, so keybinds work while Decibell or an X11 app (most games) is focused. X tells Decibell only when a bound combo is pressed — except while a push to talk or push to mute key is held, when Decibell checks every 10 ms and X answers with every key held at that moment (Decibell reads only yours). For everything else, bind the command line below in your window manager.";
     case "windows":
-      return "Keybinds work in every app, including games. Decibell checks only your bound keys (and Ctrl, Shift, Alt and Win when a combo needs them), never anything else you type, and the keys still reach the app you're in. A game running as administrator may hide its keys unless Decibell runs as administrator too.";
+      return "Keybinds work in every app, including games. Mute, deafen, leave and call keybinds are Windows shortcuts: Windows tells Decibell only when one is pressed, and that combo no longer reaches the app you're in. Push to talk and push to mute keys do still reach it: Decibell checks only those keys (and Ctrl, Shift, Alt and Win when a combo needs them) every 20 ms, never anything else you type. So does a keybind on a mouse button, on a key that types without Ctrl, Alt or Win, or on a combo another app already uses. A game running as administrator may hide its keys unless Decibell runs as administrator too.";
     case "electron":
       return "Mute, deafen, leave and call keybinds work in every app; macOS tells Decibell only when one of them fires. Push to talk and push to mute work while Decibell is focused.";
     case "none":

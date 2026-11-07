@@ -31,6 +31,9 @@ export function isSwallowed(b: HotkeyBinding, status: HotkeysStatus | null): boo
       return true;
     case "electron":
       return !isHoldAction(b.action);
+    case "windows":
+      // Press actions on a combo Windows can take whole are system hotkeys; holds and the rest are polled.
+      return status.registered?.includes(b.id) ?? false;
     default:
       return false;
   }
