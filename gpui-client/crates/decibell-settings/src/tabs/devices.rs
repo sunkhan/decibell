@@ -204,6 +204,7 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
                     .text(12., 500.)
                     .pad(12., 6.)
                     .disabled(busy)
+                    .probe(format!("device-sign-out:{id}"))
                     .on_click(move |_, _, cx| confirm(Some(Confirming::One(id)), cx)),
             )
         })

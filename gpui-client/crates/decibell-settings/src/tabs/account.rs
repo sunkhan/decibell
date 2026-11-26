@@ -216,12 +216,12 @@ impl Render for AccountTab {
             .gap_2()
             .child(Label::new("Logged in").size(12.).color(theme.color_text_muted));
         if renames {
-            meta = meta.child(dot()).child(link("account-rename", "Change username").on_click(cx.listener(|this, _, window, cx| {
+            meta = meta.child(dot()).child(link("account-rename", "Change username").probe("account-rename").on_click(cx.listener(|this, _, window, cx| {
                 this.open_rename(window, cx);
             })));
         }
         if devices {
-            meta = meta.child(dot()).child(link("account-password", "Change password").on_click(|_, _, cx| {
+            meta = meta.child(dot()).child(link("account-password", "Change password").probe("account-password").on_click(|_, _, cx| {
                 let devices = Model::global(cx).live.devices.clone();
                 devices.update(cx, |d, cx| d.open_password(cx));
             }));

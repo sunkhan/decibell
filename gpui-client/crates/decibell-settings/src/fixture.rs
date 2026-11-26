@@ -27,7 +27,7 @@ use crate::tabs::TabId;
 pub const NOW: i64 = 1_764_000_000;
 const DAY: i64 = 86_400;
 
-pub const FINGERPRINT: &str = "3f9a 21c4 7be0 0d55 91ab c6e2 48f3 0a7d e915 5c28 b4d0 6e13";
+pub const FINGERPRINT: &str = "K7QM 2XRD 5FTA LW4E HB3N P6CZ U7VY D2GS 5JMR TQ7K XE4W 3NAF";
 
 /// What a screen shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

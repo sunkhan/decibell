@@ -141,6 +141,18 @@ mod tests {
         assert_eq!(r.gpui_key_down("f9", false), Some(Recorded::Combo(v(&["F9"]))));
     }
 
+    /// On a German QWERTZ layout the key right of T types "z": physically it is `KeyY`, and a
+    /// binding must name the physical key (the listeners match physical keys). GPUI's key events at
+    /// this pin carry only the character, so this records `KeyZ`; with patch 0012 the event's
+    /// physical code (`gpui::KeyCode::Evdev(21)` on Linux) reaches the model's `event_code`, and
+    /// this test feeds that instead of the character.
+    #[test]
+    #[ignore = "needs GPUI patch 0012 (physical key codes on key events, wip/land): until it lands the recorder maps the layout's character as a US layout would"]
+    fn a_non_us_layout_records_the_physical_key() {
+        let mut r = Recorder::new();
+        assert_eq!(r.gpui_key_down("z", false), Some(Recorded::Combo(v(&["KeyY"]))));
+    }
+
     #[test]
     fn mouse_buttons_take_the_held_modifiers() {
         let mut r = Recorder::new();

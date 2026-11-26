@@ -166,6 +166,8 @@ fn theme_card(this: &AppearanceTab, id: ThemeId, window: &mut Window, cx: &mut C
         .when(selected, |this| this.shadow(ring))
         .focus_visible(move |style| style.shadow(focus_ring))
         .on_hover(listener)
+        .relative()
+        .children(decibell_shell::probes::probe(format!("theme-card:{}", id.as_str())))
         .on_click(move |_, _, cx| commit(id, cx))
         .on_key_down(move |event, _, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {

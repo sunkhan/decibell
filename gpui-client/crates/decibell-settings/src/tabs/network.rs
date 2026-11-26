@@ -343,6 +343,7 @@ impl NetworkTab {
             Btn::new((if direction == Direction::Upload { "rate-up" } else { "rate-down" }, i), *name, look, theme.radius_sm)
                 .text(12., 500.)
                 .pad(12., 6.)
+                .probe(format!("{}:{}", if direction == Direction::Upload { "rate-up" } else { "rate-down" }, name))
                 .on_click(cx.listener(move |this, _, _, cx| this.pick_preset(direction, mbps, cx)))
         }));
         let box_id = if direction == Direction::Upload { "rate-up-custom" } else { "rate-down-custom" };

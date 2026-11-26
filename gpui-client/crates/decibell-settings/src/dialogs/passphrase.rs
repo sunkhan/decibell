@@ -34,6 +34,8 @@ pub struct PassphraseOverlay {
 impl PassphraseOverlay {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
+        let weak = cx.weak_entity();
+        crate::handles::update(cx, |h| h.passphrase = Some(weak));
         let flow = cx.observe_in(&model.live.e2ee, window, |this, e2ee, window, cx| {
             let flow = e2ee.read(cx).passphrase.clone();
             this.follow(flow, window, cx);

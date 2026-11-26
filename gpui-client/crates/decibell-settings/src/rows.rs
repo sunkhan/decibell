@@ -68,11 +68,18 @@ pub struct ToggleRow {
     on: bool,
     disabled: bool,
     on_toggle: Option<Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
+    probe: Option<SharedString>,
 }
 
 impl ToggleRow {
     pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>, description: impl Into<SharedString>, on: bool) -> Self {
-        Self { id: id.into(), title: title.into(), description: description.into(), on, disabled: false, on_toggle: None }
+        Self { id: id.into(), title: title.into(), description: description.into(), on, disabled: false, on_toggle: None, probe: None }
+    }
+
+    /// Where the switch is, for the self-tests (`decibell_shell::probes`).
+    pub fn probe(mut self, key: impl Into<SharedString>) -> Self {
+        self.probe = Some(key.into());
+        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -99,6 +106,11 @@ impl RenderOnce for ToggleRow {
                 None => switch,
             }
         };
+        let switch = div()
+            .relative()
+            .flex_none()
+            .children(self.probe.and_then(decibell_shell::probes::probe))
+            .child(switch);
         div()
             .id(self.id)
             .flex()
@@ -152,6 +164,7 @@ pub struct Btn {
     /// `disabled:opacity-0` (Appearance's Reset) instead of 0.5.
     hide_disabled: bool,
     on_click: Option<Click>,
+    probe: Option<SharedString>,
 }
 
 impl Btn {
@@ -167,7 +180,14 @@ impl Btn {
             disabled: false,
             hide_disabled: false,
             on_click: None,
+            probe: None,
         }
+    }
+
+    /// Where the button is, for the self-tests (`decibell_shell::probes`).
+    pub fn probe(mut self, key: impl Into<SharedString>) -> Self {
+        self.probe = Some(key.into());
+        self
     }
 
     /// Font size and weight.
@@ -214,6 +234,8 @@ impl RenderOnce for Btn {
         div()
             .id(self.id)
             .track_focus(&focus)
+            .relative()
+            .children(self.probe.and_then(decibell_shell::probes::probe))
             .flex()
             .flex_none()
             .items_center()
@@ -257,6 +279,7 @@ pub struct TextLink {
     underline: bool,
     disabled: bool,
     on_click: Option<Click>,
+    probe: Option<SharedString>,
 }
 
 
@@ -272,7 +295,14 @@ impl TextLink {
             underline: true,
             disabled: false,
             on_click: None,
+            probe: None,
         }
+    }
+
+    /// Where the link is, for the self-tests (`decibell_shell::probes`).
+    pub fn probe(mut self, key: impl Into<SharedString>) -> Self {
+        self.probe = Some(key.into());
+        self
     }
 
     pub fn text(mut self, size: f32, weight: f32) -> Self {
@@ -307,6 +337,8 @@ impl RenderOnce for TextLink {
         div()
             .id(self.id)
             .track_focus(&focus)
+            .relative()
+            .children(self.probe.and_then(decibell_shell::probes::probe))
             .flex_none()
             .rounded(radius)
             .focus_visible(move |style| style.shadow(ring))

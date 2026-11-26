@@ -59,6 +59,8 @@ pub struct SettingsOverlay {
 impl SettingsOverlay {
     pub fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
+        let weak = cx.weak_entity();
+        crate::handles::update(cx, |h| h.settings = Some(weak));
         let subscriptions = vec![
             cx.observe(&model.overlays, |this, overlays, cx| {
                 let open = overlays.read(cx).is_open(modal::SETTINGS);

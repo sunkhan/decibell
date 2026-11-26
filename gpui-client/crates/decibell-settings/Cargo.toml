@@ -11,6 +11,9 @@ path = "src/bin/settings-fixture.rs"
 required-features = ["fixtures"]
 
 [features]
+# The app's `dev-local` turns this on: the core then honours DECIBELL_CENTRAL in a release build,
+# which the self-tests that register accounts check before they talk to any server.
+dev-local = ["decibell-model/local-central"]
 # The screens' fixture (the shell's, plus devices, E2EE states, keybinds, audio devices and codec
 # capabilities) and the screens drawn from it.
 fixtures = ["decibell-shell/fixtures"]

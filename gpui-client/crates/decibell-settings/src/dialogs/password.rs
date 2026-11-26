@@ -27,6 +27,8 @@ pub struct PasswordOverlay {
 impl PasswordOverlay {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
+        let weak = cx.weak_entity();
+        crate::handles::update(cx, |h| h.password = Some(weak));
         let flow = cx.observe_in(&model.live.devices, window, |this, devices, window, cx| {
             let flow = devices.read(cx).password.clone();
             let open = flow.is_some();

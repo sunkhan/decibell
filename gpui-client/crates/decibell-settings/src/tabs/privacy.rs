@@ -92,6 +92,7 @@ impl Render for PrivacyTab {
                     "When enabled, only users in your friends list can send you direct messages",
                     s.friends_only,
                 )
+                .probe("privacy-friends-only")
                 .on_toggle(move |_, _, cx| actions::dm::set_friends_only_dms(!s.friends_only, cx)),
             )
             .child(away)
@@ -189,7 +190,11 @@ fn e2ee_section(_: &mut Window, cx: &mut App) -> AnyElement {
     let (supported, status, fingerprint) = (e.supported, e.status, e.fingerprint.clone());
     let theme = cx.theme();
     let primary = |id: &'static str, label: &'static str, mode: PassphraseMode| {
-        Button::new(id, label).on_click(move |_, _, cx| open_passphrase(mode, cx)).into_any_element()
+        div()
+            .relative()
+            .children(decibell_shell::probes::probe(id))
+            .child(Button::new(id, label).on_click(move |_, _, cx| open_passphrase(mode, cx)))
+            .into_any_element()
     };
     let secondary = |id: &'static str, label: &'static str, mode: PassphraseMode, cx: &App| {
         Btn::new(id, label, quiet_outline_look(cx), cx.theme().radius_sm)

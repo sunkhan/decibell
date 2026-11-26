@@ -15,6 +15,7 @@
 
 pub mod dialogs;
 mod fields;
+pub mod handles;
 pub mod hooks;
 pub mod mic_test;
 mod recorder;
