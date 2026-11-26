@@ -1098,11 +1098,13 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
 - **Done (integrate-c)**: the message list's "today" now moves on at the next local midnight (one timer per list,
   re-armed daily; the renderer's memoised bubbles stay stale the same way, ours relabel); the chat self-tests no
   longer depend on order (`fixture::open` purges the channel's slice before seeding: `chat-rows,chat-history`).
-- **DM rows of central's two legacy refusal strings** ("This user is currently offline…", "…only accepts direct
-  messages from users in their friends list.") are drawn as plain bubbles; `DmChatPanel` draws them as an
-  `ErrorCard` row. Central now refuses with the sender's nonce and the model withdraws the bubble with a toast, so
-  only a refusal whose bubble was already gone (sent from another device, or after the echo watchdog) lands as a
-  row. Needs a row kind in `decibell-chat`'s `row.rs` (left alone while `wip/chat-content` edits it).
+- **Done (integrate-d): DM rows of central's two legacy refusal strings** ("This user is currently offline…", "…only
+  accepts direct messages from users in their friends list.") are drawn as `DmChatPanel`'s `ErrorCard` row: a notice
+  card row kind in `decibell-chat`'s `row.rs` (exact height, no actions or hover wash), asked of the list source
+  (`ListSource::notice`; `DmSource` answers for our own rows with those strings). Screen `dm-refusals`, Electron
+  twin `pages/dm-refusals.tsx`: 0.53–0.96 % of pixels differ in the seven themes (`dm-plain`: 0.66 %). The renderer's
+  list rests ~35 px above its end on that page (it pins before the cards' rows are final); the page scrolls it
+  to the end before the capture.
 - **Done (integrate-d): type-to-focus with the DM call's theater on** no longer reaches the hidden composer
   (`ComposerTarget::hidden`; self-test `join-type-to-focus-hotkeys`).
 - **`message_stamp` costs ~117 ns** a call, of which ~58 ns is formatting and the rest `chrono::Local`'s

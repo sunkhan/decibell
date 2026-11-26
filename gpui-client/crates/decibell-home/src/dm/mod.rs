@@ -33,7 +33,7 @@ use gpui::{
 
 pub use banner::{Notice, notice};
 pub use conversation::{Body, Conversation};
-pub use source::DmSource;
+pub use source::{DmSource, LEGACY_FRIENDS_ONLY, LEGACY_OFFLINE};
 
 use crate::friends::FriendsRail;
 use crate::friends::RAIL_WIDTH;

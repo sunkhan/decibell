@@ -32,6 +32,7 @@ pub use media::{
     invalidate_slots, slots,
 };
 pub use pane::ChatPane;
+pub use row::RowNotice;
 pub use source::{ChannelSource, Jump, ListSource};
 
 /// Once at start-up (the app's `registry::init_features`): the chat pane fills the shell's

@@ -52,6 +52,7 @@ pub enum Scene {
     DmLocked,
     DmKeyChanged,
     DmWithRail,
+    DmRefusals,
     ProfilePopup,
     ProfileModal,
     ProfilePrivacy,
@@ -64,7 +65,7 @@ pub enum Scene {
 }
 
 impl Scene {
-    pub const ALL: [Scene; 19] = [
+    pub const ALL: [Scene; 20] = [
         Scene::FriendsOnline,
         Scene::FriendsAll,
         Scene::FriendsPending,
@@ -75,6 +76,7 @@ impl Scene {
         Scene::DmLocked,
         Scene::DmKeyChanged,
         Scene::DmWithRail,
+        Scene::DmRefusals,
         Scene::ProfilePopup,
         Scene::ProfileModal,
         Scene::ProfilePrivacy,
@@ -99,6 +101,7 @@ impl Scene {
             Scene::DmLocked => "dm-locked",
             Scene::DmKeyChanged => "dm-key-changed",
             Scene::DmWithRail => "dm-with-friends-rail",
+            Scene::DmRefusals => "dm-refusals",
             Scene::ProfilePopup => "profile-popup",
             Scene::ProfileModal => "profile-modal",
             Scene::ProfilePrivacy => "profile-privacy",
@@ -123,6 +126,7 @@ impl Scene {
             Scene::DmLocked => "The conversation with alice while this device is locked (Unlock)",
             Scene::DmKeyChanged => "The conversation with alice after her keys changed",
             Scene::DmWithRail => "The conversation with bob beside the Friends rail",
+            Scene::DmRefusals => "The conversation with bob ending in central's two legacy refusal rows (ErrorCard rows)",
             Scene::ProfilePopup => "carol's profile popout from Daily Gaming's member list (roles, live stream)",
             Scene::ProfileModal => "bob's profile screen from Daily Gaming (Profile tab)",
             Scene::ProfilePrivacy => "alice's profile screen on Privacy (safety number, fingerprint)",
@@ -136,7 +140,7 @@ impl Scene {
     }
 
     fn is_dm(self) -> bool {
-        matches!(self, Scene::DmPlain | Scene::DmEncrypted | Scene::DmLocked | Scene::DmKeyChanged | Scene::DmWithRail)
+        matches!(self, Scene::DmPlain | Scene::DmEncrypted | Scene::DmLocked | Scene::DmKeyChanged | Scene::DmWithRail | Scene::DmRefusals)
     }
 
     fn uses_server(self) -> bool {
@@ -237,7 +241,16 @@ fn status(status: &str) -> CoreEvent {
 
 /// The conversations' newest pages.
 fn histories(scene: Scene) -> Vec<CoreEvent> {
-    vec![history(("bob", BOB), bob_page()), history(("alice", ALICE), alice_page(if scene == Scene::DmLocked { "locked" } else { "" }))]
+    let mut bob = bob_page();
+    if scene == Scene::DmRefusals {
+        // Central's legacy refusals, echoed as DMs from us to us (`DmChatPanel`'s ERROR_MESSAGES).
+        let me = (ME_NAME, ME);
+        let at = |minutes: i64| T0 + minutes * 60;
+        bob.push(dm(BOB_IDS + 10, me, crate::dm::LEGACY_OFFLINE, at(20), 0, None, false, ""));
+        bob.push(dm(BOB_IDS + 11, me, crate::dm::LEGACY_FRIENDS_ONLY, at(21), 0, None, false, ""));
+        bob.push(dm(BOB_IDS + 12, me, "ok, I'll wait for you to accept the request", at(22), 0, None, false, ""));
+    }
+    vec![history(("bob", BOB), bob), history(("alice", ALICE), alice_page(if scene == Scene::DmLocked { "locked" } else { "" }))]
 }
 
 /// The core events of `scene`, after the shell's.
@@ -408,7 +421,7 @@ pub fn apply(scene: Scene, cx: &mut App) -> Model {
     }
     let server = ServerId::from_central(DAILY_GAMING);
     match scene {
-        Scene::DmPlain | Scene::DmWithRail => actions::dm::open_dm(BOB, "bob".into(), cx),
+        Scene::DmPlain | Scene::DmWithRail | Scene::DmRefusals => actions::dm::open_dm(BOB, "bob".into(), cx),
         Scene::DmEncrypted | Scene::DmLocked | Scene::DmKeyChanged => actions::dm::open_dm(ALICE, "alice".into(), cx),
         _ => {}
     }
@@ -457,7 +470,7 @@ pub fn json(scene: Scene) -> serde_json::Value {
         .collect();
     let (filter, add) = friends_filter(scene);
     let dm_peer = match scene {
-        Scene::DmPlain | Scene::DmWithRail => Some(BOB),
+        Scene::DmPlain | Scene::DmWithRail | Scene::DmRefusals => Some(BOB),
         Scene::DmEncrypted | Scene::DmLocked | Scene::DmKeyChanged => Some(ALICE),
         _ => None,
     };

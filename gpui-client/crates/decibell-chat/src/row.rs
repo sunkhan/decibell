@@ -107,6 +107,16 @@ pub struct ReplySpec {
     pub kinds: Arc<[AttachmentKind]>,
 }
 
+/// A row drawn as a notice card instead of a message bubble: `DmChatPanel`'s two legacy refusal
+/// strings from central (`ErrorCard`: the warning glyph in its circle, the lead in
+/// `font-medium text-warning`, then the text). The list source decides
+/// ([`crate::ListSource::notice`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowNotice {
+    pub lead: SharedString,
+    pub text: SharedString,
+}
+
 /// What a row is built from, beyond the message: everything the list resolved from the model.
 pub struct RowSpec<'a> {
     pub message: &'a Arc<Message>,
@@ -132,6 +142,8 @@ pub struct RowSpec<'a> {
     pub space: SlotSpace,
     /// Heights of the attachments / inflight / embeds slots when a crate fills them.
     pub slot_heights: [Option<f32>; 3],
+    /// Draw the row as a notice card (no avatar, header, actions or slots).
+    pub notice: Option<RowNotice>,
 }
 
 /// A fenced code block's box (CodeBlock.tsx).
@@ -191,6 +203,8 @@ enum Body {
     Notice { layout: Rc<Layout> },
     /// The inline editor's reserved box.
     Editor { height: f32 },
+    /// A notice card: its box ([x, y, w, h] from the bubble's top) and its paragraph.
+    Card { card: [f32; 4], layout: Rc<Layout> },
 }
 
 /// See the module doc.
@@ -314,6 +328,10 @@ impl RowLayout {
         };
         let bubble_y = y;
         y = 0.;
+
+        if let Some(notice) = &spec.notice {
+            return Self::card_row(spec, notice, divider, bubble_y, width, style, engine);
+        }
 
         // The quoted line (only a row that opens a group has one: a reply never groups).
         let mut reply = None;
@@ -542,6 +560,55 @@ impl RowLayout {
         }
     }
 
+    /// A notice card row (`<div className="pl-4 pr-2 py-1.5"><ErrorCard>…</ErrorCard></div>`):
+    /// the card is at most 520 px wide, its paragraph wraps beside the 32 px icon, and the row is
+    /// the card plus 6 px above and below (exact, as every row's height).
+    fn card_row(spec: &RowSpec<'_>, notice: &RowNotice, divider: Option<Rc<Layout>>, bubble_y: f32, width: f32, style: &ChatStyle, engine: &Rc<Engine>) -> RowLayout {
+        let message = spec.message;
+        let card_width = (width - CARD_ROW_PAD_LEFT - CARD_ROW_PAD_RIGHT).clamp(1., CARD_MAX_WIDTH);
+        let text_width = (card_width - 2. * CARD_BORDER - 2. * CARD_PAD_X - CARD_ICON - CARD_GAP).max(1.);
+        let mut builder = decibell_text::ParagraphBuilder::new(engine, &style.card_text, Wrapping::NORMAL, style.scale);
+        builder.text(&notice.lead, &style.card_lead, 0);
+        builder.text(&format!(" {}", notice.text), &style.card_text, 1);
+        let layout = Rc::new(Layout::new(Rc::new(builder.build()), text_width, engine));
+        let inner = layout.height().max(CARD_ICON_MARGIN_TOP + CARD_ICON);
+        let card_height = 2. * CARD_BORDER + 2. * CARD_PAD_Y + inner;
+        let card = [CARD_ROW_PAD_LEFT, CARD_ROW_PAD_Y, card_width, card_height];
+        let content_x = CARD_ROW_PAD_LEFT + CARD_BORDER + CARD_PAD_X + CARD_ICON + CARD_GAP;
+        RowLayout {
+            height: layout_unit(bubble_y + CARD_ROW_PAD_Y + card_height + CARD_ROW_PAD_Y),
+            message: message.clone(),
+            facts: spec.facts,
+            grouped: false,
+            shown_name: spec.display_name.clone(),
+            bubble_y,
+            content_x,
+            content_width: text_width,
+            divider,
+            reply: None,
+            avatar_letter: None,
+            avatar_color: spec.avatar_color,
+            name_color: spec.name_color,
+            name: None,
+            time: None,
+            header_y: 0.,
+            header_baseline: 0.,
+            body: Body::Card { card, layout },
+            body_y: CARD_ROW_PAD_Y + CARD_BORDER + CARD_PAD_Y,
+            codes: Vec::new(),
+            maths: Vec::new(),
+            slots: [(0., 0.); 3],
+            media: Vec::new(),
+            sender: message.sender_uid,
+            overlaid: std::cell::Cell::new(false),
+        }
+    }
+
+    /// A notice card instead of a message bubble.
+    pub fn is_card(&self) -> bool {
+        matches!(self.body, Body::Card { .. })
+    }
+
     pub fn sender(&self) -> Uid {
         self.sender
     }
@@ -633,7 +700,8 @@ impl RowLayout {
         let count = shown.iter().filter(|(_, on)| *on).count() as f32;
         let top = self.bubble_y + if self.grouped { 0. } else { 4. };
         let mut x = width - ACTION_RIGHT - count * ACTION - (count - 1.).max(0.) * ACTION_GAP;
-        let editing = matches!(self.body, Body::Editor { .. });
+        // The inline editor and a notice card have no actions.
+        let editing = matches!(self.body, Body::Editor { .. } | Body::Card { .. });
         shown.into_iter().filter(move |(_, on)| *on && !editing).map(move |(action, _)| {
             let bounds = [x, top, ACTION, ACTION];
             x += ACTION + ACTION_GAP;
@@ -670,7 +738,7 @@ impl RowLayout {
                 return RowHit { target, pos: RowPos::START };
             }
         }
-        if !self.grouped {
+        if !self.grouped && self.name.is_some() {
             let avatar = [ROW_PAD_LEFT, self.bubble_y + self.header_y, AVATAR, AVATAR];
             if inside(avatar) {
                 return RowHit { target: Target::Sender, pos: RowPos::START };
@@ -721,7 +789,9 @@ impl RowLayout {
                 };
                 RowHit { target, pos }
             }
-            Body::Notice { .. } | Body::None | Body::Editor { .. } => RowHit { target: Target::None, pos: if y < self.bubble_y + self.body_y { RowPos::START } else { RowPos::END } },
+            Body::Notice { .. } | Body::None | Body::Editor { .. } | Body::Card { .. } => {
+                RowHit { target: Target::None, pos: if y < self.bubble_y + self.body_y { RowPos::START } else { RowPos::END } }
+            }
         }
     }
 
@@ -815,6 +885,7 @@ impl RowLayout {
                 }
             }
             (Body::Notice { layout }, true) => out.text(&label_text(layout, 0, u32::MAX)),
+            (Body::Card { layout, .. }, true) => out.text(&label_text(layout, 0, u32::MAX)),
             _ => {}
         }
         // The attachments come with the end of the row (a selection can't end inside them).
@@ -1213,9 +1284,11 @@ impl RowLayout {
         // The row's wash: jump flash > reply rail > hover.
         let bubble = Bounds::new(at(0., self.bubble_y), size(px(width), px(self.height - self.bubble_y)));
         let railed = paint.reply_target || self.facts.replies_to_me;
+        let card = matches!(self.body, Body::Card { .. });
         let wash = if paint.highlighted || railed {
             Some(style.accent_soft)
-        } else if paint.hovered {
+        } else if paint.hovered && !card {
+            // A notice card is no `MessageBubble`: no hover wash.
             Some(style.row_hover)
         } else {
             None
@@ -1340,6 +1413,26 @@ impl RowLayout {
                 let lock = Bounds::new(body_origin + point(px(0.), snap((line - 12.) / 2.)), size(px(12.), px(12.)));
                 icon(IconName::ChatLock, lock, style.text_muted, window, cx);
                 layout.paint(body_origin + point(px(18.), snap((line - layout.height()) / 2.)), &PaintOptions::default(), window, cx);
+            }
+            Body::Card { card, layout } => {
+                // `rounded-md border border-warning/10 bg-warning/[0.06]`.
+                let bounds = Bounds::new(at(card[0], self.bubble_y + card[1]), size(snap(card[2]), snap(card[3])));
+                let tint = |alpha: f32| Hsla { a: style.warning.a * alpha, ..style.warning };
+                window.paint_quad(quad(bounds, Corners::all(style.radius_md), tint(0.06), Edges::all(px(CARD_BORDER)), tint(0.1), BorderStyle::default()));
+                // `mt-px h-8 w-8 rounded-full bg-warning/[0.12]` with the 16 px glyph in it.
+                let circle = Bounds::new(
+                    at(card[0] + CARD_BORDER + CARD_PAD_X, self.bubble_y + card[1] + CARD_BORDER + CARD_PAD_Y + CARD_ICON_MARGIN_TOP),
+                    size(px(CARD_ICON), px(CARD_ICON)),
+                );
+                window.paint_quad(quad(circle, Corners::all(px(CARD_ICON / 2.)), tint(0.12), Edges::default(), transparent_black(), BorderStyle::default()));
+                let glyph = Bounds::new(circle.origin + point(px(8.), px(8.)), size(px(16.), px(16.)));
+                icon(IconName::AlertTriangle, glyph, style.warning, window, cx);
+                let selection = match paint.selection {
+                    Some((_, to)) if to.part == Part::Body => Some((0, u32::MAX)),
+                    _ => None,
+                };
+                let options = PaintOptions { selection, selection_background: style.selection, selection_color: Some(style.selection_text), underline_tag: None, color: None };
+                layout.paint(body_origin, &options, window, cx);
             }
             Body::None | Body::Editor { .. } => {}
         }

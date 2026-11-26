@@ -77,6 +77,18 @@ pub const CODE_FOOT_PAD_Y: f32 = 6.;
 pub const BAR: f32 = 10.;
 /// MathTex.tsx's display formula: `my-1 py-1`.
 pub const MATH_MARGIN_Y: f32 = 4.;
+/// A notice card row (`DmChatPanel`'s refusal rows: `pl-4 pr-2 py-1.5` around an `ErrorCard`).
+pub const CARD_ROW_PAD_LEFT: f32 = 16.;
+pub const CARD_ROW_PAD_RIGHT: f32 = 8.;
+pub const CARD_ROW_PAD_Y: f32 = 6.;
+/// `ErrorCard`: `max-w-[520px] border px-4 py-3.5 gap-3`, the icon's `mt-px h-8 w-8` circle.
+pub const CARD_MAX_WIDTH: f32 = 520.;
+pub const CARD_BORDER: f32 = 1.;
+pub const CARD_PAD_X: f32 = 16.;
+pub const CARD_PAD_Y: f32 = 14.;
+pub const CARD_GAP: f32 = 12.;
+pub const CARD_ICON: f32 = 32.;
+pub const CARD_ICON_MARGIN_TOP: f32 = 1.;
 pub const MATH_PAD_Y: f32 = 4.;
 
 /// See the module doc.
@@ -101,6 +113,11 @@ pub struct ChatStyle {
     pub reply_name: TextStyle,
     /// The decrypt-error line: `text-body italic leading-body`.
     pub notice: TextStyle,
+    /// `ErrorCard`'s paragraph (`text-[13px] leading-[1.55] text-text-secondary`) and its lead
+    /// (`font-medium text-warning`).
+    pub card_text: TextStyle,
+    pub card_lead: TextStyle,
+    pub warning: Hsla,
     /// The avatar's letter: weight 600, `max(10, floor(size × 0.42))` px.
     pub avatar_letter: TextStyle,
     pub reply_avatar_letter: TextStyle,
@@ -210,6 +227,12 @@ impl ChatStyle {
             .leading(theme.palette.t_lh_body)
             .letter_spacing(tracking);
         notice.selectable = true;
+        let mut card_text = text(FontRole::Sans, 13., 400.);
+        card_text.line_height = LineHeight::Factor(1.55);
+        card_text.color = theme.color_text_secondary;
+        let mut card_lead = text(FontRole::Sans, 13., 500.);
+        card_lead.line_height = LineHeight::Factor(1.55);
+        card_lead.color = theme.color_warning;
         let letter = |size: f32| {
             let font = (size * 0.42).floor().max(10.);
             text(FontRole::Sans, font, 600.)
@@ -239,6 +262,9 @@ impl ChatStyle {
             reply,
             reply_name,
             notice,
+            card_text,
+            card_lead,
+            warning: theme.color_warning,
             avatar_letter: letter(AVATAR),
             reply_avatar_letter: letter(REPLY_AVATAR),
             code_label,

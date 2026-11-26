@@ -42,6 +42,7 @@ pub fn screens() -> Vec<Screen> {
         DmLocked,
         DmKeyChanged,
         DmWithRail,
+        DmRefusals,
         ProfilePopup,
         ProfileModal,
         ProfilePrivacy,

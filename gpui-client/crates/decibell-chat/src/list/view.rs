@@ -579,6 +579,7 @@ impl MessageList {
             time_format: self.time_format,
             space,
             slot_heights: [slot_height(&attachments, cx), slot_height(&inflight, cx), slot_height(&embeds, cx)],
+            notice: if editing { None } else { self.source.notice(&message, cx) },
         };
         let view = cx.weak_entity();
         let ready = move || -> Box<dyn FnOnce(&mut App)> {

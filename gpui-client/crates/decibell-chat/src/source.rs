@@ -1,7 +1,7 @@
 //! What a [`MessageList`](crate::MessageList) shows and what it may ask for: a slice of the
 //! model plus a few capabilities. A server text channel and a DM conversation differ only here.
 
-use decibell_model::chat::MessageSlice;
+use decibell_model::chat::{Message, MessageSlice};
 use decibell_model::{ChannelId, Model, ServerId, actions};
 use gpui::{App, Entity, Task};
 
@@ -35,6 +35,11 @@ pub trait ListSource: 'static {
     fn can_delete_others(&self, cx: &App) -> bool;
     fn edit(&self, id: i64, content: &str, cx: &mut App);
     fn delete(&self, id: i64, cx: &mut App);
+    /// A message this source draws as a notice card instead of a bubble (the DM pane's legacy
+    /// refusal rows). Asked when the row is laid out; none by default.
+    fn notice(&self, _message: &Message, _cx: &App) -> Option<crate::row::RowNotice> {
+        None
+    }
 }
 
 /// A server text channel (`ChatPanel`).

@@ -93,6 +93,7 @@ impl PreviewCache {
             time_format: TimeFormat::Auto,
             space: SlotSpace { width, view_width: 0., view_height: 0., scale: style.scale },
             slot_heights: [None, None, None],
+            notice: None,
         };
         let engine = Engine::global(cx);
         // A code block's colours arrive later when highlighting is slow: draw the strip again.
