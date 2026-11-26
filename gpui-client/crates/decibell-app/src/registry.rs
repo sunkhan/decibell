@@ -47,6 +47,7 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_search::selftests());
     tests.extend(decibell_servers::selftests());
     tests.extend(decibell_platform::selftests::selftests());
+    tests.extend(crate::copy_image::selftests());
     tests
 }
 

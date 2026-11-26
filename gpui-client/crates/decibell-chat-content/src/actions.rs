@@ -2,11 +2,14 @@
 //! (`imageViewer/imageActions.ts`, main's `clipboard.ts`): copy the picture, copy its link, save
 //! it, open it in the browser.
 //!
-//! **Copying a picture on Linux**: GPUI at the pin writes only text to the X11 and Wayland
-//! clipboards (`gpui-notes.md` §2.14: Wayland offers text MIME types only, X11 writes
-//! `item.text()` and never calls its `set_image`). The picture is fetched and converted to PNG
-//! as the renderer did and handed to GPUI as an image entry, which reaches the clipboard on
-//! Windows and macOS; on Linux the copy fails with a toast saying so, until GPUI writes images.
+//! **Copying a picture** is what Electron put on the clipboard: `clipboard.writeImage` of the
+//! decoded picture, which Chromium offers as PNG (`image/png` on Linux). Main decoded PNG and JPEG
+//! itself (`nativeImage`); anything else (WebP, a GIF: its first frame) went back to the renderer
+//! once to become a PNG on a canvas. Here every picture becomes a PNG of its pixels, off the UI
+//! thread: a PNG file goes as it is, anything else is decoded (a GIF's first frame, EXIF orientation
+//! applied, as the viewer shows it) and encoded. GPUI offers it under `image/png` on Wayland and X11
+//! (patch 0015) and serves it to whoever asks, a clipboard manager included; Windows and macOS took
+//! image entries already (`gpui-notes.md` §2.14).
 
 use std::time::Duration;
 
@@ -54,22 +57,23 @@ fn toasts(cx: &App) -> Option<gpui::Entity<decibell_model::stores::toasts::Toast
     cx.try_global::<Model>().map(|m| m.toasts.clone())
 }
 
-/// Whether the clipboard can take a picture on this platform (see the module doc).
-pub fn clipboard_takes_images() -> bool {
-    !cfg!(any(target_os = "linux", target_os = "freebsd"))
-}
+/// Past this a picture isn't copied (`clipboard.ts`' `IMAGE_MAX`).
+const IMAGE_MAX: usize = 128 * 1024 * 1024;
 
-/// PNG and JPEG go to the clipboard as they are; anything else becomes a PNG.
-fn as_clipboard_image(bytes: &[u8]) -> Result<Image, String> {
+/// The picture as the PNG the clipboard gets (see the module doc).
+pub fn as_clipboard_image(bytes: &[u8]) -> Result<Image, String> {
+    if bytes.is_empty() {
+        return Err("Not an image".into());
+    }
+    if bytes.len() > IMAGE_MAX {
+        return Err("Too large to copy; save it instead".into());
+    }
     let png = bytes.len() > 4 && bytes[..4] == [0x89, b'P', b'N', b'G'];
-    let jpeg = bytes.len() > 3 && bytes[..3] == [0xff, 0xd8, 0xff];
     if png {
         return Ok(Image::from_bytes(ImageFormat::Png, bytes.to_vec()));
     }
-    if jpeg {
-        return Ok(Image::from_bytes(ImageFormat::Jpeg, bytes.to_vec()));
-    }
-    let img = decibell_attachments::thumbs::decode_image_bytes(bytes).map_err(|e| e.to_string())?;
+    // JPEG, WebP, BMP, a GIF's first frame: the pixels, as the viewer shows them.
+    let img = decibell_attachments::thumbs::decode_image_bytes(bytes).map_err(|_| "Not an image".to_string())?;
     let mut out = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(|e| e.to_string())?;
     Ok(Image::from_bytes(ImageFormat::Png, out))
@@ -117,13 +121,7 @@ pub fn copy_image(target: Target, cx: &mut App) {
             if let (Some(id), Some(t)) = (copying, &toasts) {
                 t.update(cx, |t, cx| t.dismiss(id, cx));
             }
-            let result = converted.and_then(|image| {
-                if !clipboard_takes_images() && !cx.try_global::<ClipboardSink>().is_some_and(|s| s.capture) {
-                    return Err(SharedString::new_static("Copying pictures to the clipboard isn't available on Linux yet"));
-                }
-                write(ClipboardItem::new_image(&image), cx);
-                Ok(())
-            });
+            let result = converted.map(|image| write(ClipboardItem::new_image(&image), cx));
             if let Some(t) = &toasts {
                 t.update(cx, |t, cx| match result {
                     Ok(()) => {
@@ -189,4 +187,49 @@ pub fn save(target: &Target, kind: decibell_attachments::AttachmentKind, save_as
         chunk_bytes: 0,
     };
     crate::downloads::start(server, &fallback, save_as, cx).detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba(w: u32, h: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([(x * 40) as u8, (y * 60) as u8, 200, 255]))
+    }
+
+    fn encode(img: &image::RgbaImage, format: image::ImageFormat) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img.clone()).write_to(&mut std::io::Cursor::new(&mut out), format).unwrap();
+        out
+    }
+
+    #[test]
+    fn every_picture_becomes_a_png_of_its_pixels() {
+        let picture = rgba(5, 4);
+        let png = encode(&picture, image::ImageFormat::Png);
+        // A PNG goes as it is.
+        let copied = as_clipboard_image(&png).unwrap();
+        assert_eq!(copied.format(), ImageFormat::Png);
+        assert_eq!(copied.bytes(), png.as_slice());
+        // A GIF (and WebP, BMP, JPEG) is decoded and encoded: a PNG with the same pixels.
+        for format in [image::ImageFormat::Gif, image::ImageFormat::Bmp] {
+            let copied = as_clipboard_image(&encode(&picture, format)).unwrap();
+            assert_eq!(copied.format(), ImageFormat::Png, "{format:?}");
+            let back = image::load_from_memory_with_format(copied.bytes(), image::ImageFormat::Png).unwrap().to_rgba8();
+            assert_eq!(back.dimensions(), (5, 4));
+            if format == image::ImageFormat::Bmp {
+                assert_eq!(back, picture, "{format:?} pixels");
+            }
+        }
+        let jpeg = {
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(picture.clone()).to_rgb8())
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg)
+                .unwrap();
+            out
+        };
+        assert_eq!(as_clipboard_image(&jpeg).unwrap().format(), ImageFormat::Png);
+        assert_eq!(as_clipboard_image(b"not a picture").unwrap_err(), "Not an image");
+        assert_eq!(as_clipboard_image(b"").unwrap_err(), "Not an image");
+    }
 }

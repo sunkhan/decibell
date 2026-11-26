@@ -14,11 +14,13 @@
 //! - [`render_cost`]: the self-test that measures what a change costs in views rendered.
 //! - [`software_codecs`]: the self-test that the software encoder and decoders are in the binary.
 //! - [`video`]: the video crate wired to the model and the core.
+//! - [`copy_image`]: the self-test of "Copy image" through the system clipboards.
 
 pub mod app;
 pub mod args;
 pub mod boot;
 pub mod joins;
+pub mod copy_image;
 #[cfg(feature = "dev-local")]
 pub mod dev;
 pub mod hotkeys;

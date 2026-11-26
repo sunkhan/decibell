@@ -21,7 +21,7 @@ path = "src/bin/capture.rs"
 required-features = ["capture"]
 
 [features]
-capture = ["gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu", "dep:image"]
+capture = ["gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu"]
 # Development, tests, captures and measurements only — never the shipped binary: honours
 # DECIBELL_CENTRAL (the local test stack) and enables `--login`, the stdout markers and the
 # perf control pipe (src/dev.rs).
@@ -54,7 +54,9 @@ decibell-platform.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# PNG for the captures; the `content-copy-image` self-test decodes what other processes read from
+# the clipboard (the same `image` the content crate links: no new code in the binary).
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = { version = "1", optional = true }
 # The video glue's core calls (keyframe requests, the frame-sink flag, the decode caps), and the
 # `encoder-software` self-test, which opens the core's software encoder (SVT-AV1) directly. The
