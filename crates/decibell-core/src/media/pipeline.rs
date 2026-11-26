@@ -19,8 +19,8 @@ use super::codec::{
 use super::peer::{PeerAudio, PeerOutput};
 use arc_swap::ArcSwap;
 use super::packet::{
-    UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
-    PACKET_TYPE_STREAM_AUDIO,
+    UdpAudioPacket, AUDIO_HEADER_SIZE, MAX_PAYLOAD_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
+    PACKET_TYPE_STREAM_AUDIO, SENDER_ID_SIZE,
 };
 #[cfg(not(unix))]
 use super::udp_recv::{self, Ready};
@@ -78,6 +78,12 @@ pub enum VoiceEvent {
     Error(String),
 }
 
+/// Bound on frames decoded per peer per tick (a cold-start prime or a
+/// post-stall catch-up); keeps one tick short even with many peers.
+const MAX_FRAMES_PER_TICK: usize = 8;
+/// Decoded frames queued per peer for the AEC render reference.
+const RENDER_FIFO_MAX: usize = 32;
+
 // Flags byte prepended to audio payload
 const FLAG_MUTED: u8 = 0x01;
 const FLAG_DEAFENED: u8 = 0x02;
@@ -106,7 +112,7 @@ pub fn run_audio_pipeline(
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
     ring: Option<crate::media::frame_crypto::SharedKeyRing>,
 ) {
-    use crate::media::frame_crypto::{self, Kind, PACKET_TYPE_AUDIO_SEALED, PACKET_TYPE_STREAM_AUDIO_SEALED};
+    use crate::media::frame_crypto::{self, Kind, PACKET_TYPE_AUDIO_SEALED};
     // Community channel (ring present): every voice frame is sealed under
     // the MLS epoch keys and plaintext audio from others is ignored. Until
     // the group's first epoch is ready nothing is sent at all — the sealer
@@ -313,15 +319,15 @@ pub fn run_audio_pipeline(
     const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(500);
     let mut local_speaking = SpeakingDetector::new();
     let mut input_level_counter: u32 = 0; // throttle InputLevel events (~every 3 frames = 60ms)
-    let mut remote_peers: HashMap<String, PeerAudio> = HashMap::new();
+    // Keyed by the 32-byte sender id off the wire (no String per packet);
+    // each PeerAudio carries its id as text (`name`) for events and volumes.
+    let mut remote_peers: HashMap<PeerKey, PeerAudio> = HashMap::new();
+    let self_key = peer_key(&sender_id);
 
     // Rebuilds the ArcSwap peer-list snapshot handed to the output callback.
     // Call after any peer insert/remove.
-    fn refresh_peer_list(peers: &PeerList, remote_peers: &HashMap<String, PeerAudio>) {
-        let snapshot: Vec<PeerOutput> = remote_peers
-            .iter()
-            .map(|(name, p)| p.output_handle(name))
-            .collect();
+    fn refresh_peer_list(peers: &PeerList, remote_peers: &HashMap<PeerKey, PeerAudio>) {
+        let snapshot: Vec<PeerOutput> = remote_peers.values().map(|p| p.output_handle()).collect();
         peers.store(Arc::new(snapshot));
     }
 
@@ -374,9 +380,6 @@ pub fn run_audio_pipeline(
         let frame = ((FRAME_SIZE as u64 * rate as u64 / SAMPLE_RATE as u64) as usize * channels).max(1);
         (low_water + frame - 1) / frame + 1
     }
-    // Bound on frames decoded per peer per tick (a cold-start prime or a
-    // post-stall catch-up); keeps one tick short even with many peers.
-    const MAX_FRAMES_PER_TICK: usize = 8;
 
     // AEC render reference accumulator: ONE 20ms playback frame (mono, 48kHz),
     // summed across all peers + stream audio and flushed to `render_ref_prod`
@@ -393,7 +396,6 @@ pub fn run_audio_pipeline(
     // Decoded stream-audio frames (mono 48kHz, volume applied) awaiting the
     // render flush — same role as PeerAudio::render_fifo for voice.
     let mut stream_render_fifo: std::collections::VecDeque<[f32; FRAME_SIZE]> = std::collections::VecDeque::new();
-    const RENDER_FIFO_MAX: usize = 32;
 
     // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
     // VoipAec3 bundles all three processors. We rebuild it when toggles change.
@@ -450,7 +452,10 @@ pub fn run_audio_pipeline(
     // set voice_recv_stop and wake its blocked read (`StopOnDrop`), drop
     // our channel-receiver end so its next try_send sees Disconnected, and
     // then join.
-    let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
+    // Datagrams reach this thread through an SPSC byte ring, each as a
+    // record [len u16 LE][datagram] pushed in one piece: no allocation per
+    // packet (the channel of Vecs it replaced allocated one each).
+    let (audio_pkt_tx, mut audio_pkt_rx) = HeapRb::<u8>::new(VOICE_RX_RING_BYTES).split();
     let recv_drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let voice_recv_stop = Arc::new(AtomicBool::new(false));
     let voice_recv_waker = match Waker::new() {
@@ -503,6 +508,9 @@ pub fn run_audio_pipeline(
     // below sets the flag, wakes it and joins; a panic unwinding the
     // pipeline would otherwise leave the thread waiting on the socket forever.
     let stop_recv = StopOnDrop(Arc::clone(&voice_recv_stop), Arc::clone(&voice_recv_waker), Arc::clone(&socket));
+
+    // One datagram at a time, copied out of the byte ring.
+    let mut rx_dgram = [0u8; RECV_BUF_SIZE];
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -1082,136 +1090,29 @@ pub fn run_audio_pipeline(
         }
 
         // 4. Drain audio packets from recv thread ─────────────────────────────
-        // The dedicated recv thread reads the UDP socket and dispatches packets
-        // by type. We only see audio/ping/keyframe-request packets here — video
-        // packets go directly to the video thread, never touching this loop.
+        // The dedicated recv thread reads the UDP socket and hands every
+        // datagram over through the byte ring. We only see audio/ping packets
+        // here — video packets go to the video thread, never touching this loop.
         let mut pkt_count_this_iter = 0u32;
         let mut peers_changed = false;
-        loop {
-            match audio_pkt_rx.try_recv() {
-                Ok(raw) => {
-                    pkt_count_this_iter += 1;
-                    if raw.len() >= AUDIO_HEADER_SIZE {
-                        if let Some(pkt) = UdpAudioPacket::from_bytes(&raw) {
-                            let username = pkt.sender_id_str();
-
-                            if pkt.packet_type == PACKET_TYPE_PING {
-                                let payload = pkt.payload_data();
-                                if payload.len() >= 8 {
-                                    let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
-                                    let now_ns = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_nanos() as u64;
-                                    let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
-                                    last_latency_ms = Some(rtt_ms);
-                                    let _ = event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
-                                }
-                            } else if username == sender_id {
-                                // Ignore our own reflected audio packets
-                            } else if pkt.packet_type == PACKET_TYPE_AUDIO
-                                || pkt.packet_type == PACKET_TYPE_AUDIO_SEALED
-                            {
-                                // Strict: in an encrypted channel only sealed
-                                // audio that opens under the sender's epoch key
-                                // is heard; on the plain (P2P) path only plain.
-                                let opened: Option<Vec<u8>> = match (&ring, pkt.packet_type) {
-                                    (Some(r), PACKET_TYPE_AUDIO_SEALED) => frame_crypto::open_audio(
-                                        &r.load(), Kind::Voice, &username, pkt.sequence, pkt.payload_data(),
-                                    ),
-                                    (None, PACKET_TYPE_AUDIO) => Some(pkt.payload_data().to_vec()),
-                                    _ => None,
-                                };
-                                let Some(opened) = opened else { continue };
-                                let now = Instant::now();
-                                let is_new = !remote_peers.contains_key(&username);
-                                if is_new {
-                                    log::info!("[pipeline] New remote peer '{}' detected (type={}, seq={}, payload={}B)",
-                                        username, pkt.packet_type, pkt.sequence, pkt.payload_size);
-                                }
-                                let inserted = !remote_peers.contains_key(&username);
-                                let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
-                                    PeerAudio::new(output_sample_rate, now)
-                                });
-                                peer.last_packet_time = now;
-                                if inserted { peers_changed = true; }
-
-                                let raw_payload: &[u8] = &opened;
-                                let (flags, opus_data) = if raw_payload.len() > 1 {
-                                    (raw_payload[0], &raw_payload[1..])
-                                } else {
-                                    (0u8, raw_payload)
-                                };
-                                // Emit mute/deafen only on an actual change —
-                                // these flags ride every audio packet (~50/s per
-                                // talking peer) but almost never change, so
-                                // forwarding each to the JS event bridge floods
-                                // the IPC channel for nothing.
-                                let peer_muted = flags & FLAG_MUTED != 0;
-                                let peer_deafened = flags & FLAG_DEAFENED != 0;
-                                if peer.last_reported_state != Some((peer_muted, peer_deafened)) {
-                                    peer.last_reported_state = Some((peer_muted, peer_deafened));
-                                    let _ = event_tx.send(VoiceEvent::UserStateChanged(
-                                        username.clone(), peer_muted, peer_deafened,
-                                    ));
-                                }
-
-                                let is_silence = flags & FLAG_SILENCE != 0;
-                                peer.voice_jitter.push(pkt.sequence, opus_data.to_vec(), is_silence);
-                                peer.voice_underrun_logged = false;
-                            } else if pkt.packet_type == PACKET_TYPE_STREAM_AUDIO
-                                || pkt.packet_type == PACKET_TYPE_STREAM_AUDIO_SEALED
-                            {
-                                // Only for streams we're watching. The community
-                                // relay fans STREAM_AUDIO out to watchers only, so
-                                // stop-watching silenced it at the source; a P2P
-                                // peer sends it unconditionally, so gate here —
-                                // otherwise the share keeps playing after you stop
-                                // watching (and again when they restart it).
-                                let opened: Option<Vec<u8>> = match (&ring, pkt.packet_type) {
-                                    (Some(r), PACKET_TYPE_STREAM_AUDIO_SEALED) => frame_crypto::open_audio(
-                                        &r.load(), Kind::StreamAudio, &username, pkt.sequence, pkt.payload_data(),
-                                    ),
-                                    (None, PACKET_TYPE_STREAM_AUDIO) => Some(pkt.payload_data().to_vec()),
-                                    _ => None,
-                                };
-                                let Some(opened) = opened else { continue };
-                                if username != sender_id && super::is_watched(&username) {
-                                    let now = Instant::now();
-                                    let inserted = !remote_peers.contains_key(&username);
-                                    let peer = remote_peers.entry(username.clone()).or_insert_with(|| {
-                                        PeerAudio::new(output_sample_rate, now)
-                                    });
-                                    peer.last_packet_time = now;
-                                    if inserted { peers_changed = true; }
-
-                                    if peer.stream_audio_decoder.is_none() {
-                                        peer.stream_audio_decoder = super::codec::StereoOpusDecoder::new().ok();
-                                        // Stream audio is continuous and rarely
-                                        // quiet, so the quiet-frame-first trim
-                                        // may never find a frame to drop; cap
-                                        // the backlog tightly (splice past
-                                        // +60ms over target) so it stays in
-                                        // step with the immediately-painted
-                                        // video. Voice keeps the default.
-                                        peer.stream_jitter.set_hard_excess(3);
-                                    }
-
-                                    // Straight into the jitter buffer on every
-                                    // platform. The Linux-only 1s A/V-sync hold
-                                    // queue that used to sit here compensated
-                                    // for the Tauri-era MSE video buffer; with
-                                    // WebCodecs video painting immediately it
-                                    // had become a pure audio-behind-video lag
-                                    // (see peer.rs).
-                                    peer.stream_jitter.push(pkt.sequence, opened, false);
-                                }
-                            }
-                        }
-                    }
+        if !audio_pkt_rx.write_is_held() && audio_pkt_rx.is_empty() {
+            // The recv thread is gone (it reported why) and left nothing.
+            break 'main;
+        }
+        {
+            let rx = VoiceRx {
+                ring: ring.as_ref(),
+                self_key: &self_key,
+                output_rate: output_sample_rate,
+                event_tx: &event_tx,
+            };
+            while let Some(n) = pop_datagram(&mut audio_pkt_rx, &mut rx_dgram) {
+                pkt_count_this_iter += 1;
+                match on_voice_datagram(&mut rx_dgram[..n], &rx, &mut remote_peers, &Instant::now) {
+                    Datagram::Ping(rtt_ms) => last_latency_ms = Some(rtt_ms),
+                    Datagram::NewPeer => peers_changed = true,
+                    Datagram::Other => {}
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
             }
         }
         if peers_changed {
@@ -1266,163 +1167,26 @@ pub fn run_audio_pipeline(
         );
         let stream_prime = prime_frames(stream_low_water, stream_output_sample_rate, stream_channels);
 
-        for (username, peer) in remote_peers.iter_mut() {
+        for peer in remote_peers.values_mut() {
             if drain_now.duration_since(peer.voice_drain_time) > max_behind {
                 peer.voice_drain_time = drain_now - max_behind;
             }
             if drain_now.duration_since(peer.stream_drain_time) > max_behind {
                 peer.stream_drain_time = drain_now - max_behind;
             }
-            peer.voice_jitter.set_prime_frames(if voice_ring_paced { voice_prime } else { 0 });
 
             // ── Voice jitter buffer ──
-            let mut produced = 0usize;
-            loop {
-                let due = if voice_ring_paced {
-                    peer.ring_len() < voice_low_water
-                } else {
-                    drain_now.duration_since(peer.voice_drain_time) >= frame_dur
-                };
-                if !due || produced >= MAX_FRAMES_PER_TICK { break; }
-                if !voice_ring_paced { peer.voice_drain_time += frame_dur; }
-
-                let frame = peer.voice_jitter.drain();
-                if let Some(d) = audio_dump.as_mut() {
-                    match &frame {
-                        Frame::Expand => d.event(&format!("{} EXPAND (plc) ring={} tgt={}", username, peer.ring_len(), peer.voice_jitter.target())),
-                        Frame::Lost => d.event(&format!("{} LOST (fec/plc) jb={}", username, peer.voice_jitter.len())),
-                        Frame::Idle if !peer.onset_pending => d.event(&format!("{} idle ring={} under={}", username, peer.ring_len(), peer.voice_jitter.underruns)),
-                        _ => {}
-                    }
-                }
-                if frame == Frame::Idle {
-                    if !peer.onset_pending {
-                        // First idle tick after audio: play out the
-                        // resampler's remainder so the tail ends cleanly.
-                        peer.flush_tail();
-                    }
-                    peer.onset_pending = true;
-                    // Nothing to play: cold, the sender paused (gate tail /
-                    // keepalive), or an underrun's PLC expansion ran out.
-                    if !peer.voice_underrun_logged && peer.voice_jitter.underruns > 0 {
-                        log::debug!("[pipeline] Voice idle for peer '{}' (underruns={}, expand={}, tgt={})",
-                            username, peer.voice_jitter.underruns, peer.voice_jitter.expand_frames, peer.voice_jitter.target());
-                        peer.voice_underrun_logged = true;
-                    }
-                    // Feed the speaking detector a silent tick at frame
-                    // cadence so the ring clears instead of sticking lit —
-                    // a silence-gated sender no longer streams low-RMS
-                    // frames to clear it for us.
-                    if drain_now.duration_since(peer.last_silent_tick) >= frame_dur {
-                        peer.last_silent_tick = drain_now;
-                        if let Some(state) = peer.speaking.process_threshold(false) {
-                            let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
-                        }
-                    }
-                    if !voice_ring_paced { peer.voice_drain_time = drain_now; }
-                    break;
-                }
-                produced += 1;
-                let mut pcm = [0i16; FRAME_SIZE];
-                let decode_ok = match &frame {
-                    Frame::Packet(data) => peer.decoder.decode(data, &mut pcm).is_ok(),
-                    Frame::Lost => {
-                        // Packet lost with later frames buffered — try FEC
-                        // from the next packet, else plain PLC.
-                        if let Some(next_data) = peer.voice_jitter.peek_next() {
-                            peer.decoder.decode_fec(next_data, &mut pcm).is_ok()
-                        } else {
-                            peer.decoder.decode(&[], &mut pcm).is_ok()
-                        }
-                    }
-                    // Ran dry mid-talkspurt: conceal while the late packet
-                    // lands (bounded by the jitter buffer).
-                    Frame::Expand => peer.decoder.decode(&[], &mut pcm).is_ok(),
-                    Frame::Idle => unreachable!(),
-                };
-                if !decode_ok { continue; }
-                // Last voice frame before the sender's gate closed (the next
-                // buffered packet is a flagged tail frame): fade it out over
-                // the frame. Senders from 0.7.5 fade their own tail, but a
-                // 0.7.4 sender follows its noise floor with a hard zero frame
-                // — audible as a tick after the person stops, especially on a
-                // boosted peer — and this smooths it on the listening side.
-                if matches!(frame, Frame::Packet(_))
-                    && !peer.voice_jitter.last_was_silence()
-                    && peer.voice_jitter.next_is_silence() == Some(true)
-                {
-                    let n = pcm.len() as f32;
-                    for (i, s) in pcm.iter_mut().enumerate() {
-                        *s = (*s as f32 * (1.0 - i as f32 / n)) as i16;
-                    }
-                    if let Some(d) = audio_dump.as_mut() {
-                        d.event(&format!("{} last voice frame (fade-out)", username));
-                    }
-                }
-                // Fade PLC expansion to silence across the episode: Opus PLC
-                // alone keeps a voiced tail pitch-repeating at useful level for
-                // 100ms+, which — when a pre-0.7.4 sender simply stops — is
-                // heard as a short buzz/tick after the person stops talking.
-                // A late packet that resumes playback comes back at full
-                // level; Opus smooths that join itself.
-                if frame == Frame::Expand {
-                    let k = peer.voice_jitter.expand_index() as f32;
-                    let g = (1.0 - k / (super::jitter::MAX_EXPAND_FRAMES as f32 + 1.0)).powi(2);
-                    for s in pcm.iter_mut() { *s = (*s as f32 * g) as i16; }
-                }
-
-                let rms = {
-                    let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                    (sum_sq / pcm.len() as f64).sqrt() as f32
-                };
-                let rms_db = if rms > 0.0 { 20.0 * (rms / 32768.0).log10() } else { -96.0 };
-                if let Some(state) = peer.speaking.process_threshold(rms_db >= -50.0) {
-                    let _ = event_tx.send(VoiceEvent::SpeakingChanged(username.clone(), state));
-                }
-                // Latency trim: over target, drop quiet frames (decoded, so
-                // the decoder state stays continuous) instead of playing them.
-                if peer.voice_jitter.should_drop_excess(rms_db < -45.0) {
-                    if let Some(d) = audio_dump.as_mut() {
-                        d.event(&format!("{} DROP excess={} rms={:.0}dB", username, peer.voice_jitter.excess(), rms_db));
-                    }
-                    if !voice_ring_paced { peer.voice_drain_time -= frame_dur; }
-                    continue;
-                }
-                if !deafened {
-                    let gain = user_volumes.get(username.as_str()).copied().unwrap_or(1.0);
-                    let mut f32_frame = [0.0f32; FRAME_SIZE];
-                    for (i, &s) in pcm.iter().enumerate() {
-                        f32_frame[i] = (s as f32 / 32768.0) * gain;
-                    }
-                    // Talkspurt onset into an empty ring: the sender's VAD
-                    // gate opened on a 20ms frame boundary, so the waveform
-                    // can start anywhere — and a 0.7.4 sender's first frame
-                    // is already mid-attack. Ramp the whole first frame so
-                    // the listener never gets a step (or an 8ms click-length
-                    // ramp) out of digital silence. Senders from 0.7.5 send a
-                    // pre-roll frame first, so this only shapes quiet audio.
-                    if peer.onset_pending && peer.ring_len() == 0 {
-                        const FADE: usize = 960; // 20ms @ 48kHz — the whole first frame
-                        for (i, s) in f32_frame.iter_mut().take(FADE).enumerate() {
-                            *s *= i as f32 / FADE as f32;
-                        }
-                        if let Some(d) = audio_dump.as_mut() {
-                            d.event(&format!("{} onset (fade-in) tgt={} jb={}", username, peer.voice_jitter.target(), peer.voice_jitter.len()));
-                        }
-                    }
-                    peer.onset_pending = false;
-                    if let Some(d) = audio_dump.as_mut() {
-                        d.peer_frame(username, &f32_frame);
-                    }
-                    // Queue for the AEC render reference (mono, pre-resample);
-                    // section 4c sums one frame per peer per 20ms.
-                    if aec_enabled {
-                        if peer.render_fifo.len() >= RENDER_FIFO_MAX { peer.render_fifo.pop_front(); }
-                        peer.render_fifo.push_back(f32_frame);
-                    }
-                    peer.push_voice_frame(&f32_frame);
-                }
-            }
+            drain_peer_voice(peer, &mut VoiceDrain {
+                now: drain_now,
+                ring_paced: voice_ring_paced,
+                low_water: voice_low_water,
+                prime: voice_prime,
+                deafened,
+                aec_enabled,
+                user_volumes: &user_volumes,
+                event_tx: &event_tx,
+                dump: audio_dump.as_mut(),
+            });
 
             // ── Stream audio jitter buffer ──
             if let Some(ref mut decoder) = peer.stream_audio_decoder {
@@ -1450,6 +1214,9 @@ pub fn run_audio_pipeline(
                         Frame::Lost | Frame::Expand => decoder.decode(&[], &mut pcm).is_ok(), // PLC
                         Frame::Idle => unreachable!(),
                     };
+                    if let Frame::Packet(data) = frame {
+                        peer.stream_jitter.recycle(data);
+                    }
                     if !decode_ok { continue; }
                     let quiet = {
                         let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
@@ -1532,11 +1299,11 @@ pub fn run_audio_pipeline(
                 while let Some(s) = c.try_pop() { buf.push(s); }
                 if !buf.is_empty() { d.output_samples(&buf, output_sample_rate); }
             }
-            for (username, peer) in remote_peers.iter() {
+            for peer in remote_peers.values() {
                 if voice_ring_paced && peer.ring_len() == 0
                     && (peer.voice_jitter.is_ready() || peer.voice_jitter.is_expanding())
                 {
-                    d.event(&format!("{} RING DRY while audio expected (jb={})", username, peer.voice_jitter.len()));
+                    d.event(&format!("{} RING DRY while audio expected (jb={})", peer.name, peer.voice_jitter.len()));
                 }
             }
         }
@@ -1577,20 +1344,20 @@ pub fn run_audio_pipeline(
 
         // 5. Clean up stale remote peers (no packet for > 5s) ─────────────────
         let stale_timeout = Duration::from_secs(5);
-        let mut to_remove: Vec<String> = Vec::new();
-        for (name, peer) in &remote_peers {
+        let mut to_remove: Vec<PeerKey> = Vec::new();
+        for (key, peer) in &remote_peers {
             if peer.last_packet_time.elapsed() > stale_timeout {
-                to_remove.push(name.clone());
+                to_remove.push(*key);
             }
         }
         let had_removals = !to_remove.is_empty();
-        for name in to_remove {
-            if let Some(mut peer) = remote_peers.remove(&name) {
+        for key in to_remove {
+            if let Some(mut peer) = remote_peers.remove(&key) {
                 // Emit speaking-stopped if they were still marked speaking
                 if peer.speaking.is_speaking() {
                     peer.speaking.reset();
                     let _ =
-                        event_tx.send(VoiceEvent::SpeakingChanged(name, false));
+                        event_tx.send(VoiceEvent::SpeakingChanged(peer.name, false));
                 }
             }
         }
@@ -1633,7 +1400,7 @@ pub fn run_audio_pipeline(
         if iter_num % 1000 == 999 { // ~every 5s (5ms per iter)
             let stream_fill = if let Ok(c) = stream_cons.try_lock() { c.occupied_len() } else { 0 };
             let recv_drop_total = recv_drops.load(std::sync::atomic::Ordering::Relaxed);
-            let peer_stats: Vec<String> = remote_peers.iter().map(|(n, p)| {
+            let peer_stats: Vec<String> = remote_peers.values().map(|p| { let n = &p.name;
                 format!("{}(j={:.1}ms tgt={} buf={} ring={} plc={} exp={} under={} drop={})",
                     n, p.voice_jitter.jitter_ms(), p.voice_jitter.target(), p.voice_jitter.len(), p.ring_len(),
                     p.voice_jitter.plc_frames, p.voice_jitter.expand_frames, p.voice_jitter.underruns,
@@ -1665,6 +1432,393 @@ pub fn run_audio_pipeline(
     drop(input_stream_opt); // Option<cpal::Stream>
 }
 
+// ── Voice receive, per datagram and per peer ────────────────────────────────
+
+/// A sender's 32-byte id as it is on the wire (NUL-padded): the key peers
+/// are held under, so a packet needs no String to find its peer.
+pub(crate) type PeerKey = [u8; SENDER_ID_SIZE];
+
+/// `id` as it appears on the wire (NUL-padded, cut at 32 bytes).
+pub(crate) fn peer_key(id: &str) -> PeerKey {
+    let mut k = [0u8; SENDER_ID_SIZE];
+    let b = id.as_bytes();
+    let n = b.len().min(SENDER_ID_SIZE);
+    k[..n].copy_from_slice(&b[..n]);
+    k
+}
+
+/// The id's text up to its first NUL, when it is UTF-8 (the relay stamps a
+/// decimal uid). `None` can't name a member of the key ring or a watch, as
+/// its lossy text (what a String key held before) couldn't.
+fn key_str(key: &PeerKey) -> Option<&str> {
+    let end = key.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
+    std::str::from_utf8(&key[..end]).ok()
+}
+
+/// The id's text for a new peer (lossy, as `UdpAudioPacket::sender_id_str`).
+fn key_name(key: &PeerKey) -> String {
+    let end = key.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
+    String::from_utf8_lossy(&key[..end]).into_owned()
+}
+
+/// Bytes of the recv thread → audio thread datagram ring: ~1,000 voice
+/// packets, a second of five talking peers, far past any stall the audio
+/// thread has (a device hot-swap). The channel it replaced held 1,024.
+pub(crate) const VOICE_RX_RING_BYTES: usize = 256 * 1024;
+
+/// Push one datagram as a record. `rec` is the datagram with two spare bytes
+/// in front of it (`rec[2..]`), which take its length. False when the ring has
+/// no room (the packet is dropped; the jitter buffer conceals it).
+pub(crate) fn push_datagram(prod: &mut ringbuf::HeapProd<u8>, rec: &mut [u8]) -> bool {
+    let len = rec.len() - 2;
+    if len > u16::MAX as usize || prod.vacant_len() < rec.len() {
+        return false;
+    }
+    rec[..2].copy_from_slice(&(len as u16).to_le_bytes());
+    prod.push_slice(rec) == rec.len()
+}
+
+/// Pop the next whole record into `out`; its length, or None when none is
+/// there.
+pub(crate) fn pop_datagram(cons: &mut ringbuf::HeapCons<u8>, out: &mut [u8]) -> Option<usize> {
+    let mut hdr = [0u8; 2];
+    if cons.peek_slice(&mut hdr) < 2 {
+        return None;
+    }
+    let len = u16::from_le_bytes(hdr) as usize;
+    if cons.occupied_len() < 2 + len {
+        return None; // never: a record is pushed in one piece
+    }
+    cons.skip(2);
+    if len > out.len() {
+        cons.skip(len);
+        return Some(0);
+    }
+    cons.pop_slice(&mut out[..len]);
+    Some(len)
+}
+
+/// What `on_voice_datagram` needs from the pipeline.
+pub(crate) struct VoiceRx<'a> {
+    /// The channel's MLS key ring; None on the plain (P2P) path.
+    pub ring: Option<&'a crate::media::frame_crypto::SharedKeyRing>,
+    /// Our own id: our packets reflected back are ignored.
+    pub self_key: &'a PeerKey,
+    pub output_rate: u32,
+    pub event_tx: &'a std::sync::mpsc::Sender<VoiceEvent>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Datagram {
+    Other,
+    /// Our PING came back: the round trip in ms (PingMeasured sent).
+    Ping(u32),
+    /// A peer heard for the first time: the output's peer list must be rebuilt.
+    NewPeer,
+}
+
+/// Section 4 of the loop for one datagram: a PING echo, or a peer's audio
+/// or stream audio opened (in place, when sealed) into its jitter buffer.
+/// Strict: in an encrypted channel only sealed audio that opens under the
+/// sender's epoch key is heard; on the plain (P2P) path only plain. Allocates
+/// nothing for a known peer. `clock` is read where the loop read
+/// `Instant::now()` before (once the packet is opened, and again as it goes
+/// into the jitter buffer: its arrival for the jitter estimate), so the
+/// buffer sees each packet at the same point as before.
+pub(crate) fn on_voice_datagram(
+    dgram: &mut [u8],
+    rx: &VoiceRx<'_>,
+    remote_peers: &mut HashMap<PeerKey, PeerAudio>,
+    clock: &dyn Fn() -> Instant,
+) -> Datagram {
+    use crate::media::frame_crypto::{self, Kind, PACKET_TYPE_AUDIO_SEALED, PACKET_TYPE_STREAM_AUDIO_SEALED};
+    // Header as `UdpAudioPacket::from_bytes` reads it, payload left in place.
+    if dgram.len() < AUDIO_HEADER_SIZE {
+        return Datagram::Other;
+    }
+    let packet_type = dgram[0];
+    let mut key: PeerKey = [0u8; SENDER_ID_SIZE];
+    key.copy_from_slice(&dgram[1..1 + SENDER_ID_SIZE]);
+    let sequence = u16::from_le_bytes([dgram[33], dgram[34]]);
+    let payload_size = u16::from_le_bytes([dgram[35], dgram[36]]) as usize;
+    if payload_size > MAX_PAYLOAD_SIZE || dgram.len() < AUDIO_HEADER_SIZE + payload_size {
+        return Datagram::Other;
+    }
+    let payload = &mut dgram[AUDIO_HEADER_SIZE..AUDIO_HEADER_SIZE + payload_size];
+
+    if packet_type == PACKET_TYPE_PING {
+        if payload.len() >= 8 {
+            let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+            let now_ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let rtt_ms = (now_ns.saturating_sub(sent_ns) / 1_000_000) as u32;
+            let _ = rx.event_tx.send(VoiceEvent::PingMeasured(rtt_ms));
+            return Datagram::Ping(rtt_ms);
+        }
+        return Datagram::Other;
+    }
+    if key == *rx.self_key {
+        // Ignore our own reflected audio packets
+        return Datagram::Other;
+    }
+    let is_voice = packet_type == PACKET_TYPE_AUDIO || packet_type == PACKET_TYPE_AUDIO_SEALED;
+    let is_stream = packet_type == PACKET_TYPE_STREAM_AUDIO || packet_type == PACKET_TYPE_STREAM_AUDIO_SEALED;
+    if !is_voice && !is_stream {
+        return Datagram::Other;
+    }
+    let kind = if is_voice { Kind::Voice } else { Kind::StreamAudio };
+    let sealed_type = if is_voice { PACKET_TYPE_AUDIO_SEALED } else { PACKET_TYPE_STREAM_AUDIO_SEALED };
+    let opened: Option<std::ops::Range<usize>> = match (rx.ring, packet_type == sealed_type) {
+        (Some(r), true) => key_str(&key)
+            .and_then(|name| frame_crypto::open_audio_in_place(&r.load(), kind, name, sequence, payload)),
+        (None, false) => Some(0..payload.len()),
+        _ => None,
+    };
+    let Some(opened) = opened else { return Datagram::Other };
+    let opened = &payload[opened];
+
+    if is_stream {
+        // Only for streams we're watching. The community relay fans
+        // STREAM_AUDIO out to watchers only, so stop-watching silenced it
+        // at the source; a P2P peer sends it unconditionally, so gate here —
+        // otherwise the share keeps playing after you stop watching (and
+        // again when they restart it).
+        if !key_str(&key).is_some_and(super::is_watched) {
+            return Datagram::Other;
+        }
+    }
+
+    let now = clock();
+    let inserted = !remote_peers.contains_key(&key);
+    if inserted {
+        log::info!(
+            "[pipeline] New remote peer '{}' detected (type={}, seq={}, payload={}B)",
+            key_name(&key), packet_type, sequence, payload_size
+        );
+    }
+    let peer = remote_peers
+        .entry(key)
+        .or_insert_with(|| PeerAudio::new(key_name(&key), rx.output_rate, now));
+    peer.last_packet_time = now;
+
+    if is_voice {
+        let (flags, opus_data) = if opened.len() > 1 {
+            (opened[0], &opened[1..])
+        } else {
+            (0u8, opened)
+        };
+        // Emit mute/deafen only on an actual change — these flags ride every
+        // audio packet (~50/s per talking peer) but almost never change, so
+        // forwarding each to the JS event bridge floods the IPC channel for
+        // nothing.
+        let peer_muted = flags & FLAG_MUTED != 0;
+        let peer_deafened = flags & FLAG_DEAFENED != 0;
+        if peer.last_reported_state != Some((peer_muted, peer_deafened)) {
+            peer.last_reported_state = Some((peer_muted, peer_deafened));
+            let _ = rx.event_tx.send(VoiceEvent::UserStateChanged(peer.name.clone(), peer_muted, peer_deafened));
+        }
+        let is_silence = flags & FLAG_SILENCE != 0;
+        peer.voice_jitter.push_slice_at(sequence, opus_data, clock(), is_silence);
+        peer.voice_underrun_logged = false;
+    } else {
+        if peer.stream_audio_decoder.is_none() {
+            peer.stream_audio_decoder = super::codec::StereoOpusDecoder::new().ok();
+            // Stream audio is continuous and rarely quiet, so the
+            // quiet-frame-first trim may never find a frame to drop; cap the
+            // backlog tightly (splice past +60ms over target) so it stays in
+            // step with the immediately-painted video. Voice keeps the
+            // default.
+            peer.stream_jitter.set_hard_excess(3);
+        }
+        // Straight into the jitter buffer on every platform. The Linux-only
+        // 1s A/V-sync hold queue that used to sit here compensated for the
+        // Tauri-era MSE video buffer; with WebCodecs video painting
+        // immediately it had become a pure audio-behind-video lag (see
+        // peer.rs).
+        peer.stream_jitter.push_slice_at(sequence, opened, clock(), false);
+    }
+    if inserted { Datagram::NewPeer } else { Datagram::Other }
+}
+
+/// What `drain_peer_voice` needs from the pipeline (section 4b).
+pub(crate) struct VoiceDrain<'a> {
+    pub now: Instant,
+    /// Decode when the peer's ring is below `low_water` (the device pulls
+    /// it); else on the 20 ms clock (no output, or deafened).
+    pub ring_paced: bool,
+    pub low_water: usize,
+    pub prime: usize,
+    pub deafened: bool,
+    pub aec_enabled: bool,
+    pub user_volumes: &'a HashMap<String, f32>,
+    pub event_tx: &'a std::sync::mpsc::Sender<VoiceEvent>,
+    pub dump: Option<&'a mut AudioDump>,
+}
+
+/// Decode a peer's due voice frames into its ring (section 4b). Allocates
+/// nothing in steady state: payload buffers go back to the jitter buffer.
+pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
+    let drain_now = cx.now;
+    let frame_dur = Duration::from_millis(20);
+    let voice_ring_paced = cx.ring_paced;
+    let voice_low_water = cx.low_water;
+    peer.voice_jitter.set_prime_frames(if voice_ring_paced { cx.prime } else { 0 });
+    let mut produced = 0usize;
+    loop {
+        let due = if voice_ring_paced {
+            peer.ring_len() < voice_low_water
+        } else {
+            drain_now.duration_since(peer.voice_drain_time) >= frame_dur
+        };
+        if !due || produced >= MAX_FRAMES_PER_TICK { break; }
+        if !voice_ring_paced { peer.voice_drain_time += frame_dur; }
+
+        let frame = peer.voice_jitter.drain();
+        if let Some(d) = cx.dump.as_deref_mut() {
+            match &frame {
+                Frame::Expand => d.event(&format!("{} EXPAND (plc) ring={} tgt={}", peer.name, peer.ring_len(), peer.voice_jitter.target())),
+                Frame::Lost => d.event(&format!("{} LOST (fec/plc) jb={}", peer.name, peer.voice_jitter.len())),
+                Frame::Idle if !peer.onset_pending => d.event(&format!("{} idle ring={} under={}", peer.name, peer.ring_len(), peer.voice_jitter.underruns)),
+                _ => {}
+            }
+        }
+        if frame == Frame::Idle {
+            if !peer.onset_pending {
+                // First idle tick after audio: play out the
+                // resampler's remainder so the tail ends cleanly.
+                peer.flush_tail();
+            }
+            peer.onset_pending = true;
+            // Nothing to play: cold, the sender paused (gate tail /
+            // keepalive), or an underrun's PLC expansion ran out.
+            if !peer.voice_underrun_logged && peer.voice_jitter.underruns > 0 {
+                log::debug!("[pipeline] Voice idle for peer '{}' (underruns={}, expand={}, tgt={})",
+                    peer.name, peer.voice_jitter.underruns, peer.voice_jitter.expand_frames, peer.voice_jitter.target());
+                peer.voice_underrun_logged = true;
+            }
+            // Feed the speaking detector a silent tick at frame
+            // cadence so the ring clears instead of sticking lit —
+            // a silence-gated sender no longer streams low-RMS
+            // frames to clear it for us.
+            if drain_now.duration_since(peer.last_silent_tick) >= frame_dur {
+                peer.last_silent_tick = drain_now;
+                if let Some(state) = peer.speaking.process_threshold(false) {
+                    let _ = cx.event_tx.send(VoiceEvent::SpeakingChanged(peer.name.clone(), state));
+                }
+            }
+            if !voice_ring_paced { peer.voice_drain_time = drain_now; }
+            break;
+        }
+        produced += 1;
+        let mut pcm = [0i16; FRAME_SIZE];
+        let decode_ok = match &frame {
+            Frame::Packet(data) => peer.decoder.decode(data, &mut pcm).is_ok(),
+            Frame::Lost => {
+                // Packet lost with later frames buffered — try FEC
+                // from the next packet, else plain PLC.
+                if let Some(next_data) = peer.voice_jitter.peek_next() {
+                    peer.decoder.decode_fec(next_data, &mut pcm).is_ok()
+                } else {
+                    peer.decoder.decode(&[], &mut pcm).is_ok()
+                }
+            }
+            // Ran dry mid-talkspurt: conceal while the late packet
+            // lands (bounded by the jitter buffer).
+            Frame::Expand => peer.decoder.decode(&[], &mut pcm).is_ok(),
+            Frame::Idle => unreachable!(),
+        };
+        let was_packet = matches!(frame, Frame::Packet(_));
+        let was_expand = frame == Frame::Expand;
+        if let Frame::Packet(data) = frame {
+            peer.voice_jitter.recycle(data);
+        }
+        if !decode_ok { continue; }
+        // Last voice frame before the sender's gate closed (the next
+        // buffered packet is a flagged tail frame): fade it out over
+        // the frame. Senders from 0.7.5 fade their own tail, but a
+        // 0.7.4 sender follows its noise floor with a hard zero frame
+        // — audible as a tick after the person stops, especially on a
+        // boosted peer — and this smooths it on the listening side.
+        if was_packet
+            && !peer.voice_jitter.last_was_silence()
+            && peer.voice_jitter.next_is_silence() == Some(true)
+        {
+            let n = pcm.len() as f32;
+            for (i, s) in pcm.iter_mut().enumerate() {
+                *s = (*s as f32 * (1.0 - i as f32 / n)) as i16;
+            }
+            if let Some(d) = cx.dump.as_deref_mut() {
+                d.event(&format!("{} last voice frame (fade-out)", peer.name));
+            }
+        }
+        // Fade PLC expansion to silence across the episode: Opus PLC
+        // alone keeps a voiced tail pitch-repeating at useful level for
+        // 100ms+, which — when a pre-0.7.4 sender simply stops — is
+        // heard as a short buzz/tick after the person stops talking.
+        // A late packet that resumes playback comes back at full
+        // level; Opus smooths that join itself.
+        if was_expand {
+            let k = peer.voice_jitter.expand_index() as f32;
+            let g = (1.0 - k / (super::jitter::MAX_EXPAND_FRAMES as f32 + 1.0)).powi(2);
+            for s in pcm.iter_mut() { *s = (*s as f32 * g) as i16; }
+        }
+
+        let rms = {
+            let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+            (sum_sq / pcm.len() as f64).sqrt() as f32
+        };
+        let rms_db = if rms > 0.0 { 20.0 * (rms / 32768.0).log10() } else { -96.0 };
+        if let Some(state) = peer.speaking.process_threshold(rms_db >= -50.0) {
+            let _ = cx.event_tx.send(VoiceEvent::SpeakingChanged(peer.name.clone(), state));
+        }
+        // Latency trim: over target, drop quiet frames (decoded, so
+        // the decoder state stays continuous) instead of playing them.
+        if peer.voice_jitter.should_drop_excess(rms_db < -45.0) {
+            if let Some(d) = cx.dump.as_deref_mut() {
+                d.event(&format!("{} DROP excess={} rms={:.0}dB", peer.name, peer.voice_jitter.excess(), rms_db));
+            }
+            if !voice_ring_paced { peer.voice_drain_time -= frame_dur; }
+            continue;
+        }
+        if !cx.deafened {
+            let gain = cx.user_volumes.get(peer.name.as_str()).copied().unwrap_or(1.0);
+            let mut f32_frame = [0.0f32; FRAME_SIZE];
+            for (i, &s) in pcm.iter().enumerate() {
+                f32_frame[i] = (s as f32 / 32768.0) * gain;
+            }
+            // Talkspurt onset into an empty ring: the sender's VAD
+            // gate opened on a 20ms frame boundary, so the waveform
+            // can start anywhere — and a 0.7.4 sender's first frame
+            // is already mid-attack. Ramp the whole first frame so
+            // the listener never gets a step (or an 8ms click-length
+            // ramp) out of digital silence. Senders from 0.7.5 send a
+            // pre-roll frame first, so this only shapes quiet audio.
+            if peer.onset_pending && peer.ring_len() == 0 {
+                const FADE: usize = 960; // 20ms @ 48kHz — the whole first frame
+                for (i, s) in f32_frame.iter_mut().take(FADE).enumerate() {
+                    *s *= i as f32 / FADE as f32;
+                }
+                if let Some(d) = cx.dump.as_deref_mut() {
+                    d.event(&format!("{} onset (fade-in) tgt={} jb={}", peer.name, peer.voice_jitter.target(), peer.voice_jitter.len()));
+                }
+            }
+            peer.onset_pending = false;
+            if let Some(d) = cx.dump.as_deref_mut() {
+                d.peer_frame(&peer.name, &f32_frame);
+            }
+            // Queue for the AEC render reference (mono, pre-resample);
+            // section 4c sums one frame per peer per 20ms.
+            if cx.aec_enabled {
+                if peer.render_fifo.len() >= RENDER_FIFO_MAX { peer.render_fifo.pop_front(); }
+                peer.render_fifo.push_back(f32_frame);
+            }
+            peer.push_voice_frame(&f32_frame);
+        }
+    }
+}
+
 // ── Dedicated voice UDP receive thread ──────────────────────────────────────
 //
 // Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice UDP socket
@@ -1692,7 +1846,7 @@ impl Drop for StopOnDrop {
 
 fn voice_recv_thread(
     socket: Arc<MediaSocket>,
-    audio_tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    mut audio_tx: ringbuf::HeapProd<u8>,
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
     drops: Arc<std::sync::atomic::AtomicU64>,
     stop: Arc<AtomicBool>,
@@ -1721,7 +1875,9 @@ fn voice_recv_thread(
         return;
     }
 
-    let mut buf = [0u8; RECV_BUF_SIZE];
+    // Two bytes in front of the datagram take its length, so a record goes
+    // into the ring in one piece (`push_datagram`).
+    let mut buf = [0u8; 2 + RECV_BUF_SIZE];
     let mut recv_errors = RecvErrors::new("voice-recv");
     let mut recv_count: u64 = 0;
     let mut recv_log_time = Instant::now();
@@ -1745,7 +1901,7 @@ fn voice_recv_thread(
         // MediaSocket, which hands this loop an empty read for them; a
         // sealed socket's skipped datagrams too (it returns to this loop
         // rather than reading past what is queued: `recv_ready`).
-        match socket.recv_ready(&mut buf) {
+        match socket.recv_ready(&mut buf[2..]) {
             // Cut short to fit the buffer: bigger than anything we send.
             Ok(inner) if is_oversized(inner.end) => recv_errors.ok(),
             Ok(inner) if !inner.is_empty() => {
@@ -1759,16 +1915,16 @@ fn voice_recv_thread(
 
                 // Forward all packets on the voice socket to the audio thread.
                 // No type classification needed — only voice packets arrive here.
-                match audio_tx.try_send(buf[inner].to_vec()) {
-                    Ok(()) => {}
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        // Audio thread is behind — drop this packet.
-                        // The jitter buffer's PLC will smooth the gap.
-                        drops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        break;
-                    }
+                if !audio_tx.read_is_held() {
+                    break; // the audio thread is gone
+                }
+                // `inner` is relative to buf[2..]: the record is the two
+                // bytes before the datagram, then the datagram.
+                let rec = inner.start..inner.end + 2;
+                if !push_datagram(&mut audio_tx, &mut buf[rec]) {
+                    // Audio thread is behind — drop this packet.
+                    // The jitter buffer's PLC will smooth the gap.
+                    drops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             Ok(_) => recv_errors.ok(),
@@ -1783,7 +1939,25 @@ fn voice_recv_thread(
 mod recv_tests {
     use super::*;
     use std::net::UdpSocket;
-    use std::sync::mpsc::{channel, sync_channel};
+    use std::sync::mpsc::channel;
+
+    /// The recv thread → audio thread ring, as the pipeline makes it.
+    fn ring() -> (ringbuf::HeapProd<u8>, ringbuf::HeapCons<u8>) {
+        HeapRb::<u8>::new(VOICE_RX_RING_BYTES).split()
+    }
+
+    /// The next datagram the recv thread handed over, waiting up to 2 s.
+    fn next_datagram(rx: &mut ringbuf::HeapCons<u8>) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut buf = [0u8; RECV_BUF_SIZE];
+        loop {
+            if let Some(n) = pop_datagram(rx, &mut buf) {
+                return buf[..n].to_vec();
+            }
+            assert!(Instant::now() < deadline, "no datagram handed over");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 
     /// A relay restart, as the voice socket sees it: our datagrams to the
     /// closed port come back as ICMP unreachable, so the connected socket
@@ -1800,7 +1974,7 @@ mod recv_tests {
         drop(relay); // the relay goes away
 
         let socket = Arc::new(MediaSocket::plain(client, "7"));
-        let (audio_tx, audio_rx) = sync_channel(16);
+        let (audio_tx, mut audio_rx) = ring();
         let (event_tx, event_rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let waker = Arc::new(Waker::new().unwrap());
@@ -1822,14 +1996,14 @@ mod recv_tests {
         // The relay is back on the same port and sends audio.
         let relay = UdpSocket::bind(relay_addr).unwrap();
         relay.send_to(b"\x00audio from the relay", client_addr).unwrap();
-        let got = audio_rx.recv_timeout(Duration::from_secs(2)).expect("datagram after the errors");
+        let got = next_datagram(&mut audio_rx);
         assert_eq!(got, b"\x00audio from the relay");
 
         // An oversized datagram (cut to the buffer) is dropped; the loop
         // goes on to the next one.
         relay.send_to(&[0u8; RECV_BUF_SIZE + 100], client_addr).unwrap();
         relay.send_to(b"\x00next", client_addr).unwrap();
-        let got = audio_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let got = next_datagram(&mut audio_rx);
         assert_eq!(got, b"\x00next");
 
         drop(StopOnDrop(stop, waker, socket.clone()));
@@ -1846,7 +2020,7 @@ mod recv_tests {
 
         // The stop flag and its wake, on a silent socket: the loop sleeps in
         // its read (no read timeout polls the socket) and ends at once.
-        let (audio_tx, _audio_rx) = sync_channel(16);
+        let (audio_tx, _audio_rx) = ring();
         let (event_tx, _event_rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let waker = Arc::new(Waker::new().unwrap());
@@ -1869,7 +2043,7 @@ mod recv_tests {
         client.connect(peer.local_addr().unwrap()).unwrap();
         let client_addr = client.local_addr().unwrap();
         let socket = Arc::new(MediaSocket::plain(client, "7"));
-        let (audio_tx, audio_rx) = sync_channel(16);
+        let (audio_tx, audio_rx) = ring();
         let (event_tx, _event_rx) = channel();
         drop(audio_rx);
         let handle = {
@@ -1909,7 +2083,7 @@ mod recv_tests {
         a.set_peer(b.local_addr().unwrap());
         b.set_peer(a.local_addr().unwrap());
 
-        let (audio_tx, audio_rx) = sync_channel(16);
+        let (audio_tx, mut audio_rx) = ring();
         let (event_tx, _event_rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let waker = Arc::new(Waker::new().unwrap());
@@ -1923,7 +2097,7 @@ mod recv_tests {
         let audio = UdpAudioPacket::new_audio("1", 1, b"after the ping").unwrap().to_bytes();
         std::thread::sleep(Duration::from_millis(30));
         a.send(&audio).unwrap();
-        assert_eq!(audio_rx.recv_timeout(Duration::from_secs(2)).unwrap(), audio);
+        assert_eq!(next_datagram(&mut audio_rx), audio);
         // The ping came back to a, reflected.
         a.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         let mut buf = [0u8; RECV_BUF_SIZE];
@@ -1951,59 +2125,336 @@ mod recv_tests {
         }
     }
 
-    /// Hand-off latency, datagram sent → in the audio thread's queue, of this
-    /// loop against the 1 ms read-timeout loop it replaced, on the same kind
-    /// of socket and the same channel: no worse, so the jitter buffer sees
-    /// every packet at least as early as before. 300 datagrams 0.2–4 ms
-    /// apart (inside and across the old loop's 1 ms slices); the consumer
-    /// stamps each as it is handed over.
+    /// Hand-off latency, datagram sent → visible to the audio thread, of this
+    /// loop (blocking read, records into the byte ring) against the loop it
+    /// replaced (1 ms read timeout, a Vec per datagram into a channel): no
+    /// worse, so the jitter buffer sees every packet at least as early as
+    /// before. Both loops run at once on their own socket pairs and take
+    /// turns (so CPU frequency and load hit both alike): 2 × 300 datagrams
+    /// 0.2–4 ms apart (inside and across the old loop's 1 ms slices); the
+    /// consumer spins on each queue (`try_recv` / the ring) as the audio
+    /// thread's tick would find it, and stamps each arrival.
     #[test]
     fn handoff_is_as_prompt_as_the_1ms_poll() {
-        fn run(new: bool) -> Vec<Duration> {
+        let pair = || {
             let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
             let client = UdpSocket::bind("127.0.0.1:0").unwrap();
             client.connect(peer.local_addr().unwrap()).unwrap();
             peer.connect(client.local_addr().unwrap()).unwrap();
-            let socket = Arc::new(MediaSocket::plain(client, "7"));
-            let (audio_tx, audio_rx) = sync_channel(64);
-            let (event_tx, _event_rx) = channel();
-            let stop = Arc::new(AtomicBool::new(false));
-            let waker = Arc::new(Waker::new().unwrap());
-            let handle = {
-                let (socket, stop, waker) = (socket.clone(), stop.clone(), waker.clone());
-                std::thread::spawn(move || {
-                    if new {
-                        voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop, waker)
-                    } else {
-                        old_voice_recv_loop(socket, audio_tx, stop)
-                    }
-                })
-            };
-            let mut lcg = 0x2545_f491_4f6c_dd1du64;
-            let mut lat = Vec::new();
-            for _ in 0..300 {
-                lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                std::thread::sleep(Duration::from_micros(200 + (lcg >> 33) % 3800));
-                let sent = Instant::now();
-                peer.send(b"\x00voice").unwrap();
-                audio_rx.recv_timeout(Duration::from_secs(2)).expect("handed over");
-                lat.push(sent.elapsed());
+            (peer, Arc::new(MediaSocket::plain(client, "7")))
+        };
+        let (old_peer, old_sock) = pair();
+        let (new_peer, new_sock) = pair();
+        let (ring_tx, mut ring_rx) = ring();
+        let (vec_tx, vec_rx) = std::sync::mpsc::sync_channel(64);
+        let (event_tx, _event_rx) = channel();
+        let old_stop = Arc::new(AtomicBool::new(false));
+        let new_stop = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new(Waker::new().unwrap());
+        let old_handle = {
+            let (s, stop) = (old_sock.clone(), old_stop.clone());
+            std::thread::spawn(move || old_voice_recv_loop(s, vec_tx, stop))
+        };
+        let new_handle = {
+            let (s, stop, waker) = (new_sock.clone(), new_stop.clone(), waker.clone());
+            std::thread::spawn(move || voice_recv_thread(s, ring_tx, event_tx, Arc::new(Default::default()), stop, waker))
+        };
+        let mut lcg = 0x2545_f491_4f6c_dd1du64;
+        let (mut old, mut new) = (Vec::new(), Vec::new());
+        let mut buf = [0u8; RECV_BUF_SIZE];
+        for i in 0..600 {
+            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            std::thread::sleep(Duration::from_micros(200 + (lcg >> 33) % 3800));
+            let use_new = i % 2 == 1;
+            let sent = Instant::now();
+            if use_new { new_peer.send(b"\x00voice").unwrap(); } else { old_peer.send(b"\x00voice").unwrap(); }
+            loop {
+                let got = if use_new { pop_datagram(&mut ring_rx, &mut buf).is_some() } else { vec_rx.try_recv().is_ok() };
+                if got {
+                    break;
+                }
+                assert!(sent.elapsed() < Duration::from_secs(2), "never handed over");
+                std::hint::spin_loop();
             }
-            drop(StopOnDrop(stop, waker, socket));
-            handle.join().unwrap();
-            lat.sort();
-            lat
+            if use_new { new.push(sent.elapsed()) } else { old.push(sent.elapsed()) }
         }
+        old_stop.store(true, Ordering::Relaxed);
+        old_handle.join().unwrap();
+        drop(StopOnDrop(new_stop, waker, new_sock));
+        new_handle.join().unwrap();
+        old.sort();
+        new.sort();
         let pct = |v: &[Duration], p: usize| v[(v.len() * p / 100).min(v.len() - 1)];
-        let (old, new) = (run(false), run(true));
         println!(
-            "hand-off µs p50 / p90 / p99: 1 ms poll {} / {} / {}; blocking read {} / {} / {}",
-            pct(&old, 50).as_micros(), pct(&old, 90).as_micros(), pct(&old, 99).as_micros(),
-            pct(&new, 50).as_micros(), pct(&new, 90).as_micros(), pct(&new, 99).as_micros(),
+            "hand-off µs p10 / p50 / p90 / p99: 1 ms poll {} / {} / {} / {}; blocking read {} / {} / {} / {}",
+            pct(&old, 10).as_micros(), pct(&old, 50).as_micros(), pct(&old, 90).as_micros(), pct(&old, 99).as_micros(),
+            pct(&new, 10).as_micros(), pct(&new, 50).as_micros(), pct(&new, 90).as_micros(), pct(&new, 99).as_micros(),
         );
         // Both are one kernel wakeup and one read; allow scheduler noise from
         // tests running alongside, never a systematic delay.
         assert!(pct(&new, 50) <= pct(&old, 50) + pct(&old, 50) / 2 + Duration::from_micros(20));
         assert!(pct(&new, 90) <= pct(&old, 90) * 2 + Duration::from_micros(100));
+    }
+}
+
+#[cfg(test)]
+mod rx_tests {
+    //! The voice receive path (sections 4 and 4b) driven without devices or
+    //! sockets: datagrams through the recv thread's byte ring into
+    //! `on_voice_datagram`, then `drain_peer_voice` into each peer's ring, a
+    //! simulated device pulling 20 ms per peer per step.
+    use super::*;
+    use crate::media::frame_crypto::{AudioSealer, EpochKeys, KeyRing, SharedKeyRing};
+    use crate::media::packet::UdpAudioPacket;
+    use crate::media::peer::PeerCons;
+    use crate::test_alloc::allocations_on_this_thread;
+    use ringbuf::traits::Consumer;
+
+    const PEERS: [&str; 3] = ["101", "102", "103"];
+    const ME: &str = "9";
+    const STEPS: usize = 400;
+    const WARM_UP: usize = 120;
+
+    fn rings() -> (Vec<KeyRing>, SharedKeyRing) {
+        let members: Vec<String> = PEERS.iter().chain([&ME]).map(|s| s.to_string()).collect();
+        let keys = EpochKeys::derive(1, &[7u8; 32], &members);
+        let senders = PEERS.iter().map(|p| KeyRing::empty(p).rotated(keys.clone())).collect();
+        (senders, Arc::new(ArcSwap::from_pointee(KeyRing::empty(ME).rotated(keys))))
+    }
+
+    /// (step, datagram) for each peer's 20 ms frames: a tone per peer, sealed
+    /// or plain. `rough`: every 29th packet lost, pairs swapped every 17, and
+    /// steps 200–206 held back and delivered at once on step 207.
+    fn datagrams(sealed: bool, rough: bool) -> Vec<(usize, Vec<u8>)> {
+        let (senders, _) = rings();
+        let mut out = Vec::new();
+        for (pi, peer) in PEERS.iter().enumerate() {
+            let mut enc = super::super::codec::OpusEncoder::new(64_000).unwrap();
+            let sealer = AudioSealer::new(Kind::Voice);
+            let mut opus = [0u8; MAX_OPUS_FRAME_SIZE];
+            for step in 0..STEPS {
+                let mut frame = [0i16; FRAME_SIZE];
+                for (i, s) in frame.iter_mut().enumerate() {
+                    let t = (step * FRAME_SIZE + i) as f64 / 48_000.0;
+                    *s = ((2.0 * std::f64::consts::PI * (180.0 + 70.0 * pi as f64) * t).sin() * 7_000.0) as i16;
+                }
+                let n = enc.encode(&frame, &mut opus).unwrap();
+                let mut flagged = vec![0u8];
+                flagged.extend_from_slice(&opus[..n]);
+                let seq = step as u16;
+                let pkt = if sealed {
+                    let s = sealer.seal(&senders[pi], seq, &flagged).unwrap();
+                    UdpAudioPacket::new_typed(crate::media::frame_crypto::PACKET_TYPE_AUDIO_SEALED, peer, seq, &s)
+                } else {
+                    UdpAudioPacket::new_audio(peer, seq, &flagged)
+                };
+                let mut at = step;
+                if rough {
+                    if step % 29 == 28 {
+                        continue;
+                    }
+                    if (200..207).contains(&step) {
+                        at = 207;
+                    }
+                }
+                out.push((at, pkt.unwrap().to_bytes()));
+            }
+        }
+        if rough {
+            for i in (0..out.len() - 1).step_by(17) {
+                if out[i].0 == out[i + 1].0 {
+                    out.swap(i, i + 1);
+                }
+            }
+        }
+        out.sort_by_key(|(at, _)| *at);
+        out
+    }
+
+    use crate::media::frame_crypto::Kind;
+
+    struct Out {
+        /// Each peer's ring as the device pulled it.
+        pcm: Vec<Vec<i16>>,
+        steady_allocations: u64,
+    }
+
+    /// Run the receive path. `old_path`: decode the datagrams as the loop did
+    /// before (`UdpAudioPacket::from_bytes`, an allocating open, a Vec per
+    /// packet into the jitter buffer); else the new path.
+    fn run(sealed: bool, rough: bool, output_rate: u32, old_path: bool) -> Out {
+        let dgrams = datagrams(sealed, rough);
+        let (_, ring) = rings();
+        let ring = sealed.then_some(ring);
+        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        let self_key = peer_key(ME);
+        let user_volumes = HashMap::new();
+        let mut peers: HashMap<PeerKey, PeerAudio> = HashMap::with_capacity(8);
+        let (mut prod, mut cons) = HeapRb::<u8>::new(VOICE_RX_RING_BYTES).split();
+        let mut rec = [0u8; 2 + RECV_BUF_SIZE];
+        let mut dgram = [0u8; RECV_BUF_SIZE];
+        let pull = (output_rate / 50) as usize;
+        let low_water = pull + (output_rate / 100) as usize;
+        let frame_out = FRAME_SIZE * output_rate as usize / 48_000;
+        let prime = low_water.div_ceil(frame_out) + 1;
+        let mut handles: Vec<(PeerKey, PeerCons)> = Vec::new();
+        let mut pcm: Vec<Vec<i16>> = PEERS.iter().map(|_| Vec::with_capacity((STEPS + 20) * pull)).collect();
+        let mut pulled = [0i16; 2048];
+        let t0 = Instant::now();
+        let mut next = 0;
+        let mut warm = 0;
+        // The window is the talking: from WARM_UP to the last packet's step
+        // (the 20 steps after it are the talkspurt's end: speaking-stopped
+        // events, which allocate in the channel, once per talkspurt).
+        let mut talking_end = 0;
+        for step in 0..STEPS + 20 {
+            if step == WARM_UP {
+                warm = allocations_on_this_thread();
+            }
+            if step == STEPS {
+                talking_end = allocations_on_this_thread();
+            }
+            let now = t0 + Duration::from_millis(step as u64 * 20);
+            // The recv thread's side: each datagram into the ring as a record.
+            while next < dgrams.len() && dgrams[next].0 <= step {
+                let d = &dgrams[next].1;
+                rec[2..2 + d.len()].copy_from_slice(d);
+                assert!(push_datagram(&mut prod, &mut rec[..2 + d.len()]));
+                next += 1;
+            }
+            // The audio thread's: section 4, then 4b per peer.
+            let rx = VoiceRx { ring: ring.as_ref(), self_key: &self_key, output_rate, event_tx: &event_tx };
+            while let Some(n) = pop_datagram(&mut cons, &mut dgram) {
+                if old_path {
+                    let pkt = UdpAudioPacket::from_bytes(&dgram[..n]).unwrap();
+                    let name = pkt.sender_id_str();
+                    let opened = match &ring {
+                        Some(r) => crate::media::frame_crypto::open_audio(&r.load(), Kind::Voice, &name, pkt.sequence, pkt.payload_data()).unwrap(),
+                        None => pkt.payload_data().to_vec(),
+                    };
+                    let peer = peers.entry(peer_key(&name)).or_insert_with(|| PeerAudio::new(name.clone(), output_rate, now));
+                    peer.last_packet_time = now;
+                    peer.voice_jitter.push_at(pkt.sequence, opened[1..].to_vec(), now, false);
+                } else {
+                    on_voice_datagram_at(&mut dgram[..n], &rx, &mut peers, now);
+                }
+            }
+            if handles.len() < peers.len() {
+                handles = peers.iter().map(|(k, p)| (*k, p.output_handle().cons)).collect();
+                handles.sort_by_key(|(k, _)| *k);
+            }
+            for peer in peers.values_mut() {
+                drain_peer_voice(peer, &mut VoiceDrain {
+                    now,
+                    ring_paced: true,
+                    low_water,
+                    prime,
+                    deafened: false,
+                    aec_enabled: false,
+                    user_volumes: &user_volumes,
+                    event_tx: &event_tx,
+                    dump: None,
+                });
+            }
+            // The device: one 20 ms pull per peer.
+            for (i, (_, c)) in handles.iter().enumerate() {
+                let mut c = c.lock().unwrap();
+                let got = c.pop_slice(&mut pulled[..pull]);
+                pcm[i].extend_from_slice(&pulled[..got]);
+                pcm[i].extend(std::iter::repeat(0).take(pull - got));
+            }
+        }
+        let steady_allocations = talking_end - warm;
+        Out { pcm, steady_allocations }
+    }
+
+    /// A talking peer costs no heap allocation per packet once warm: three
+    /// peers, plain and sealed, at the device's rate and through the
+    /// playback resampler.
+    #[test]
+    fn three_talking_peers_allocate_nothing_in_steady_state() {
+        for sealed in [false, true] {
+            for rate in [48_000, 44_100] {
+                let out = run(sealed, false, rate, false);
+                assert_eq!(out.steady_allocations, 0, "sealed={sealed} rate={rate}");
+                for p in &out.pcm {
+                    // Played throughout: digital silence only before the
+                    // first frame and after the last, a real level between.
+                    let zeros = p.iter().filter(|s| **s == 0).count();
+                    let peak = p.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+                    assert!(zeros < p.len() / 10 && peak > 3000, "sealed={sealed} rate={rate}: {zeros} zeros, peak {peak}");
+                }
+            }
+        }
+    }
+
+    /// The same datagrams, with loss, reordering and a late burst, give the
+    /// same PCM through the new path (in-place open, borrowed payloads,
+    /// recycled buffers) as through the old one (copy, allocating open, a Vec
+    /// per packet), sample for sample.
+    #[test]
+    fn new_receive_path_gives_the_old_pcm() {
+        for sealed in [false, true] {
+            for rate in [48_000, 44_100] {
+                let old = run(sealed, true, rate, true);
+                let new = run(sealed, true, rate, false);
+                assert_eq!(old.pcm.len(), new.pcm.len());
+                for (o, n) in old.pcm.iter().zip(&new.pcm) {
+                    assert!(o.iter().any(|s| s.abs() > 1000));
+                    assert!(o == n, "sealed={sealed} rate={rate}: PCM differs");
+                }
+            }
+        }
+    }
+
+    /// Strict, and our own packets ignored: plaintext audio is dropped in an
+    /// encrypted channel, sealed audio on the plain path, a reflected packet of
+    /// ours, a truncated or over-long header; stream audio only for a watched
+    /// streamer.
+    #[test]
+    fn what_reaches_a_jitter_buffer() {
+        let (senders, ring) = rings();
+        let (event_tx, _rx) = std::sync::mpsc::channel();
+        let self_key = peer_key(ME);
+        let now = Instant::now();
+        let plain = UdpAudioPacket::new_audio("101", 1, b"\x00abc").unwrap().to_bytes();
+        let s = AudioSealer::new(Kind::Voice).seal(&senders[0], 1, b"\x00abc").unwrap();
+        let sealed = UdpAudioPacket::new_typed(crate::media::frame_crypto::PACKET_TYPE_AUDIO_SEALED, "101", 1, &s).unwrap().to_bytes();
+        let ours = UdpAudioPacket::new_audio(ME, 1, b"\x00abc").unwrap().to_bytes();
+        for (with_ring, dgram, heard) in [
+            (true, &plain, false),
+            (true, &sealed, true),
+            (false, &sealed, false),
+            (false, &plain, true),
+            (false, &ours, false),
+        ] {
+            let mut peers = HashMap::new();
+            let rx = VoiceRx { ring: with_ring.then_some(&ring), self_key: &self_key, output_rate: 48_000, event_tx: &event_tx };
+            let got = on_voice_datagram_at(&mut dgram.clone(), &rx, &mut peers, now);
+            assert_eq!(got == Datagram::NewPeer, heard, "ring={with_ring}");
+            assert_eq!(peers.len(), heard as usize);
+            if heard {
+                assert_eq!(peers[&peer_key("101")].voice_jitter.len(), 1);
+                assert_eq!(peers[&peer_key("101")].name, "101");
+            }
+        }
+        let mut peers = HashMap::new();
+        let rx = VoiceRx { ring: None, self_key: &self_key, output_rate: 48_000, event_tx: &event_tx };
+        assert_eq!(on_voice_datagram_at(&mut plain[..plain.len() - 1].to_vec(), &rx, &mut peers, now), Datagram::Other);
+        assert_eq!(on_voice_datagram_at(&mut plain[..20].to_vec(), &rx, &mut peers, now), Datagram::Other);
+        let stream = UdpAudioPacket::new_stream_audio("4711", 1, b"opus").unwrap().to_bytes();
+        assert_eq!(on_voice_datagram_at(&mut stream.clone(), &rx, &mut peers, now), Datagram::Other);
+        assert!(peers.is_empty(), "unwatched stream audio is dropped");
+        crate::media::watch_stream_add("4711");
+        assert_eq!(on_voice_datagram_at(&mut stream.clone(), &rx, &mut peers, now), Datagram::NewPeer);
+        assert_eq!(peers[&peer_key("4711")].stream_jitter.len(), 1);
+        crate::media::watch_stream_remove("4711");
+        // A PING echo: the round trip, and the event.
+        let ping = UdpAudioPacket::new_ping(ME, 0).to_bytes();
+        assert!(matches!(on_voice_datagram_at(&mut ping.clone(), &rx, &mut peers, now), Datagram::Ping(_)));
+    }
+
+    fn on_voice_datagram_at(d: &mut [u8], rx: &VoiceRx<'_>, peers: &mut HashMap<PeerKey, PeerAudio>, now: Instant) -> Datagram {
+        on_voice_datagram(d, rx, peers, &move || now)
     }
 }

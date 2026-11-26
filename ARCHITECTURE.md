@@ -577,7 +577,9 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
   loop it replaced; its stop shuts the read side down, or sends a sealed socket a loopback byte; Windows
   waits in `WSAPoll` instead), `decibell-video-recv` in `udp_recv::wait` (`poll` / `WSAPoll` over the
   socket and a loopback waker socket) until a datagram, a stop or its next timed job (the media PING,
-  NACK / keyframe maintenance while a frame is in flight).
+  NACK / keyframe maintenance while a frame is in flight). A talking peer costs no allocation per packet:
+  datagrams reach the audio thread as records in an SPSC byte ring, peers are held under the 32-byte id off
+  the wire, sealed audio is opened in place, and jitter buffers reuse their payload buffers.
 - **Screen capture + encode** (sender). Sources are listed by Electron's `desktopCapturer` (Chromium
   ids `screen:N:0` / `window:HWND:0`, parsed natively by `source_id.rs`).
   - **Encoder backends** (`media/encoder_backend.rs`, `encoder_probe.rs`; design

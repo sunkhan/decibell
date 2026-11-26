@@ -39,6 +39,10 @@ pub struct PeerOutput {
 }
 
 pub struct PeerAudio {
+    /// The sender's media key as text (their uid in decimal): events, the
+    /// per-user volume lookup, diagnostics. Peers are held under the 32-byte
+    /// id off the wire (`pipeline::PeerKey`).
+    pub name: String,
     pub decoder: OpusDecoder,
     pub speaking: SpeakingDetector,
     pub last_packet_time: Instant,
@@ -78,11 +82,14 @@ pub struct PeerAudio {
     /// resamp_accum each iteration. Persistent so the per-20ms decode
     /// path stops allocating a fresh Vec per chunk.
     resamp_scratch: Vec<f64>,
+    /// The resampler's output, allocated with it (`process_into_buffer`;
+    /// `process` allocated a fresh one per 10 ms chunk).
+    resamp_out: Vec<Vec<f64>>,
     output_rate: u32,
 }
 
 impl PeerAudio {
-    pub fn new(output_rate: u32, now: Instant) -> Self {
+    pub fn new(name: String, output_rate: u32, now: Instant) -> Self {
         let rb = HeapRb::<i16>::new(PEER_RING_CAP);
         let (prod, cons) = rb.split();
         let cons = Arc::new(std::sync::Mutex::new(cons));
@@ -91,7 +98,9 @@ impl PeerAudio {
         } else {
             Some(make_sinc_resampler(SAMPLE_RATE, output_rate, 480, 1))
         };
+        let resamp_out = resampler.as_ref().map(|r| r.output_buffer_allocate(true)).unwrap_or_default();
         Self {
+            name,
             decoder: OpusDecoder::new().expect("OpusDecoder::new failed"),
             speaking: SpeakingDetector::new(),
             last_packet_time: now,
@@ -110,13 +119,14 @@ impl PeerAudio {
             resampler,
             resamp_accum: Vec::with_capacity(1024),
             resamp_scratch: Vec::with_capacity(1024),
+            resamp_out,
             output_rate,
         }
     }
 
-    pub fn output_handle(&self, username: &str) -> PeerOutput {
+    pub fn output_handle(&self) -> PeerOutput {
         PeerOutput {
-            username: username.to_string(),
+            username: self.name.clone(),
             cons: Arc::clone(&self.cons),
         }
     }
@@ -133,6 +143,7 @@ impl PeerAudio {
         } else {
             Some(make_sinc_resampler(SAMPLE_RATE, output_rate, 480, 1))
         };
+        self.resamp_out = self.resampler.as_ref().map(|r| r.output_buffer_allocate(true)).unwrap_or_default();
         self.resamp_accum.clear();
         if let Ok(mut cons) = self.cons.lock() {
             use ringbuf::traits::Consumer;
@@ -173,8 +184,8 @@ impl PeerAudio {
         while self.resamp_accum.len() >= needed {
             self.resamp_scratch.clear();
             self.resamp_scratch.extend(self.resamp_accum.drain(..needed));
-            if let Ok(out) = resampler.process(&[&self.resamp_scratch], None) {
-                for &s in &out[0] {
+            if let Ok((_, frames)) = resampler.process_into_buffer(&[&self.resamp_scratch], &mut self.resamp_out, None) {
+                for &s in &self.resamp_out[0][..frames] {
                     let q = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                     let _ = self.prod.try_push(q);
                 }
@@ -195,8 +206,8 @@ impl PeerAudio {
         self.resamp_accum.resize(needed, 0.0);
         self.resamp_scratch.clear();
         self.resamp_scratch.extend(self.resamp_accum.drain(..));
-        if let Ok(out) = resampler.process(&[&self.resamp_scratch], None) {
-            for &s in &out[0] {
+        if let Ok((_, frames)) = resampler.process_into_buffer(&[&self.resamp_scratch], &mut self.resamp_out, None) {
+            for &s in &self.resamp_out[0][..frames] {
                 let q = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                 let _ = self.prod.try_push(q);
             }

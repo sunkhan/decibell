@@ -4959,3 +4959,15 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   the keyframe the server requests for a new watcher isn't relayed to an endpoint it hasn't bound. Watch-set
   and frame-sink writers had a lost-update race (load-clone-store from several threads); both now serialise
   their writers. Scenario A: no `decibell-video-recv` thread (38 → 37 threads).
+- **A talking peer allocates nothing per packet.** The voice receive path allocated about five times per packet
+  (~50/s per talking peer): `buf[..n].to_vec()` into the channel, `sender_id_str()`, the sealed open's output
+  (or `payload_data().to_vec()` on P2P), the peer map's String key, the Opus payload's Vec into the jitter buffer;
+  plus the playback resampler's output when the device isn't at 48 kHz. Now: records `[len][datagram]` in an
+  SPSC byte ring (one `push_slice`, so a record is whole when seen), peers keyed by the wire's 32-byte id
+  (`PeerAudio::name` for events and volumes), `frame_crypto::open_audio_in_place`, `JitterBuffer::push_slice` +
+  `recycle` (spare payload buffers; which frames come out, and when, unchanged), `process_into_buffer` with a
+  buffer allocated with the resampler. The packet's arrival clock is read at the same points as before.
+  Sections 4 and 4b of the loop became `on_voice_datagram` / `drain_peer_voice` (code moved, not changed) so
+  tests drive them: 0 allocations over 280 steady-state steps of 3 talking peers (plain and sealed, 48 and
+  44.1 kHz output); the same datagrams with loss, reordering and a late burst give sample-identical PCM through
+  the old path and the new one; the jitter buffer's own tests pass unchanged, plus a recycled-vs-Vec PCM test.

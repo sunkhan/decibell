@@ -25,6 +25,12 @@ use std::time::{Duration, Instant};
 // how many frames over target we hold, and the caller drops quiet frames
 // (after decoding them, so the decoder state stays continuous) rather than
 // splicing speech — except past a hard ceiling where a splice beats the lag.
+//
+// Payload buffers are recycled: `push_slice` copies a packet into a spare
+// buffer, every buffer the jitter buffer lets go of goes back to its spares,
+// and the caller hands a drained `Frame::Packet` back with `recycle`. A
+// talking peer then costs no allocation per packet once the spares cover the
+// buffer's depth; which frames come out, and when, is the same either way.
 
 pub const FRAME_DUR_SEC: f64 = 0.020; // 20ms per Opus frame at 48kHz
 
@@ -64,6 +70,13 @@ const REJOIN_RESYNC_STREAK: u32 = 3;
 const LATE_RESOLVE_WINDOW: u16 = 8;
 /// Underrun-earned depth decays one frame per this interval of calm.
 const UNDERRUN_BOOST_DECAY: Duration = Duration::from_secs(15);
+
+/// Spare payload buffers kept for reuse: the most the buffer can hold, plus
+/// the few the caller has out between `drain` and `recycle`.
+const MAX_SPARE: usize = JITTER_MAX + 8;
+/// Capacity of a new payload buffer: a 20 ms Opus frame at any bitrate we
+/// allow (320 kbps ≈ 800 B) plus the flags byte, so a reused one never grows.
+const SPARE_CAPACITY: usize = 1024;
 
 #[derive(Debug, PartialEq)]
 pub enum Frame {
@@ -128,6 +141,20 @@ pub struct JitterBuffer {
     /// for the user-panel telemetry popover.
     pub decoded_frames: u64,
     pub underruns: u64,
+
+    /// Payload buffers to reuse (see the module docs).
+    spare: Vec<Vec<u8>>,
+}
+
+/// Keep `data` for reuse while there's room (freed otherwise).
+fn put_spare(spare: &mut Vec<Vec<u8>>, mut data: Vec<u8>) {
+    if spare.len() < MAX_SPARE && data.capacity() > 0 {
+        if spare.capacity() == 0 {
+            spare.reserve_exact(MAX_SPARE);
+        }
+        data.clear();
+        spare.push(data);
+    }
 }
 
 impl JitterBuffer {
@@ -156,7 +183,33 @@ impl JitterBuffer {
             dropped_frames: 0,
             decoded_frames: 0,
             underruns: 0,
+            spare: Vec::new(),
         }
+    }
+
+    /// Give a payload buffer back for reuse: a drained `Frame::Packet`'s, once
+    /// the caller has decoded it.
+    pub fn recycle(&mut self, data: Vec<u8>) {
+        put_spare(&mut self.spare, data);
+    }
+
+    /// Recycle every buffered payload and empty the buffer.
+    fn clear_packets(&mut self) {
+        for (_, (data, _)) in self.packets.drain() {
+            put_spare(&mut self.spare, data);
+        }
+    }
+
+    /// `push` from a borrowed payload, copied into a reused buffer.
+    pub fn push_slice(&mut self, seq: u16, data: &[u8], silence: bool) {
+        self.push_slice_at(seq, data, Instant::now(), silence);
+    }
+
+    /// `push_at` from a borrowed payload (tests / simulation).
+    pub fn push_slice_at(&mut self, seq: u16, data: &[u8], now: Instant, silence: bool) {
+        let mut buf = self.spare.pop().unwrap_or_else(|| Vec::with_capacity(SPARE_CAPACITY.max(data.len())));
+        buf.extend_from_slice(data);
+        self.push_at(seq, buf, now, silence);
     }
 
     /// Current target occupancy in packets — for diagnostics.
@@ -269,15 +322,17 @@ impl JitterBuffer {
         if behind {
             self.behind_streak = self.behind_streak.saturating_add(1);
             if self.behind_streak >= REJOIN_RESYNC_STREAK {
-                self.packets.clear();
+                self.clear_packets();
                 self.next_seq = seq;
                 self.ready = false;
                 self.expanding = 0;
                 self.late_noted = false;
                 self.behind_streak = 0;
                 self.packets.insert(seq, (data, silence));
+            } else {
+                // A lone late/duplicate packet — discard it.
+                self.recycle(data);
             }
-            // else: a lone late/duplicate packet — discard it.
             return;
         }
         self.behind_streak = 0;
@@ -292,7 +347,7 @@ impl JitterBuffer {
         // utterance. Drop them; this packet starts a fresh fill.
         if !silence && gap_before && !self.ready && self.expanding == 0 && !self.packets.is_empty() {
             self.dropped_frames += self.packets.len() as u64;
-            self.packets.clear();
+            self.clear_packets();
             self.next_seq = seq;
         }
 
@@ -302,6 +357,7 @@ impl JitterBuffer {
         if silence && !self.ready && self.packets.is_empty() && self.expanding == 0 {
             self.next_seq = seq.wrapping_add(1);
             self.last_dequeued_silence = true;
+            self.recycle(data);
             return;
         }
 
@@ -313,7 +369,10 @@ impl JitterBuffer {
             self.note_late_resolve();
         }
 
-        self.packets.insert(seq, (data, silence));
+        if let Some((old, _)) = self.packets.insert(seq, (data, silence)) {
+            // A duplicate of a buffered packet replaces it.
+            self.recycle(old);
+        }
 
         // Cold start needs target + prime (the caller will immediately pull
         // `prime` frames into its ring); resuming after an expansion only
@@ -341,7 +400,9 @@ impl JitterBuffer {
                     break;
                 }
             }
-            self.packets.remove(&self.next_seq);
+            if let Some((old, _)) = self.packets.remove(&self.next_seq) {
+                self.recycle(old);
+            }
             self.next_seq = self.next_seq.wrapping_add(1);
             self.dropped_frames += 1;
         }
@@ -434,7 +495,7 @@ impl JitterBuffer {
 
     /// Reset the buffer to its initial state, forcing a re-buffering period.
     pub fn reset(&mut self) {
-        self.packets.clear();
+        self.clear_packets();
         self.initialized = false;
         self.ready = false;
         self.consecutive_losses = 0;
@@ -646,6 +707,157 @@ mod tests {
         fill(&mut jb, 12, 10, 240); // push well past the hard ceiling
         assert!(jb.excess() > SHRINK_HARD_EXCESS);
         assert!(jb.should_drop_excess(false), "past the ceiling even speech is spliced");
+    }
+
+    /// One arrival in a recycling test: (arrival ms, seq, silence-flagged).
+    type Arrival = (u64, u16, bool);
+
+    /// A talkspurt of 300 frames with loss (every 37th packet), reordering
+    /// (pairs swapped every 23), a 120 ms stall released as a late burst, a
+    /// duplicate, a pause with flagged keepalives, and a second talkspurt.
+    fn rough_arrivals() -> Vec<Arrival> {
+        let mut out: Vec<Arrival> = Vec::new();
+        let mut seq = 0u16;
+        for i in 0..300u64 {
+            let send = i * 20;
+            let mut arrive = send + 30;
+            if (2000..2120).contains(&send) {
+                arrive = 2150; // stalled, then delivered in one burst
+            }
+            if i % 37 != 36 {
+                out.push((arrive, seq, i >= 297)); // the last three are the gate tail
+            }
+            seq = seq.wrapping_add(1);
+        }
+        for i in (0..out.len() - 1).step_by(23) {
+            out.swap(i, i + 1);
+        }
+        out.push(out[50]); // a duplicate
+        for k in 0..4u64 {
+            out.push((6030 + 500 * k, seq, true)); // keepalives while paused
+            seq = seq.wrapping_add(1);
+        }
+        for i in 0..100u64 {
+            out.push((8100 + i * 20, seq, i >= 97));
+            seq = seq.wrapping_add(1);
+        }
+        out.sort_by_key(|a| a.0);
+        out
+    }
+
+    /// Opus payloads (flags byte + frame) for every sequence the arrivals use.
+    fn payloads(n: usize) -> Vec<Vec<u8>> {
+        use super::super::codec::{OpusEncoder, FRAME_SIZE, MAX_OPUS_FRAME_SIZE};
+        let mut enc = OpusEncoder::new(64_000).unwrap();
+        let mut out = [0u8; MAX_OPUS_FRAME_SIZE];
+        (0..n)
+            .map(|f| {
+                let mut frame = [0i16; FRAME_SIZE];
+                for (i, s) in frame.iter_mut().enumerate() {
+                    let t = (f * FRAME_SIZE + i) as f64 / 48_000.0;
+                    *s = ((2.0 * std::f64::consts::PI * 220.0 * t).sin() * 6_000.0) as i16;
+                }
+                let len = enc.encode(&frame, &mut out).unwrap();
+                let mut p = vec![0u8];
+                p.extend_from_slice(&out[..len]);
+                p
+            })
+            .collect()
+    }
+
+    /// Drive `jb` over `arrivals` on a 5 ms tick, draining two frames a tick
+    /// once primed (a stand-in for the ring-paced drain), decoding each frame
+    /// like pipeline.rs does. `by_slice`: push borrowed payloads and recycle
+    /// drained buffers (the voice path now) instead of handing over a Vec each
+    /// time (before). Returns the PCM and the drained frame kinds.
+    fn run_through(jb: &mut JitterBuffer, arrivals: &[Arrival], payloads: &[Vec<u8>], by_slice: bool) -> (Vec<i16>, Vec<u8>) {
+        use super::super::codec::{OpusDecoder, FRAME_SIZE};
+        let mut dec = OpusDecoder::new().unwrap();
+        let mut pcm_out = Vec::new();
+        let mut kinds = Vec::new();
+        let mut next = 0;
+        let mut ms = 0u64;
+        while ms < 11_000 {
+            while next < arrivals.len() && arrivals[next].0 <= ms {
+                let (_, seq, silence) = arrivals[next];
+                let data = &payloads[seq as usize];
+                if by_slice {
+                    jb.push_slice_at(seq, data, t(ms), silence);
+                } else {
+                    jb.push_at(seq, data.clone(), t(ms), silence);
+                }
+                next += 1;
+            }
+            if ms % 20 == 0 || ms % 20 == 10 {
+                let mut pcm = [0i16; FRAME_SIZE];
+                let frame = jb.drain();
+                let ok = match &frame {
+                    Frame::Packet(p) => dec.decode(&p[1..], &mut pcm).is_ok(),
+                    Frame::Lost => match jb.peek_next() {
+                        Some(n) => dec.decode_fec(&n[1..], &mut pcm).is_ok(),
+                        None => dec.decode(&[], &mut pcm).is_ok(),
+                    },
+                    Frame::Expand => dec.decode(&[], &mut pcm).is_ok(),
+                    Frame::Idle => false,
+                };
+                kinds.push(match frame {
+                    Frame::Packet(_) => b'P',
+                    Frame::Lost => b'L',
+                    Frame::Expand => b'E',
+                    Frame::Idle => b'.',
+                });
+                if ok && !jb.should_drop_excess(false) {
+                    pcm_out.extend_from_slice(&pcm);
+                }
+                if let (true, Frame::Packet(p)) = (by_slice, frame) {
+                    jb.recycle(p);
+                }
+            }
+            ms += 5;
+        }
+        (pcm_out, kinds)
+    }
+
+    /// Recycling payload buffers changes nothing: the same arrivals (loss,
+    /// reordering, a late burst, a duplicate, keepalives) give the same frames
+    /// and, decoded, the same PCM sample for sample.
+    #[test]
+    fn recycled_payloads_give_the_same_frames_and_pcm() {
+        let arrivals = rough_arrivals();
+        let payloads = payloads(arrivals.iter().map(|a| a.1 as usize + 1).max().unwrap());
+        let (pcm_old, kinds_old) = run_through(&mut JitterBuffer::new(), &arrivals, &payloads, false);
+        let mut jb = JitterBuffer::new();
+        let (pcm_new, kinds_new) = run_through(&mut jb, &arrivals, &payloads, true);
+        assert!(kinds_old.contains(&b'L') && kinds_old.contains(&b'P'), "the run exercises loss");
+        assert_eq!(kinds_old, kinds_new);
+        assert!(pcm_old.len() > 48_000 * 5, "{}", pcm_old.len());
+        assert_eq!(pcm_old, pcm_new);
+        assert!(jb.spare.len() <= MAX_SPARE);
+    }
+
+    /// Steady state: a talking peer's packets through push_slice / drain /
+    /// recycle allocate nothing once the spares are warm.
+    #[test]
+    fn recycled_payloads_allocate_nothing_in_steady_state() {
+        use crate::test_alloc::allocations_on_this_thread;
+        let payload = vec![0x5Au8; 160];
+        let mut jb = JitterBuffer::new();
+        jb.set_prime_frames(3);
+        let mut seq = 0u16;
+        let mut ms = 0u64;
+        let mut warm = 0;
+        for i in 0..600u32 {
+            if i == 200 {
+                warm = allocations_on_this_thread();
+            }
+            jb.push_slice_at(seq, &payload, t(ms), false);
+            seq = seq.wrapping_add(1);
+            ms += 20;
+            if let Frame::Packet(p) = jb.drain() {
+                jb.recycle(p);
+            }
+        }
+        assert_eq!(allocations_on_this_thread() - warm, 0);
     }
 
     #[test]

@@ -307,6 +307,34 @@ pub fn open_audio(ring: &KeyRing, kind: Kind, sender: &str, sequence: u16, seale
     cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: &sealed[12..], aad: &aad }).ok()
 }
 
+/// [`open_audio`] where the payload lies: on success the plaintext is
+/// `sealed[range]` (the seal header and tag are left around it), decrypted in
+/// place, nothing allocated. `None` exactly when `open_audio` gives `None`.
+pub fn open_audio_in_place(
+    ring: &KeyRing,
+    kind: Kind,
+    sender: &str,
+    sequence: u16,
+    sealed: &mut [u8],
+) -> Option<std::ops::Range<usize>> {
+    let n = sealed.len();
+    if n < AUDIO_SEAL_OVERHEAD {
+        return None;
+    }
+    let epoch = u32::from_le_bytes(sealed[0..4].try_into().ok()?);
+    let counter = u64::from_le_bytes(sealed[4..12].try_into().ok()?);
+    let key = ring.peer_key(sender, epoch, kind)?;
+    let mut nonce = [0u8; 12];
+    nonce[4..].copy_from_slice(&counter.to_le_bytes());
+    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let aad = audio_aad(kind, sender, sequence);
+    let tag = *Tag::<aes_gcm::aead::consts::U16>::from_slice(&sealed[n - 16..]);
+    cipher
+        .decrypt_in_place_detached(Nonce::from_slice(&nonce), &aad, &mut sealed[12..n - 16], &tag)
+        .ok()?;
+    Some(12..n - 16)
+}
+
 /// Seal one encoded video frame (before chunking). `stream_salt` is fixed
 /// for the life of one stream. `None` when the ring can't send.
 pub fn seal_video_frame(
@@ -463,6 +491,30 @@ mod tests {
         // two seals never share a counter
         let s2 = sealer.seal(&alice, 18, b"x").unwrap();
         assert_ne!(&sealed[4..12], &s2[4..12]);
+    }
+
+    /// In place and allocating open agree: the same plaintext, the same
+    /// refusals (wrong kind, sequence, sender, tampering, too short).
+    #[test]
+    fn audio_opens_in_place_like_open_audio() {
+        let ex = [9u8; 32];
+        let (alice, bob) = (ring_for("alice", 3, &ex), ring_for("bob", 3, &ex));
+        let sealed = AudioSealer::new(Kind::Voice).seal(&alice, 17, b"\x00opus-frame").unwrap();
+        let mut buf = sealed.clone();
+        let r = open_audio_in_place(&bob, Kind::Voice, "alice", 17, &mut buf).unwrap();
+        assert_eq!(&buf[r], &open_audio(&bob, Kind::Voice, "alice", 17, &sealed).unwrap()[..]);
+        let mut tampered = sealed.clone();
+        tampered[14] ^= 1;
+        for (kind, sender, seq, bytes) in [
+            (Kind::StreamAudio, "alice", 17, &sealed),
+            (Kind::Voice, "alice", 18, &sealed),
+            (Kind::Voice, "bob", 17, &sealed),
+            (Kind::Voice, "alice", 17, &tampered),
+        ] {
+            assert!(open_audio(&bob, kind, sender, seq, bytes).is_none());
+            assert!(open_audio_in_place(&bob, kind, sender, seq, &mut bytes.clone()).is_none());
+        }
+        assert!(open_audio_in_place(&bob, Kind::Voice, "alice", 17, &mut sealed[..AUDIO_SEAL_OVERHEAD - 1].to_vec()).is_none());
     }
 
     #[test]
