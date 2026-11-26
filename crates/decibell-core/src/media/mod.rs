@@ -77,6 +77,11 @@ mod encoder_vaapi;
 // decoded (tests only).
 #[cfg(all(test, target_os = "linux"))]
 mod encoder_harness;
+// Procedural screen content and the encoder quality bench (tests only).
+#[cfg(all(test, target_os = "linux"))]
+mod encoder_content;
+#[cfg(all(test, target_os = "linux"))]
+mod encoder_bench;
 // The harnesses' synthetic screen and output checks (tests only).
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod encoder_checks;
