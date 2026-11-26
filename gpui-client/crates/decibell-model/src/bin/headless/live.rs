@@ -9,6 +9,7 @@ use decibell_model::ids::Uid;
 use decibell_model::live::e2ee::{E2eeStatus, PassphraseMode};
 use decibell_model::live::friends::FriendAction;
 use decibell_model::live::presence::{OwnStatus, StatusMessage};
+use decibell_model::live::voice::VideoCodec;
 use decibell_model::live::{Cue, voice::session::VoiceE2eePhase};
 use decibell_model::{Model, actions};
 use gpui::{App, AsyncApp, SharedString};
@@ -369,6 +370,35 @@ pub fn holds(wait: &LiveWait, model: &Model, cx: &App) -> bool {
         LiveWait::IncomingEnded => model.live.calls.read(cx).incoming_ended.is_some(),
         LiveWait::Devices => model.live.devices.read(cx).list.is_some(),
     }
+}
+
+/// `dump codecs`: the core's encoder probe, run now (`probe_native_encoders`: what Go Live
+/// offers on this machine, each codec with its backend, FFmpeg encoder and limits;
+/// `DECIBELL_ENCODER` leaves one backend), and the codec caps the model holds (the `codecs`
+/// step loads them; they carry no backend). One line `DUMP codecs <json>`.
+pub async fn dump_codecs(model: &Model, cx: &mut AsyncApp) -> Result<(), String> {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let encoders: Vec<Value> = decibell_core::api::streaming::probe_native_encoders()
+        .await
+        .map_err(|e| format!("dump codecs: the encoder probe failed: {e}"))?
+        .iter()
+        .map(|c| {
+            json!({
+                "codec": VideoCodec::from_wire(c.codec).human_name(), "backend": c.backend, "label": c.label,
+                "encoder": c.encoder_name, "hardware": c.hardware, "maxWidth": c.max_width,
+                "maxHeight": c.max_height, "maxFps": c.max_fps, "maxPixelRate": c.max_pixel_rate,
+            })
+        })
+        .collect();
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let encoders: Vec<Value> = Vec::new();
+    let caps = cx.update(|cx| {
+        let c = model.live.voice.codecs.read(cx);
+        json!({ "encode": c.encode, "decode": c.decode, "loaded": c.loaded })
+    });
+    let forced = std::env::var(decibell_core::media::encoder_backend::FORCE_ENV).ok();
+    crate::say(format!("DUMP codecs {}", json!({ "forced": forced, "encoders": encoders, "caps": caps })));
+    Ok(())
 }
 
 /// A live `dump`, or none when `what` is not one.

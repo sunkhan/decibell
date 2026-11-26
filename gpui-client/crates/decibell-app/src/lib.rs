@@ -9,6 +9,7 @@
 //! - [`root`]: the root view: window frame, title bar, content.
 //! - [`registry`]: every screen and self-test of the workspace.
 //! - [`selftests`]: the app's own self-tests.
+//! - [`software_codecs`]: the self-test that the software encoder and decoders are in the binary.
 
 pub mod app;
 pub mod args;
@@ -19,4 +20,5 @@ pub mod logging;
 pub mod registry;
 pub mod root;
 pub mod selftests;
+pub mod software_codecs;
 pub mod window;

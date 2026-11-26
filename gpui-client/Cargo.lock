@@ -1736,6 +1736,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "decibell-chat",
+ "decibell-core",
  "decibell-harness",
  "decibell-model",
  "decibell-shell",
@@ -1750,6 +1751,7 @@ dependencies = [
  "image",
  "libc",
  "log",
+ "pkg-config",
  "serde_json",
 ]
 

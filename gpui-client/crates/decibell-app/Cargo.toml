@@ -43,6 +43,14 @@ futures.workspace = true
 log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde_json = { version = "1", optional = true }
+# The `encoder-software` self-test opens the core's software encoder (SVT-AV1) directly. The
+# same line as decibell-model's, so the core's features do not diverge.
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+
+# build.rs refuses an FFmpeg without SVT-AV1 and the software decoders (Linux: reads the static
+# prefix pkg-config names; Windows: vcpkg's database).
+[build-dependencies]
+pkg-config = "0.3"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_wgpu = { workspace = true, optional = true }

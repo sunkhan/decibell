@@ -31,6 +31,7 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "each of the seven themes repaints in exactly one frame, then idles",
             run: |cx| Box::pin(themes(cx)),
         },
+        crate::software_codecs::selftest(),
     ]
 }
 

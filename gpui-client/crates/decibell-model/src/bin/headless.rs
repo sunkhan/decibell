@@ -66,6 +66,10 @@ Dumps (each prints one line `DUMP <what> <json>`):
   dump permissions <community> <channel>
   dump chat <channel> | dm <user> | search
   dump voice | presence | own | friends | e2ee | call | transfers | devices | hotkeys | cues
+  dump codecs                     the core's encoder probe, run now (each codec's backend, FFmpeg
+                                  encoder and limits; DECIBELL_ENCODER leaves one backend), and the
+                                  codec caps the model holds (the `codecs` step loads them); not
+                                  part of `dump all`
 
 Example: one client through both halves (perf3 has E2EE keys on the stack: voice needs them)
   decibell-headless --user-data-dir /tmp/p login perf3 wait connected \"Daily Gaming\" \\
@@ -541,6 +545,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             model.nav.update(cx, |nav, cx| nav.set_active_channel(Some(id), cx));
             Ok::<_, String>(())
         })?,
+        Step::Dump(parts) if parts[0] == "codecs" => live::dump_codecs(model, cx).await?,
         Step::Dump(parts) if parts[0] == "all" => {
             for (what, value) in cx.update(|cx| dump_all(model, cx)) {
                 say(format!("DUMP {what} {value}"));
