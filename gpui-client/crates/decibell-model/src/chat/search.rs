@@ -474,6 +474,12 @@ impl SearchStore {
         }
     }
 
+    /// Replace how requests leave (fixtures and screens: a store with no core answers from the
+    /// routed `MESSAGE_SEARCH_RES` only; a request that couldn't leave would turn it into an error).
+    pub fn set_sender(&mut self, sender: SearchSender) {
+        self.sender = sender;
+    }
+
     pub fn draft(&self, server: ServerId) -> SearchQuery {
         self.drafts.get(&server).cloned().unwrap_or_default()
     }
