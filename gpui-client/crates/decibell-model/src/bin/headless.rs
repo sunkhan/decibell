@@ -5,7 +5,8 @@
 //!
 //! It only ever talks to the local test stack: it refuses to start unless
 //! `DECIBELL_CENTRAL` names a loopback address **and** this build honours that variable,
-//! and `login` only takes accounts listed in the stack's `accounts.json`.
+//! and `login` only takes accounts listed in the stack's `accounts.json` (`register` /
+//! `login-as` make and use throwaway accounts on that same local central).
 
 #[path = "headless/live.rs"]
 mod live;
@@ -49,6 +50,11 @@ with a saved sign-in — always comes first); any mix of the groups below.
 
 Account and communities:
   login <account>                 password sign-in as an account of the stack's accounts.json
+  register <name> <password>      sign up a throwaway account on the local stack (the core's
+                                  `register`, email <name>@example.test); waits for central's
+                                  answer and fails on a refusal; prints `REGISTERED <name>`
+  login-as <name> <password>      password sign-in as any account of the local stack (a
+                                  throwaway one `register` made); `wait logged-in` follows
   logout                          Settings → Account's Log Out: hangs up a call first, then signs out
   wait booted | logged-in | logged-out
   wait connected <community>      it answered our authentication
@@ -92,6 +98,8 @@ fn usage() -> String {
 #[derive(Debug, Clone)]
 enum Step {
     Login(String),
+    Register { name: String, password: String },
+    LoginAs { name: String, password: String },
     Logout,
     Wait(Wait),
     OpenServer(String),
@@ -143,6 +151,8 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
                 continue;
             }
             "login" => Step::Login(next(&arg, &mut it)?),
+            "register" => Step::Register { name: next(&arg, &mut it)?, password: next(&arg, &mut it)? },
+            "login-as" => Step::LoginAs { name: next(&arg, &mut it)?, password: next(&arg, &mut it)? },
             "logout" => Step::Logout,
             "open-server" => Step::OpenServer(next(&arg, &mut it)?),
             "open-channel" => Step::OpenChannel(next(&arg, &mut it)?),
@@ -526,6 +536,28 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             let password = stack_password(account)?;
             cx.update(|cx| actions::auth::sign_in(account.clone(), password, cx));
         }
+        Step::Register { name, password } => {
+            // A fresh answer: an earlier one (another step's) doesn't count.
+            cx.update(|cx| model.auth.update(cx, |a, cx| a.set_register_result(None, cx)));
+            let email = format!("{name}@example.test");
+            cx.update(|cx| actions::auth::register(name.clone(), email, password.clone(), cx));
+            let started = Instant::now();
+            let result = loop {
+                if let Some(result) = cx.update(|cx| model.auth.read(cx).register_result.clone()) {
+                    break result;
+                }
+                if started.elapsed() > timeout {
+                    return Err(format!("register {name}: no answer within {timeout:?}"));
+                }
+                cx.background_executor().timer(Duration::from_millis(20)).await;
+            };
+            if !result.success {
+                return Err(format!("register {name}: {}", result.message));
+            }
+            say(format!("REGISTERED {name}"));
+        }
+        // Any account of the local stack (central is loopback: checked before anything ran).
+        Step::LoginAs { name, password } => cx.update(|cx| actions::auth::sign_in(name.clone(), password.clone(), cx)),
         Step::Logout => cx.update(actions::auth::log_out),
         Step::Wait(wait) => {
             if !wait_for(wait, model, timeout, cx).await {

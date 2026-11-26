@@ -365,10 +365,11 @@ every other setting with `settings.update(cx, |s, cx| s.change(|v| v.aec_enabled
 
 The core and every store of the model with no window, driven by a script on the command line; one process per
 client. `cargo run -p decibell-model --bin decibell-headless -- --help` documents every step in one text, grouped:
-account and communities (`login <account>`, `logout` (`actions::auth::log_out`: Settings → Account's Log Out,
-which hangs up a call first; `actions::auth::sign_out` is the bare sign-out), `wait booted | logged-in | logged-out | connected
-<community> | roster <community> | online / offline <community> <user>`, `open-server`, `open-channel`, `idle
-<seconds>`, `print`, `wait-file`), messages (`history`, `send`, `edit`, `delete`, `dm-*`, `search`, `wait-*`: §15),
+account and communities (`login <account>`, `register <name> <password>`, `login-as <name> <password>`,
+`logout` (`actions::auth::log_out`: Settings → Account's Log Out, which hangs up a call first;
+`actions::auth::sign_out` is the bare sign-out), `wait booted | logged-in | logged-out | connected <community> |
+roster <community> | online / offline <community> <user>`, `open-server`, `open-channel`, `idle <seconds>`, `print`,
+`wait-file`), messages (`history`, `send`, `edit`, `delete`, `dm-*`, `search`, `wait-*`: §15),
 live (`voice-join`, `mute` / `deafen`, `status`, `friends`, `e2ee-ready`, `call`, `watch`, `wait voice | mls |
 presence | call …`: §M3), the test-only streamer (`stream-file <file.dbv>` / `stream-stop`: a `.dbv` recording into
 the voice channel through `send_video_frame`; `tools/perf/streambot.sh`), and the dumps. Each `dump` prints one line `DUMP <what> <json>`; **`dump all`** prints
@@ -383,6 +384,17 @@ It only talks to the local stack: it exits 2 unless `DECIBELL_CENTRAL` is a loop
 build honours that variable (a debug build, or `--features local-central`), and `login` takes only accounts
 of the stack's `accounts.json`. Default: no keychain (`--keychain` opts in), profile from
 `--user-data-dir`.
+
+**Throwaway accounts** (a self-test's second participant, instead of a second app window): `register <name>
+<password>` signs one up on that same local central (email `<name>@example.test`; it waits for central's answer,
+fails on a refusal and prints `REGISTERED <name>`), `login-as <name> <password>` signs in as it. The DM steps
+take a `<user>` as an account of the stack, `uid:<n>`, or a name the client already knows (a conversation's
+peer, the users store), so a test passes the other side's uid (`dump auth` prints this client's):
+
+```sh
+target/release/decibell-headless --user-data-dir /tmp/p register ht1b pw-ht1b login-as ht1b pw-ht1b \
+    wait logged-in dump auth dm-send uid:4711 hello wait-dm uid:4711 hello logout wait logged-out
+```
 
 ```sh
 eval "$(../tools/dev/local-stack.sh client-env)"

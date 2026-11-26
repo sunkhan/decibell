@@ -25,7 +25,9 @@ Message steps (the open community):
   delete <channel> <id|last|mine|prefix:<text>>
                                   delete our message(s): an id, the newest, every loaded one,
                                   or every loaded one starting with <text>
-  dm-open <user>                  open the conversation and load its newest page
+  dm-open <user>                  open the conversation and load its newest page (a <user> of
+                                  the DM steps: an account of the stack, `uid:<n>`, or a name
+                                  this client knows: a conversation's peer, the users store)
   dm-send <user> <text>           send a DM
   dm-delete <user> <id|last|prefix:<text>>  delete our DM(s)
   dm-read <user>                  read it up to its newest message (mark read)
@@ -163,6 +165,29 @@ fn stack_uid(account: &str) -> Result<Uid, String> {
         .ok_or(format!("{account:?} is not an account of the stack"))
 }
 
+/// A user named on the command line: `uid:<n>`, an account of the stack's `accounts.json`, or a
+/// name this client already knows (a conversation's peer, the users store: a throwaway account
+/// another client registered).
+pub fn user_uid(model: &Model, user: &str, cx: &App) -> Result<Uid, String> {
+    if let Some(n) = user.strip_prefix("uid:") {
+        return n.parse().map_err(|_| format!("{user:?}: not a uid"));
+    }
+    if let Ok(uid) = stack_uid(user) {
+        return Ok(uid);
+    }
+    let list = model.dm.list.read(cx);
+    if let Some(c) = list.conversations().find(|c| &*c.username == user) {
+        return Ok(c.peer);
+    }
+    model
+        .users
+        .read(cx)
+        .iter()
+        .find(|(_, name)| &***name == user)
+        .map(|(uid, _)| uid)
+        .ok_or(format!("{user:?} is neither an account of the stack nor a name this client knows (use uid:<n>)"))
+}
+
 fn open_channel(model: &Model, name: &str, cx: &App) -> Result<(ServerId, ChannelId), String> {
     let server = model.nav.read(cx).active_server.ok_or("no community is open")?;
     let community = model.community(server, cx).ok_or("that community has not answered")?;
@@ -283,7 +308,7 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
             }
         }
         ChatStep::DmOpen(user) => {
-            let peer = stack_uid(user)?;
+            let peer = cx.update(|cx| user_uid(model, user, cx))?;
             cx.update(|cx| dm_actions::open_dm(peer, user.clone().into(), cx));
             let run = cx.update(|cx| dm_actions::open_history(peer, cx));
             if let Some(run) = run
@@ -294,12 +319,12 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
             cx.update(|cx| model.dm.list.update(cx, |l, _| l.set_displayed(Some(peer))));
         }
         ChatStep::DmSend { user, text } => {
-            let peer = stack_uid(user)?;
+            let peer = cx.update(|cx| user_uid(model, user, cx))?;
             let outcome = cx.update(|cx| dm_actions::send_dm(peer, text, 0, cx));
             crate::say(format!("DM-SENT {user} {outcome:?}"));
         }
         ChatStep::DmDelete { user, target } => {
-            let peer = stack_uid(user)?;
+            let peer = cx.update(|cx| user_uid(model, user, cx))?;
             let ids = cx.update(|cx| {
                 let s = model.dm.list.read(cx).slice(peer).cloned().ok_or("conversation not loaded")?;
                 own_target(s.read(cx), target)
@@ -310,7 +335,7 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
             }
         }
         ChatStep::DmRead(user) => {
-            let peer = stack_uid(user)?;
+            let peer = cx.update(|cx| user_uid(model, user, cx))?;
             cx.update(|cx| dm_actions::mark_read(peer, cx));
             // Past the 250 ms before the marker leaves.
             cx.background_executor().timer(Duration::from_millis(400)).await;
@@ -357,7 +382,7 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
                     until(timeout, cx, |cx| slice(model, server, &id, cx).is_none_or(|s| s.read(cx).pending_deletion_count() == 0)).await
                 }
                 ChatWait::DmDeleted(user) => {
-                    let peer = stack_uid(user)?;
+                    let peer = cx.update(|cx| user_uid(model, user, cx))?;
                     until(timeout, cx, |cx| model.dm.list.read(cx).slice(peer).is_none_or(|s| s.read(cx).pending_deletion_count() == 0)).await
                 }
                 ChatWait::Held(channel, held) => {
@@ -373,22 +398,25 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
                     .await
                 }
                 ChatWait::Dm(user, text) => {
-                    let peer = stack_uid(user)?;
                     until(timeout, cx, |cx| {
+                        let Ok(peer) = user_uid(model, user, cx) else { return false };
                         model.dm.list.read(cx).slice(peer).is_some_and(|s| s.read(cx).rows().iter().any(|m| m.id > 0 && &*m.content == text.as_str()))
                     })
                     .await
                 }
                 ChatWait::DmGone(user, text) => {
-                    let peer = stack_uid(user)?;
+                    let peer = cx.update(|cx| user_uid(model, user, cx))?;
                     until(timeout, cx, |cx| {
                         model.dm.list.read(cx).slice(peer).is_none_or(|s| !s.read(cx).rows().iter().any(|m| &*m.content == text.as_str()))
                     })
                     .await
                 }
                 ChatWait::Unread(user, n) => {
-                    let peer = stack_uid(user)?;
-                    until(timeout, cx, |cx| model.dm.list.read(cx).get(peer).is_some_and(|c| c.unread == *n)).await
+                    until(timeout, cx, |cx| {
+                        let Ok(peer) = user_uid(model, user, cx) else { return false };
+                        model.dm.list.read(cx).get(peer).is_some_and(|c| c.unread == *n)
+                    })
+                    .await
                 }
             };
             if !ok {
@@ -451,7 +479,7 @@ pub fn dump(parts: &[String], model: &Model, cx: &App) -> Result<Value, String> 
             })
         }
         "dm" => {
-            let peer = stack_uid(&parts[1])?;
+            let peer = user_uid(model, &parts[1], cx)?;
             let list = model.dm.list.read(cx);
             let Some(c) = list.get(peer) else { return Ok(json!({ "open": false, "conversations": list.len() })) };
             let sl = c.slice.read(cx);
