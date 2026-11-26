@@ -685,6 +685,51 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
     and italic `KaTeX_Math` got a synthetic slant on top. `decibell-text` marks the five italic faces before it
     hands them over (`math::mark_italic`; test `katex_faces`).
 
+## Servers (`decibell-servers`)
+
+The community screens that are no settings window: Browse (`Slot::Browse`), the deep-link join dialog, Invites
+(`modal::INVITE_MANAGE`), Invite friends (`modal::INVITE_FRIENDS`), the create-channel dialog (answering
+`ShellRequests::create_channel`), dragging the channel list with the Sync / Keep / Cancel prompt, and the welcome
+banner (the chat pane's `slots(cx).welcome`). `decibell_servers::init(cx)` registers all of it; `src/lib.rs` maps
+the files. What stays the shell's: the server-name dropdown, the channel list's context menu, the delete and leave
+confirmations, the kicked / banned notice.
+
+- **A deep link** (the OS's `decibell://` handler, a link that started the app) goes through
+  `decibell_servers::open_invite_link(url, cx)`: the model's grammar (`invite_link.rs`) sets
+  `ServersStore::pending_invite`, and the join dialog shows now or as soon as the main layout does (a link received
+  before sign-in waits for it). Links are code-only; older `host:port/code` ones still join without central.
+- **Personal invites** (`invite_friends.rs`): the picker filters friends by central's `friends_in_community`
+  answer plus the loaded roster, **never by asking the community** (owner rule); each invite is a request with
+  its own id answered on `model.answers` (8 s without an answer is a failure), then `send_private_message` as
+  the renderer sends it (no optimistic bubble, the DM draft untouched).
+- **Dragging the channel list** (`reorder.rs`, the shell's `ChannelReorder`): our own press / move / release on
+  window listeners that exist only while a press is held (not GPUI's drag, whose every move redraws the whole
+  window): each move redraws the sidebar alone, nothing draws while the pointer holds still, Escape cancels
+  (a keystroke interceptor held only while dragging), auto-scroll steps on pointer moves (no timer). The drop
+  rules are pure functions with unit tests (`drop_point`, `reorder`, `resolve_drop`); the order is applied at once
+  (`Channels::set_all`) and sent whole, the community's broadcast settles it. A drop into another syncing category
+  stores a `SyncPrompt` in the drag state; `SyncPromptOverlay` shows it.
+- **Inputs** are the renderer's `<input>` boxes around `decibell-text`'s `TextInput` (`ui::input_box`): each look
+  (background, radius, padding, `text-sm` / 13 px, monospace with a sans placeholder, the plain placeholder of an
+  input without a `placeholder:` class) is an `InputLook`. Autofocus happens in the next render (it has the window);
+  Escape in a dialog's field closes the dialog (`useEscapeToClose` listens on the document).
+- **Windowed lists**: the directory's grid by rows (`auto-fill` counts columns at the 360 px maximum, CSS Grid
+  §7.2.3.2; a row is its tallest card, descriptions measured once per list and width), the invite list (each row's
+  meta line packed as `flex-wrap` would), the friends picker (44 px rows). A list's width is measured by a probe
+  in its rows and re-laid out when it changes (a resize, the scrollbar).
+- **Screens** (`--screen browse`, `join-dialog-*`, `invite-manage*`, `invite-friends`, `server-menu-*`,
+  `leave-confirm`, `create-channel-*`, `channel-menu`, `sidebar-dragging-*`, `category-sync-prompt`, `welcome-*`)
+  are the shell's fixture plus `decibell_servers::fixture` (a directory, invites, more friends, the ownership or
+  roles a menu is gated on, a syncing category, empty channels) and what the user did (`ScreenState`: a typed
+  search, a create that is out; `ShellRequests::open_sidebar_menu`; `reorder::state(cx)` for a drag).
+  `decibell-servers-fixture <dir>` exports them for the Electron pages (`pages/_servers.tsx`, which replays the
+  same events and clicks, right-clicks and drags as the user would).
+- **Self-tests** run the app as children against the local stack, as Settings' do. Joining and leaving use
+  throwaway accounts (`sv<hex>`); as `carol` (Design Lab's owner) they create only channels named
+  `sv-<pid>-…` and their own invites, delete them again (and what an earlier failed run left), reorder only among
+  them, and assert the seeded order unchanged. `invite-manage-live` runs its child under XWayland and checks Copy
+  link only on an empty clipboard, which it empties again (`wl-copy --clear`); otherwise it says it skipped.
+
 ## Voice (`decibell-voice`)
 
 The voice view, streams, Go Live, the voice menus and DM calls (`crates/decibell-voice/src/lib.rs` maps the files).
