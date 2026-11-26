@@ -29,6 +29,9 @@ startup time and install size; every design choice is judged by those.
 - **RAM and the GPU driver** (owner, 2026-11-26): keep the GPU; the driver's own memory (~60 MB of any Vulkan
   process on NVIDIA) doesn't fail the RAM target. Report total private memory first; if it is over, report the
   driver's share (a minimal Vulkan window, same tool) beside it and judge the row on what is ours.
+- **Codecs on every vendor** (owner, 2026-11-26): hardware encode and decode on NVIDIA, AMD and Intel on both
+  OSes, integrated GPUs with a hardware codec included; software (dav1d / FFmpeg decode, SVT-AV1 encode) only
+  when no hardware path works. Design record §7.0.
 - Linux is finished in this session; Windows code must compile (Windows Native Check on the branch); what only
   the owner can do goes in §6 and is not waited on.
 - A parity row is done only when it was run, with a self-test where possible.
