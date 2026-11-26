@@ -49,7 +49,14 @@ pub(crate) fn voice_session_started() {
 }
 
 pub(crate) fn voice_session_ended() {
-    let _ = VOICE_SESSIONS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+    // Never below zero (an engine's `stop` runs once, but be safe).
+    let mut n = VOICE_SESSIONS.load(Ordering::Acquire);
+    while n > 0 {
+        match VOICE_SESSIONS.compare_exchange_weak(n, n - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(now) => n = now,
+        }
+    }
 }
 
 pub fn is_running() -> bool {

@@ -612,6 +612,7 @@ impl OutputCtl {
         self.live.store(false, std::sync::atomic::Ordering::Release);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_live(&self) -> bool {
         self.live.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -967,7 +968,9 @@ macro_rules! build_output_dispatch {
 
 /// A live output stream and the handles to its callback.
 pub struct OutputHandle {
-    /// The open stream (a `cpal::Stream`): dropping it closes the device.
+    /// The open stream (a `cpal::Stream`): held to keep the device open,
+    /// dropping it closes it.
+    #[allow(dead_code)]
     pub(crate) stream: Box<dyn std::any::Any>,
     pub rate: u32,
     pub ctl: Arc<OutputCtl>,
