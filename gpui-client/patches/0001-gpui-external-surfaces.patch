@@ -1,0 +1,902 @@
+diff --git a/crates/gpui/src/scene.rs b/crates/gpui/src/scene.rs
+index cccc924..e3d1920 100644
+--- a/crates/gpui/src/scene.rs
++++ b/crates/gpui/src/scene.rs
+@@ -1172,6 +1172,35 @@ pub struct PaintSurface {
+     pub content_mask: ContentMask<ScaledPixels>,
+     #[cfg(any(target_os = "macos", target_os = "ios"))]
+     pub image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
++    /// Radii the surface's corners are rounded by.
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
++    pub corner_radii: Corners<ScaledPixels>,
++    /// The image the platform renderer draws.
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
++    pub source: ExternalSurface,
++}
++
++/// A GPU image owned by the application (a decoded video picture, a camera frame) that the
++/// platform renderer composites in scene order, clipped and rounded like any other primitive.
++///
++/// The scene only carries the handle. What it must be is the platform renderer's business
++/// (`gpui_wgpu::WgpuSurface` for the wgpu renderer), and the renderer reads the image it
++/// currently holds when it draws, not when the element paints: presenting the retained scene
++/// again ([`crate::Window::request_present`]) shows a newer image without painting anything.
++#[derive(Clone)]
++pub struct ExternalSurface(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
++
++impl ExternalSurface {
++    /// Wraps a renderer-specific surface object.
++    pub fn new<T: std::any::Any + Send + Sync>(surface: std::sync::Arc<T>) -> Self {
++        Self(surface)
++    }
++}
++
++impl Debug for ExternalSurface {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "ExternalSurface({:p})", std::sync::Arc::as_ptr(&self.0))
++    }
+ }
+ 
+ impl From<PaintSurface> for Primitive {
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 0ff98bb..3b3650c 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -5692,6 +5692,41 @@ impl Window {
+         });
+     }
+ 
++    /// Paint an image the application owns on the GPU (see [`crate::ExternalSurface`]) into the
++    /// scene for the next frame at the current z-index, clipped by the current content mask.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
++    pub fn paint_external_surface(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        corner_radii: Corners<Pixels>,
++        source: crate::ExternalSurface,
++    ) {
++        use crate::PaintSurface;
++
++        self.invalidator.debug_assert_paint();
++
++        let bounds = self.snap_bounds(bounds);
++        let content_mask = self.snapped_content_mask();
++        self.next_frame.scene.insert_primitive(PaintSurface {
++            order: 0,
++            bounds,
++            content_mask,
++            corner_radii: corner_radii.scale(self.scale_factor()),
++            source,
++        });
++    }
++
++    /// Presents the scene of the last drawn frame again at the next frame, without laying out or
++    /// painting anything. For content the renderer reads when it draws (an
++    /// [`crate::ExternalSurface`] that got a new image). Does nothing more than a redraw would if
++    /// the window is dirty anyway.
++    pub fn request_present(&self) {
++        self.needs_present.set(true);
++        self.platform_window.schedule_frame();
++    }
++
+     /// Removes an image from the sprite atlas.
+     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+         for frame_index in 0..data.frame_count() {
+diff --git a/crates/gpui_wgpu/src/gpui_wgpu.rs b/crates/gpui_wgpu/src/gpui_wgpu.rs
+index 29a79af..b34e1ad 100644
+--- a/crates/gpui_wgpu/src/gpui_wgpu.rs
++++ b/crates/gpui_wgpu/src/gpui_wgpu.rs
+@@ -2,11 +2,13 @@ mod cosmic_text_system;
+ mod wgpu_atlas;
+ mod wgpu_context;
+ mod wgpu_renderer;
++mod wgpu_surface;
+ 
+ pub use cosmic_text_system::*;
+ pub use wgpu;
+ pub use wgpu_atlas::*;
+ pub use wgpu_context::*;
++pub use wgpu_surface::*;
+ #[cfg(all(
+     not(target_family = "wasm"),
+     any(test, feature = "bench-support", feature = "test-support")
+diff --git a/crates/gpui_wgpu/src/shaders.wgsl b/crates/gpui_wgpu/src/shaders.wgsl
+index 8dd2d02..cb48f5b 100644
+--- a/crates/gpui_wgpu/src/shaders.wgsl
++++ b/crates/gpui_wgpu/src/shaders.wgsl
+@@ -1465,6 +1465,14 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
+ struct SurfaceParams {
+     bounds: Bounds,
+     content_mask: Bounds,
++    corner_radii: Corners,
++    // Rows of the matrix taking (Y', Cb, Cr, 1) to gamma-encoded R'G'B'.
++    ycbcr_to_r: vec4<f32>,
++    ycbcr_to_g: vec4<f32>,
++    ycbcr_to_b: vec4<f32>,
++    // Offset of the chroma samples, in texture coordinates.
++    chroma_offset: vec2<f32>,
++    pad: vec2<f32>,
+ }
+ 
+ @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
+@@ -1472,13 +1480,6 @@ struct SurfaceParams {
+ @group(1) @binding(2) var t_cb_cr: texture_2d<f32>;
+ @group(1) @binding(3) var s_surface: sampler;
+ 
+-const ycbcr_to_RGB = mat4x4<f32>(
+-    vec4<f32>( 1.0000f,  1.0000f,  1.0000f, 0.0),
+-    vec4<f32>( 0.0000f, -0.3441f,  1.7720f, 0.0),
+-    vec4<f32>( 1.4020f, -0.7141f,  0.0000f, 0.0),
+-    vec4<f32>(-0.7010f,  0.5291f, -0.8860f, 1.0),
+-);
+-
+ struct SurfaceVarying {
+     @builtin(position) position: vec4<f32>,
+     @location(0) texture_position: vec2<f32>,
+@@ -1491,7 +1492,7 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
+     var out = SurfaceVarying();
+     let clipped = clip_to_mask(unit_vertex, surface_locals.bounds, surface_locals.content_mask);
+     out.position = to_device_position_impl(clipped.position);
+-    // The whole texture is copied, so sample at the vertex's position within the unclipped bounds.
++    // The whole texture is shown in the unclipped bounds, so sample at the vertex's position within them.
+     out.texture_position = clipped.unit_vertex;
+     return out;
+ }
+@@ -1500,8 +1501,13 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
+ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
+     let y_cb_cr = vec4<f32>(
+         textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r,
+-        textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg,
++        textureSampleLevel(t_cb_cr, s_surface, input.texture_position + surface_locals.chroma_offset, 0.0).rg,
+         1.0);
+-
+-    return ycbcr_to_RGB * y_cb_cr;
++    // The targets hold gamma-encoded colour (see fs_quad), and so does video: no transfer function here.
++    let rgb = saturate(vec3<f32>(
++        dot(surface_locals.ycbcr_to_r, y_cb_cr),
++        dot(surface_locals.ycbcr_to_g, y_cb_cr),
++        dot(surface_locals.ycbcr_to_b, y_cb_cr)));
++    let distance = quad_sdf(input.position.xy, surface_locals.bounds, surface_locals.corner_radii);
++    return blend_color(vec4<f32>(rgb, 1.0), saturate(0.5 - distance));
+ }
+diff --git a/crates/gpui_wgpu/src/wgpu_context.rs b/crates/gpui_wgpu/src/wgpu_context.rs
+index b7e5453..e29c47f 100644
+--- a/crates/gpui_wgpu/src/wgpu_context.rs
++++ b/crates/gpui_wgpu/src/wgpu_context.rs
+@@ -83,6 +83,50 @@ impl DeviceErrorState {
+     }
+ }
+ 
++/// Changes the parameters a Vulkan device is created with: device extensions, extra queues and
++/// feature structures the application needs on the device GPUI renders with (hardware video
++/// decode on the renderer's own `VkDevice`, for one). Must only add what the adapter supports.
++#[cfg(any(target_os = "linux", target_os = "freebsd"))]
++pub type VulkanDeviceHook = dyn for<'arg, 'pnext, 'this> Fn(
++        &wgpu::Adapter,
++        &mut wgpu::hal::vulkan::CreateDeviceCallbackArgs<'arg, 'pnext, 'this>,
++    ) + Send
++    + Sync;
++
++#[cfg(any(target_os = "linux", target_os = "freebsd"))]
++static VULKAN_DEVICE_HOOK: std::sync::OnceLock<Box<VulkanDeviceHook>> = std::sync::OnceLock::new();
++
++/// Installs the hook every Vulkan device creation runs (including after a device loss). Call
++/// before the first window opens; a second call is ignored and returns false.
++#[cfg(any(target_os = "linux", target_os = "freebsd"))]
++pub fn set_vulkan_device_hook(hook: Box<VulkanDeviceHook>) -> bool {
++    VULKAN_DEVICE_HOOK.set(hook).is_ok()
++}
++
++static DEVICE_QUEUE_LOCK: Mutex<()> = Mutex::new(());
++
++/// Held by the renderer around every use of its device's queues: submitting, presenting, and
++/// configuring or releasing a surface (wgpu waits for the whole device to idle there, which
++/// Vulkan only allows while no thread is submitting to any of the device's queues).
++///
++/// An application that submits raw commands to queues of the renderer's device from other
++/// threads (hardware video decode, see [`set_vulkan_device_hook`]) holds it around each of its
++/// submissions too, on whichever queue, and never across anything that waits on the GPU.
++pub fn device_queue_lock() -> &'static Mutex<()> {
++    &DEVICE_QUEUE_LOCK
++}
++
++#[cfg(not(target_family = "wasm"))]
++static SHARED_CONTEXT: Mutex<Option<WgpuContext>> = Mutex::new(None);
++
++/// The context every window of this process renders with: the device to create textures on and
++/// the queue to upload with, for content handed to the renderer as a [`crate::WgpuSurface`].
++/// `None` until the first window exists. A device loss replaces it (compare `device`).
++#[cfg(not(target_family = "wasm"))]
++pub fn shared_context() -> Option<WgpuContext> {
++    SHARED_CONTEXT.lock().clone()
++}
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum WgpuBackend {
+     BrowserWebGpu,
+@@ -310,7 +354,7 @@ impl WgpuContext {
+         );
+         let backend = WgpuBackend::Native(adapter.get_info().backend);
+ 
+-        Self {
++        let context = Self {
+             instance,
+             adapter,
+             device: Arc::new(device),
+@@ -319,7 +363,9 @@ impl WgpuContext {
+             dual_source_blending,
+             color_texture_format,
+             errors,
+-        }
++        };
++        *SHARED_CONTEXT.lock() = Some(context.clone());
++        context
+     }
+ 
+     #[cfg(not(target_family = "wasm"))]
+@@ -461,16 +507,64 @@ impl WgpuContext {
+             .using_resolution(adapter.limits())
+             .using_alignment(adapter.limits());
+ 
++        let descriptor = wgpu::DeviceDescriptor {
++            label: Some("gpui_device"),
++            required_features,
++            required_limits,
++            memory_hints: wgpu::MemoryHints::MemoryUsage,
++            trace: wgpu::Trace::Off,
++            experimental_features: wgpu::ExperimentalFeatures::disabled(),
++            default_queue: wgpu::QueueDescriptor::default(),
++        };
++
++        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        if let Some(hook) = VULKAN_DEVICE_HOOK.get()
++            && adapter.get_info().backend == wgpu::Backend::Vulkan
++        {
++            // Same device as `request_device` would make, plus whatever the hook adds. If the
++            // driver refuses the additions, the device is created without them below.
++            // Safety: the hook's contract is to add only what the adapter supports.
++            let hooked = unsafe {
++                adapter
++                    .as_hal::<wgpu::hal::api::Vulkan>()
++                    .ok_or_else(|| anyhow::anyhow!("Vulkan adapter without a Vulkan backend"))
++                    .and_then(|hal_adapter| {
++                        hal_adapter
++                            .open_with_callback(
++                                descriptor.required_features,
++                                &descriptor.required_limits,
++                                &descriptor.memory_hints,
++                                Some(Box::new(|mut args| hook(adapter, &mut args))),
++                            )
++                            .map_err(|e| anyhow::anyhow!("{e}"))
++                    })
++                    .and_then(|open_device| {
++                        adapter
++                            .create_device_from_hal::<wgpu::hal::api::Vulkan>(
++                                open_device,
++                                &descriptor,
++                            )
++                            .map_err(|e| anyhow::anyhow!("{e}"))
++                    })
++            };
++            match hooked {
++                Ok((device, queue)) => {
++                    return Ok((
++                        device,
++                        queue,
++                        dual_source_blending,
++                        color_atlas_texture_format,
++                    ));
++                }
++                Err(error) => log::warn!(
++                    "Creating the device with the application's Vulkan device hook failed \
++                     ({error}); creating it without"
++                ),
++            }
++        }
++
+         let (device, queue) = adapter
+-            .request_device(&wgpu::DeviceDescriptor {
+-                label: Some("gpui_device"),
+-                required_features,
+-                required_limits,
+-                memory_hints: wgpu::MemoryHints::MemoryUsage,
+-                trace: wgpu::Trace::Off,
+-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+-                default_queue: wgpu::QueueDescriptor::default(),
+-            })
++            .request_device(&descriptor)
+             .await
+             .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?;
+ 
+@@ -675,7 +769,10 @@ impl WgpuContext {
+             WgpuRenderer::surface_configuration(surface, adapter, &device, config)?;
+         let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+ 
+-        surface.configure(&device, &surface_config);
++        {
++            let _queue = DEVICE_QUEUE_LOCK.lock();
++            surface.configure(&device, &surface_config);
++        }
+ 
+         let error = error_scope.pop().await;
+         if let Some(e) = error {
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index a9b3289..1e0a729 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -1,4 +1,7 @@
+-use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
++use crate::{
++    CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurface, WgpuSurfaceFrame,
++    WgpuSurfacePlanes,
++};
+ use anyhow::{Context as _, Result};
+ use bytemuck::{Pod, Zeroable};
+ use collections::FxHashMap;
+@@ -14,7 +17,7 @@ use std::cell::RefCell;
+ use std::num::NonZeroU64;
+ use std::ops::Range;
+ use std::rc::Rc;
+-use std::sync::Arc;
++use std::sync::{Arc, Weak};
+ 
+ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
+ 
+@@ -47,6 +50,17 @@ const SUBPIXEL_WEBGL_SHADERS: &str = concat!(
+     include_str!("shaders_subpixel.wgsl"),
+ );
+ 
++/// Configuring a surface releases its swapchain, which waits for the device to idle: under the
++/// device's queue lock, as every other use of a queue here.
++fn configure_surface(
++    surface: &wgpu::Surface<'_>,
++    device: &wgpu::Device,
++    config: &wgpu::SurfaceConfiguration,
++) {
++    let _queue = crate::device_queue_lock().lock();
++    surface.configure(device, config);
++}
++
+ fn least_common_multiple(left: u64, right: u64) -> u64 {
+     let mut first = left;
+     let mut second = right;
+@@ -98,6 +112,23 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
+ struct SurfaceParams {
+     bounds: PodBounds,
+     content_mask: PodBounds,
++    corner_radii: [f32; 4],
++    ycbcr_to_rgb: [[f32; 4]; 3],
++    chroma_offset: [f32; 2],
++    pad: [f32; 2],
++}
++
++/// The bind group of one set of surface planes, kept for as long as the application keeps the
++/// planes (a decoder cycles through a few of them).
++struct CachedSurfaceBindGroup {
++    planes: Weak<WgpuSurfacePlanes>,
++    bind_group: wgpu::BindGroup,
++}
++
++/// A scene surface resolved to the picture this frame draws.
++struct PreparedSurface {
++    bind_group: wgpu::BindGroup,
++    params_offset: u32,
+ }
+ 
+ #[repr(C)]
+@@ -131,7 +162,6 @@ struct WgpuPipelines {
+     mono_sprites: wgpu::RenderPipeline,
+     subpixel_sprites: Option<wgpu::RenderPipeline>,
+     poly_sprites: wgpu::RenderPipeline,
+-    #[allow(dead_code)]
+     surfaces: wgpu::RenderPipeline,
+     premultiplied_alpha: bool,
+ }
+@@ -204,6 +234,10 @@ struct WgpuResources {
+     globals_buffer: wgpu::Buffer,
+     globals_bind_group: wgpu::BindGroup,
+     instance_data: InstanceData,
++    /// One `SurfaceParams` per scene surface, each at a multiple of `surface_params_stride`.
++    surface_params: wgpu::Buffer,
++    surface_params_stride: u64,
++    surface_bind_groups: FxHashMap<usize, CachedSurfaceBindGroup>,
+ }
+ 
+ struct CachedTextureBindGroup {
+@@ -271,6 +305,14 @@ pub struct WgpuRenderer {
+     needs_redraw: bool,
+ }
+ 
++impl Drop for WgpuRenderer {
++    fn drop(&mut self) {
++        // Dropping the surface releases its swapchain (see `configure_surface`).
++        let _queue = crate::device_queue_lock().lock();
++        self.state = RendererState::Released;
++    }
++}
++
+ impl WgpuRenderer {
+     fn core(&self) -> Option<&WgpuRendererCore> {
+         match &self.state {
+@@ -499,7 +541,7 @@ impl WgpuRenderer {
+         // Adapter selection configures the surface with this same configuration when it
+         // creates the context, so only configure it here when that did not happen.
+         if !surface_configured {
+-            surface.configure(&context.device, &surface_config);
++            configure_surface(&surface, &context.device, &surface_config);
+         }
+ 
+         let surface_format = surface_config.format;
+@@ -640,7 +682,7 @@ impl WgpuRendererCore {
+                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                     ty: wgpu::BindingType::Buffer {
+                         ty: wgpu::BufferBindingType::Uniform,
+-                        has_dynamic_offset: false,
++                        has_dynamic_offset: true,
+                         min_binding_size: NonZeroU64::new(
+                             std::mem::size_of::<SurfaceParams>() as u64
+                         ),
+@@ -1021,7 +1063,7 @@ impl WgpuRenderer {
+         self.surface_config.height = clamped_height.max(1);
+ 
+         if let RendererState::Ready { surface, core } = &self.state {
+-            surface.configure(&core.resources.device, &self.surface_config);
++            configure_surface(&surface, &core.resources.device, &self.surface_config);
+         }
+     }
+ 
+@@ -1050,7 +1092,7 @@ impl WgpuRenderer {
+         core.rebuild_pipelines(format, new_alpha_mode);
+ 
+         if let RendererState::Ready { surface, core } = &self.state {
+-            surface.configure(&core.resources.device, &self.surface_config);
++            configure_surface(&surface, &core.resources.device, &self.surface_config);
+         }
+     }
+ 
+@@ -1134,11 +1176,11 @@ impl WgpuRenderer {
+             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                 // Textures must be destroyed before the surface can be reconfigured.
+                 drop(frame);
+-                surface.configure(&core.resources.device, &self.surface_config);
++                configure_surface(&surface, &core.resources.device, &self.surface_config);
+                 return false;
+             }
+             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+-                surface.configure(&core.resources.device, &self.surface_config);
++                configure_surface(&surface, &core.resources.device, &self.surface_config);
+                 return false;
+             }
+             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+@@ -1164,7 +1206,10 @@ impl WgpuRenderer {
+             return false;
+         }
+ 
+-        core.resources.queue.present(frame);
++        {
++            let _queue = crate::device_queue_lock().lock();
++            core.resources.queue.present(frame);
++        }
+         true
+     }
+ }
+@@ -1269,9 +1314,15 @@ impl WgpuRendererCore {
+             ],
+         });
+         let max_texture_size = device.limits().max_texture_dimension_2d;
++        let surface_params_stride =
++            (std::mem::size_of::<SurfaceParams>() as u64).next_multiple_of(uniform_alignment);
++        let surface_params = Self::create_surface_params_buffer(&device, surface_params_stride * 4);
+ 
+         Self {
+             resources: WgpuResources {
++                surface_params,
++                surface_params_stride,
++                surface_bind_groups: FxHashMap::default(),
+                 device,
+                 queue,
+                 pipelines,
+@@ -1303,6 +1354,140 @@ impl WgpuRendererCore {
+         }
+     }
+ 
++    fn create_surface_params_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
++        device.create_buffer(&wgpu::BufferDescriptor {
++            label: Some("surface_params"),
++            size,
++            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
++            mapped_at_creation: false,
++        })
++    }
++
++    /// Resolves every scene surface to the picture its source holds right now, and writes its
++    /// parameters. Returns one entry per `scene.surfaces` element (None: nothing to draw) and
++    /// the pictures, which must stay alive until the frame's submission has completed.
++    fn prepare_surfaces(
++        &mut self,
++        scene: &Scene,
++    ) -> (Vec<Option<PreparedSurface>>, Vec<Arc<WgpuSurfaceFrame>>) {
++        let resources = &mut self.resources;
++        resources
++            .surface_bind_groups
++            .retain(|_, cached| cached.planes.strong_count() > 0);
++        let mut prepared = Vec::with_capacity(scene.surfaces.len());
++        let mut frames = Vec::new();
++        if scene.surfaces.is_empty() {
++            return (prepared, frames);
++        }
++
++        let stride = resources.surface_params_stride;
++        let needed = stride * scene.surfaces.len() as u64;
++        if needed > resources.surface_params.size() {
++            resources.surface_params =
++                Self::create_surface_params_buffer(&resources.device, needed.next_power_of_two());
++            // The cached bind groups point at the old buffer.
++            resources.surface_bind_groups.clear();
++        }
++
++        for (index, surface) in scene.surfaces.iter().enumerate() {
++            let Some(frame) = surface
++                .source
++                .0
++                .downcast_ref::<WgpuSurface>()
++                .and_then(WgpuSurface::acquire)
++            else {
++                prepared.push(None);
++                continue;
++            };
++            let key = Arc::as_ptr(&frame.planes) as usize;
++            let bind_group = match resources.surface_bind_groups.get(&key) {
++                Some(cached) => cached.bind_group.clone(),
++                None => {
++                    let bind_group =
++                        resources
++                            .device
++                            .create_bind_group(&wgpu::BindGroupDescriptor {
++                                label: Some("surface_bind_group"),
++                                layout: &resources.bind_group_layouts.surfaces,
++                                entries: &[
++                                    wgpu::BindGroupEntry {
++                                        binding: 0,
++                                        resource: wgpu::BindingResource::Buffer(
++                                            wgpu::BufferBinding {
++                                                buffer: &resources.surface_params,
++                                                offset: 0,
++                                                size: NonZeroU64::new(std::mem::size_of::<
++                                                    SurfaceParams,
++                                                >(
++                                                )
++                                                    as u64),
++                                            },
++                                        ),
++                                    },
++                                    wgpu::BindGroupEntry {
++                                        binding: 1,
++                                        resource: wgpu::BindingResource::TextureView(
++                                            &frame.planes.luma,
++                                        ),
++                                    },
++                                    wgpu::BindGroupEntry {
++                                        binding: 2,
++                                        resource: wgpu::BindingResource::TextureView(
++                                            &frame.planes.chroma,
++                                        ),
++                                    },
++                                    wgpu::BindGroupEntry {
++                                        binding: 3,
++                                        resource: wgpu::BindingResource::Sampler(
++                                            &resources.atlas_sampler,
++                                        ),
++                                    },
++                                ],
++                            });
++                    resources.surface_bind_groups.insert(
++                        key,
++                        CachedSurfaceBindGroup {
++                            planes: Arc::downgrade(&frame.planes),
++                            bind_group: bind_group.clone(),
++                        },
++                    );
++                    bind_group
++                }
++            };
++
++            let chroma_size = frame.planes.chroma.texture().size();
++            let radii = &surface.corner_radii;
++            let params = SurfaceParams {
++                bounds: surface.bounds.into(),
++                content_mask: surface.content_mask.bounds.into(),
++                corner_radii: [
++                    radii.top_left.0,
++                    radii.top_right.0,
++                    radii.bottom_right.0,
++                    radii.bottom_left.0,
++                ],
++                ycbcr_to_rgb: frame.color.ycbcr_to_rgb_rows(),
++                chroma_offset: [
++                    frame.color.chroma_offset[0] / chroma_size.width.max(1) as f32,
++                    frame.color.chroma_offset[1] / chroma_size.height.max(1) as f32,
++                ],
++                pad: [0.0; 2],
++            };
++            let params_offset = stride * index as u64;
++            resources.queue.write_buffer(
++                &resources.surface_params,
++                params_offset,
++                bytemuck::bytes_of(&params),
++            );
++            prepared.push(Some(PreparedSurface {
++                bind_group,
++                params_offset: params_offset as u32,
++            }));
++            frames.push(frame);
++        }
++        (prepared, frames)
++    }
++
+     fn resources(&self) -> &WgpuResources {
+         &self.resources
+     }
+@@ -1362,6 +1547,7 @@ impl WgpuRendererCore {
+         self.record_frame(scene, target_view, size, clear_color)
+             .inspect_err(|_| {
+                 // Queue writes are staged before encoding; flush them even if the frame fails.
++                let _queue = crate::device_queue_lock().lock();
+                 self.resources.queue.submit(std::iter::empty());
+             })
+     }
+@@ -1404,6 +1590,7 @@ impl WgpuRendererCore {
+             bytemuck::bytes_of(&globals),
+         );
+         self.prepare_texture_bind_groups(scene);
++        let (prepared_surfaces, surface_frames) = self.prepare_surfaces(scene);
+         self.ensure_depth_texture(size);
+         let depth_view = &self
+             .depth_texture
+@@ -1542,19 +1729,36 @@ impl WgpuRendererCore {
+                             &mut pass,
+                         )?;
+                     }
+-                    // Surfaces are macOS-only for video playback and are not
+-                    // implemented by the WGPU renderer.
+-                    PrimitiveBatch::Surfaces(_surfaces) => {}
++                    // One draw per surface: each samples its own textures.
++                    PrimitiveBatch::Surfaces(range) => {
++                        for surface in prepared_surfaces[range].iter().flatten() {
++                            pass.set_pipeline(&self.resources().pipelines.surfaces);
++                            pass.set_bind_group(
++                                1,
++                                &surface.bind_group,
++                                &[surface.params_offset],
++                            );
++                            pass.draw(0..4, 0..1);
++                        }
++                    }
+                     // Native views are only composited by the Metal renderer.
+                     PrimitiveBatch::NativeViews(_) => {}
+                 }
+             }
+         }
+ 
+-        let submission = self
+-            .resources()
+-            .queue
+-            .submit(std::iter::once(encoder.finish()));
++        let command_buffer = encoder.finish();
++        let submission = {
++            let _queue = crate::device_queue_lock().lock();
++            self.resources().queue.submit(std::iter::once(command_buffer))
++        };
++        if !surface_frames.is_empty() {
++            // The pictures stay in use until the GPU has finished sampling them; their owners
++            // watch `WgpuSurfaceFrame::in_use` to know when the planes may be written again.
++            self.resources()
++                .queue
++                .on_submitted_work_done(move || drop(surface_frames));
++        }
+         Ok(submission)
+     }
+ 
+@@ -2079,6 +2283,7 @@ impl WgpuRenderer {
+     pub fn unconfigure_surface(&mut self) {
+         self.state = match std::mem::replace(&mut self.state, RendererState::Released) {
+             RendererState::Ready { core, surface } => {
++                let _queue = crate::device_queue_lock().lock();
+                 drop(surface);
+                 RendererState::Unconfigured { core }
+             }
+@@ -2140,7 +2345,7 @@ impl WgpuRenderer {
+         if alpha_mode_changed {
+             core.rebuild_pipelines(self.surface_config.format, alpha_mode);
+         }
+-        surface.configure(&core.resources.device, &self.surface_config);
++        configure_surface(&surface, &core.resources.device, &self.surface_config);
+         self.state = RendererState::Ready { surface, core };
+ 
+         Ok(())
+@@ -2149,6 +2354,7 @@ impl WgpuRenderer {
+     pub fn destroy(&mut self) {
+         // Release surface-bound GPU resources eagerly so the underlying native
+         // window can be destroyed before the renderer itself is dropped.
++        let _queue = crate::device_queue_lock().lock();
+         self.state = RendererState::Released;
+     }
+ 
+@@ -2440,11 +2646,14 @@ impl WgpuHeadlessRenderer {
+                 depth_or_array_layers: 1,
+             },
+         );
+-        let submission = self
+-            .core
+-            .resources
+-            .queue
+-            .submit(std::iter::once(encoder.finish()));
++        let command_buffer = encoder.finish();
++        let submission = {
++            let _queue = crate::device_queue_lock().lock();
++            self.core
++                .resources
++                .queue
++                .submit(std::iter::once(command_buffer))
++        };
+         let (sender, receiver) = std::sync::mpsc::channel();
+         readback_buffer
+             .slice(..)
+diff --git a/crates/gpui_wgpu/src/wgpu_surface.rs b/crates/gpui_wgpu/src/wgpu_surface.rs
+new file mode 100644
+index 0000000..3bd563b
+--- /dev/null
++++ b/crates/gpui_wgpu/src/wgpu_surface.rs
+@@ -0,0 +1,150 @@
++//! Images the application owns on the GPU, drawn by the wgpu renderer as scene surfaces.
++//!
++//! An element paints a [`WgpuSurface`] (wrapped in a `gpui::ExternalSurface`) with
++//! `Window::paint_external_surface`. The application hands the surface new pictures from any
++//! thread with [`WgpuSurface::set_frame`]; the renderer takes the newest one each time it draws
++//! the scene, so a new picture costs a present of the retained scene (`Window::request_present`)
++//! and no layout or paint.
++
++use parking_lot::Mutex;
++use std::any::Any;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU64, Ordering};
++
++/// The two plane textures of a 4:2:0 picture, on the renderer's device: luma (one channel) and
++/// interleaved chroma (two channels, half size). Views of ordinary `R8Unorm` / `Rg8Unorm`
++/// textures or of the planes of a multi-planar one.
++///
++/// Long-lived: the renderer caches a bind group per `Arc<WgpuSurfacePlanes>`, so a decoder
++/// should cycle through a small fixed set of these instead of making one per picture.
++pub struct WgpuSurfacePlanes {
++    pub luma: wgpu::TextureView,
++    pub chroma: wgpu::TextureView,
++}
++
++/// How a picture's Y'CbCr samples become R'G'B'.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SurfaceMatrix {
++    Bt601,
++    Bt709,
++    Bt2020,
++}
++
++/// A picture's colour description.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct SurfaceColor {
++    pub matrix: SurfaceMatrix,
++    /// Full range (0..255) rather than limited (16..235 / 16..240).
++    pub full_range: bool,
++    /// Added to the chroma sampling position, in chroma texels. [0.0, 0.0] is right for chroma
++    /// sited at the centre of each 2x2 luma block (what sampling both planes at the same
++    /// coordinate assumes); "left" siting, the H.264 / HEVC / AV1 default, is [0.25, 0.0].
++    pub chroma_offset: [f32; 2],
++}
++
++impl Default for SurfaceColor {
++    fn default() -> Self {
++        Self {
++            matrix: SurfaceMatrix::Bt709,
++            full_range: false,
++            chroma_offset: [0.0, 0.0],
++        }
++    }
++}
++
++impl SurfaceColor {
++    /// Rows of the matrix taking (Y', Cb, Cr, 1) as sampled (0..1) to gamma-encoded R'G'B'.
++    /// GPUI's targets are non-sRGB formats holding gamma-encoded colour, so the result is
++    /// written as is.
++    pub fn ycbcr_to_rgb_rows(&self) -> [[f32; 4]; 3] {
++        let (kr, kb) = match self.matrix {
++            SurfaceMatrix::Bt601 => (0.299, 0.114),
++            SurfaceMatrix::Bt709 => (0.2126, 0.0722),
++            SurfaceMatrix::Bt2020 => (0.2627, 0.0593),
++        };
++        let kg = 1.0 - kr - kb;
++        // Scale and offset from the stored code values to Y' in 0..1 and Cb / Cr in -0.5..0.5.
++        let (y_scale, y_offset, c_scale) = if self.full_range {
++            (1.0f32, 0.0f32, 1.0f32)
++        } else {
++            (255.0 / 219.0, 16.0 / 255.0, 255.0 / 224.0)
++        };
++        let c_offset = 128.0 / 255.0;
++        let r_cr = 2.0 * (1.0 - kr);
++        let b_cb = 2.0 * (1.0 - kb);
++        let g_cb = -b_cb * kb / kg;
++        let g_cr = -r_cr * kr / kg;
++        let row = |cb: f32, cr: f32| {
++            let cb = cb * c_scale;
++            let cr = cr * c_scale;
++            [
++                y_scale,
++                cb,
++                cr,
++                -y_scale * y_offset - (cb + cr) * c_offset,
++            ]
++        };
++        [row(0.0, r_cr), row(g_cb, g_cr), row(b_cb, 0.0)]
++    }
++}
++
++/// One picture, ready to be sampled: every write to its planes has completed.
++pub struct WgpuSurfaceFrame {
++    pub planes: Arc<WgpuSurfacePlanes>,
++    pub color: SurfaceColor,
++    /// Dropped once no scene shows the picture and every submission sampling it has finished on
++    /// the GPU. A decoder puts a token here to learn when it may overwrite the planes.
++    pub in_use: Option<Box<dyn Any + Send + Sync>>,
++}
++
++/// A place in the scene that shows the newest picture it was given.
++#[derive(Default)]
++pub struct WgpuSurface {
++    /// The newest picture and its sequence number (1-based count of pictures set).
++    latest: Mutex<(u64, Option<Arc<WgpuSurfaceFrame>>)>,
++    last_drawn: AtomicU64,
++    pictures_drawn: AtomicU64,
++    draws: AtomicU64,
++}
++
++impl WgpuSurface {
++    pub fn new() -> Arc<Self> {
++        Arc::new(Self::default())
++    }
++
++    /// Replaces the picture. Callable from any thread; the caller then asks the window that
++    /// shows the surface for a present (`Window::request_present`, on the main thread).
++    pub fn set_frame(&self, frame: Arc<WgpuSurfaceFrame>) {
++        let mut latest = self.latest.lock();
++        latest.0 += 1;
++        latest.1 = Some(frame);
++    }
++
++    /// Stops showing a picture (the surface draws nothing).
++    pub fn clear(&self) {
++        self.latest.lock().1 = None;
++    }
++
++    /// How many distinct pictures reached a rendered frame.
++    pub fn pictures_drawn(&self) -> u64 {
++        self.pictures_drawn.load(Ordering::Relaxed)
++    }
++
++    /// How many rendered frames drew this surface (a picture drawn again counts again).
++    pub fn draws(&self) -> u64 {
++        self.draws.load(Ordering::Relaxed)
++    }
++
++    /// The picture to draw now. Called by the renderer once per surface per frame.
++    pub(crate) fn acquire(&self) -> Option<Arc<WgpuSurfaceFrame>> {
++        let (sequence, frame) = {
++            let latest = self.latest.lock();
++            (latest.0, latest.1.clone()?)
++        };
++        self.draws.fetch_add(1, Ordering::Relaxed);
++        if self.last_drawn.swap(sequence, Ordering::Relaxed) != sequence {
++            self.pictures_drawn.fetch_add(1, Ordering::Relaxed);
++        }
++        Some(frame)
++    }
++}
