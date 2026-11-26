@@ -45,7 +45,10 @@ pub use requests::{CreateChannelRequest, ShellRequests};
 pub use server_bar::{BAR_HEIGHT, ServerBar, TILE_HEIGHT, TILE_WIDTH};
 pub use server_pane::ServerPane;
 pub use shell::{Shell, titlebar_title, window_title};
-pub use slots::{ChannelMenuTarget, PaneBuilder, Placeholder, Slot, register_channel_menu, register_overlay, register_pane};
+pub use slots::{
+    ChannelMenuTarget, PaneBuilder, PanelAction, PanelActionHandler, Placeholder, Slot, build_slot, is_registered, register_channel_menu,
+    register_overlay, register_pane, register_user_panel_action,
+};
 pub use user_panel::{PanelHeight, UserPanel};
 
 /// Once, after `Model::init`, before the first window: the model's toasts show in the kit's stack.

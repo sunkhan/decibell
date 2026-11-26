@@ -3,11 +3,13 @@
 //! deafen / settings, and while in voice the session's rows (channel, latency, streams, the
 //! engine's error, Stream / Stop, Disconnect).
 //!
-//! Left to the voice feature (named slots, see CONVENTIONS "Shell"): the connection-stats popover
-//! (the latency button), the Go Live dialog (Stream), the stream-audio popover, the device menu
-//! on a right click of mute / deafen, the update chip's restart (the updater).
+//! The voice feature draws what the voice controls open, through [`crate::PanelAction`]
+//! (`register_user_panel_action`): the connection-stats popover (the latency button), the Go Live
+//! dialog (Stream), the stream-audio popover, the device menu on a right click of mute / deafen.
+//! Left to the updater: the update chip's restart.
 
 use crate::ink::Ink;
+use crate::slots::{PanelAction, user_panel_action};
 use decibell_common::{BoundsCell, UserAvatar, Watch, dot_presence, status_line};
 use decibell_model::live::calls::CallStatus;
 use decibell_model::live::presence::{DisplayStatus, OwnStatus};
@@ -39,6 +41,12 @@ pub struct UserPanel {
     /// The status menu, open at this point (window coordinates).
     status_menu: Option<Point<Pixels>>,
     identity_bounds: BoundsCell,
+    /// The voice controls' bounds, for what they open ([`PanelAction`]).
+    latency_bounds: BoundsCell,
+    stream_bounds: BoundsCell,
+    audio_bounds: BoundsCell,
+    mute_bounds: BoundsCell,
+    deafen_bounds: BoundsCell,
     /// What the panel shows of the voice stats: only the latency.
     latency: Option<u32>,
     _watch: Watch,
@@ -63,7 +71,18 @@ impl UserPanel {
             // The connected channel's name and our SPEAK there.
             .store(&model.communities, cx);
         let latency = voice.stats.read(cx).latency_ms;
-        Self { height, status_menu: None, identity_bounds: BoundsCell::new(), latency, _watch: watch }
+        Self {
+            height,
+            status_menu: None,
+            identity_bounds: BoundsCell::new(),
+            latency_bounds: BoundsCell::new(),
+            stream_bounds: BoundsCell::new(),
+            audio_bounds: BoundsCell::new(),
+            mute_bounds: BoundsCell::new(),
+            deafen_bounds: BoundsCell::new(),
+            latency,
+            _watch: watch,
+        }
     }
 
     fn toggle_status_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -88,6 +107,7 @@ fn panel_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
     danger: bool,
     active: bool,
     t: &Ink,
+    right_click: Option<(PanelAction, BoundsCell)>,
     on_click: F,
 ) -> impl IntoElement + use<F> {
     let (bg, bg_hover, fg, fg_hover) = if danger {
@@ -111,6 +131,12 @@ fn panel_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
         .cursor_pointer()
         .tooltip(title_tooltip(title))
         .on_click(on_click)
+        .when_some(right_click, |this, (action, bounds)| {
+            this.relative().child(bounds.probe()).on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                cx.stop_propagation();
+                user_panel_action(action, bounds.get(), window, cx);
+            })
+        })
         .child(Icon::new(icon).size(px(16.)).color(fg).group_hover(id, fg_hover))
 }
 
@@ -228,9 +254,16 @@ impl Render for UserPanel {
                     // The connection-stats popover opens here (voice feature).
                     div()
                         .id("user-panel-latency")
+                        .relative()
                         .ml_auto()
                         .cursor_pointer()
                         .tooltip(title_tooltip("Click for connection stats"))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click({
+                            let bounds = self.latency_bounds.clone();
+                            move |_: &ClickEvent, window, cx| user_panel_action(PanelAction::Latency, bounds.get(), window, cx)
+                        })
+                        .child(self.latency_bounds.probe())
                         .child(Label::new(latency).size(11.).weight(500.).color(latency_color)),
                 )
         });
@@ -245,6 +278,7 @@ impl Render for UserPanel {
                 .child(Label::new(error).size(11.).color(t.color_error))
         });
 
+        let (stream_bounds, audio_bounds) = (self.stream_bounds.clone(), self.audio_bounds.clone());
         let stream_row = (in_session && call_peer.is_none()).then(|| {
             let accent = t.color_accent;
             let (bg, bg_hover, border) = if streaming {
@@ -261,6 +295,7 @@ impl Render for UserPanel {
                     div()
                         .id("user-panel-stream")
                         .group("user-panel-stream")
+                        .relative()
                         .flex()
                         .flex_1()
                         .h_8()
@@ -274,11 +309,16 @@ impl Render for UserPanel {
                         .hover(move |s| s.bg(bg_hover))
                         .cursor_pointer()
                         .tooltip(title_tooltip(if streaming { "Stop sharing" } else { "Share screen" }))
-                        .on_click(move |_: &ClickEvent, _, cx| {
-                            if streaming {
-                                actions::voice::stop_stream(cx);
+                        .child(stream_bounds.probe())
+                        .on_click({
+                            let bounds = stream_bounds.clone();
+                            move |_: &ClickEvent, window, cx| {
+                                if streaming {
+                                    actions::voice::stop_stream(cx);
+                                } else {
+                                    user_panel_action(PanelAction::GoLive, bounds.get(), window, cx);
+                                }
                             }
-                            // Not streaming: the Go Live dialog opens here (voice feature).
                         })
                         .child(
                             Icon::new(if streaming { IconName::StageStopShare } else { IconName::StageScreen })
@@ -290,8 +330,19 @@ impl Render for UserPanel {
                 .when(audio_button, |this| this.child(
                     // The stream-audio popover's button (voice feature).
                     div()
+                        .id("user-panel-stream-audio")
+                        .relative()
                         .flex()
                         .flex_none()
+                        .cursor_pointer()
+                        .tooltip(title_tooltip("Stream sound"))
+                        .hover(move |s| s.bg(accent.opacity(0.15)))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click({
+                            let bounds = audio_bounds.clone();
+                            move |_: &ClickEvent, window, cx| user_panel_action(PanelAction::StreamAudio, bounds.get(), window, cx)
+                        })
+                        .child(audio_bounds.probe())
                         .size_8()
                         .items_center()
                         .justify_center()
@@ -401,6 +452,7 @@ impl Render for UserPanel {
                     true,
                     false,
                     &t,
+                    None,
                     move |_, _, cx| {
                         let in_call = Model::global(cx).live.calls.read(cx).status != CallStatus::Idle;
                         if in_call {
@@ -424,6 +476,7 @@ impl Render for UserPanel {
                 mic_off,
                 mic_off,
                 &t,
+                Some((PanelAction::InputDevices, self.mute_bounds.clone())),
                 |_, _, cx| actions::voice::toggle_mute(cx),
             ))
             .child(panel_button(
@@ -433,9 +486,10 @@ impl Render for UserPanel {
                 deafened,
                 deafened,
                 &t,
+                Some((PanelAction::OutputDevices, self.deafen_bounds.clone())),
                 |_, _, cx| actions::voice::toggle_deafen(cx),
             ))
-            .child(panel_button("user-panel-settings", IconName::SettingsGear, "Settings", false, false, &t, |_, _, cx| {
+            .child(panel_button("user-panel-settings", IconName::SettingsGear, "Settings", false, false, &t, None, |_, _, cx| {
                 let overlays = Model::global(cx).overlays.clone();
                 overlays.update(cx, |o, cx| o.open_modal(modal::SETTINGS, cx));
             }));

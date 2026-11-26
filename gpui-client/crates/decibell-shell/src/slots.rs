@@ -48,6 +48,8 @@ pub enum Slot {
     /// The unread-DM tiles of the server bar, between the home button and the server tiles
     /// (`UnreadDmTiles`; draws nothing while every conversation is read).
     UnreadDms,
+    /// the call stage shown in a DM conversation during a call
+    DmCallStage,
 }
 
 impl Slot {
@@ -62,6 +64,7 @@ impl Slot {
             Slot::Browse => "Discover",
             Slot::DmList => "Conversations",
             Slot::UnreadDms => "Unread DMs",
+            Slot::DmCallStage => "Call",
         }
     }
 }
@@ -86,11 +89,32 @@ pub enum ChannelMenuTarget {
 /// Adds entries to the channel list's context menu (after the shell's own).
 pub type ChannelMenuExtension = Rc<dyn Fn(&ChannelMenuTarget, &mut App) -> Vec<MenuEntry>>;
 
+/// What the user panel's voice controls ask a feature to open (`UserPanel.tsx`: the
+/// connection-stats popover, the Go Live dialog, the stream-audio popover, the device menus on a
+/// right click of mute / deafen). `anchor` is the clicked control's bounds in window coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelAction {
+    /// The latency readout: the connection-stats popover.
+    Latency,
+    /// "Stream" while not streaming: the Go Live dialog.
+    GoLive,
+    /// The stream-audio button beside Stop.
+    StreamAudio,
+    /// A right click on mute: the input devices.
+    InputDevices,
+    /// A right click on deafen: the output devices.
+    OutputDevices,
+}
+
+/// Handles a [`PanelAction`] (registered by the voice feature).
+pub type PanelActionHandler = Rc<dyn Fn(PanelAction, gpui::Bounds<gpui::Pixels>, &mut Window, &mut App)>;
+
 #[derive(Default)]
 struct Registry {
     panes: HashMap<Slot, PaneBuilder>,
     overlays: Vec<PaneBuilder>,
     channel_menu: Vec<ChannelMenuExtension>,
+    panel_action: Option<PanelActionHandler>,
 }
 
 impl Global for Registry {}
@@ -113,6 +137,34 @@ pub fn register_overlay(cx: &mut App, build: impl Fn(&mut Window, &mut App) -> A
 /// Add entries to the channel list's context menu.
 pub fn register_channel_menu(cx: &mut App, entries: impl Fn(&ChannelMenuTarget, &mut App) -> Vec<MenuEntry> + 'static) {
     registry(cx).channel_menu.push(Rc::new(entries));
+}
+
+/// Handle the user panel's voice controls (one handler; the voice feature's).
+pub fn register_user_panel_action(
+    cx: &mut App,
+    handler: impl Fn(PanelAction, gpui::Bounds<gpui::Pixels>, &mut Window, &mut App) + 'static,
+) {
+    registry(cx).panel_action = Some(Rc::new(handler));
+}
+
+/// Run the registered handler for `action` (nothing when no feature registered one).
+pub(crate) fn user_panel_action(action: PanelAction, anchor: gpui::Bounds<gpui::Pixels>, window: &mut Window, cx: &mut App) {
+    let handler = cx.try_global::<Registry>().and_then(|r| r.panel_action.clone());
+    if let Some(handler) = handler {
+        handler(action, anchor, window, cx);
+    }
+}
+
+/// The view registered for `slot`, built now (a sub-slot another pane hosts, e.g.
+/// [`Slot::DmCallStage`] in the DM pane): the host keeps it while it shows. `None` when no feature
+/// registered one.
+pub fn build_slot(slot: Slot, window: &mut Window, cx: &mut App) -> Option<AnyView> {
+    pane_builder(cx, slot).map(|build| build(window, cx))
+}
+
+/// Whether a feature registered a view for `slot`.
+pub fn is_registered(cx: &App, slot: Slot) -> bool {
+    pane_builder(cx, slot).is_some()
 }
 
 pub(crate) fn pane_builder(cx: &App, slot: Slot) -> Option<PaneBuilder> {
