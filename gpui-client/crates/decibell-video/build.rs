@@ -1,7 +1,9 @@
 //! Linux: compiles the C shim against the FFmpeg prefix's headers (the prefix ffmpeg-sys-next
-//! links, found through the same pkg-config path). The shim holds what touches FFmpeg's Vulkan
-//! structs (`AVVulkanDeviceContext`, `AVVkFrame`), so their layout comes from the headers of the
-//! FFmpeg that is linked and not from hand-written Rust. Other platforms compile no C.
+//! links, found through the same pkg-config path). The shim holds what touches FFmpeg's Vulkan,
+//! CUDA and DRM structs (`AVVulkanDeviceContext`, `AVVkFrame`, `AVCUDADeviceContext`,
+//! `AVDRMFrameDescriptor`) and CUDA's own (through nv-codec-headers' run-time loader, which the
+//! prefix installs), so their layout comes from the headers of the FFmpeg that is linked and
+//! not from hand-written Rust. Other platforms compile no C.
 //! Also sets `cfg(vk)`.
 
 fn main() {
@@ -15,7 +17,9 @@ fn main() {
     }
     #[cfg(target_os = "linux")]
     {
-        println!("cargo::rerun-if-changed=src/linux/shim.c");
+        for file in ["shim.c", "cuda.c", "drm.c"] {
+            println!("cargo::rerun-if-changed=src/linux/{file}");
+        }
         if !vk {
             return;
         }
@@ -25,7 +29,12 @@ fn main() {
             .probe("libavutil")
             .expect("libavutil.pc (run gpui-client/tools/build-ffmpeg.sh)");
         let mut build = cc::Build::new();
-        build.file("src/linux/shim.c").opt_level(2).warnings(false);
+        build
+            .file("src/linux/shim.c")
+            .file("src/linux/cuda.c")
+            .file("src/linux/drm.c")
+            .opt_level(2)
+            .warnings(false);
         for path in &avutil.include_paths {
             build.include(path);
         }

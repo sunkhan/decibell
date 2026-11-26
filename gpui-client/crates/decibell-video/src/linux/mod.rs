@@ -7,14 +7,19 @@
 //! - [`GpuDevice`] is that device as the decoders use it: the aux queue for picture copies and
 //!   uploads, and (made on the first hardware decode) the FFmpeg `AVHWDeviceContext` around it.
 //! - [`slots`]: the plane textures a stream's pictures are handed over in.
-//! - [`hw`]: Vulkan Video decode + a GPU copy into a slot. [`upload`]: software pictures into
+//! - [`hw`]: Vulkan Video decode + a GPU copy into a slot. [`nvdec`]: NVIDIA's decoder through
+//!   CUDA, copied device to device into slots whose memory CUDA imported. [`vaapi`]: VA-API
+//!   surfaces imported as DMA-BUFs and copied into slots. [`upload`]: software pictures into
 //!   the same slots through a persistent staging buffer.
 //!
-//! Why a copy and not the decoded image itself: docs/video-design.md §3.
+//! Which of them a stream gets: `select.rs` walks [`LinuxBackend::order`]. Why every path
+//! ends in a copy into a slot and not in the decoder's own image: docs/video-design.md §3.
 
 mod hw;
+mod nvdec;
 mod slots;
 mod upload;
+mod vaapi;
 
 use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -26,12 +31,13 @@ use gpui_wgpu::wgpu::hal::api::Vulkan;
 use gpui_wgpu::{WgpuContext, wgpu};
 use parking_lot::Mutex;
 
-use crate::codec::{Codec, CodecSupport, DecodePath};
+use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
 use crate::decode::{
     Backend, ColorInfo, DecodeError, DecodeResult, Matrix, PictureDecoder, SoftwareDecoder,
-    av_error, has_software_decoder,
+    av_error, software_support,
 };
 use crate::hub::StreamTarget;
+use crate::select::Order;
 
 unsafe extern "C" {
     fn dbv_vk_device(
@@ -75,6 +81,26 @@ const OPTIONAL_EXTENSIONS: [&CStr; 5] = [
 ];
 static QUEUE_PRIORITY: [f32; 1] = [1.0];
 
+pub(crate) const EXTERNAL_MEMORY_FD: &CStr = c"VK_KHR_external_memory_fd";
+pub(crate) const EXTERNAL_SEMAPHORE_FD: &CStr = c"VK_KHR_external_semaphore_fd";
+pub(crate) const EXTERNAL_MEMORY_DMA_BUF: &CStr = c"VK_EXT_external_memory_dma_buf";
+pub(crate) const IMAGE_DRM_FORMAT_MODIFIER: &CStr = c"VK_EXT_image_drm_format_modifier";
+pub(crate) const QUEUE_FAMILY_FOREIGN: &CStr = c"VK_EXT_queue_family_foreign";
+/// What the hardware fallbacks need of the device, each enabled when the GPU has it: sharing
+/// slot memory and a semaphore with CUDA (NVDEC), importing a VA surface's DMA-BUFs with their
+/// DRM format modifier (VA-API). No queue, no feature struct, nothing at run time until one of
+/// those decoders is opened.
+const INTEROP_EXTENSIONS: [&CStr; 6] = [
+    EXTERNAL_MEMORY_FD,
+    EXTERNAL_SEMAPHORE_FD,
+    EXTERNAL_MEMORY_DMA_BUF,
+    IMAGE_DRM_FORMAT_MODIFIER,
+    QUEUE_FAMILY_FOREIGN,
+    // Required by VK_EXT_image_drm_format_modifier; Vulkan 1.2 core, named for 1.1 devices.
+    c"VK_KHR_image_format_list",
+];
+const NVIDIA: u32 = 0x10DE;
+
 fn decode_extension(codec: Codec) -> &'static CStr {
     match codec {
         Codec::H264 => c"VK_KHR_video_decode_h264",
@@ -84,7 +110,8 @@ fn decode_extension(codec: Codec) -> &'static CStr {
 }
 
 /// Registers the device hook with gpui_wgpu. Must run before the first window is opened.
-/// `DECIBELL_VIDEO=software` leaves the device alone (every stream then decodes in software).
+/// `DECIBELL_VIDEO=software` leaves the device alone (every stream then decodes in software;
+/// `DECIBELL_VIDEO_DECODER=software` decodes in software on the device as the hook makes it).
 pub(crate) fn install_device_hook() -> bool {
     if std::env::var("DECIBELL_VIDEO").is_ok_and(|value| value == "software") {
         return false;
@@ -113,8 +140,13 @@ fn device_hook(
             .iter()
             .any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == name))
     };
+    for name in INTEROP_EXTENSIONS {
+        if has(name) && !args.extensions.contains(&name) {
+            args.extensions.push(name);
+        }
+    }
     if !has(VIDEO_QUEUE) || !has(VIDEO_DECODE_QUEUE) {
-        log::info!("video: the GPU has no Vulkan Video decode; streams decode in software");
+        log::info!("video: the GPU has no Vulkan Video decode");
         return;
     }
     // Safety: as above.
@@ -124,7 +156,7 @@ fn device_hook(
         .iter()
         .position(|f| f.queue_flags.contains(vk::QueueFlags::VIDEO_DECODE_KHR))
     else {
-        log::info!("video: no video decode queue family; streams decode in software");
+        log::info!("video: the GPU has no video decode queue family");
         return;
     };
     // A second family with compute + transfer (NVIDIA has one) keeps FFmpeg and our copies off
@@ -241,6 +273,12 @@ pub(crate) struct GpuDevice {
     decode_family: Option<u32>,
     aux_queue: vk::Queue,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
+    pub instance: ash::Instance,
+    pub physical_device: vk::PhysicalDevice,
+    /// The device extensions that are enabled.
+    extensions: Vec<&'static CStr>,
+    /// PCI vendor id of the GPU.
+    pub vendor: u32,
 }
 
 // Safety: Vulkan handles are plain values; the queue is used under the device-wide lock.
@@ -281,14 +319,13 @@ impl GpuDevice {
         } else {
             unsafe { raw.get_device_queue(aux_family, 0) }
         };
+        let instance = hal_device.shared_instance().raw_instance().clone();
         // Safety: a valid physical device.
-        let memory_properties = unsafe {
-            hal_device
-                .shared_instance()
-                .raw_instance()
-                .get_physical_device_memory_properties(physical_device)
-        };
+        let memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let extensions = hal_device.enabled_device_extensions().to_vec();
         drop(hal_device);
+        let vendor = context.adapter.get_info().vendor;
         Some(Arc::new(Self {
             hw: OnceLock::new(),
             context,
@@ -299,7 +336,127 @@ impl GpuDevice {
             decode_family,
             aux_queue,
             memory_properties,
+            instance,
+            physical_device,
+            extensions,
+            vendor,
         }))
+    }
+
+    pub fn has_extension(&self, name: &CStr) -> bool {
+        self.extensions.contains(&name)
+    }
+
+    /// `vkGetMemoryFdKHR` and friends, when the device has them.
+    pub fn external_memory_fd(&self) -> Option<ash::khr::external_memory_fd::Device> {
+        self.has_extension(EXTERNAL_MEMORY_FD)
+            .then(|| ash::khr::external_memory_fd::Device::new(&self.instance, &self.raw))
+    }
+
+    pub fn external_semaphore_fd(&self) -> Option<ash::khr::external_semaphore_fd::Device> {
+        self.has_extension(EXTERNAL_SEMAPHORE_FD)
+            .then(|| ash::khr::external_semaphore_fd::Device::new(&self.instance, &self.raw))
+    }
+
+    /// The queue family that stands for "another API owns this image's contents".
+    /// `VK_QUEUE_FAMILY_EXTERNAL` is the core 1.1 stand-in on a device without
+    /// `VK_EXT_queue_family_foreign` (meant for other Vulkan instances of the same driver).
+    pub fn foreign_queue_family(&self) -> u32 {
+        if self.has_extension(QUEUE_FAMILY_FOREIGN) {
+            vk::QUEUE_FAMILY_FOREIGN_EXT
+        } else {
+            vk::QUEUE_FAMILY_EXTERNAL
+        }
+    }
+
+    fn physical_device_has(&self, name: &CStr) -> bool {
+        // Safety: a valid physical device of this instance.
+        unsafe {
+            self.instance
+                .enumerate_device_extension_properties(self.physical_device)
+        }
+        .unwrap_or_default()
+        .iter()
+        .any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == name))
+    }
+
+    /// The GPU's UUID (`VkPhysicalDeviceIDProperties`, Vulkan 1.1), which is its CUDA UUID
+    /// on NVIDIA.
+    pub fn uuid(&self) -> Option<[u8; 16]> {
+        let mut id = vk::PhysicalDeviceIDProperties::default();
+        let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+        // Safety: a valid physical device; a core 1.1 query.
+        unsafe {
+            self.instance
+                .get_physical_device_properties2(self.physical_device, &mut properties)
+        };
+        (id.device_uuid != [0; 16]).then_some(id.device_uuid)
+    }
+
+    /// The DRM render node of this GPU (`/dev/dri/renderD<n>`): where VA-API is opened, so
+    /// that the decoder is the GPU the window is drawn with.
+    pub fn render_node(&self) -> Result<std::path::PathBuf, String> {
+        use std::os::unix::fs::MetadataExt as _;
+        let nodes = || {
+            std::fs::read_dir("/dev/dri")
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("renderD"))
+                })
+        };
+        // The driver's own answer (VK_EXT_physical_device_drm: Mesa since 21.1, NVIDIA since
+        // the 470 series). A physical-device-level query: the extension need not be enabled
+        // on the device.
+        if self.physical_device_has(c"VK_EXT_physical_device_drm") {
+            let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
+            let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
+            // Safety: a valid physical device that supports the extension.
+            unsafe {
+                self.instance
+                    .get_physical_device_properties2(self.physical_device, &mut properties)
+            };
+            if drm.has_render == vk::TRUE {
+                let wanted = libc::makedev(drm.render_major as _, drm.render_minor as _);
+                return nodes()
+                    .find(|path| {
+                        std::fs::metadata(path).is_ok_and(|meta| meta.rdev() == wanted as u64)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "the GPU's DRM render node ({}:{}) is not in /dev/dri",
+                            drm.render_major, drm.render_minor
+                        )
+                    });
+            }
+            return Err("the GPU has no DRM render node".into());
+        }
+        // Else by PCI address (VK_EXT_pci_bus_info): the node sysfs lists under the device.
+        if self.physical_device_has(c"VK_EXT_pci_bus_info") {
+            let mut pci = vk::PhysicalDevicePCIBusInfoPropertiesEXT::default();
+            let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut pci);
+            // Safety: as above.
+            unsafe {
+                self.instance
+                    .get_physical_device_properties2(self.physical_device, &mut properties)
+            };
+            let sysfs = format!(
+                "/sys/bus/pci/devices/{:04x}:{:02x}:{:02x}.{}/drm",
+                pci.pci_domain, pci.pci_bus, pci.pci_device, pci.pci_function
+            );
+            return std::fs::read_dir(&sysfs)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.file_name())
+                .find(|name| name.to_string_lossy().starts_with("renderD"))
+                .map(|name| std::path::Path::new("/dev/dri").join(name))
+                .ok_or_else(|| format!("no DRM render node under {sysfs}"));
+        }
+        Err("the Vulkan driver does not say which DRM render node the GPU is".into())
     }
 
     pub fn lost(&self) -> bool {
@@ -430,12 +587,20 @@ pub(crate) fn surface_color(color: ColorInfo) -> gpui_wgpu::SurfaceColor {
 /// Plane textures alive in the process.
 pub(crate) static LIVE_PLANES: AtomicI64 = AtomicI64::new(0);
 
+/// Per codec: the largest picture Vulkan Video decodes, `None` when it does not decode it.
+type VulkanVideoSupport = [Option<(u32, u32)>; 3];
+
 pub(crate) struct LinuxBackend {
     /// The device the current decoders are on. Weak: with the last decoder it goes, and with
     /// it FFmpeg's device context.
     device: Mutex<Weak<GpuDevice>>,
-    /// Hardware support per codec, for the device it was probed on.
-    support: Mutex<Option<(wgpu::Device, [CodecSupport; 3])>>,
+    /// What Vulkan Video does with each codec (the driver's largest picture), for the device
+    /// it was asked of.
+    support: Mutex<Option<(wgpu::Device, VulkanVideoSupport)>>,
+    /// The CUDA context of the NVDEC decoders, and the VA display of the VA-API ones: each
+    /// alive while one of its decoders is.
+    cuda: Mutex<Weak<nvdec::CudaDevice>>,
+    vaapi: Mutex<Weak<vaapi::VaDevice>>,
 }
 
 impl LinuxBackend {
@@ -443,6 +608,8 @@ impl LinuxBackend {
         Self {
             device: Mutex::new(Weak::new()),
             support: Mutex::new(None),
+            cuda: Mutex::new(Weak::new()),
+            vaapi: Mutex::new(Weak::new()),
         }
     }
 
@@ -462,28 +629,42 @@ impl LinuxBackend {
         Ok(device)
     }
 
-    fn probe(&self, context: &WgpuContext) -> [CodecSupport; 3] {
+    /// The driver's Vulkan Video answer per codec.
+    fn vulkan_video(&self, context: &WgpuContext) -> VulkanVideoSupport {
         let mut cached = self.support.lock();
         if let Some((device, support)) = &*cached
             && *device == *context.device
         {
             return *support;
         }
-        let support = Codec::ALL.map(|codec| {
-            let hardware = hardware_support(context, codec);
-            CodecSupport {
-                codec,
-                path: match hardware {
-                    Some(_) => Some(DecodePath::Hardware),
-                    None if has_software_decoder(codec) => Some(DecodePath::Software),
-                    None => None,
-                },
-                max_size: hardware,
-            }
-        });
-        log::info!("video: decode support {support:?}");
+        let support = Codec::ALL.map(|codec| hardware_support(context, codec));
+        log::info!("video: Vulkan Video decode (largest picture per codec): {support:?}");
         *cached = Some(((*context.device).clone(), support));
         support
+    }
+
+    fn cuda(&self, device: &GpuDevice) -> DecodeResult<Arc<nvdec::CudaDevice>> {
+        let mut cached = self.cuda.lock();
+        if let Some(cuda) = cached.upgrade()
+            && Some(cuda.uuid) == device.uuid()
+        {
+            return Ok(cuda);
+        }
+        let cuda = nvdec::CudaDevice::open(device)?;
+        *cached = Arc::downgrade(&cuda);
+        Ok(cuda)
+    }
+
+    fn va(&self, device: &GpuDevice) -> DecodeResult<Arc<vaapi::VaDevice>> {
+        let mut cached = self.vaapi.lock();
+        if let Some(va) = cached.upgrade()
+            && device.render_node().is_ok_and(|node| node == va.node)
+        {
+            return Ok(va);
+        }
+        let va = vaapi::VaDevice::open(device)?;
+        *cached = Arc::downgrade(&va);
+        Ok(va)
     }
 }
 
@@ -553,17 +734,51 @@ fn hardware_support(context: &WgpuContext, codec: Codec) -> Option<(u32, u32)> {
     }
 }
 
+/// The decoders of a GPU of PCI vendor `vendor`, best first. `vulkan_video`: its device was
+/// created with a video decode queue.
+fn platform_order(vulkan_video: bool, vendor: u32) -> Order {
+    let vendor_decoder = if vendor == NVIDIA {
+        DecodeBackend::Nvdec
+    } else {
+        DecodeBackend::Vaapi
+    };
+    if vulkan_video {
+        Order::new(&[
+            DecodeBackend::VulkanVideo,
+            vendor_decoder,
+            DecodeBackend::Software,
+        ])
+    } else {
+        Order::new(&[vendor_decoder, DecodeBackend::Software])
+    }
+}
+
 impl Backend for LinuxBackend {
+    /// Vulkan Video when the device was created for it; then the GPU vendor's own decoder
+    /// (NVDEC on NVIDIA, VA-API on everything else: AMD, Intel); then software. A renderer
+    /// that is not on Vulkan (the OpenGL fallback) has no device to share: software.
+    fn order(&self) -> Order {
+        let Ok(Some(device)) = self.device() else {
+            return Order::SOFTWARE;
+        };
+        platform_order(device.decode_family.is_some(), device.vendor)
+    }
+
     fn open(
         &self,
+        backend: DecodeBackend,
         codec: Codec,
         description: Option<&[u8]>,
-        allow_hardware: bool,
         target: &StreamTarget,
     ) -> DecodeResult<Box<dyn PictureDecoder>> {
         let device = self.device()?;
         let Some(device) = device else {
-            // Not Vulkan: software decode, uploaded through wgpu.
+            if backend != DecodeBackend::Software {
+                return Err(DecodeError::decoder(
+                    "the renderer is not on Vulkan: there is no GPU device to decode on",
+                ));
+            }
+            // Software decode, uploaded through wgpu.
             let context = gpui_wgpu::shared_context()
                 .ok_or_else(|| DecodeError::device_lost("the renderer has no GPU device"))?;
             let uploader = upload::WgpuUploader::new(context, target.surface.clone());
@@ -573,32 +788,71 @@ impl Backend for LinuxBackend {
                 Box::new(uploader),
             )?));
         };
-        let hardware = allow_hardware
-            && self.probe(&device.context)[codec.index()].path == Some(DecodePath::Hardware);
-        if hardware {
-            let hw_device = device.hw_device()?;
-            let decoder =
-                hw::VulkanDecoder::open(device.clone(), hw_device, codec, description, target)
-                    .map_err(|error| classify(&device, error))?;
-            return Ok(Box::new(decoder));
-        }
-        let uploader: Box<dyn crate::decode::Uploader> =
-            if std::env::var("DECIBELL_VIDEO_UPLOAD").is_ok_and(|value| value == "wgpu") {
-                Box::new(upload::WgpuUploader::new(
-                    device.context.clone(),
-                    target.surface.clone(),
-                ))
-            } else {
-                Box::new(
-                    upload::VulkanUploader::new(device.clone(), target.surface.clone())
-                        .map_err(|error| classify(&device, error))?,
-                )
-            };
-        Ok(Box::new(SoftwareDecoder::open(
-            codec,
-            description,
-            uploader,
-        )?))
+        let opened = (|| -> DecodeResult<Box<dyn PictureDecoder>> {
+            match backend {
+            DecodeBackend::VulkanVideo => {
+                if device.decode_family.is_none() {
+                    return Err(DecodeError::decoder(
+                        "the GPU device was created without Vulkan Video (the driver has no video decode queue)",
+                    ));
+                }
+                if self.vulkan_video(&device.context)[codec.index()].is_none() {
+                    return Err(DecodeError::decoder(format!(
+                        "the driver does not decode {} with Vulkan Video",
+                        codec.label()
+                    )));
+                }
+                let hw_device = device.hw_device()?;
+                Ok(Box::new(hw::VulkanDecoder::open(
+                    device.clone(),
+                    hw_device,
+                    codec,
+                    description,
+                    target,
+                )?))
+            }
+            DecodeBackend::Nvdec => {
+                let cuda = self.cuda(&device)?;
+                Ok(Box::new(nvdec::NvdecDecoder::open(
+                    device.clone(),
+                    cuda,
+                    codec,
+                    description,
+                    target,
+                )?))
+            }
+            DecodeBackend::Vaapi => {
+                let va = self.va(&device)?;
+                Ok(Box::new(vaapi::VaapiDecoder::open(
+                    device.clone(),
+                    va,
+                    codec,
+                    description,
+                    target,
+                )?))
+            }
+            DecodeBackend::Software => {
+                let uploader: Box<dyn crate::decode::Uploader> =
+                    if std::env::var("DECIBELL_VIDEO_UPLOAD").is_ok_and(|value| value == "wgpu") {
+                        Box::new(upload::WgpuUploader::new(
+                            device.context.clone(),
+                            target.surface.clone(),
+                        ))
+                    } else {
+                        Box::new(upload::VulkanUploader::new(
+                            device.clone(),
+                            target.surface.clone(),
+                        )?)
+                    };
+                Ok(Box::new(SoftwareDecoder::open(
+                    codec,
+                    description,
+                    uploader,
+                )?))
+            }
+            }
+        })();
+        opened.map_err(|error| classify(&device, error))
     }
 
     fn ready(&self) -> bool {
@@ -611,15 +865,46 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn support(&self, codec: Codec) -> CodecSupport {
-        match gpui_wgpu::shared_context().filter(|context| !context.device_lost()) {
-            Some(context) => self.probe(&context)[codec.index()],
-            None => CodecSupport {
-                codec,
-                path: has_software_decoder(codec).then_some(DecodePath::Software),
-                max_size: None,
-            },
+    fn support(&self, backend: DecodeBackend, codec: Codec) -> CodecSupport {
+        if backend == DecodeBackend::Software {
+            return software_support(codec);
         }
+        let Ok(Some(device)) = self.device() else {
+            return CodecSupport::none(codec);
+        };
+        let hardware = |max_size| CodecSupport {
+            codec,
+            path: Some(DecodePath::Hardware),
+            backend: Some(backend),
+            probed: false,
+            max_size,
+        };
+        // Vulkan Video: the driver's capability query. The other two only say whether the
+        // device could take their pictures; whether the vendor's decoder takes the codec is
+        // found by opening it (the probe, or the first stream).
+        match backend {
+            DecodeBackend::VulkanVideo => match self.vulkan_video(&device.context)[codec.index()]
+            {
+                Some(size) => hardware(Some(size)),
+                None => CodecSupport::none(codec),
+            },
+            DecodeBackend::Nvdec => hardware(None)
+                .filter(device.vendor == NVIDIA && device.has_extension(EXTERNAL_MEMORY_FD)),
+            DecodeBackend::Vaapi => hardware(None).filter(
+                device.has_extension(EXTERNAL_MEMORY_DMA_BUF)
+                    && device.has_extension(IMAGE_DRM_FORMAT_MODIFIER),
+            ),
+            DecodeBackend::Software => software_support(codec),
+        }
+    }
+
+    fn device_key(&self) -> Option<String> {
+        let context = gpui_wgpu::shared_context().filter(|context| !context.device_lost())?;
+        let info = context.adapter.get_info();
+        Some(format!(
+            "{:04x}:{:04x} {:?} {} {}",
+            info.vendor, info.device, info.backend, info.driver, info.driver_info
+        ))
     }
 
     fn live_textures(&self) -> i64 {
@@ -641,4 +926,29 @@ pub(crate) fn classify(device: &GpuDevice, error: DecodeError) -> DecodeError {
         return DecodeError::device_lost(error.message);
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use DecodeBackend::*;
+
+    #[test]
+    fn the_order_follows_the_gpu_vendor() {
+        const AMD: u32 = 0x1002;
+        const INTEL: u32 = 0x8086;
+        assert_eq!(
+            platform_order(true, NVIDIA).as_slice(),
+            [VulkanVideo, Nvdec, Software]
+        );
+        for vendor in [AMD, INTEL] {
+            assert_eq!(
+                platform_order(true, vendor).as_slice(),
+                [VulkanVideo, Vaapi, Software]
+            );
+            // An older Mesa, or a GPU whose Vulkan driver has no video decode: VA-API first.
+            assert_eq!(platform_order(false, vendor).as_slice(), [Vaapi, Software]);
+        }
+        assert_eq!(platform_order(false, NVIDIA).as_slice(), [Nvdec, Software]);
+    }
 }

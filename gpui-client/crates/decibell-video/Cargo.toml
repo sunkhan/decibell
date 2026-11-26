@@ -33,6 +33,7 @@ decibell-core = { path = "../../../crates/decibell-core", default-features = fal
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_wgpu.workspace = true
+libc.workspace = true
 ash = "0.38"
 ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "static"] }
 

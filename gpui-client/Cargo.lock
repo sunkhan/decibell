@@ -2040,6 +2040,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui_wgpu",
+ "libc",
  "log",
  "parking_lot",
  "pkg-config",

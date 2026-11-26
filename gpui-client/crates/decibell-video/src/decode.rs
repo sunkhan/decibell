@@ -12,7 +12,8 @@ use std::sync::mpsc;
 use ffmpeg_sys_next as ff;
 use parking_lot::Mutex;
 
-use crate::codec::{Codec, CodecSupport, DecodePath};
+use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
+use crate::select::Order;
 use crate::packet::{PADDING, Packet};
 use crate::stats::Counters;
 
@@ -103,7 +104,10 @@ pub(crate) struct FrameCx<'a> {
 }
 
 pub(crate) trait PictureDecoder: Send {
-    fn path(&self) -> DecodePath;
+    fn backend(&self) -> DecodeBackend;
+    fn path(&self) -> DecodePath {
+        self.backend().path()
+    }
     /// Decodes one whole encoded frame and hands the pictures it yields to the stream's
     /// surface. Returns how many were handed over (0 or 1: streams have no reordering).
     fn decode(
@@ -117,12 +121,16 @@ pub(crate) trait PictureDecoder: Send {
 
 /// What the hub asks of the platform.
 pub(crate) trait Backend: Send + Sync + 'static {
-    /// Opens a decoder for a stream. `allow_hardware` is false once the stream fell back.
+    /// The decoders this machine could use, best first (`select.rs` walks it). Software only
+    /// while the renderer has no device.
+    fn order(&self) -> Order;
+    /// Opens `backend`'s decoder for a stream. An error that is not a device loss means this
+    /// decoder does not work for the codec here.
     fn open(
         &self,
+        backend: DecodeBackend,
         codec: Codec,
         description: Option<&[u8]>,
-        allow_hardware: bool,
         target: &crate::hub::StreamTarget,
     ) -> DecodeResult<Box<dyn PictureDecoder>>;
     /// Whether a decoder can be opened now (false between a device loss and the renderer's
@@ -130,7 +138,12 @@ pub(crate) trait Backend: Send + Sync + 'static {
     fn ready(&self) -> bool;
     /// Makes the renderer abandon its device as after a real loss (tests).
     fn simulate_device_loss(&self);
-    fn support(&self, codec: Codec) -> CodecSupport;
+    /// What `backend` would do with `codec` as far as can be told without opening a decoder
+    /// (the driver's lists, the FFmpeg build): `path` is `None` when it certainly cannot.
+    fn support(&self, backend: DecodeBackend, codec: Codec) -> CodecSupport;
+    /// Names the GPU and its driver version: what a probe's result is valid for. `None`: the
+    /// renderer has no device yet.
+    fn device_key(&self) -> Option<String>;
     /// Plane textures alive in the process (tests: that a closed stream frees them).
     fn live_textures(&self) -> i64;
     /// Lets the renderer's device notice which of its submissions the GPU has finished, so the
@@ -152,6 +165,18 @@ pub(crate) fn av_error(code: c_int) -> String {
 /// Whether FFmpeg was built with a software decoder for `codec`.
 pub(crate) fn has_software_decoder(codec: Codec) -> bool {
     !find_decoder(codec, false).is_null()
+}
+
+/// What the software decoders do with `codec`.
+pub(crate) fn software_support(codec: Codec) -> CodecSupport {
+    let has = has_software_decoder(codec);
+    CodecSupport {
+        codec,
+        path: has.then_some(DecodePath::Software),
+        backend: has.then_some(DecodeBackend::Software),
+        probed: false,
+        max_size: None,
+    }
 }
 
 fn find_decoder(codec: Codec, hardware: bool) -> *const ff::AVCodec {
@@ -198,6 +223,30 @@ unsafe impl Send for FfDecoder {}
 
 pub(crate) type GetFormat =
     unsafe extern "C" fn(*mut ff::AVCodecContext, *const ff::AVPixelFormat) -> ff::AVPixelFormat;
+
+/// The body of a hardware decoder's `get_format`: `wanted` or nothing (failing the stream's
+/// first packet, so that it moves to the next decoder instead of FFmpeg decoding on the CPU
+/// behind our back).
+///
+/// # Safety
+/// `formats` is the list FFmpeg passes to `get_format`, terminated by `AV_PIX_FMT_NONE`.
+pub(crate) unsafe fn pick_format(
+    formats: *const ff::AVPixelFormat,
+    wanted: ff::AVPixelFormat,
+) -> ff::AVPixelFormat {
+    // Safety: the caller's contract; read as integers (a value this FFmpeg knows and the
+    // bindings do not must not become an invalid Rust enum).
+    unsafe {
+        let mut format = formats.cast::<c_int>();
+        while *format != -1 {
+            if *format == wanted as c_int {
+                return wanted;
+            }
+            format = format.add(1);
+        }
+    }
+    ff::AVPixelFormat::AV_PIX_FMT_NONE
+}
 
 impl FfDecoder {
     /// `hardware`: the device context to decode on and the `get_format` that picks its pixel
@@ -348,13 +397,16 @@ impl FfDecoder {
             let frame = self.frame;
             let int = |field: *const c_int| field.read();
             let format = int(std::ptr::addr_of!((*frame).format));
-            let sw_format = if (*frame).hw_frames_ctx.is_null() {
-                format
+            let (sw_format, coded) = if (*frame).hw_frames_ctx.is_null() {
+                (format, ((*frame).width, (*frame).height))
             } else {
                 let frames = (*(*frame).hw_frames_ctx)
                     .data
                     .cast::<ff::AVHWFramesContext>();
-                int(std::ptr::addr_of!((*frames).sw_format).cast())
+                (
+                    int(std::ptr::addr_of!((*frames).sw_format).cast()),
+                    ((*frames).width, (*frames).height),
+                )
             };
             let colorspace = int(std::ptr::addr_of!((*frame).colorspace).cast());
             let range = int(std::ptr::addr_of!((*frame).color_range).cast());
@@ -363,6 +415,8 @@ impl FfDecoder {
             FrameInfo {
                 width: (*frame).width.max(0) as u32,
                 height,
+                coded_width: coded.0.max(0) as u32,
+                coded_height: coded.1.max(0) as u32,
                 format,
                 sw_format,
                 color: ColorInfo {
@@ -420,6 +474,10 @@ pub(crate) struct FrameInfo {
     /// The picture's size (the image behind it may be larger: coded size).
     pub width: u32,
     pub height: u32,
+    /// The size of the image behind a hardware frame (its frames pool's): the picture is its
+    /// top-left part.
+    pub coded_width: u32,
+    pub coded_height: u32,
     /// `AVPixelFormat` of the frame.
     pub format: c_int,
     /// For a hardware frame: what its image holds.
@@ -544,8 +602,8 @@ impl SoftwareDecoder {
 }
 
 impl PictureDecoder for SoftwareDecoder {
-    fn path(&self) -> DecodePath {
-        DecodePath::Software
+    fn backend(&self) -> DecodeBackend {
+        DecodeBackend::Software
     }
 
     fn decode(

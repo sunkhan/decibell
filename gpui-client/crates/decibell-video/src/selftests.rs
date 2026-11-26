@@ -1,5 +1,6 @@
 //! Self-tests of stream playback on the real platform: real window, real GPU, real frame loop
-//! (`decibell --selftest video-hw,video-idle,…`). Each opens a window of its own, plays test
+//! (`decibell --selftest video-hw,video-idle,…`; `gpui-client/docs/video-owner-checks.md` says
+//! what to run on a machine with another GPU). Each opens a window of its own, plays test
 //! streams from `gpui-client/vendor/streams` (`tools/streamgen/make-streams.sh`;
 //! `DECIBELL_VIDEO_STREAMS` points elsewhere) through the hub, and closes it. Without the
 //! streams a test says so and passes: they are 600 MB and not in the repository.
@@ -13,7 +14,7 @@ use gpui::{
     AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions, px, size,
 };
 
-use crate::codec::DecodePath;
+use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
 use crate::dbv::{FeedOptions, Feeder};
 use crate::hub::{Fault, Stream, VideoHub};
 use crate::screens::{Playback, Tile, file_label, stats_line};
@@ -24,7 +25,7 @@ pub fn selftests() -> Vec<SelfTest> {
     vec![
         SelfTest {
             name: "video-hw",
-            about: "each codec decodes on the GPU: every frame in is a picture presented, the right one",
+            about: "the capability probe, then each codec on the decoder it found: every frame presented, the right picture and colours",
             run: |cx| Box::pin(hardware(cx)),
         },
         SelfTest {
@@ -44,7 +45,7 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         SelfTest {
             name: "video-recover",
-            about: "a decoder error falls back to software, a lost GPU device is survived",
+            about: "a decoder error moves the stream to the next decoder; a lost GPU device is survived on each",
             run: |cx| Box::pin(recover(cx)),
         },
         SelfTest {
@@ -52,7 +53,81 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "a stream that changes resolution mid-stream keeps playing",
             run: |cx| Box::pin(switch(cx)),
         },
+        SelfTest {
+            name: "video-nvdec",
+            about: "NVDEC (NVIDIA): each codec decoded through CUDA into the renderer's textures",
+            run: |cx| Box::pin(vendor_decoder(cx, DecodeBackend::Nvdec)),
+        },
+        SelfTest {
+            name: "video-vaapi",
+            about: "VA-API (AMD, Intel): each codec decoded into DMA-BUFs imported by the renderer's device",
+            run: |cx| Box::pin(vendor_decoder(cx, DecodeBackend::Vaapi)),
+        },
+        SelfTest {
+            name: "video-order",
+            about: "each decoder failing in turn walks the order down to software, reasons recorded",
+            run: |cx| Box::pin(order(cx)),
+        },
+        SelfTest {
+            name: "video-fastpath",
+            about: "a present for a new picture reuses the frame the renderer kept: same pixels, no scene writes",
+            run: |cx| Box::pin(fast_path(cx)),
+        },
     ]
+}
+
+/// Forces a decoder order for a test and puts back what was forced before (the environment's
+/// `DECIBELL_VIDEO_DECODER`, or nothing) when dropped.
+struct ForcedOrder {
+    hub: VideoHub,
+    previous: Option<Vec<DecodeBackend>>,
+}
+
+impl ForcedOrder {
+    fn new(hub: &VideoHub, order: &[DecodeBackend]) -> Self {
+        let previous = hub.forced_decoder_order();
+        hub.set_decoder_order(Some(order));
+        Self {
+            hub: hub.clone(),
+            previous,
+        }
+    }
+}
+
+impl Drop for ForcedOrder {
+    fn drop(&mut self) {
+        self.hub.set_decoder_order(self.previous.as_deref());
+    }
+}
+
+/// Runs the capability probe and waits for it without blocking the UI thread.
+async fn probe(cx: &TestCx, hub: &VideoHub) -> Result<[CodecSupport; 3]> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    hub.probe_capabilities(move |result| {
+        let _ = sender.send(result);
+    });
+    let started = Instant::now();
+    loop {
+        if let Ok(result) = receiver.try_recv() {
+            return Ok(result);
+        }
+        ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the capability probe did not finish"
+        );
+        cx.sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn log_skipped(cx: &TestCx, hub: &VideoHub) {
+    for skipped in hub.skipped_decoders() {
+        cx.log(format_args!(
+            "{} with {}: not used, {}",
+            skipped.codec.label(),
+            skipped.backend.label(),
+            skipped.reason
+        ));
+    }
 }
 
 /// The test streams' folder, when it has them.
@@ -199,6 +274,26 @@ impl Stage {
         Ok(last)
     }
 
+    /// The window's next frame as the renderer draws it, read back from the GPU. `rebuild`:
+    /// the scene is written to the GPU again for it; else the frame the renderer kept is
+    /// reused if it can be.
+    #[cfg(vk)]
+    async fn capture(&self, rebuild: bool) -> Result<gpui_wgpu::CapturedFrame> {
+        let receiver = gpui_wgpu::capture_next_surface_frame(rebuild);
+        self.cx.app().update(|cx| {
+            self.window
+                .update(cx, |_, window, _| window.request_present())
+                .context("the video test window is closed")
+        })?;
+        let mut frame = None;
+        self.wait("a captured frame", Duration::from_secs(5), || {
+            frame = receiver.try_recv().ok();
+            frame.is_some()
+        })
+        .await?;
+        frame.context("no captured frame")
+    }
+
     /// Ends every stream and closes the window.
     fn close(self) -> Result<()> {
         for stream in &self.streams {
@@ -307,44 +402,245 @@ async fn check_barcodes(stage: &Stage, stream: &Stream, name: &str, count: usize
     Ok(())
 }
 
-async fn play_each_codec(cx: TestCx, path: DecodePath, frames: u64) -> Result<()> {
-    let names = ["1080p60_h264.dbv", "1080p60_hevc.dbv", "1080p60_av1.dbv"];
-    let Some(files) = streams(&cx, &names) else {
-        return Ok(());
+const CODEC_FILES: [(Codec, &str); 3] = [
+    (Codec::H264, "1080p60_h264.dbv"),
+    (Codec::Hevc, "1080p60_hevc.dbv"),
+    (Codec::Av1, "1080p60_av1.dbv"),
+];
+
+/// What a window showed when a stream's last frame was up.
+#[cfg(vk)]
+type Shot = gpui_wgpu::CapturedFrame;
+#[cfg(not(vk))]
+type Shot = ();
+
+/// Plays `frames` frames of each of `codecs` with whatever the hub's order gives, expecting
+/// the decoder `expect`: every frame in is a picture presented, the right one. Returns the
+/// window's last frame per codec.
+async fn play_codecs(
+    cx: &TestCx,
+    codecs: &[Codec],
+    expect: DecodeBackend,
+    frames: u64,
+) -> Result<Vec<(Codec, Shot)>> {
+    let names: Vec<&str> = CODEC_FILES
+        .iter()
+        .filter(|(codec, _)| codecs.contains(codec))
+        .map(|(_, name)| *name)
+        .collect();
+    let Some(files) = streams(cx, &names) else {
+        return Ok(Vec::new());
     };
-    for (name, file) in names.iter().zip(&files) {
-        let key = format!("selftest-{}-{name}", path.label());
-        let stage = Stage::open(&cx, &[key], std::slice::from_ref(file), false)?;
-        cx.settle().await?;
-        let feeder = feed(&stage, 0, file, Some(frames))?;
-        check_barcodes(&stage, &stage.streams[0], name, 3).await?;
-        let playing = stage.streams[0].stats();
-        ensure!(
-            playing.path == Some(path),
-            "{name}: decoding on the {:?} path, expected {path:?}",
-            playing.path
-        );
-        let stats = stage.drained(&stage.streams[0], &feeder).await?;
-        let result = ensure_all_presented(&cx, name, &stats, frames, path, frames / 50 + 1);
+    let mut shots = Vec::new();
+    for ((name, file), codec) in names.iter().zip(&files).zip(codecs) {
+        let key = format!("selftest-{}-{name}", expect.label());
+        let stage = Stage::open(cx, &[key], std::slice::from_ref(file), false)?;
+        let played = async {
+            cx.settle().await?;
+            let feeder = feed(&stage, 0, file, Some(frames))?;
+            check_barcodes(&stage, &stage.streams[0], name, 3).await?;
+            let playing = stage.streams[0].stats();
+            ensure!(
+                playing.backend == Some(expect),
+                "{name}: decoding with {:?}, expected {expect:?} ({})",
+                playing.backend,
+                playing.fallback_reason.as_deref().unwrap_or("no failure recorded")
+            );
+            let stats = stage.drained(&stage.streams[0], &feeder).await?;
+            // A vendor decoder takes a few hundred milliseconds to open (a CUDA context, a VA
+            // display): the frames that arrive meanwhile are decoded in a burst when it is up,
+            // and of a burst only the newest picture reaches the screen.
+            let burst = match expect {
+                DecodeBackend::Nvdec | DecodeBackend::Vaapi => 40,
+                DecodeBackend::VulkanVideo | DecodeBackend::Software => 0,
+            };
+            ensure_all_presented(
+                cx,
+                name,
+                &stats,
+                frames,
+                expect.path(),
+                frames / 50 + 1 + burst,
+            )?;
+            // The last frame stays up: what the window shows now is frame `frames - 1`.
+            #[cfg(vk)]
+            return stage.capture(true).await;
+            #[cfg(not(vk))]
+            Ok(())
+        }
+        .await;
         stage.close()?;
-        result?;
+        shots.push((*codec, played?));
+    }
+    Ok(shots)
+}
+
+/// The largest difference between two captures of the same frame that two correct decoders may
+/// show, as the mean absolute difference per channel (0..255). Hardware and software decoders
+/// of these codecs are bit-exact, so the pictures are identical and so are the frames; the
+/// margin is for a driver that rounds a copy differently. Swapped chroma planes, a wrong
+/// matrix or a shifted plane are tens of levels.
+const SAME_PICTURE: f64 = 1.0;
+
+/// Checks that `shots` (a hardware decoder's) show what the software decoder shows for the same
+/// frames: the colours are right, not only the luma barcode.
+#[cfg(vk)]
+async fn same_as_software(
+    cx: &TestCx,
+    hub: &VideoHub,
+    backend: DecodeBackend,
+    shots: &[(Codec, Shot)],
+    frames: u64,
+) -> Result<()> {
+    let codecs: Vec<Codec> = shots.iter().map(|(codec, _)| *codec).collect();
+    let reference = {
+        let _software = ForcedOrder::new(hub, &[DecodeBackend::Software]);
+        play_codecs(cx, &codecs, DecodeBackend::Software, frames).await?
+    };
+    for ((codec, shot), (_, software)) in shots.iter().zip(&reference) {
+        ensure!(
+            (shot.width, shot.height) == (software.width, software.height)
+                && shot.pixels.len() == software.pixels.len(),
+            "{}: the two windows differ in size",
+            codec.label()
+        );
+        let difference: u64 = shot
+            .pixels
+            .iter()
+            .zip(&software.pixels)
+            .map(|(a, b)| a.abs_diff(*b) as u64)
+            .sum();
+        let mean = difference as f64 / shot.pixels.len().max(1) as f64;
+        // A window that shows no video would compare equal too: the picture must be there.
+        let varied = software
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .step_by(997)
+            .map(|pixel| pixel[1])
+            .collect::<std::collections::HashSet<u8>>()
+            .len();
+        cx.log(format_args!(
+            "{} with {}: the window's last frame differs from software decode's by {mean:.3} of 255 per channel",
+            codec.label(),
+            backend.label()
+        ));
+        ensure!(varied > 16, "{}: the captured window shows no picture", codec.label());
+        ensure!(
+            mean <= SAME_PICTURE,
+            "{} with {}: the picture differs from software decode's ({mean:.2} of 255 per channel)",
+            codec.label(),
+            backend.label()
+        );
     }
     Ok(())
 }
 
 async fn hardware(cx: TestCx) -> Result<()> {
     let hub = cx.app().update(VideoHub::global);
-    let support = hub.capabilities();
-    cx.log(format_args!("decode support: {support:?}"));
-    if support
-        .iter()
-        .any(|codec| codec.path != Some(DecodePath::Hardware))
-    {
-        cx.log("SKIPPED: this GPU does not decode all three codecs (see video-sw)");
+    cx.log(format_args!(
+        "decoder order: {}",
+        hub.decoder_order()
+            .iter()
+            .map(|backend| backend.label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    let started = Instant::now();
+    let support = probe(&cx, &hub).await?;
+    cx.log(format_args!(
+        "probed in {:.0} ms: {}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        crate::probe::describe(&support)
+    ));
+    log_skipped(&cx, &hub);
+    ensure!(
+        support.iter().all(|codec| codec.path.is_some()),
+        "a codec has no decoder at all: {support:?}"
+    );
+    let frames = 180;
+    let mut played = false;
+    for backend in DecodeBackend::ALL {
+        let codecs: Vec<Codec> = support
+            .iter()
+            .filter(|codec| codec.backend == Some(backend))
+            .map(|codec| codec.codec)
+            .collect();
+        if codecs.is_empty() || backend == DecodeBackend::Software {
+            continue;
+        }
+        played = true;
+        let shots = play_codecs(&cx, &codecs, backend, frames).await?;
+        #[cfg(vk)]
+        same_as_software(&cx, &hub, backend, &shots, frames).await?;
+        #[cfg(not(vk))]
+        let _ = shots;
+    }
+    if !played {
+        cx.log("SKIPPED: no hardware decoder works on this machine (see video-sw)");
         return Ok(());
     }
-    play_each_codec(cx.clone(), DecodePath::Hardware, 180).await?;
-    description_stream(cx).await
+    if support[Codec::Hevc.index()].path == Some(DecodePath::Hardware) {
+        description_stream(cx).await?;
+    }
+    Ok(())
+}
+
+/// One vendor decoder alone (NVDEC or VA-API), forced: what `video-hw` does for the machine's
+/// first choice. Skipped where the decoder does not exist for this GPU, unless
+/// `DECIBELL_VIDEO_DECODER` names it: then its absence is the failure.
+async fn vendor_decoder(cx: TestCx, backend: DecodeBackend) -> Result<()> {
+    let hub = cx.app().update(VideoHub::global);
+    let demanded = std::env::var("DECIBELL_VIDEO_DECODER")
+        .is_ok_and(|names| names.split(',').any(|name| name.trim() == backend.label()));
+    hub.forget_decoder_failures();
+    let forced = ForcedOrder::new(&hub, &[backend]);
+    let support = probe(&cx, &hub).await?;
+    let codecs: Vec<Codec> = support
+        .iter()
+        .filter(|codec| codec.backend == Some(backend))
+        .map(|codec| codec.codec)
+        .collect();
+    cx.log(format_args!(
+        "{} decodes: {}",
+        backend.label(),
+        if codecs.is_empty() {
+            "nothing".to_owned()
+        } else {
+            codecs
+                .iter()
+                .map(|codec| codec.label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ));
+    log_skipped(&cx, &hub);
+    let result = async {
+        if codecs.is_empty() {
+            ensure!(
+                !demanded,
+                "DECIBELL_VIDEO_DECODER asks for {} and it decodes nothing here",
+                backend.label()
+            );
+            cx.log(format_args!(
+                "SKIPPED: {} is not usable on this GPU",
+                backend.label()
+            ));
+            return Ok(());
+        }
+        let frames = 180;
+        let shots = play_codecs(&cx, &codecs, backend, frames).await?;
+        drop(forced);
+        #[cfg(vk)]
+        same_as_software(&cx, &hub, backend, &shots, frames).await?;
+        #[cfg(not(vk))]
+        let _ = shots;
+        Ok(())
+    }
+    .await;
+    hub.forget_decoder_failures();
+    result
 }
 
 /// HEVC as the streamer sends it (length-prefixed NAL units, parameter sets in the keyframes'
@@ -387,9 +683,9 @@ async fn description_stream(cx: TestCx) -> Result<()> {
 async fn software(cx: TestCx) -> Result<()> {
     let hub = cx.app().update(VideoHub::global);
     hub.set_force_software(true);
-    let result = play_each_codec(cx, DecodePath::Software, 120).await;
+    let result = play_codecs(&cx, &Codec::ALL, DecodeBackend::Software, 120).await;
     hub.set_force_software(false);
-    result
+    result.map(|_| ())
 }
 
 async fn idle(cx: TestCx) -> Result<()> {
@@ -556,111 +852,451 @@ async fn two(cx: TestCx) -> Result<()> {
     result
 }
 
+/// The hardware decoders that decode `codec` on this machine, each found by forcing it and
+/// probing, in the order's order.
+async fn usable_hardware(cx: &TestCx, hub: &VideoHub, codec: Codec) -> Result<Vec<DecodeBackend>> {
+    let mut usable = Vec::new();
+    for backend in DecodeBackend::ALL {
+        if backend == DecodeBackend::Software {
+            continue;
+        }
+        let _forced = ForcedOrder::new(hub, &[backend]);
+        if probe(cx, hub).await?[codec.index()].backend == Some(backend) {
+            usable.push(backend);
+        }
+    }
+    Ok(usable)
+}
+
+fn labels(backends: &[DecodeBackend]) -> String {
+    backends
+        .iter()
+        .map(|backend| backend.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 async fn recover(cx: TestCx) -> Result<()> {
     let Some(files) = streams(&cx, &["1080p60_h264.dbv"]) else {
         return Ok(());
     };
-    let stage = Stage::open(&cx, &["selftest-recover".into()], &files, false)?;
-    let stream = stage.streams[0].clone();
-    if stage.hub.capabilities()[0].path != Some(DecodePath::Hardware) {
-        cx.log("SKIPPED: no hardware decode on this GPU, nothing to fall back from");
-        return stage.close();
+    let hub = cx.app().update(VideoHub::global);
+    hub.forget_decoder_failures();
+    let hardware = usable_hardware(&cx, &hub, Codec::H264).await?;
+    if hardware.is_empty() {
+        cx.log("SKIPPED: no hardware decoder on this GPU, nothing to recover");
+        return Ok(());
     }
+    cx.log(format_args!(
+        "hardware decoders for H.264 here: {}",
+        labels(&hardware)
+    ));
+
+    // 1. A decoder error: the stream moves to the next decoder of the order and keeps playing.
     // The file loops; it has a keyframe every 4 s, which is how long a recovery can take here
     // (a real streamer answers the keyframe request at once).
-    let _feeder = feed(&stage, 0, &files[0], None)?;
-    let playing = |path: DecodePath, after: u64| {
-        let stats = stream.stats();
-        stats.path == Some(path) && stats.presented > after + 30
+    {
+        let stage = Stage::open(&cx, &["selftest-recover".into()], &files, false)?;
+        let stream = stage.streams[0].clone();
+        let _feeder = feed(&stage, 0, &files[0], None)?;
+        let moved = async {
+            stage
+                .wait("hardware playback", Duration::from_secs(10), || {
+                    let stats = stream.stats();
+                    stats.path == Some(DecodePath::Hardware) && stats.presented > 30
+                })
+                .await?;
+            let before = stream.stats();
+            stream.inject(Fault::DecodeError);
+            stage
+                .wait(
+                    "playback on the next decoder after a decoder error",
+                    Duration::from_secs(12),
+                    || {
+                        let stats = stream.stats();
+                        stats.backend.is_some()
+                            && stats.backend != before.backend
+                            && stats.presented > before.presented + 30
+                    },
+                )
+                .await?;
+            let after = stream.stats();
+            cx.log(format_args!(
+                "injected decoder error on {}: playing with {} after {} dropped frames ({} keyframe requests); recorded: {}",
+                before.backend.map_or("-", DecodeBackend::label),
+                after.backend.map_or("-", DecodeBackend::label),
+                after.dropped - before.dropped,
+                after.keyframe_requests - before.keyframe_requests,
+                after.fallback_reason.as_deref().unwrap_or("nothing"),
+            ));
+            ensure!(
+                after.fallbacks == before.fallbacks + 1,
+                "expected one fallback"
+            );
+            ensure!(
+                after.keyframe_requests > before.keyframe_requests,
+                "no keyframe was requested"
+            );
+            ensure!(
+                after
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("injected")),
+                "the failure's reason was not recorded"
+            );
+            Ok(())
+        }
+        .await;
+        stage.close()?;
+        moved?;
+    }
+
+    // 2. The GPU device is lost: the renderer makes a new one and the stream moves to it, on
+    // each hardware decoder in turn.
+    for backend in hardware {
+        let _forced = ForcedOrder::new(&hub, &[backend]);
+        let key = format!("selftest-lost-{}", backend.label());
+        let stage = Stage::open(&cx, &[key], &files, false)?;
+        let stream = stage.streams[0].clone();
+        let _feeder = feed(&stage, 0, &files[0], None)?;
+        let survived = async {
+            let playing = |after: u64| {
+                let stats = stream.stats();
+                stats.backend == Some(backend) && stats.presented > after + 30
+            };
+            stage
+                .wait("playback", Duration::from_secs(10), || playing(0))
+                .await?;
+            let before = stream.stats();
+            let frames_before = stage.frames()?;
+            stream.inject(Fault::DeviceLost);
+            stage
+                .wait(
+                    "the device loss to be noticed",
+                    Duration::from_secs(5),
+                    || stream.stats().device_losses > before.device_losses,
+                )
+                .await?;
+            stage
+                .wait(
+                    "playback on the new device",
+                    Duration::from_secs(15),
+                    || playing(before.presented + 30),
+                )
+                .await?;
+            let after = stream.stats();
+            let frames = stage.frames()?.since(frames_before);
+            cx.log(format_args!(
+                "{}: injected device loss: {} loss noticed, decoder reopened {} times, playback resumed ({} more pictures presented, window presented {} frames)",
+                backend.label(),
+                after.device_losses - before.device_losses,
+                after.decoder_opens - before.decoder_opens,
+                after.presented - before.presented,
+                frames.presented
+            ));
+            ensure!(
+                after.device_losses == before.device_losses + 1,
+                "expected one device loss"
+            );
+            ensure!(
+                after.fallbacks == before.fallbacks,
+                "a device loss must not cost the stream its decoder"
+            );
+            ensure!(
+                frames.presented > 60,
+                "the window stopped presenting after the device loss"
+            );
+            // Every window moves to the new device at its next frame: make the app's main
+            // window do it now, while this one is still open.
+            let main_before = cx.frames()?;
+            cx.update(|window, _| window.refresh())?;
+            cx.settle().await?;
+            let main_frames = cx.frames()?.since(main_before);
+            ensure!(
+                main_frames.drawn >= 1,
+                "the main window did not draw after the device loss"
+            );
+            Ok(())
+        }
+        .await;
+        stage.close()?;
+        survived?;
+    }
+    ensure!(
+        hub.skipped_decoders().is_empty(),
+        "a recovery gave a decoder up for the session: {:?}",
+        hub.skipped_decoders()
+    );
+    Ok(())
+}
+
+async fn order(cx: TestCx) -> Result<()> {
+    let Some(files) = streams(&cx, &["1080p60_h264.dbv"]) else {
+        return Ok(());
     };
-    stage
-        .wait("hardware playback", Duration::from_secs(10), || {
-            playing(DecodePath::Hardware, 0)
-        })
-        .await?;
+    let hub = cx.app().update(VideoHub::global);
+    hub.forget_decoder_failures();
+    cx.log(format_args!(
+        "this machine's order: {}",
+        labels(&hub.decoder_order())
+    ));
+    // Every decoder that works here, in the order's order: on NVIDIA with the NVDEC-backed VA
+    // driver installed that is all four, although the machine's own order has no VA-API.
+    let mut walk = usable_hardware(&cx, &hub, Codec::H264).await?;
+    walk.push(DecodeBackend::Software);
+    hub.forget_decoder_failures();
+    cx.log(format_args!("walking: {}", labels(&walk)));
+    let _forced = ForcedOrder::new(&hub, &walk);
+    let stage = Stage::open(&cx, &["selftest-order".into()], &files, false)?;
+    let stream = stage.streams[0].clone();
+    let _feeder = feed(&stage, 0, &files[0], None)?;
+    let walked = async {
+        let mut presented = 0;
+        for (step, backend) in walk.iter().enumerate() {
+            stage
+                .wait(
+                    &format!("playback with {}", backend.label()),
+                    Duration::from_secs(15),
+                    || {
+                        let stats = stream.stats();
+                        stats.backend == Some(*backend) && stats.presented > presented + 40
+                    },
+                )
+                .await?;
+            let stats = stream.stats();
+            presented = stats.presented;
+            ensure!(
+                stats.fallbacks == step as u64,
+                "{} fallbacks before failing {}",
+                stats.fallbacks,
+                backend.label()
+            );
+            if *backend == DecodeBackend::Software {
+                break;
+            }
+            stream.inject(Fault::DecodeError);
+            stage
+                .wait("the failure to be noticed", Duration::from_secs(5), || {
+                    stream.stats().fallbacks == step as u64 + 1
+                })
+                .await?;
+            let reason = stream.stats().fallback_reason;
+            cx.log(format_args!(
+                "{} failed -> recorded {:?}",
+                backend.label(),
+                reason.as_deref().unwrap_or("nothing")
+            ));
+            ensure!(
+                reason.as_deref().is_some_and(|reason| reason
+                    .starts_with(&format!("{}: ", backend.label()))
+                    && reason.contains("injected")),
+                "the reason for giving {} up was not recorded",
+                backend.label()
+            );
+        }
+        let stats = stream.stats();
+        cx.log(format_args!(
+            "ended on {} after {} fallbacks, {} decoder opens",
+            stats.backend.map_or("-", DecodeBackend::label),
+            stats.fallbacks,
+            stats.decoder_opens
+        ));
+        ensure!(
+            stats.backend == Some(DecodeBackend::Software),
+            "the walk did not end on software"
+        );
+        ensure!(
+            stats.decoder_opens == walk.len() as u64,
+            "{} decoders opened for {} steps: one was tried twice",
+            stats.decoder_opens,
+            walk.len()
+        );
+        // These decoders failed after half a second of pictures: that costs the stream the
+        // decoder, not everybody (a failure in the first pictures would; `select.rs`).
+        ensure!(
+            hub.skipped_decoders().is_empty(),
+            "a late failure gave a decoder up for the session"
+        );
+        Ok(())
+    }
+    .await;
+    stage.close()?;
+    walked
+}
 
-    // 1. A decoder error: the stream moves to software and keeps playing.
-    let before = stream.stats();
-    stream.inject(Fault::DecodeError);
-    stage
-        .wait(
-            "software playback after a decoder error",
-            Duration::from_secs(12),
-            || playing(DecodePath::Software, before.presented),
-        )
-        .await?;
-    let after = stream.stats();
-    cx.log(format_args!(
-        "injected decoder error: fell back to software ({} fallback, {} keyframe requests), playing again after {} dropped frames",
-        after.fallbacks - before.fallbacks,
-        after.keyframe_requests - before.keyframe_requests,
-        after.dropped - before.dropped
-    ));
-    ensure!(
-        after.fallbacks == before.fallbacks + 1,
-        "expected one fallback"
-    );
-    ensure!(
-        after.keyframe_requests > before.keyframe_requests,
-        "no keyframe was requested"
-    );
+/// The UI thread's allocations per presented video frame that `video-fastpath` allows when it
+/// can count them (run under `tools/alloc-count.c`). Measured: 139 with the kept frame, 280
+/// when every present writes the scene again; what is left is wgpu's own per-frame work
+/// (acquire, encoder, pass, submit, present) and the driver's.
+const ALLOCATIONS_PER_PRESENT: u64 = 170;
 
-    // 2. The GPU device is lost: the renderer makes a new one, the stream moves to it.
-    stream.set_software_only(false);
-    let before = stream.stats();
-    let frames_before = stage.frames()?;
-    stream.inject(Fault::DeviceLost);
-    stage
-        .wait(
-            "the device loss to be noticed",
-            Duration::from_secs(5),
-            || stream.stats().device_losses > before.device_losses,
-        )
-        .await?;
-    stage
-        .wait(
-            "hardware playback on the new device",
-            Duration::from_secs(15),
-            || {
-                playing(
-                    DecodePath::Hardware,
-                    stream.stats().presented.min(before.presented),
-                ) && stream.stats().presented > before.presented + 60
-            },
-        )
-        .await?;
-    let after = stream.stats();
-    let frames = stage.frames()?.since(frames_before);
-    cx.log(format_args!(
-        "injected device loss: {} loss noticed, decoder reopened {} times, hardware playback resumed ({} more pictures presented, window presented {} frames)",
-        after.device_losses - before.device_losses,
-        after.decoder_opens - before.decoder_opens,
-        after.presented - before.presented,
-        frames.presented
-    ));
-    ensure!(
-        after.device_losses == before.device_losses + 1,
-        "expected one device loss"
-    );
-    ensure!(
-        frames.presented > 60,
-        "the window stopped presenting after the device loss"
-    );
-    // Every window moves to the new device at its next frame: make the app's main window do it
-    // now, while this one is still open.
-    let main_before = cx.frames()?;
-    cx.update(|window, _| window.refresh())?;
-    cx.settle().await?;
-    let main_frames = cx.frames()?.since(main_before);
-    cx.log(format_args!(
-        "the main window drew {} frames on the new device",
-        main_frames.drawn
-    ));
-    ensure!(
-        main_frames.drawn >= 1,
-        "the main window did not draw after the device loss"
-    );
-    stage.close()
+/// The calling thread's allocation count, when the process runs under `alloc-count.so`.
+fn allocation_count() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe extern "C" {
+            fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char)
+            -> *mut std::ffi::c_void;
+        }
+        // Safety: a lookup in the process's own symbols; the function, when present, takes no
+        // arguments and returns the thread's counter.
+        unsafe {
+            let symbol = dlsym(std::ptr::null_mut(), c"decibell_alloc_count".as_ptr());
+            if symbol.is_null() {
+                return None;
+            }
+            let count: unsafe extern "C" fn() -> std::ffi::c_ulong = std::mem::transmute(symbol);
+            Some(count() as u64)
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+#[cfg(not(vk))]
+async fn fast_path(cx: TestCx) -> Result<()> {
+    cx.log("SKIPPED: the renderer of this platform draws no video surfaces yet");
+    Ok(())
+}
+
+#[cfg(vk)]
+async fn fast_path(cx: TestCx) -> Result<()> {
+    let Some(files) = streams(&cx, &["1080p60_hevc.dbv"]) else {
+        return Ok(());
+    };
+    if std::env::var("DECIBELL_VIDEO_FASTPATH").is_ok_and(|value| value == "0") {
+        cx.log("SKIPPED: DECIBELL_VIDEO_FASTPATH=0 turns the kept frame off");
+        return Ok(());
+    }
+    // One stream in two places (tile and mini-player), with ordinary elements over it.
+    let stage = Stage::open(&cx, &["selftest-fastpath".into()], &files, true)?;
+    let stream = stage.streams[0].clone();
+    let checked = async {
+        cx.settle().await?;
+        let feeder = feed(&stage, 0, &files[0], Some(90))?;
+        stage.drained(&stream, &feeder).await?;
+
+        // The same picture drawn both ways: the scene written to the GPU for the frame, and
+        // the frame the renderer kept encoded again.
+        let compare = |what: &str, built: &Shot, reused: &Shot| -> Result<()> {
+            ensure!(!built.reused, "{what}: the first capture was not built from the scene");
+            ensure!(
+                reused.reused,
+                "{what}: the second capture did not reuse the kept frame"
+            );
+            ensure!(
+                (built.width, built.height) == (reused.width, reused.height),
+                "{what}: the two captures differ in size"
+            );
+            let different = built
+                .pixels
+                .iter()
+                .zip(&reused.pixels)
+                .filter(|(a, b)| a != b)
+                .count();
+            let varied = built
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .step_by(997)
+                .map(|pixel| pixel[1])
+                .collect::<std::collections::HashSet<u8>>()
+                .len();
+            cx.log(format_args!(
+                "{what}: {}x{} built from the scene and from the kept frame: {different} of {} bytes differ",
+                built.width,
+                built.height,
+                built.pixels.len()
+            ));
+            ensure!(varied > 16, "{what}: the captured window shows no picture");
+            ensure!(different == 0, "{what}: the two paths drew different frames");
+            Ok(())
+        };
+        let built = stage.capture(true).await?;
+        let reused = stage.capture(false).await?;
+        compare("window", &built, &reused)?;
+
+        // Something else changes mid-stream (a resize: new layout, new scene, new size): the
+        // next frame is built, and the one after reuses it again.
+        let frames_before = gpui_wgpu::frame_stats();
+        stage.cx.app().update(|cx| {
+            stage
+                .window
+                .update(cx, |_, window, _| window.resize(size(px(1120.), px(700.))))
+        })?;
+        stage.cx.sleep(Duration::from_millis(400)).await;
+        ensure!(
+            gpui_wgpu::frame_stats().built > frames_before.built,
+            "a resized window was not drawn from its scene"
+        );
+        let built = stage.capture(true).await?;
+        let reused = stage.capture(false).await?;
+        compare("after a resize", &built, &reused)?;
+        ensure!(
+            (built.width, built.height) != (0, 0),
+            "empty capture after the resize"
+        );
+
+        // Then a stream plays: every picture is a present of the kept frame.
+        let frames: u64 = 240;
+        let before = gpui_wgpu::frame_stats();
+        let presented_before = stream.stats().presented;
+        let allocations_before = allocation_count();
+        let feeder = feed(&stage, 0, &files[0], Some(frames))?;
+        // One timer for the whole run: polling would be the test's own work on this thread.
+        stage
+            .cx
+            .sleep(Duration::from_millis(frames * 1000 / 60 + 400))
+            .await;
+        let allocations = allocation_count()
+            .zip(allocations_before)
+            .map(|(after, before)| after - before);
+        let after = gpui_wgpu::frame_stats();
+        ensure!(feeder.finished(), "the feeder did not finish in time");
+        let presented = stream.stats().presented - presented_before;
+        let (built, reused) = (after.built - before.built, after.reused - before.reused);
+        let mean_us = |ns: u64, count: u64| ns as f64 / 1000.0 / count.max(1) as f64;
+        cx.log(format_args!(
+            "{presented} pictures presented in {} frames: {reused} reused the kept frame ({:.0} us each on the UI thread), {built} were built ({:.0} us each over the whole run)",
+            built + reused,
+            mean_us(after.reused_ns - before.reused_ns, reused),
+            mean_us(after.built_ns, after.built),
+        ));
+        ensure!(
+            presented >= frames - frames / 20,
+            "{presented} of {frames} pictures presented"
+        );
+        // Another window taking the focus is a frame of its own: a few may be built.
+        ensure!(
+            built <= 4,
+            "{built} frames wrote the scene to the GPU while only pictures changed"
+        );
+        ensure!(
+            reused >= presented.saturating_sub(4),
+            "{reused} of {presented} presents reused the kept frame"
+        );
+        match allocations {
+            Some(allocations) => {
+                let per_present = allocations / (built + reused).max(1);
+                cx.log(format_args!(
+                    "UI thread: {allocations} allocations for {} presents: {per_present} each (budget {ALLOCATIONS_PER_PRESENT})",
+                    built + reused
+                ));
+                ensure!(
+                    per_present <= ALLOCATIONS_PER_PRESENT,
+                    "{per_present} allocations per present, over the budget of {ALLOCATIONS_PER_PRESENT}"
+                );
+            }
+            None => cx.log(format_args!(
+                "allocation budget ({ALLOCATIONS_PER_PRESENT} per present) not checked: run under crates/decibell-video/tools/alloc-count.c (see the file)"
+            )),
+        }
+        Ok(())
+    }
+    .await;
+    stage.close()?;
+    checked
 }
 
 async fn switch(cx: TestCx) -> Result<()> {

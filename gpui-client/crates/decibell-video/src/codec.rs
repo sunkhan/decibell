@@ -68,6 +68,68 @@ impl DecodePath {
     }
 }
 
+/// The decoder a stream is (or would be) decoded with. The order of the variants is the order
+/// they are tried in: `gpui-client/docs/video-design.md` §0.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DecodeBackend {
+    /// Vulkan Video on the renderer's own device: every vendor's first choice.
+    VulkanVideo,
+    /// NVIDIA's NVDEC through CUDA, copied on the GPU into the renderer's textures.
+    Nvdec,
+    /// VA-API (AMD, Intel), its surfaces imported as DMA-BUFs into the renderer's device.
+    Vaapi,
+    /// FFmpeg's software decoders / dav1d, one upload per picture.
+    Software,
+}
+
+impl DecodeBackend {
+    pub const ALL: [DecodeBackend; 4] = [
+        DecodeBackend::VulkanVideo,
+        DecodeBackend::Nvdec,
+        DecodeBackend::Vaapi,
+        DecodeBackend::Software,
+    ];
+
+    pub fn path(self) -> DecodePath {
+        match self {
+            DecodeBackend::Software => DecodePath::Software,
+            _ => DecodePath::Hardware,
+        }
+    }
+
+    /// The name `DECIBELL_VIDEO_DECODER` takes and the stats print.
+    pub fn label(self) -> &'static str {
+        match self {
+            DecodeBackend::VulkanVideo => "vulkan",
+            DecodeBackend::Nvdec => "nvdec",
+            DecodeBackend::Vaapi => "vaapi",
+            DecodeBackend::Software => "software",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<DecodeBackend> {
+        DecodeBackend::ALL
+            .into_iter()
+            .find(|backend| backend.label() == label.trim())
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn from_index(index: usize) -> Option<DecodeBackend> {
+        DecodeBackend::ALL.get(index).copied()
+    }
+}
+
+/// A decoder that was tried for a codec and is not used: why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedBackend {
+    pub codec: Codec,
+    pub backend: DecodeBackend,
+    pub reason: std::sync::Arc<str>,
+}
+
 /// What this machine does with one codec: the answer to "which codecs can this client decode"
 /// (the renderer's `probeDecoders`), from the driver and the linked FFmpeg, not from a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +137,33 @@ pub struct CodecSupport {
     pub codec: Codec,
     /// `None`: no decoder at all; the client must not advertise the codec.
     pub path: Option<DecodePath>,
+    /// The decoder a stream of this codec gets (the first of the order that works).
+    pub backend: Option<DecodeBackend>,
+    /// The answer comes from decoding a test frame on that decoder ([`crate::VideoHub::probe_capabilities`]),
+    /// not only from what the driver and the FFmpeg build list.
+    pub probed: bool,
     /// The largest picture the hardware decoder takes (the driver's answer). `None` for
     /// software and where the driver does not say.
     pub max_size: Option<(u32, u32)>,
+}
+
+impl CodecSupport {
+    pub(crate) fn none(codec: Codec) -> CodecSupport {
+        CodecSupport {
+            codec,
+            path: None,
+            backend: None,
+            probed: false,
+            max_size: None,
+        }
+    }
+
+    /// `self` when `keep`, else "cannot".
+    pub(crate) fn filter(self, keep: bool) -> CodecSupport {
+        if keep {
+            self
+        } else {
+            CodecSupport::none(self.codec)
+        }
+    }
 }

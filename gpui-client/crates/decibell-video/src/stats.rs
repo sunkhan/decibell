@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::codec::{Codec, DecodePath};
+use crate::codec::{Codec, DecodeBackend, DecodePath};
 
 const RELAXED: Ordering = Ordering::Relaxed;
 
@@ -143,8 +143,10 @@ pub(crate) struct Counters {
     height: AtomicU32,
     /// `Codec::index() + 1`; 0: none yet.
     codec: AtomicU32,
-    /// 1 hardware, 2 software; 0: no decoder.
-    path: AtomicU32,
+    /// `DecodeBackend::index() + 1`; 0: no decoder.
+    backend: AtomicU32,
+    /// The last decoder given up for this stream and why (`"nvdec: ..."`).
+    fallback_reason: parking_lot::Mutex<Option<std::sync::Arc<str>>>,
     /// Packet handed to the decoder -> picture published.
     pub decode: Histogram,
     /// Frame arrived at the hub -> picture published.
@@ -176,7 +178,8 @@ impl Counters {
             width: AtomicU32::new(0),
             height: AtomicU32::new(0),
             codec: AtomicU32::new(0),
-            path: AtomicU32::new(0),
+            backend: AtomicU32::new(0),
+            fallback_reason: parking_lot::Mutex::new(None),
             decode: Histogram::new(),
             latency: Histogram::new(),
             present_interval: Histogram::new(),
@@ -194,20 +197,20 @@ impl Counters {
         instant.saturating_duration_since(self.epoch).as_nanos() as u64 + 1
     }
 
-    pub fn set_decoder(&self, codec: Codec, path: Option<DecodePath>) {
+    pub fn set_decoder(&self, codec: Codec, backend: Option<DecodeBackend>) {
         self.codec.store(codec.index() as u32 + 1, RELAXED);
-        self.path.store(
-            match path {
-                Some(DecodePath::Hardware) => 1,
-                Some(DecodePath::Software) => 2,
-                None => 0,
-            },
+        self.backend.store(
+            backend.map_or(0, |backend| backend.index() as u32 + 1),
             RELAXED,
         );
     }
 
     pub fn clear_decoder(&self) {
-        self.path.store(0, RELAXED);
+        self.backend.store(0, RELAXED);
+    }
+
+    pub fn set_fallback_reason(&self, backend: DecodeBackend, reason: &str) {
+        *self.fallback_reason.lock() = Some(format!("{}: {reason}", backend.label()).into());
     }
 
     pub fn set_size(&self, width: u32, height: u32) {
@@ -276,6 +279,9 @@ impl Counters {
     pub fn snapshot(&self, queue: usize) -> StreamStats {
         let published = self.published.load(RELAXED);
         let presented = self.presented.load(RELAXED);
+        let backend = (self.backend.load(RELAXED) as usize)
+            .checked_sub(1)
+            .and_then(DecodeBackend::from_index);
         let [decode_p50, decode_p99] = self.decode.percentiles([50.0, 99.0]);
         let [latency_p50, latency_p99] = self.latency.percentiles([50.0, 99.0]);
         let [interval_p50, interval_p99] = self.present_interval.percentiles([50.0, 99.0]);
@@ -283,11 +289,9 @@ impl Counters {
             codec: (self.codec.load(RELAXED) as usize)
                 .checked_sub(1)
                 .and_then(Codec::from_index),
-            path: match self.path.load(RELAXED) {
-                1 => Some(DecodePath::Hardware),
-                2 => Some(DecodePath::Software),
-                _ => None,
-            },
+            path: backend.map(DecodeBackend::path),
+            backend,
+            fallback_reason: self.fallback_reason.lock().clone(),
             width: self.width.load(RELAXED),
             height: self.height.load(RELAXED),
             received: self.received.load(RELAXED),
@@ -369,6 +373,11 @@ pub struct StreamStats {
     pub codec: Option<Codec>,
     /// `None`: no decoder is open (nothing arrived, nobody displays it, or it went idle).
     pub path: Option<DecodePath>,
+    /// Which decoder that is.
+    pub backend: Option<DecodeBackend>,
+    /// The last decoder this stream gave up, and why (`"vulkan: ..."`): what to show next to
+    /// "software decode", and what a bug report needs.
+    pub fallback_reason: Option<std::sync::Arc<str>>,
     /// The picture's size (not the coded size).
     pub width: u32,
     pub height: u32,

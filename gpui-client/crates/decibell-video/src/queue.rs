@@ -6,10 +6,13 @@
 //! `StreamVideoPlayer.tsx`, "gate deltas on the next keyframe and ask for one now").
 //!
 //! A decoder that has just been opened is given room to catch up: opening one (FFmpeg's device
-//! context, the frames pool, five slots) can take tens of milliseconds, several frame intervals
-//! at 120 fps, and shedding then would cost every stream a second keyframe at its start. Until
-//! the decoder has published a picture and found the queue empty, the queue holds up to
-//! [`CATCH_UP`] frames.
+//! context, the frames pool, five slots) can take tens of milliseconds with Vulkan Video and a
+//! few hundred with the vendor decoders (NVDEC creates a CUDA context: 160 ms measured; the
+//! NVDEC-backed VA driver takes 370 ms to initialise), many frame intervals at 120 fps, and
+//! shedding then would cost every stream a second keyframe at its start. Until the decoder
+//! has published a picture and found the queue empty, the queue holds up to [`CATCH_UP`]
+//! frames (half a second at 120 fps; the decoder then works them off at its own speed, a
+//! millisecond or two each).
 //!
 //! One mutex, held for a few moves of a small struct; nothing is allocated or freed under it.
 
@@ -23,7 +26,7 @@ use crate::packet::Packet;
 /// Frames queued in the steady state.
 pub(crate) const CAPACITY: usize = 3;
 /// Frames queued while a new decoder catches up.
-pub(crate) const CATCH_UP: usize = 16;
+pub(crate) const CATCH_UP: usize = 64;
 
 /// One encoded frame waiting for the decoder.
 pub(crate) struct Item {

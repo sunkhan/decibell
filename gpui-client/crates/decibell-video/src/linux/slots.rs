@@ -265,6 +265,9 @@ pub(crate) struct Slot {
     pub frame: Arc<WgpuSurfaceFrame>,
     pub luma: vk::Image,
     pub chroma: vk::Image,
+    /// The images' memory and its size, luma then chroma: alive as long as `frame`'s planes
+    /// are. For exporting it to another API ([`SlotRing::new`] with `exportable`).
+    pub memory: [(vk::DeviceMemory, u64); 2],
 }
 
 /// A stream's slots for one picture size.
@@ -275,21 +278,32 @@ pub(crate) struct SlotRing {
 
 impl SlotRing {
     /// Creates the slots, every image in `SHADER_READ_ONLY_OPTIMAL`, wrapped for wgpu.
-    pub fn new(work: &Work, width: u32, height: u32, color: SurfaceColor) -> DecodeResult<Self> {
+    /// `exportable`: each image gets a dedicated allocation that can be exported as an opaque
+    /// file descriptor (`VK_KHR_external_memory_fd`), for the NVDEC path's CUDA import.
+    pub fn new(
+        work: &Work,
+        width: u32,
+        height: u32,
+        color: SurfaceColor,
+        exportable: bool,
+    ) -> DecodeResult<Self> {
         let device = &work.device;
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-        let mut images: Vec<[(vk::Image, vk::DeviceMemory); 2]> = Vec::with_capacity(SLOT_COUNT);
+        let mut images: Vec<[(vk::Image, vk::DeviceMemory, u64); 2]> =
+            Vec::with_capacity(SLOT_COUNT);
         // Safety: raw image creation and one layout-change submission, on a live device; on
         // failure every image made so far is destroyed.
         unsafe {
             let created = (|| -> DecodeResult<()> {
                 for _ in 0..SLOT_COUNT {
-                    let luma = create_plane_image(device, vk::Format::R8_UNORM, width, height)?;
+                    let luma =
+                        create_plane_image(device, vk::Format::R8_UNORM, width, height, exportable)?;
                     let chroma = match create_plane_image(
                         device,
                         vk::Format::R8G8_UNORM,
                         chroma_width,
                         chroma_height,
+                        exportable,
                     ) {
                         Ok(chroma) => chroma,
                         Err(error) => {
@@ -304,7 +318,7 @@ impl SlotRing {
                 let barriers: Vec<_> = images
                     .iter()
                     .flatten()
-                    .map(|(image, _)| {
+                    .map(|(image, _, _)| {
                         barrier(
                             *image,
                             vk::ImageLayout::UNDEFINED,
@@ -318,7 +332,7 @@ impl SlotRing {
                 work.run()
             })();
             if let Err(error) = created {
-                for (image, memory) in images.into_iter().flatten() {
+                for (image, memory, _) in images.into_iter().flatten() {
                     device.raw.destroy_image(image, None);
                     device.raw.free_memory(memory, None);
                 }
@@ -327,7 +341,7 @@ impl SlotRing {
 
             let slots = images
                 .into_iter()
-                .map(|[(luma, luma_memory), (chroma, chroma_memory)]| {
+                .map(|[(luma, luma_memory, luma_size), (chroma, chroma_memory, chroma_size)]| {
                     let luma_texture = wrap_plane(
                         device,
                         luma,
@@ -356,6 +370,7 @@ impl SlotRing {
                         }),
                         luma,
                         chroma,
+                        memory: [(luma_memory, luma_size), (chroma_memory, chroma_size)],
                     }
                 })
                 .collect();
@@ -369,10 +384,20 @@ impl SlotRing {
     /// A slot nobody else holds: not the newest published picture, and not sampled by a frame
     /// the GPU has not finished. Its published frame carries `color`.
     pub fn free(&mut self, color: SurfaceColor) -> Option<&Slot> {
-        let slot = self
+        self.free_indexed(color).map(|(_, slot)| slot)
+    }
+
+    pub fn slots(&self) -> &[Slot] {
+        &self.slots
+    }
+
+    /// [`Self::free`], with the slot's index in [`Self::slots`].
+    pub fn free_indexed(&mut self, color: SurfaceColor) -> Option<(usize, &Slot)> {
+        let (index, slot) = self
             .slots
             .iter_mut()
-            .find(|slot| Arc::strong_count(&slot.frame) == 1)?;
+            .enumerate()
+            .find(|(_, slot)| Arc::strong_count(&slot.frame) == 1)?;
         if slot.frame.color != color {
             // The stream's colour description changed (it does not, in practice): the one
             // allocation a picture can cost.
@@ -383,17 +408,19 @@ impl SlotRing {
                 in_use: None,
             });
         }
-        Some(slot)
+        Some((index, slot))
     }
 }
 
-/// A sampled image the aux queue writes and the renderer's queue reads, and its memory.
+/// A sampled image the aux queue writes and the renderer's queue reads, its memory and the
+/// memory's size.
 unsafe fn create_plane_image(
     device: &GpuDevice,
     format: vk::Format,
     width: u32,
     height: u32,
-) -> DecodeResult<(vk::Image, vk::DeviceMemory)> {
+    exportable: bool,
+) -> DecodeResult<(vk::Image, vk::DeviceMemory, u64)> {
     let families = [device.render_family, device.aux_family];
     let (sharing_mode, families) = if device.shared {
         (vk::SharingMode::EXCLUSIVE, &families[..0])
@@ -422,6 +449,13 @@ unsafe fn create_plane_image(
         .sharing_mode(sharing_mode)
         .queue_family_indices(families)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    let mut external = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+    let info = if exportable {
+        info.push_next(&mut external)
+    } else {
+        info
+    };
     // Safety: plain creation on a live device; destroyed on the error paths.
     unsafe {
         let raw = &device.raw;
@@ -435,13 +469,21 @@ unsafe fn create_plane_image(
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
             )
             .and_then(|memory_type| {
-                raw.allocate_memory(
-                    &vk::MemoryAllocateInfo::default()
-                        .allocation_size(requirements.size)
-                        .memory_type_index(memory_type),
-                    None,
-                )
-                .map_err(|e| vk_error("vkAllocateMemory", e))
+                let mut export = vk::ExportMemoryAllocateInfo::default()
+                    .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+                // An image another API maps gets memory of its own: the importer is told the
+                // allocation is dedicated and maps the image at offset 0.
+                let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+                let allocation = vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirements.size)
+                    .memory_type_index(memory_type);
+                let allocation = if exportable {
+                    allocation.push_next(&mut export).push_next(&mut dedicated)
+                } else {
+                    allocation
+                };
+                raw.allocate_memory(&allocation, None)
+                    .map_err(|e| vk_error("vkAllocateMemory", e))
             });
         let memory = match memory {
             Ok(memory) => memory,
@@ -455,7 +497,7 @@ unsafe fn create_plane_image(
             raw.free_memory(memory, None);
             return Err(vk_error("vkBindImageMemory", error));
         }
-        Ok((image, memory))
+        Ok((image, memory, requirements.size))
     }
 }
 

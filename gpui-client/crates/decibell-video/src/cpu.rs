@@ -7,10 +7,10 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use crate::codec::{Codec, CodecSupport, DecodePath};
+use crate::codec::{Codec, CodecSupport, DecodeBackend};
+use crate::select::Order;
 use crate::decode::{
     Backend, DecodeResult, FrameCx, LumaRow, PictureDecoder, SoftwareDecoder, SwPicture, Uploader,
-    has_software_decoder,
 };
 use crate::hub::StreamTarget;
 
@@ -49,13 +49,23 @@ impl Drop for CountingUploader {
 }
 
 impl Backend for CpuBackend {
+    fn order(&self) -> Order {
+        Order::SOFTWARE
+    }
+
     fn open(
         &self,
+        backend: DecodeBackend,
         codec: Codec,
         description: Option<&[u8]>,
-        _allow_hardware: bool,
         _target: &StreamTarget,
     ) -> DecodeResult<Box<dyn PictureDecoder>> {
+        if backend != DecodeBackend::Software {
+            return Err(crate::decode::DecodeError::decoder(format!(
+                "{} decode is not built for this platform",
+                backend.label()
+            )));
+        }
         self.live.fetch_add(1, Ordering::Relaxed);
         let uploader = Box::new(CountingUploader {
             live: self.live.clone(),
@@ -73,12 +83,12 @@ impl Backend for CpuBackend {
 
     fn simulate_device_loss(&self) {}
 
-    fn support(&self, codec: Codec) -> CodecSupport {
-        CodecSupport {
-            codec,
-            path: has_software_decoder(codec).then_some(DecodePath::Software),
-            max_size: None,
-        }
+    fn support(&self, backend: DecodeBackend, codec: Codec) -> CodecSupport {
+        crate::decode::software_support(codec).filter(backend == DecodeBackend::Software)
+    }
+
+    fn device_key(&self) -> Option<String> {
+        Some("software".into())
     }
 
     fn live_textures(&self) -> i64 {

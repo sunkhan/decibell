@@ -55,7 +55,7 @@ impl VulkanUploader {
             .is_none_or(|slots| slots.size != (width, height))
         {
             self.slots = None;
-            self.slots = Some(SlotRing::new(&self.work, width, height, color)?);
+            self.slots = Some(SlotRing::new(&self.work, width, height, color, false)?);
         }
         if self
             .staging

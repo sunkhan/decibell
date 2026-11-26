@@ -12,6 +12,7 @@
 //!
 //! // 2. Once, with the app context: the hub, and how it reaches the core.
 //! let hub = VideoHub::global(cx);
+//! hub.probe_capabilities(|support| /* advertise the codecs whose `path` is `Some` */);
 //! hub.set_callbacks(HubCallbacks {
 //!     request_keyframe: Box::new(|key| /* core: request_stream_keyframe / force_keyframe */),
 //!     interest: Box::new(|key, on| /* core: set_stream_frame_sink(key, on) */),
@@ -49,8 +50,12 @@
 //!
 //! # Platforms
 //!
-//! Linux: Vulkan Video on GPUI's own device, software otherwise. Windows: compiles; decodes in
-//! software into a counting sink until `gpui_windows` draws surfaces (`video-design.md` §8).
+//! Linux: Vulkan Video on GPUI's own device first; where that is missing or fails, NVDEC on
+//! NVIDIA and VA-API on AMD and Intel; software only when no hardware decoder works. Which one
+//! a stream got is in its [`StreamStats`] (`backend`, and `fallback_reason` when it is not the
+//! first choice); [`VideoHub::probe_capabilities`] finds out by decoding what to advertise.
+//! `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` forces one. Windows: compiles; decodes
+//! in software into a counting sink until `gpui_windows` draws surfaces (`video-design.md` §8).
 
 // Without the Vulkan backend (Windows, `no-gpu`) the GPU-facing half of the shared code has
 // no user yet.
@@ -66,13 +71,15 @@ mod hub;
 #[cfg(vk)]
 mod linux;
 mod packet;
+mod probe;
 mod queue;
 mod screens;
+mod select;
 mod selftests;
 mod stats;
 mod view;
 
-pub use codec::{Codec, CodecSupport, DecodePath};
+pub use codec::{Codec, CodecSupport, DecodeBackend, DecodePath, SkippedBackend};
 #[cfg(feature = "core")]
 pub use core_glue::{POOL_BUFFER_BYTES, POOL_BUFFERS, POOLED_STREAMS, enable_frame_pool};
 pub use decode::{LumaRow, barcode};
@@ -112,8 +119,17 @@ impl VideoDevice {
     /// receives its first frame. Returns whether the hook was installed (false: not Linux,
     /// `DECIBELL_VIDEO=software`, or a second call).
     ///
-    /// Without it (or on a GPU without Vulkan Video) every stream decodes in software.
+    /// The hook also enables, where the GPU has them, the extensions the vendor decoders need
+    /// to hand their pictures to the device (external memory and semaphores for NVDEC,
+    /// DMA-BUF import with DRM format modifiers for VA-API). Without the hook every stream
+    /// decodes in software.
     pub fn install() -> bool {
+        // `DECIBELL_VIDEO_FASTPATH=0`: every present writes the whole scene to the GPU again,
+        // as before the renderer kept frames (GPUI patch 0007). For measuring the difference.
+        #[cfg(vk)]
+        if std::env::var("DECIBELL_VIDEO_FASTPATH").is_ok_and(|value| value == "0") {
+            gpui_wgpu::set_frame_reuse(false);
+        }
         #[cfg(vk)]
         return linux::install_device_hook();
         #[cfg(not(vk))]

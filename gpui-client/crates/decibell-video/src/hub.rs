@@ -25,10 +25,11 @@ use futures::task::AtomicWaker;
 use gpui::AnyWindowHandle;
 use parking_lot::{Mutex, RwLock};
 
-use crate::codec::{Codec, CodecSupport, DecodePath};
+use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath, SkippedBackend};
 use crate::decode::{Backend, CaptureCell, DecodeError, Failure, FrameCx, LumaRow, PictureDecoder};
 use crate::packet::Packet;
 use crate::queue::{FrameQueue, Item, Popped};
+use crate::select::{FIRST_FRAMES, Order, Selector};
 use crate::stats::{Counters, StreamStats};
 
 const RELAXED: Ordering = Ordering::Relaxed;
@@ -58,8 +59,19 @@ pub struct EncodedFrame {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamEvent {
     /// A decoder was opened (also after every recovery).
-    DecoderOpened { codec: Codec, path: DecodePath },
-    /// Hardware decode failed for this stream; it continues in software.
+    DecoderOpened {
+        codec: Codec,
+        path: DecodePath,
+        backend: DecodeBackend,
+    },
+    /// This decoder did not open or failed for the stream; the next one in the order is tried
+    /// at the next keyframe (`BackendFailed` for each one given up, in order).
+    BackendFailed {
+        backend: DecodeBackend,
+        reason: String,
+    },
+    /// Every hardware decoder failed for this stream; it continues in software. `reason` is
+    /// the last hardware decoder's failure.
     FellBackToSoftware { reason: String },
     /// A decoder failed and was reopened.
     DecoderError { reason: String },
@@ -114,7 +126,16 @@ pub(crate) struct StreamTarget {
 }
 
 impl StreamTarget {
-    fn clear(&self) {
+    /// A target nothing displays: where the capability probe decodes its test frames.
+    pub(crate) fn detached() -> StreamTarget {
+        StreamTarget {
+            #[cfg(vk)]
+            surface: gpui_wgpu::WgpuSurface::new(),
+            counters: Arc::new(Counters::new()),
+        }
+    }
+
+    pub(crate) fn clear(&self) {
         #[cfg(vk)]
         self.surface.clear();
     }
@@ -136,7 +157,9 @@ pub(crate) struct StreamShared {
     /// A picture was published since the presenter last looked.
     dirty: AtomicBool,
     last_keyframe_request_ms: AtomicU64,
-    software_only: AtomicBool,
+    /// The decoders that failed for this stream (bit `DecodeBackend::index`): not tried for it
+    /// again.
+    denied: AtomicU8,
     /// 0 none, 1 decode error, 2 device loss.
     fault: AtomicU8,
     capture: CaptureCell,
@@ -174,6 +197,8 @@ pub(crate) struct HubInner {
     /// Decoder threads alive.
     threads: AtomicI64,
     force_software: AtomicBool,
+    pub(crate) selector: Selector,
+    pub(crate) probe: crate::probe::ProbeState,
     started: Instant,
     unknown_frames: AtomicU64,
     presenter: Mutex<Option<gpui::Task<()>>>,
@@ -209,7 +234,6 @@ impl VideoHub {
     }
 
     pub(crate) fn with_backend(backend: Arc<dyn Backend>) -> VideoHub {
-        let force_software = std::env::var("DECIBELL_VIDEO").is_ok_and(|value| value == "software");
         VideoHub {
             inner: Arc::new(HubInner {
                 streams: RwLock::new(HashMap::new()),
@@ -225,7 +249,9 @@ impl VideoHub {
                 next_index: AtomicU64::new(0),
                 next_viewer: AtomicU64::new(1),
                 threads: AtomicI64::new(0),
-                force_software: AtomicBool::new(force_software),
+                force_software: AtomicBool::new(false),
+                selector: Selector::new(crate::select::forced_by_environment()),
+                probe: Default::default(),
                 started: Instant::now(),
                 unknown_frames: AtomicU64::new(0),
                 presenter: Mutex::new(None),
@@ -271,31 +297,30 @@ impl VideoHub {
                         }
                     }
                 }
-                let present = |cx: &mut gpui::AsyncApp| {
-                    cx.update(|cx| {
-                        for window in &windows {
-                            // A closed window is simply skipped.
-                            let _ = window.update(cx, |_, window, _| window.request_present());
-                        }
-                    });
-                };
-                if !released {
-                    present(cx);
-                } else {
+                present_windows(cx, &windows);
+                if released {
                     // A stream was torn down. Its last pictures are still referenced by the
                     // renderer: by the frames that sampled them, until it notices the GPU has
                     // finished those (it only looks when it draws), and by the bind groups it
                     // caches per picture, until its next frame. With no stream there may be no
                     // next frame for a long time, so: let the GPU finish, look, present once
                     // more (the bind groups go), look again. Two short one-shot timers per
-                    // closed stream, and its textures are freed.
-                    let pause = Duration::from_millis(120);
-                    present(cx);
-                    cx.background_executor().timer(pause).await;
-                    inner.backend.collect();
-                    present(cx);
-                    cx.background_executor().timer(pause).await;
-                    inner.backend.collect();
+                    // closed stream, and its textures are freed. In a task of its own: the
+                    // other streams' pictures are presented meanwhile.
+                    let windows = windows.clone();
+                    let hub = hub.clone();
+                    cx.spawn(async move |cx| {
+                        let pause = Duration::from_millis(120);
+                        for step in 0..2 {
+                            cx.background_executor().timer(pause).await;
+                            let Some(inner) = hub.upgrade() else { return };
+                            inner.backend.collect();
+                            if step == 0 {
+                                present_windows(cx, &windows);
+                            }
+                        }
+                    })
+                    .detach();
                 }
                 drop(inner);
             }
@@ -342,7 +367,7 @@ impl VideoHub {
                     viewer_count: AtomicU32::new(0),
                     dirty: AtomicBool::new(false),
                     last_keyframe_request_ms: AtomicU64::new(0),
-                    software_only: AtomicBool::new(false),
+                    denied: AtomicU8::new(0),
                     fault: AtomicU8::new(0),
                     capture: CaptureCell::default(),
                     removed: AtomicBool::new(false),
@@ -417,14 +442,69 @@ impl VideoHub {
 
     /// Decode every stream in software from its next decoder on (settings, tests).
     pub fn set_force_software(&self, force: bool) {
-        self.inner.force_software.store(force, RELAXED);
+        if self.inner.force_software.swap(force, RELAXED) != force {
+            self.inner.probe.forget();
+        }
     }
 
-    /// What this machine does with each codec, for the decode capabilities the client
-    /// advertises. Hardware answers come from the renderer's GPU, so ask once a window exists;
-    /// before that only the software decoders are reported.
+    /// Replaces the order decoders are tried in (`None`: the platform's own again), as
+    /// `DECIBELL_VIDEO_DECODER` does: exactly these are tried. For tests and settings.
+    pub fn set_decoder_order(&self, order: Option<&[DecodeBackend]>) {
+        self.inner.selector.force(order.map(Order::new));
+        self.inner.probe.forget();
+    }
+
+    /// The order that is forced (by `DECIBELL_VIDEO_DECODER` or [`Self::set_decoder_order`]),
+    /// if one is.
+    pub fn forced_decoder_order(&self) -> Option<Vec<DecodeBackend>> {
+        self.inner
+            .selector
+            .forced()
+            .map(|order| order.as_slice().to_vec())
+    }
+
+    /// The decoders streams are opened with, in order, on this machine right now.
+    pub fn decoder_order(&self) -> Vec<DecodeBackend> {
+        self.inner.order().as_slice().to_vec()
+    }
+
+    /// Every decoder that was tried for a codec this session and given up, with the reason
+    /// (a failed open, or a failure in its first pictures).
+    pub fn skipped_decoders(&self) -> Vec<SkippedBackend> {
+        self.inner.selector.report()
+    }
+
+    /// Forgets which decoders failed (tests).
+    #[doc(hidden)]
+    pub fn forget_decoder_failures(&self) {
+        self.inner.selector.forget();
+        self.inner.probe.forget();
+    }
+
+    /// What this machine does with each codec, as far as is known without decoding anything:
+    /// the last probe's answer for this GPU and driver when there is one
+    /// ([`Self::probe_capabilities`]; `probed` is then set), else the first decoder of the
+    /// order that the driver and the FFmpeg build list for the codec. Never blocks. Hardware
+    /// answers come from the renderer's GPU: before a window exists only the software decoders
+    /// are reported.
     pub fn capabilities(&self) -> [CodecSupport; 3] {
-        Codec::ALL.map(|codec| self.inner.backend.support(codec))
+        crate::probe::known(&self.inner)
+    }
+
+    /// The decode capabilities to advertise, from a real probe: for each codec the decoders
+    /// are tried in order with a small test frame compiled into the binary, and the first that
+    /// returns the right picture is the answer. Runs on a thread of its own, once per GPU and
+    /// driver version (the result is kept, and with [`Self::set_capabilities_cache`] also
+    /// across runs); `done` is called from that thread, or at once when the answer is known.
+    /// Call it once a window exists.
+    pub fn probe_capabilities(&self, done: impl FnOnce([CodecSupport; 3]) + Send + 'static) {
+        crate::probe::start(&self.inner, Box::new(done));
+    }
+
+    /// A file to keep the probe's result in between runs (keyed by GPU and driver version: a
+    /// driver update probes again). Without it every run probes once, lazily.
+    pub fn set_capabilities_cache(&self, path: impl Into<std::path::PathBuf>) {
+        self.inner.probe.set_cache_file(path.into());
     }
 
     /// Decoder threads alive right now.
@@ -448,7 +528,40 @@ impl VideoHub {
     }
 }
 
+/// One `request_present` per window; a closed window is simply skipped.
+fn present_windows(cx: &mut gpui::AsyncApp, windows: &[AnyWindowHandle]) {
+    cx.update(|cx| {
+        for window in windows {
+            let _ = window.update(cx, |_, window, _| window.request_present());
+        }
+    });
+}
+
 impl HubInner {
+    /// The decoders to try for a stream, in order.
+    pub(crate) fn order(&self) -> Order {
+        if self.force_software.load(RELAXED) {
+            return Order::SOFTWARE;
+        }
+        self.selector.order(self.backend.order())
+    }
+
+    /// Somebody replaced the machine's own order (the environment, a test, a setting): what
+    /// decodes now is not what the machine does by itself.
+    pub(crate) fn order_is_forced(&self) -> bool {
+        self.force_software.load(RELAXED) || self.selector.forced().is_some()
+    }
+
+    /// A decoder was given up for a codec: what the probe said (if it named that decoder) is
+    /// wrong. Under a forced order only this run's answer is; the machine's own is in the file.
+    fn probed_answer_is_stale(&self) {
+        if self.order_is_forced() {
+            self.probe.forget();
+        } else {
+            self.probe.invalidate();
+        }
+    }
+
     fn now_ms(&self) -> u64 {
         self.started.elapsed().as_millis() as u64 + 1
     }
@@ -524,6 +637,10 @@ struct Decoding {
     announced: (u32, u32),
     /// The decoder is new and the queue still gives it room (see `queue.rs`).
     catching_up: bool,
+    /// Pictures the open decoder has published.
+    pictures: u64,
+    /// The last hardware decoder's failure, until a decoder opens after it.
+    hardware_failure: Option<String>,
 }
 
 fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
@@ -535,6 +652,8 @@ fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
         description: Vec::new(),
         announced: (0, 0),
         catching_up: true,
+        pictures: 0,
+        hardware_failure: None,
     };
     let stopped = loop {
         match stream.queue.pop(IDLE_EXIT) {
@@ -598,46 +717,30 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
             hub.signal.notify();
             return;
         }
-        let mut allow_hardware =
-            !stream.software_only.load(RELAXED) && !hub.force_software.load(RELAXED);
-        let decoder = loop {
-            match hub.backend.open(
-                codec,
-                description.as_deref(),
-                allow_hardware,
-                &stream.target,
-            ) {
-                Ok(decoder) => break decoder,
-                // The hardware decoder does not take this stream: software, with the keyframe
-                // in hand.
-                Err(error) if allow_hardware && error.failure == Failure::Decoder => {
-                    allow_hardware = false;
-                    stream.software_only.store(true, RELAXED);
-                    counters.fallbacks.fetch_add(1, RELAXED);
-                    counters.errors.fetch_add(1, RELAXED);
-                    hub.event(
-                        stream,
-                        StreamEvent::FellBackToSoftware {
-                            reason: error.message,
-                        },
-                    );
-                }
-                Err(error) => {
-                    counters.shed.fetch_add(1, RELAXED);
-                    failed(hub, stream, decoding, DecodePath::Software, error);
-                    return;
-                }
+        let decoder = match open_decoder(hub, stream, decoding, codec, description.as_deref()) {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                counters.shed.fetch_add(1, RELAXED);
+                failed(hub, stream, decoding, None, error);
+                return;
             }
         };
         counters.opens.fetch_add(1, RELAXED);
-        counters.set_decoder(codec, Some(decoder.path()));
+        counters.set_decoder(codec, Some(decoder.backend()));
         hub.event(
             stream,
             StreamEvent::DecoderOpened {
                 codec,
                 path: decoder.path(),
+                backend: decoder.backend(),
             },
         );
+        if let Some(reason) = decoding.hardware_failure.take()
+            && decoder.backend() == DecodeBackend::Software
+        {
+            hub.event(stream, StreamEvent::FellBackToSoftware { reason });
+        }
+        decoding.pictures = 0;
         decoding.decoder = Some(decoder);
         decoding.codec = Some(codec);
         decoding.announced = (0, 0);
@@ -658,7 +761,7 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
         serial,
         capture: &stream.capture,
     };
-    let path = decoder.path();
+    let backend = decoder.backend();
     let result = if fault == 1 {
         drop(packet);
         Err(DecodeError::decoder("injected decode error"))
@@ -668,6 +771,7 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
     match result {
         Ok(0) => {}
         Ok(_) => {
+            decoding.pictures += 1;
             counters.frame_published(serial, arrived, handed);
             stream.dirty.store(true, Ordering::Release);
             hub.signal.notify();
@@ -686,17 +790,85 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
                 );
             }
         }
-        Err(error) => failed(hub, stream, decoding, path, error),
+        Err(error) => failed(hub, stream, decoding, Some(backend), error),
     }
 }
 
-/// A decoder (or its opening) failed: drop it, decide what the next one is, start again at a
-/// keyframe. A hardware decoder that failed is answered by decoding in software.
+/// Opens the first decoder of the order that this stream may use and that opens. One that does
+/// not open is given up for the codec, for every stream (`select.rs`).
+fn open_decoder(
+    hub: &HubInner,
+    stream: &StreamShared,
+    decoding: &mut Decoding,
+    codec: Codec,
+    description: Option<&[u8]>,
+) -> Result<Box<dyn PictureDecoder>, DecodeError> {
+    let counters = &stream.target.counters;
+    let order = hub.order();
+    let denied = stream.denied.load(RELAXED);
+    let mut last_reason: Option<String> = None;
+    for &backend in order.as_slice() {
+        if denied & (1 << backend.index()) != 0 {
+            continue;
+        }
+        if let Some(reason) = hub.selector.skipped(codec, backend) {
+            last_reason = Some(format!("{}: {reason}", backend.label()));
+            continue;
+        }
+        let started = Instant::now();
+        match hub.backend.open(backend, codec, description, &stream.target) {
+            Ok(decoder) => {
+                log::info!(
+                    "video: stream {}: {} decoder for {} opened in {:.1} ms",
+                    stream.key,
+                    backend.label(),
+                    codec.label(),
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+                return Ok(decoder);
+            }
+            Err(error) if error.failure == Failure::DeviceLost => return Err(error),
+            Err(error) => {
+                if hub.selector.skip(codec, backend, &error.message) {
+                    hub.probed_answer_is_stale();
+                }
+                counters.errors.fetch_add(1, RELAXED);
+                gave_up(hub, stream, decoding, backend, error.message.clone());
+                last_reason = Some(format!("{}: {}", backend.label(), error.message));
+            }
+        }
+    }
+    Err(DecodeError::decoder(match last_reason {
+        Some(reason) => format!("no decoder is left for this stream (last: {reason})"),
+        None => "no decoder is left for this stream".into(),
+    }))
+}
+
+/// `backend` is not used for this stream any more: count it, say so, remember why.
+fn gave_up(
+    hub: &HubInner,
+    stream: &StreamShared,
+    decoding: &mut Decoding,
+    backend: DecodeBackend,
+    reason: String,
+) {
+    let counters = &stream.target.counters;
+    counters.fallbacks.fetch_add(1, RELAXED);
+    counters.set_fallback_reason(backend, &reason);
+    if backend.path() == DecodePath::Hardware {
+        decoding.hardware_failure = Some(reason.clone());
+    }
+    hub.event(stream, StreamEvent::BackendFailed { backend, reason });
+}
+
+/// A decoder failed (`backend`), or none could be opened (`None`): drop it, decide what the
+/// next one is, start again at a keyframe. A hardware decoder that failed is not used for this
+/// stream again, and if it failed within its first pictures, for the codec by nobody.
 fn failed(
     hub: &HubInner,
     stream: &StreamShared,
     decoding: &mut Decoding,
-    path: DecodePath,
+    backend: Option<DecodeBackend>,
     error: DecodeError,
 ) {
     let counters = &stream.target.counters;
@@ -704,14 +876,16 @@ fn failed(
     log::warn!(
         "video: stream {} ({} decode): {error}",
         stream.key,
-        path.label()
+        backend.map_or("no", DecodeBackend::label)
     );
+    let codec = decoding.codec;
+    let pictures = std::mem::take(&mut decoding.pictures);
     decoding.decoder = None;
     decoding.codec = None;
     counters.clear_decoder();
     counters.presentation_paused();
-    match error.failure {
-        Failure::DeviceLost => {
+    match (error.failure, backend) {
+        (Failure::DeviceLost, _) => {
             counters.device_losses.fetch_add(1, RELAXED);
             stream.target.clear();
             hub.event(stream, StreamEvent::DeviceLost);
@@ -719,17 +893,17 @@ fn failed(
             stream.dirty.store(true, Ordering::Release);
             hub.signal.notify();
         }
-        Failure::Decoder if path == DecodePath::Hardware => {
-            stream.software_only.store(true, RELAXED);
-            counters.fallbacks.fetch_add(1, RELAXED);
-            hub.event(
-                stream,
-                StreamEvent::FellBackToSoftware {
-                    reason: error.message,
-                },
-            );
+        (Failure::Decoder, Some(backend)) if backend.path() == DecodePath::Hardware => {
+            stream.denied.fetch_or(1 << backend.index(), RELAXED);
+            if pictures < FIRST_FRAMES
+                && let Some(codec) = codec
+                && hub.selector.skip(codec, backend, &error.message)
+            {
+                hub.probed_answer_is_stale();
+            }
+            gave_up(hub, stream, decoding, backend, error.message);
         }
-        Failure::Decoder => hub.event(
+        (Failure::Decoder, _) => hub.event(
             stream,
             StreamEvent::DecoderError {
                 reason: error.message,
@@ -805,9 +979,16 @@ impl Stream {
         self.shared.queue.has_consumer()
     }
 
-    /// Decode this stream in software from its next decoder on.
+    /// Decode this stream in software from its next decoder on (`false`: with every decoder
+    /// of the order again, also those that failed for it).
     pub fn set_software_only(&self, software: bool) {
-        self.shared.software_only.store(software, RELAXED);
+        let hardware = DecodeBackend::ALL
+            .into_iter()
+            .filter(|backend| backend.path() == DecodePath::Hardware)
+            .fold(0, |bits, backend| bits | 1 << backend.index());
+        self.shared
+            .denied
+            .store(if software { hardware } else { 0 }, RELAXED);
     }
 
     /// Makes the stream's decoder fail once (tests of the recovery paths).
@@ -997,6 +1178,7 @@ mod tests {
                 (60, 60, 0, 0)
             );
             assert_eq!(stats.path, Some(DecodePath::Software));
+            assert_eq!(stats.backend, Some(DecodeBackend::Software));
             assert_eq!((stats.width, stats.height), (1920, 1080));
             assert_eq!(hub.decoder_threads(), 1);
             assert_eq!(hub.live_textures(), 1);
@@ -1124,6 +1306,382 @@ mod tests {
             log.lock().last().map(String::as_str),
             Some("interest 7 false")
         );
+    }
+
+    /// A platform with scripted hardware decoders (software decode underneath, so pictures are
+    /// real): what a machine whose Vulkan Video or VA-API misbehaves looks like to the hub.
+    struct Scripted {
+        software: crate::cpu::CpuBackend,
+        order: Vec<DecodeBackend>,
+        /// Per decoder: `None` works; `Some(Err(reason))` does not open; `Some(Ok(n))` fails
+        /// after publishing n pictures.
+        script: Mutex<HashMap<DecodeBackend, Result<u64, &'static str>>>,
+        opens: Mutex<Vec<DecodeBackend>>,
+    }
+
+    impl Scripted {
+        fn new(
+            order: &[DecodeBackend],
+            script: &[(DecodeBackend, Result<u64, &'static str>)],
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                software: Default::default(),
+                order: order.to_vec(),
+                script: Mutex::new(script.iter().cloned().collect()),
+                opens: Mutex::default(),
+            })
+        }
+
+        fn opens(&self, backend: DecodeBackend) -> usize {
+            self.opens.lock().iter().filter(|b| **b == backend).count()
+        }
+    }
+
+    struct ScriptedDecoder {
+        inner: Box<dyn PictureDecoder>,
+        backend: DecodeBackend,
+        fails_after: Option<u64>,
+        pictures: u64,
+    }
+
+    impl PictureDecoder for ScriptedDecoder {
+        fn backend(&self) -> DecodeBackend {
+            self.backend
+        }
+
+        fn decode(
+            &mut self,
+            packet: Packet,
+            keyframe: bool,
+            pts: i64,
+            cx: &FrameCx<'_>,
+        ) -> crate::decode::DecodeResult<u32> {
+            if self.fails_after.is_some_and(|limit| self.pictures >= limit) {
+                return Err(DecodeError::decoder("scripted decode failure"));
+            }
+            let published = self.inner.decode(packet, keyframe, pts, cx)?;
+            self.pictures += published as u64;
+            Ok(published)
+        }
+    }
+
+    impl Backend for Scripted {
+        fn order(&self) -> Order {
+            Order::new(&self.order)
+        }
+
+        fn open(
+            &self,
+            backend: DecodeBackend,
+            codec: Codec,
+            description: Option<&[u8]>,
+            target: &StreamTarget,
+        ) -> crate::decode::DecodeResult<Box<dyn PictureDecoder>> {
+            self.opens.lock().push(backend);
+            let script = self.script.lock().get(&backend).cloned();
+            if let Some(Err(reason)) = script {
+                return Err(DecodeError::decoder(reason));
+            }
+            Ok(Box::new(ScriptedDecoder {
+                inner: self.software.open(
+                    DecodeBackend::Software,
+                    codec,
+                    description,
+                    target,
+                )?,
+                backend,
+                fails_after: script.and_then(Result::ok),
+                pictures: 0,
+            }))
+        }
+
+        fn ready(&self) -> bool {
+            true
+        }
+
+        fn simulate_device_loss(&self) {}
+
+        fn support(&self, backend: DecodeBackend, codec: Codec) -> CodecSupport {
+            CodecSupport {
+                backend: Some(backend),
+                path: Some(backend.path()),
+                ..self.software.support(DecodeBackend::Software, codec)
+            }
+        }
+
+        fn device_key(&self) -> Option<String> {
+            Some("scripted".into())
+        }
+
+        fn live_textures(&self) -> i64 {
+            self.software.live_textures()
+        }
+
+        fn collect(&self) {}
+    }
+
+    /// Plays the file's first `count` frames (it starts on a keyframe, as a streamer's answer
+    /// to a keyframe request does) and waits until the decoder has taken them all.
+    fn play(hub: &VideoHub, stream: &Stream, path: &std::path::Path, count: usize) {
+        let mut file = StreamFile::open(path).unwrap();
+        push_frames(hub, stream, &mut file, count);
+        // Until nothing moves any more: every frame was decoded, shed or lost to an error.
+        let mut last = stream.stats();
+        let mut quiet = Instant::now();
+        wait_for("the frames to be decoded or shed", || {
+            let now = stream.stats();
+            if now != last {
+                last = now;
+                quiet = Instant::now();
+            }
+            last.queue == 0 && quiet.elapsed() > Duration::from_millis(60)
+        });
+    }
+
+    const AMD: [DecodeBackend; 3] = [
+        DecodeBackend::VulkanVideo,
+        DecodeBackend::Vaapi,
+        DecodeBackend::Software,
+    ];
+
+    #[test]
+    fn a_decoder_that_does_not_open_is_tried_once_and_the_next_one_plays() {
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let backend = Scripted::new(
+            &AMD,
+            &[(DecodeBackend::VulkanVideo, Err("no video decode queue"))],
+        );
+        let hub = VideoHub::with_backend(backend.clone());
+        let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::default();
+        hub.set_callbacks(HubCallbacks {
+            event: Box::new({
+                let events = events.clone();
+                move |_, event| events.lock().push(event)
+            }),
+            ..Default::default()
+        });
+        let stream = hub.stream("a");
+        let _viewer = stream.viewer();
+        play(&hub, &stream, &path, 10);
+        let stats = stream.stats();
+        // The keyframe that found Vulkan Video broken opened VA-API: nothing was lost.
+        assert_eq!(
+            (stats.backend, stats.decoded, stats.dropped, stats.fallbacks),
+            (Some(DecodeBackend::Vaapi), 10, 0, 1)
+        );
+        assert_eq!(
+            stats.fallback_reason.as_deref(),
+            Some("vulkan: no video decode queue")
+        );
+        assert_eq!(
+            events.lock()[..2],
+            [
+                StreamEvent::BackendFailed {
+                    backend: DecodeBackend::VulkanVideo,
+                    reason: "no video decode queue".into()
+                },
+                StreamEvent::DecoderOpened {
+                    codec: Codec::H264,
+                    path: DecodePath::Hardware,
+                    backend: DecodeBackend::Vaapi
+                },
+            ]
+        );
+        let skipped = hub.skipped_decoders();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(
+            (skipped[0].codec, skipped[0].backend, &*skipped[0].reason),
+            (Codec::H264, DecodeBackend::VulkanVideo, "no video decode queue")
+        );
+        // What the client advertises follows: VA-API for H.264, and the other codecs still
+        // listed with the first decoder (nobody tried them).
+        let support = hub.capabilities();
+        assert_eq!(support[0].backend, Some(DecodeBackend::Vaapi));
+        assert_eq!(support[1].backend, Some(DecodeBackend::VulkanVideo));
+
+        // Another stream of the codec does not try it again.
+        let other = hub.stream("b");
+        let _other_viewer = other.viewer();
+        play(&hub, &other, &path, 5);
+        assert_eq!(other.stats().backend, Some(DecodeBackend::Vaapi));
+        assert_eq!(other.stats().fallbacks, 0);
+        assert_eq!(backend.opens(DecodeBackend::VulkanVideo), 1);
+    }
+
+    #[test]
+    fn a_decoder_that_fails_in_its_first_pictures_is_given_up_for_the_session() {
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let backend = Scripted::new(&AMD, &[(DecodeBackend::VulkanVideo, Ok(5))]);
+        let hub = VideoHub::with_backend(backend.clone());
+        let stream = hub.stream("a");
+        let _viewer = stream.viewer();
+        play(&hub, &stream, &path, 12);
+        let stats = stream.stats();
+        // Five pictures, then the failure; the rest of the chain is shed until a keyframe.
+        assert_eq!((stats.decoded, stats.errors, stats.fallbacks), (5, 1, 1));
+        assert_eq!(stats.backend, None);
+        assert!(stats.keyframe_requests >= 2);
+        assert_eq!(
+            stats.fallback_reason.as_deref(),
+            Some("vulkan: scripted decode failure")
+        );
+        assert_eq!(hub.skipped_decoders().len(), 1);
+        // The streamer's keyframe: the next decoder of the order.
+        play(&hub, &stream, &path, 10);
+        let stats = stream.stats();
+        assert_eq!((stats.backend, stats.decoded), (Some(DecodeBackend::Vaapi), 15));
+        // And nobody tries Vulkan Video for H.264 again.
+        let other = hub.stream("b");
+        let _other_viewer = other.viewer();
+        play(&hub, &other, &path, 5);
+        assert_eq!(other.stats().backend, Some(DecodeBackend::Vaapi));
+        assert_eq!(backend.opens(DecodeBackend::VulkanVideo), 1);
+    }
+
+    #[test]
+    fn a_late_failure_costs_only_the_stream_it_happened_on() {
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let backend = Scripted::new(
+            &AMD,
+            &[(DecodeBackend::VulkanVideo, Ok(crate::select::FIRST_FRAMES + 10))],
+        );
+        let hub = VideoHub::with_backend(backend.clone());
+        let stream = hub.stream("a");
+        let _viewer = stream.viewer();
+        play(&hub, &stream, &path, 50);
+        assert_eq!(stream.stats().fallbacks, 1);
+        assert!(hub.skipped_decoders().is_empty());
+        play(&hub, &stream, &path, 10);
+        assert_eq!(stream.stats().backend, Some(DecodeBackend::Vaapi));
+        // Another stream starts on Vulkan Video again.
+        let other = hub.stream("b");
+        let _other_viewer = other.viewer();
+        play(&hub, &other, &path, 5);
+        assert_eq!(other.stats().backend, Some(DecodeBackend::VulkanVideo));
+        // The stream it failed on is given it back when asked (`set_software_only(false)`).
+        stream.set_software_only(false);
+        hub.remove("b");
+    }
+
+    #[test]
+    fn the_walk_ends_on_software_and_never_goes_back() {
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let backend = Scripted::new(
+            &AMD,
+            &[
+                (DecodeBackend::VulkanVideo, Ok(3)),
+                (DecodeBackend::Vaapi, Err("vaInitialize failed")),
+            ],
+        );
+        let hub = VideoHub::with_backend(backend.clone());
+        let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::default();
+        hub.set_callbacks(HubCallbacks {
+            event: Box::new({
+                let events = events.clone();
+                move |_, event| events.lock().push(event)
+            }),
+            ..Default::default()
+        });
+        let stream = hub.stream("a");
+        let _viewer = stream.viewer();
+        play(&hub, &stream, &path, 8);
+        play(&hub, &stream, &path, 8);
+        let stats = stream.stats();
+        assert_eq!(
+            (stats.backend, stats.fallbacks, stats.decoded),
+            (Some(DecodeBackend::Software), 2, 3 + 8)
+        );
+        assert_eq!(
+            stats.fallback_reason.as_deref(),
+            Some("vaapi: vaInitialize failed")
+        );
+        assert!(events.lock().contains(&StreamEvent::FellBackToSoftware {
+            reason: "vaInitialize failed".into()
+        }));
+        // More keyframes, a software decoder error: the hardware decoders are not tried again.
+        stream.inject(Fault::DecodeError);
+        play(&hub, &stream, &path, 4);
+        play(&hub, &stream, &path, 4);
+        assert_eq!(stream.stats().backend, Some(DecodeBackend::Software));
+        assert_eq!(backend.opens(DecodeBackend::VulkanVideo), 1);
+        assert_eq!(backend.opens(DecodeBackend::Vaapi), 1);
+        assert_eq!(backend.opens(DecodeBackend::Software), 2);
+    }
+
+    #[test]
+    fn a_forced_decoder_that_does_not_work_is_not_replaced_and_not_retried() {
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let backend = Scripted::new(&AMD, &[(DecodeBackend::Vaapi, Err("no VA driver"))]);
+        let hub = VideoHub::with_backend(backend.clone());
+        hub.set_decoder_order(Some(&[DecodeBackend::Vaapi]));
+        assert_eq!(hub.decoder_order(), [DecodeBackend::Vaapi]);
+        let stream = hub.stream("a");
+        let _viewer = stream.viewer();
+        for _ in 0..3 {
+            play(&hub, &stream, &path, 3);
+        }
+        let stats = stream.stats();
+        assert_eq!((stats.backend, stats.decoded), (None, 0));
+        assert!(stats.errors >= 3);
+        assert_eq!(backend.opens(DecodeBackend::Vaapi), 1);
+        assert_eq!(backend.opens(DecodeBackend::Software), 0);
+        assert_eq!(hub.capabilities()[0].path, None);
+        // Back to the machine's own order: Vulkan Video.
+        hub.set_decoder_order(None);
+        play(&hub, &stream, &path, 3);
+        assert_eq!(stream.stats().backend, Some(DecodeBackend::VulkanVideo));
+    }
+
+    /// The probe on a machine where a listed decoder decodes nothing: the answer is the
+    /// decoder that returned the test picture, and the broken one is on record.
+    #[test]
+    fn the_probe_reports_the_first_decoder_that_really_decodes() {
+        let backend = Scripted::new(
+            &AMD,
+            &[
+                (DecodeBackend::VulkanVideo, Ok(0)),
+                (DecodeBackend::Vaapi, Err("no VA driver")),
+            ],
+        );
+        let hub = VideoHub::with_backend(backend.clone());
+        // Listed, before anything was tried.
+        assert_eq!(hub.capabilities()[0].backend, Some(DecodeBackend::VulkanVideo));
+        assert!(!hub.capabilities()[0].probed);
+        let (sender, receiver) = mpsc::channel();
+        hub.probe_capabilities(move |result| sender.send(result).unwrap());
+        let result = receiver.recv_timeout(Duration::from_secs(30)).unwrap();
+        for support in result {
+            assert_eq!(support.backend, Some(DecodeBackend::Software));
+            assert_eq!(support.path, Some(DecodePath::Software));
+            assert!(support.probed);
+        }
+        assert_eq!(hub.capabilities(), result);
+        assert_eq!(hub.skipped_decoders().len(), 6);
+        // Asked again: the kept answer, nothing opened.
+        let opens = backend.opens.lock().len();
+        let (sender, receiver) = mpsc::channel();
+        hub.probe_capabilities(move |result| sender.send(result).unwrap());
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(5)).unwrap(), result);
+        assert_eq!(backend.opens.lock().len(), opens);
+        // Streams never try what the probe found broken.
+        if let Some(path) = stream_file("1080p60_h264.dbv") {
+            let stream = hub.stream("a");
+            let _viewer = stream.viewer();
+            play(&hub, &stream, &path, 5);
+            assert_eq!(stream.stats().backend, Some(DecodeBackend::Software));
+            assert_eq!(stream.stats().fallbacks, 0);
+            assert_eq!(backend.opens(DecodeBackend::VulkanVideo), 3);
+        }
     }
 
     #[test]

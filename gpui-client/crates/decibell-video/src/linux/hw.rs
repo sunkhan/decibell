@@ -11,7 +11,7 @@ use gpui_wgpu::WgpuSurface;
 
 use super::slots::{COLOR_LAYER, SlotRing, Work, barrier, read_luma_row};
 use super::{GpuDevice, classify, surface_color};
-use crate::codec::{Codec, DecodePath};
+use crate::codec::{Codec, DecodeBackend};
 use crate::decode::{DecodeError, DecodeResult, FfDecoder, FrameCx, FrameInfo, PictureDecoder};
 use crate::hub::StreamTarget;
 use crate::packet::Packet;
@@ -34,23 +34,13 @@ unsafe extern "C" {
     fn dbv_vkframe_unlock(f: *mut ff::AVFrame, signalled: c_int);
 }
 
-/// FFmpeg's `get_format`: the Vulkan hwaccel or nothing (failing the stream's first packet, so
-/// the stream falls back to software instead of decoding on the CPU behind our back).
+/// FFmpeg's `get_format`: the Vulkan hwaccel or nothing.
 unsafe extern "C" fn pick_vulkan(
     _context: *mut ff::AVCodecContext,
     formats: *const ff::AVPixelFormat,
 ) -> ff::AVPixelFormat {
-    // Safety: FFmpeg passes a list terminated by AV_PIX_FMT_NONE (-1); read as integers.
-    unsafe {
-        let mut format = formats.cast::<c_int>();
-        while *format != -1 {
-            if *format == ff::AVPixelFormat::AV_PIX_FMT_VULKAN as c_int {
-                return ff::AVPixelFormat::AV_PIX_FMT_VULKAN;
-            }
-            format = format.add(1);
-        }
-    }
-    ff::AVPixelFormat::AV_PIX_FMT_NONE
+    // Safety: FFmpeg's list.
+    unsafe { crate::decode::pick_format(formats, ff::AVPixelFormat::AV_PIX_FMT_VULKAN) }
 }
 
 pub(crate) struct VulkanDecoder {
@@ -105,7 +95,7 @@ impl VulkanDecoder {
         {
             // Slots of the old size live on until the renderer lets go of them.
             self.slots = None;
-            self.slots = Some(SlotRing::new(&self.work, width, height, color)?);
+            self.slots = Some(SlotRing::new(&self.work, width, height, color, false)?);
             cx.counters.set_size(width, height);
         }
         let Some(slot) = self.slots.as_mut().and_then(|slots| slots.free(color)) else {
@@ -273,8 +263,8 @@ impl VulkanDecoder {
 }
 
 impl PictureDecoder for VulkanDecoder {
-    fn path(&self) -> DecodePath {
-        DecodePath::Hardware
+    fn backend(&self) -> DecodeBackend {
+        DecodeBackend::VulkanVideo
     }
 
     fn decode(

@@ -10,8 +10,9 @@
 //! - `DECIBELL_VIDEO_STATS=<seconds>`: a thread prints every stream's counters on stderr at
 //!   that period (the UI is not woken to report them).
 //! - `DECIBELL_VIDEO_TEST_FRAMES=<n>`: each stream ends after n frames (then nothing may draw).
-//! - `DECIBELL_VIDEO=software`: decode in software. `DECIBELL_VIDEO_TRACE=<file>`: per-frame
-//!   timestamps when a stream ends.
+//! - `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software`: decode with that decoder and no
+//!   other (`select.rs`). `DECIBELL_VIDEO_FASTPATH=0`: every present writes the scene to the
+//!   GPU again. `DECIBELL_VIDEO_TRACE=<file>`: per-frame timestamps when a stream ends.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -230,9 +231,10 @@ fn print_stats_every(period: Duration, hub: VideoHub, streams: Vec<Stream>) {
 pub(crate) fn stats_line(hub: &VideoHub, stream: &Stream) -> String {
     let stats = stream.stats();
     format!(
-        "codec={} path={} size={}x{} received={} decoded={} published={} presented={} replaced={} dropped={} errors={} opens={} fallbacks={} device_losses={} keyframe_requests={} queue={} decode_ms_p50={:.2} decode_ms_p99={:.2} latency_ms_p50={:.2} latency_ms_p99={:.2} present_interval_ms_p50={:.2} present_interval_ms_p99={:.2} threads={} textures={} present_wakes={} packet_copies={}",
+        "codec={} path={} backend={} size={}x{} received={} decoded={} published={} presented={} replaced={} dropped={} errors={} opens={} fallbacks={} device_losses={} keyframe_requests={} queue={} decode_ms_p50={:.2} decode_ms_p99={:.2} latency_ms_p50={:.2} latency_ms_p99={:.2} present_interval_ms_p50={:.2} present_interval_ms_p99={:.2} threads={} textures={} present_wakes={} packet_copies={}{}",
         stats.codec.map_or("-", |codec| codec.label()),
         stats.path.map_or("-", |path| path.label()),
+        stats.backend.map_or("-", |backend| backend.label()),
         stats.width,
         stats.height,
         stats.received,
@@ -257,5 +259,25 @@ pub(crate) fn stats_line(hub: &VideoHub, stream: &Stream) -> String {
         hub.live_textures(),
         hub.present_wakes(),
         crate::packet::copies(),
+        renderer_frames(),
     )
+}
+
+/// How the renderer drew the process's frames: built from the scene, or encoded again from the
+/// frame it kept (a present for a new picture), with the mean time of each on the UI thread.
+fn renderer_frames() -> String {
+    #[cfg(vk)]
+    {
+        let frames = gpui_wgpu::frame_stats();
+        let mean_us = |ns: u64, count: u64| ns as f64 / 1000.0 / count.max(1) as f64;
+        format!(
+            " frames_built={} frames_reused={} built_us={:.0} reused_us={:.0}",
+            frames.built,
+            frames.reused,
+            mean_us(frames.built_ns, frames.built),
+            mean_us(frames.reused_ns, frames.reused),
+        )
+    }
+    #[cfg(not(vk))]
+    String::new()
 }
