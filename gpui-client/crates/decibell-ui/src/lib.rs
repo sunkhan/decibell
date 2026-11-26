@@ -20,6 +20,7 @@ mod icon;
 pub mod identity;
 mod interaction;
 pub mod kit;
+pub mod layer;
 mod kit_tests;
 mod menu;
 pub mod modal;
@@ -57,6 +58,7 @@ pub use structure::{
 };
 pub use toast::{Toast, ToastAction, ToastId, ToastSeverity, ToastStack, Toasts};
 pub use tooltip::{Tooltip, title_tooltip};
+pub use layer::layer;
 pub use popover::{
     DismissEvent, Placed, Placement, Popover, Side, place_menu, visible_window_bounds,
 };

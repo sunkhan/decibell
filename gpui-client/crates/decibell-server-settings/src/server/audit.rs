@@ -970,7 +970,7 @@ impl Render for AuditLogTab {
             "audit-filter",
             Some(category),
             CATEGORY_OPTIONS.iter().map(|(c, label, icon)| SelectOption::new(*c, *label).icon(SelectIcon::Icon(*icon))).collect(),
-        ).over_modal()
+        )
         .on_change(cx.listener(|this, c: &Category, _, cx| this.set_category(*c, cx)));
         let select = if self.filter_open { select.initially_open() } else { select };
         let toolbar = div()

@@ -926,7 +926,7 @@ impl ChannelSettingsWindow {
         }
         let b = self.perms.add_button.get();
         let anchor = if b.size.width > px(0.) { point(b.left(), b.bottom() + px(4.)) } else { p.anchor };
-        Popover::new("perm-add-target-popover", anchor).over_modal()
+        Popover::new("perm-add-target-popover", anchor)
             .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
                 this.perms.picker = None;
                 cx.notify();

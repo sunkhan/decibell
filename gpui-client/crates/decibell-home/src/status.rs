@@ -25,7 +25,7 @@ use decibell_ui::{
 };
 use gpui::{Focusable as _, 
     AnyElement, AnyView, App, AppContext as _, Bounds, ClickEvent, Context, Entity, Global, IntoElement, Pixels, Render,
-    SharedString, Subscription, Window, anchored, deferred, div, point, prelude::*, px,
+    SharedString, Subscription, Window, anchored, div, point, prelude::*, px,
 };
 
 use crate::ui::{Look, button, caps_label};
@@ -315,7 +315,7 @@ impl CustomStatusModal {
                 (area.bottom() - height - gap).max(area.top() + gap)
             };
             let left = field.left().min(area.right() - width - gap).max(area.left() + gap);
-            return Some(deferred(anchored().position(point(left, top)).child(view)).with_priority(2).into_any_element());
+            return Some(decibell_ui::layer(2, anchored().position(point(left, top)).child(view)).into_any_element());
         }
         let t = cx.theme();
         Some(

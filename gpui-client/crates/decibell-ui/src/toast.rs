@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt as _, App, AppContext as _, Context, ElementId, Entity, Global,
-    IntoElement, RenderOnce, SharedString, Task, Window, deferred, div, prelude::*, px,
+    IntoElement, RenderOnce, SharedString, Task, Window, div, prelude::*, px,
 };
 
 use crate::popover::{Placed, Placement, visible_window_bounds};
@@ -224,7 +224,8 @@ impl RenderOnce for ToastStack {
             .into_iter()
             .map(|(id, toast)| toast_card(id, toast, cx))
             .collect();
-        deferred(
+        crate::layer::layer(
+            crate::layer::TOAST_PRIORITY,
             Placed::new(Placement::At(bounds.origin + gpui::point(px(0.), px(24.)))).child(
                 div()
                     .w(bounds.size.width)
@@ -236,7 +237,6 @@ impl RenderOnce for ToastStack {
                     .children(cards),
             ),
         )
-        .with_priority(20)
         .into_any_element()
     }
 }

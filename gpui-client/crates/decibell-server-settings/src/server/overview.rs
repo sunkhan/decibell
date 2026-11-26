@@ -1047,7 +1047,7 @@ impl OverviewTab {
         // Under the trigger as last laid out.
         let b = self.picker_trigger.get();
         let anchor = if b.size.width > px(0.) { point(b.left(), b.bottom() + px(4.)) } else { picker.anchor };
-        Popover::new("owner-picker", anchor).over_modal()
+        Popover::new("owner-picker", anchor)
             .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
                 this.owner_picker = None;
                 cx.notify();

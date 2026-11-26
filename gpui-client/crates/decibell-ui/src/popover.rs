@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Bounds, Decorations, Display, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point, Position,
-    RenderOnce, Size, Style, Window, deferred, div, point, prelude::*, px, size,
+    RenderOnce, Size, Style, Window, div, point, prelude::*, px, size,
 };
 
 use crate::window_frame::decorations;
@@ -344,8 +344,7 @@ pub struct Popover {
     priority: usize,
 }
 
-/// A modal's layer: GPUI paints deferred layers by priority alone, so a popover or a select's
-/// menu opened inside a modal must sit above this to be drawn over it (see `over_modal`).
+/// A modal's layer (`crate::layer`: what is opened inside it stacks above it by itself).
 pub const MODAL_PRIORITY: usize = 10;
 
 impl Popover {
@@ -358,13 +357,6 @@ impl Popover {
             content: Vec::new(),
             priority: 2,
         }
-    }
-
-    /// Opened from inside a modal (a settings window): drawn over the modal's layer, which GPUI
-    /// would otherwise paint on top of it.
-    pub fn over_modal(mut self) -> Self {
-        self.priority = MODAL_PRIORITY + 2;
-        self
     }
 
     pub fn prefer(mut self, side: Side) -> Self {
@@ -403,14 +395,15 @@ impl RenderOnce for Popover {
             .bg(theme.color_bg_light)
             .shadow(theme.shadow_float.clone())
             .children(self.content);
-        deferred(
+        // Above whatever layer it was opened in (a modal: `crate::layer`).
+        crate::layer::layer(
+            self.priority,
             Placed::new(Placement::Menu {
                 anchor: self.anchor,
                 prefer: self.prefer,
             })
             .child(drop_in(self.id, dismissal.attach(panel))),
         )
-        .with_priority(self.priority)
     }
 }
 

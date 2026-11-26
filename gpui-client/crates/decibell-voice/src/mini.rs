@@ -22,7 +22,7 @@ use decibell_ui::{ActiveTheme as _, Icon, IconName, Label, title_tooltip};
 use decibell_video::{Fit, VideoView, Viewer};
 use gpui::{
     Bounds, ClickEvent, Context, DispatchPhase, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Render, SharedString, Window, anchored, canvas, deferred, div, linear_color_stop, linear_gradient,
+    Pixels, Point, Render, SharedString, Window, anchored, canvas, div, linear_color_stop, linear_gradient,
     point, prelude::*, px, size,
 };
 
@@ -545,6 +545,6 @@ impl Render for MiniPlayer {
                     .child(Icon::new(grip_icon).size(px(13.)).color(white(0.4)).group_hover("mini-player", white(1.))),
             )
             .children(track);
-        root.child(deferred(anchored().position(point(px(pos.x), px(pos.y))).child(mini)).with_priority(5))
+        root.child(decibell_ui::layer(5, anchored().position(point(px(pos.x), px(pos.y))).child(mini)))
     }
 }

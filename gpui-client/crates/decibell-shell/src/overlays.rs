@@ -16,7 +16,7 @@ use decibell_ui::{
     ActiveTheme as _, Button, ButtonVariant, CloseRequest, ConfirmModal, FontRole, Icon, IconName, Label, Modal,
     Toast, ToastId, Toasts,
 };
-use gpui::{App, ClickEvent, Context, IntoElement, Render, SharedString, Subscription, Window, deferred, div, prelude::*, px};
+use gpui::{App, ClickEvent, Context, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*, px};
 
 use crate::requests::ShellRequests;
 
@@ -237,7 +237,8 @@ impl Render for RevokedNoticeOverlay {
             }
         });
         let overlays = model.overlays.clone();
-        deferred(
+        decibell_ui::layer(
+            10,
             div().absolute().top_6().left_0().right_0().flex().justify_center().child(
                 div()
                     .id("revoked-notice")
@@ -285,7 +286,6 @@ impl Render for RevokedNoticeOverlay {
                     ),
             ),
         )
-        .with_priority(10)
         .into_any_element()
     }
 }

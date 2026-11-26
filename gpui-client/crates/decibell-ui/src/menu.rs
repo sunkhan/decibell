@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, FocusHandle, IntoElement, Pixels, Point, RenderOnce, SharedString,
-    Transformation, Window, deferred, div, prelude::*, px, radians, svg,
+    Transformation, Window, div, prelude::*, px, radians, svg,
 };
 
 use crate::icon::icon_path;
@@ -274,14 +274,14 @@ impl RenderOnce for ContextMenu {
                 handles[next].focus(window, cx);
             })
             .children(rows);
-        deferred(
+        crate::layer::layer(
+            4,
             Placed::new(Placement::Menu {
                 anchor: self.anchor,
                 prefer: self.prefer,
             })
             .child(drop_in(id, dismissal.attach(menu))),
         )
-        .with_priority(4)
     }
 }
 

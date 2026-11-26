@@ -22,7 +22,7 @@ use decibell_ui::{
 };
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Bounds, Context, Corners, FocusHandle, Hsla, IntoElement, MouseButton, PathBuilder,
-    Pixels, Point, Render, SharedString, Subscription, Task, Window, canvas, deferred, div, point, prelude::*, px,
+    Pixels, Point, Render, SharedString, Subscription, Task, Window, canvas, div, point, prelude::*, px,
 };
 
 use super::format;
@@ -626,7 +626,7 @@ impl TransfersButton {
                 })
                 .into_any_element()
         };
-        deferred(Placed::new(Placement::At(origin)).child(entrance)).with_priority(3).into_any_element()
+        decibell_ui::layer(3, Placed::new(Placement::At(origin)).child(entrance)).into_any_element()
     }
 
     /// Keeps the previews of the rows shown wanted by the pipeline (and only those).

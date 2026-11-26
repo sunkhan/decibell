@@ -12,5 +12,10 @@ decibell-harness.workspace = true
 decibell-text.workspace = true
 anyhow.workspace = true
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
 gpui_wgpu.workspace = true
+# `tests/layers.rs`: the headless renderer, to read pixels.
+gpui_platform = { workspace = true, features = ["test-support"] }

@@ -27,7 +27,7 @@ use decibell_model::{Model, ServerId, Uid};
 use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, ScrollArea, ScrollHandle, title_tooltip};
 use gpui::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, IntoElement, Render, SharedString,
-    StyleRefinement, Subscription, Window, anchored, canvas, deferred, div, prelude::*, px,
+    StyleRefinement, Subscription, Window, anchored, canvas, div, prelude::*, px,
 };
 
 use crate::dock::{Dock, HeaderStats};
@@ -350,12 +350,12 @@ impl Render for VoicePane {
                 // Window fullscreen: the focused view over the whole window, title bar included
                 // (the renderer's `fixed inset-0 z-50`).
                 let bounds = decibell_ui::visible_window_bounds(window, cx);
-                deferred(
+                decibell_ui::layer(
+                    8,
                     anchored()
                         .position(bounds.origin)
                         .child(div().w(bounds.size.width).h(bounds.size.height).child(focus.clone())),
                 )
-                .with_priority(8)
                 .into_any_element()
             }
             _ => div()

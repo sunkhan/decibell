@@ -37,7 +37,7 @@ use decibell_ui::{
 };
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, DispatchPhase, Entity, Global, IntoElement, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, Window, canvas, deferred, div, point, prelude::*, px,
+    MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, Window, canvas, div, point, prelude::*, px,
 };
 
 // ── The rules ──────────────────────────────────────────────────────────────────────────────
@@ -495,7 +495,7 @@ impl ChannelReorder for Reorder {
             // mouse events during a drag).
             .when(s.dragging, |this| this.child(div().id("reorder-shield").absolute().inset_0().occlude()))
             .children(ghost);
-        Some(deferred(Placed::new(Placement::At(bounds.origin)).child(layer)).with_priority(20).into_any_element())
+        Some(decibell_ui::layer(20, Placed::new(Placement::At(bounds.origin)).child(layer)).into_any_element())
     }
 }
 

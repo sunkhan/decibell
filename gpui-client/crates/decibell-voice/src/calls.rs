@@ -29,7 +29,7 @@ use decibell_video::{Fit, VideoView, Viewer};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, DispatchPhase, Easing, Entity, Hsla, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, SharedString, StyleRefinement,
-    Subscription, Task, TimedTransformation, Transformation, Window, anchored, canvas, deferred, div, prelude::*, px, svg,
+    Subscription, Task, TimedTransformation, Transformation, Window, anchored, canvas, div, prelude::*, px, svg,
 };
 
 use crate::dock::{Tone, dock_button, dock_divider, latency_tone};
@@ -248,7 +248,7 @@ impl Render for IncomingCall {
             .child(buttons);
         // `fixed inset-x-0 top-14 flex justify-center`: 56 px below the window's top.
         let left = viewport.left() + (viewport.size.width - px(384.)) / 2.;
-        deferred(anchored().position(gpui::point(left, viewport.top() + px(56.))).child(card)).with_priority(7).into_any_element()
+        decibell_ui::layer(7, anchored().position(gpui::point(left, viewport.top() + px(56.))).child(card)).into_any_element()
     }
 }
 
@@ -1006,8 +1006,7 @@ impl Render for CallStage {
             .children(track);
         if fullscreen {
             let bounds = decibell_ui::visible_window_bounds(window, cx);
-            return deferred(anchored().position(bounds.origin).child(div().w(bounds.size.width).h(bounds.size.height).child(root)))
-                .with_priority(8)
+            return decibell_ui::layer(8, anchored().position(bounds.origin).child(div().w(bounds.size.width).h(bounds.size.height).child(root)))
                 .into_any_element();
         }
         root.into_any_element()

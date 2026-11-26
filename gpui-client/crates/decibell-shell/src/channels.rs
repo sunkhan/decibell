@@ -27,7 +27,7 @@ use decibell_ui::{
 };
 use gpui::{
     AnyElement, App, ClickEvent, Context, DragMoveEvent, Entity, Hsla, IntoElement, MouseButton, MouseDownEvent, Pixels,
-    Point, Render, SharedString, Subscription, Window, deferred, div, point, prelude::*, px,
+    Point, Render, SharedString, Subscription, Window, div, point, prelude::*, px,
 };
 
 use crate::ink::Ink;
@@ -984,7 +984,8 @@ fn server_menu(server: ServerId, can_invite: bool, header: BoundsCell, cx: &Cont
         this.server_menu = false;
         cx.notify();
     };
-    deferred(
+    decibell_ui::layer(
+        2,
         div()
             .id("server-menu")
             .occlude()
@@ -1030,7 +1031,6 @@ fn server_menu(server: ServerId, can_invite: bool, header: BoundsCell, cx: &Cont
                 },
             ))),
     )
-    .with_priority(2)
 }
 
 /// The channel list's context menu (MANAGE_CHANNELS): settings and delete on a row, the create

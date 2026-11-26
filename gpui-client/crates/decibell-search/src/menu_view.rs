@@ -14,7 +14,7 @@ use decibell_text::{Engine, FontSpec, TextStyle, Wrapping};
 use decibell_ui::popover::visible_window_bounds;
 use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, ScrollArea, Switch, motion};
 use gpui::{
-    AnimationExt as _, AnyElement, Animation, ClickEvent, Context, Hsla, IntoElement, MouseMoveEvent, SharedString, Window, deferred,
+    AnimationExt as _, AnyElement, Animation, ClickEvent, Context, Hsla, IntoElement, MouseMoveEvent, SharedString, Window,
     div, prelude::*, px,
 };
 
@@ -129,7 +129,7 @@ impl SearchBox {
                 })
                 .into_any_element()
         };
-        deferred(placed).with_priority(1).into_any_element()
+        decibell_ui::layer(1, placed).into_any_element()
     }
 
     /// A row (`row` in `MenuBody`): `mx-1.5 h-9 gap-2.5 rounded-md px-2 text-[13px]`, the active

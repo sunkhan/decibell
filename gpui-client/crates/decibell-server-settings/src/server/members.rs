@@ -621,7 +621,7 @@ impl Render for MembersTab {
             );
         }
         options.push(SelectOption::new(-1i64, "No roles"));
-        let select = Select::options("members-role-filter", Some(self.role_filter), options).over_modal()
+        let select = Select::options("members-role-filter", Some(self.role_filter), options)
             .on_change(cx.listener(|this, v: &i64, _, cx| this.set_role_filter(*v, cx)));
         let heads = grid_row([
             SectionLabel::new("Member").into_any_element(),
@@ -1116,7 +1116,7 @@ impl MembersTab {
                 );
             }
             out.push(
-                Popover::new("member-menu", target.at).over_modal()
+                Popover::new("member-menu", target.at)
                     .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
                         this.menu = None;
                         cx.notify();
@@ -1162,7 +1162,7 @@ impl MembersTab {
                 );
             }
             out.push(
-                Popover::new("member-role-picker", target.at).over_modal()
+                Popover::new("member-role-picker", target.at)
                     .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
                         this.role_picker = None;
                         cx.notify();
@@ -1294,7 +1294,7 @@ impl MembersTab {
                         SelectOption::new(7 * 86400i64, "7 days"),
                         SelectOption::new(30 * 86400i64, "30 days"),
                     ],
-                ).over_modal()
+                )
                 .on_change(cx.listener(|this, v: &i64, _, cx| {
                     this.ban_duration = *v;
                     cx.notify();
@@ -1308,7 +1308,7 @@ impl MembersTab {
                         SelectOption::new(86400i32, "Last 24 hours"),
                         SelectOption::new(7 * 86400i32, "Last 7 days"),
                     ],
-                ).over_modal()
+                )
                 .on_change(cx.listener(|this, v: &i32, _, cx| {
                     this.purge = *v;
                     cx.notify();

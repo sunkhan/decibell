@@ -4,7 +4,7 @@
 
 use gpui::{
     AnyView, App, AppContext as _, Bounds, Context, ElementId, IntoElement, Pixels, Render,
-    RenderOnce, SharedString, Window, deferred, div, point, prelude::*, px,
+    RenderOnce, SharedString, Window, div, point, prelude::*, px,
 };
 
 use crate::motion::{self, Transition};
@@ -57,7 +57,8 @@ impl RenderOnce for Tooltip {
             self.anchor.right() + px(16.),
             (self.anchor.center().y - px(HEIGHT / 2.)).round(),
         );
-        deferred(
+        crate::layer::layer(
+            5,
             Placed::new(Placement::At(origin)).child(
                 div()
                     .flex_none()
@@ -77,7 +78,6 @@ impl RenderOnce for Tooltip {
                     ),
             ),
         )
-        .with_priority(5)
         .into_any_element()
     }
 }

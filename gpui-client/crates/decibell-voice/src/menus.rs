@@ -24,7 +24,7 @@ use decibell_model::{ChannelId, Model, ServerId, Uid, actions};
 use decibell_ui::{ActiveTheme as _, DismissEvent, Icon, IconName, Label, Placed, Placement, Popover, Side, Slider};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, IntoElement, KeyDownEvent, PathBuilder, Pixels,
-    Render, SharedString, Stateful, Subscription, Task, Window, canvas, deferred, div, linear_color_stop, linear_gradient, point,
+    Render, SharedString, Stateful, Subscription, Task, Window, canvas, div, linear_color_stop, linear_gradient, point,
     prelude::*, px,
 };
 
@@ -639,7 +639,7 @@ fn floating(id: &'static str, anchor: gpui::Point<Pixels>, prefer: Side, content
         .shadow(theme.shadow_modal.clone())
         .on_mouse_down_out(|_, _, cx| close_popover(cx))
         .child(content);
-    deferred(Placed::new(Placement::Menu { anchor, prefer }).child(card)).with_priority(4)
+    decibell_ui::layer(4, Placed::new(Placement::Menu { anchor, prefer }).child(card))
 }
 
 /// `DeviceContextMenu`: "INPUT DEVICE" / "OUTPUT DEVICE", Default then each device, a tick on

@@ -942,7 +942,7 @@ impl Render for RolesTab {
         let tile = self.custom_tile.get();
         let color_picker = self.color_picker.as_ref().map(|(picker, at, _)| {
             let at = if tile.size.width > px(0.) { point(tile.right() - px(PICKER_W), tile.bottom() + px(8.)) } else { *at };
-            Popover::new("role-color-picker", at).over_modal()
+            Popover::new("role-color-picker", at)
                 .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
                     this.color_picker = None;
                     cx.notify();
@@ -1551,7 +1551,7 @@ impl RolesTab {
         let label = if count > 0 { format!("Add {count} member{}", if count == 1 { "" } else { "s" }) } else { "Add members".to_string() };
         let b = self.add_button.get();
         let anchor = if b.size.width > px(0.) { point(b.right() - px(288.), b.bottom() + px(4.)) } else { p.anchor };
-        Popover::new("add-members", anchor).over_modal()
+        Popover::new("add-members", anchor)
             .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
                 this.add_picker = None;
                 cx.notify();

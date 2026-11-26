@@ -22,7 +22,7 @@ use decibell_ui::{ActiveTheme as _, FontRole, Label, StatusDot, title_tooltip};
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
     ImageSource, IntoElement, KeyDownEvent, MouseDownEvent, ObjectFit, Render, SharedString, Subscription, Task,
-    Window, deferred, div, img, point, prelude::*, px,
+    Window, div, img, point, prelude::*, px,
 };
 
 use super::role_chips;
@@ -451,7 +451,8 @@ impl Render for ProfilePopup {
             |card, t| card.opacity(t).top(px(6. * (1. - t))),
         );
         let anchor = point(px(open.anchor.x), px(open.anchor.y));
-        deferred(
+        decibell_ui::layer(
+            5,
             div()
                 .id("profile-popup-layer")
                 .absolute()
@@ -461,7 +462,6 @@ impl Render for ProfilePopup {
                 .on_mouse_down(gpui::MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, window, cx| this.close(window, cx)))
                 .child(Clamped::new(anchor).child(entrance)),
         )
-        .with_priority(5)
         .into_any_element()
     }
 }

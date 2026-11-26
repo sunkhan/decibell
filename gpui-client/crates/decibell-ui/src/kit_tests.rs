@@ -55,6 +55,11 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(kit_scroll(cx)),
         },
         SelfTest {
+            name: "kit-layers",
+            about: "inside a modal: an open select, a context menu and a tooltip are drawn above it (crate::layer) and take the clicks there",
+            run: |cx| Box::pin(kit_layers(cx)),
+        },
+        SelfTest {
             name: "kit-toast",
             about: "a toast appears, its timer dismisses it, and no timer or frame is left",
             run: |cx| Box::pin(kit_toast(cx)),
@@ -867,5 +872,65 @@ async fn kit_toast(cx: TestCx) -> Result<()> {
     .await;
     close(&window);
     cx.update(|_, cx| Toasts::dismiss_all(cx))?;
+    result
+}
+
+// ── kit-layers ──────────────────────────────────────────────────────────────────────────────
+
+/// What opens inside a modal stacks above it (`crate::layer`): the select's menu, the context
+/// menu and the tooltip are each one layer above the modal, and the select's option and the menu's
+/// row take the clicks (the pixels: `tests/layers.rs`, a headless capture of the same screen).
+async fn kit_layers(cx: TestCx) -> Result<()> {
+    use crate::kit::KitLayers;
+    // The menus close when the window loses the focus: hold it "active" (other windows share the
+    // desktop).
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(Some(true), cx))?;
+    let (window, view) = open(&cx, |_, cx| cx.new(KitLayers::new).into())?;
+    let fixture = view.downcast::<KitLayers>().map_err(|_| anyhow::anyhow!("not the layers fixture"))?;
+    let result = async {
+        window.settle().await?;
+        let read = |w: &TestCx| w.update(|_, cx| {
+            let f = fixture.read(cx);
+            (f.select.is_open(cx), f.select.active(cx), f.value, f.picked, f.trigger.get(), f.card.get())
+        });
+        let (open, active, value, _, trigger, card) = read(&window)?;
+        ensure!(open, "the select didn't open");
+        window.log(format_args!("the dialog at {card:?}; the select open on option {value} (active {active:?})"));
+        let origin = window.update(|window, cx| visible_window_bounds(window, cx).origin)?;
+
+        // The select's menu: hover down past the trigger until another row is active, click it.
+        let mut at = None;
+        let mut y = trigger.bottom() + px(8.);
+        while y < trigger.bottom() + px(400.) {
+            let position = point(trigger.left() + px(40.), y);
+            mouse_move(&window, position)?;
+            window.settle().await?;
+            if let (_, Some(a), ..) = read(&window)?
+                && Some(a) != active
+            {
+                at = Some((position, a));
+                break;
+            }
+            y += px(6.);
+        }
+        let (position, row) = at.context("no row of the select's menu took the pointer")?;
+        click(&window, position)?;
+        window.settle().await?;
+        let (open, _, value, ..) = read(&window)?;
+        window.log(format_args!("clicked row {row} of the menu at {position:?}: option {value} chosen, open {open}"));
+        ensure!(value == row + 1 && !open, "the click on the select's menu didn't choose (value {value}, row {row})");
+
+        // The context menu on the backdrop: its first row.
+        let first = origin + point(px(KitLayers::MENU_AT.0 + 40.), px(KitLayers::MENU_AT.1 + 18.));
+        click(&window, first)?;
+        window.settle().await?;
+        let picked = read(&window)?.3;
+        window.log(format_args!("clicked the context menu's first row: {picked:?}"));
+        ensure!(picked == Some("Mark as read"), "the context menu over the modal didn't take the click ({picked:?})");
+        Ok(())
+    }
+    .await;
+    close(&window);
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(None, cx))?;
     result
 }

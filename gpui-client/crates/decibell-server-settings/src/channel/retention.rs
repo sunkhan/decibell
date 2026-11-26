@@ -46,7 +46,7 @@ impl ChannelSettingsWindow {
             if !preset {
                 options.push(SelectOption::new(value, format!("{value} days")).hint("Custom"));
             }
-            let select = Select::options(("retention", i), Some(value), options).over_modal()
+            let select = Select::options(("retention", i), Some(value), options)
                 .size(SelectSize::Sm)
                 .disabled(!editable)
                 .searchable(false)

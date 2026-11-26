@@ -11,7 +11,7 @@ use decibell_theme::ThemeId;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Bounds, DispatchPhase, ElementId, Entity, Focusable as _, Hsla,
     IntoElement, MouseButton, Pixels, RenderOnce, ScrollEvent, SharedString, Transformation,
-    Window, canvas, deferred, div, linear_color_stop, linear_gradient, prelude::*, px,
+    Window, canvas, div, linear_color_stop, linear_gradient, prelude::*, px,
     radians, svg,
 };
 
@@ -228,6 +228,12 @@ impl SelectHandle {
         Self(cx.new(|_| SelectState::new(false)))
     }
 
+    /// A handle whose select opens the first time it is drawn with `initially_open` (galleries
+    /// and tests: `initially_open` alone opens only a select without a handle).
+    pub fn new_open(cx: &mut App) -> Self {
+        Self(cx.new(|_| SelectState::new(true)))
+    }
+
     pub fn is_open(&self, cx: &App) -> bool {
         self.0.read(cx).open
     }
@@ -297,13 +303,6 @@ impl<T: Clone + PartialEq + 'static> Select<T> {
             on_change: None,
             menu_priority: 3,
         }
-    }
-
-    /// Inside a modal (a settings window): the menu draws over the modal's layer, which GPUI
-    /// would otherwise paint on top of it.
-    pub fn over_modal(mut self) -> Self {
-        self.menu_priority = crate::popover::MODAL_PRIORITY + 3;
-        self
     }
 
     /// Share the open state with the owner.
@@ -1059,7 +1058,8 @@ fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut W
                 .into_any_element()
         }
     };
-    deferred(placed.child(animated)).with_priority(priority).into_any_element()
+    // Above whatever layer the select is in (a modal: `crate::layer`).
+    crate::layer::layer(priority, placed.child(animated)).into_any_element()
 }
 
 struct OptionRow<'a, T: Clone + PartialEq + 'static> {

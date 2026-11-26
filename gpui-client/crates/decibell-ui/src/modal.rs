@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, ElementId, FocusHandle, Hsla, IntoElement, MouseButton, ParentElement,
-    Pixels, RenderOnce, SharedString, Window, deferred, div, prelude::*, px,
+    Pixels, RenderOnce, SharedString, Window, div, prelude::*, px,
 };
 
 use crate::motion::{self, Transition};
@@ -241,8 +241,9 @@ impl RenderOnce for Modal {
                 }
             })
             .child(content);
-        deferred(Placed::new(Placement::At(bounds.origin)).child(layer))
-            .with_priority(10)
+        // A modal opened inside another layer (a confirmation in a settings window) stacks above
+        // it (`crate::layer`).
+        crate::layer::layer(crate::popover::MODAL_PRIORITY, Placed::new(Placement::At(bounds.origin)).child(layer))
             .into_any_element()
     }
 }

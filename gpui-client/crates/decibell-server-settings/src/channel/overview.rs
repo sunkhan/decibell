@@ -76,7 +76,7 @@ impl ChannelSettingsWindow {
                 "channel-slowmode",
                 Some(draft.slowmode),
                 SLOWMODE.iter().map(|(v, l)| SelectOption::new(*v, *l)).collect(),
-            ).over_modal()
+            )
             .size(SelectSize::Sm)
             .disabled(!editable)
             .searchable(false)

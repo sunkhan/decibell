@@ -921,6 +921,80 @@ impl Render for KitScroll {
 }
 
 /// The kit's screens (see `decibell_harness::Screen`).
+/// `kit-layers`: a modal with what opens inside one: a select's menu dropping past the dialog's
+/// bottom edge, a context menu and a rail-style tooltip placed on the backdrop beside the dialog.
+/// Every one of them must be drawn above the modal and take the clicks there (`crate::layer`): the
+/// `kit-layers` self-test clicks them, `tests/layers.rs` reads their pixels.
+pub struct KitLayers {
+    pub value: usize,
+    pub picked: Option<&'static str>,
+    pub select: crate::SelectHandle,
+    /// Where the dialog card and the select were last laid out (window coordinates).
+    pub card: Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    pub trigger: Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+}
+
+impl KitLayers {
+    /// The context menu's anchor and the tooltip's anchor, on the backdrop left of the dialog
+    /// (relative to the visible window's origin).
+    pub const MENU_AT: (f32, f32) = (80., 120.);
+    pub const TOOLTIP_AT: (f32, f32, f32, f32) = (80., 420., 40., 40.);
+
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            value: 1,
+            picked: None,
+            select: crate::SelectHandle::new_open(cx),
+            card: Rc::default(),
+            trigger: Rc::default(),
+        }
+    }
+}
+
+fn record_bounds(cell: &Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>) -> impl IntoElement {
+    let cell = cell.clone();
+    // `inset_0`: an absolute box without insets sits at its static position (after the padding).
+    gpui::canvas(move |bounds, _, _| cell.set(bounds), |_, _, _, _| {}).absolute().inset_0()
+}
+
+impl Render for KitLayers {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let origin = visible_window_bounds(window, cx).origin;
+        let options = (1..=6).map(|i| SelectOption::new(i, format!("Option {i}"))).collect::<Vec<_>>();
+        let select = Select::options("layers-select", Some(self.value), options)
+            .track(&self.select)
+            .initially_open()
+            .on_change(cx.listener(|this, value: &usize, _, cx| {
+                this.value = *value;
+                cx.notify();
+            }));
+        let menu = ContextMenu::new("layers-menu", origin + point(px(Self::MENU_AT.0), px(Self::MENU_AT.1)))
+            .entry(MenuItem::new("Mark as read").on_click(cx.listener(|this, _, _, cx| {
+                this.picked = Some("Mark as read");
+                cx.notify();
+            })))
+            .entry(MenuItem::new("Copy link").on_click(cx.listener(|this, _, _, cx| {
+                this.picked = Some("Copy link");
+                cx.notify();
+            })));
+        let (x, y, w, h) = Self::TOOLTIP_AT;
+        let tooltip = Tooltip::new("layers-tooltip", "Audio", gpui::Bounds::new(origin + point(px(x), px(y)), gpui::size(px(w), px(h)))).shown(true);
+        let card = crate::dialog_card(360., cx)
+            .relative()
+            .child(record_bounds(&self.card))
+            .child(Label::new("Layers").size(16.).weight(600.).color(theme.color_text_primary))
+            .child(div().mt_2().child(Label::new("Everything opened in here is drawn above it.").size(13.).color(theme.color_text_muted)))
+            .child(div().mt_4().relative().child(record_bounds(&self.trigger)).child(select))
+            .child(menu)
+            .child(tooltip);
+        div()
+            .size_full()
+            .bg(theme.color_bg_primary)
+            .child(crate::Modal::new("layers-modal", true).child(card))
+    }
+}
+
 pub fn screens() -> Vec<decibell_harness::Screen> {
     use decibell_harness::Screen;
     vec![
@@ -952,6 +1026,14 @@ pub fn screens() -> Vec<decibell_harness::Screen> {
                     volume: 50.,
                 })
                 .into()
+            },
+        },
+        Screen {
+            name: "kit-layers",
+            about: "A modal with an open select, a context menu and a tooltip inside it, all drawn above it",
+            build: |_, cx| {
+                settle_motion_for_capture(cx);
+                cx.new(KitLayers::new).into()
             },
         },
         Screen {

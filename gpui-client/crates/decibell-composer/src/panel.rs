@@ -17,7 +17,7 @@ use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, ScrollArea,
 use gpui::Focusable as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId, Entity, GlobalElementId, InspectorElementId, IntoElement, KeyDownEvent,
-    LayoutId, Pixels, Render, SharedString, Style, Subscription, WeakEntity, Window, deferred, div, point, prelude::*, px,
+    LayoutId, Pixels, Render, SharedString, Style, Subscription, WeakEntity, Window, div, point, prelude::*, px,
 };
 
 use crate::Composer;
@@ -484,12 +484,12 @@ pub fn snippet_menu(anchor: Bounds<Pixels>, composer: WeakEntity<Composer>, cx: 
         })
         .child(item("snippet-code", SnippetKind::Code, "Code", cx))
         .child(item("snippet-math", SnippetKind::Math, "Math", cx));
-    deferred(Above::new(px(8.), true, menu)).with_priority(2)
+    decibell_ui::layer(2, Above::new(px(8.), true, menu))
 }
 
 /// The panel over the card (put in the card): as wide as the card, its bottom 8 px above it.
 pub fn panel_layer(panel: Entity<SnippetPanel>) -> impl IntoElement + use<> {
-    deferred(Above::new(px(8.), false, div().w_full().child(panel))).with_priority(1)
+    decibell_ui::layer(1, Above::new(px(8.), false, div().w_full().child(panel)))
 }
 
 #[cfg(test)]

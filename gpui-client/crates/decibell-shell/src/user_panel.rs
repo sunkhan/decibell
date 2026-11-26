@@ -20,7 +20,7 @@ use decibell_model::{Model, actions};
 use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, Placed, Placement, Side, StatusDot, title_tooltip};
 use gpui::{
     App, ClickEvent, Context, Entity, IntoElement, MouseButton, Pixels, Point, Render, SharedString, Window,
-    canvas, deferred, div, point, prelude::*, px,
+    canvas, div, point, prelude::*, px,
 };
 
 gpui::actions!(
@@ -693,5 +693,5 @@ fn status_menu(
         .child(custom)
         .child(div().mx_1p5().my_1().h(px(1.)).bg(t.color_border_divider))
         .children(options);
-    deferred(Placed::new(Placement::Menu { anchor: at, prefer: Side::Above }).child(panel)).with_priority(3)
+    decibell_ui::layer(3, Placed::new(Placement::Menu { anchor: at, prefer: Side::Above }).child(panel))
 }

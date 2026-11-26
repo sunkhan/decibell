@@ -2244,6 +2244,7 @@ dependencies = [
  "decibell-text",
  "decibell-theme",
  "gpui",
+ "gpui_platform",
  "gpui_wgpu",
 ]
 

@@ -27,7 +27,7 @@ use decibell_ui::{ActiveTheme as _, FontRole, Label, ScrollAlign, ScrollArea, Sc
 use gpui::Focusable as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, ClipboardEntry, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, IntoElement,
-    KeyDownEvent, Pixels, Render, SharedString, Subscription, Task, WeakEntity, Window, canvas, deferred, div, prelude::*, px,
+    KeyDownEvent, Pixels, Render, SharedString, Subscription, Task, WeakEntity, Window, canvas, div, prelude::*, px,
 };
 
 use crate::chrome;
@@ -906,7 +906,7 @@ impl Render for Composer {
             .child(track_bounds(self.snippet_anchor.clone()))
             .children(menu);
         // `absolute bottom-full right-0 mb-2`: the picker's right edge on the button's, 8 px above.
-        let picker = self.picker.clone().map(|picker| deferred(crate::panel::Above::new(px(8.), true, picker)).with_priority(2));
+        let picker = self.picker.clone().map(|picker| decibell_ui::layer(2, crate::panel::Above::new(px(8.), true, picker)));
         let emoji_button = div()
             .relative()
             .child(
@@ -1036,7 +1036,8 @@ impl Composer {
 /// it takes the drop anywhere (`useDragDrop` attaches to the active channel), unless a drop
 /// target of its own claimed the drag (`DragState::hovered` set to another key).
 fn drop_catcher(window: &Window, cx: &mut Context<Composer>) -> AnyElement {
-    deferred(
+    decibell_ui::layer(
+        0,
         gpui::anchored().position_mode(gpui::AnchoredPositionMode::Window).position(gpui::point(px(0.), px(0.))).child(
             div()
                 .id("drop-catcher")
@@ -1049,6 +1050,5 @@ fn drop_catcher(window: &Window, cx: &mut Context<Composer>) -> AnyElement {
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.dropped(paths, cx))),
         ),
     )
-    .with_priority(0)
     .into_any_element()
 }

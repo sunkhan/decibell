@@ -138,6 +138,12 @@ control is a tab stop and Enter / Space activate it; `decibell_ui::init` binds T
   layer; `Tooltip::new(id, "Audio", bounds).shown(hovered)` (the settings rail's label) and
   `title_tooltip("…")` for GPUI's `.tooltip(…)`; `Toasts::push(cx, Toast::error("…").body(…).action(…))`
   with one `ToastStack::new()` in the **root** view (not inside a cached view).
+- **Layers**: GPUI paints deferred draws by bare priority, whatever they were opened in. Build every overlay
+  element with `decibell_ui::layer(own, child)` instead of `deferred(child).with_priority(own)`: inside
+  another layer its priority is the enclosing one's plus `own`, so whatever opens in a modal (a select's menu,
+  a context menu, a popover, a tooltip, a confirmation) is drawn above it with no flag to remember; the kit's
+  overlays all do (`layer.rs` has the base priorities; toasts sit at `TOAST_PRIORITY`, above any nesting).
+  Self-test `kit-layers` (clicks), `cargo test -p decibell-ui --test layers` (pixels).
 - Structure: `SettingsWindow::new(id, open, &scroll).nav_label(…).item(NavItem::new(id, icon, "Audio")
   .active(…).dot(dirty).probe(key)).foot_item(…).title(…).context(…).on_close(…).child(tab)` (folds to the 64 px rail
   below 1024 px); `SaveBar::new(id, &pane_scroll, dirty, nudge).saving(…).on_reset(…).on_save(…)` (bump
@@ -416,8 +422,8 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
   the pane's viewport (`rows::PaneRows`: uniform or measured heights, measured once per width) inside the one
   settings scroll; toolbars stick with `rows::StickyTop`. Member lists come from the server's search
   (`member_search::MemberSearch`, patched by roster deltas), never from the roster store.
-- **Over a modal.** GPUI paints deferred layers by priority alone, so a popover or select opened inside a
-  modal must be built `.over_modal()` (`Popover`, `Select`), or it is drawn under the modal.
+- **Over a modal.** Nothing to ask for: a popover, select menu, context menu or tooltip opened inside a modal
+  is drawn above it (`decibell_ui::layer`, kit section "Layers").
 - **Mixed-style sentences** (audit entries, counts with inline dots / avatars) are one paragraph
   (`sentence::Sentence` over `decibell_text`), with inline boxes filled by elements; an inline box only as
   tall as the part above the baseline keeps the CSS line height.
