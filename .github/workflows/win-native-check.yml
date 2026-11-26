@@ -177,12 +177,16 @@ jobs:
           version: "27.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The same pinned vcpkg FFmpeg, and the same binary cache, as the job above.
+      # The same pinned vcpkg as the job above, but the client's FFmpeg: the overlay ports in
+      # gpui-client/tools/vcpkg-overlay add the SVT-AV1 software encoder (`svt-av1`, SVT-AV1
+      # 4.2.0) and `dav1d` (the AV1 software decoder); decibell-app's build.rs refuses an
+      # FFmpeg without them. Its own binary cache: the overlay changes the packages' ABI hashes,
+      # and a key shared with the addon job would keep whichever job saved first.
       - name: Cache vcpkg binaries
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-archives-ffmpeg-e5a1490e-x64-windows
+          key: vcpkg-archives-ffmpeg-e5a1490e-svtav1-x64-windows-${{ hashFiles('gpui-client/tools/vcpkg-overlay/**') }}
 
       - name: Install FFmpeg via vcpkg
         shell: pwsh
@@ -190,7 +194,9 @@ jobs:
           git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
           git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
           & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv,dav1d,svt-av1]:x64-windows" `
+            "--overlay-ports=$env:GITHUB_WORKSPACE\gpui-client\tools\vcpkg-overlay"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: cargo check
