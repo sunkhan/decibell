@@ -65,21 +65,25 @@ mod tests {
 
     #[test]
     fn names_are_unique_and_the_default_screen_exists() {
-        let mut names: Vec<_> = screens().iter().map(|screen| screen.name).collect();
-        assert!(names.contains(&DEFAULT_SCREEN));
-        names.extend(selftests().iter().map(|test| test.name));
-        for name in &names {
-            assert!(
-                name.chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
-                "{name}"
-            );
-            assert_ne!(*name, "all");
-            assert_ne!(*name, "list");
+        // Screens (`--screen`) and self-tests (`--selftest`) are two namespaces: a screen and the
+        // test that exercises it may share a name (`kit-scroll`), two screens or two tests may not.
+        let screens: Vec<_> = screens().iter().map(|screen| screen.name).collect();
+        let tests: Vec<_> = selftests().iter().map(|test| test.name).collect();
+        assert!(screens.contains(&DEFAULT_SCREEN));
+        for (kind, names) in [("screen", &screens), ("self-test", &tests)] {
+            for name in names {
+                assert!(
+                    name.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                    "{name}"
+                );
+                assert_ne!(*name, "all");
+                assert_ne!(*name, "list");
+            }
+            let mut sorted = names.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), names.len(), "duplicate {kind} name");
         }
-        let count = names.len();
-        names.sort();
-        names.dedup();
-        assert_eq!(names.len(), count, "duplicate screen or self-test name");
     }
 }

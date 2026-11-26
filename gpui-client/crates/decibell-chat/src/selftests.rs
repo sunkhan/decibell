@@ -142,8 +142,8 @@ impl Harness {
 
     fn key(&self, keystroke: &'static str) -> Result<()> {
         let keystroke = Keystroke::parse(keystroke)?;
-        self.input(PlatformInput::KeyDown(KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }))?;
-        self.input(PlatformInput::KeyUp(KeyUpEvent { keystroke }))
+        self.input(PlatformInput::KeyDown(KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false, code: gpui::KeyCode::Unknown }))?;
+        self.input(PlatformInput::KeyUp(KeyUpEvent { keystroke, code: gpui::KeyCode::Unknown }))
     }
 
     /// Waits until the list has measured every row and stopped drawing.
