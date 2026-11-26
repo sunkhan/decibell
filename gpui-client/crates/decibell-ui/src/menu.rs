@@ -137,6 +137,7 @@ pub struct ContextMenu {
     width: Option<Pixels>,
     entries: Vec<MenuEntry>,
     on_dismiss: Option<Handler>,
+    sidebar: bool,
 }
 
 impl ContextMenu {
@@ -148,7 +149,18 @@ impl ContextMenu {
             width: None,
             entries: Vec::new(),
             on_dismiss: None,
+            sidebar: false,
         }
+    }
+
+    /// The channel list's menu (`ServerChannelsSidebar`'s context menu and its `ContextMenuItem`
+    /// rows): `rounded-md p-[5px]`, rows `rounded-sm px-2.5 py-[8px] text-[13px]` in
+    /// `text-text-secondary` (danger: `text-text-muted`, `hover:text-error hover:bg-error/10`),
+    /// no icons. Drawn in the sidebar's DOM, it takes the chrome's palette: build it inside
+    /// [`crate::chrome_scope`].
+    pub fn sidebar(mut self) -> Self {
+        self.sidebar = true;
+        self
     }
 
     pub fn prefer(mut self, side: Side) -> Self {
@@ -196,7 +208,7 @@ impl RenderOnce for ContextMenu {
                     if !item.disabled {
                         handles.push(focus.clone());
                     }
-                    rows.push(menu_row(row_id, item, focus, dismiss.clone(), window, cx));
+                    rows.push(menu_row(row_id, item, focus, dismiss.clone(), self.sidebar, window, cx));
                 }
                 MenuEntry::Separator => {
                     let theme = cx.theme();
@@ -249,12 +261,12 @@ impl RenderOnce for ContextMenu {
             .when_some(self.width, |this, width| this.w(width))
             .max_h(max_height)
             .overflow_hidden()
-            .rounded(theme.radius_lg)
+            .rounded(if self.sidebar { theme.radius_md } else { theme.radius_lg })
             .border_1()
             .border_color(theme.color_border)
             .bg(theme.color_bg_light)
             .shadow(theme.shadow_float.clone())
-            .p_1()
+            .map(|this| if self.sidebar { this.p(px(5.)) } else { this.p_1() })
             .on_key_down(move |event, window, cx| {
                 let key = event.keystroke.key.as_str();
                 if !matches!(key, "down" | "up" | "home" | "end") || handles.is_empty() {
@@ -290,9 +302,13 @@ fn menu_row(
     item: MenuItem,
     focus: FocusHandle,
     dismiss: Handler,
+    sidebar: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    if sidebar {
+        return sidebar_row(id, item, focus, dismiss, window, cx);
+    }
     let expand_t = item.expanded.map(|expanded| {
         motion::transition_flag(window, cx, (id.clone(), "expanded"), expanded, Transition::TAILWIND)
     });
@@ -369,5 +385,48 @@ fn menu_row(
                     .with_transformation(Transformation::rotate(radians(std::f32::consts::FRAC_PI_2 * t))),
             )
         })
+        .into_any_element()
+}
+
+/// `ContextMenuItem` (ServerChannelsSidebar): `flex w-full items-center rounded-sm px-2.5 py-[8px]
+/// text-[13px]`, `text-text-secondary hover:bg-surface-hover hover:text-text-primary`; danger
+/// `text-text-muted hover:bg-error/10 hover:text-error`. The label takes the row's colour (it
+/// changes on hover).
+fn sidebar_row(id: ElementId, item: MenuItem, focus: FocusHandle, dismiss: Handler, window: &mut Window, cx: &mut App) -> AnyElement {
+    let theme = cx.theme();
+    let focused = focus.is_focused(window) && window.last_input_was_keyboard();
+    let (fg, fg_hover, bg_hover) = if item.danger {
+        (theme.color_text_muted, theme.color_error, theme.color_error.opacity(0.1))
+    } else {
+        (theme.color_text_secondary, theme.color_text_primary, theme.color_surface_hover)
+    };
+    let keep_open = item.keep_open;
+    let on_click = item.on_click.clone();
+    div()
+        .id(id)
+        .track_focus(&focus)
+        .flex()
+        .w_full()
+        .items_center()
+        .rounded(theme.radius_sm)
+        .px_2p5()
+        .py(px(8.))
+        .text_color(fg)
+        .when(focused, |this| this.bg(bg_hover).text_color(fg_hover))
+        .map(|this| {
+            if item.disabled {
+                this.opacity(0.4)
+            } else {
+                this.cursor_pointer().hover(move |style| style.bg(bg_hover).text_color(fg_hover)).on_click(move |event, window, cx| {
+                    if let Some(handler) = &on_click {
+                        handler(event, window, cx);
+                    }
+                    if !keep_open {
+                        dismiss(window, cx);
+                    }
+                })
+            }
+        })
+        .child(Label::new(item.label).size(13.).truncate())
         .into_any_element()
 }

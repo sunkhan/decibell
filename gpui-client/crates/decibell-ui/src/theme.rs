@@ -17,7 +17,7 @@ use decibell_theme::{
     Color, DEFAULT_ROW_SCALE, DEFAULT_TEXT_SIZE_PX, LengthPct, Palette, Scaled, ShadowLayer,
     ThemeId, clamp_row_scale, clamp_text_size_px, scaled,
 };
-use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, SharedString, px};
+use gpui::{App, BoxShadow, Global, Hsla, IntoElement, Pixels, Rgba, SharedString, px};
 
 use crate::fonts;
 
@@ -119,6 +119,9 @@ pub struct Theme {
     text_size: f32,
     row_scale: f32,
     fonts: [SharedString; 8],
+    /// The same theme seen from inside `.chrome-scope` (its base tokens are the chrome's): what
+    /// [`ActiveTheme::theme`] answers inside [`chrome_scope`]. `None` on that copy itself.
+    chrome_view: Option<Box<Theme>>,
 }
 
 impl Deref for Theme {
@@ -133,7 +136,14 @@ impl Global for Theme {}
 
 impl Theme {
     fn new(id: ThemeId, text_size: f32, row_scale: f32) -> Self {
-        let palette = id.palette();
+        let mut theme = Self::scoped(id, id.palette(), text_size, row_scale);
+        // In the chrome every token is the chrome's (console-split is the only theme where the
+        // two differ).
+        theme.chrome_view = Some(Box::new(Self::scoped(id, id.chrome_palette(), text_size, row_scale)));
+        theme
+    }
+
+    fn scoped(id: ThemeId, palette: &'static Palette, text_size: f32, row_scale: f32) -> Self {
         let family = |token, stretch| SharedString::new_static(fonts::family(token, stretch));
         Self {
             id,
@@ -158,6 +168,7 @@ impl Theme {
                 family(palette.font_tile, palette.t_tile_stretch),
                 family(palette.font_tile, palette.t_wordmark_stretch),
             ],
+            chrome_view: None,
         }
     }
 
@@ -213,7 +224,103 @@ pub trait ActiveTheme {
 
 impl ActiveTheme for App {
     fn theme(&self) -> &Theme {
-        self.global::<Theme>()
+        let theme = self.global::<Theme>();
+        if CHROME_SCOPE.with(|depth| depth.get() > 0) {
+            return theme.chrome_view.as_deref().unwrap_or(theme);
+        }
+        theme
+    }
+}
+
+thread_local! {
+    static CHROME_SCOPE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// CSS's `.chrome-scope` for whatever `child` draws: while it is laid out, prepainted and painted,
+/// `cx.theme()` answers the chrome's tokens as the base ones, so kit components inside (a
+/// confirmation, a menu, their buttons) take the sidebar's palette as the renderer's do when they
+/// are rendered inside the sidebar's DOM (console-split is the only theme where it differs). Views
+/// that draw the chrome themselves keep reading `theme.chrome` explicitly.
+pub fn chrome_scope(child: impl IntoElement) -> ChromeScope {
+    ChromeScope { child: Some(child.into_any_element()) }
+}
+
+pub struct ChromeScope {
+    child: Option<gpui::AnyElement>,
+}
+
+pub(crate) struct InChrome;
+
+/// Inside a [`chrome_scope`] now (a layer built here keeps it for its deferred draw).
+pub(crate) fn in_chrome() -> bool {
+    CHROME_SCOPE.with(|depth| depth.get() > 0)
+}
+
+impl InChrome {
+    pub(crate) fn enter() -> Self {
+        CHROME_SCOPE.with(|depth| depth.set(depth.get() + 1));
+        InChrome
+    }
+}
+
+impl Drop for InChrome {
+    fn drop(&mut self) {
+        CHROME_SCOPE.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+impl gpui::Element for ChromeScope {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        let _scope = InChrome::enter();
+        (self.child.as_mut().expect("the scope's content").request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        _: &mut (),
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) {
+        let _scope = InChrome::enter();
+        if let Some(child) = &mut self.child {
+            child.prepaint(window, cx);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut gpui::Window,
+        cx: &mut App,
+    ) {
+        let _scope = InChrome::enter();
+        if let Some(child) = &mut self.child {
+            child.paint(window, cx);
+        }
     }
 }
 

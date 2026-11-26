@@ -26,6 +26,7 @@ mod menu;
 pub mod modal;
 pub mod motion;
 pub mod popover;
+mod runs;
 pub mod scroll;
 mod select;
 pub mod settings;
@@ -71,7 +72,8 @@ pub use spinner::Spinner;
 pub use toggles::{Checkbox, Segment, SegmentedControl, Switch};
 pub use icon::{Icon, IconName};
 pub use text::Label;
-pub use theme::{ActiveTheme, FontRole, Theme, Tokens, box_shadows, hsla};
+pub use theme::{ActiveTheme, ChromeScope, FontRole, Theme, Tokens, box_shadows, chrome_scope, hsla};
+pub use runs::{Runs, run_style};
 pub use titlebar::{CloseHandler, TITLEBAR_HEIGHT, TitleBar, request_window_close};
 pub use window_frame::{
     AssumeClientDecorations, outer_window_size, window_corner_radius, window_frame,

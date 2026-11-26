@@ -169,8 +169,18 @@ impl Render for LeaveServerOverlay {
             let overlays = model.overlays.clone();
             move |cx: &mut App| overlays.update(cx, |o, cx| o.close_modal(cx))
         };
-        ConfirmModal::new("leave-server", open, "Leave server", "Leave")
-            .message(SharedString::from(format!("Leave {name}? You will need a new invite to rejoin.")))
+        // `LeaveServerConfirmModal` is rendered inside the server sidebar: the chrome's palette
+        // (console-split), and the name in `font-semibold text-text-primary` inside the
+        // `mt-2 text-[13px] text-text-secondary` sentence.
+        let chrome = &cx.theme().chrome;
+        let (secondary, primary) = (chrome.color_text_secondary, chrome.color_text_primary);
+        let sentence = decibell_ui::Runs::new(vec![
+            ("Leave ".to_string(), decibell_ui::run_style(FontRole::Sans, 13., 400., secondary, cx)),
+            (name.to_string(), decibell_ui::run_style(FontRole::Sans, 13., 600., primary, cx)),
+            ("? You will need a new invite to rejoin.".to_string(), decibell_ui::run_style(FontRole::Sans, 13., 400., secondary, cx)),
+        ]);
+        let confirm = ConfirmModal::new("leave-server", open, "Leave server", "Leave")
+            .child(div().mt_2().child(sentence))
             .on_cancel({
                 let close = close.clone();
                 move |_: &ClickEvent, _, cx| close(cx)
@@ -195,7 +205,8 @@ impl Render for LeaveServerOverlay {
                     });
                 }
                 close(cx);
-            })
+            });
+        decibell_ui::chrome_scope(confirm)
     }
 }
 

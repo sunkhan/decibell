@@ -1041,8 +1041,11 @@ fn channel_context_menu(
     channels: &[Channel],
     cx: &mut Context<ChannelSidebar>,
 ) -> impl IntoElement + use<> {
+    // `w-[190px] rounded-md border border-border bg-bg-light p-[5px] shadow-float` with
+    // `ContextMenuItem` rows, in the sidebar's DOM: the chrome's palette.
     let mut menu = ContextMenu::new("channel-menu", at)
         .width(px(190.))
+        .sidebar()
         .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| this.close_menus(cx)));
     match &target {
         ChannelMenuTarget::Empty { server } => {
@@ -1082,5 +1085,5 @@ fn channel_context_menu(
     for extension in extensions {
         extra.extend(extension(&target, cx));
     }
-    menu.entries(extra)
+    decibell_ui::chrome_scope(menu.entries(extra))
 }

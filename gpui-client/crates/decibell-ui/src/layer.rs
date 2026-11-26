@@ -48,13 +48,16 @@ pub fn priority(own: usize) -> usize {
 /// doc). Use it for every overlay element instead of GPUI's `deferred`.
 pub fn layer(own: usize, child: impl IntoElement) -> Deferred {
     let priority = priority(own);
-    deferred(Scope { priority, child: Some(child.into_any_element()) }).with_priority(priority)
+    let chrome = crate::theme::in_chrome();
+    deferred(Scope { priority, chrome, child: Some(child.into_any_element()) }).with_priority(priority)
 }
 
 /// A layer's content: while it is laid out, prepainted and painted, layers built inside it stack
-/// on its priority.
+/// on its priority, and a layer built inside [`crate::chrome_scope`] keeps the chrome's palette
+/// for its deferred prepaint and paint.
 pub struct Scope {
     priority: usize,
+    chrome: bool,
     child: Option<AnyElement>,
 }
 
@@ -95,6 +98,7 @@ impl Element for Scope {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         let _scope = Pushed::new(self.priority);
+        let _chrome = self.chrome.then(crate::theme::InChrome::enter);
         let layout_id = self.child.as_mut().expect("a layer's content").request_layout(window, cx);
         (layout_id, ())
     }
@@ -109,6 +113,7 @@ impl Element for Scope {
         cx: &mut App,
     ) {
         let _scope = Pushed::new(self.priority);
+        let _chrome = self.chrome.then(crate::theme::InChrome::enter);
         if let Some(child) = &mut self.child {
             child.prepaint(window, cx);
         }
@@ -125,6 +130,7 @@ impl Element for Scope {
         cx: &mut App,
     ) {
         let _scope = Pushed::new(self.priority);
+        let _chrome = self.chrome.then(crate::theme::InChrome::enter);
         if let Some(child) = &mut self.child {
             child.paint(window, cx);
         }
