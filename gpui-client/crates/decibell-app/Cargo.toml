@@ -41,6 +41,9 @@ dev = [
     "decibell-search/fixtures",
     "decibell-servers/fixtures",
     "decibell-release/test-hooks",
+    # The avatar self-test reads the stack's accounts.json and checks the saved JPEG.
+    "dep:serde_json",
+    "image/jpeg",
 ]
 ship = ["decibell-release/ship", "decibell-harness/ship"]
 capture = ["dev", "gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu"]

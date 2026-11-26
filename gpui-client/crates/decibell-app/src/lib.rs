@@ -19,10 +19,12 @@
 //! - [`render_cost`]: the self-test that measures what a change costs in views rendered.
 //! - [`software_codecs`]: the self-test that the software encoder and decoders are in the binary.
 //! - [`copy_image`]: the self-test of "Copy image" through the system clipboards.
+//! - [`avatar`]: the picture editor joined to Settings → Account, and its self-test.
 
 pub mod app;
 pub mod args;
 pub mod audio;
+pub mod avatar;
 pub mod boot;
 #[cfg(feature = "dev")]
 pub mod copy_image;

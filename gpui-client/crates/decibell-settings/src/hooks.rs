@@ -106,14 +106,23 @@ impl SettingsHooks {
 }
 
 /// What Account asks of the picture editor (`AccountTab.tsx`: the picture button and "Change
-/// picture" open the file dialog, then `AvatarCropperModal`). The editor subscribes to this
-/// entity (`SettingsHooks::pictures`) and draws over Settings; nothing here depends on it.
+/// picture" open the file dialog, a picture dropped on the card opens the editor on it, then
+/// `AvatarCropperModal`). The editor's host (the app's `avatar.rs`, joined by
+/// `registry::join_features`) subscribes to this entity (`SettingsHooks::pictures`), draws over
+/// Settings and answers a save with [`PictureEvent::AvatarSaved`]; nothing here depends on it.
 pub struct PictureRequests;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum PictureEvent {
-    /// Pick a file for our avatar and open the editor on it.
+    /// Pick a file for our avatar (the file dialog) and open the editor on it.
     ChangeAvatar,
+    /// Files dropped on the Account card (`usePictureDrop`): the first that looks like a picture
+    /// opens the editor.
+    AvatarDropped(Vec<std::path::PathBuf>),
+    /// The host saved a picture (`onSaved`): Account shows these JPEG bytes in place of our
+    /// picture until the avatar store has fetched a version other than `before` (at most 10 s),
+    /// so the old one never flashes back.
+    AvatarSaved { jpeg: std::sync::Arc<Vec<u8>>, before: SharedString },
 }
 
 impl EventEmitter<PictureEvent> for PictureRequests {}

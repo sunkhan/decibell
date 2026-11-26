@@ -34,6 +34,49 @@ pub(crate) fn fetch_avatar(uid: Uid) -> LocalBoxFuture<'static, Result<(String, 
     })
 }
 
+/// Central's cap on a profile picture (`UPDATE_AVATAR_REQ`: a JPEG of at most 1 MiB; the
+/// picture editor's output is ≤ 1000 KiB).
+pub const AVATAR_MAX_BYTES: usize = 1024 * 1024;
+
+/// What a failed save shows when central gave no reason (`AvatarCropperModal`'s `onSave`).
+pub const AVATAR_SAVE_FAILED: &str = "Couldn't save your picture.";
+
+/// Upload our profile picture (`AvatarCropperModal` / `AccountTab`'s `upload_avatar`): a JPEG of
+/// at most [`AVATAR_MAX_BYTES`]; empty bytes remove it. Resolves once central has it; a refusal
+/// is central's message ("Not a JPEG", "Avatar too large", "Storage error"), else
+/// [`AVATAR_SAVE_FAILED`]; a call that failed is its error's plain text. What central refuses
+/// is refused here first, with central's words, without a round trip. On success the core
+/// announces our new version (`avatar_changed`; central tells only our watchers), so every
+/// `UserAvatar` follows through the avatars store.
+pub fn upload_avatar(jpeg: Vec<u8>) -> LocalBoxFuture<'static, Result<(), gpui::SharedString>> {
+    Box::pin(async move {
+        if !jpeg.is_empty() {
+            if !jpeg.starts_with(&[0xFF, 0xD8]) {
+                return Err("Not a JPEG".into());
+            }
+            if jpeg.len() > AVATAR_MAX_BYTES {
+                return Err("Avatar too large".into());
+            }
+        }
+        match core(api::auth::upload_avatar(jpeg)).await {
+            Ok(r) if r.success => Ok(()),
+            Ok(r) if r.message.is_empty() => Err(AVATAR_SAVE_FAILED.into()),
+            Ok(r) => Err(r.message.into()),
+            Err(e) => Err(e.plain()),
+        }
+    })
+}
+
+/// "Remove" under the Account card: the empty upload central takes as "remove" (the picture
+/// goes everywhere with `avatar_changed`). A failure is logged, as the renderer's is.
+pub fn remove_avatar() -> LocalBoxFuture<'static, ()> {
+    Box::pin(async move {
+        if let Err(e) = upload_avatar(Vec::new()).await {
+            log::error!("Avatar removal failed: {e}");
+        }
+    })
+}
+
 /// Auto-away's report: our idle flag to the own-presence store and to central.
 pub(crate) fn report_idle(idle: bool, cx: &mut App) {
     let Some(model) = model(cx) else { return };

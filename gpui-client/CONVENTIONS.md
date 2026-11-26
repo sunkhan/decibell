@@ -511,6 +511,12 @@ avatar editor subscribes and opens over Settings).
   `ModifiersChangedEvent::key` for a modifier alone and its side): the German key labelled Z records
   `KeyY`. The app's root feeds the focused fallback (`decibell-app/src/hotkeys.rs`, self-test
   `hotkeys-focused`).
+- **Account's picture**: the picture button and "Change picture" / "Add a picture" emit `PictureEvent::ChangeAvatar`
+  (the file dialog), a file dropped on the card `AvatarDropped(paths)` (the veil shows while one is dragged over);
+  the app's `avatar.rs` (joined in `registry::join_features`) opens `decibell-picture-editor`'s editor over
+  Settings, uploads its JPEG with `actions::presence::upload_avatar` (≤ 1 MiB, central's refusal texts) and answers
+  `AvatarSaved`, which Account shows until the avatar store has fetched the new version. Remove is
+  `actions::presence::remove_avatar`. Self-test `avatar-editor` (throwaway account, a second client watching).
 - **Log Out** is `actions::auth::log_out` (hangs up a call first, then signs out); the attachment speed
   caps reach the attachment service through the model (`CoreAttachmentService::set_limits`, at its
   creation and on every settings change).

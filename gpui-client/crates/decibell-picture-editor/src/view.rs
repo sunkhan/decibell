@@ -1071,6 +1071,7 @@ impl Render for PictureEditor {
             )
             .child(
                 Button::new("picture-save", if self.saving { "Saving…" } else { "Save" })
+                    .probe("picture-save")
                     .loading(self.saving)
                     .disabled(!ready || self.saving)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save(cx))),

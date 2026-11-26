@@ -30,7 +30,8 @@ Live steps (voice, people, calls):
   devices                         load the account's device list
   device-sign-out <id | @file>    sign one device out (the id, or a file holding it)
   call <user> | answer | decline | hangup
-  watch <user>[,<user>...]        register presence interest (as a view showing them)
+  watch <user>[,<user>...]        register presence interest (as a view showing them); a user is a
+                                  name, or #<uid> (a throwaway account another client made)
   watch-roster <community> <n>    interest in the first n held members of a community
   codecs                          probe / read the codec capabilities and ship them
   wait voice <channel> <user>     shown in that voice channel of the open community
@@ -39,6 +40,8 @@ Live steps (voice, people, calls):
   wait mls <joining|ready|...>    the connected channel's MLS state
   wait e2ee <unavailable|not_set_up|locked|ready>
   wait presence <user> <online|away|dnd|offline>
+  wait avatar <user> <version|@file|any|->   their picture's version as the avatars store knows it
+                                  (@file: the version a file holds, once it exists; - = no picture)
   wait message <user> <text|->    their custom status (- = none)
   wait friend <user> <status|none>   (a|b: either)
   wait call <idle|outgoing|incoming|connecting|active>   (a|b: either)
@@ -81,6 +84,7 @@ pub enum LiveWait {
     Call(String),
     IncomingEnded,
     Devices,
+    Avatar(String, String),
 }
 
 type Args = std::vec::IntoIter<String>;
@@ -147,6 +151,7 @@ pub fn parse_wait(what: &str, it: &mut Args) -> Result<Option<LiveWait>, String>
         "call" => LiveWait::Call(next(&w(what), it)?),
         "incoming-ended" => LiveWait::IncomingEnded,
         "devices" => LiveWait::Devices,
+        "avatar" => LiveWait::Avatar(next(&w(what), it)?, next(&w(what), it)?),
         _ => return Ok(None),
     }))
 }
@@ -160,8 +165,12 @@ pub fn install(model: &Model, cx: &mut App) {
     cx.subscribe(&model.live.cues, |_, cue: &Cue, _| CUES.with(|c| c.borrow_mut().push(*cue))).detach();
 }
 
-/// A user by name: the users store, else the stack's accounts (their uids are fixed).
+/// A user by name: the users store, else the stack's accounts (their uids are fixed); `#<uid>`
+/// names one by uid.
 fn uid_of(model: &Model, name: &str, cx: &App) -> Option<Uid> {
+    if let Some(uid) = name.strip_prefix('#') {
+        return uid.parse().ok();
+    }
     if let Some((uid, _)) = model.users.read(cx).iter().find(|(_, n)| n.as_ref() == name) {
         return Some(uid);
     }
@@ -369,6 +378,18 @@ pub fn holds(wait: &LiveWait, model: &Model, cx: &App) -> bool {
         }
         LiveWait::IncomingEnded => model.live.calls.read(cx).incoming_ended.is_some(),
         LiveWait::Devices => model.live.devices.read(cx).list.is_some(),
+        LiveWait::Avatar(user, want) => uid_of(model, user, cx).is_some_and(|uid| {
+            let avatars = model.live.presence.avatars.read(cx);
+            let version = avatars.get(uid).map(|e| e.version.to_string()).unwrap_or_default();
+            match want.as_str() {
+                "-" => version.is_empty(),
+                "any" => !version.is_empty(),
+                file if file.starts_with('@') => {
+                    std::fs::read_to_string(&file[1..]).is_ok_and(|v| !v.trim().is_empty() && v.trim() == version)
+                }
+                exact => version == exact,
+            }
+        }),
     }
 }
 

@@ -39,6 +39,7 @@ pub fn screens() -> Vec<Screen> {
 pub fn selftests() -> Vec<SelfTest> {
     let mut tests = Vec::new();
     tests.extend(crate::selftests::selftests());
+    tests.extend(crate::avatar::selftests());
     tests.extend(decibell_ui::selftests());
     tests.extend(decibell_text_gallery::selftests());
     tests.extend(decibell_video::selftests());
@@ -79,7 +80,8 @@ pub fn init_features(cx: &mut gpui::App) {
 
 /// What one feature crate hands another through the app, so the crates stay independent of each
 /// other: the composer crate's composer under the DM conversation and its emoji picker in the
-/// custom status dialog. Registrations only (no model
+/// custom status dialog, the voice crate's user-menu sections, the picture editor for Settings →
+/// Account's picture. Registrations only (no model
 /// needed): the capture tool calls this too, so screens show the joined pieces.
 pub fn join_features(cx: &mut gpui::App) {
     decibell_home::dm::set_dm_composer(cx, decibell_composer::dm_composer);
@@ -88,6 +90,8 @@ pub fn join_features(cx: &mut gpui::App) {
         decibell_composer::status_emoji_picker(request.on_pick, request.on_close, request.anchor, window, cx)
     });
     join_user_menu(cx);
+    // Settings → Account's picture: the picture editor over Settings (`avatar.rs`).
+    crate::avatar::join(cx);
 }
 
 /// The voice crate's sections of the people crate's user menu (`UserContextMenu.tsx`: local mute,
@@ -139,6 +143,7 @@ fn join_user_menu(cx: &mut gpui::App) {
 /// app that way in a child process, with its own profile).
 pub fn checks() -> Vec<SelfTest> {
     let mut checks = decibell_shell::checks();
+    checks.extend(crate::avatar::checks());
     checks.extend(decibell_voice::checks());
     checks.extend(decibell_settings::checks());
     checks.extend(decibell_composer::checks());
