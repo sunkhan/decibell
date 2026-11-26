@@ -281,6 +281,14 @@ the attachment tests read git-ignored `*.key` / `*.crt` files (they generate the
   read with a 1 ms timeout loop instead of blocking, and the video receive thread runs for every voice session
   whether or not a stream is watched. Both clients pay it. To fix in the core (blocking receive with a wake on
   shutdown; start the video receiver with the first watched stream), with Electron's bar.
+- **Physical key codes (must be fixed before the Keybinds screen and the focused-window hotkey path are done).**
+  Bindings name keys by physical position (`KeyboardEvent.code`: `Semicolon`, `KeyQ`; `hotkeys/keys.rs`). GPUI's
+  `Keystroke` carries only the character the key produced (`key`, `key_char`; `KeyDownEvent` has no code), so a
+  recorder built on it assumes a US layout: on a German keyboard the key labelled Z would be saved as the
+  physical Y position, and Turkish ş / ı / ğ keys could not be recorded or would be saved as the wrong key. The
+  platform layers have the code at hand (Linux: the xkb keycode passed to `keystroke_from_xkb`; Windows: the
+  scan code in the key message), so the fix is a small GPUI patch adding the physical code to key events, and
+  the hotkeys store using it. A self-test must cover a non-US layout (e.g. an xkb `tr` / `de` keymap).
 - `system_idle` can only be queried, not subscribed to: auto-away is late by up to one threshold on Wayland.
   There is no device-change notification from the core and no mic test outside a voice session (Electron used
   Web Audio for the out-of-voice meter).
