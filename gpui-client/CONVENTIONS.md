@@ -563,7 +563,10 @@ shell's (`DmRows`, `UnreadDmTiles`).
   the menu is open (each callback `cx.notify()`s). Orders: `order::PROFILE` 100, `FRIENDS` 200, `VOICE` 300
   (local mute, the volume), `VOICE_MODERATION` 400, `MODERATION` 500 (this crate's: nickname, roles, timeout,
   kick, ban), `COPY` 600. Rows: `menu::menu_section()`, `menu_row(id, label, cx)`, `menu_row_danger`,
-  `menu_row_icon`, `menu_label("Moderation", cx)`; a row's action ends with `menu::close_user_menu(cx)`.
+  `menu_row_icon`, `menu_label("Moderation", cx)`; a row's action ends with `menu::close_user_menu(cx)`. The
+  voice crate's sections (local mute, the volume slider: 300; voice moderation: 400) are joined by the app
+  (`registry::join_features`, with these row builders handed over in a `decibell_voice::menus::MenuKit`): one
+  right click, one menu; the slider applies every move at once and a drag doesn't close it.
   Gating comes from `menu::acts_for(server, &member, cx)` / `assignable_roles` (MembersTab's `actionsFor`).
 - **The custom status's emoji picker**: `decibell_home::status::set_emoji_picker(cx, |EmojiPickerRequest {
   field, on_pick, on_close }, window, cx| -> AnyElement)`; until then a small chooser takes a typed emoji or
@@ -665,8 +668,10 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
 
 The voice view, streams, Go Live, the voice menus and DM calls (`crates/decibell-voice/src/lib.rs` maps the files).
 What it registers: `Slot::Voice` (the stage), `Slot::DmCallStage` (the call stage the DM pane shows above its message
-list during a call with that conversation's peer), five overlays (mini-player, Go Live, the user context menu, the user
-panel's popovers, the incoming call) and the user panel's voice controls (`register_user_panel_action`).
+list during a call with that conversation's peer), four overlays (mini-player, Go Live, the user panel's popovers, the
+incoming call) and the user panel's voice controls (`register_user_panel_action`). The user menu is the people crate's:
+the voice sections (`menus::user_menu_mute` / `user_menu_volume` / `user_menu_moderation`, `watch_user_menu`) are
+joined into it by the app (`registry::join_features`), so neither crate depends on the other.
 
 - **Layout in observers, never in `render`.** The stage and the filmstrip recompute their layout (`layout.rs`: the
   renderer's `fitGrid` / `gridCapacity` / "+N more" / hidden-speaker swap, unit-tested) when a store they show changes

@@ -1,10 +1,13 @@
 //! The voice feature's menus and popovers:
 //!
-//! - [`UserMenu`] (`UserContextMenu.tsx`): opened by any right click on a person
-//!   (`model.overlays.context_menu`): their name, local mute, the volume slider, and voice
-//!   moderation (server mute / deafen, move to a voice channel, disconnect) gated exactly as the
-//!   renderer gates it (permissions v3: the bits in the target's channel, the hierarchy's
-//!   "manage", never ourselves or the owner).
+//! - The user menu's voice sections (`UserContextMenu.tsx`): local mute and the volume slider
+//!   ([`user_menu_mute`], [`user_menu_volume`]) and voice moderation ([`user_menu_moderation`]:
+//!   server mute / deafen, move to a voice channel, disconnect) gated exactly as the renderer gates
+//!   it (permissions v3: the bits in the target's channel, the hierarchy's "manage", never
+//!   ourselves or the owner). The menu itself is the people crate's (`decibell_home::menu`, one
+//!   menu per right click); the app joins these sections into it at `order::VOICE` /
+//!   `VOICE_MODERATION` (`registry::join_features`: neither crate depends on the other), with
+//!   [`watch_user_menu`] for what they read and [`MenuKit`] for the host's row look.
 //! - [`PanelPopovers`]: what the user panel's voice controls open — the connection-stats popover
 //!   (`ConnectionStatsPopover.tsx`, the ping / loss graph drawn as paths), the device menu on a
 //!   right click of mute / deafen (`DeviceContextMenu.tsx`), the stream-audio app picker
@@ -12,57 +15,243 @@
 
 use std::time::{Duration, Instant};
 
-use decibell_common::{UserAvatar, Watch, display_name, user_name};
+use decibell_common::Watch;
 use decibell_model::live::voice::gain::{self, DEFAULT_DB, MAX_DB, MIN_DB};
 use decibell_model::live::voice::stats::StatsSample;
 use decibell_model::stores::community::ChannelKind;
 use decibell_model::stores::permissions::{Hierarchy, has_bits, perm};
 use decibell_model::{ChannelId, Model, ServerId, Uid, actions};
-use decibell_ui::{
-    ActiveTheme as _, ContextMenu, DismissEvent, FontRole, Icon, IconName, Label, MenuEntry, MenuItem, Placed,
-    Placement, Popover, Side, Slider,
-};
+use decibell_ui::{ActiveTheme as _, DismissEvent, Icon, IconName, Label, Placed, Placement, Popover, Side, Slider};
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Entity, IntoElement, KeyDownEvent, PathBuilder, Pixels,
-    Render, SharedString, Task, Window, canvas, deferred, div, linear_color_stop, linear_gradient, point, prelude::*, px,
+    AnyElement, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, IntoElement, KeyDownEvent, PathBuilder, Pixels,
+    Render, SharedString, Stateful, Subscription, Task, Window, canvas, deferred, div, linear_color_stop, linear_gradient, point,
+    prelude::*, px,
 };
 
 use crate::state::{PanelPopover, VoiceUi};
 
-// ── the user context menu ───────────────────────────────────────────────────────────────
+// ── the user context menu's voice sections ─────────────────────────────────────────────
 
-pub struct UserMenu {
-    /// "Move to…" unfolded.
+/// The row look of the menu that hosts the voice sections (the people crate's user menu: the app
+/// hands its builders in, `registry::join_features`, so neither crate depends on the other).
+#[derive(Clone, Copy)]
+pub struct MenuKit {
+    /// `flex w-full items-center rounded-md px-2.5 py-[7px] text-[13px] text-text-primary
+    /// hover:bg-surface-hover`.
+    pub row: fn(SharedString, SharedString, &App) -> Stateful<Div>,
+    /// The same in `text-error hover:bg-error/10`.
+    pub danger: fn(SharedString, SharedString, &App) -> Stateful<Div>,
+    /// A section heading ("MODERATION").
+    pub label: fn(&str, &App) -> AnyElement,
+    /// Close the menu (a row's action ends with it).
+    pub close: fn(&mut App),
+}
+
+/// What the voice sections keep while the menu is open: "Move to…" unfolded (a dropdown nested
+/// in the menu would be a second floating layer).
+#[derive(Default)]
+pub struct VoiceMenuState {
     move_open: bool,
-    _watch: Watch,
 }
 
-impl UserMenu {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let model = Model::global(cx).clone();
-        let mut watch = Watch::new();
-        watch
-            .store_if(&model.overlays, cx, |this: &mut Self, o, _| {
-                // A new menu starts folded.
-                if o.context_menu.is_none() {
-                    this.move_open = false;
-                }
-                true
-            })
-            .store_if(&model.settings, cx, |_, _, cx| open(cx))
-            .store_if(&model.live.voice.rosters, cx, |_, _, cx| open(cx))
-            .people(cx, |_, _| true);
-        Self { move_open: false, _watch: watch }
+struct VoiceMenuGlobal(Entity<VoiceMenuState>);
+
+impl gpui::Global for VoiceMenuGlobal {}
+
+fn menu_state(cx: &mut App) -> Entity<VoiceMenuState> {
+    if let Some(state) = cx.try_global::<VoiceMenuGlobal>() {
+        return state.0.clone();
     }
+    let state = cx.new(|_| VoiceMenuState::default());
+    cx.set_global(VoiceMenuGlobal(state.clone()));
+    state
 }
 
-fn open(cx: &App) -> bool {
-    Model::global(cx).overlays.read(cx).context_menu.is_some()
-}
-
-fn close_menu(cx: &mut App) {
+/// The stores the voice sections read, observed while the menu is open (the menu calls this when it
+/// opens: a new menu starts with "Move to…" folded). Each change redraws the menu.
+pub fn watch_user_menu<T: 'static>(cx: &mut Context<T>) -> Vec<Subscription> {
     let model = Model::global(cx).clone();
-    model.overlays.update(cx, |o, cx| o.close_context_menu(cx));
+    let state = menu_state(cx);
+    state.update(cx, |s, _| s.move_open = false);
+    let mut subscriptions = vec![
+        // The volume, local mute (settings); who is in which voice channel and their server
+        // mute / deafen (rosters); the moderation gate (channels, roles, roster, ownership).
+        cx.observe(&model.settings, |_, _, cx| cx.notify()),
+        cx.observe(&model.live.voice.rosters, |_, _, cx| cx.notify()),
+        cx.observe(&state, |_, _, cx| cx.notify()),
+    ];
+    if let Some(open) = model.overlays.read(cx).context_menu.clone()
+        && let Some(community) = open.server.and_then(|server| model.community(server, cx))
+    {
+        subscriptions.push(cx.observe(&community.channels, |_, _, cx| cx.notify()));
+    }
+    subscriptions
+}
+
+/// Local mute (`px-[5px] py-1` around one row): none for ourselves.
+pub fn user_menu_mute(uid: Uid, own: bool, cx: &App) -> Option<AnyElement> {
+    if own {
+        return None;
+    }
+    let settings = Model::global(cx).settings.read(cx).get();
+    let locally_muted = gain::locally_muted(settings, uid);
+    let theme = cx.theme();
+    let (fg, bg) = if locally_muted { (theme.color_error, theme.color_error.opacity(0.1)) } else { (theme.color_text_secondary, gpui::transparent_black()) };
+    let (hover_bg, hover_fg) = (theme.color_surface_hover, theme.color_text_primary);
+    let row = div()
+        .id("user-menu-mute")
+        .relative()
+        .children(decibell_shell::probes::probe("user-menu:user-menu-mute"))
+        .flex()
+        .w_full()
+        .items_center()
+        .gap_2()
+        .rounded(theme.radius_md)
+        .bg(bg)
+        .px_2p5()
+        .py_2()
+        .when(!locally_muted, |this| this.hover(move |s| s.bg(hover_bg).text_color(hover_fg)))
+        .text_color(fg)
+        .cursor_pointer()
+        .on_click(move |_: &ClickEvent, _, cx| actions::voice::toggle_local_mute(uid, cx))
+        .child(
+            Icon::new(if locally_muted { IconName::StageSpeaker } else { IconName::StageSpeakerMuted })
+                .size(px(16.))
+                .color(if locally_muted { theme.color_error } else { theme.color_text_muted }),
+        )
+        .child(Label::new(if locally_muted { "Unmute" } else { "Mute" }).size(13.).weight(500.));
+    Some(div().px(px(5.)).py_1().child(row).into_any_element())
+}
+
+/// "USER VOLUME" with Reset, the slider (0–100 over MIN_DB..MAX_DB, a tick at 0 dB, within
+/// 0.8 dB of 0 snaps to it; every move applies at once) and the dB / percent readout
+/// (`px-3.5 py-3`): none for ourselves.
+pub fn user_menu_volume(uid: Uid, own: bool, cx: &App) -> Option<AnyElement> {
+    if own {
+        return None;
+    }
+    let db = gain::user_db(Model::global(cx).settings.read(cx).get(), uid).unwrap_or(DEFAULT_DB);
+    let theme = cx.theme();
+    let value = ((db - MIN_DB) / (MAX_DB - MIN_DB) * 100.) as f32;
+    let zero = ((0. - MIN_DB) / (MAX_DB - MIN_DB) * 100.) as f32;
+    let (accent, accent_bright) = (theme.color_accent, theme.color_accent_bright);
+    Some(
+        div()
+            .px_3p5()
+            .py_3()
+            .child(
+                div()
+                    .mb_2p5()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(Label::new("USER VOLUME").size(11.).weight(600.).tracking(0.07).color(theme.color_text_muted))
+                    .child(
+                        div()
+                            .id("user-menu-volume-reset")
+                            .cursor_pointer()
+                            .text_color(accent_bright)
+                            .hover(move |s| s.text_color(accent))
+                            .tooltip(decibell_ui::title_tooltip("Reset to 0 dB"))
+                            .on_click(move |_: &ClickEvent, _, cx| actions::voice::set_user_volume(uid, DEFAULT_DB, cx))
+                            .child(Label::new("Reset").size(11.).weight(500.)),
+                    ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .children(decibell_shell::probes::probe("user-menu:user-menu-volume"))
+                    .mb_2()
+                    .py(px(5.))
+                    .child(Slider::new("user-menu-volume", value, 0., 100.).ticks([zero]).on_change(move |v, _, cx| {
+                        let db = MIN_DB + (*v as f64 / 100.) * (MAX_DB - MIN_DB);
+                        let db = if db.abs() < 0.8 { 0. } else { (db * 10.).round() / 10. };
+                        actions::voice::set_user_volume(uid, db.clamp(MIN_DB, MAX_DB), cx);
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(Label::new(SharedString::from(gain::format_db(db))).size(11.).weight(500.).color(theme.color_text_primary))
+                    .child(Label::new(SharedString::from(gain::db_to_percent(db))).size(11.).color(theme.color_text_muted)),
+            )
+            .into_any_element(),
+    )
+}
+
+/// "Moderation" (`border-t … px-[5px] py-1`): server mute / deafen, Move to… (unfolding the voice
+/// channels in place), Disconnect from voice, gated as the renderer gates them
+/// ([`voice_moderation`]). Each action closes the menu (`runVoiceMod`).
+pub fn user_menu_moderation(uid: Uid, server: Option<ServerId>, kit: MenuKit, cx: &App) -> Option<AnyElement> {
+    let server = server?;
+    let m = voice_moderation(server, uid, cx)?;
+    let move_open = cx.try_global::<VoiceMenuGlobal>().is_some_and(|s| s.0.read(cx).move_open);
+    let close = kit.close;
+    let run = move |action: &'static str, channel: Option<ChannelId>| {
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            actions::voice::voice_mod(server, uid, action, channel.clone(), cx);
+            close(cx);
+        }
+    };
+    let theme = cx.theme();
+    let (muted, accent, divider, secondary, primary, hover) =
+        (theme.color_text_muted, theme.color_accent, theme.color_border_divider, theme.color_text_secondary, theme.color_text_primary, theme.color_surface_hover);
+    let radius = theme.radius_md;
+    let mut rows: Vec<AnyElement> = vec![(kit.label)("Moderation", cx)];
+    if m.can_mute {
+        let (label, action) = if m.server_muted { ("Server unmute", "server_unmute") } else { ("Server mute", "server_mute") };
+        rows.push((kit.row)("menu-voice-mute".into(), label.into(), cx).on_click(run(action, None)).into_any_element());
+    }
+    if m.can_deafen {
+        let (label, action) = if m.server_deafened { ("Server undeafen", "server_undeafen") } else { ("Server deafen", "server_deafen") };
+        rows.push((kit.row)("menu-voice-deafen".into(), label.into(), cx).on_click(run(action, None)).into_any_element());
+    }
+    if m.can_move && !m.move_targets.is_empty() {
+        rows.push(
+            (kit.row)("menu-voice-move".into(), "Move to…".into(), cx)
+                .child(Icon::new(IconName::ChevronRight).size(px(12.)).stroke_width(2.5).color(if move_open { accent } else { muted }))
+                .on_click(|_: &ClickEvent, _, cx| {
+                    let state = menu_state(cx);
+                    state.update(cx, |s, cx| {
+                        s.move_open = !s.move_open;
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
+        );
+        if move_open {
+            let mut list = div().id("menu-voice-move-list").mb_1().ml_2p5().max_h(px(192.)).overflow_y_scroll().border_l_1().border_color(divider).pl_1();
+            for (channel, name) in m.move_targets {
+                let id = SharedString::from(format!("menu-voice-move:{channel}"));
+                list = list.child(
+                    div()
+                        .id(gpui::ElementId::Name(id.clone()))
+                        .relative()
+                        .children(decibell_shell::probes::probe(format!("user-menu:{id}")))
+                        .flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .rounded(radius)
+                        .px_2()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .text_color(secondary)
+                        .hover(move |s| s.bg(hover).text_color(primary))
+                        .on_click(run("move", Some(channel.clone())))
+                        .child(Icon::new(IconName::SettingsSpeaker).size(px(12.)).color(muted))
+                        .child(div().flex_1().min_w_0().child(Label::new(name).size(13.).truncate())),
+                );
+            }
+            rows.push(list.into_any_element());
+        }
+    }
+    if m.can_move {
+        rows.push(div().mt_1().child((kit.danger)("menu-voice-disconnect".into(), "Disconnect from voice".into(), cx).on_click(run("disconnect", None))).into_any_element());
+    }
+    Some(div().px(px(5.)).py_1().children(rows).into_any_element())
 }
 
 /// What voice moderation the menu offers for `uid` in `server` (`showVoiceMod` and its parts).
@@ -110,151 +299,6 @@ pub fn voice_moderation(server: ServerId, uid: Uid, cx: &App) -> Option<VoiceMod
         can_move,
         move_targets: voice_channels.iter().filter(|c| c.id != target.id).map(|c| (c.id.clone(), c.name.clone())).collect(),
     })
-}
-
-impl Render for UserMenu {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::trace("UserMenu");
-        let model = Model::global(cx).clone();
-        let Some(request) = model.overlays.read(cx).context_menu.clone() else { return div().into_any_element() };
-        let uid = request.uid;
-        let server = request.server;
-        let me = model.auth.read(cx).uid;
-        // A community placeholder (no account) has its name only on the member.
-        let member_name: SharedString = server
-            .and_then(|s| model.community(s, cx))
-            .and_then(|c| c.roster.read(cx).members().get(&uid).map(|m| m.username.clone()))
-            .unwrap_or_else(|| "Unknown user".into());
-        let username = user_name(uid, &member_name, cx);
-        let shown = display_name(server, uid, &username, cx);
-        let settings = model.settings.read(cx).get().clone();
-        let locally_muted = gain::locally_muted(&settings, uid);
-        let db = gain::user_db(&settings, uid).unwrap_or(DEFAULT_DB);
-        let moderation = server.and_then(|s| voice_moderation(s, uid, cx));
-        let theme = cx.theme();
-        let anchor = point(px(request.anchor.x), px(request.anchor.y));
-
-        let header = div()
-            .mx(px(-4.))
-            .mt(px(-4.))
-            .flex()
-            .items_center()
-            .gap_2p5()
-            .border_b_1()
-            .border_color(theme.color_border_divider)
-            .px_3p5()
-            .py_3()
-            .child(UserAvatar::new(uid, username.clone(), 32.))
-            .child(div().min_w_0().child(Label::new(shown).font(FontRole::Display).size(14.).weight(500.).color(theme.color_text_primary).truncate()));
-        let mut menu = ContextMenu::new("user-menu", anchor)
-            .width(px(220.))
-            .on_dismiss(|_: &DismissEvent, _, cx| close_menu(cx))
-            .entry(MenuEntry::Custom(header.into_any_element()));
-        if uid != me {
-            let (fg, bg) = if locally_muted { (theme.color_error, theme.color_error.opacity(0.1)) } else { (theme.color_text_secondary, gpui::transparent_black()) };
-            let mute = div()
-                .id("user-menu-mute")
-                .mt_1()
-                .flex()
-                .w_full()
-                .items_center()
-                .gap_2()
-                .rounded(theme.radius_md)
-                .bg(bg)
-                .px_2p5()
-                .py_2()
-                .when(!locally_muted, |this| this.hover(|s| s.bg(theme.color_surface_hover)))
-                .cursor_pointer()
-                .on_click(move |_: &ClickEvent, _, cx| actions::voice::toggle_local_mute(uid, cx))
-                .child(
-                    Icon::new(if locally_muted { IconName::StageSpeaker } else { IconName::StageSpeakerMuted })
-                        .size(px(16.))
-                        .color(if locally_muted { theme.color_error } else { theme.color_text_muted }),
-                )
-                .child(Label::new(if locally_muted { "Unmute" } else { "Mute" }).size(13.).weight(500.).color(fg));
-            menu = menu.entry(MenuEntry::Custom(mute.into_any_element())).entry(MenuEntry::Separator);
-            // The slider runs 0–100 over MIN_DB..MAX_DB; a value within 0.8 dB of 0 snaps to it.
-            let value = ((db - MIN_DB) / (MAX_DB - MIN_DB) * 100.) as f32;
-            let zero = ((0. - MIN_DB) / (MAX_DB - MIN_DB) * 100.) as f32;
-            let volume = div()
-                .px_3()
-                .py_3()
-                .child(
-                    div()
-                        .mb_2p5()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(Label::new("USER VOLUME").size(11.).weight(600.).tracking(0.07).color(theme.color_text_muted))
-                        .child(
-                            div()
-                                .id("user-menu-volume-reset")
-                                .cursor_pointer()
-                                .on_click(move |_: &ClickEvent, _, cx| actions::voice::set_user_volume(uid, DEFAULT_DB, cx))
-                                .child(Label::new("Reset").size(11.).weight(500.).color(theme.color_accent_bright)),
-                        ),
-                )
-                .child(div().mb_2().py(px(5.)).child(Slider::new("user-menu-volume", value, 0., 100.).ticks([zero]).on_change(
-                    move |v, _, cx| {
-                        let db = MIN_DB + (*v as f64 / 100.) * (MAX_DB - MIN_DB);
-                        let db = if db.abs() < 0.8 { 0. } else { (db * 10.).round() / 10. };
-                        actions::voice::set_user_volume(uid, db.clamp(MIN_DB, MAX_DB), cx);
-                    },
-                )))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(Label::new(SharedString::from(gain::format_db(db))).size(11.).weight(500.).color(theme.color_text_primary))
-                        .child(Label::new(SharedString::from(gain::db_to_percent(db))).size(11.).color(theme.color_text_muted)),
-                );
-            menu = menu.entry(MenuEntry::Custom(volume.into_any_element()));
-            if let (Some(m), Some(server)) = (moderation, server) {
-                menu = menu.entry(MenuEntry::Separator).entry(MenuEntry::Label("Moderation".into()));
-                if m.can_mute {
-                    let action = if m.server_muted { "server_unmute" } else { "server_mute" };
-                    menu = menu.entry(
-                        MenuItem::new(if m.server_muted { "Server unmute" } else { "Server mute" })
-                            .on_click(move |_, _, cx| actions::voice::voice_mod(server, uid, action, None, cx)),
-                    );
-                }
-                if m.can_deafen {
-                    let action = if m.server_deafened { "server_undeafen" } else { "server_deafen" };
-                    menu = menu.entry(
-                        MenuItem::new(if m.server_deafened { "Server undeafen" } else { "Server deafen" })
-                            .on_click(move |_, _, cx| actions::voice::voice_mod(server, uid, action, None, cx)),
-                    );
-                }
-                if m.can_move && !m.move_targets.is_empty() {
-                    let this = cx.entity().downgrade();
-                    menu = menu.entry(MenuItem::new("Move to…").expander(self.move_open).on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |m, cx| {
-                            m.move_open = !m.move_open;
-                            cx.notify();
-                        });
-                    }));
-                    if self.move_open {
-                        for (channel, name) in m.move_targets {
-                            menu = menu.entry(
-                                MenuItem::new(name)
-                                    .icon(IconName::SettingsSpeaker)
-                                    .on_click(move |_, _, cx| actions::voice::voice_mod(server, uid, "move", Some(channel.clone()), cx)),
-                            );
-                        }
-                    }
-                }
-                if m.can_move {
-                    menu = menu.entry(
-                        MenuItem::new("Disconnect from voice")
-                            .danger()
-                            .on_click(move |_, _, cx| actions::voice::voice_mod(server, uid, "disconnect", None, cx)),
-                    );
-                }
-            }
-        }
-        menu.into_any_element()
-    }
 }
 
 // ── the user panel's popovers ───────────────────────────────────────────────────────────

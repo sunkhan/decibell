@@ -634,6 +634,31 @@ async fn check_user_menu(cx: TestCx) -> Result<()> {
         wait_probe(&cx, &format!("user-menu:{row}")).await?;
     }
     cx.log("the owner's menu has Set / Change nickname, Edit roles, Kick, Ban");
+    // The voice crate's sections, joined by the app into this one menu: local mute and the
+    // volume (300); a drag of the slider applies live and keeps the menu open.
+    let sections = menu_sections();
+    ensure!(sections.iter().any(|s| s == "300"), "the voice sections are in the menu: {sections:?}");
+    let volume = |cx: &App| decibell_model::live::voice::gain::user_db(model(cx).settings.read(cx).get(), uid);
+    let before = cx.update(move |_, cx| volume(cx))?;
+    let slider = wait_probe(&cx, "user-menu:user-menu-volume").await?;
+    let (from, to) = (slider.center(), point(slider.center().x + px(36.), slider.center().y));
+    cx.mouse_down(from, 1, Default::default())?;
+    let mut moved = Vec::new();
+    for step in 1..=6 {
+        cx.mouse_drag(point(from.x + px(6. * step as f32), from.y))?;
+        cx.sleep(Duration::from_millis(30)).await;
+        moved.push(cx.update(move |_, cx| volume(cx))?);
+    }
+    cx.mouse_up(to)?;
+    park_pointer(&cx)?;
+    let (after, open) = cx.update(move |_, cx| (volume(cx), model(cx).overlays.read(cx).context_menu.is_some()))?;
+    cx.log(format_args!("the volume slider dragged: {before:?} → {after:?} dB (live while dragging: {moved:?}); the menu stayed open: {open}"));
+    ensure!(open, "dragging the volume closed the menu");
+    // The press puts the thumb under the pointer; the drag to the right raises it from there.
+    ensure!(after.is_some() && after > moved[0], "the drag raised the volume ({:?} → {after:?})", moved[0]);
+    ensure!(moved.windows(2).any(|w| w[0] != w[1]), "the volume didn't follow the drag live: {moved:?}");
+    cx.update(move |_, cx| actions::voice::set_user_volume(uid, decibell_model::live::voice::gain::DEFAULT_DB, cx))?;
+    quiet(&cx).await?;
     // Nickname: set, settle on the record, then back.
     for (step, nickname) in [("set", "selftest-nick"), ("revert", original.as_str())] {
         if step == "set" {

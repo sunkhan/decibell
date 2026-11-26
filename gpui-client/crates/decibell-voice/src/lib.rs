@@ -6,8 +6,9 @@
 //!   and window fullscreen ([`focus`]), the floating dock.
 //! - [`mini::MiniPlayer`] (an overlay): the watched stream floating over every other view.
 //! - [`go_live::GoLiveDialog`] (an overlay): presets, Advanced, the stream-audio picker.
-//! - [`menus`]: the user context menu (local mute, volume, voice moderation), the device menus,
-//!   the connection-stats popover, the stream-audio popover (the user panel's controls).
+//! - [`menus`]: the user menu's voice sections (local mute, volume, voice moderation: joined into
+//!   the people crate's menu by the app), the device menus, the connection-stats popover, the
+//!   stream-audio popover (the user panel's controls).
 //! - [`calls`]: the incoming-call card (an overlay) and the call stage (`Slot::DmCallStage`, hosted
 //!   by the DM pane).
 //!
@@ -68,7 +69,6 @@ pub fn init(cx: &mut App) {
     decibell_shell::register_pane(cx, decibell_shell::Slot::DmCallStage, |_, cx| cx.new(calls::CallStage::new).into());
     decibell_shell::register_overlay(cx, |_, cx| cx.new(mini::MiniPlayer::new).into());
     decibell_shell::register_overlay(cx, |_, cx| cx.new(go_live::GoLiveDialog::new).into());
-    decibell_shell::register_overlay(cx, |_, cx| cx.new(menus::UserMenu::new).into());
     decibell_shell::register_overlay(cx, |_, cx| cx.new(menus::PanelPopovers::new).into());
     decibell_shell::register_overlay(cx, |_, cx| cx.new(calls::IncomingCall::new).into());
     decibell_shell::register_user_panel_action(cx, |action, anchor, _, cx| state::panel_action(action, anchor, cx));

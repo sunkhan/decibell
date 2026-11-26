@@ -8,13 +8,14 @@
 //! |---|---|---|
 //! | [`order::PROFILE`] 100 | Profile, Message | this crate |
 //! | [`order::FRIENDS`] 200 | Add friend / Accept / Decline / Cancel request / Remove friend, Block / Unblock | this crate |
-//! | [`order::VOICE`] 300 | local Mute, the user volume (the renderer's sections, in its order) | the voice crate |
-//! | [`order::VOICE_MODERATION`] 400 | "Moderation": server mute / deafen, Move to…, Disconnect | the voice crate |
+//! | [`order::VOICE`] 300 | local Mute, the user volume (the renderer's sections, in its order) | the voice crate, joined by the app |
+//! | [`order::VOICE_MODERATION`] 400 | "Moderation": server mute / deafen, Move to…, Disconnect | the voice crate, joined by the app |
 //! | [`order::MODERATION`] 500 | Change nickname, Edit roles, Time out… / End timeout, Kick…, Ban… | this crate |
 //! | [`order::COPY`] 600 | Copy username | this crate |
 //!
 //! ```ignore
-//! // the voice crate's init(cx):
+//! // a crate's init(cx), or the app joining two crates (`registry::join_features` does the
+//! // voice crate's this way, with its row builders handed over: neither crate depends on the other):
 //! decibell_home::menu::register_user_menu(cx, UserMenuExtension {
 //!     order: decibell_home::menu::order::VOICE,
 //!     // the stores the sections read, observed while the menu is open:

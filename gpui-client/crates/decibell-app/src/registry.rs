@@ -69,6 +69,51 @@ pub fn init_features(cx: &mut gpui::App) {
 /// needed): the capture tool calls this too, so screens show the joined pieces.
 pub fn join_features(cx: &mut gpui::App) {
     decibell_home::dm::set_dm_composer(cx, decibell_composer::dm_composer);
+    join_user_menu(cx);
+}
+
+/// The voice crate's sections of the people crate's user menu (`UserContextMenu.tsx`: local mute,
+/// the volume, then "Moderation"), in the renderer's order, drawn with the menu's own rows.
+fn join_user_menu(cx: &mut gpui::App) {
+    use std::rc::Rc;
+
+    use decibell_home::menu::{Above, MenuSection, UserMenuExtension, order, register_user_menu};
+    use decibell_voice::menus::{MenuKit, user_menu_moderation, user_menu_mute, user_menu_volume, watch_user_menu};
+    use gpui::IntoElement as _;
+
+    const KIT: MenuKit = MenuKit {
+        row: |id, label, cx| decibell_home::menu::menu_row(id, label, cx),
+        danger: |id, label, cx| decibell_home::menu::menu_row_danger(id, label, cx),
+        label: |text, cx| decibell_home::menu::menu_label(text, cx).into_any_element(),
+        close: decibell_home::menu::close_user_menu,
+    };
+    register_user_menu(
+        cx,
+        UserMenuExtension {
+            order: order::VOICE,
+            watch: Some(Rc::new(watch_user_menu::<decibell_home::menu::UserMenu>)),
+            build: Rc::new(|target, _, cx| {
+                // Mute, the renderer's inset divider, the volume (none for ourselves).
+                let mut sections = Vec::new();
+                sections.extend(user_menu_mute(target.uid, target.own, cx).map(|mute| MenuSection::new(Above::Rule, mute)));
+                sections.extend(user_menu_volume(target.uid, target.own, cx).map(|volume| MenuSection::new(Above::Inset, volume)));
+                sections
+            }),
+        },
+    );
+    register_user_menu(
+        cx,
+        UserMenuExtension {
+            order: order::VOICE_MODERATION,
+            watch: None,
+            build: Rc::new(|target, _, cx| {
+                if target.own {
+                    return Vec::new();
+                }
+                user_menu_moderation(target.uid, target.server, KIT, cx).map(|m| vec![MenuSection::new(Above::Rule, m)]).unwrap_or_default()
+            }),
+        },
+    );
 }
 
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the

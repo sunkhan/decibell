@@ -269,11 +269,13 @@ impl Dismissal {
     ) -> Self {
         let focus = crate::interaction::focus_handle(window, cx, (id.clone(), "layer-focus"), false);
         // Where focus was when the layer opened, and whether the window was active last frame.
+        // Active as a self-test may hold it (`decibell_harness::focus`): other windows share the
+        // desktop, and a layer would close whenever one took the focus.
         let opened = window.use_keyed_state((id.clone(), "layer-opened"), cx, |window, cx| {
-            (window.focused(cx), window.is_window_active(), false)
+            (window.focused(cx), decibell_harness::focus::window_active(window, cx), false)
         });
         let (restore, was_active, focused_once) = opened.read(cx).clone();
-        let active = window.is_window_active();
+        let active = decibell_harness::focus::window_active(window, cx);
         let dismiss: DismissHandler = {
             let on_dismiss = on_dismiss.clone();
             Rc::new(move |window: &mut Window, cx: &mut App| {
