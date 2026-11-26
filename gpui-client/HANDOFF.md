@@ -868,25 +868,35 @@ on frame counts or pointer focus, none on decoding: `video-recover` ("the window
   `cargo tree -e features -i zbus` shows no `tokio`. `decibell_model::core::prepare` (the earlier workaround) can
   go when the app's boot is wired. Keep `blocking` at 1.6.x in the lockfile (1.7.0 keeps an idle pool thread
   waking every 500 ms).
-- **Where audio can click or gap today** (read-only audit of the core's voice path, 2026-11-26; pre-existing in
-  both clients; file:line in the voice task's notes and the review log). Fixing any of these changes audible
-  output, so each fix needs a sample-exact test and the owner's listening test:
-  1. output device switched mid-speech: rings are cut with no fade and the next frame gets no fade-in (click);
-  2. undeafen while someone talks: no fade-in (click);
-  3. per-user volume change: gain steps at a 20 ms frame boundary, no ramp ("zipper");
-  4. input device switched mid-speech: gate / pre-roll not reset, AEC reconverges (~1 s of echo);
-  5. toggling echo cancellation / noise suppression / gain control rebuilds the processors (gain resets);
-  6. the output pull estimate is not reset on a device change (crackle or extra latency for ~2 s, e.g. wired →
-     Bluetooth);
-  7. the output callback goes silent for one period if it cannot take the stream-audio lock (very rare);
-  8. ten lost frames in a row reset the jitter buffer (~100 ms gap; by design);
-  9. stream audio splices when 60 ms over target, no onset fade;
-  10. push-to-talk press has no pre-roll (10 ms fade-in on the first frame); mute mid-word sends a 60 ms tail;
-  11. building a device stream blocks the audio loop during a hot-swap (a hiccup for listeners);
-  12. the audio thread (not the device callback) allocates per capture frame.
+- **Where audio could click: the 2026-11-26 audit, fixed on `wip/core-audio`** (the review log's entry of
+  that date has the table: what each did at the sample level, the test that failed before, the commit). Every
+  entry has a sample-exact test in `crates/decibell-core/src/media/click_tests.rs` (the real receive path, mix
+  and capture chain; no step between samples larger than the talker's own slope) and is waiting for the
+  owner's two-person listening test (§6). Fixed: 1 output device switch, 2 deafen / undeafen, 3 per-user
+  volume, 4 microphone switch, 5 processing toggles, 6 the pull estimate across a switch, 7 the stream-audio
+  lock, 9 stream audio's start / stall / catch-up, 10 the end of a talkspurt cut mid-sound (push-to-talk
+  release, mute), 12 the capture path's own allocations; and three found on the way (a concealment's fade
+  stepped at every frame, late packets resumed at full level after it, voice cut to trim latency was spliced).
+  Shown not to click: 8 (ten lost frames, the jitter buffer's reset), 10's push-to-talk press. **Open**:
+  - 11, a device open blocks the audio loop (~90 ms here, more on Bluetooth): no capture frame goes out
+    meanwhile, listeners hear a gap and then a burst. Fixing it means streams owned by a thread of their own,
+    which changes who produces and consumes when: the owner's decision.
+  - a device whose period is over 30 ms (some Bluetooth) starves the ring until the first 2 s look at what it
+    pulls, after a switch and on a fresh join alike. Taking the first observed pull at once would fix both; it
+    holds the ring deeper sooner (a buffering change): proposed, not made.
+  - a new microphone restarts the echo canceller (~1 s to converge; the echo path is new either way); a
+    deafen toggled twice within 30 ms can meet its own leftover audio; a mono output device plays a stereo
+    stream ring at half speed (pre-existing, `OutputMix`); the `aec3` crate allocates ~134 times per capture
+    frame with echo cancellation or gain control on.
+- **Interface sounds, the mic test and device changes are the core's** (`api::audio`, `media/{cue,mic_test,
+  device_watch}.rs`; the review log has the design). Two things to know: a sound played with no voice session
+  opens a stream first (91–171 ms into a null sink at load average 10, then the device's buffer; one that
+  follows within 250 ms reuses it), and in voice a sound plays on the voice output device, out of voice on the
+  OS default (Electron: always the default). Both are in §6 for the owner.
 - Timed waits that remain in the core by decision: the 5 ms audio tick and device-clock wakeups in voice, the
-  30 s server pings, the 500 ms MLS tick (could be deadline-driven), `default_device_watch`'s 1 s poll on
-  Windows / macOS (should become OS notifications), the documented hotkey polls.
+  30 s server pings, the 500 ms MLS tick (could be deadline-driven), the documented hotkey polls.
+  `default_device_watch` (Windows / macOS) now sleeps until the OS's notification; it polls once a second only
+  if the notification can't be registered.
 - **Physical key codes: done** (GPUI patch 0012, `patches/README.md`). Key events carry the platform's
   physical key (`KeyDownEvent::code`: the evdev code on Linux, the scan code on Windows) and modifier keys
   arrive with their side (`ModifiersChangedEvent::key`); `decibell_model::live::hotkeys` names them through
@@ -897,8 +907,7 @@ on frame counts or pointer focus, none on decoding: `video-recover` ("the window
   a focused text field is the field's, `docs/electron-quirks.md` #13). Still by hand, once: record a binding
   on a real Turkish or German keyboard under Wayland, and on Windows (scan codes there were never run).
 - `system_idle` can only be queried, not subscribed to: auto-away is late by up to one threshold on Wayland.
-  There is no device-change notification from the core and no mic test outside a voice session (Electron used
-  Web Audio for the out-of-voice meter).
+  (Device changes and the mic test outside voice exist since 2026-11-26: `api::audio`.)
 - **Voice receive path allocates per packet** (~5 allocations per voice packet per talking peer; the core
   follow-up measured it and left a plan in its notes: fixed datagram slots on the existing ring, peers keyed by
   the 32-byte sender id, in-place open, preallocated Opus slots). Not done; do it if voice CPU / wakeups need it.
@@ -1080,9 +1089,49 @@ Things only the owner can do; nothing here blocks the rest.
   ways with a screen share in it; watch a stream (first picture as fast as before, stream audio plays), stop and
   re-watch; join / leave / switch channels quickly and quit: nothing hangs. The hand-off of a voice packet to
   the audio thread is 3–5 µs later at the median than the old 1 ms polling loop and better at p99.
-- **Then listen for the pre-existing click sources** listed in §5 ("Where audio can click or gap today"),
-  especially: switch output device while someone talks; undeafen mid-sentence; drag a user's volume while they
-  talk; switch wired → Bluetooth mid-talk.
+- **The listening test for the click fixes** (`wip/core-audio`; two clients A and B in one voice channel, B
+  talking or playing steady speech / music into its microphone, A listening on headphones; the Electron client
+  built from this branch works as A or B, the fixes are in the shared core). A failure is a tick, a pop or a
+  short buzz at the moment named; a pass is a quick fade or nothing.
+  1. A switches its output device while B talks (wired ↔ wired, then wired → Bluetooth): B fades out, comes
+     back fading in. Failure: a click at the switch or as B returns; on Bluetooth, crackle for up to 2 s (the
+     open item in §5: say if you hear it).
+  2. A deafens and undeafens while B talks, several times, slowly and fast: no tick either way.
+  3. A drags B's volume slider up and down while B talks: no "zipper" noise.
+  4. B switches its microphone mid-word: A hears B's word end softly and the new microphone start softly; no
+     click. (A second of echo of A's own voice at B is expected: the echo canceller relearns.)
+  5. B toggles echo cancellation, gain control and noise suppression mid-word, each on and off, and moves the
+     noise-suppression level between two "on" values: A hears the level or the noise change over a moment, no
+     click; the level change between "on" values changes nothing.
+  6. B, with push to talk, releases the key in the middle of a loud word, and mutes in the middle of one: the
+     word ends in a short fade. Failure: a tick right after the word stops. Then B presses the key mid-sound:
+     the start fades in.
+  7. A watches B's stream with audio (music), starts and stops watching, B stops and restarts the stream, and
+     one of them stalls the network for half a second (pause the Wi-Fi, a `tc netem` delay): the stream's
+     audio starts and returns without a click, a stall ends in a fade, the catch-up after it has no tick.
+     The same stall while B talks: the voice comes back without a tick.
+  8. A leaves the channel while B talks: B fades out (5 ms) instead of being cut; the leave sound plays whole.
+  9. Anything new: with three people talking in turns for a few minutes, no crackle, word starts not clipped.
+- **Interface sounds, side by side with Electron** (native client and Electron on the same account settings,
+  same headphones): join and leave a voice channel, have someone else join and leave, mute / unmute, deafen /
+  undeafen, start and stop a stream, call and be called (ring until answered, declined, timed out; with Do Not
+  Disturb on, the incoming ring is silent in both), end a call. Each sound should be the same sound at the same
+  level in both. Listen for: a click at a sound's start or end; the ring's loop point; the ring ending
+  (the native client fades it over 5 ms where Electron cuts it); a sound played while people talk (it is mixed
+  into the voice output: no dip, no click, the voices unchanged); the first sound after a silence outside
+  voice arriving late (0.1–0.2 s: the output stream opens for it).
+  **Decide**: (a) outside voice the native client plays sounds on the OS default output, as Electron does, and
+  in voice on the voice output device (Electron: always the default): should it use the chosen output device
+  everywhere? (b) is the 0.1–0.2 s before a sound outside voice acceptable, or should a stream stay open for
+  a few seconds after a sound (immediate repeats, device-clock wakeups meanwhile)?
+- **The microphone test** (Settings → Audio, outside voice): the meter follows your voice, the OS's
+  microphone indicator comes on with "Test mic" and goes out when the test or the tab ends, and joining voice
+  ends the test. It meters the signal after your echo-cancellation / noise-suppression / gain-control
+  switches (what others would hear); Electron's meters Chromium's own processing.
+- **Devices**: with Settings → Audio or a device menu open, plug and unplug a headset: the list and a saved
+  device's "Not connected" follow within a second. On Windows and macOS this code (and the default-device
+  follower's switch from polling to notifications) has never run: check that changing the default device in
+  the OS moves a session set to "Default" within a moment, once.
 - **Stream playback on AMD and Intel, and by eye** (`docs/video-owner-checks.md`; §4a there is new): the decoder
   list in Settings → Codecs on those machines (it is the probe's whole answer: copy it), "Reconnecting…" with a
   real network drop, a 120 fps stream on a machine whose CPU is busy (it should stutter at worst, not freeze),
