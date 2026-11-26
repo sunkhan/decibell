@@ -77,7 +77,10 @@ impl RenderOnce for TitleBar {
             .border_b_1()
             .border_color(chrome.color_border)
             .window_control_area(WindowControlArea::Drag)
-            .when(own_controls, |bar| {
+            // On Windows the drag area is the system's caption (`HTCAPTION`): moving, the
+            // double-click that maximises and restores, snapping and the right-click window
+            // menu are Windows' own, and a second `zoom_window` here would undo a restore.
+            .when(own_controls && !cfg!(target_os = "windows"), |bar| {
                 bar.on_mouse_down(MouseButton::Left, |event, window, _| {
                     if event.click_count == 2 {
                         window.zoom_window();
@@ -171,9 +174,24 @@ fn title_button(
         .justify_center()
         .hover(|style| style.bg(hover_bg))
         .window_control_area(area)
-        // The bar under the button starts a window move on mouse-down.
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(on_click)
+        .map(|button| {
+            if cfg!(target_os = "windows") {
+                // Windows asks the window what is under the pointer (`WM_NCHITTEST`) and GPUI
+                // answers with the topmost control area: the button has to hide the bar's
+                // drag area beneath it to be the minimise / maximise / close button (which is
+                // also what makes Windows 11 show its snap layouts over the maximise button).
+                // The press is then the system's: GPUI's Windows backend minimises, closes,
+                // and maximises *or restores* on the button's mouse-up unless the app handled
+                // the event, so nothing is handled here (`Window::zoom_window` only ever
+                // maximises on Windows).
+                button.occlude()
+            } else {
+                button
+                    // The bar under the button starts a window move on mouse-down.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(on_click)
+            }
+        })
         .child(
             Icon::new(icon)
                 .size(px(14.))
