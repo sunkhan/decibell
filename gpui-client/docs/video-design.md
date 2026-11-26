@@ -1063,7 +1063,7 @@ Reading it:
   table: 2 × 1440p120 H.264 on Vulkan Video, second pass, where one of the two streams shed 160 frames (its
   decoder thread fell more than three frames behind once, and the test file's next keyframe was up to 4 s
   away; a streamer answers the keyframe request at once). The first pass of the same row, at twice the load,
-  lost nothing; the cause was not found (risk 17). Packet to published picture is 1–3 ms on all three.
+  lost nothing; a scheduling gap of the decoder thread is the likeliest cause (risk 17). Packet to published picture is 1–3 ms on all three.
 - **CPU**: the three hardware decoders are within each other's noise. In the quietest runs (load 4–8) one
   1440p120 stream costs 5.4–6.8 % of a core and two cost 9.6–10.4 %, on any of them; rows taken at load 15–26
   read up to twice that (most NVDEC rows were: both passes reached them while the machine was at its busiest).
@@ -1184,13 +1184,22 @@ with `tools/streamgen/malloc-count.c` on the UI thread over 3.05 s of a 1440p120
     driver version; where it does not, the vendor decoder's start-up per codec (a CUDA context each: 465 ms for
     three). It runs when the app asks, off the UI thread; the app does not ask yet (nothing advertises
     capabilities on this branch).
-17. **One unexplained shed.** In 54 measured hardware runs (§11.4) one stream of one run (2 × 1440p120 H.264,
-    Vulkan Video, load average 5) overflowed its three-frame queue once, seconds into the stream, and lost 160 frames until
-    the file's next keyframe; no error, no device loss, the other stream of the same run lost nothing, and the
-    same row at load 11 lost nothing. Two 1440p120 H.264 streams are the heaviest thing the one decode queue is
-    asked for here (`dec` 37–52 %), other processes were using the GPU, and the decoder thread waits for each
-    picture's copy inline (risk 9): any of them stalling it for 25 ms does this. Not reproduced, not explained.
-    With a real streamer the cost is the time to the answered keyframe request, not 4 s.
+17. **A starved decoder thread sheds, and the test streams make that expensive.** The queue holds three
+    frames (§0.4): a decoder thread that does not run for three frame intervals (50 ms at 60 fps, 25 ms at
+    120 fps) overflows it, the chain is broken, and everything up to the next keyframe is refused. In 54 measured
+    hardware runs (§11.4) that happened once (2 × 1440p120 H.264 on Vulkan Video, load average 5 at the start
+    of the run: 160 frames of one stream; no error, no device loss, the other stream of the run and the same
+    row at load 11 lost nothing). It happened repeatably later the same day with the machine at load average
+    20–50 on its 20 hardware threads (other agents' builds): `video-hw`, `video-switch`, `video-sw` and the
+    software reference runs of `video-nvdec` / `video-vaapi` each failed some runs with "N frames dropped",
+    on every decoder; the same tests pass at load average below 10, and passed when run again one at a time
+    as the load fell. So the cause is scheduling, not a decoder; the single
+    measured case most likely was the same (two 1440p120 H.264 streams are also the heaviest load the one
+    decode queue sees here, `dec` 37–52 %, and the decoder thread waits for each picture's copy inline: risk 9).
+    Two things make it look worse here than in the client: the test files have a keyframe every 4 s where a
+    streamer answers the request at once, and the self-tests allow no drop at all. What it would take to
+    ride out such gaps (a deeper steady-state queue, at the price of latency after every hiccup) is a decision
+    for the stream view, mirrored from the Electron player today.
 
 ## 13. Building and running
 

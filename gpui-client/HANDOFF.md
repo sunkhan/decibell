@@ -473,7 +473,9 @@ load in the last column; load average 2–26 during the two passes, so read CPU 
 
 - Every hardware decoder plays every row, packet to published picture in 1–3 ms, nothing dropped in 53 of the
   54 hardware runs; in one (2 × 1440p120 H.264 on Vulkan Video, the row shown) a stream shed 160 frames once
-  and waited for the file's next keyframe: not reproduced, cause not found (`docs/video-design.md` §11.4). Their
+  and waited for the file's next keyframe: a decoder thread that is not scheduled for three frame intervals
+  overflows the three-frame queue, and with the machine at load 20–50 the paced self-tests shed the same way
+  on every decoder (`docs/video-design.md` §12.17). Their
   CPU is within each other's noise: at load 4–8, one 1440p120 stream is 5.4–6.8 % of a core and two are
   9.6–10.4 %.
 - The vendor decoders cost memory, not CPU: 67–140 MB private with Vulkan Video, 204–307 MB with NVDEC (a CUDA
