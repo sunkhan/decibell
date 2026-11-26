@@ -838,6 +838,28 @@ on frame counts or pointer focus, none on decoding: `video-recover` ("the window
 `chat-hover` ("no tooltip on the Reply action"), `content-gif` ("the GIF kept drawing off screen": 2 frames in
 1 s).
 
+### Audio: sounds, the mic test, device changes (`wip/core-audio`, 2026-11-26)
+
+Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), release builds.
+
+- **Idle app** (perf1, unfocused, `DECIBELL_CUE_SINK=off`, load ~2): own wakeups 0.55 / s (`decibell-rt` 0.3,
+  main 0.2), 0.01 % CPU, 86.1 MB private, 37 threads. No `decibell-cue`, `decibell-mic-test` or
+  `decibell-audio-devices` thread exists (each lives only while a sound plays without voice, a test runs, a
+  device list is on screen).
+- **Voice session** (`decibell-headless` as perf5, alone in Lounge, muted, on a PipeWire null sink through the
+  pulse PCM, load ~3): 690 wakeups / s (766 in the voice-plane table's row A; 688 on null sinks there).
+  `decibell-audio` 197.7, cpal in / out 100.2 / 93.9, `decibell-voice-recv` 0.3, runtime 6.0, the sound
+  server's two loops 145 each. Our threads did not rise. The app itself in voice (which has the cue player)
+  was not measured.
+- **A sound outside voice**: the stream's open took 171 ms the first time and 91–113 ms after (the core's
+  ignored test `cue::tests::open_latency_into_a_null_sink`, a named null sink through the pulse PCM, load ~10);
+  the OS-default path the app uses was not measured (it would open the real device).
+- Self-tests (`settings-audio-meter`, `voice-cues`, `call-ring`): a sink appearing is listed ~452 ms later and
+  gone ~453 ms after removal (the 400 ms debounce included); the ring loops every 2.00 s; 244 ms after leaving
+  voice nothing is open. **Every voice self-test now plays and captures on a null sink the test's parent
+  makes** (`decibell_harness::test_audio`, `DECIBELL_CUE_SINK`); before, they opened the desktop's real
+  devices muted. `CONVENTIONS.md`'s voice / settings self-test notes don't say this yet.
+
 ## 5. Open items
 
 - **Attachment playback: what was not run or built** (`docs/media-design.md` §8 has the reasons).
