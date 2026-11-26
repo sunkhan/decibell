@@ -135,6 +135,13 @@ impl Settings {
         }
     }
 
+    /// Take a pending save to write it oneself (and wait for it): the blob to save, or
+    /// `None` when nothing is pending. The debounce timer is dropped.
+    pub fn take_pending_save(&mut self) -> Option<serde_json::Value> {
+        drop(self.save.take()?);
+        serde_json::to_value(&self.values).map_err(|e| log::error!("[settings] couldn't serialise: {e}")).ok()
+    }
+
     pub fn save_pending(&self) -> bool {
         self.save.is_some()
     }
@@ -272,5 +279,17 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(saved.borrow().len(), 2);
         assert_eq!(*appearance.borrow(), 2);
+
+        // A pending save taken to be written (and waited for) by the caller: the blob once,
+        // nothing for the saver, no timer left.
+        let taken = settings.update(cx, |s, cx| {
+            s.change(|v| v.output_device = Some("speakers".into()), cx);
+            s.take_pending_save()
+        });
+        assert_eq!(taken.expect("a save was pending")["output_device"], "speakers");
+        settings.update(cx, |s, _| assert!(s.take_pending_save().is_none() && !s.save_pending()));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(saved.borrow().len(), 2);
     }
 }

@@ -214,7 +214,7 @@ drawn); `load_more()` pages (the sidebar calls it when `member_window::near_load
 a missing member up (50 ms batches of ≤ 200, once per generation, 3 tries 1.5 s apart). The window
 arithmetic of the sidebar is `stores/member_window.rs`, roster order `stores/roster_order.rs`.
 
-## 6. The 86 events
+## 6. The 87 events
 
 `events::route` matches every `CoreEvent` variant with no wildcard, and so does `events::users::directory`
 (the users directory sees each event first). Since the two halves landed every variant has a handler: the M2
@@ -311,6 +311,7 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 84 | `call_failed` | `events/calls.rs` |
 | 85 | `call_dropped` | `events/calls.rs` |
 | 86 | `system_idle_changed` | ignored (only after `api::presence::subscribe_system_idle`, not called yet: auto-away still asks `system_idle_state`) |
+| 87 | `audio_devices_changed` | `events/voice.rs` (`voice.devices.hotplug`; comes only while a view watches the device lists, M3.2) |
 | — | `stream_thumbnail` (the sink's own method) | `events/voice.rs` (`todo::m3::stream_thumbnail`) |
 | — | `stream_frame`, `stream_frame_sink_removed` | `StreamFrameSink`, off the UI thread (the video crate) |
 
@@ -851,7 +852,7 @@ small views each show one key, the entity emits a keyed event they filter on.
 | `voice.watching` | watched streams, focused, mini player, window fullscreen | user actions | — | stage, mini player, **the app** (applies `fullscreen` to the window) |
 | `voice.stream_views` | how many views draw each stream | never notifies | — | — (`actions::voice::show_stream` / `hide_stream` switch the core's frame sink: the video hub receives only what is displayed) |
 | `voice.own_stream` | idle / starting / live (codec as started, size, fps, audio, where, the encoder's label from `StartScreenShareResult.encoder`), the Go Live error, cursor option, Windows source | Go Live, stop, failures | — | user panel, Go Live dialog |
-| `voice.devices`, `voice.stream_audio_apps`, `voice.codecs` | audio device lists; stream-audio apps; codec toggles and caps | a refresh that changed something, a toggle | — | Settings → Audio / Codecs, the Go Live picker |
+| `voice.devices`, `voice.stream_audio_apps`, `voice.codecs` | audio device lists (`watch` / `unwatch` while a view shows them: the core reports device changes only meanwhile, `audio_devices_changed` → one refresh 400 ms after the last); stream-audio apps; codec toggles and caps | a refresh that changed something, a toggle | — | Settings → Audio / Codecs, the user panel's device menu, the Go Live picker |
 | `calls` (`Calls`) | the call state machine; the 45 s ring timer (only while ringing) | a handful of transitions per call | `ShowConversation(uid)` (accepting lands on the caller's DM: **M2's DM store subscribes**) | DM header, call stage, incoming card |
 | `presence.statuses` (`Presence`) | watched users' statuses + who central answered for | a watched user's change; a whole subscription answer is one batch | `PresenceChanged(uids)` | a dot / avatar (one person) subscribes and filters; a member list observes |
 | `presence.messages` | watched users' custom statuses (apart, so an edit doesn't regroup lists) | idem | `MessagesChanged(uids)` | idem |
@@ -875,11 +876,12 @@ creating / dropping hundreds of entities with their observers.
 
 | What | Where | Notes |
 |---|---|---|
-| Sounds and attention | subscribe to `model.live.cues` | `Cue::Play(Sound)` (`Sound::asset()` → `assets/sounds/*.wav`), `StartRing` / `StopRing` (loop `call_ring.wav`), `Flash` (taskbar flash / dock bounce without focus). The model plays nothing. |
+| Sounds and attention | (wired: `decibell-app/src/audio.rs`) subscribe to `model.live.cues` | `Cue::Play(Sound)` → the core's `api::audio::play_sound`, `StartRing` / `StopRing` → `start_ring` / `stop_ring` with `call_ring.wav`; `Flash` (taskbar flash / dock bounce without focus) is still only logged. The WAVs (`Sound::asset()` → `assets/sounds/*.wav`) are embedded in the app and loaded on first use, the two 44.1 kHz ones resampled off the UI thread. Sounds play in the voice / call output's mix while there is one, else on the OS default output through a stream that closes by itself; no thread, timer or stream at idle. The model plays nothing. Under `--selftest` / `--check` the player never calls the core unless `DECIBELL_CUE_SINK` names a test sink that is also the saved output device (development builds honour the variable too; `off` silences them). |
 | Decode capabilities | `codecs.update(|c, _| c.set_decoder_probe(Rc<dyn DecoderProbe>))`, then `actions::voice::load_decode_caps(cx)` once the first frame is up, after the core booted, and whenever the answer may have changed | `DecoderProbe::probe(force) -> DecodeReport`: what to advertise, the decoder each codec's streams get (`DecoderInfo`: "Vulkan Video", …), what was tried and given up (`SkippedDecoder`). The video crate's real probe, kept by it per GPU and driver; the model adds the H.264 fallback, keeps the report in `voice.codecs` (`decode`, `decoders`, `skipped_decoders`, `decode_probed`), ships `decode` to the core and re-derives the advertised encoders. Without a probe (headless) only H.264 is advertised. |
 | Codec caps (encode + decode) | `actions::voice::init_codec_caps(force, cx)` when first needed: the first voice session, Go Live, Settings → Codecs; `force` for "Refresh" | **The one loader, never at start** (the encoder probe opens encoder sessions): the decode probe, then the encoders (`ui.json` `extra["native_encoder_caps.v3"]`, else the core's `probe_native_encoders`; one re-probe 15 s after a cached load, for the next session), kept whole in `voice.codecs.encoders` (`EncoderCap`: backend, label, limits, a software encoder's pixel rate) with `encode` the ones we also decode, both shipped to the core. One load at a time: callers while one runs share it (`CodecCaps::begin_load`), a forced one asked for meanwhile runs after it, a plain one is a no-op once `loaded`. |
 | Idle source | `auto_away.update(|a, cx| a.set_source(Rc::new(CoreIdleSource), cx))` or the platform's own `IdleSource` | The core's answers Wayland + GNOME, "unsupported" on X11 / Windows / macOS (Electron used `powerMonitor`): the app supplies `XScreenSaver` / `GetLastInputInfo` / `CGEventSource` sources there, ideally with `idle_for`. Also `set_locked(bool)` on lock / sleep, `poke()` on resume pushes and on input in our window. |
-| Device hot-plug | `devices.update(|d, cx| d.hotplug(cx))` | Electron had `devicechange`; GPUI has none (PipeWire / WASAPI notifications are the app's). 400 ms debounce, timer only while pending. Pickers call `ensure_loaded`. |
+| Device hot-plug | done by the model: a view that shows the lists holds `devices.update(|d, cx| d.watch(cx))` … `d.unwatch()` (Settings → Audio, the user panel's device menu) | The first watch lists again and switches the core's notifications on (`api::audio::watch_devices`: PipeWire's registry, `IMMNotificationClient`, CoreAudio; its listener thread exists only meanwhile), the last switches them off. `audio_devices_changed` → `hotplug`: 400 ms debounce, timer only while pending. Nothing for the app. |
+| Mic test outside voice | `decibell_settings::SettingsHooks::set_mic_test(Rc::new(CoreMicTest), cx)` once the core runs | `CoreMicTest` is the core's `api::audio::start_mic_test` / `stop_mic_test` with the user's AEC / noise suppression / gain control, so the meter shows what a voice session would send. Refused while a voice session or call holds the microphone (the tab uses the session's `voice_input_level` then). |
 | Downloads | `transfers.update(|t, cx| t.attach_downloads(Rc<dyn DownloadControl>, cx))` → `DownloadEvents`; give `move |e| events.push(e)` to `DownloadManager::new` | `ManagerControl { manager, runtime }` implements the trait. Then `actions::transfers::configure_downloads`. A view starts one with `start_download(actions::chat::download_request(server, attachment_id, Some(&attachment), save_to, cx), cx)`. |
 | Uploads | done by the model (§16): `bridge::install` sets the composer as the `UploadControl` and mirrors its pendings through `actions::transfers::sync_uploads` | Nothing for the app. Rows: `go_to_upload` / `go_to_download` for "Go to message". |
 | Taskbar / quit guard | observe `transfers`: `progress()` (fraction or none, paused-only) and `uploads_in_flight()` | Electron throttled the platform call to 4 / s. |
@@ -962,9 +964,10 @@ Nothing of M3 polls at idle: signed in with nothing on screen, no M3 timer exist
 
 1. `system_idle` is a query: no push of the compositor's `idled` / `resumed`, so auto-away either lags (≤ one
    threshold) or re-reads; a push from `system_idle.rs`'s watcher would make it exact and timer-free.
-2. No out-of-voice mic test: the Audio tab's meter outside voice used Web Audio's `getUserMedia`; the core
-   meters only inside a session (`voice_input_level`).
-3. No device-change notification from the core (only `default_device_watch` for the default device).
+2. ~~No out-of-voice mic test~~: the core has `api::audio::start_mic_test` (the voice path's capture and
+   processing, no output stream); Settings → Audio uses it through `CoreMicTest`.
+3. ~~No device-change notification from the core~~: `api::audio::watch_devices` + `audio_devices_changed`
+   (M3.2, "Device hot-plug").
 4. ~~GPUI's `Keystroke` has no physical key code~~: fixed by GPUI patch 0012 (`KeyDownEvent::code`, `ModifiersChangedEvent::key`); `live::hotkeys` names keys from it. macOS still guesses from the character.
 5. `probe_native_encoders` does not exist on macOS: encode caps are empty there.
 6. `caps_refreshed` and `stream_gpu_fallback` have no emitter (as the foundation noted).

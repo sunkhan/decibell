@@ -1,13 +1,16 @@
 //! Audio hardware lists (`stores/audioDevicesStore.ts`, `hooks/useAudioDeviceSync.ts`)
 //! and the stream-audio app roster (`stores/streamAudioAppsStore.ts`).
 //!
-//! **Devices**: one list for every picker. The app's platform glue calls
-//! [`AudioDevices::hotplug`] when the OS reports a device change (Electron had the
-//! browser's `devicechange`; there is nothing like it in GPUI — PipeWire / WASAPI
-//! notifications are the app's to wire): a burst collapses into one refresh 400 ms after
-//! the last report. The timer exists only while one is pending. Like the renderer, a
-//! change never re-pushes the selection to a running voice engine (each re-push was an
-//! audible pop); a "Default" selection follows the OS default inside the core.
+//! **Devices**: one list for every picker. A view that shows it holds a watch
+//! ([`AudioDevices::watch`] while it is on screen, [`AudioDevices::unwatch`] when it
+//! goes): the first watch lists the devices again and switches the core's device
+//! notifications on (`api::audio::watch_devices`: the platform's own, never a poll; the
+//! core's listener thread exists only meanwhile), the last switches them off. Each
+//! notification (`audio_devices_changed`, Electron's `devicechange`) is
+//! [`AudioDevices::hotplug`]: a burst collapses into one refresh 400 ms after the last
+//! report. The timer exists only while one is pending. Like the renderer, a change never
+//! re-pushes the selection to a running voice engine (each re-push was an audible pop); a
+//! "Default" selection follows the OS default inside the core.
 //!
 //! **Stream-audio apps**: the Go Live picker refreshes while it is open (the renderer
 //! polls every 2 s while mounted: that timer is the picker view's, with the open picker
@@ -32,6 +35,9 @@ pub struct AudioDevice {
 
 pub type DeviceList = (Vec<AudioDevice>, Vec<AudioDevice>);
 pub type DeviceLister = Rc<dyn Fn() -> LocalBoxFuture<'static, Result<DeviceList, UiError>>>;
+/// Switches the platform's device notifications on or off. Answers whether there is a
+/// platform to ask (the core runs): `false` and nothing was switched.
+pub type DeviceWatching = Rc<dyn Fn(bool) -> bool>;
 
 pub struct AudioDevices {
     pub inputs: Vec<AudioDevice>,
@@ -41,6 +47,11 @@ pub struct AudioDevices {
     lister: DeviceLister,
     in_flight: Option<Task<()>>,
     debounce: Option<Task<()>>,
+    watching: Option<DeviceWatching>,
+    /// Views showing the lists now.
+    watchers: usize,
+    /// The notifications were switched on (to switch them off exactly once).
+    notified: bool,
 }
 
 impl AudioDevices {
@@ -53,7 +64,52 @@ impl AudioDevices {
             lister,
             in_flight: None,
             debounce: None,
+            watching: None,
+            watchers: 0,
+            notified: false,
         }
+    }
+
+    /// With the switch for the platform's device notifications (the model's: the core's).
+    pub fn with_watching(mut self, watching: DeviceWatching) -> Self {
+        self.watching = Some(watching);
+        self
+    }
+
+    /// A view that shows the lists appeared (a picker opened, Settings → Audio). The first
+    /// one switches the notifications on and lists again: changes while nobody watched
+    /// were not reported.
+    pub fn watch(&mut self, cx: &mut Context<Self>) {
+        self.watchers += 1;
+        if self.watchers > 1 {
+            return;
+        }
+        self.notified = self.watching.as_ref().is_some_and(|w| w(true));
+        if self.notified {
+            self.refresh(cx);
+        }
+    }
+
+    /// That view went. The last one switches the notifications off; a refresh still
+    /// waiting out its debounce is dropped with them.
+    pub fn unwatch(&mut self) {
+        if self.watchers == 0 {
+            return;
+        }
+        self.watchers -= 1;
+        if self.watchers > 0 {
+            return;
+        }
+        self.debounce = None;
+        if std::mem::take(&mut self.notified)
+            && let Some(w) = &self.watching
+        {
+            w(false);
+        }
+    }
+
+    pub fn watchers(&self) -> usize {
+        self.watchers
     }
 
     /// Re-enumerate. A refresh already in flight is reused.
@@ -89,7 +145,7 @@ impl AudioDevices {
         }
     }
 
-    /// The OS reported a device change.
+    /// The OS reported a device change (`audio_devices_changed`, while watched).
     pub fn hotplug(&mut self, cx: &mut Context<Self>) {
         self.debounce = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(HOTPLUG_DEBOUNCE).await;
@@ -200,6 +256,75 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(calls.get(), 2);
+    }
+
+    #[gpui::test]
+    fn the_notifications_run_exactly_while_a_view_watches(cx: &mut TestAppContext) {
+        let lists = Rc::new(Cell::new(0));
+        let switched: Rc<std::cell::RefCell<Vec<bool>>> = Rc::default();
+        let devices = cx.new(|_| {
+            let (lists, switched) = (lists.clone(), switched.clone());
+            AudioDevices::new(Rc::new(move || {
+                lists.set(lists.get() + 1);
+                Box::pin(async { Ok((vec![device("mic")], vec![device("speakers")])) })
+            }))
+            .with_watching(Rc::new(move |on| {
+                switched.borrow_mut().push(on);
+                true
+            }))
+        });
+        // The first watcher switches them on and lists; a second changes nothing.
+        devices.update(cx, |d, cx| d.watch(cx));
+        devices.update(cx, |d, cx| d.watch(cx));
+        cx.run_until_parked();
+        assert_eq!((lists.get(), switched.borrow().clone()), (1, vec![true]));
+        // A report while watched: one refresh after the debounce.
+        devices.update(cx, |d, cx| d.hotplug(cx));
+        cx.executor().advance_clock(HOTPLUG_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(lists.get(), 2);
+        // The last watcher going switches them off and drops a pending refresh.
+        devices.update(cx, |d, cx| {
+            d.hotplug(cx);
+            d.unwatch();
+            assert_eq!(d.watchers(), 1);
+            d.unwatch();
+            assert!(!d.hotplug_pending());
+            d.unwatch();
+        });
+        cx.executor().advance_clock(HOTPLUG_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!((lists.get(), switched.borrow().clone()), (2, vec![true, false]));
+        // Watching again lists again (what changed meanwhile was not reported).
+        devices.update(cx, |d, cx| d.watch(cx));
+        cx.run_until_parked();
+        assert_eq!((lists.get(), switched.borrow().clone()), (3, vec![true, false, true]));
+    }
+
+    #[gpui::test]
+    fn without_a_platform_watching_switches_nothing(cx: &mut TestAppContext) {
+        let lists = Rc::new(Cell::new(0));
+        let offs = Rc::new(Cell::new(0));
+        let devices = cx.new(|_| {
+            let (lists, offs) = (lists.clone(), offs.clone());
+            AudioDevices::new(Rc::new(move || {
+                lists.set(lists.get() + 1);
+                Box::pin(async { Ok((Vec::new(), Vec::new())) })
+            }))
+            // No core (a screen drawn from fixtures): nothing to switch, nothing to list.
+            .with_watching(Rc::new(move |on| {
+                if !on {
+                    offs.set(offs.get() + 1);
+                }
+                false
+            }))
+        });
+        devices.update(cx, |d, cx| {
+            d.watch(cx);
+            d.unwatch();
+        });
+        cx.run_until_parked();
+        assert_eq!((lists.get(), offs.get()), (0, 0));
     }
 
     #[gpui::test]

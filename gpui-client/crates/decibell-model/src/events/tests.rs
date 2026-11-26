@@ -850,5 +850,5 @@ fn sign_in_page_states(cx: &mut TestAppContext) {
 fn every_event_name_is_routed(_cx: &mut TestAppContext) {
     // The router's match has no wildcard, so the compiler already holds it to the
     // enum; this pins the count the docs quote.
-    assert_eq!(CoreEvent::NAMES.len(), 86);
+    assert_eq!(CoreEvent::NAMES.len(), 87);
 }

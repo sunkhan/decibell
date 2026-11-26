@@ -226,7 +226,7 @@ pub fn start_call(peer: Uid, cx: &mut App) {
     let name = model.name_of(peer, &SharedString::default(), cx);
     cx.spawn(async move |cx| {
         leave_community_voice_if_any(&model, cx).await;
-        cx.update(|cx| model.settings.update(cx, |s, _| s.flush()));
+        super::settings::flush_saved(&model, cx).await;
         let result: Result<(), UiError> = async {
             let prep = transport.prepare(call_id.clone(), peer, name.clone()).await?;
             if !cx.update(|cx| model.live.calls.read(cx).is(&call_id)) {
@@ -280,7 +280,7 @@ pub fn accept_call(cx: &mut App) {
     let name = model.name_of(inc.from_uid, &inc.from, cx);
     cx.spawn(async move |cx| {
         leave_community_voice_if_any(&model, cx).await;
-        cx.update(|cx| model.settings.update(cx, |s, _| s.flush()));
+        super::settings::flush_saved(&model, cx).await;
         let result: Result<(), UiError> = async {
             let prep = transport.prepare(inc.call_id.clone(), inc.from_uid, name.clone()).await?;
             if !cx.update(|cx| model.live.calls.read(cx).is(&inc.call_id)) {

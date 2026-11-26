@@ -84,6 +84,17 @@ pub fn voice_input_level(model: &Model, p: &VoiceInputLevelPayload, cx: &mut App
     model.live.voice.input_level.update(cx, |l, cx| l.set(p.db, cx));
 }
 
+/// `audio_devices_changed`: a capture or playback device appeared or went, or a default
+/// moved (the core reports it only while a view watches the lists; Electron's
+/// `devicechange`). Several come for one plug: the store lists once, after the last.
+pub fn audio_devices_changed(model: &Model, cx: &mut App) {
+    model.live.voice.devices.update(cx, |d, cx| {
+        if d.watchers() > 0 {
+            d.hotplug(cx);
+        }
+    });
+}
+
 pub fn voice_ping_updated(model: &Model, p: &VoicePingUpdatedPayload, cx: &mut App) {
     model.live.voice.stats.update(cx, |s, cx| s.set_latency(p.latency_ms, cx));
 }

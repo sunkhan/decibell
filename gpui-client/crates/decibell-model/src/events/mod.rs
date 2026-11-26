@@ -4,7 +4,7 @@
 //! (`useAuthEvents`), `servers.rs` (`useServerEvents`), `connection.rs`
 //! (`useCentralConnectionStatus`), `users.rs` (`userDirectory.ts`); `todo.rs` lists what
 //! the features still to be ported will take, as empty functions with the renderer file
-//! each one ports. **Both matches (here and in `users.rs`) name all 86 variants with no
+//! each one ports. **Both matches (here and in `users.rs`) name all 87 variants with no
 //! wildcard**: a new core event doesn't compile until someone decides where it goes.
 //!
 //! Called by the pump for each item of a batch, inside one `App::update`
@@ -160,6 +160,7 @@ pub fn route(model: &Model, event: CoreEvent, cx: &mut App) {
         E::VoicePingUpdated(p) => todo::m3::voice_ping_updated(model, &p, cx),
         E::VoiceConnectionStats(p) => todo::m3::voice_connection_stats(model, &p, cx),
         E::VoiceError(p) => todo::m3::voice_error(model, &p, cx),
+        E::AudioDevicesChanged => voice::audio_devices_changed(model, cx),
 
         // ── Streaming ──
         E::StreamPresenceUpdated(p) => todo::m3::stream_presence_updated(model, &p, cx),

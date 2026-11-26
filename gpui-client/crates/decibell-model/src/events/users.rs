@@ -124,6 +124,7 @@ pub fn directory(model: &Model, event: &CoreEvent, cx: &mut App) {
         | E::VoiceUserSpeaking(_)
         | E::VoiceUserStateChanged(_)
         | E::VoiceInputLevel(_)
+        | E::AudioDevicesChanged
         | E::VoicePingUpdated(_)
         | E::VoiceConnectionStats(_)
         | E::VoiceError(_)

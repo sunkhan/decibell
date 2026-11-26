@@ -61,6 +61,17 @@ pub(crate) fn set_level_reporting(on: bool) {
     api::voice::set_input_level_reporting(api::voice::SetInputLevelReportingArgs { enabled: on });
 }
 
+/// `AudioDevices`' switch: the core's device notifications (`audio_devices_changed`, from
+/// the platform's own; its listener thread exists only while they are on). Nothing to
+/// switch without a core (screens drawn from fixtures).
+pub(crate) fn watch_audio_devices(on: bool) -> bool {
+    if !crate::core::is_running() {
+        return false;
+    }
+    api::audio::watch_devices(on);
+    true
+}
+
 pub(crate) fn list_audio_devices() -> LocalBoxFuture<'static, Result<DeviceList, UiError>> {
     Box::pin(async {
         let list = core(api::settings::list_audio_devices()).await?;
@@ -220,7 +231,7 @@ pub fn join_voice_channel(server: ServerId, channel: ChannelId, cx: &mut App) ->
         }
         // The core reads config.json to pick the devices when the engine starts: a device
         // changed inside the save debounce must be on disk first.
-        cx.update(|cx| model.settings.update(cx, |s, _| s.flush()));
+        super::settings::flush_saved(&model, cx).await;
         let joined = core(api::voice::join_voice_channel(api::voice::JoinVoiceChannelArgs {
             server_id: server.wire(),
             channel_id: channel.to_string(),

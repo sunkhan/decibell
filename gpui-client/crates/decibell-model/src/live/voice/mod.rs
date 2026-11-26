@@ -18,7 +18,7 @@
 //! | `watching` ([`Watching`]) | watch / focus / mini player / fullscreen | on change | — |
 //! | `stream_views` ([`StreamViews`]) | a player mounts / unmounts | never | — |
 //! | `own_stream` ([`OwnStream`]) | Go Live, stop, failure | on change | — |
-//! | `devices` ([`AudioDevices`]) | a refresh | on change | — |
+//! | `devices` ([`AudioDevices`]) | a refresh (a view's first watch, a device change while watched) | on change | — |
 //! | `stream_audio_apps` ([`StreamAudioApps`]) | a refresh that found a change | on change | — |
 //! | `codecs` ([`CodecCaps`]) | a probe, a toggle | on change | — |
 
@@ -77,7 +77,10 @@ impl Voice {
             watching: cx.new(|_| Watching::default()),
             stream_views: cx.new(|_| StreamViews::default()),
             own_stream: cx.new(|_| OwnStream::default()),
-            devices: cx.new(|_| AudioDevices::new(Rc::new(crate::actions::voice::list_audio_devices))),
+            devices: cx.new(|_| {
+                AudioDevices::new(Rc::new(crate::actions::voice::list_audio_devices))
+                    .with_watching(Rc::new(crate::actions::voice::watch_audio_devices))
+            }),
             stream_audio_apps: cx.new(|_| StreamAudioApps::new(Rc::new(crate::actions::voice::list_stream_audio_apps))),
             codecs: cx.new(|_| CodecCaps::default()),
         }
