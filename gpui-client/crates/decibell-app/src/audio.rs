@@ -6,9 +6,12 @@
 //! and hands each to the core: `Cue::Play` → `play_sound`, `Cue::StartRing` → `start_ring` with
 //! `call_ring.wav`, `Cue::StopRing` → `stop_ring`. While a voice session or a call has an output
 //! stream the core mixes the sound into it (it plays on the voice output device); otherwise it
-//! opens a stream on the OS default output (where the renderer's `AudioContext` played) that
-//! closes by itself a quarter of a second after the last sound. Nothing of ours runs between
-//! sounds: no thread, no timer, no open stream.
+//! opens a stream **on that same device, Settings → Audio's output** (owner, 2026-11-26: sounds
+//! use the voice output device everywhere, never the separate stream-output one; the renderer's
+//! `AudioContext` played on the OS default), which closes by itself a quarter of a second after
+//! the last sound. Nothing of ours runs between sounds: no thread, no timer, no open stream.
+//! The 0.1–0.2 s the stream takes to open before a sound outside voice is accepted for now
+//! (owner, same day).
 //!
 //! The WAVs are the renderer's (`assets/sounds/`, embedded here: 368 KB). One is parsed the
 //! first time it is played and kept. The two 44.1 kHz files (the ring, the call's end) are
@@ -47,7 +50,7 @@ const USUAL_DEVICE_RATE: u32 = 48_000;
 /// Where the interface sounds go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CueOutput {
-    /// The shipped behaviour: the voice output while in voice, else the OS default output.
+    /// The shipped behaviour: the voice output device of the settings, in voice and out of it.
     System,
     /// Tests: this sink only, and only while it is also the saved output device.
     Sink(String),
@@ -73,11 +76,13 @@ impl CueOutput {
     }
 
     /// The device to hand the core with a sound (`Some(None)`: the OS default), or `None`
-    /// when the sound must not play. `saved_output` is the output device in the settings: a
-    /// voice session plays on it, sounds included.
-    fn device(&self, saved_output: Option<&str>) -> Option<Option<&str>> {
+    /// when the sound must not play. `saved_output` is Settings → Audio's output device, the one
+    /// voice plays on (`None`: "Default"): **sounds play there, in voice and out of it** (owner,
+    /// 2026-11-26; never the separate stream-output device). The Electron client's sounds go to
+    /// the OS default whatever the setting says (`docs/electron-quirks.md`).
+    fn device<'a>(&'a self, saved_output: Option<&'a str>) -> Option<Option<&'a str>> {
         match self {
-            CueOutput::System => Some(None),
+            CueOutput::System => Some(saved_output),
             CueOutput::Silent => None,
             CueOutput::Sink(name) => (saved_output == Some(name.as_str())).then_some(Some(name.as_str())),
         }
@@ -275,7 +280,9 @@ mod tests {
         assert_eq!(CueOutput::choose(false, true, Some("off")), CueOutput::Silent);
 
         assert_eq!(CueOutput::Silent.device(Some("null-1")), None);
-        assert_eq!(CueOutput::System.device(Some("speakers")), Some(None));
+        // The app: the voice output device of the settings; "Default" is the OS default.
+        assert_eq!(CueOutput::System.device(Some("speakers")), Some(Some("speakers")));
+        assert_eq!(CueOutput::System.device(None), Some(None));
         // The sink only while a voice session would play on it too.
         let sink = CueOutput::Sink("null-1".into());
         assert_eq!(sink.device(Some("null-1")), Some(Some("null-1")));

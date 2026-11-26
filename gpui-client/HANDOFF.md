@@ -1142,10 +1142,9 @@ Things only the owner can do; nothing here blocks the rest.
   (the native client fades it over 5 ms where Electron cuts it); a sound played while people talk (it is mixed
   into the voice output: no dip, no click, the voices unchanged); the first sound after a silence outside
   voice arriving late (0.1–0.2 s: the output stream opens for it).
-  **Decide**: (a) outside voice the native client plays sounds on the OS default output, as Electron does, and
-  in voice on the voice output device (Electron: always the default): should it use the chosen output device
-  everywhere? (b) is the 0.1–0.2 s before a sound outside voice acceptable, or should a stream stay open for
-  a few seconds after a sound (immediate repeats, device-clock wakeups meanwhile)?
+  **Decided** (owner, 2026-11-26): sounds play on the voice output device chosen in Settings → Audio, in voice
+  and out of it, never the separate stream-output device (`crates/decibell-app/src/audio.rs`; Electron keeps the OS
+  default: `docs/electron-quirks.md` #23); and the 0.1–0.2 s before a sound outside voice is fine for now.
 - **The microphone test** (Settings → Audio, outside voice): the meter follows your voice, the OS's
   microphone indicator comes on with "Test mic" and goes out when the test or the tab ends, and joining voice
   ends the test. It meters the signal after your echo-cancellation / noise-suppression / gain-control

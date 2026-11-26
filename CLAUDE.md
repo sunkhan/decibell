@@ -208,6 +208,11 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   wakeups, startup and install size on both): Windows gets the same measurement harness
   (`tools/perf/windows/`), the Electron baseline is taken on the same Windows machine, and the owner runs
   both.
+- **Native client: interface sounds play on the voice output device** chosen in Settings → Audio, in a
+  voice session and outside one (owner, 2026-11-26), never on the separate stream-output device when that
+  is on. (Electron plays them on the OS default output.) Outside voice a sound opens a short-lived output
+  stream and starts 0.1–0.2 s late: accepted for now by the owner; don't keep a stream open at rest to
+  shave it.
 - **Native client: a DM is marked read only while it is being read** (owner, 2026-11-26: "That's how
   Discord does it"). A conversation's messages are marked read only while it is the open view, the window
   is focused **and** its list is scrolled to the bottom. A message that arrives otherwise stays unread (row
