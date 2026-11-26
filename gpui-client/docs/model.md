@@ -679,7 +679,8 @@ Rules for the list view, besides the replay:
 bubble is on screen at once (faded: `Message::pending`); queued attachments start uploading; once they
 all ended (event-driven, no polling) the message goes to the community's bucket (`chat::pacing`: 10
 burst, 2.7 / s, FIFO per community, reset when the community authenticates) and then to the core,
-after the previous send of that community (`call_in_order`). Refused (`channel_message_rejected`): the
+after the previous send of that community has returned, its token spent only then (`chat::pacing`: a
+slow call pushes the bucket back instead of letting a later send reach the server inside its refill). Refused (`channel_message_rejected`): the
 bubble goes, the text comes back (`Drafts::restore` + `DraftsEvent::Restored`), the reason toasts and
 a slowmode refusal corrects the window. Not echoed within 30 s: the echo watchdog asks the server
 (after-pages of 100 from `sent_after_id`, up to 5) before withdrawing; offline it waits for the
@@ -721,7 +722,8 @@ while `restoreDmDraft` doesn't; DM mark-read sends one marker per call (the "coa
 coalesced); `markServerStale` keeps a channel's slice that holds only a scroll position or a flag even
 when the channel is gone; the DM composer's send error is a string from `String(err)` ("Error: …").
 
-Changed on purpose: (1) **sends and edits of a community leave one after another** (`call_in_order`):
+Changed on purpose: (1) **sends and edits of a community leave one after another** (the pacer runs one
+call at a time and spends a send's token when its call returns, not when it is admitted):
 the core runs calls concurrently and a burst admitted at once reached the server out of order (the
 stack's 15-send burst arrived as 1, 7, 2, 3, 4, 10, … before this); the renderer intends FIFO. (2) A
 reply with no cursor echoed is the newest page **unless it answers a waiting older-page request**

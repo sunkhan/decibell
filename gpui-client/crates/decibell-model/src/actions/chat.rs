@@ -67,31 +67,23 @@ fn detached<T: 'static>(cx: &mut App, work: impl AsyncFnOnce(&mut gpui::AsyncApp
     cx.spawn(async move |_| rx.await.ok())
 }
 
-/// Run a message call (send, edit) after the previous one of this community finished, so
-/// they reach the server in the order they were made: the core runs calls concurrently
-/// on its runtime, and a burst of ten admitted at once raced each other to the socket.
-fn call_in_order<T: 'static>(
-    model: &Model,
-    server: ServerId,
+/// A paced job's message call (send, edit): the core's `request` now, `done` with its answer.
+/// The task ends once the call returned (the packet handed to the connection, or a failure):
+/// the pacer starts the community's next call only then and spends this one's token at that
+/// moment (`chat::pacing`), so calls reach the server in the order they were made.
+fn message_call<T: 'static>(
     request: impl Future<Output = Result<T, decibell_core::api::CoreError>> + 'static,
     done: impl FnOnce(Result<T, crate::error::UiError>, &mut App) + 'static,
     cx: &mut App,
-) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let previous = model.chat.pacing.update(cx, |p, _| p.chains.insert(server, rx.map(|_| ()).boxed_local().shared()));
+) -> Task<()> {
     cx.spawn(async move |cx| {
-        if let Some(previous) = previous {
-            previous.await;
-        }
         let result = if crate::core::is_running() {
             request.await.map_err(crate::error::UiError::from)
         } else {
             Err(crate::error::UiError::not_running())
         };
-        let _ = tx.send(());
         cx.update(|cx| done(result, cx));
     })
-    .detach();
 }
 
 fn slice_of(model: &Model, server: ServerId, channel: &str, cx: &App) -> Option<Entity<MessageSlice>> {
@@ -570,7 +562,7 @@ fn finish_send(
         &model.chat.pacing.clone(),
         server,
         Box::new(move |cx| {
-            call_in_order(&model.clone(), server, api::channels::send_channel_message(args), move |r, cx| {
+            message_call(api::channels::send_channel_message(args), move |r, cx| {
                 match r {
                     Ok(()) => {
                         watch_echo(server, channel.clone(), nonce.clone(), cx);
@@ -609,7 +601,7 @@ fn finish_send(
                         model.chat.composer.update(cx, |c, cx| c.claim(&pending, false, cx));
                     }
                 }
-            }, cx);
+            }, cx)
         }),
         cx,
     );
@@ -656,7 +648,7 @@ pub fn send_gif(server: ServerId, channel: ChannelId, url: &str, reply_to: i64, 
         &model.chat.pacing.clone(),
         server,
         Box::new(move |cx| {
-            call_in_order(&model.clone(), server, api::channels::send_channel_message(args), move |r, cx| match r {
+            message_call(api::channels::send_channel_message(args), move |r, cx| match r {
                 Ok(()) => watch_echo(server, channel, n, cx),
                 Err(e) => {
                     log::error!("send_channel_message (gif): {e}");
@@ -665,7 +657,7 @@ pub fn send_gif(server: ServerId, channel: ChannelId, url: &str, reply_to: i64, 
                     }
                     model.toasts.update(cx, |t, cx| t.error("Failed to send GIF", None, cx));
                 }
-            }, cx);
+            }, cx)
         }),
         cx,
     );
@@ -784,12 +776,11 @@ pub fn edit_message(server: ServerId, channel: ChannelId, id: i64, content: &str
         encrypted: Some(channel_encrypted(&model, server, &channel, cx)),
         encrypted_attachments: encrypted_attachment_args(&message.attachments),
     };
-    let m = model.clone();
     pace(
         &model.chat.pacing.clone(),
         server,
         Box::new(move |cx| {
-            call_in_order(&m, server, api::channels::edit_channel_message(args), |r, _| {
+            message_call(api::channels::edit_channel_message(args), |r, _| {
                 if let Err(e) = r {
                     log::error!("edit_channel_message: {e}");
                 }
