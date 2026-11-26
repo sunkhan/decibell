@@ -158,6 +158,7 @@ pub(crate) struct Rx {
     pub deafened: bool,
     enc: OpusEncoder,
     sent: Vec<Vec<u8>>,
+    seq: u16,
     pub step: usize,
     t0: Instant,
     pub event_tx: mpsc::Sender<super::pipeline::VoiceEvent>,
@@ -188,6 +189,7 @@ impl Rx {
             deafened: false,
             enc: OpusEncoder::new(64_000).unwrap(),
             sent: Vec::new(),
+            seq: 0,
             step: 0,
             t0: Instant::now(),
             event_tx,
@@ -223,6 +225,49 @@ impl Rx {
         let pkt = UdpAudioPacket::new_audio(PEER, self.step as u16, &flagged).unwrap().to_bytes();
         self.sent.push(pkt.clone());
         pkt
+    }
+
+    /// A frame from the sender side of a test (`Tx`): encoded and delivered
+    /// as the pipeline sends it, `flags` in front.
+    pub(crate) fn send_pcm(&mut self, frame: Option<&[i16; FRAME_SIZE]>, flags: u8) {
+        let now = self.now();
+        let mut opus = [0u8; MAX_OPUS_FRAME_SIZE];
+        let n = match frame {
+            Some(f) => self.enc.encode(f, &mut opus).unwrap(),
+            None => self.enc.encode_silence(&mut opus).unwrap(),
+        };
+        let mut flagged = vec![flags];
+        flagged.extend_from_slice(&opus[..n]);
+        let mut pkt = UdpAudioPacket::new_audio(PEER, self.seq, &flagged).unwrap().to_bytes();
+        self.seq = self.seq.wrapping_add(1);
+        let rx = VoiceRx { ring: None, self_key: &peer_key("9"), output_rate: 48_000, event_tx: &self.event_tx };
+        if on_voice_datagram(&mut pkt, &rx, &mut self.peers, &move || now) == super::pipeline::Datagram::NewPeer {
+            let snapshot = self.peers.values().map(|p| p.output_handle()).collect();
+            self.list.store(Arc::new(snapshot));
+        }
+    }
+
+    /// The receiving half of a step when the sender side is a `Tx`: decode
+    /// what is due, and the device pulls 20 ms.
+    pub(crate) fn play_step(&mut self) {
+        let now = self.now();
+        let low_water = 480 + 480;
+        for peer in self.peers.values_mut() {
+            drain_peer_voice(peer, &mut VoiceDrain {
+                now,
+                ring_paced: true,
+                low_water,
+                prime: low_water.div_ceil(FRAME_SIZE) + 1,
+                deafened: false,
+                aec_enabled: false,
+                user_volumes: &self.user_volumes,
+                event_tx: &self.event_tx,
+                dump: None,
+            });
+        }
+        self.device.callback();
+        self.device.callback();
+        self.step += 1;
     }
 
     /// The packet of an earlier step arrives now.
@@ -618,4 +663,242 @@ fn late_packets_resume_from_the_concealment_without_a_step() {
         }
     }
     assert!(concealed > 20, "the longer stalls were concealed ({concealed} frames)");
+}
+
+// ── The sending side ─────────────────────────────────────────────────────────
+
+use super::capture_chain::{rms_db, CaptureChain, TxGate};
+use super::pipeline::FLAG_SILENCE;
+use super::voice_gate::Gate as VoiceGate;
+
+/// A microphone into the pipeline's capture path (the capture ring, the
+/// chain, the transmit gate), sending as the pipeline's loop sends: each
+/// captured frame is processed, gated and, when the gate says so, encoded
+/// and delivered to an `Rx`, which plays it.
+struct Tx {
+    chain: CaptureChain,
+    gate: TxGate,
+    prod: HeapProd<i16>,
+    cons: HeapCons<i16>,
+    /// The signal at the microphone, by sample index.
+    mic: fn(usize) -> i16,
+    at: usize,
+    muted: bool,
+    hotkey: VoiceGate,
+}
+
+fn mic_talker(i: usize) -> i16 {
+    talker(i as f64 / 48_000.0)
+}
+
+/// The same talker, quiet (a tenth): room for gain control to lift it.
+fn mic_quiet(i: usize) -> i16 {
+    talker(i as f64 / 48_000.0) / 10
+}
+
+/// Another microphone: the talker at 80 %, 13.7 ms later in its wave.
+fn mic_other(i: usize) -> i16 {
+    (talker((i + 658) as f64 / 48_000.0) as f32 * 0.8) as i16
+}
+
+impl Tx {
+    fn new(mic: fn(usize) -> i16) -> Tx {
+        let (prod, cons) = HeapRb::<i16>::new(FRAME_SIZE * 48).split();
+        Tx { chain: CaptureChain::new(48_000), gate: TxGate::new(), prod, cons, mic, at: 0, muted: false, hotkey: VoiceGate::Vad }
+    }
+
+    /// 20 ms at the microphone, through to the listener's device.
+    fn step(&mut self, rx: &mut Rx) {
+        use ringbuf::traits::Producer;
+        for _ in 0..FRAME_SIZE {
+            let _ = self.prod.try_push((self.mic)(self.at));
+            self.at += 1;
+        }
+        self.chain.pull(&mut self.cons);
+        while let Some(mut frame) = self.chain.next_frame() {
+            if self.gate.wants_processing(self.muted) {
+                self.chain.process(&mut frame);
+            }
+            let level = rms_db(&frame);
+            let tx = self.gate.step(&mut frame, level, -50.0, self.muted, self.hotkey);
+            if let Some(pre) = &tx.pre_roll {
+                rx.send_pcm(Some(pre), 0);
+            }
+            if tx.transmit_voice || tx.tail_index.is_some() {
+                rx.send_pcm(Some(&frame), if tx.transmit_voice { 0 } else { FLAG_SILENCE });
+            }
+        }
+        rx.play_step();
+    }
+
+    fn run(&mut self, rx: &mut Rx, steps: usize) {
+        for _ in 0..steps {
+            self.step(rx);
+        }
+    }
+
+    /// The user picks another microphone; opening it takes `gap` steps, in
+    /// which nothing is captured or sent (the pipeline's `SetInputDevice`).
+    fn switch_input_device(&mut self, rx: &mut Rx, mic: fn(usize) -> i16, gap: usize) {
+        use ringbuf::traits::Consumer;
+        if self.gate.cut() {
+            rx.send_pcm(None, FLAG_SILENCE);
+        }
+        while self.cons.try_pop().is_some() {}
+        self.chain.clear_capture();
+        self.chain.reset_processor();
+        for _ in 0..gap {
+            rx.play_step();
+            self.at += FRAME_SIZE;
+        }
+        self.mic = mic;
+    }
+}
+
+/// What a clean signal steps by, measured on `steady` (a stretch of the same
+/// talker with nothing happening): for tests where the level heard depends
+/// on gain control, so the tone's slope can't be computed ahead.
+fn assert_no_step_beyond(heard: &[f32], steady: std::ops::Range<usize>, what: &str) {
+    let own = max_step(&heard[steady]).0;
+    let (step, at) = max_step(heard);
+    assert!(own > 0.0, "{what}: nothing was heard in the steady stretch");
+    assert!(
+        step <= 1.6 * own + 4.0 / 32768.0,
+        "{what}: a step of {:.4} ({:.0} of 32768) at sample {at}, where the steady signal's largest is {:.4}",
+        step,
+        step * 32768.0,
+        own
+    );
+}
+
+/// The sending side as a whole is clean: a talker through the capture
+/// chain and the gate to the listener's device (the gate's pre-roll and the
+/// receiver's onset fade shape the start).
+#[test]
+fn a_steady_sender_is_clean() {
+    let mut rx = Rx::new();
+    let mut tx = Tx::new(mic_talker);
+    tx.run(&mut rx, 120);
+    let heard = rx.heard();
+    assert!(heard.iter().any(|s| s.abs() > 0.15));
+    assert_clean(&heard, 1.0, "steady sender");
+}
+
+/// Audit 4: the microphone switched mid-word. The talkspurt is ended on
+/// the wire before the old device closes (a flagged frame: the listener
+/// fades the last voice frame out) and the new device's first frame starts
+/// a new one (faded in, no pre-roll from the old device). Before, the gate
+/// stayed open and the new microphone's signal was butted against the old.
+#[test]
+fn switching_the_microphone_mid_word_ends_the_talkspurt() {
+    for at in [84usize, 85, 86, 87] {
+        for gap in [0usize, 1, 2, 3, 6] {
+            let mut rx = Rx::new();
+            let mut tx = Tx::new(mic_talker);
+            tx.run(&mut rx, at);
+            tx.switch_input_device(&mut rx, mic_other, gap);
+            tx.run(&mut rx, 60);
+            let heard = rx.heard();
+            assert!(heard[heard.len() - 9_600..].iter().any(|s| s.abs() > 0.1), "the new microphone is heard");
+            assert_clean(&heard, 1.0, &format!("microphone switch at step {at}, {} ms to open", gap * 20));
+        }
+    }
+}
+
+/// Audit 10, first half: a push-to-talk press mid-sound. No pre-roll by
+/// design (the frame before the press is audio from before the key went
+/// down), so the first frame is faded in over 10 ms; the release ends with
+/// the 60 ms tail. Neither is a step.
+#[test]
+fn push_to_talk_presses_and_releases_are_faded() {
+    for at in [84usize, 85, 86, 87] {
+        let mut rx = Rx::new();
+        let mut tx = Tx::new(mic_talker);
+        tx.hotkey = VoiceGate::Closed; // push-to-talk mode, key up
+        tx.run(&mut rx, at);
+        assert!(rx.peers.is_empty(), "nothing is sent with the key up");
+        tx.hotkey = VoiceGate::Open;
+        tx.run(&mut rx, 30);
+        tx.hotkey = VoiceGate::Closed;
+        tx.run(&mut rx, 30);
+        let heard = rx.heard();
+        assert!(heard.iter().any(|s| s.abs() > 0.1), "the held key was heard");
+        assert!(heard[heard.len() - 9_600..].iter().all(|&s| s == 0.0), "silent after the release");
+        assert_clean(&heard, 1.0, &format!("push-to-talk pressed at step {at}"));
+    }
+}
+
+/// Audit 10, second half: mute mid-word, with gain control on. The 60 ms
+/// tail that follows the mute is the processed signal fading out, like the
+/// frames before it; it used to be the raw microphone (processing stopped
+/// at the mute), a jump in level at the mute.
+#[test]
+fn muting_mid_word_fades_the_processed_signal() {
+    for at in [150usize, 151, 152, 153] {
+        let mut rx = Rx::new();
+        let mut tx = Tx::new(mic_quiet);
+        tx.chain.set_agc(true);
+        tx.run(&mut rx, at);
+        tx.muted = true;
+        tx.run(&mut rx, 30);
+        let heard = rx.heard();
+        assert!(heard[heard.len() - 9_600..].iter().all(|&s| s == 0.0), "silent once muted");
+        // Gain control starts high and settles: everything before the mute
+        // is the measure of the signal's own steps.
+        assert_no_step_beyond(&heard, 0..(at - 6) * 960, &format!("mute at step {at}"));
+    }
+}
+
+/// Audit 5: echo cancellation, gain control or noise suppression switched
+/// mid-word. The frame after the switch is a crossfade from the old
+/// processing to the new (the processor has to be rebuilt, and with it the
+/// gain it had settled on), where it used to jump.
+#[test]
+fn toggling_the_voice_processing_mid_word_is_a_crossfade() {
+    let toggles: [(&str, fn(&mut CaptureChain), fn(&mut CaptureChain)); 5] = [
+        ("gain control off", |c| drop(c.set_agc(true)), |c| drop(c.set_agc(false))),
+        ("gain control on", |_| {}, |c| drop(c.set_agc(true))),
+        ("echo cancellation off, gain control on", |c| drop((c.set_aec(true), c.set_agc(true))), |c| drop(c.set_aec(false))),
+        ("noise suppression off", |c| drop(c.set_ns_level(2)), |c| drop(c.set_ns_level(0))),
+        ("noise suppression on", |_| {}, |c| drop(c.set_ns_level(2))),
+    ];
+    for (what, before, toggle) in toggles {
+        for at in [150usize, 151, 152] {
+            let mut rx = Rx::new();
+            let mut tx = Tx::new(mic_quiet);
+            before(&mut tx.chain);
+            tx.run(&mut rx, at);
+            toggle(&mut tx.chain);
+            tx.run(&mut rx, 60);
+            let heard = rx.heard();
+            // The louder of the two settings sets what a clean step is.
+            // (Gain control starts high and settles: all of it before the
+            // switch counts, and the settled stretch after.)
+            let own = max_step(&heard[..(at - 6) * 960]).0.max(max_step(&heard[heard.len() - 30 * 960..]).0);
+            let (step, sample) = max_step(&heard);
+            assert!(own > 0.0, "{what}: heard nothing");
+            assert!(step <= 1.6 * own + 4.0 / 32768.0, "{what} at step {at}: a step of {:.4} at sample {sample}; the steady signal's largest is {:.4}", step, own);
+        }
+    }
+}
+
+/// Changing the noise-suppression level between two "on" levels changes
+/// nothing in the path (the level only says on or off): the samples sent are
+/// the same as without the change. It used to rebuild the suppressor and the
+/// echo canceller / gain control with it, restarting all three mid-word.
+#[test]
+fn a_noise_suppression_level_change_restarts_nothing() {
+    let run = |change: bool| {
+        let mut rx = Rx::new();
+        let mut tx = Tx::new(mic_quiet);
+        tx.chain.set_ns_level(1);
+        tx.chain.set_agc(true);
+        tx.run(&mut rx, 120);
+        if change {
+            tx.chain.set_ns_level(3);
+        }
+        tx.run(&mut rx, 40);
+        rx.heard()
+    };
+    assert!(run(false) == run(true), "the level change altered the signal");
 }

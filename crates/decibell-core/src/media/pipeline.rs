@@ -545,6 +545,26 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetInputDevice(name)) => {
                     log::info!("[pipeline] Hot-swapping input device to: {:?}", name);
+                    // Mid-word: the talkspurt ends on the wire before the old
+                    // device closes. The flagged frame makes the listener fade
+                    // out the last voice frame it holds; the new device's
+                    // first frame then opens a new talkspurt (faded in).
+                    if tx_gate.cut() {
+                        let mut opus_out = [0u8; MAX_OPUS_FRAME_SIZE];
+                        if let Ok(len) = encoder.encode_silence(&mut opus_out) {
+                            let flags = if muted { FLAG_MUTED } else { 0 }
+                                | if deafened { FLAG_DEAFENED } else { 0 }
+                                | FLAG_SILENCE;
+                            let mut flagged = [0u8; MAX_OPUS_FRAME_SIZE + 1];
+                            flagged[0] = flags;
+                            flagged[1..1 + len].copy_from_slice(&opus_out[..len]);
+                            if let Some(packet) = make_audio_packet(sequence, &flagged[..1 + len]) {
+                                let _ = socket.send(&packet.to_bytes());
+                            }
+                            sequence = sequence.wrapping_add(1);
+                            last_voice_send = loop_start;
+                        }
+                    }
                     input_device_name = name.clone();
                     input_stream_opt = None; // drop old stream
                     { let mut g = capture_cons.lock().unwrap(); while g.try_pop().is_some() {} }
@@ -666,18 +686,21 @@ pub fn run_audio_pipeline(
                 }
                 Ok(ControlMessage::SetAecEnabled(enabled)) => {
                     log::info!("[pipeline] AEC enabled={}", enabled);
-                    chain.set_aec(enabled);
-                    if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    if chain.set_aec(enabled) {
+                        if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    }
                 }
                 Ok(ControlMessage::SetNoiseSuppressionLevel(level)) => {
                     log::info!("[pipeline] NS level={}", level);
-                    chain.set_ns_level(level);
-                    if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    if chain.set_ns_level(level) {
+                        if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    }
                 }
                 Ok(ControlMessage::SetAgcEnabled(enabled)) => {
                     log::info!("[pipeline] AGC enabled={}", enabled);
-                    chain.set_agc(enabled);
-                    if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    if chain.set_agc(enabled) {
+                        if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
@@ -722,7 +745,7 @@ pub fn run_audio_pipeline(
                 // the threshold sees. Previous order caused AGC to boost quiet
                 // audio after the gate had already decided to fade it out,
                 // producing robotic popping artifacts.
-                if !muted {
+                if tx_gate.wants_processing(muted) {
                     chain.process(&mut frame);
                 }
 
@@ -1474,9 +1497,22 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
             for (i, s) in pcm.iter_mut().enumerate() {
                 *s = (*s as f32 * (1.0 - i as f32 / n)) as i16;
             }
+            peer.talkspurt_faded = true;
             if let Some(d) = cx.dump.as_deref_mut() {
                 d.event(&format!("{} last voice frame (fade-out)", peer.name));
             }
+        } else if was_packet && peer.voice_jitter.last_was_silence() {
+            // A flagged frame (the sender's fade tail, or a keepalive) after
+            // a last voice frame we faded to silence ourselves: the talkspurt
+            // has ended here, so it plays as silence. Played as sent, the
+            // tail (the sender's signal fading from full level) jumped back
+            // up out of our silence: a click when the gate closed mid-sound
+            // (a push-to-talk release, a mute).
+            if peer.talkspurt_faded {
+                pcm = [0i16; FRAME_SIZE];
+            }
+        } else if was_packet {
+            peer.talkspurt_faded = false;
         }
         // Fade PLC expansion to silence across the episode: Opus PLC
         // alone keeps a voiced tail pitch-repeating at useful level for

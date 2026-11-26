@@ -73,6 +73,14 @@ pub(crate) struct CaptureChain {
     rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
     /// AEC render reference awaiting a full 10 ms frame.
     render_accum: Vec<f32>,
+    /// A toggle just replaced the processor / the suppressor: what was there
+    /// before (None inside: nothing was), for one more frame, which is the
+    /// crossfade from the old processing to the new.
+    outgoing_processor: Option<Option<aec3::voip::VoipAec3>>,
+    outgoing_rnnoise: Option<Option<Box<nnnoiseless::DenoiseState<'static>>>>,
+    /// The frame before the one being processed, as captured: what a new
+    /// processor is warmed up on.
+    last_raw: [i16; FRAME_SIZE],
 }
 
 impl CaptureChain {
@@ -87,6 +95,9 @@ impl CaptureChain {
             processor: None,
             rnnoise: None,
             render_accum: Vec::with_capacity(AEC_FRAME_SIZE * 2),
+            outgoing_processor: None,
+            outgoing_rnnoise: None,
+            last_raw: [0; FRAME_SIZE],
         };
         c.set_input_rate(input_rate);
         c
@@ -117,36 +128,66 @@ impl CaptureChain {
         self.processor.is_some()
     }
 
-    fn rebuild_processor(&mut self) {
+    /// A new processor for the current toggles. The one it replaces (echo
+    /// canceller and gain control are one object: its adapted filter and the
+    /// gain it had settled on can't be carried over) processes the next frame
+    /// too, and that frame is the crossfade between them. `crossfade`: false
+    /// when the input itself is changing (a new device).
+    fn rebuild_processor(&mut self, crossfade: bool) {
+        let old = self.processor.take();
+        if crossfade && self.outgoing_processor.is_none() {
+            self.outgoing_processor = Some(old);
+        }
         self.processor = build_voice_processor(self.aec_enabled, self.ns_level, self.agc_enabled);
         self.render_accum.clear();
     }
 
-    /// Each of these rebuilds the processor; the caller then empties the
-    /// render reference ring (what is queued there belongs to the old one).
-    pub fn set_aec(&mut self, enabled: bool) {
+    /// Each of these says whether the processor was rebuilt; the caller then
+    /// empties the render reference ring (what is queued there belongs to
+    /// the old one). Setting what is already set does nothing.
+    pub fn set_aec(&mut self, enabled: bool) -> bool {
+        if self.aec_enabled == enabled {
+            return false;
+        }
         self.aec_enabled = enabled;
-        self.rebuild_processor();
+        self.rebuild_processor(true);
+        true
     }
 
-    pub fn set_ns_level(&mut self, level: u8) {
+    /// The level only says on (1–4) or off (0): RNNoise has no strength
+    /// setting and the WebRTC processor does no suppression. So a change
+    /// between two "on" levels changes nothing, and none touches the echo
+    /// canceller or gain control (it used to rebuild all three).
+    pub fn set_ns_level(&mut self, level: u8) -> bool {
         self.ns_level = level;
-        self.rnnoise = build_rnnoise(level);
-        self.rebuild_processor();
+        if (level > 0) != self.rnnoise.is_some() {
+            let old = self.rnnoise.take();
+            if self.outgoing_rnnoise.is_none() {
+                self.outgoing_rnnoise = Some(old);
+            }
+            self.rnnoise = build_rnnoise(level);
+        }
+        false
     }
 
-    pub fn set_agc(&mut self, enabled: bool) {
+    pub fn set_agc(&mut self, enabled: bool) -> bool {
+        if self.agc_enabled == enabled {
+            return false;
+        }
         self.agc_enabled = enabled;
-        self.rebuild_processor();
+        self.rebuild_processor(true);
+        true
     }
 
     /// The input device changed: a processor in use starts from scratch.
     /// True when it was rebuilt (the caller empties the render reference ring).
     pub fn reset_processor(&mut self) -> bool {
+        self.outgoing_processor = None;
+        self.outgoing_rnnoise = None;
         if self.processor.is_none() {
             return false;
         }
-        self.rebuild_processor();
+        self.rebuild_processor(false);
         true
     }
 
@@ -217,45 +258,87 @@ impl CaptureChain {
     /// AEC / AGC, then noise suppression, in place. Runs before the level is
     /// measured so the gate sees what AGC made of the signal.
     pub fn process(&mut self, frame: &mut [i16; FRAME_SIZE]) {
-        if self.processor.is_none() && self.rnnoise.is_none() {
+        let outgoing_processor = self.outgoing_processor.take();
+        let outgoing_rnnoise = self.outgoing_rnnoise.take();
+        let previous = std::mem::replace(&mut self.last_raw, *frame);
+        if self.processor.is_none() && self.rnnoise.is_none() && outgoing_processor.is_none() && outgoing_rnnoise.is_none() {
             return;
         }
         let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
 
         // Pass 1: WebRTC AEC + AGC (if enabled)
-        if let Some(ref mut proc) = self.processor {
-            let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
-            for chunk_idx in 0..2 {
-                let start = chunk_idx * AEC_FRAME_SIZE;
-                let end = start + AEC_FRAME_SIZE;
-                if proc.process_capture_frame(&f32_frame[start..end], false, &mut output_buf).is_ok() {
-                    f32_frame[start..end].copy_from_slice(&output_buf);
-                }
+        match outgoing_processor {
+            None => run_processor(self.processor.as_mut(), &mut f32_frame),
+            Some(mut old) => {
+                let mut old_out = f32_frame.clone();
+                run_processor(old.as_mut(), &mut old_out);
+                // A new processor's gain controller steps its gain 5 ms into
+                // the first audio it is given (a jump of a third of the
+                // wave's value, measured). It takes that start on the frame
+                // before this one, whose output is not used.
+                let mut warm_up: Vec<f32> = previous.iter().map(|&s| s as f32 / 32768.0).collect();
+                run_processor(self.processor.as_mut(), &mut warm_up);
+                run_processor(self.processor.as_mut(), &mut f32_frame);
+                crossfade(&old_out, &mut f32_frame);
             }
         }
 
         // Pass 2: RNNoise deep-learning noise suppression
-        if let Some(ref mut rnn) = self.rnnoise {
-            let mut rnn_in = [0.0f32; AEC_FRAME_SIZE];
-            let mut rnn_out = [0.0f32; AEC_FRAME_SIZE];
-            for chunk_idx in 0..2 {
-                let start = chunk_idx * AEC_FRAME_SIZE;
-                let end = start + AEC_FRAME_SIZE;
-                // RNNoise expects samples in [-32768, 32767] range
-                for (j, s) in f32_frame[start..end].iter().enumerate() {
-                    rnn_in[j] = s * 32768.0;
-                }
-                let _vad = rnn.process_frame(&mut rnn_out, &rnn_in);
-                // Convert back to [-1, 1] range
-                for (j, s) in rnn_out.iter().enumerate() {
-                    f32_frame[start + j] = s / 32768.0;
-                }
+        match outgoing_rnnoise {
+            None => run_rnnoise(self.rnnoise.as_deref_mut(), &mut f32_frame),
+            Some(mut old) => {
+                let mut old_out = f32_frame.clone();
+                run_rnnoise(old.as_deref_mut(), &mut old_out);
+                run_rnnoise(self.rnnoise.as_deref_mut(), &mut f32_frame);
+                crossfade(&old_out, &mut f32_frame);
             }
         }
 
         for (i, s) in f32_frame.iter().enumerate() {
             frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
         }
+    }
+}
+
+/// `frame` through the WebRTC processor (AEC + AGC), two 10 ms halves.
+fn run_processor(processor: Option<&mut aec3::voip::VoipAec3>, f32_frame: &mut [f32]) {
+    let Some(proc) = processor else { return };
+    let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
+    for chunk_idx in 0..2 {
+        let start = chunk_idx * AEC_FRAME_SIZE;
+        let end = start + AEC_FRAME_SIZE;
+        if proc.process_capture_frame(&f32_frame[start..end], false, &mut output_buf).is_ok() {
+            f32_frame[start..end].copy_from_slice(&output_buf);
+        }
+    }
+}
+
+/// `frame` through RNNoise, two 10 ms halves.
+fn run_rnnoise(rnnoise: Option<&mut nnnoiseless::DenoiseState<'static>>, f32_frame: &mut [f32]) {
+    let Some(rnn) = rnnoise else { return };
+    let mut rnn_in = [0.0f32; AEC_FRAME_SIZE];
+    let mut rnn_out = [0.0f32; AEC_FRAME_SIZE];
+    for chunk_idx in 0..2 {
+        let start = chunk_idx * AEC_FRAME_SIZE;
+        let end = start + AEC_FRAME_SIZE;
+        // RNNoise expects samples in [-32768, 32767] range
+        for (j, s) in f32_frame[start..end].iter().enumerate() {
+            rnn_in[j] = s * 32768.0;
+        }
+        let _vad = rnn.process_frame(&mut rnn_out, &rnn_in);
+        // Convert back to [-1, 1] range
+        for (j, s) in rnn_out.iter().enumerate() {
+            f32_frame[start + j] = s / 32768.0;
+        }
+    }
+}
+
+/// `new` becomes a linear crossfade from `old` to itself across the frame.
+fn crossfade(old: &[f32], new: &mut [f32]) {
+    let n = new.len() as f32;
+    for (i, (s, &o)) in new.iter_mut().zip(old).enumerate() {
+        let w = (i + 1) as f32 / n;
+        *s = o * (1.0 - w) + *s * w;
     }
 }
 
@@ -299,6 +382,29 @@ pub(crate) struct TxGate {
 impl TxGate {
     pub fn new() -> Self {
         TxGate { open: false, hang_remaining: 0, tail_remaining: 0, pre_roll: None }
+    }
+
+    /// Whether this frame goes through the voice processing: always unless
+    /// muted, and then still while the frames of the talkspurt's end go out
+    /// (the frame the mute lands on and the fade tail). They used to be the
+    /// raw microphone: a jump in level and tone against the processed frames
+    /// before them.
+    pub fn wants_processing(&self, muted: bool) -> bool {
+        !muted || self.open || self.tail_remaining > 0
+    }
+
+    /// The input device is about to change: whatever was being sent ends
+    /// here, with no fade tail and no pre-roll (they would be the old
+    /// device's audio against the new one's). True when a talkspurt was
+    /// under way: the caller then sends one silence-flagged frame, which
+    /// tells the listener to fade out the last voice frame it holds.
+    pub fn cut(&mut self) -> bool {
+        let sending = self.open || self.tail_remaining > 0;
+        self.open = false;
+        self.hang_remaining = 0;
+        self.tail_remaining = 0;
+        self.pre_roll = None;
+        sending
     }
 
     /// Decide for `frame` (processed, its level `rms_db`) and shape the

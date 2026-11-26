@@ -62,6 +62,9 @@ pub struct PeerAudio {
     /// empty ring gets a short fade-in so a talkspurt never starts with a
     /// step from digital silence (a 20ms VAD gate opens mid-waveform).
     pub onset_pending: bool,
+    /// The last voice frame of the talkspurt was faded out here (its flagged
+    /// tail was already buffered behind it): the tail then plays as silence.
+    pub talkspurt_faded: bool,
     /// The level a running concealment (an underrun's PLC, faded frame by
     /// frame) has reached; 1.0 when none. The frame that resumes playback
     /// ramps back up from it.
@@ -129,6 +132,7 @@ impl PeerAudio {
             last_silent_tick: now,
             render_fifo: VecDeque::new(),
             onset_pending: true,
+            talkspurt_faded: false,
             concealed_level: 1.0,
             stream_concealed_level: 1.0,
             voice_cut: [0; FRAME_SIZE],
