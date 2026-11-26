@@ -13,6 +13,23 @@ use crate::{ActiveTheme as _, FontRole, Icon, IconName, Label, window_corner_rad
 /// `h-8`.
 pub const TITLEBAR_HEIGHT: Pixels = px(32.);
 
+/// What the close button does when the app installed something (the quit guard: uploads in flight
+/// ask first, `window.ts`' `close` handler); without it the button closes the window.
+pub struct CloseHandler(pub std::rc::Rc<CloseFn>);
+
+/// What a [`CloseHandler`] runs.
+pub type CloseFn = dyn Fn(&mut Window, &mut App);
+
+impl gpui::Global for CloseHandler {}
+
+/// Close the window as its close button does: through the app's [`CloseHandler`] if one is set.
+pub fn request_window_close(window: &mut Window, cx: &mut App) {
+    match cx.try_global::<CloseHandler>().map(|handler| handler.0.clone()) {
+        Some(handler) => handler(window, cx),
+        None => window.remove_window(),
+    }
+}
+
 #[derive(IntoElement)]
 pub struct TitleBar {
     title: SharedString,
@@ -124,7 +141,7 @@ impl RenderOnce for TitleBar {
                                     chrome.color_error,
                                     gpui::white(),
                                     cx,
-                                    |_, window, _| window.remove_window(),
+                                    |_, window, cx| request_window_close(window, cx),
                                 )
                                 .rounded_tr(corner_radius),
                             )

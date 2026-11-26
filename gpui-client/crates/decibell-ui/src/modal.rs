@@ -310,6 +310,9 @@ pub struct ConfirmModal {
     open: bool,
     title: SharedString,
     confirm_label: SharedString,
+    cancel_label: SharedString,
+    /// Enter answers Cancel instead of the confirm button.
+    default_cancel: bool,
     message: Option<SharedString>,
     body: Vec<AnyElement>,
     tone: ConfirmTone,
@@ -332,6 +335,8 @@ impl ConfirmModal {
             open,
             title: title.into(),
             confirm_label: confirm_label.into(),
+            cancel_label: SharedString::new_static("Cancel"),
+            default_cancel: false,
             message: None,
             body: Vec::new(),
             tone: ConfirmTone::Danger,
@@ -347,6 +352,18 @@ impl ConfirmModal {
     /// dialog fades out, so an owner clearing its state on confirm doesn't blank it.
     pub fn message(mut self, message: impl Into<SharedString>) -> Self {
         self.message = Some(message.into());
+        self
+    }
+
+    /// The cancel button's label ("Cancel" unless the dialog names it: "Keep uploading").
+    pub fn cancel_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.cancel_label = label.into();
+        self
+    }
+
+    /// Enter answers Cancel (the safe choice is the default: a message box's `defaultId: 0`).
+    pub fn default_cancel(mut self) -> Self {
+        self.default_cancel = true;
         self
     }
 
@@ -424,7 +441,7 @@ impl RenderOnce for ConfirmModal {
         };
         let cancel = {
             let on_cancel = on_cancel.clone();
-            Button::new((id.clone(), "cancel"), "Cancel")
+            Button::new((id.clone(), "cancel"), self.cancel_label.clone())
                 .variant(ButtonVariant::Secondary)
                 .on_click(move |event, window, cx| {
                     if open && let Some(handler) = &on_cancel {
@@ -443,6 +460,7 @@ impl RenderOnce for ConfirmModal {
         });
         let wide = secondary.is_some();
 
+        let default_cancel = self.default_cancel;
         let card = dialog_card(if wide { 512. } else { 400. }, cx)
             .child(
                 Label::new(self.title)
@@ -466,6 +484,7 @@ impl RenderOnce for ConfirmModal {
                     .child(confirm),
             );
 
+        let on_cancel_enter = on_cancel.clone();
         Modal::new(id, open)
             .on_close(move |_, window, cx| {
                 if let Some(handler) = &on_cancel {
@@ -474,8 +493,14 @@ impl RenderOnce for ConfirmModal {
             })
             // `onKeyDown` on the document: Enter confirms whatever is focused (the modal's own
             // layer when it opens, Cancel after a Tab), unless the button is disabled or busy.
+            // With `default_cancel` Enter takes the safe choice instead (the quit guard's "Keep
+            // uploading").
             .on_enter(move |window, cx| {
-                if confirmable && let Some(handler) = &on_confirm {
+                if default_cancel {
+                    if let Some(handler) = &on_cancel_enter {
+                        handler(&ClickEvent::default(), window, cx);
+                    }
+                } else if confirmable && let Some(handler) = &on_confirm {
                     handler(&ClickEvent::default(), window, cx);
                 }
             })
