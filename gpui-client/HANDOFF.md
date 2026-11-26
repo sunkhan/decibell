@@ -45,7 +45,7 @@ screens in all seven themes beside Electron's.
 |---|---|
 | Decision recorded (CLAUDE.md, design record, pin) | done (2026-11-26) |
 | Core split step 1 (move + event sink) | done `76b77c3`: Electron's bar on Linux (tsc 0 errors, napi build with `index.d.ts` / `index.js` byte-identical, 322 + 2 tests, smoke load) and Windows Native Check run 45797141001 green |
-| Core split step 2 (typed `CoreEvent`) | on the branch `1930905` + `ebb65d2`: 85 variants, `to_json()` pinned byte-for-byte by a golden test recorded from the old path; Linux bar passed (tsc 0, napi build with `index.d.ts` / `index.js` unchanged, 327 + 2 tests, smoke); Windows check running |
+| Core split step 2 (typed `CoreEvent`) | on the branch `1930905` + `ebb65d2`: 85 variants, `to_json()` pinned byte-for-byte by a golden test recorded from the old path; Linux bar passed (tsc 0, napi build with `index.d.ts` / `index.js` unchanged, 327 + 2 tests, smoke); Windows Native Check run 45806591240 green (after `34f6527` fixed a Windows-only test) |
 | Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle) | in progress, worktree `.worktrees/core-api` (branch `wip/core-api`) |
 | Core split step 5 (pooled receive path) | not started (with stream playback) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
@@ -56,7 +56,9 @@ screens in all seven themes beside Electron's.
 | Theme generator + assets | done `e846392`: `crates/decibell-theme` (162 tokens × 7 themes, 12 scaled, scopes), `tools/gen-theme`, `tools/fetch-assets.mjs`, `docs/css-component-rules.md` |
 | Service crates (what Electron main did): attachments, link previews + GIFs | in progress (`crates/decibell-attachments`, `crates/decibell-unfurl`) |
 | Skeleton (workspace, patched GPUI copy, fonts, window frame, capture + self-test harness) | in progress |
-| Text pieces without GPUI: rich-text parser (`decibell-richtext`), highlight.js-compatible highlighter (`decibell-highlight`), KaTeX-compatible layout (`decibell-tex`) | in progress |
+| Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
+| Rich-text parser (`decibell-richtext`), KaTeX-compatible layout (`decibell-tex`) | in progress |
+| Stream playback: design + prototype | done `8c990eb`: `docs/video-design.md`, `patches/0001-gpui-external-surfaces.patch`; the real crate (`decibell-video`) not started |
 | Stream playback | not started |
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
@@ -65,8 +67,99 @@ screens in all seven themes beside Electron's.
 
 ## 2. Building and running
 
-_To be written with the skeleton._ The pin is `gpui-client/GPUI_PIN`; the Zed checkout lives in
-`gpui-client/vendor/zed` (gitignored), patches in `gpui-client/patches/`.
+Everything below runs from `gpui-client/`. How code here is written: `CONVENTIONS.md`.
+
+**Prerequisites** (Linux): Rust ≥ 1.100 (GPUI uses `cfg_select!`), git, a C toolchain, the development files
+GPUI's Linux backends link (`libxcb`, `libxkbcommon`, `libxkbcommon-x11`, Wayland client) and a Vulkan driver.
+Nothing is installed system-wide by the tools here. Windows: Rust stable (MSVC) and Git for Windows; a release
+build also needs the Windows SDK's `fxc.exe` (`docs/gpui-notes.md` §11.1). Regenerating fonts needs a Python 3
+with fontTools (`tools/gen-fonts.sh` finds or creates one); refetching assets needs Node ≥ 18.
+
+```sh
+tools/fetch-gpui.sh                     # once after cloning, and whenever GPUI_PIN or patches/ change
+cargo build --release -p decibell-app   # → target/release/decibell (about 4 min clean, fat LTO)
+cargo build -p decibell-app             # debug: our crates unoptimised, dependencies at opt-level 1
+```
+
+- **GPUI source**: `vendor/zed` is the pristine clone at `GPUI_PIN` (fetched by the script if missing),
+  `vendor/gpui-src` a git worktree of it with `patches/*.patch` applied in order; cargo builds GPUI from there
+  (`[workspace.dependencies]` in `Cargo.toml`). The script is a no-op while the pin and patches are unchanged
+  and refuses to throw away edits that are in no patch. What each patch does and how to write one:
+  `patches/README.md`. `Cargo.lock` started as Zed's own, so GPUI's dependencies are at the versions Zed ships.
+- **Never build the shipped binary with `--features capture` or `--all-features`**: that feature turns on
+  GPUI's test platform. `cargo build --workspace` is fine (the capture tool is skipped without its feature).
+
+**Run**
+
+```sh
+target/release/decibell [--theme <id>] [--screen <name>] [--perf]
+```
+
+`--theme`: nocturne (default), matinee, graphite, graphite-light, console, console-light, console-split;
+F8 / Shift-F8 step through them while the window is open. `--screen <name>` shows one registered screen
+(`--screen list`); without it the window shows the default screen (the token gallery until the app shell
+exists). The session's display is used: Wayland if `WAYLAND_DISPLAY` is set, else X11 (`WAYLAND_DISPLAY=
+target/release/decibell` forces XWayland). Nothing here talks to a server yet.
+
+`--perf` (or `DECIBELL_PERF=1`) prints on stderr `decibell: first-frame <ms> ms since start
+monotonic_ns=<ns>` when the first frame reached the screen and `decibell: frames drawn=<n> presented=<n>` at
+exit and on `SIGUSR1`. The counters are always compiled in (`decibell_harness::perf`,
+`patches/0002-gpui-frame-counters.patch`); they cost two atomic increments per frame and no timer.
+
+**Check**
+
+```sh
+cargo test --workspace                           # unit tests (font matching, tokens, registry, args, …)
+cargo clippy --workspace --all-targets
+target/release/decibell --selftest all           # the app's self-tests, in its real window; exit code 0 / 1
+WAYLAND_DISPLAY= target/release/decibell --selftest idle-frames     # the same under XWayland
+tools/gen-fonts.sh --check                       # the static fonts match what the generator produces
+tools/gen-theme/check.sh                         # the theme tokens match globals.css
+```
+
+Self-tests (`--selftest list`; one name, several separated by commas, or `all`) drive the real app on the
+real platform: `boot` (first frame, every bundled font face resolves to itself), `idle-frames` (0 frames
+drawn or presented and a sleeping main thread over 5 s; `DECIBELL_SELFTEST_IDLE_SECS` changes the window),
+`themes` (each theme switch costs exactly one frame). They open a visible window for a few seconds: GPUI
+cannot create a hidden one on Linux. Keep the pointer off it; a hover is a frame (the idle test retries
+twice before failing).
+
+**Capture** (no window, no display server needed; Linux only)
+
+```sh
+cargo run -p decibell-app --features capture --bin decibell-capture -- \
+    --screen gallery --all-themes --out-dir target/captures      # <dir>/<screen>-<theme>.png
+cargo run -p decibell-app --features capture --bin decibell-capture -- \
+    --screen gallery --theme console --size 1024x700 --scale 2 --out /tmp/console@2x.png
+```
+
+`--size` is the window's visible size in logical px (default 1280x800); the PNG is 20 px larger each way at
+scale 1: it includes the transparent margin a client-decorated window draws its shadow in (black in the PNG).
+Only the bundled fonts are loaded, so the same arguments give the same picture on any machine with a Vulkan
+or GL driver.
+
+**Measure** (`tools/perf/README.md`, Linux section)
+
+```sh
+../tools/perf/startup.sh --runs 5 --ready-marker 'first-frame .* monotonic_ns=(?P<ns>\d+)' -- \
+    target/release/decibell --perf
+target/release/decibell & ../tools/perf/winctl.sh unfocus $!
+../tools/perf/measure.sh --pid $! --settle 20 --duration 60 --label "gpui skeleton idle"
+```
+
+**Where things are**
+
+| Path | What |
+|---|---|
+| `Cargo.toml` | The workspace: members, the one GPUI definition, Zed's `[patch.crates-io]`, profiles (`release`: opt 3, fat LTO, 1 codegen unit, abort, strip; `release-s`: the same at `opt-level = "s"`) |
+| `GPUI_PIN`, `patches/`, `tools/fetch-gpui.sh` | The pin, the patches against it, the script that builds `vendor/gpui-src` |
+| `crates/decibell-theme` | Tokens generated from `globals.css` (`tools/gen-theme/`) |
+| `crates/decibell-harness` | `Screen`, `SelfTest`, `TestCx`, `perf` |
+| `crates/decibell-ui` | `Theme` global, fonts, `Label`, `Icon`, `window_frame`, `TitleBar`, embedded assets, the gallery screen |
+| `crates/decibell-app` | `main.rs` → `args` → `boot` → `window` + `root`; `registry` (every screen and self-test); `selftests`; `bin/capture.rs` |
+| `assets/fonts/static/`, `tools/gen-fonts.{sh,py}` | The static font faces GPUI loads, cut from the variable fonts in `assets/fonts/` |
+| `assets/icons/` | SVG icons, embedded by `decibell-ui`'s build script |
+| `.github/workflows/win-native-check.yml` (job `gpui-client`) | `cargo check` of this workspace on Windows; log on the `ci/win-gpui-check-log` branch |
 
 ## 3. Architecture notes and gotchas
 
