@@ -882,6 +882,92 @@ pub fn set_draft(server: ServerId, channel: ChannelId, text: SharedString, cx: &
     }
 }
 
+// ── Attachments as files: downloads, and where an upload ended up ──────────
+
+/// What downloading attachment `attachment_id` of `server` needs (`downloads.ts`' `locate` +
+/// `startDownload`'s arguments), for `actions::transfers::start_download`. The attachment
+/// and the message it came from are looked up in the loaded channels of `server`, in
+/// channel-list order (a scan: this runs on a click); not loaded, the view's own copy
+/// (`fallback`, else "attachment", `application/octet-stream`, a document of unknown size)
+/// and the open channel of that community give it its context. `save_to`: a path from a
+/// save dialog ("Save as…", or Settings' "ask each time": the app asks
+/// `DownloadControl::ask_each_time`), none = the download folder.
+pub fn download_request(
+    server: ServerId,
+    attachment_id: i64,
+    fallback: Option<&Attachment>,
+    save_to: Option<std::path::PathBuf>,
+    cx: &App,
+) -> crate::actions::transfers::DownloadRequest {
+    use crate::live::transfers::{AttachmentKind, DownloadContext};
+    let model = Model::global(cx);
+    let server_name = model.servers.read(cx).get(server).map(|s| s.name.to_string()).unwrap_or_default();
+    let community = model.community(server, cx);
+    let found = community.as_ref().and_then(|community| {
+        let cache = model.chat.channels.read(cx);
+        community.channels.read(cx).list().iter().find_map(|channel| {
+            let slice = cache.get(server, &channel.id)?.read(cx);
+            slice.rows().iter().find_map(|m| {
+                let a = m.attachments.iter().find(|a| a.id == attachment_id)?;
+                let context = DownloadContext {
+                    server_name: server_name.clone(),
+                    channel_id: channel.id.to_string(),
+                    channel_name: channel.name.to_string(),
+                    message_id: m.id,
+                    sender: m.sender.to_string(),
+                    sender_uid: m.sender_uid,
+                };
+                Some((a.clone(), context))
+            })
+        })
+    });
+    let (attachment, context) = match found {
+        Some((a, context)) => (Some(a), context),
+        None => {
+            let nav = model.nav.read(cx);
+            let channel_id = if nav.active_server == Some(server) { nav.active_channel.clone().unwrap_or_default() } else { ChannelId::default() };
+            let channel_name = community
+                .as_ref()
+                .and_then(|c| c.channels.read(cx).get(&channel_id).map(|c| c.name.to_string()))
+                .unwrap_or_default();
+            let context = DownloadContext {
+                server_name,
+                channel_id: channel_id.to_string(),
+                channel_name,
+                message_id: 0,
+                sender: String::new(),
+                sender_uid: 0,
+            };
+            (None, context)
+        }
+    };
+    let source = attachment.as_ref().or(fallback);
+    crate::actions::transfers::DownloadRequest {
+        server,
+        attachment_id,
+        filename: source.map_or_else(|| "attachment".to_string(), |a| a.filename.to_string()),
+        mime: source.map_or_else(|| "application/octet-stream".to_string(), |a| a.mime.to_string()),
+        kind: source.map_or(AttachmentKind::Document, |a| a.kind),
+        size_bytes: source.map_or(0, |a| a.size_bytes.max(0) as u64),
+        context,
+        save_to,
+    }
+}
+
+/// The message an uploaded attachment ended up in, once its echo is loaded; 0 when it isn't
+/// (`uploads.ts` `messageIdForAttachment`: the Transfers panel's "Go to message").
+pub fn message_id_for_attachment(server: ServerId, channel: &str, attachment_id: i64, cx: &App) -> i64 {
+    let Some(model) = model(cx) else { return 0 };
+    let Some(slice) = slice_of(&model, server, channel, cx) else { return 0 };
+    slice
+        .read(cx)
+        .rows()
+        .iter()
+        .rev()
+        .find(|m| m.attachments.iter().any(|a| a.id == attachment_id))
+        .map_or(0, |m| m.id)
+}
+
 /// Whether the server view shows `(server, channel)` right now.
 pub fn is_on_screen(server: ServerId, channel: &str, cx: &App) -> bool {
     model(cx).is_some_and(|m| {

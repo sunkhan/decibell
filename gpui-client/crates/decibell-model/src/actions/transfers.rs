@@ -112,6 +112,43 @@ pub fn sync_uploads(pendings: &[PendingUpload], cx: &mut App) {
     });
 }
 
+/// An upload row's "Go to message" (`UploadRow.tsx`): its channel, and the message its
+/// attachment went out in once that message is loaded there (else just the channel).
+pub fn go_to_upload(pending_id: &str, cx: &mut App) {
+    let Some(model) = model(cx) else { return };
+    let Some((server, channel, attachment_id)) = model
+        .live
+        .transfers
+        .read(cx)
+        .uploads()
+        .iter()
+        .find(|u| &*u.pending_id == pending_id)
+        .map(|u| (u.server, u.channel.clone(), u.attachment_id))
+    else {
+        return;
+    };
+    let message_id = attachment_id.map_or(0, |id| crate::actions::chat::message_id_for_attachment(server, &channel, id, cx));
+    crate::actions::chat::go_to_message(server, channel, message_id, cx);
+}
+
+/// A download row's "Go to message" (`TransfersPanel.tsx`): the message it came from, as
+/// its context recorded it when the download started.
+pub fn go_to_download(download_id: &str, cx: &mut App) {
+    let Some(model) = model(cx) else { return };
+    let Some((server, channel, message_id)) = model
+        .live
+        .transfers
+        .read(cx)
+        .downloads()
+        .iter()
+        .find(|d| d.id == download_id)
+        .map(|d| (ServerId::from_wire(&d.server_id), SharedString::from(d.context.channel_id.clone()), d.context.message_id))
+    else {
+        return;
+    };
+    crate::actions::chat::go_to_message(server, channel, message_id, cx);
+}
+
 pub fn pause_upload(pending_id: &str, paused: bool, cx: &mut App) {
     let Some(model) = model(cx) else { return };
     if let Some(control) = model.live.transfers.read(cx).upload_control() {

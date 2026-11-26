@@ -5,15 +5,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use decibell_attachments::upload::{PreparedUpload, UploadProgress};
 use decibell_core::events::*;
 use futures::future::LocalBoxFuture;
 use gpui::{SharedString, TestAppContext};
 
 use crate::Model;
+use crate::chat::composer::UploadError;
+use crate::chat::composer::testing::{Fake, FakeService, prepared, uploaded};
 use crate::chat::history::{HistoryRequest, WaitKey};
 use crate::error::UiError;
 use crate::ids::{ServerId, Uid};
 use crate::live::calls::{CallStatus, CallTransport, ConnectArgs, OutSignal, Prepared};
+use crate::live::transfers::{AttachmentKind, DownloadControl, DownloadView, StartArgs, UploadState};
 use crate::pump::Incoming;
 use crate::stores::navigation::ActiveView;
 
@@ -375,6 +379,244 @@ fn friends_only_dms_has_one_copy(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!model.settings.read_with(cx, |s, _| s.get().friends_only_dms));
     assert_eq!(*notifies.borrow(), 2);
+}
+
+// ── Transfers ↔ the composer ────────────────────────────────────────────────
+
+fn with_fake_uploads(model: &Model, cx: &mut TestAppContext) -> Rc<FakeService> {
+    let fake = Rc::new(FakeService::default());
+    model.chat.composer.update(cx, |c, _| c.set_service(Rc::new(Fake(fake.clone()))));
+    fake
+}
+
+fn picture(name: &str) -> PreparedUpload {
+    let mut file = prepared(name.into());
+    file.thumbnails = vec![(640, vec![2; 8]), (320, vec![1; 4])];
+    file
+}
+
+fn upload_states(model: &Model, cx: &mut TestAppContext) -> Vec<(String, UploadState, u64)> {
+    model.live.transfers.read_with(cx, |t, _| {
+        t.uploads().iter().map(|u| (u.filename.to_string(), u.state, u.transferred_bytes)).collect()
+    })
+}
+
+/// The Uploads tab mirrors the composer: a queued file has no row; sending starts it
+/// (with its names, preview, progress); pause / resume / cancel from the panel reach the
+/// upload; a finished one keeps its row when its pending goes, and "Go to message" lands
+/// on the message its attachment went out in.
+#[gpui::test]
+fn the_uploads_tab_mirrors_the_composer(cx: &mut TestAppContext) {
+    let model = signed_in(cx);
+    let fake = with_fake_uploads(&model, cx);
+    let (a, b) = model.chat.composer.update(cx, |c, cx| {
+        let a = c.add(gaming(), "general".into(), picture("a.png"), false, cx).unwrap();
+        let b = c.add(gaming(), "general".into(), prepared("b.zip".into()), false, cx).unwrap();
+        (a, b)
+    });
+    cx.run_until_parked();
+    assert!(upload_states(&model, cx).is_empty(), "queued: nothing sent yet, no row");
+
+    model.chat.composer.update(cx, |c, cx| {
+        c.start_upload(&a, cx);
+        c.start_upload(&b, cx);
+    });
+    cx.run_until_parked();
+    model.live.transfers.read_with(cx, |t, _| {
+        let row = t.uploads().iter().find(|u| u.pending_id == a).unwrap();
+        assert_eq!((row.server_name.as_ref(), row.channel_name.as_ref()), ("Daily Gaming", "general"));
+        assert_eq!(row.state, UploadState::Uploading);
+        assert!(t.uploads().iter().find(|u| u.pending_id == b).unwrap().preview.is_none(), "no picture, no preview");
+        assert_eq!(t.uploads_in_flight(), 2);
+    });
+    let preview = model.chat.composer.read_with(cx, |c, _| c.get(&a).unwrap().preview.clone()).expect("the 320 px thumbnail");
+    assert_eq!(&*preview.bytes, &[1u8; 4][..]);
+    assert_eq!(
+        model.live.transfers.read_with(cx, |t, _| t.uploads().iter().find(|u| u.pending_id == a).unwrap().preview.as_ref().map(|p| p.id)),
+        Some(preview.id),
+        "the composer's own image, not a copy"
+    );
+
+    // Progress.
+    let (_, done_a, progress_a) = fake.uploads.borrow_mut().remove(0);
+    progress_a.unbounded_send(UploadProgress { sent: 500, total: 1000, speed_bps: 0.0, paused: false }).unwrap();
+    cx.run_until_parked();
+    assert!(upload_states(&model, cx).contains(&("a.png".into(), UploadState::Uploading, 500)));
+
+    // Pause and resume from the panel.
+    cx.update(|cx| crate::actions::transfers::pause_upload(&a, true, cx));
+    cx.run_until_parked();
+    model.chat.composer.read_with(cx, |c, _| {
+        let p = c.get(&a).unwrap();
+        assert!(p.paused && p.control.is_paused());
+    });
+    assert!(upload_states(&model, cx).contains(&("a.png".into(), UploadState::Paused, 500)));
+    cx.update(|cx| crate::actions::transfers::pause_upload(&a, false, cx));
+    cx.run_until_parked();
+    assert!(model.chat.composer.read_with(cx, |c, _| !c.get(&a).unwrap().control.is_paused()));
+    assert!(upload_states(&model, cx).contains(&("a.png".into(), UploadState::Uploading, 500)));
+
+    // Cancel b from the panel: its upload is told, and ends as cancelled.
+    cx.update(|cx| crate::actions::transfers::cancel_upload(&b, cx));
+    assert!(model.chat.composer.read_with(cx, |c, _| c.get(&b).unwrap().control.is_cancelled()));
+    let (_, done_b, _) = fake.uploads.borrow_mut().remove(0);
+    done_b.send(Err(UploadError { message: "Cancelled".into(), cancelled: true })).unwrap();
+    cx.run_until_parked();
+    assert!(upload_states(&model, cx).iter().any(|(f, s, _)| f == "b.zip" && *s == UploadState::Cancelled));
+
+    // a finishes as attachment 77; its message goes out and the pending with it.
+    done_a.send(Ok(uploaded(77, "a.png"))).unwrap();
+    cx.run_until_parked();
+    assert!(upload_states(&model, cx).iter().any(|(f, s, _)| f == "a.png" && *s == UploadState::Done));
+    model.chat.composer.update(cx, |c, cx| {
+        c.remove(&a, cx);
+        c.remove(&b, cx);
+    });
+    cx.run_until_parked();
+    model.live.transfers.read_with(cx, |t, _| {
+        let row = t.uploads().iter().find(|u| u.pending_id == a).unwrap();
+        assert_eq!((row.state, row.attachment_id), (UploadState::Done, Some(77)), "the row outlives its pending");
+        assert!(row.preview.is_none(), "the preview went with the pending");
+        assert_eq!(t.uploads_in_flight(), 0);
+    });
+
+    // Go to message: #general holds the echo (message 5 carries attachment 77).
+    deliver(&model, cx, [general_page()]);
+    cx.update(|cx| crate::actions::transfers::go_to_upload(&a, cx));
+    cx.read(|cx| {
+        assert_eq!(model.nav.read(cx).active_channel.as_deref(), Some("general"));
+        let jump = model.chat.channels.read(cx).jump_request().cloned().unwrap();
+        assert_eq!((jump.server, jump.channel.as_ref(), jump.message_id), (gaming(), "general", 5));
+    });
+}
+
+/// Sign-out with an upload in flight: the composer cancels it and empties; the panel keeps
+/// the session's row, as cancelled (it never finished).
+#[gpui::test]
+fn sign_out_cancels_uploads_and_keeps_their_rows(cx: &mut TestAppContext) {
+    let model = signed_in(cx);
+    let _fake = with_fake_uploads(&model, cx);
+    let a = model.chat.composer.update(cx, |c, cx| {
+        let a = c.add(gaming(), "general".into(), picture("a.png"), false, cx).unwrap();
+        c.start_upload(&a, cx);
+        a
+    });
+    cx.run_until_parked();
+    let control = model.chat.composer.read_with(cx, |c, _| c.get(&a).unwrap().control.clone());
+    deliver(&model, cx, [CoreEvent::LoggedOut(LoggedOutPayload { reason: None })]);
+    assert!(control.is_cancelled());
+    assert!(model.chat.composer.read_with(cx, |c, _| c.is_empty()));
+    assert_eq!(upload_states(&model, cx), vec![("a.png".into(), UploadState::Cancelled, 0)]);
+}
+
+// ── Downloads from a message's attachment ───────────────────────────────────
+
+#[derive(Default)]
+struct DownloadLog {
+    started: RefCell<Vec<StartArgs>>,
+    listed: RefCell<Vec<DownloadView>>,
+}
+
+struct FakeDownloads(Rc<DownloadLog>);
+
+impl DownloadControl for FakeDownloads {
+    fn list(&self) -> Vec<DownloadView> {
+        self.0.listed.borrow().clone()
+    }
+    fn start(&self, args: StartArgs) -> LocalBoxFuture<'static, Result<String, SharedString>> {
+        self.0.started.borrow_mut().push(args);
+        Box::pin(async { Ok("d1".to_string()) })
+    }
+    fn pause(&self, _: &str) {}
+    fn resume(&self, _: &str) {}
+    fn cancel(&self, _: &str) {}
+    fn remove(&self, _: &[String]) {}
+    fn clear_finished(&self) {}
+    fn configure(&self, _: Option<std::path::PathBuf>, _: bool) {}
+    fn ask_each_time(&self) -> bool {
+        false
+    }
+}
+
+/// A download's request comes from the loaded message that holds the attachment (its
+/// file facts, channel, message and sender: `locate`); one that isn't loaded takes the
+/// view's copy and the open channel; the manager receives it; "Go to message" on the
+/// download row goes back to that message.
+#[gpui::test]
+fn a_download_is_described_by_its_message(cx: &mut TestAppContext) {
+    let model = signed_in(cx);
+    deliver(&model, cx, [general_page()]);
+    let log = Rc::new(DownloadLog::default());
+    let _events = model.live.transfers.update(cx, |t, cx| t.attach_downloads(Rc::new(FakeDownloads(log.clone())), cx));
+
+    let req = cx.read(|cx| crate::actions::chat::download_request(gaming(), 77, None, None, cx));
+    assert_eq!((req.filename.as_str(), req.mime.as_str(), req.kind, req.size_bytes), ("clip.mp4", "video/mp4", AttachmentKind::Video, 4096));
+    let c = &req.context;
+    assert_eq!((c.server_name.as_str(), c.channel_id.as_str(), c.channel_name.as_str()), ("Daily Gaming", "general", "general"));
+    assert_eq!((c.message_id, c.sender.as_str(), c.sender_uid), (5, "u2", 2));
+    let started = cx.update(|cx| crate::actions::transfers::start_download(req, cx));
+    let ok: Rc<RefCell<Option<bool>>> = Rc::default();
+    let o = ok.clone();
+    cx.spawn(async move |_| *o.borrow_mut() = Some(started.await)).detach();
+    cx.run_until_parked();
+    assert_eq!(*ok.borrow(), Some(true));
+    {
+        let started = log.started.borrow();
+        assert_eq!((started[0].server_id.as_str(), started[0].attachment_id, started[0].context.message_id), ("1", 77, 5));
+    }
+    assert_eq!(model.live.transfers.read_with(cx, |t, _| t.start_pulse), 1);
+
+    // Not loaded: the view's copy, and the channel open in that community.
+    cx.update(|cx| crate::actions::servers::open_server(gaming(), cx));
+    model.nav.update(cx, |n, cx| n.set_active_channel(Some("clips".into()), cx));
+    let shown = crate::chat::message::Attachment::from_payload(&attachment(99, 40, "old.mkv"), &[]);
+    let req = cx.read(|cx| crate::actions::chat::download_request(gaming(), 99, Some(&shown), Some("/tmp/x.mkv".into()), cx));
+    assert_eq!((req.filename.as_str(), req.size_bytes, req.context.message_id), ("old.mkv", 4096, 0));
+    assert_eq!((req.context.channel_id.as_str(), req.context.channel_name.as_str()), ("clips", "clips"));
+    assert_eq!(req.save_to.as_deref(), Some(std::path::Path::new("/tmp/x.mkv")));
+    // Neither loaded nor shown: the renderer's defaults.
+    let req = cx.read(|cx| crate::actions::chat::download_request(gaming(), 98, None, None, cx));
+    assert_eq!((req.filename.as_str(), req.mime.as_str(), req.kind, req.size_bytes), ("attachment", "application/octet-stream", AttachmentKind::Document, 0));
+
+    // The row's "Go to message".
+    let mut view = log.started.borrow()[0].clone_view("d1");
+    view.state = crate::live::transfers::DownloadState::Done;
+    model.live.transfers.update(cx, |t, cx| t.upsert_download(view, cx));
+    model.nav.update(cx, |n, cx| n.set_active_channel(None, cx));
+    cx.update(|cx| crate::actions::transfers::go_to_download("d1", cx));
+    cx.read(|cx| {
+        assert_eq!(model.nav.read(cx).active_channel.as_deref(), Some("general"));
+        assert_eq!(model.chat.channels.read(cx).jump_request().map(|j| j.message_id), Some(5));
+    });
+}
+
+/// What the manager would report for a started download.
+trait CloneView {
+    fn clone_view(&self, id: &str) -> DownloadView;
+}
+
+impl CloneView for StartArgs {
+    fn clone_view(&self, id: &str) -> DownloadView {
+        DownloadView {
+            id: id.into(),
+            server_id: self.server_id.clone(),
+            attachment_id: self.attachment_id,
+            filename: self.filename.clone(),
+            mime: self.mime.clone(),
+            kind: self.kind,
+            total_bytes: self.size_bytes,
+            received_bytes: 0,
+            state: crate::live::transfers::DownloadState::Active,
+            error: None,
+            started_at: 0,
+            finished_at: None,
+            context: self.context.clone(),
+            speed_bps: 0.0,
+            eta_s: -1,
+            missing: false,
+            encrypted: false,
+        }
+    }
 }
 
 // ── Sign-out across both halves ─────────────────────────────────────────────

@@ -65,6 +65,10 @@ pub struct PendingAttachment {
     pub height: u32,
     pub duration_ms: u32,
     pub placeholder: SharedString,
+    /// The picture shown while the file is in the message box and in the Transfers panel
+    /// (`previewUrl`): the probe's smallest thumbnail (320 px), made once at `add`. None
+    /// for a file that isn't a picture (or one that didn't decode).
+    pub preview: Option<Arc<gpui::Image>>,
     /// Encrypted channel: sealed client-side; the real metadata rides the envelope.
     pub encrypted: bool,
     /// Ready, encrypted: what the send puts in `encrypted_attachments`.
@@ -129,6 +133,12 @@ impl ComposerAttachments {
         &self.service
     }
 
+    /// Swap the attachment service (tests: a fake behind `Model::init`'s stores).
+    #[cfg(test)]
+    pub(crate) fn set_service(&mut self, service: Rc<dyn AttachmentService>) {
+        self.service = service;
+    }
+
     pub fn get(&self, id: &str) -> Option<&PendingAttachment> {
         self.pendings.iter().find(|p| &*p.id == id)
     }
@@ -136,6 +146,11 @@ impl ComposerAttachments {
     /// A channel's attachments (the composer's row, `selectForChannel`).
     pub fn for_channel(&self, server: ServerId, channel: &str) -> impl Iterator<Item = &PendingAttachment> {
         self.pendings.iter().filter(move |p| p.server == server && &*p.channel == channel)
+    }
+
+    /// Every attachment, in the order they were attached (the Transfers panel's source).
+    pub fn iter(&self) -> impl Iterator<Item = &PendingAttachment> {
+        self.pendings.iter()
     }
 
     pub fn len(&self) -> usize {
@@ -186,6 +201,7 @@ impl ComposerAttachments {
             height: file.height,
             duration_ms: file.duration_ms,
             placeholder: file.placeholder.clone().into(),
+            preview: preview_of(&file),
             encrypted,
             sealed: None,
             file: Arc::new(file),
@@ -343,6 +359,12 @@ impl ComposerAttachments {
         self.finished.clear();
         cx.notify();
     }
+}
+
+/// The smallest of the probe's thumbnails (JPEG), as an image GPUI decodes when drawn.
+fn preview_of(file: &PreparedUpload) -> Option<Arc<gpui::Image>> {
+    let (_, jpeg) = file.thumbnails.iter().min_by_key(|(size, _)| *size)?;
+    Some(Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Jpeg, jpeg.clone())))
 }
 
 // ── The app's service: decibell-attachments on the core's runtime ──────────
