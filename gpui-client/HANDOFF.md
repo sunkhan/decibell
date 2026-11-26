@@ -72,13 +72,13 @@ screens in all seven themes beside Electron's.
 | Server Settings, Channel Settings, picture editor (`decibell-server-settings`, `decibell-picture-editor`) | in progress, worktree `.worktrees/server-settings` (`wip/server-settings`) |
 | Regional formats (`decibell_model::regional`: dates, times of day and counts follow the system's settings; English words) | done `1d2e9e1` (owner decision 2026-11-26 in CLAUDE.md): chat stamps, day dividers, member counts, ban expiry; 42 stamp cases equal the renderer's under en-US; self-test `regional` reads the drawn labels under four environments; Windows path compiled only. **Sweep each crate that merges later** with the grep in CONVENTIONS "Regional formats" |
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
-| Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
+| Video, part 2: NVDEC and VA-API hardware fallbacks, decoder order and failure handling, a capability probe that really decodes, retained frames in the renderer (GPUI patch 0007) | done `7266df6`..`825cb99`: Vulkan Video, then NVDEC on NVIDIA / VA-API elsewhere, then software; `DECIBELL_VIDEO_DECODER` forces one; all three hardware decoders ran here for H.264 / HEVC / AV1 and match software decode pixel for pixel; 17 self-tests passed one at a time on the merged tree (load 4–11). AMD / Intel unrun: `docs/video-owner-checks.md`. Open: the probe is not called by the app yet, queue depth under a starved decoder thread, both with `wip/integrate-b` |
 | Core: voice / media plane without polling | done `344068e`..`5840094` (Electron's bar passed on the merged tree: 419 core tests; Windows check run 45855500083 green): UDP receive loops block instead of polling at 1 ms, the video receive thread exists only while a stream is watched or sent, a talking peer allocates nothing per packet (PCM sample-identical in tests), `FrameBuf` keeps FFmpeg's padding, system idle as an event on Wayland. **No audio stream or processing is paused** (owner rule). In a voice channel alone and muted: 1,380 → 766 wakeups/s; what remains is the device clock and the 5 ms audio tick |
-| Encoder quality (NVENC HEVC bitrate undershoot, per-codec tuning, colour signalling) | in progress, worktree `.worktrees/core-quality` (`wip/core-quality`) |
+| Encoder quality (NVENC HEVC bitrate undershoot, per-codec tuning, colour signalling) | done on the branch (six commits ending `ea92ab8`): a first pass for NVENC (HEVC 88 → 99 % of target, text +5–8 dB), no held frames (68 → 3.4 ms call-to-packet at 720p30), H.264 without filler, AV1 on target, a 10 s keyframe interval on every backend, a complete colour description; quality bench + stream contract tests; core tests 436 passed. Windows code compiled only; AMF / Quick Sync / VAAPI quality unrun (`crates/decibell-core/tools/verify-encoders.md`, Quality) |
 | Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software. **The software fallback is in the client's build** (`12c9115`, Windows `8a2a302`): `tools/build-ffmpeg.sh` builds SVT-AV1 4.2.0 into `vendor/ffmpeg` (rebuilt and swapped in on this machine; `scale_vaapi` too), `crates/decibell-app/build.rs` refuses an FFmpeg without `libsvtav1` and the software decoders, self-test `encoder-software` and `decibell-headless dump codecs` show it (`DECIBELL_ENCODER=software` → AV1 on `software`); Windows: vcpkg overlay ports `tools/vcpkg-overlay` (the pinned FFmpeg 8.0.1 + upstream's `svt-av1` feature + FFmpeg's own `libsvtav1.c` fix for SVT-AV1 4.x, SVT-AV1 4.2.0), installed by the Windows job's `gpui-client` step, **never built on Windows yet** (the first CI run is the check; checked on Linux: 8.0.1 + the fix + 4.2.0 passes the core's software tests); VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
 | Shell (`decibell-common`, `decibell-shell`, app boot with core + model) | done `f4ac4fe`: sign-in / register pages, server bar, channel sidebar with voice rosters, user panel, member list, friends frame, pane / overlay / menu registration (CONVENTIONS "Shell"); self-tests `shell-signin`, `-navigate`, `-members`, `-idle`, `-signout`, `-no-keyring`; captures within 0.3–1.2 % of Electron's; numbers in §4 "Shell". Left: channel drag-to-reorder, panes of the other features |
-| Voice view, stream watching, mini-player, Go Live, calls (`decibell-voice`) + the stream bot for measurements | in progress, worktree `.worktrees/voice` (`wip/voice`) |
-| Settings window (all tabs) + passphrase dialog (`decibell-settings`) | in progress, worktree `.worktrees/settings` (`wip/settings`) |
+| Voice view, stream watching, mini-player, Go Live, calls (`decibell-voice`) + the stream bot for measurements | done (eight commits ending `044123b`, + `63515a7`): stage, tiles, focus / theater / fullscreen, dock, mini-player, Go Live with presets and the probed encoders, call ring and stage (`Slot::DmCallStage`), the app's video glue (frames, keyframe requests, frame-sink interest); `tools/perf/streambot.sh`, scenarios `watch-1` / `watch-2`; all `voice-*` and `call-ring` self-tests pass on the merged tree. Open with `wip/integrate-b`: the stall state, cursor hiding in fullscreen, two-stream measurement (needs a second keyed streamer on the stack), nested cached views |
+| Settings window (all tabs) + rename, change-password and passphrase dialogs (`decibell-settings`) | done (nine commits ending `ff7c600`): nine tabs on the kit's frame, each a cached view; twelve `settings-*` self-tests pass on the merged tree. Open with `wip/integrate-a`: real text inputs, the recorder on physical key codes, regional formats, kit gaps, the focused-window hotkey fallback. Seams: mic test (needs a core API), updater, crash reporting, avatar editor |
 | Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
 | Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
 | Rich-text grammar (`crates/decibell-richtext`) | done `497ab53`: 0 mismatches against the renderer over 120,570 committed + 1.6M stress cases |
@@ -104,14 +104,15 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/core-quality` / `wip/core-quality` | encoder quality: HEVC undershoot, tuning, colour signalling (core) |
 | `.worktrees/server-settings` / `wip/server-settings` | Server Settings and Channel Settings windows, the picture editor |
-| `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
-| `.worktrees/voice` / `wip/voice` | voice view, streams UI, calls, stream bot |
-| `.worktrees/settings` / `wip/settings` | settings window, passphrase dialog |
 | `.worktrees/chat-content` / `wip/chat-content` | attachments, embeds, image viewer, Transfers panel |
 | `.worktrees/composer` / `wip/composer` | composer, pickers, inline editor |
 | `.worktrees/home` / `wip/home` | DMs, friends, profiles, user menu |
+| `.worktrees/integrate-a` / `wip/integrate-a` | settings integration: real inputs, recorder on physical codes, regional formats, kit gaps, model asks |
+| `.worktrees/integrate-b` / `wip/integrate-b` | video / voice integration: probe wiring, encoder caps, queue depth, stall state, cursor hiding, nested cached views, two-stream numbers |
+| `.worktrees/servers` / `wip/servers` | browse / join, invites, server menu, channel create / reorder, category-sync prompt, welcome banner |
+| `.worktrees/search` / `wip/search` | channel header, search box, date picker, results panel |
+| `.worktrees/land` / `wip/land` | the architect's landing tree: composer and home stacked on the branch head, not yet compiled |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
 clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
@@ -287,6 +288,15 @@ target/release/decibell & ../tools/perf/winctl.sh unfocus $!
 | `assets/icons/` | SVG icons, embedded by `decibell-ui`'s build script |
 | `.github/workflows/win-native-check.yml` (job `gpui-client`) | `cargo check` of this workspace on Windows; log on the `ci/win-gpui-check-log` branch |
 
+### Self-tests need the headless client built beside the app
+
+Several self-tests (`voice-*`, `call-ring`, the DM and settings tests with a second participant) start
+`target/release/decibell-headless` as the other client. Build it whenever the model changes:
+`cargo build --release -p decibell-model --features local-central --bin decibell-headless`. A stale one fails
+those tests after a 60 s wait with "the peer never printed MARK ready" (seen 2026-11-26 after the voice merge).
+A self-test that unlocks the E2EE identity must wait for the passphrase dialog (the settings crate's overlay)
+to close before it clicks anything: the dialog takes every click while it is open and for its 300 ms fade.
+
 ## 3. Architecture notes and gotchas
 
 - **Fonts as Chromium draws them** (found by the theme work, checked against the renderer's font files): Inter
@@ -403,11 +413,12 @@ agents compiling): load average 14.5 / 8.3 / 3.3 / 9.3 at the start of startup /
 - Startup is the window with the shell booting (the core reads its configuration and signs in with the saved sign-in
   meanwhile: `decibell: signed-in` follows ~0.3 s later in the dev markers).
 
-**Windows compile status**: Windows Native Check run 45855500083 (`b374268`) is green for both jobs: `check` (the
-addon and the core, with the encoders on every vendor and the reworked voice receive path) and `gpui-client`
-(`fetch-gpui.sh` with all nine patches + `cargo check --locked --workspace --all-targets` of every client crate
-on the branch: theme, harness, ui, text, model, video, common, shell, chat, app, the service and content
-crates, and the capture build). Self-tests and unit tests run on Linux only.
+**Windows compile status**: Windows Native Check run 45865452333 (`721c6ae`) is green for both jobs: `check` (the
+addon and the core) and `gpui-client` (`fetch-gpui.sh` + `cargo check --locked --workspace --all-targets` of every
+client crate then on the branch, with the client's own FFmpeg built by vcpkg from `tools/vcpkg-overlay`: FFmpeg
+8.0.1 + SVT-AV1 4.2.0 + dav1d 1.5.3 with its MSVC 19.5x fix; the app's `build.rs` check passed there). Not yet
+compiled on Windows at that run: video part 2, the voice view, settings, encoder quality, regional formats'
+Windows path was. Self-tests and unit tests run on Linux only.
 
 ### Stream playback (`crates/decibell-video`, 2026-11-26)
 

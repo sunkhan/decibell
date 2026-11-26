@@ -300,6 +300,10 @@ async fn ready(cx: &TestCx) -> Result<()> {
         ensure!(started.elapsed() < Duration::from_secs(30), "the E2EE keys never became ready ({status:?})");
         cx.sleep(Duration::from_millis(100)).await;
     }
+    // The passphrase dialog (the settings crate's overlay) is open for a locked identity and takes
+    // every click until it has closed and faded out (300 ms).
+    wait_for(cx, Duration::from_secs(10), "the passphrase dialog to close", |cx| model(cx).live.e2ee.read(cx).passphrase.is_none()).await?;
+    cx.sleep(Duration::from_millis(400)).await;
     cx.update(|_, cx| {
         actions::voice::set_mute(true, cx);
         actions::voice::set_deafen(true, cx);
