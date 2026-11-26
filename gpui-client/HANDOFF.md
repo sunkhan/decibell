@@ -161,7 +161,9 @@ cargo build -p decibell-app             # debug: our crates unoptimised, depende
   in each target directory (`build.rs` reads the new prefix and passes while the binary still holds the old
   one; `--selftest encoder-software` / `decibell-headless dump codecs` tell).
 - **FFmpeg on Windows** is vcpkg's, at CI's pin, with **the client's overlay ports**
-  (`tools/vcpkg-overlay`: an `ffmpeg` 8.0.1 port with an `svt-av1` feature and an `svt-av1` 4.2.0 port; what
+  (`tools/vcpkg-overlay`: an `ffmpeg` 8.0.1 port with an `svt-av1` feature, an `svt-av1` 4.2.0 port, and the
+  pinned `dav1d` 1.5.3 port plus dav1d's own fix for Visual Studio 2026 (`a34e0685`: MSVC 19.5x rejects the
+  undefined `__has_include_next` in its atomics shim; first seen in run 45864663165); what
   differs from upstream: `crates/decibell-core/tools/ffmpeg-encoders.md`, Windows). In its own vcpkg tree,
   not the Electron addon's: one tree holds one FFmpeg, and the addon's build copies only the FFmpeg DLLs, so an
   FFmpeg that needs `SvtAv1Enc.dll` / `dav1d.dll` would not load there. The binary cache is shared, so ports
