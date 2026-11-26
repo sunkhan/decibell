@@ -60,7 +60,13 @@ impl VulkanDecoder {
         target: &StreamTarget,
     ) -> DecodeResult<Self> {
         let work = Work::new(device)?;
-        let decoder = FfDecoder::open(codec, description, Some((hw_device, pick_vulkan)), 1)?;
+        let decoder = FfDecoder::open(
+            codec,
+            description,
+            Some((hw_device, pick_vulkan)),
+            1,
+            target.reorder(),
+        )?;
         Ok(Self {
             decoder,
             slots: None,
@@ -251,6 +257,10 @@ impl VulkanDecoder {
         let mut published = 0;
         while self.decoder.receive()? {
             Counters::frame_decoded(cx.counters, cx.serial);
+            if !cx.admit(self.decoder.frame_pts()) {
+                self.decoder.unref_frame();
+                continue;
+            }
             let info = self.decoder.frame_info();
             let handed = self.hand_over(&info, cx);
             self.decoder.unref_frame();
@@ -281,5 +291,10 @@ impl PictureDecoder for VulkanDecoder {
         }
         self.decode_inner(packet, keyframe, pts, cx)
             .map_err(|error| classify(&self.work.device, error))
+    }
+
+    fn flush(&mut self) -> bool {
+        self.decoder.flush();
+        true
     }
 }

@@ -28,7 +28,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath, SkippedBackend};
 use crate::decode::{Backend, CaptureCell, DecodeError, Failure, FrameCx, LumaRow, PictureDecoder};
 use crate::packet::Packet;
-use crate::queue::{FrameQueue, Item, Popped};
+use crate::queue::{Description, FrameQueue, Item, Popped};
 use crate::select::{FIRST_FRAMES, Order, Selector};
 use crate::stats::{Counters, StreamStats};
 
@@ -133,6 +133,8 @@ pub(crate) struct StreamTarget {
     #[cfg(vk)]
     pub surface: Arc<gpui_wgpu::WgpuSurface>,
     pub counters: Arc<Counters>,
+    /// A timed stream (`timed.rs`): its decoders give pictures out in presentation order.
+    reorder: AtomicBool,
 }
 
 impl StreamTarget {
@@ -142,7 +144,17 @@ impl StreamTarget {
             #[cfg(vk)]
             surface: gpui_wgpu::WgpuSurface::new(),
             counters: Arc::new(Counters::new()),
+            reorder: AtomicBool::new(false),
         }
+    }
+
+    /// Whether a decoder opened for this target reorders (a file) or is low-delay (a stream).
+    pub(crate) fn reorder(&self) -> bool {
+        self.reorder.load(RELAXED)
+    }
+
+    pub(crate) fn set_reorder(&self, reorder: bool) {
+        self.reorder.store(reorder, RELAXED);
     }
 
     pub(crate) fn clear(&self) {
@@ -160,7 +172,9 @@ pub(crate) struct StreamShared {
     key: Box<str>,
     /// The `<n>` of `decibell-video-<n>`.
     index: u64,
-    queue: FrameQueue,
+    pub(crate) queue: FrameQueue,
+    /// `Some`: a timed stream (`timed.rs`).
+    pub(crate) timing: RwLock<Option<Arc<dyn crate::timed::Timing>>>,
     pub(crate) target: StreamTarget,
     viewers: Mutex<Vec<ViewerEntry>>,
     viewer_count: AtomicU32,
@@ -195,6 +209,20 @@ impl PresentSignal {
             self.wakes.fetch_add(1, RELAXED);
             self.waker.wake();
         }
+    }
+}
+
+impl StreamShared {
+    pub(crate) fn viewer_count(&self) -> u32 {
+        self.viewer_count.load(RELAXED)
+    }
+
+    fn timing(&self) -> Option<Arc<dyn crate::timed::Timing>> {
+        self.timing.read().clone()
+    }
+
+    fn is_timed(&self) -> bool {
+        self.timing.read().is_some()
     }
 }
 
@@ -406,11 +434,13 @@ impl VideoHub {
                         surface
                     },
                     counters,
+                    reorder: AtomicBool::new(false),
                 };
                 Arc::new(StreamShared {
                     key: key.into(),
                     index: self.inner.next_index.fetch_add(1, RELAXED),
                     queue: FrameQueue::new(),
+                    timing: RwLock::new(None),
                     target,
                     viewers: Mutex::new(Vec::new()),
                     viewer_count: AtomicU32::new(0),
@@ -471,8 +501,9 @@ impl VideoHub {
                 codec,
                 keyframe: frame.keyframe,
                 timestamp: frame.timestamp,
-                description: frame.description,
+                description: frame.description.map(Description::Owned),
                 arrived: Instant::now(),
+                epoch: 0,
             },
             frame.discontinuity,
         );
@@ -628,6 +659,11 @@ impl HubInner {
     }
 
     fn request_keyframe(&self, stream: &StreamShared) {
+        if let Some(timing) = stream.timing() {
+            // A file: its producer seeks; the core is not asked for anything.
+            timing.keyframe_needed();
+            return;
+        }
         let now = self.now_ms();
         let last = stream.last_keyframe_request_ms.load(RELAXED);
         if last != 0 && now.saturating_sub(last) < KEYFRAME_REQUEST_INTERVAL_MS {
@@ -651,6 +687,10 @@ impl HubInner {
 
     fn event(&self, stream: &StreamShared, event: StreamEvent) {
         log::info!("video: stream {}: {event:?}", stream.key);
+        if let Some(timing) = stream.timing() {
+            timing.event(event);
+            return;
+        }
         let callbacks = self.callbacks.read().clone();
         (callbacks.event)(&stream.key, event);
     }
@@ -672,7 +712,7 @@ impl HubInner {
         self.signal.notify();
     }
 
-    fn start_decoder(self: Arc<Self>, stream: Arc<StreamShared>) {
+    pub(crate) fn start_decoder(self: Arc<Self>, stream: Arc<StreamShared>) {
         let name = format!("decibell-video-{}", stream.index);
         let hub = self.clone();
         let spawned = std::thread::Builder::new().name(name).spawn({
@@ -705,6 +745,8 @@ struct Decoding {
     /// When this thread last published a picture (or started): frames that arrive and give
     /// no picture for [`STALLED_AFTER`] are a stall too.
     last_picture: Instant,
+    /// The epoch of the last packet (timed streams: a new one is a seek).
+    epoch: u32,
 }
 
 fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
@@ -719,12 +761,18 @@ fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
         pictures: 0,
         hardware_failure: None,
         last_picture: Instant::now(),
+        epoch: 0,
     };
     let stopped = loop {
-        match stream.queue.pop(STALLED_AFTER) {
+        let timing = stream.timing();
+        let popped = match &timing {
+            Some(_) => stream.queue.pop_timed(STALLED_AFTER),
+            None => stream.queue.pop(STALLED_AFTER),
+        };
+        match popped {
             Popped::Item(item) => {
-                decode_one(&hub, &stream, &mut decoding, item);
-                if decoding.last_picture.elapsed() >= STALLED_AFTER {
+                decode_one(&hub, &stream, &mut decoding, item, timing.as_deref());
+                if timing.is_none() && decoding.last_picture.elapsed() >= STALLED_AFTER {
                     // Frames arrive and none becomes a picture.
                     stalled(&hub, &stream);
                 }
@@ -732,6 +780,13 @@ fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
             Popped::Idle => {
                 stalled(&hub, &stream);
                 break false;
+            }
+            Popped::Quiet => {
+                // A file whose producer has nothing to send: paused with an empty queue,
+                // waiting for the network, or at its end.
+                if timing.is_none_or(|timing| timing.idle()) && stream.queue.leave() {
+                    break false;
+                }
             }
             Popped::Stopped => break true,
         }
@@ -752,6 +807,9 @@ fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
 /// one that never had one shows its spinner) and ask the streamer for a keyframe, which a live
 /// streamer answers at once (the renderer's "ping", its liveness probe).
 fn stalled(hub: &HubInner, stream: &StreamShared) {
+    if stream.is_timed() {
+        return;
+    }
     if stream.has_picture.load(RELAXED)
         && stream.viewer_count.load(RELAXED) > 0
         && !stream.removed.load(RELAXED)
@@ -763,7 +821,13 @@ fn stalled(hub: &HubInner, stream: &StreamShared) {
     }
 }
 
-fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, item: Item) {
+fn decode_one(
+    hub: &HubInner,
+    stream: &StreamShared,
+    decoding: &mut Decoding,
+    item: Item,
+    timing: Option<&dyn crate::timed::Timing>,
+) {
     let counters = &stream.target.counters;
     let Item {
         packet,
@@ -772,7 +836,24 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
         timestamp,
         description,
         arrived,
+        epoch,
     } = item;
+
+    if epoch != decoding.epoch {
+        // A seek in a file: the decoder forgets the old position and starts on this keyframe
+        // (kept open when it can flush; a packet that is not a keyframe finds no decoder below
+        // and is refused there).
+        decoding.epoch = epoch;
+        let kept = keyframe
+            && decoding
+                .decoder
+                .as_mut()
+                .is_some_and(|decoder| decoder.flush());
+        if !kept && decoding.decoder.is_some() {
+            decoding.decoder = None;
+            counters.clear_decoder();
+        }
+    }
 
     let fault = stream.fault.swap(0, RELAXED);
     if fault == 2 {
@@ -853,6 +934,7 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
         counters,
         serial,
         capture: &stream.capture,
+        timing: timing.map(|timing| (timing, epoch)),
     };
     let backend = decoder.backend();
     let result = if fault == 1 {
@@ -908,6 +990,10 @@ fn open_decoder(
     let mut last_reason: Option<String> = None;
     for &backend in order.as_slice() {
         if denied & (1 << backend.index()) != 0 {
+            continue;
+        }
+        if backend.path() == DecodePath::Hardware && !codec.has_hardware_path() {
+            // A codec only files use: software, without a word about the hardware decoders.
             continue;
         }
         if let Some(reason) = hub.selector.skipped(codec, backend) {
@@ -1046,10 +1132,12 @@ impl Stream {
             self.shared.has_picture.store(false, RELAXED);
             self.shared.stalled.store(false, RELAXED);
             self.shared.queue.start();
-            let callbacks = self.hub.callbacks.read().clone();
-            (callbacks.interest)(&self.shared.key, true);
-            self.shared.last_keyframe_request_ms.store(0, RELAXED);
-            self.hub.request_keyframe(&self.shared);
+            if !self.shared.is_timed() {
+                let callbacks = self.hub.callbacks.read().clone();
+                (callbacks.interest)(&self.shared.key, true);
+                self.shared.last_keyframe_request_ms.store(0, RELAXED);
+                self.hub.request_keyframe(&self.shared);
+            }
         }
         Viewer {
             inner: Arc::new(ViewerInner {
@@ -1197,8 +1285,10 @@ impl Drop for ViewerInner {
             // Nobody displays it: decode nothing. The thread leaves and frees its decoder.
             shared.queue.stop();
             shared.target.clear();
-            let callbacks = self.stream.hub.callbacks.read().clone();
-            (callbacks.interest)(&shared.key, false);
+            if !shared.is_timed() {
+                let callbacks = self.stream.hub.callbacks.read().clone();
+                (callbacks.interest)(&shared.key, false);
+            }
             self.stream
                 .hub
                 .release_pending

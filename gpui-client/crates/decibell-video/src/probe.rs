@@ -271,6 +271,7 @@ fn try_backend(hub: &HubInner, backend: DecodeBackend, codec: Codec) -> Result<(
             counters: &target.counters,
             serial,
             capture: &capture,
+            timing: None,
         };
         published = decoder
             .decode(Packet::from(padded), true, serial as i64 * 33_333, &cx)

@@ -106,6 +106,8 @@ fn decode_extension(codec: Codec) -> &'static CStr {
         Codec::H264 => c"VK_KHR_video_decode_h264",
         Codec::Hevc => c"VK_KHR_video_decode_h265",
         Codec::Av1 => c"VK_KHR_video_decode_av1",
+        // Files only, software only (`Codec::has_hardware_path`): an extension no driver has.
+        Codec::Vp8 | Codec::Vp9 => c"",
     }
 }
 
@@ -722,6 +724,7 @@ fn hardware_support(context: &WgpuContext, codec: Codec) -> Option<(u32, u32)> {
                     .push_next(&mut av1_profile),
                 caps.push_next(&mut av1_caps),
             ),
+            Codec::Vp8 | Codec::Vp9 => return None,
         };
         (video.fp().get_physical_device_video_capabilities_khr)(
             hal_device.raw_physical_device(),
@@ -786,6 +789,7 @@ impl Backend for LinuxBackend {
                 codec,
                 description,
                 Box::new(uploader),
+                target.reorder(),
             )?));
         };
         let opened = (|| -> DecodeResult<Box<dyn PictureDecoder>> {
@@ -848,6 +852,7 @@ impl Backend for LinuxBackend {
                     codec,
                     description,
                     uploader,
+                    target.reorder(),
                 )?))
             }
             }

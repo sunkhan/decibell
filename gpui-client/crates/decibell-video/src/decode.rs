@@ -101,6 +101,22 @@ pub(crate) struct FrameCx<'a> {
     /// The frame's serial: the tag its picture is published with.
     pub serial: u64,
     pub capture: &'a CaptureCell,
+    /// A timed stream's clock (a file being played) and the epoch of the packet in hand:
+    /// decoded pictures wait for it before they are published. `None`: a live stream, whose
+    /// pictures are published as they are decoded.
+    pub timing: Option<(&'a dyn crate::timed::Timing, u32)>,
+}
+
+impl FrameCx<'_> {
+    /// Whether the decoded picture with this presentation time is to be published. A live
+    /// stream: always, at once. A timed one: waits until the picture is due, and may then say
+    /// no (decoded only to reach a seek target, or nothing shows the stream).
+    pub fn admit(&self, pts: i64) -> bool {
+        match self.timing {
+            None => true,
+            Some((timing, epoch)) => timing.admit(epoch, pts) == crate::timed::Admit::Show,
+        }
+    }
 }
 
 pub(crate) trait PictureDecoder: Send {
@@ -117,6 +133,11 @@ pub(crate) trait PictureDecoder: Send {
         pts: i64,
         cx: &FrameCx<'_>,
     ) -> DecodeResult<u32>;
+    /// Forgets what was decoded so far, keeping the decoder open (a seek in a file). False:
+    /// this decoder cannot; the hub opens a new one instead.
+    fn flush(&mut self) -> bool {
+        false
+    }
 }
 
 /// What the hub asks of the platform.
@@ -188,6 +209,10 @@ fn find_decoder(codec: Codec, hardware: bool) -> *const ff::AVCodec {
             // FFmpeg's own AV1 decoder only decodes through a hwaccel; dav1d is the software one.
             Codec::Av1 if hardware => ff::avcodec_find_decoder_by_name(c"av1".as_ptr()),
             Codec::Av1 => ff::avcodec_find_decoder_by_name(c"libdav1d".as_ptr()),
+            Codec::Vp8 if hardware => std::ptr::null(),
+            Codec::Vp9 if hardware => std::ptr::null(),
+            Codec::Vp8 => ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_VP8),
+            Codec::Vp9 => ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_VP9),
         }
     }
 }
@@ -257,6 +282,7 @@ impl FfDecoder {
         description: Option<&[u8]>,
         hardware: Option<(*mut ff::AVBufferRef, GetFormat)>,
         threads: usize,
+        reorder: bool,
     ) -> DecodeResult<Self> {
         init_logging();
         let decoder = find_decoder(codec, hardware.is_some());
@@ -283,8 +309,11 @@ impl FfDecoder {
                 packet: std::ptr::null_mut(),
                 frame: std::ptr::null_mut(),
             };
-            // Streams have no reordering: every packet in gives its picture out.
-            (*context).flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
+            // Streams have no reordering: every packet in gives its picture out. A file may
+            // have B-frames: its decoder gives pictures out in presentation order.
+            if !reorder {
+                (*context).flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
+            }
             (*context).pkt_timebase = ff::AVRational {
                 num: 1,
                 den: 1_000_000,
@@ -330,6 +359,20 @@ impl FfDecoder {
     /// Hands one encoded frame to the decoder. The packet's buffer is not copied: FFmpeg holds
     /// it by reference and its owner is dropped when FFmpeg is done with it.
     pub fn send(&mut self, packet: Packet, keyframe: bool, pts: i64) -> DecodeResult<()> {
+        if packet.is_empty() {
+            // The end of a file (`TimedFrame::end`): the pictures the decoder still holds for
+            // reordering come out. A live stream never sends an empty frame.
+            drop(packet);
+            // Safety: a null packet starts draining.
+            let sent = unsafe { ff::avcodec_send_packet(self.context, std::ptr::null()) };
+            if sent < 0 && sent != ff::AVERROR_EOF {
+                return Err(DecodeError::decoder(format!(
+                    "avcodec_send_packet (end): {}",
+                    av_error(sent)
+                )));
+            }
+            return Ok(());
+        }
         let (data, len, opaque) = packet.into_raw();
         // Safety: `self.packet` is a blank packet; the buffer is alive until `free_packet`.
         unsafe {
@@ -382,6 +425,25 @@ impl FfDecoder {
             )));
         }
         Ok(true)
+    }
+
+    /// Forgets everything decoded so far (a seek): the next packet must be a keyframe.
+    pub fn flush(&mut self) {
+        // Safety: the context is open.
+        unsafe { ff::avcodec_flush_buffers(self.context) };
+    }
+
+    /// The presentation time of the frame in `self.frame`, in the packets' time base.
+    pub fn frame_pts(&self) -> i64 {
+        // Safety: the frame is valid.
+        unsafe {
+            let frame = self.frame;
+            if (*frame).best_effort_timestamp != ff::AV_NOPTS_VALUE {
+                (*frame).best_effort_timestamp
+            } else {
+                (*frame).pts
+            }
+        }
     }
 
     pub fn unref_frame(&mut self) {
@@ -542,9 +604,10 @@ impl SoftwareDecoder {
         codec: Codec,
         description: Option<&[u8]>,
         uploader: Box<dyn Uploader>,
+        reorder: bool,
     ) -> DecodeResult<Self> {
         Ok(Self {
-            decoder: FfDecoder::open(codec, description, None, software_threads())?,
+            decoder: FfDecoder::open(codec, description, None, software_threads(), reorder)?,
             uploader,
         })
     }
@@ -617,6 +680,10 @@ impl PictureDecoder for SoftwareDecoder {
         let mut published = 0;
         while self.decoder.receive()? {
             cx.counters.frame_decoded(cx.serial);
+            if !cx.admit(self.decoder.frame_pts()) {
+                self.decoder.unref_frame();
+                continue;
+            }
             let handed = self.hand_over(cx);
             self.decoder.unref_frame();
             if handed? {
@@ -624,6 +691,11 @@ impl PictureDecoder for SoftwareDecoder {
             }
         }
         Ok(published)
+    }
+
+    fn flush(&mut self) -> bool {
+        self.decoder.flush();
+        true
     }
 }
 

@@ -58,7 +58,7 @@ impl Backend for CpuBackend {
         backend: DecodeBackend,
         codec: Codec,
         description: Option<&[u8]>,
-        _target: &StreamTarget,
+        target: &StreamTarget,
     ) -> DecodeResult<Box<dyn PictureDecoder>> {
         if backend != DecodeBackend::Software {
             return Err(crate::decode::DecodeError::decoder(format!(
@@ -74,6 +74,7 @@ impl Backend for CpuBackend {
             codec,
             description,
             uploader,
+            target.reorder(),
         )?))
     }
 

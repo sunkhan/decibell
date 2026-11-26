@@ -81,7 +81,7 @@ pub(crate) fn forced_by_environment() -> Option<Order> {
 #[derive(Default)]
 pub(crate) struct Selector {
     /// Why a decoder is not tried for a codec any more, by `[codec][backend]`.
-    skipped: Mutex<[[Option<Arc<str>>; 4]; 3]>,
+    skipped: Mutex<[[Option<Arc<str>>; 4]; Codec::EVERY.len()]>,
     forced: Mutex<Option<Order>>,
 }
 

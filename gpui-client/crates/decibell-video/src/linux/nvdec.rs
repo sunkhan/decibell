@@ -378,7 +378,13 @@ impl NvdecDecoder {
         if hw_device.is_null() {
             return Err(DecodeError::decoder("out of memory"));
         }
-        let decoder = FfDecoder::open(codec, description, Some((hw_device, pick_cuda)), 1);
+        let decoder = FfDecoder::open(
+            codec,
+            description,
+            Some((hw_device, pick_cuda)),
+            1,
+            target.reorder(),
+        );
         // Safety: our reference.
         unsafe { ff::av_buffer_unref(&mut hw_device) };
         Ok(Self {
@@ -479,6 +485,10 @@ impl NvdecDecoder {
         let mut published = 0;
         while self.decoder.receive()? {
             cx.counters.frame_decoded(cx.serial);
+            if !cx.admit(self.decoder.frame_pts()) {
+                self.decoder.unref_frame();
+                continue;
+            }
             let info = self.decoder.frame_info();
             let handed = self.hand_over(&info, cx);
             // Unmaps the decoder's surface: it is free for the next picture.
@@ -510,5 +520,10 @@ impl PictureDecoder for NvdecDecoder {
         }
         self.decode_inner(packet, keyframe, pts, cx)
             .map_err(|error| classify(&self.work.device, error))
+    }
+
+    fn flush(&mut self) -> bool {
+        self.decoder.flush();
+        true
     }
 }

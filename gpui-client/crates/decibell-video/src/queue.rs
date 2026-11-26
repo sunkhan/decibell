@@ -51,8 +51,33 @@ pub(crate) struct Item {
     pub codec: Codec,
     pub keyframe: bool,
     pub timestamp: i64,
-    pub description: Option<Vec<u8>>,
+    pub description: Option<Description>,
     pub arrived: Instant,
+    /// A timed stream's seek generation (`timed.rs`); 0 for live streams.
+    pub epoch: u32,
+}
+
+/// A frame's configuration record: a live stream's own copy, or a file's shared one.
+pub(crate) enum Description {
+    Owned(Vec<u8>),
+    Shared(std::sync::Arc<[u8]>),
+}
+
+impl std::ops::Deref for Description {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Description::Owned(bytes) => bytes,
+            Description::Shared(bytes) => bytes,
+        }
+    }
+}
+
+/// What [`FrameQueue::push_timed`] did.
+pub(crate) enum TimedQueued {
+    Queued { start_consumer: bool },
+    NeedKeyframe,
+    Stopped,
 }
 
 struct State {
@@ -105,6 +130,9 @@ pub(crate) struct Pushed {
 
 pub(crate) enum Popped {
     Item(Item),
+    /// [`FrameQueue::pop_timed`] only: nothing arrived in time and the consumer is still
+    /// registered. It waits again, or leaves through [`FrameQueue::leave`].
+    Quiet,
     /// Nothing arrived in time. The consumer is deregistered: it must exit.
     Idle,
     /// The stream stopped. The consumer is deregistered: it must exit.
@@ -195,8 +223,68 @@ impl FrameQueue {
         pushed
     }
 
+    /// Queues a packet of a timed stream (`timed.rs`): the caller keeps the queue short, so
+    /// nothing is ever shed for room, and a delta that meets a closed gate is refused without
+    /// anything else changing.
+    pub fn push_timed(&self, item: Item) -> TimedQueued {
+        let mut refused = None;
+        let result = {
+            let mut state = self.state.lock();
+            if state.stopped {
+                refused = Some(item);
+                TimedQueued::Stopped
+            } else if state.need_key && !item.keyframe {
+                refused = Some(item);
+                TimedQueued::NeedKeyframe
+            } else if state.len >= CATCH_UP {
+                // Not reachable with a caller that keeps to `TIMED_DEPTH`.
+                refused = Some(item);
+                TimedQueued::Stopped
+            } else {
+                if item.keyframe {
+                    state.need_key = false;
+                }
+                let tail = (state.head + state.len) % CATCH_UP;
+                state.items[tail] = Some(item);
+                state.len += 1;
+                let start_consumer = !state.consumer;
+                if start_consumer {
+                    state.consumer = true;
+                } else if state.consumer_waiting {
+                    self.ready.notify_one();
+                }
+                TimedQueued::Queued { start_consumer }
+            }
+        };
+        drop(refused);
+        result
+    }
+
+    /// [`Self::pop`] for a timed stream: a timeout leaves the consumer registered
+    /// ([`Popped::Quiet`]).
+    pub fn pop_timed(&self, idle: Duration) -> Popped {
+        self.pop_inner(idle, true)
+    }
+
+    /// The consumer of a timed stream leaves after a [`Popped::Quiet`], unless a packet came
+    /// meanwhile (false: it must pop again).
+    pub fn leave(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.len > 0 && !state.stopped {
+            return false;
+        }
+        state.consumer = false;
+        state.need_key = true;
+        state.catching_up = true;
+        true
+    }
+
     /// The next frame, waiting up to `idle` for one.
     pub fn pop(&self, idle: Duration) -> Popped {
+        self.pop_inner(idle, false)
+    }
+
+    fn pop_inner(&self, idle: Duration, stay: bool) -> Popped {
         let mut state = self.state.lock();
         let deadline = Instant::now() + idle;
         loop {
@@ -218,6 +306,9 @@ impl FrameQueue {
             let timed_out = self.ready.wait_until(&mut state, deadline).timed_out();
             state.consumer_waiting = false;
             if timed_out && state.len == 0 && !state.stopped {
+                if stay {
+                    return Popped::Quiet;
+                }
                 state.consumer = false;
                 // Whatever comes next meets a new decoder.
                 state.need_key = true;
@@ -308,6 +399,7 @@ mod tests {
             timestamp: tag as i64,
             description: None,
             arrived,
+            epoch: 0,
         }
     }
 

@@ -7,10 +7,25 @@ pub enum Codec {
     H264,
     Hevc,
     Av1,
+    /// Files only (attachment playback, [`crate::Timing`]): never a stream's codec, never
+    /// advertised, decoded in software.
+    Vp8,
+    /// Files only, as [`Codec::Vp8`].
+    Vp9,
 }
 
 impl Codec {
+    /// The codecs a stream can use: what is probed and advertised.
     pub const ALL: [Codec; 3] = [Codec::H264, Codec::Hevc, Codec::Av1];
+    /// Every codec, those only files use included, in `index` order.
+    pub(crate) const EVERY: [Codec; 5] =
+        [Codec::H264, Codec::Hevc, Codec::Av1, Codec::Vp8, Codec::Vp9];
+
+    /// Whether the hardware decoders are wired for this codec (the stream codecs). The others
+    /// go straight to software.
+    pub fn has_hardware_path(self) -> bool {
+        matches!(self, Codec::H264 | Codec::Hevc | Codec::Av1)
+    }
 
     /// From the wire's `VideoCodec` byte (`StreamFrame::codec`): 1 and 2 H.264, 3 H.265, 4 AV1.
     pub fn from_wire(codec: u8) -> Option<Codec> {
@@ -29,6 +44,8 @@ impl Codec {
             Codec::H264 => 1,
             Codec::Hevc => 3,
             Codec::Av1 => 4,
+            // Not on the wire.
+            Codec::Vp8 | Codec::Vp9 => 0,
         }
     }
 
@@ -38,6 +55,8 @@ impl Codec {
             Codec::H264 => "H.264",
             Codec::Hevc => "H.265",
             Codec::Av1 => "AV1",
+            Codec::Vp8 => "VP8",
+            Codec::Vp9 => "VP9",
         }
     }
 
@@ -46,7 +65,7 @@ impl Codec {
     }
 
     pub(crate) fn from_index(index: usize) -> Option<Codec> {
-        Codec::ALL.get(index).copied()
+        Codec::EVERY.get(index).copied()
     }
 }
 

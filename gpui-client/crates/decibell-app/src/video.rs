@@ -62,6 +62,12 @@ fn model_codec(codec: Codec) -> VideoCodec {
         Codec::H264 => VideoCodec::H264Hw,
         Codec::Hevc => VideoCodec::H265,
         Codec::Av1 => VideoCodec::Av1,
+        // File-only codecs (attachment playback) are never probed or advertised: the callers
+        // walk `Codec::ALL`.
+        Codec::Vp8 | Codec::Vp9 => {
+            debug_assert!(false, "a file-only codec reached the model");
+            VideoCodec::H264Hw
+        }
     }
 }
 

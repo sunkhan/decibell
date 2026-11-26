@@ -789,6 +789,8 @@ async fn check_stall(cx: TestCx) -> Result<()> {
         decibell_video::Codec::H264 => decibell_model::live::voice::VideoCodec::H264Hw,
         decibell_video::Codec::Hevc => decibell_model::live::voice::VideoCodec::H265,
         decibell_video::Codec::Av1 => decibell_model::live::voice::VideoCodec::Av1,
+        // Codecs only attachment playback decodes: never a stream's.
+        other => anyhow::bail!("the stream's codec is {}", other.label()),
     };
     let shown = decoders.iter().find(|d| d.codec == model_codec).map(|d| d.label.clone()).context("the stream's codec is not in the probe's answer")?;
     cx.log(format_args!("the stream ({}) is decoded with {used}; Settings → Codecs says {shown}", codec.label()));

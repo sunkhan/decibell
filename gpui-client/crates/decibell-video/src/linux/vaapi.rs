@@ -226,7 +226,13 @@ impl VaapiDecoder {
             }
         }
         let work = Work::new(device)?;
-        let decoder = FfDecoder::open(codec, description, Some((va.hw, pick_vaapi)), 1)?;
+        let decoder = FfDecoder::open(
+            codec,
+            description,
+            Some((va.hw, pick_vaapi)),
+            1,
+            target.reorder(),
+        )?;
         // Safety: plain allocation; freed in `Drop`.
         let mapped = unsafe { ff::av_frame_alloc() };
         if mapped.is_null() {
@@ -563,6 +569,10 @@ impl VaapiDecoder {
         let mut published = 0;
         while self.decoder.receive()? {
             cx.counters.frame_decoded(cx.serial);
+            if !cx.admit(self.decoder.frame_pts()) {
+                self.decoder.unref_frame();
+                continue;
+            }
             let info = self.decoder.frame_info();
             let handed = self.hand_over(&info, cx);
             // The surface goes back to the decoder's pool: the picture is in a slot.
@@ -612,6 +622,11 @@ impl PictureDecoder for VaapiDecoder {
         }
         self.decode_inner(packet, keyframe, pts, cx)
             .map_err(|error| classify(&self.work.device, error))
+    }
+
+    fn flush(&mut self) -> bool {
+        self.decoder.flush();
+        true
     }
 }
 

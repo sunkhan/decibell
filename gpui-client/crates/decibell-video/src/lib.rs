@@ -77,6 +77,7 @@ mod screens;
 mod select;
 mod selftests;
 mod stats;
+mod timed;
 mod view;
 
 pub use codec::{Codec, CodecSupport, DecodeBackend, DecodePath, SkippedBackend};
@@ -93,6 +94,7 @@ pub use packet::{
 pub use screens::screens;
 pub use selftests::selftests;
 pub use stats::{StatsSampler, StreamRates, StreamStats};
+pub use timed::{Admit, TIMED_DEPTH, TimedFrame, TimedPush, Timing};
 pub use view::{Fit, VideoView};
 
 mod platform {
