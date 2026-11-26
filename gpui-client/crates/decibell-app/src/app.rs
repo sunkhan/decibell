@@ -69,6 +69,18 @@ pub fn init_model(theme_override: Option<ThemeId>, with_core: bool, cx: &mut App
     model
 }
 
+/// Where the at-rest key lives: the OS keychain in a shipped build. A development build
+/// (`dev-local`, or any debug build) keeps it in a file of the profile instead, because its runs
+/// use throwaway profiles and each would leave an item in the desktop's keychain;
+/// `DECIBELL_DEV_KEYCHAIN=real` opts one run back in (the test of a machine without a keychain
+/// does, on a private bus).
+fn local_key_provider() -> Box<dyn decibell_model::local_key::LocalKeyProvider> {
+    if cfg!(any(feature = "dev-local", debug_assertions)) && std::env::var("DECIBELL_DEV_KEYCHAIN").as_deref() != Ok("real") {
+        return Box::new(decibell_model::local_key::FileKey);
+    }
+    Box::new(KeychainKey)
+}
+
 /// Start the core (once per process) the way the model expects, then what follows it.
 pub fn start_core(model: &Model, cx: &mut App) {
     // Auto-away: the core's idle source (Wayland's ext-idle-notify, GNOME's IdleMonitor; it
@@ -81,7 +93,7 @@ pub fn start_core(model: &Model, cx: &mut App) {
         CoreOptions {
             user_data_dir: None,
             app_version: env!("CARGO_PKG_VERSION").into(),
-            local_key: Box::new(KeychainKey),
+            local_key: local_key_provider(),
         },
     )
     .detach();

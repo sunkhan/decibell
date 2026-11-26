@@ -235,7 +235,15 @@ async fn no_keyring(cx: TestCx) -> Result<()> {
     let bus = EmptyBus::start()?;
     cx.log(format_args!("private session bus without a Secret Service: {}", bus.address));
     let profile = Profile::new("shell-no-keyring")?;
-    let env = |phase: &str| vec![("DBUS_SESSION_BUS_ADDRESS", bus.address.clone()), ("DECIBELL_CHECK_PHASE", phase.to_string())];
+    // A development build keeps its key in a file; this test is the one that asks for the real
+    // keychain path, on a bus where there is none (so nothing is ever written to a keyring).
+    let env = |phase: &str| {
+        vec![
+            ("DBUS_SESSION_BUS_ADDRESS", bus.address.clone()),
+            ("DECIBELL_DEV_KEYCHAIN", "real".to_string()),
+            ("DECIBELL_CHECK_PHASE", phase.to_string()),
+        ]
+    };
     match run_child(&cx, "shell-no-keyring", true, &stack, &profile.0, &env("1")).await? {
         Child::NoDevLogin => {
             cx.log("SKIP: this binary has no --login (build with --features dev-local)");

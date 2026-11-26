@@ -58,6 +58,49 @@ impl LocalKeyProvider for FixedKey {
     }
 }
 
+/// A key kept in a file of the user data directory (`dev-local.key`): for development builds and
+/// the self-tests, **which must never write to the desktop's keychain** (every throwaway profile
+/// would leave an item in the developer's keyring; 2026-11-26). It behaves like a keychain that
+/// works (`protected`), so the saved sign-in and the key store take the same path as in a shipped
+/// build. Never for a shipped build: whatever can read the profile can read the file.
+pub struct FileKey;
+
+/// The file's name inside the user data directory.
+pub const DEV_KEY_FILE: &str = "dev-local.key";
+
+impl LocalKeyProvider for FileKey {
+    fn load(&self, user_data_dir: &Path, _: &mut App) -> Task<LocalKey> {
+        Task::ready(file_key(user_data_dir))
+    }
+}
+
+fn file_key(user_data_dir: &Path) -> LocalKey {
+    let path = user_data_dir.join(DEV_KEY_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) if is_valid(text.trim()) => LocalKey { key_b64: Some(text.trim().to_string()), protected: true },
+        // As with the keychain: a value of another form is ignored, not replaced.
+        Ok(_) => {
+            log::warn!("[e2ee] {} has an unexpected form; ignoring it", path.display());
+            LocalKey::none()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let Some(key) = generate() else { return LocalKey::none() };
+            let stored = std::fs::create_dir_all(user_data_dir).and_then(|()| std::fs::write(&path, &key));
+            match stored {
+                Ok(()) => LocalKey { key_b64: Some(key), protected: true },
+                Err(e) => {
+                    log::warn!("[e2ee] couldn't store the development key in {}: {e}", path.display());
+                    LocalKey::none()
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("[e2ee] couldn't read {}: {e}", path.display());
+            LocalKey::none()
+        }
+    }
+}
+
 /// The OS keychain, through GPUI's credentials API.
 pub struct KeychainKey;
 
@@ -125,6 +168,19 @@ impl LocalKeyProvider for KeychainKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_key_is_created_once_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let first = file_key(&profile);
+        assert!(first.protected && first.key_b64.as_deref().is_some_and(is_valid));
+        assert_eq!(file_key(&profile), first, "a second start reads the same key");
+        // A file of another form is left alone and gives no key.
+        std::fs::write(profile.join(DEV_KEY_FILE), "not a key").unwrap();
+        assert_eq!(file_key(&profile), LocalKey::none());
+        assert_eq!(std::fs::read_to_string(profile.join(DEV_KEY_FILE)).unwrap(), "not a key");
+    }
 
     #[test]
     fn generated_keys_are_32_bytes() {
