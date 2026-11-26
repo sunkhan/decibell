@@ -22,6 +22,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0016-keyring-label.patch` | Credentials are stored, read and deleted under the label `Decibell` (Secret Service, Linux) and the target `Decibell:url=…` (Credential Manager, Windows) instead of Zed's `zed-github-account` / `zed:url=…`. | A shipped client's at-rest key would have shown up in the user's keyring manager under Zed's name. |
 | `0017-wayland-request-attention.patch` | `Window::request_attention` on Wayland: an xdg-activation token that names no input, used at once; the compositor marks the window as demanding attention (it never grants focus for such a token). Nothing while the window is active. | The taskbar flash on an incoming call (`FEATURES.md` §9): Wayland's `request_attention` did nothing. |
 | `0018-gpui-activate-with-token.patch` | `Window::activate_window_with_token(token)` (`PlatformWindow::activate_with_token`, defaulting to `activate`): on Wayland, activates with an activation token another process got from the desktop. | A second start of the app hands its `XDG_ACTIVATION_TOKEN` to the running instance, which then may take the focus (single instance). |
+| `0019-windows-clipboard-bitmap.patch` | A picture written to the Windows clipboard also goes out as a `CF_DIB` (32-bit, bottom-up, from the decoded picture), beside the registered "PNG" / "GIF" / "JFIF" formats GPUI wrote. | Programs that paste only bitmaps (Paint, older Office, most native editors) got nothing from "Copy image": GPUI wrote no bitmap format. Windows makes `CF_BITMAP` / `CF_DIBV5` from the `CF_DIB`. |
 
 ## How the patches are applied
 
@@ -604,9 +605,8 @@ got each at once. Before the patch the same copy offered three text types and se
 the serial fallback's unit test (`gpui_linux` is not a member of the client's workspace and its own tests build in
 Zed's); the runtime path is the self-test's, which has no real input.
 
-**Windows and macOS** were not changed: Windows writes the picture under its registered format ("PNG", "GIF", "JFIF")
-plus a PNG and **no `CF_DIB`**, so programs that paste only bitmaps (Paint, older Office) get nothing (the Windows batch
-in `HANDOFF.md`); macOS writes the picture's own pasteboard type (`public.png`).
+**Windows and macOS** are not changed by this patch: Windows writes the picture under its registered format ("PNG",
+"GIF", "JFIF") plus a PNG, and with `0019` a `CF_DIB`; macOS writes the picture's own pasteboard type (`public.png`).
 
 **Upstream.** Yes: GPUI's own `ClipboardItem::new_image` did nothing on Linux. The serial fallback is a separate
 question for upstream (their test pins the opposite).
@@ -641,6 +641,20 @@ with it the compositor gives the running window the focus, where its own request
 it. X11, Windows: `activate` (`_NET_ACTIVE_WINDOW`; `SetForegroundWindow`, which the second start allows with
 `AllowSetForegroundWindow`). GPUI had no way to use a token from another process (`gpui-notes.md` §2.9). Upstream:
 yes (any single-instance application on Wayland needs it).
+
+## 0019: a bitmap on the Windows clipboard
+
+`gpui_windows/src/clipboard.rs` (+41). `write_image` wrote the picture under its registered format ("PNG", "GIF",
+"JFIF", "image/svg+xml") and a PNG copy, but no standard bitmap format, so a program that reads only `CF_DIB` /
+`CF_BITMAP` (Paint, older Office, most Win32 editors) pasted nothing; Chromium-based programs and newer Office read the
+"PNG" format. Now every raster picture is also written as a packed DIB: a `BITMAPINFOHEADER` (40 bytes, 32 bits per
+pixel, `BI_RGB`, positive height = bottom-up rows) and the pixels as BGRA, decoded with the `image` crate GPUI already
+uses for its PNG copy (`convert_to_dib`). The alpha byte is kept (`BI_RGB` readers ignore it; a transparent picture
+pastes with its colour where it was transparent, as Chromium's `CF_DIB` does). Windows synthesises `CF_BITMAP` and
+`CF_DIBV5` from it on demand. The formats go out PNG first, so programs that prefer PNG keep getting it. Written to
+compile against `windows` 0.62 (the code is plain Rust over GPUI's own `set_clipboard_bytes` and the `CF_DIB` it
+imports for reading); **not run here** (no Windows machine): the owner's check is in `docs/windows-owner-checks.md`.
+Upstream: yes.
 
 ## Considered and not patched
 
