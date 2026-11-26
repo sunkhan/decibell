@@ -61,6 +61,19 @@ impl HttpClient {
         }
     }
 
+    /// The `loopback` feature only (development builds' self-tests): public addresses or
+    /// 127.0.0.0/8, the system resolver, webpki roots.
+    #[cfg(feature = "loopback")]
+    pub(crate) fn loopback() -> Self {
+        Self {
+            rule: AddressRule::PublicOrLoopback,
+            resolver: Arc::new(SystemResolver),
+            tls: OnceLock::new(),
+            #[cfg(test)]
+            extra_roots: Vec::new(),
+        }
+    }
+
     /// Test builds only: allow 127.0.0.0/8, script DNS, trust a test CA.
     #[cfg(test)]
     pub(crate) fn for_tests(

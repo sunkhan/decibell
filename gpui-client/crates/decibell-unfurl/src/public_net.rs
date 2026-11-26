@@ -201,12 +201,13 @@ pub(crate) fn check_url_with(u: &Url, rule: AddressRule) -> Result<Destination, 
 }
 
 /// Which addresses a connection may reach. Production code has exactly one rule; the loopback
-/// relaxation exists only in this crate's own test build.
+/// relaxation exists only in this crate's own test build and with the `loopback` feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AddressRule {
     PublicOnly,
-    /// Public, or IPv4 loopback (127.0.0.0/8): the in-process test servers. Test builds only.
-    #[cfg(test)]
+    /// Public, or IPv4 loopback (127.0.0.0/8): the in-process test servers. Test builds and the
+    /// `loopback` feature (the client's self-tests against a local fixture server) only.
+    #[cfg(any(test, feature = "loopback"))]
     PublicOrLoopback,
 }
 
@@ -214,7 +215,7 @@ impl AddressRule {
     pub(crate) fn allows(self, ip: IpAddr) -> bool {
         match self {
             AddressRule::PublicOnly => is_public_address(ip),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "loopback"))]
             AddressRule::PublicOrLoopback => {
                 is_public_address(ip) || matches!(ip, IpAddr::V4(v4) if v4.is_loopback())
             }

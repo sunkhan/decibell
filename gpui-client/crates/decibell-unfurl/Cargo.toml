@@ -11,6 +11,11 @@ description = "Link previews (with the private-network guard) and GIF search for
 # already in GPUI's tree. The only crate this adds to the app is brotli-decompressor (the unfurler
 # sends `Accept-Encoding: gzip, deflate, br`, as Electron's main does).
 
+[features]
+# Development builds' self-tests only: constructors that may also reach 127.0.0.0/8
+# (`LinkPreviews::loopback`, `RemoteImages::loopback`). Never in a shipped build.
+loopback = []
+
 [dependencies]
 brotli-decompressor = { version = "5", default-features = false, features = ["std"] }
 bytes = "1"

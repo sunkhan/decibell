@@ -8,8 +8,11 @@
 //!   concurrency limit.
 //! - [`Gifs`]: KLIPY or GIPHY search and trending feed ([`GifConfig`] from `gifs.json` or the
 //!   `GIF_API_KEY` / `GIF_API_PROVIDER` environment variables). Never Tenor: its API is gone.
-//! - [`images`]: a public-web picture's bytes for a view that shows it directly (the GIF picker's
-//!   previews), through the same guard and caps, independent of `LinkPreviews`.
+//! - [`RemoteImages`]: the pictures a message shows from the public web (a preview's image, a GIF
+//!   link), behind the same guard, https only, size-capped: what the renderer's `<img src=https:>`
+//!   fetched.
+//!   [`images::fetch`] is the same fetch for a view that holds no `RemoteImages` (the GIF picker's
+//!   previews; `http:` upgraded first).
 //! - [`links`]: the `decibell://invite/…` grammar and the small pure URL rules the message view
 //!   needs (GIF / image labels, which links may open in the browser).
 //!
@@ -29,6 +32,7 @@ pub mod public_net;
 use std::fmt;
 
 pub use gifs::{GifConfig, GifPage, GifProvider, GifResult, GifStatus, Gifs};
+pub use images::RemoteImages;
 pub use link_preview::{ImagePreview, LinkPreview, LinkPreviewImage, LinkPreviews, SitePreview};
 pub use links::{MediaLabel, PendingInvite};
 pub use public_net::Refusal;
@@ -90,6 +94,7 @@ mod api_tests {
     #[test]
     fn public_types_are_send_sync() {
         assert_send_sync::<LinkPreviews>();
+        assert_send_sync::<RemoteImages>();
         assert_send_sync::<Gifs>();
         assert_send_sync::<Error>();
         assert_send_sync::<LinkPreview>();

@@ -636,3 +636,42 @@ fn production_client_refuses_loopback() {
         assert_eq!(srv.requests.lock().unwrap().len(), 0);
     });
 }
+
+#[tokio::test]
+async fn remote_images_follow_redirects_within_the_guard_and_the_cap() {
+    use crate::images::RemoteImages;
+    let pki = server::pki();
+    let mut routes = HashMap::new();
+    let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4, 5, 6];
+    routes.insert(
+        "/pic.png".to_string(),
+        Reply::Fixed { status: 200, headers: vec![("content-type".into(), b"image/png".to_vec())], body: png.clone() },
+    );
+    routes.insert(
+        "/moved".to_string(),
+        Reply::Fixed { status: 302, headers: vec![("location".into(), b"/pic.png".to_vec())], body: vec![] },
+    );
+    // A redirect off https is refused (the CSP allowed `img-src https:` only).
+    routes.insert(
+        "/to-plain".to_string(),
+        Reply::Fixed { status: 302, headers: vec![("location".into(), b"http://127.0.0.1:{port}/pic.png".to_vec())], body: vec![] },
+    );
+    routes.insert(
+        "/big.gif".to_string(),
+        Reply::Fixed { status: 200, headers: vec![("content-type".into(), b"image/gif".to_vec())], body: vec![7; 4096] },
+    );
+    routes.insert("/gone".to_string(), Reply::Fixed { status: 404, headers: vec![], body: b"nope".to_vec() });
+    let srv = server::start(routes, &pki).await;
+    let images = RemoteImages::for_tests(client(&pki, Dns::with(&[])), 1024);
+    let at = |path: &str| format!("https://127.0.0.1:{}{path}", srv.port);
+    assert_eq!(images.fetch(&at("/pic.png")).await.unwrap().as_ref(), png.as_slice());
+    assert_eq!(images.fetch(&at("/moved")).await.unwrap().as_ref(), png.as_slice());
+    assert!(matches!(images.fetch(&at("/to-plain")).await, Err(Error::InvalidUrl)));
+    assert!(images.fetch(&at("/big.gif")).await.is_err());
+    assert!(images.fetch(&at("/gone")).await.is_err());
+    // Nothing is sent as a referrer.
+    let requests = srv.requests.lock().unwrap();
+    assert!(requests.iter().all(|(_, headers)| headers.iter().all(|(name, _)| !name.eq_ignore_ascii_case("referer"))));
+    assert!(requests.iter().any(|(path, headers)| path == "/pic.png"
+        && headers.iter().any(|(name, value)| name == "Accept" && value.starts_with("image/avif"))));
+}

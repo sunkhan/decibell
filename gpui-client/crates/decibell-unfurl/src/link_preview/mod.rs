@@ -167,6 +167,14 @@ impl LinkPreviews {
         }
     }
 
+    /// The `loopback` feature only (development builds' self-tests): the production unfurler
+    /// that may also reach 127.0.0.0/8, so a self-test can serve its page from a local fixture
+    /// server and no public site is contacted. Never in a shipped build.
+    #[cfg(feature = "loopback")]
+    pub fn loopback(app_version: &str) -> Self {
+        Self::with(HttpClient::loopback(), app_version, Limits::ELECTRON)
+    }
+
     /// Test builds only: a client with the loopback relaxation / scripted DNS / test CA, and
     /// shorter limits.
     #[cfg(test)]
