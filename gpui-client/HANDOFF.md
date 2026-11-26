@@ -69,8 +69,10 @@ screens in all seven themes beside Electron's.
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
 | Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
 | Core: voice idle wakeups and polling, per-packet voice allocations, `FrameBuf` padding, idle / device-change events | in progress, worktree `.worktrees/core-voice` (`wip/core-voice`) |
-| Encoders on every vendor + software fallback (core) | in progress, worktree `.worktrees/core-encoders` (`wip/core-encoders`) |
-| Shell (boot with core + model, sign-in pages, server bar, channel sidebar, user panel, member list; `decibell-common`, `decibell-shell`) | in progress |
+| Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software; VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
+| Shell (`decibell-common`, `decibell-shell`, app boot with core + model) | done `f4ac4fe`: sign-in / register pages, server bar, channel sidebar with voice rosters, user panel, member list, friends frame, pane / overlay / menu registration (CONVENTIONS "Shell"); self-tests `shell-signin`, `-navigate`, `-members`, `-idle`, `-signout`, `-no-keyring`; captures within 0.3–1.2 % of Electron's; numbers in §4 "Shell". Left: channel drag-to-reorder, panes of the other features |
+| Voice view, stream watching, mini-player, Go Live, calls (`decibell-voice`) + the stream bot for measurements | in progress, worktree `.worktrees/voice` (`wip/voice`) |
+| Settings window (all tabs) + passphrase dialog (`decibell-settings`) | in progress, worktree `.worktrees/settings` (`wip/settings`) |
 | Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
 | Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
 | Rich-text grammar (`crates/decibell-richtext`) | done `497ab53`: 0 mismatches against the renderer over 120,570 committed + 1.6M stress cases |
@@ -96,11 +98,12 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/core-encoders` / `wip/core-encoders` | encoders on every vendor + SVT-AV1 software fallback (core) |
 | `.worktrees/core-voice` / `wip/core-voice` | voice wakeups / polling, voice allocations, `FrameBuf` padding (core) |
 | `.worktrees/land` / `wip/land` | text inputs + GPUI patch 0012 (physical key codes) |
 | `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
-| main tree (uncommitted until each reports) | the shell (`decibell-common`, `decibell-shell`, app boot), the message list (`decibell-chat`) |
+| `.worktrees/voice` / `wip/voice` | voice view, streams UI, calls, stream bot |
+| `.worktrees/settings` / `wip/settings` | settings window, passphrase dialog |
+| main tree (uncommitted until it reports; safety copy on local branch `wip/snapshot`) | the message list (`decibell-chat`) |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
 clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
