@@ -413,6 +413,9 @@ struct Router {
 }
 
 static ROUTER: Mutex<Option<Router>> = Mutex::new(None);
+/// How long the last cue stream took to open, in µs (the delay before a
+/// sound played outside voice is heard; diagnostics and the latency test).
+pub(crate) static LAST_OPEN_US: AtomicU64 = AtomicU64::new(0);
 
 fn with_router<R>(f: impl FnOnce(&mut Router) -> R) -> R {
     let mut g = ROUTER.lock().unwrap_or_else(|e| e.into_inner());
@@ -590,6 +593,7 @@ fn standalone_thread(generation: u64, device: Option<String>) {
         return;
     };
     log::debug!("[cue] output stream open in {:?} ({} Hz)", opened_at.elapsed(), bus.rate);
+    LAST_OPEN_US.store(opened_at.elapsed().as_micros() as u64, Ordering::Relaxed);
     // Hand over what was asked for meanwhile; from here senders use the bus.
     let ours = with_router(|r| match r.standalone.as_mut().filter(|s| s.generation == generation) {
         Some(s) => {
@@ -963,5 +967,49 @@ pub(crate) mod tests {
         assert_eq!(live2.busy(), 0);
         retire_live(&live2);
         *TEST_OPENER.lock().unwrap() = None;
+    }
+
+    /// How late a sound is with no voice session: the time to open the
+    /// stream, on this desktop's own audio server, into a null sink (which
+    /// plays nowhere). Creates and removes `decibell-test-cue-<pid>`. Ignored
+    /// by default: needs PipeWire / PulseAudio with `pactl`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn open_latency_into_a_null_sink() {
+        let _one = ROUTER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        *TEST_OPENER.lock().unwrap() = None;
+        fresh_router();
+        let name = format!("decibell-test-cue-{}", std::process::id());
+        let out = std::process::Command::new("pactl")
+            .args(["load-module", "module-null-sink", &format!("sink_name={name}")])
+            .output()
+            .expect("pactl");
+        let module = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(out.status.success() && !module.is_empty(), "load-module failed");
+        std::thread::sleep(Duration::from_millis(300));
+        let sound = file("mute");
+        let mut opens = Vec::new();
+        let mut totals = Vec::new();
+        for _ in 0..6 {
+            LAST_OPEN_US.store(0, Ordering::Relaxed);
+            let asked = Instant::now();
+            play(&sound, Some(&name));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while LAST_OPEN_US.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            totals.push(asked.elapsed().as_micros() as u64);
+            opens.push(LAST_OPEN_US.load(Ordering::Relaxed));
+            // Until the stream has played out and closed.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while with_router(|r| r.standalone.is_some()) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let _ = std::process::Command::new("pactl").args(["unload-module", &module]).status();
+        println!("cue stream open, µs (cpal's own): {opens:?}; play() to open, µs: {totals:?}");
+        assert!(opens.iter().all(|&us| us > 0), "the stream opened each time");
+        assert!(with_router(|r| r.standalone.is_none()), "and closed by itself");
     }
 }
