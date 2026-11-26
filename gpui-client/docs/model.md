@@ -372,7 +372,9 @@ live (`voice-join`, `mute` / `deafen`, `status`, `friends`, `e2ee-ready`, `call`
 presence | call …`: §M3), and the dumps. Each `dump` prints one line `DUMP <what> <json>`; **`dump all`** prints
 every dump that applies in the current state (the account stores, the open community's channels / roles / roster,
 the open channel's permissions and messages, the open DM, search, every live store), one line each, a dump that
-can't be made carrying `{"error": …}`. The last line is `DONE` or `FAILED …`. Steps of every group mix freely in
+can't be made carrying `{"error": …}`. The last line is `DONE` or `FAILED …`. **`dump codecs`** needs no sign-in:
+it runs the core's encoder probe and prints, per codec, the backend, encoder and limits in use (plus the model's
+codec caps); `DECIBELL_ENCODER=software` shows what a machine without a hardware encoder gets. Steps of every group mix freely in
 one script (one process, one core): the usage's example, also `tests/stack.rs`' combined test.
 
 It only talks to the local stack: it exits 2 unless `DECIBELL_CENTRAL` is a loopback address **and** the
