@@ -8,9 +8,13 @@
 //! unpinned streams to the new default by themselves, so Linux needs none
 //! of this and gets no watcher.
 //!
-//! A thread asks for the current defaults about once a second and, when
-//! one is a different device than before, sends the pipeline
-//! `DefaultInputChanged` / `DefaultOutputChanged`. The pipeline re-opens
+//! A thread sleeps until the OS says a default device changed
+//! (`device_watch::OsNotifications`: `IMMNotificationClient` on Windows,
+//! CoreAudio property listeners on macOS), then reads the current defaults
+//! and, when one is a different device than before (a notification comes per
+//! role, and for changes that leave our device where it was), sends the
+//! pipeline `DefaultInputChanged` / `DefaultOutputChanged`. Only if the
+//! notifications can't be registered does it ask once a second instead. The pipeline re-opens
 //! only what follows the default (an explicitly chosen device stays put),
 //! through the same hot-swap as picking a device in Settings. No signal
 //! for anything else, so device-list churn (wireless headsets, virtual
@@ -42,7 +46,7 @@ impl DefaultDeviceWatch {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            Self::spawn(make_probe, POLL_INTERVAL, move |input| {
+            Self::spawn(make_notified_probe, move |input| {
                 let msg = if input {
                     ControlMessage::DefaultInputChanged
                 } else {
@@ -55,12 +59,15 @@ impl DefaultDeviceWatch {
 
     /// `make_probe` runs on the watcher thread (COM objects aren't `Send`)
     /// and returns the probe: `probe(input)` → an identity for the current
-    /// default capture (`true`) / render (`false`) device. `on_change(input)`
-    /// returns false once nobody is listening, which ends the thread.
+    /// default capture (`true`) / render (`false`) device; and how the thread
+    /// waits between looks: None = until it is unparked (by the OS
+    /// notification the probe's maker registered), else that long.
+    /// `on_change(input)` returns false once nobody is listening, which ends
+    /// the thread.
     #[cfg_attr(target_os = "linux", allow(dead_code))]
-    fn spawn<M, P, C>(make_probe: M, interval: Duration, on_change: C) -> Option<Self>
+    fn spawn<M, P, C>(make_probe: M, on_change: C) -> Option<Self>
     where
-        M: FnOnce() -> P + Send + 'static,
+        M: FnOnce() -> (P, Option<Duration>) + Send + 'static,
         P: FnMut(bool) -> Option<String>,
         C: Fn(bool) -> bool + Send + 'static,
     {
@@ -69,10 +76,13 @@ impl DefaultDeviceWatch {
         let thread = std::thread::Builder::new()
             .name("decibell-default-device".into())
             .spawn(move || {
-                let mut probe = make_probe();
+                let (mut probe, interval) = make_probe();
                 let mut last = [probe(true), probe(false)];
                 while !stop_thread.load(Ordering::Acquire) {
-                    std::thread::park_timeout(interval);
+                    match interval {
+                        Some(interval) => std::thread::park_timeout(interval),
+                        None => std::thread::park(),
+                    }
                     if stop_thread.load(Ordering::Acquire) {
                         break;
                     }
@@ -109,6 +119,29 @@ impl Drop for DefaultDeviceWatch {
             let _ = t.join();
         }
     }
+}
+
+/// The probe, woken by the OS's default-device notifications (registered
+/// here, on the watcher thread, and for as long as the probe lives); the
+/// once-a-second look only if they can't be registered.
+#[cfg(not(target_os = "linux"))]
+fn make_notified_probe() -> (impl FnMut(bool) -> Option<String>, Option<Duration>) {
+    use super::device_watch::{Change, OsNotifications};
+    let watcher = std::thread::current();
+    let notifications = OsNotifications::start(move |change| {
+        if change != Change::Devices {
+            watcher.unpark();
+        }
+    });
+    let interval = if notifications.is_some() { None } else { Some(POLL_INTERVAL) };
+    let mut probe = make_probe();
+    (
+        move |input| {
+            let _registered = &notifications;
+            probe(input)
+        },
+        interval,
+    )
 }
 
 /// Windows: endpoint IDs of the default communications and default
@@ -172,12 +205,14 @@ mod tests {
         let watch = DefaultDeviceWatch::spawn(
             move || {
                 let (mut i, mut o) = (script_in.into_iter(), script_out.into_iter());
-                move |input: bool| {
-                    let next = if input { i.next() } else { o.next() };
-                    next.flatten().map(str::to_string)
-                }
+                (
+                    move |input: bool| {
+                        let next = if input { i.next() } else { o.next() };
+                        next.flatten().map(str::to_string)
+                    },
+                    Some(Duration::from_millis(5)),
+                )
             },
-            Duration::from_millis(5),
             move |input| {
                 fired_cb.lock().unwrap().push(input);
                 true
@@ -192,6 +227,43 @@ mod tests {
         assert_eq!(*fired.lock().unwrap(), vec![false, true, true]);
     }
 
+    /// With notifications the thread only looks when woken: a change it
+    /// isn't told about is not seen (nothing polls), the wake shows it.
+    #[test]
+    fn looks_only_when_woken() {
+        let current = Arc::new(Mutex::new("spk-a"));
+        let probe_current = Arc::clone(&current);
+        let looks = Arc::new(Mutex::new(0));
+        let probe_looks = Arc::clone(&looks);
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let fired_cb = Arc::clone(&fired);
+        let watch = DefaultDeviceWatch::spawn(
+            move || {
+                (
+                    move |_input: bool| {
+                        *probe_looks.lock().unwrap() += 1;
+                        Some(probe_current.lock().unwrap().to_string())
+                    },
+                    None,
+                )
+            },
+            move |input| {
+                fired_cb.lock().unwrap().push(input);
+                true
+            },
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(*looks.lock().unwrap(), 2, "the baseline look, then asleep");
+        *current.lock().unwrap() = "spk-b";
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(fired.lock().unwrap().is_empty());
+        watch.thread.as_ref().unwrap().thread().unpark(); // the OS notification
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(*fired.lock().unwrap(), vec![true, false]);
+        drop(watch);
+    }
+
     #[test]
     fn stops_when_nobody_listens() {
         let calls = Arc::new(Mutex::new(0));
@@ -199,12 +271,14 @@ mod tests {
         let mut n = 0;
         let watch = DefaultDeviceWatch::spawn(
             move || {
-                move |_input: bool| {
-                    n += 1;
-                    Some(n.to_string())
-                }
+                (
+                    move |_input: bool| {
+                        n += 1;
+                        Some(n.to_string())
+                    },
+                    Some(Duration::from_millis(5)),
+                )
             },
-            Duration::from_millis(5),
             move |_| {
                 *calls_cb.lock().unwrap() += 1;
                 false

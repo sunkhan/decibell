@@ -137,6 +137,8 @@ core_events! {
     OwnPresence(OwnPresencePayload) => OWN_PRESENCE;
     /// The system went idle past the subscribed threshold / input resumed (`system_idle::subscribe`; only after a client subscribed: Electron never does).
     SystemIdleChanged(SystemIdleChangedPayload) => SYSTEM_IDLE_CHANGED;
+    /// An audio device appeared or went, or a default device changed (after `api::audio::watch_devices`).
+    AudioDevicesChanged => AUDIO_DEVICES_CHANGED;
     /// The account's friend list (incl. pending and blocked).
     FriendListReceived(FriendListReceivedPayload) => FRIEND_LIST_RECEIVED;
     /// Central answered a friend action.

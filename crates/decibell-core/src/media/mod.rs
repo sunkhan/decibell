@@ -132,6 +132,7 @@ mod video_recv_host;
 pub use video_recv_host::VideoRecvDemand;
 pub mod voice_gate;
 pub mod default_device_watch;
+pub mod device_watch;
 pub mod frame_crypto;
 // Recycled frame buffers for the video receive path (off unless the host enables it).
 pub mod frame_pool;

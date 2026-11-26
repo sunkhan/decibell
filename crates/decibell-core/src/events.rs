@@ -259,6 +259,10 @@ pub const OWN_PRESENCE: &str = "own_presence";
 /// The system went idle past the subscribed threshold, or input resumed
 /// (`system_idle::subscribe`; Wayland's ext-idle-notify).
 pub const SYSTEM_IDLE_CHANGED: &str = "system_idle_changed";
+/// An audio device was added or removed, or a default device changed; only
+/// while a client subscribed (`media::device_watch`). No payload: the client
+/// lists the devices again.
+pub const AUDIO_DEVICES_CHANGED: &str = "audio_devices_changed";
 pub const FRIEND_LIST_RECEIVED: &str = "friend_list_received";
 pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
@@ -1573,6 +1577,10 @@ pub struct SystemIdleChangedPayload {
 
 pub fn emit_system_idle_changed(idle: bool, threshold_seconds: u32) {
     emit(CoreEvent::SystemIdleChanged(SystemIdleChangedPayload { idle, threshold_seconds }));
+}
+
+pub fn emit_audio_devices_changed() {
+    emit(CoreEvent::AudioDevicesChanged);
 }
 
 pub fn emit_voice_input_level(db: f32) {

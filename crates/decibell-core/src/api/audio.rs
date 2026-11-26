@@ -66,3 +66,21 @@ pub fn stop_mic_test() {
 pub fn mic_test_running() -> bool {
     crate::media::mic_test::is_running()
 }
+
+// ── Device changes ──────────────────────────────────────────────────────────
+
+/// Start (true) or stop (false) watching the audio devices: while watched,
+/// `CoreEvent::AudioDevicesChanged` is emitted when a capture or playback
+/// device appears or disappears or a default device changes, from the
+/// platform's notifications (PipeWire's registry, `IMMNotificationClient`,
+/// CoreAudio listeners), never by polling. Ref-counted: each `true` is undone
+/// by one `false`; the listener thread exists only in between. Returns
+/// whether notifications are running.
+pub fn watch_devices(watch: bool) -> bool {
+    if watch {
+        crate::media::device_watch::subscribe()
+    } else {
+        crate::media::device_watch::unsubscribe();
+        false
+    }
+}

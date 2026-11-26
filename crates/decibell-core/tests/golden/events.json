@@ -1121,6 +1121,10 @@
     }
   },
   {
+    "name": "audio_devices_changed",
+    "payload": null
+  },
+  {
     "name": "voice_ping_updated",
     "payload": {
       "latencyMs": 23
