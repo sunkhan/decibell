@@ -1,0 +1,995 @@
+diff --git a/crates/gpui/src/scene.rs b/crates/gpui/src/scene.rs
+index e3d1920..f8cce7e 100644
+--- a/crates/gpui/src/scene.rs
++++ b/crates/gpui/src/scene.rs
+@@ -65,11 +65,31 @@ pub struct Scene {
+     pub surfaces: Vec<PaintSurface>,
+     pub native_views: Vec<PaintNativeView>,
+     animations: Vec<SpriteAnimation>,
++    /// See [`Scene::version`].
++    version: u64,
+ }
+ 
++/// The source of [`Scene::version`]: one counter for every scene of the process, so two scenes
++/// (a window's two frames, another window's) never carry the same version.
++static NEXT_SCENE_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++
+ #[expect(missing_docs)]
+ impl Scene {
++    /// Identifies what the scene holds: unique in the process and changed by everything that
++    /// changes a primitive ([`Self::clear`], [`Self::finish`], an animation step). A renderer
++    /// that is handed a scene with the version it drew last may reuse what it built for it
++    /// (instance buffers, bind groups): only what the scene refers to but does not hold, an
++    /// external surface's picture, can differ. 0 is never a finished scene's version.
++    pub fn version(&self) -> u64 {
++        self.version
++    }
++
++    fn touch(&mut self) {
++        self.version = NEXT_SCENE_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    }
++
+     pub fn clear(&mut self) {
++        self.version = 0;
+         self.paint_operations.clear();
+         self.primitive_bounds.clear();
+         self.layer_stack.clear();
+@@ -118,6 +138,9 @@ impl Scene {
+     /// Moves every animated sprite to its pose at `elapsed` time on the app's
+     /// synced animation clock, without the scene being rebuilt.
+     pub(crate) fn advance_animations(&mut self, elapsed: Duration) {
++        if !self.animations.is_empty() {
++            self.touch();
++        }
+         for animation in &self.animations {
+             let Some(sprite) = self.monochrome_sprites.get_mut(animation.sprite_index) else {
+                 continue;
+@@ -305,6 +328,7 @@ impl Scene {
+ 
+     pub fn finish(&mut self) {
+         debug_assert!(self.layer_stack.is_empty(), "unbalanced scene layers");
++        self.touch();
+         let keys = &mut Vec::new();
+         sort_in_place(&mut self.shadows, keys, |shadow| (shadow.order, 0));
+         sort_in_place(&mut self.quads, keys, |quad| (quad.order, 0));
+diff --git a/crates/gpui_wgpu/src/gpui_wgpu.rs b/crates/gpui_wgpu/src/gpui_wgpu.rs
+index b34e1ad..f78c1ba 100644
+--- a/crates/gpui_wgpu/src/gpui_wgpu.rs
++++ b/crates/gpui_wgpu/src/gpui_wgpu.rs
+@@ -14,4 +14,8 @@ pub use wgpu_surface::*;
+     any(test, feature = "bench-support", feature = "test-support")
+ ))]
+ pub use wgpu_renderer::WgpuHeadlessRenderer;
+-pub use wgpu_renderer::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
++#[cfg(not(target_family = "wasm"))]
++pub use wgpu_renderer::{CapturedFrame, capture_next_surface_frame};
++pub use wgpu_renderer::{
++    FrameStats, GpuContext, WgpuRenderer, WgpuSurfaceConfig, frame_stats, set_frame_reuse,
++};
+diff --git a/crates/gpui_wgpu/src/wgpu_atlas.rs b/crates/gpui_wgpu/src/wgpu_atlas.rs
+index b2a7bfe..97fda8f 100644
+--- a/crates/gpui_wgpu/src/wgpu_atlas.rs
++++ b/crates/gpui_wgpu/src/wgpu_atlas.rs
+@@ -36,6 +36,9 @@ struct WgpuAtlasTextures {
+     storage: WgpuAtlasStorage,
+     pending_uploads: Vec<PendingUpload>,
+     next_texture_generation: u64,
++    /// Counts the changes to the set of textures (one created, one released, all cleared): a
++    /// renderer that kept bind groups for a scene's textures checks it before using them again.
++    revision: u64,
+ }
+ 
+ pub struct WgpuTextureInfo {
+@@ -59,6 +62,7 @@ impl WgpuAtlas {
+             storage: WgpuAtlasStorage::default(),
+             pending_uploads: Vec::new(),
+             next_texture_generation: 0,
++            revision: 0,
+         })))
+     }
+ 
+@@ -70,9 +74,13 @@ impl WgpuAtlas {
+         )
+     }
+ 
+-    pub fn before_frame(&self) {
++    /// Flushes the pending uploads. Returns the atlas's revision: it changes whenever a
++    /// texture is created or released, i.e. whenever a bind group made for an earlier frame
++    /// may be stale.
++    pub fn before_frame(&self) -> u64 {
+         let mut lock = self.0.lock();
+         lock.backend.flush_uploads();
++        lock.backend.revision
+     }
+ 
+     /// Returns the view backing `id`, or `None` once every tile in it has been
+@@ -94,6 +102,7 @@ impl WgpuAtlas {
+         self.0.lock().clear(|textures| {
+             textures.storage = WgpuAtlasStorage::default();
+             textures.pending_uploads.clear();
++            textures.revision += 1;
+         });
+     }
+ 
+@@ -106,6 +115,7 @@ impl WgpuAtlas {
+             textures.color_texture_format = context.color_texture_format();
+             textures.storage = WgpuAtlasStorage::default();
+             textures.pending_uploads.clear();
++            textures.revision += 1;
+         });
+     }
+ }
+@@ -146,6 +156,7 @@ impl AtlasBackend for WgpuAtlasTextures {
+             texture.allocator.deallocate(tile.tile_id.into());
+             texture.decrement_ref_count();
+             if texture.is_unreferenced() {
++                self.revision += 1;
+                 self.pending_uploads
+                     .retain(|upload| upload.id != texture.id);
+                 self.storage[id.kind]
+@@ -222,6 +233,7 @@ impl WgpuAtlasTextures {
+         let index = texture_list.free_list.pop();
+         let generation = self.next_texture_generation;
+         self.next_texture_generation = self.next_texture_generation.wrapping_add(1);
++        self.revision += 1;
+ 
+         let atlas_texture = WgpuAtlasTexture {
+             id: AtlasTextureId {
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index e3b0d1f..1f430ed 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -177,6 +177,113 @@ struct PreparedSurface {
+     params_offset: u32,
+ }
+ 
++/// One draw call of a frame, with everything it binds.
++enum RetainedDraw {
++    Instances {
++        pipeline: wgpu::RenderPipeline,
++        instances: wgpu::BindGroup,
++        /// The atlas texture of a sprite batch.
++        texture: Option<wgpu::BindGroup>,
++        range: Range<u32>,
++        /// The viewport's depth range (see `record_draws`).
++        depth: (f32, f32),
++    },
++    /// The scene surface with this index, drawn with whatever picture it holds at that moment.
++    Surface { index: usize, depth: f32 },
++}
++
++/// What was built on the GPU for the scene drawn last: its instance data (in `instance_data`,
++/// written once), the bind groups over it and the list of draw calls. Every frame is encoded
++/// from the list. A frame of the same scene at the same size reuses all of it: nothing is
++/// written or created for the scene, only the pass is recorded again, with the pictures the
++/// scene's external surfaces hold by then (`Window::request_present` for a video frame).
++#[derive(Default)]
++struct RetainedFrame {
++    /// The list belongs to this scene, size and atlas state and may be drawn again as it is.
++    /// Only ever set for scenes with external surfaces: nothing else presents an unchanged
++    /// scene often enough to matter.
++    reusable: bool,
++    scene_version: u64,
++    size: Size<DevicePixels>,
++    atlas_revision: u64,
++    draws: Vec<RetainedDraw>,
++}
++
++/// How the frames of this process were drawn, for measuring the reuse of retained frames.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct FrameStats {
++    /// Frames whose scene was written to the GPU (instance data, bind groups, draw list).
++    pub built: u64,
++    /// Frames encoded from the previous frame's draw list (same scene, new surface pictures).
++    pub reused: u64,
++    /// Time spent in `WgpuRenderer::draw` for each kind, nanoseconds (acquire, encode, submit
++    /// and present; not the GPU's time).
++    pub built_ns: u64,
++    pub reused_ns: u64,
++}
++
++static FRAME_REUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++static FRAMES_BUILT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static FRAMES_REUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static BUILT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static REUSED_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++/// Whether a frame of an unchanged scene reuses what the previous frame built (the default).
++/// Off: every frame writes its scene to the GPU again, as before retained frames existed. For
++/// measuring the difference and for comparing the two paths' output.
++pub fn set_frame_reuse(enabled: bool) {
++    FRAME_REUSE.store(enabled, std::sync::atomic::Ordering::Relaxed);
++}
++
++/// See [`FrameStats`]. Sums over every window of the process since it started.
++pub fn frame_stats() -> FrameStats {
++    let load = |counter: &std::sync::atomic::AtomicU64| {
++        counter.load(std::sync::atomic::Ordering::Relaxed)
++    };
++    FrameStats {
++        built: load(&FRAMES_BUILT),
++        reused: load(&FRAMES_REUSED),
++        built_ns: load(&BUILT_NS),
++        reused_ns: load(&REUSED_NS),
++    }
++}
++
++/// A frame read back from the GPU ([`capture_next_surface_frame`]).
++#[cfg(not(target_family = "wasm"))]
++pub struct CapturedFrame {
++    pub width: u32,
++    pub height: u32,
++    pub format: wgpu::TextureFormat,
++    /// `width * height * 4` bytes, rows top to bottom, in `format`'s channel order.
++    pub pixels: Vec<u8>,
++    /// The frame was encoded from the previous frame's draw list.
++    pub reused: bool,
++}
++
++#[cfg(not(target_family = "wasm"))]
++struct CaptureRequest {
++    rebuild: bool,
++    sender: std::sync::mpsc::Sender<CapturedFrame>,
++}
++
++#[cfg(not(target_family = "wasm"))]
++static CAPTURE: parking_lot::Mutex<Option<CaptureRequest>> = parking_lot::Mutex::new(None);
++#[cfg(not(target_family = "wasm"))]
++static CAPTURE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
++/// Asks for a copy of the next frame a window draws of a scene with external surfaces: that
++/// frame is also rendered into an offscreen texture of the window's format and size, by the
++/// same code and with the same pictures, and read back. `rebuild`: write the scene to the GPU
++/// again for it even if the previous frame's draw list could be reused. For tests that compare
++/// the two paths; the read-back waits for the GPU on the render thread.
++#[cfg(not(target_family = "wasm"))]
++pub fn capture_next_surface_frame(rebuild: bool) -> std::sync::mpsc::Receiver<CapturedFrame> {
++    let (sender, receiver) = std::sync::mpsc::channel();
++    *CAPTURE.lock() = Some(CaptureRequest { rebuild, sender });
++    CAPTURE_PENDING.store(true, std::sync::atomic::Ordering::Release);
++    receiver
++}
++
+ #[repr(C)]
+ #[derive(Clone, Copy, Pod, Zeroable)]
+ struct GammaParams {
+@@ -284,6 +391,8 @@ struct WgpuResources {
+     surface_params: wgpu::Buffer,
+     surface_params_stride: u64,
+     surface_bind_groups: FxHashMap<usize, CachedSurfaceBindGroup>,
++    /// What `surface_params` holds per surface index: an unchanged entry is not written again.
++    surface_params_written: Vec<Option<SurfaceParams>>,
+ }
+ 
+ struct CachedTextureBindGroup {
+@@ -305,6 +414,9 @@ struct WgpuRendererCore {
+     transient_attachments: bool,
+     adapter_info: wgpu::AdapterInfo,
+     depth_texture: Option<DepthTexture>,
++    retained: RetainedFrame,
++    /// This frame's surfaces, one entry per `scene.surfaces` element; kept for its allocation.
++    prepared_surfaces: Vec<Option<PreparedSurface>>,
+     /// Read by the headless renderer to create its render target.
+     #[cfg(all(
+         not(target_family = "wasm"),
+@@ -1106,6 +1218,7 @@ impl WgpuRenderer {
+         self.is_bgr = is_bgr;
+         if let Some(core) = self.core_mut() {
+             core.is_bgr = is_bgr;
++            core.retained.reusable = false;
+         }
+     }
+ 
+@@ -1236,15 +1349,35 @@ impl WgpuRenderer {
+         let frame_view = frame
+             .texture
+             .create_view(&wgpu::TextureViewDescriptor::default());
+-        if let Err(error) = core.render_frame(scene, &frame_view, size, wgpu::Color::TRANSPARENT) {
+-            log::error!("{error:#}");
+-            return false;
++        #[cfg(not(target_family = "wasm"))]
++        if CAPTURE_PENDING.load(std::sync::atomic::Ordering::Acquire) && !scene.surfaces.is_empty()
++        {
++            CAPTURE_PENDING.store(false, std::sync::atomic::Ordering::Release);
++            if let Some(request) = CAPTURE.lock().take() {
++                core.capture(scene, size, self.surface_config.format, request);
++            }
+         }
++        let started = std::time::Instant::now();
++        let reused = match core.render_frame(scene, &frame_view, size, wgpu::Color::TRANSPARENT) {
++            Ok((_, reused)) => reused,
++            Err(error) => {
++                log::error!("{error:#}");
++                return false;
++            }
++        };
+ 
+         {
+             let _queue = crate::device_queue_lock().lock();
+             core.resources.queue.present(frame);
+         }
++        let elapsed = started.elapsed().as_nanos() as u64;
++        let (frames, nanoseconds) = if reused {
++            (&FRAMES_REUSED, &REUSED_NS)
++        } else {
++            (&FRAMES_BUILT, &BUILT_NS)
++        };
++        frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++        nanoseconds.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
+         true
+     }
+ }
+@@ -1358,6 +1491,7 @@ impl WgpuRendererCore {
+                 surface_params,
+                 surface_params_stride,
+                 surface_bind_groups: FxHashMap::default(),
++                surface_params_written: Vec::new(),
+                 device,
+                 queue,
+                 pipelines,
+@@ -1380,6 +1514,8 @@ impl WgpuRendererCore {
+             transient_attachments: context.supports_transient_attachments(),
+             adapter_info: context.adapter.get_info(),
+             depth_texture: None,
++            retained: RetainedFrame::default(),
++            prepared_surfaces: Vec::new(),
+             #[cfg(all(
+                 not(target_family = "wasm"),
+                 any(test, feature = "bench-support", feature = "test-support")
+@@ -1401,18 +1537,16 @@ impl WgpuRendererCore {
+     /// Resolves every scene surface to the picture its source holds right now, and writes its
+     /// parameters. Returns one entry per `scene.surfaces` element (None: nothing to draw) and
+     /// the pictures, which must stay alive until the frame's submission has completed.
+-    fn prepare_surfaces(
+-        &mut self,
+-        scene: &Scene,
+-    ) -> (Vec<Option<PreparedSurface>>, Vec<Arc<WgpuSurfaceFrame>>) {
++    fn prepare_surfaces(&mut self, scene: &Scene) -> SmallVec<[Arc<WgpuSurfaceFrame>; 4]> {
+         let resources = &mut self.resources;
+         resources
+             .surface_bind_groups
+             .retain(|_, cached| cached.planes.strong_count() > 0);
+-        let mut prepared = Vec::with_capacity(scene.surfaces.len());
+-        let mut frames = Vec::new();
++        let prepared = &mut self.prepared_surfaces;
++        prepared.clear();
++        let mut frames = SmallVec::new();
+         if scene.surfaces.is_empty() {
+-            return (prepared, frames);
++            return frames;
+         }
+ 
+         let stride = resources.surface_params_stride;
+@@ -1422,6 +1556,12 @@ impl WgpuRendererCore {
+                 Self::create_surface_params_buffer(&resources.device, needed.next_power_of_two());
+             // The cached bind groups point at the old buffer.
+             resources.surface_bind_groups.clear();
++            resources.surface_params_written.clear();
++        }
++        if resources.surface_params_written.len() < scene.surfaces.len() {
++            resources
++                .surface_params_written
++                .resize(scene.surfaces.len(), None);
+         }
+ 
+         for (index, surface) in scene.surfaces.iter().enumerate() {
+@@ -1519,18 +1659,28 @@ impl WgpuRendererCore {
+                 uv_rect,
+             };
+             let params_offset = stride * index as u64;
+-            resources.queue.write_buffer(
+-                &resources.surface_params,
+-                params_offset,
+-                bytemuck::bytes_of(&params),
+-            );
++            // A queue write is a staging buffer and a copy at the next submit: skipped while
++            // the surface keeps its place and its picture keeps its size and colour, which is
++            // every frame of a playing stream but the first.
++            let written = &mut resources.surface_params_written[index];
++            if written
++                .as_ref()
++                .is_none_or(|written| bytemuck::bytes_of(written) != bytemuck::bytes_of(&params))
++            {
++                resources.queue.write_buffer(
++                    &resources.surface_params,
++                    params_offset,
++                    bytemuck::bytes_of(&params),
++                );
++                *written = Some(params);
++            }
+             prepared.push(Some(PreparedSurface {
+                 bind_group,
+                 params_offset: params_offset as u32,
+             }));
+             frames.push(frame);
+         }
+-        (prepared, frames)
++        frames
+     }
+ 
+     fn resources(&self) -> &WgpuResources {
+@@ -1542,6 +1692,8 @@ impl WgpuRendererCore {
+         surface_format: wgpu::TextureFormat,
+         alpha_mode: wgpu::CompositeAlphaMode,
+     ) {
++        // The retained draw list holds the old pipelines.
++        self.retained.reusable = false;
+         self.resources.pipelines = Self::create_pipelines(
+             &self.resources.device,
+             &self.resources.bind_group_layouts,
+@@ -1556,13 +1708,15 @@ impl WgpuRendererCore {
+         &mut self.resources
+     }
+ 
++    /// Draws `scene` into `target_view`. Returns the submission and whether the frame reused
++    /// the previous frame's draw list.
+     fn render_frame(
+         &mut self,
+         scene: &Scene,
+         target_view: &wgpu::TextureView,
+         size: Size<DevicePixels>,
+         clear_color: wgpu::Color,
+-    ) -> Result<wgpu::SubmissionIndex> {
++    ) -> Result<(wgpu::SubmissionIndex, bool)> {
+         anyhow::ensure!(
+             size.width.0 > 0 && size.height.0 > 0,
+             "invalid render target size: {size:?}"
+@@ -1574,8 +1728,43 @@ impl WgpuRendererCore {
+             self.max_texture_size
+         );
+ 
+-        self.atlas.before_frame();
++        let atlas_revision = self.atlas.before_frame();
++
++        // The same scene again (a present for a new picture of an external surface): what the
++        // last frame wrote and created for it is still on the GPU, and its draw list is still
++        // right. Anything else builds the frame.
++        let retained = &self.retained;
++        let reused = retained.reusable
++            && retained.scene_version == scene.version()
++            && retained.size == size
++            && retained.atlas_revision == atlas_revision
++            && FRAME_REUSE.load(std::sync::atomic::Ordering::Relaxed);
++        if !reused {
++            self.retained.reusable = false;
++            self.build_frame(scene, size).inspect_err(|_| {
++                // Queue writes are staged before encoding; flush them even if the frame fails.
++                let _queue = crate::device_queue_lock().lock();
++                self.resources.queue.submit(std::iter::empty());
++            })?;
++            let retained = &mut self.retained;
++            retained.scene_version = scene.version();
++            retained.size = size;
++            retained.atlas_revision = atlas_revision;
++            retained.reusable = scene.version() != 0 && !scene.surfaces.is_empty();
++        }
++        let submission = self
++            .encode_frame(scene, target_view, size, clear_color)
++            .inspect_err(|_| {
++                self.retained.reusable = false;
++                let _queue = crate::device_queue_lock().lock();
++                self.resources.queue.submit(std::iter::empty());
++            })?;
++        Ok((submission, reused))
++    }
+ 
++    /// Writes the scene to the GPU (uniforms, instance data, the bind groups over them) and
++    /// lists its draw calls in `self.retained.draws`.
++    fn build_frame(&mut self, scene: &Scene, size: Size<DevicePixels>) -> Result<()> {
+         let gamma_params = GammaParams {
+             gamma_ratios: self.rendering_params.gamma_ratios,
+             grayscale_enhanced_contrast: self.rendering_params.grayscale_enhanced_contrast,
+@@ -1589,21 +1778,6 @@ impl WgpuRendererCore {
+             bytemuck::bytes_of(&gamma_params),
+         );
+ 
+-        self.record_frame(scene, target_view, size, clear_color)
+-            .inspect_err(|_| {
+-                // Queue writes are staged before encoding; flush them even if the frame fails.
+-                let _queue = crate::device_queue_lock().lock();
+-                self.resources.queue.submit(std::iter::empty());
+-            })
+-    }
+-
+-    fn record_frame(
+-        &mut self,
+-        scene: &Scene,
+-        frame_view: &wgpu::TextureView,
+-        size: Size<DevicePixels>,
+-        clear_color: wgpu::Color,
+-    ) -> Result<wgpu::SubmissionIndex> {
+         let mut instance_offset = 0;
+         let instance_bindings = self
+             .write_instances(scene, &mut instance_offset)
+@@ -1635,17 +1809,164 @@ impl WgpuRendererCore {
+             bytemuck::bytes_of(&globals),
+         );
+         self.prepare_texture_bind_groups(scene);
+-        let (prepared_surfaces, surface_frames) = self.prepare_surfaces(scene);
++        // Quads are written first, so their instance indices are their
++        // indices in `scene.quads` on both transports, which the quad depths
++        // rely on.
++        debug_assert_eq!(instance_bindings.quads.first_instance, 0);
++
++        let mut draws = std::mem::take(&mut self.retained.draws);
++        draws.clear();
++        self.record_draws(scene, &instance_bindings, depth_scale, &mut draws);
++        self.retained.draws = draws;
++        Ok(())
++    }
++
++    /// The scene's draw calls, in order.
++    fn record_draws(
++        &self,
++        scene: &Scene,
++        instance_bindings: &InstanceBindings,
++        depth_scale: f32,
++        draws: &mut Vec<RetainedDraw>,
++    ) {
++        let pipelines = &self.resources().pipelines;
++        let instances = |binding: &InstanceBinding,
++                         pipeline: &wgpu::RenderPipeline,
++                         texture: Option<&wgpu::BindGroup>,
++                         range: Range<u32>,
++                         depth: (f32, f32)| {
++            (!range.is_empty()).then(|| RetainedDraw::Instances {
++                pipeline: pipeline.clone(),
++                instances: binding.bind_group.clone(),
++                texture: texture.cloned(),
++                range: binding.first_instance + range.start..binding.first_instance + range.end,
++                depth,
++            })
++        };
++        // A sprite batch whose texture the atlas has released belongs to a stale paint that
++        // will be replaced once its view re-renders: it is not drawn.
++        let sprites = |binding: &InstanceBinding,
++                       pipeline: &wgpu::RenderPipeline,
++                       texture_id: AtlasTextureId,
++                       range: Range<u32>,
++                       depth: (f32, f32)| {
++            let texture = self.resources().atlas_texture_bind_groups.get(&texture_id)?;
++            instances(binding, pipeline, Some(&texture.bind_group), range, depth)
++        };
++
++        draws.extend(instances(
++            &instance_bindings.quads,
++            &pipelines.opaque_quads,
++            None,
++            instance_range(0..scene.quads.len()),
++            (0.0, 1.0),
++        ));
++
++        let mut quad_cursor: u32 = 0;
++        let mut path_tile_cursor = 0;
++        for batch in scene.batches() {
++            // Quad shaders assign each quad its own depth.
++            // In every other batch type, the depth is fixed to the position of the quad cursor.
++            let depth = if matches!(&batch, PrimitiveBatch::Quads(_)) {
++                (0.0, 1.0)
++            } else {
++                let depth = quad_depth(quad_cursor, depth_scale);
++                (depth, depth)
++            };
++            let draw = match batch {
++                PrimitiveBatch::Quads(range) => {
++                    quad_cursor += range.len() as u32;
++                    instances(
++                        &instance_bindings.quads,
++                        &pipelines.quads,
++                        None,
++                        instance_range(range),
++                        depth,
++                    )
++                }
++                PrimitiveBatch::Shadows(range) => instances(
++                    &instance_bindings.shadows,
++                    &pipelines.shadows,
++                    None,
++                    instance_range(range),
++                    depth,
++                ),
++                PrimitiveBatch::Paths(range) => {
++                    let tiles_start = path_tile_cursor;
++                    path_tile_cursor += scene.paths[range]
++                        .iter()
++                        .map(PaintedPath::tile_count)
++                        .sum::<usize>();
++                    instances(
++                        &instance_bindings.path_tiles.tiles,
++                        &pipelines.path_tiles,
++                        None,
++                        instance_range(tiles_start..path_tile_cursor),
++                        depth,
++                    )
++                }
++                PrimitiveBatch::Underlines(range) => instances(
++                    &instance_bindings.underlines,
++                    &pipelines.underlines,
++                    None,
++                    instance_range(range),
++                    depth,
++                ),
++                PrimitiveBatch::MonochromeSprites { texture_id, range } => sprites(
++                    &instance_bindings.monochrome_sprites,
++                    &pipelines.mono_sprites,
++                    texture_id,
++                    instance_range(range),
++                    depth,
++                ),
++                PrimitiveBatch::SubpixelSprites { texture_id, range } => sprites(
++                    &instance_bindings.subpixel_sprites,
++                    pipelines
++                        .subpixel_sprites
++                        .as_ref()
++                        .unwrap_or(&pipelines.mono_sprites),
++                    texture_id,
++                    instance_range(range),
++                    depth,
++                ),
++                PrimitiveBatch::PolychromeSprites { texture_id, range } => sprites(
++                    &instance_bindings.polychrome_sprites,
++                    &pipelines.poly_sprites,
++                    texture_id,
++                    instance_range(range),
++                    depth,
++                ),
++                // One draw per surface: each samples its own textures.
++                PrimitiveBatch::Surfaces(range) => {
++                    draws.extend(range.map(|index| RetainedDraw::Surface {
++                        index,
++                        depth: depth.0,
++                    }));
++                    None
++                }
++                // Native views are only composited by the Metal renderer.
++                PrimitiveBatch::NativeViews(_) => None,
++            };
++            draws.extend(draw);
++        }
++    }
++
++    /// Encodes the retained draw list into one pass over `frame_view` and submits it. The
++    /// scene's surfaces are resolved here, to the pictures they hold now.
++    fn encode_frame(
++        &mut self,
++        scene: &Scene,
++        frame_view: &wgpu::TextureView,
++        size: Size<DevicePixels>,
++        clear_color: wgpu::Color,
++    ) -> Result<wgpu::SubmissionIndex> {
++        let surface_frames = self.prepare_surfaces(scene);
+         self.ensure_depth_texture(size);
+         let depth_view = &self
+             .depth_texture
+             .as_ref()
+             .context("depth texture missing")?
+             .view;
+-        // Quads are written first, so their instance indices are their
+-        // indices in `scene.quads` on both transports, which the quad depths
+-        // rely on.
+-        debug_assert_eq!(instance_bindings.quads.first_instance, 0);
+ 
+         let mut encoder =
+             self.resources()
+@@ -1678,116 +1999,46 @@ impl WgpuRendererCore {
+             });
+             pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
+ 
+-            self.draw_instances(
+-                &instance_bindings.quads,
+-                &self.resources().pipelines.opaque_quads,
+-                instance_range(0..scene.quads.len()),
+-                &mut pass,
+-            );
+-
+             let viewport_width = size.width.0 as f32;
+             let viewport_height = size.height.0 as f32;
+-            let mut quad_cursor: u32 = 0;
+-            let mut path_tile_cursor = 0;
+-            for batch in scene.batches() {
+-                // Quad shaders assign each quad its own depth.
+-                // In every other batch type, the depth is fixed to the position of the quad cursor.
+-                let (minimum_depth, maximum_depth) = if matches!(&batch, PrimitiveBatch::Quads(_)) {
+-                    (0.0, 1.0)
+-                } else {
+-                    let depth = quad_depth(quad_cursor, depth_scale);
+-                    (depth, depth)
+-                };
+-                pass.set_viewport(
+-                    0.0,
+-                    0.0,
+-                    viewport_width,
+-                    viewport_height,
+-                    minimum_depth,
+-                    maximum_depth,
+-                );
+-
+-                match batch {
+-                    PrimitiveBatch::Quads(range) => {
+-                        quad_cursor += range.len() as u32;
+-                        self.draw_instances(
+-                            &instance_bindings.quads,
+-                            &self.resources().pipelines.quads,
+-                            instance_range(range),
+-                            &mut pass,
+-                        )
+-                    }
+-                    PrimitiveBatch::Shadows(range) => self.draw_instances(
+-                        &instance_bindings.shadows,
+-                        &self.resources().pipelines.shadows,
+-                        instance_range(range),
+-                        &mut pass,
+-                    ),
+-                    PrimitiveBatch::Paths(range) => {
+-                        let tiles_start = path_tile_cursor;
+-                        path_tile_cursor += scene.paths[range]
+-                            .iter()
+-                            .map(PaintedPath::tile_count)
+-                            .sum::<usize>();
+-                        self.draw_instances(
+-                            &instance_bindings.path_tiles.tiles,
+-                            &self.resources().pipelines.path_tiles,
+-                            instance_range(tiles_start..path_tile_cursor),
+-                            &mut pass,
+-                        )
+-                    }
+-                    PrimitiveBatch::Underlines(range) => self.draw_instances(
+-                        &instance_bindings.underlines,
+-                        &self.resources().pipelines.underlines,
+-                        instance_range(range),
+-                        &mut pass,
+-                    ),
+-                    PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+-                        self.draw_sprites(
+-                            &instance_bindings.monochrome_sprites,
+-                            texture_id,
+-                            &self.resources().pipelines.mono_sprites,
+-                            instance_range(range),
+-                            &mut pass,
+-                        )?;
+-                    }
+-                    PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+-                        let resources = self.resources();
+-                        self.draw_sprites(
+-                            &instance_bindings.subpixel_sprites,
+-                            texture_id,
+-                            resources
+-                                .pipelines
+-                                .subpixel_sprites
+-                                .as_ref()
+-                                .unwrap_or(&resources.pipelines.mono_sprites),
+-                            instance_range(range),
+-                            &mut pass,
+-                        )?;
+-                    }
+-                    PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+-                        self.draw_sprites(
+-                            &instance_bindings.polychrome_sprites,
+-                            texture_id,
+-                            &self.resources().pipelines.poly_sprites,
+-                            instance_range(range),
+-                            &mut pass,
+-                        )?;
+-                    }
+-                    // One draw per surface: each samples its own textures.
+-                    PrimitiveBatch::Surfaces(range) => {
+-                        for surface in prepared_surfaces[range].iter().flatten() {
+-                            pass.set_pipeline(&self.resources().pipelines.surfaces);
+-                            pass.set_bind_group(
+-                                1,
+-                                &surface.bind_group,
+-                                &[surface.params_offset],
+-                            );
+-                            pass.draw(0..4, 0..1);
++            // A pass starts with the whole target and the depth range 0..1.
++            let mut viewport_depth = (0.0, 1.0);
++            let mut set_depth = |pass: &mut wgpu::RenderPass<'_>, depth: (f32, f32)| {
++                if depth != viewport_depth {
++                    viewport_depth = depth;
++                    pass.set_viewport(0.0, 0.0, viewport_width, viewport_height, depth.0, depth.1);
++                }
++            };
++            for draw in &self.retained.draws {
++                match draw {
++                    RetainedDraw::Instances {
++                        pipeline,
++                        instances,
++                        texture,
++                        range,
++                        depth,
++                    } => {
++                        set_depth(&mut pass, *depth);
++                        pass.set_pipeline(pipeline);
++                        pass.set_bind_group(1, instances, &[]);
++                        if let Some(texture) = texture {
++                            pass.set_bind_group(2, texture, &[]);
+                         }
++                        pass.draw(0..4, range.clone());
++                    }
++                    RetainedDraw::Surface { index, depth } => {
++                        let Some(surface) = self
++                            .prepared_surfaces
++                            .get(*index)
++                            .and_then(|surface| surface.as_ref())
++                        else {
++                            continue;
++                        };
++                        set_depth(&mut pass, (*depth, *depth));
++                        pass.set_pipeline(&self.resources().pipelines.surfaces);
++                        pass.set_bind_group(1, &surface.bind_group, &[surface.params_offset]);
++                        pass.draw(0..4, 0..1);
+                     }
+-                    // Native views are only composited by the Metal renderer.
+-                    PrimitiveBatch::NativeViews(_) => {}
+                 }
+             }
+         }
+@@ -1807,6 +2058,115 @@ impl WgpuRendererCore {
+         Ok(submission)
+     }
+ 
++    /// Renders `scene` into an offscreen texture and sends its pixels to `request`'s receiver.
++    #[cfg(not(target_family = "wasm"))]
++    fn capture(
++        &mut self,
++        scene: &Scene,
++        size: Size<DevicePixels>,
++        format: wgpu::TextureFormat,
++        request: CaptureRequest,
++    ) {
++        let (width, height) = (size.width.0 as u32, size.height.0 as u32);
++        let device = self.resources.device.clone();
++        let texture = device.create_texture(&wgpu::TextureDescriptor {
++            label: Some("frame_capture"),
++            size: wgpu::Extent3d {
++                width,
++                height,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
++            view_formats: &[],
++        });
++        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++        if request.rebuild {
++            self.retained.reusable = false;
++        }
++        let reused = match self.render_frame(scene, &view, size, wgpu::Color::TRANSPARENT) {
++            Ok((_, reused)) => reused,
++            Err(error) => {
++                log::error!("frame capture: {error:#}");
++                return;
++            }
++        };
++        let row_bytes = width * 4;
++        let padded_row_bytes = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
++        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
++            label: Some("frame_capture_readback"),
++            size: u64::from(padded_row_bytes) * u64::from(height),
++            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
++            mapped_at_creation: false,
++        });
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("frame_capture_encoder"),
++        });
++        encoder.copy_texture_to_buffer(
++            wgpu::TexelCopyTextureInfo {
++                texture: &texture,
++                mip_level: 0,
++                origin: wgpu::Origin3d::ZERO,
++                aspect: wgpu::TextureAspect::All,
++            },
++            wgpu::TexelCopyBufferInfo {
++                buffer: &buffer,
++                layout: wgpu::TexelCopyBufferLayout {
++                    offset: 0,
++                    bytes_per_row: Some(padded_row_bytes),
++                    rows_per_image: Some(height),
++                },
++            },
++            wgpu::Extent3d {
++                width,
++                height,
++                depth_or_array_layers: 1,
++            },
++        );
++        {
++            let _queue = crate::device_queue_lock().lock();
++            self.resources.queue.submit(std::iter::once(encoder.finish()));
++        }
++        let (mapped_sender, mapped) = std::sync::mpsc::channel();
++        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
++            let _ = mapped_sender.send(result);
++        });
++        if let Err(error) = device.poll(wgpu::PollType::Wait {
++            submission_index: None,
++            timeout: Some(std::time::Duration::from_secs(5)),
++        }) {
++            log::error!("frame capture: {error}");
++            return;
++        }
++        if !matches!(mapped.try_recv(), Ok(Ok(()))) {
++            log::error!("frame capture: the read-back buffer could not be mapped");
++            return;
++        }
++        let mut pixels = Vec::with_capacity((row_bytes * height) as usize);
++        match buffer.slice(..).get_mapped_range() {
++            Ok(data) => {
++                for row in data.chunks_exact(padded_row_bytes as usize) {
++                    pixels.extend_from_slice(&row[..row_bytes as usize]);
++                }
++            }
++            Err(error) => {
++                log::error!("frame capture: {error}");
++                return;
++            }
++        }
++        buffer.unmap();
++        let _ = request.sender.send(CapturedFrame {
++            width,
++            height,
++            format,
++            pixels,
++            reused,
++        });
++    }
++
+     fn ensure_depth_texture(&mut self, size: Size<DevicePixels>) {
+         let width = size.width.0 as u32;
+         let height = size.height.0 as u32;
+@@ -1952,52 +2312,6 @@ impl WgpuRendererCore {
+         }
+     }
+ 
+-    fn draw_instances(
+-        &self,
+-        instances: &InstanceBinding,
+-        pipeline: &wgpu::RenderPipeline,
+-        range: Range<u32>,
+-        pass: &mut wgpu::RenderPass<'_>,
+-    ) {
+-        if range.is_empty() {
+-            return;
+-        }
+-        pass.set_pipeline(pipeline);
+-        pass.set_bind_group(1, &instances.bind_group, &[]);
+-        pass.draw(
+-            0..4,
+-            instances.first_instance + range.start..instances.first_instance + range.end,
+-        );
+-    }
+-
+-    fn draw_sprites(
+-        &self,
+-        sprite_instances: &InstanceBinding,
+-        texture_id: AtlasTextureId,
+-        pipeline: &wgpu::RenderPipeline,
+-        range: Range<u32>,
+-        pass: &mut wgpu::RenderPass<'_>,
+-    ) -> Result<()> {
+-        if range.is_empty() {
+-            return Ok(());
+-        }
+-        let resources = self.resources();
+-        // The atlas has released this texture; the batch belongs to a stale
+-        // paint that will be replaced once its view re-renders.
+-        let Some(texture) = resources.atlas_texture_bind_groups.get(&texture_id) else {
+-            return Ok(());
+-        };
+-        pass.set_pipeline(pipeline);
+-        pass.set_bind_group(1, &sprite_instances.bind_group, &[]);
+-        pass.set_bind_group(2, &texture.bind_group, &[]);
+-        pass.draw(
+-            0..4,
+-            sprite_instances.first_instance + range.start
+-                ..sprite_instances.first_instance + range.end,
+-        );
+-        Ok(())
+-    }
+-
+     unsafe fn instance_bytes<T>(instances: &[T]) -> &[u8] {
+         unsafe {
+             std::slice::from_raw_parts(
