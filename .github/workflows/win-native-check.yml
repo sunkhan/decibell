@@ -215,12 +215,124 @@ jobs:
             | tee -a cargo-check.log || status=1
           exit $status
 
+      # From here on the job *runs* things, which the check above cannot: none of these steps
+      # fails the job (the compile check is the gate) and each writes a log that is published
+      # with the compiler output. A hosted runner has no GPU: Direct3D 11 is WARP there
+      # ("Microsoft Basic Render Driver"), which draws but has no video decoder.
+
+      # GPUI's HLSL is compiled by fxc.exe only in release builds (debug builds compile it at
+      # run time): a release check of gpui_windows runs its build script, fxc included.
+      - name: Compile the shaders (fxc)
+        if: always() && steps.check.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --locked --release -p gpui_windows 2>&1 | tee shaders.log
+
+      # Unit tests of the crates that need no core: text, rich text, highlighter, TeX, theme,
+      # attachments, unfurl, the kit, the picture editor, the harness, and the video crate
+      # (software decode of the frames compiled into it; FFmpeg's DLLs come from vcpkg).
+      - name: Unit tests (crates without the core)
+        if: always() && steps.check.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          set -o pipefail
+          export PATH="$(cygpath "$VCPKG_ROOT")/installed/x64-windows/bin:$PATH"
+          : > unit-tests.log
+          for crate in decibell-theme decibell-highlight decibell-tex decibell-richtext \
+              decibell-attachments decibell-unfurl decibell-harness decibell-text decibell-ui \
+              decibell-picture-editor decibell-video; do
+            echo "=== cargo test -p $crate" | tee -a unit-tests.log
+            cargo test --locked -p "$crate" 2>&1 | tee -a unit-tests.log \
+              || echo "=== FAILED: $crate" | tee -a unit-tests.log
+          done
+
+      # The client's own self-tests that need neither a server nor a hardware codec, in its
+      # real window on the runner's desktop: first frame and fonts, 0 frames and a sleeping
+      # main thread at rest (GPUI patch 0021), themes, the kit, the text field, the chat list
+      # from its fixture, and `video-probe` (software decode into Direct3D textures, a row read
+      # back, the surface drawn: GPUI patch 0020 and the video crate's Windows backend on
+      # WARP). One process per group, so a crash or a hang costs one group.
+      - name: Self-tests
+        if: always() && steps.check.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          DECIBELL_LOG: info
+          RUST_BACKTRACE: "1"
+        run: |
+          export PATH="$(cygpath "$VCPKG_ROOT")/installed/x64-windows/bin:$PATH"
+          export DECIBELL_USER_DATA_DIR="$RUNNER_TEMP/decibell-profile"
+          : > selftests.log
+          cargo build --locked -p decibell-app 2>&1 | tail -n 40 | tee -a selftests.log
+          for group in \
+              "boot" \
+              "idle-frames" \
+              "themes,window-frame" \
+              "video-probe" \
+              "kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast" \
+              "input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle" \
+              "chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover" \
+              "render-cost,encoder-software"; do
+            echo "=== decibell --selftest $group" | tee -a selftests.log
+            timeout 600 target/debug/decibell.exe --selftest "$group" >> selftests.log 2>&1
+            echo "=== exit $? ($group)" | tee -a selftests.log
+          done
+          # The same first frame without DirectComposition, in case the runner's session has
+          # no compositor to give the window.
+          echo "=== decibell --selftest boot (GPUI_DISABLE_DIRECT_COMPOSITION=1)" | tee -a selftests.log
+          GPUI_DISABLE_DIRECT_COMPOSITION=1 timeout 600 target/debug/decibell.exe --selftest boot >> selftests.log 2>&1
+          echo "=== exit $? (boot, no DirectComposition)" | tee -a selftests.log
+          tail -n 60 selftests.log
+
+      # The window at rest, measured by the script the owner uses on a real machine
+      # (tools/perf/windows/row.ps1, under Windows PowerShell 5.1 as there): the numbers of a
+      # runner mean nothing, but a script that runs here and appends a well-formed row is a
+      # verified script, and the per-thread table says whether the main thread and the vsync
+      # thread ("VSyncProvider") sleep with nothing to draw (GPUI patch 0021): about 0 context
+      # switches a second each, against the display's refresh rate without the patch.
+      - name: Measure the window at rest
+        if: always() && steps.check.outcome == 'success'
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $env:Path = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:Path"
+          $env:DECIBELL_USER_DATA_DIR = "$env:RUNNER_TEMP\decibell-profile"
+          if (-not (Test-Path target\debug\decibell.exe)) { "no binary" | Tee-Object idle.log; exit 0 }
+          $process = Start-Process -FilePath target\debug\decibell.exe -ArgumentList '--perf','--screen','gallery' `
+            -RedirectStandardError perf.log -PassThru
+          try {
+            ..\tools\perf\windows\row.ps1 -ProcessId $process.Id -Client gpui -Label "ci gallery at rest" `
+              -PerfLog perf.log -Settle 20 -Seconds 20 -Results "$PWD\perf-results\windows-table.md" *>&1 |
+              Tee-Object idle.log
+            Get-Content perf-results\windows-table.md | Tee-Object -Append idle.log
+            ..\tools\perf\windows\install-size.ps1 target\debug\decibell.exe | Tee-Object -Append idle.log
+          } catch {
+            "row.ps1 failed: $_" | Tee-Object -Append idle.log
+            $_.ScriptStackTrace | Tee-Object -Append idle.log
+          }
+          "--- the client's stderr" | Tee-Object -Append idle.log
+          Get-Content perf.log -ErrorAction SilentlyContinue | Select-Object -Last 40 | Tee-Object -Append idle.log
+          "alive: $(-not $process.HasExited)" | Tee-Object -Append idle.log
+          if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          exit 0
+
       - name: Upload compiler output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: win-gpui-check-log
-          path: gpui-client/cargo-check.log
+          path: |
+            gpui-client/idle.log
+            gpui-client/cargo-check.log
+            gpui-client/shaders.log
+            gpui-client/unit-tests.log
+            gpui-client/selftests.log
           if-no-files-found: ignore
 
       - name: Publish compiler output to ci/win-gpui-check-log
@@ -238,6 +350,10 @@ jobs:
           else
             echo "(no cargo-check.log: a step before cargo check failed)" > /tmp/win-gpui-log/cargo-check.log
           fi
+          # What the job ran, when it got that far (see the steps above).
+          for log in shaders.log unit-tests.log selftests.log idle.log; do
+            if [ -f "gpui-client/$log" ]; then cp "gpui-client/$log" /tmp/win-gpui-log/; fi
+          done
           cd /tmp/win-gpui-log
           printf 'run=%s\nsha=%s\noutcome=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$CHECK_OUTCOME" > meta.txt
           git init -q
