@@ -205,7 +205,35 @@ pub fn open_link(req: LinkOpen, cx: &mut App) {
 }
 
 pub fn init(cx: &mut App) {
-    decibell_shell::register_overlay(cx, |window, cx| overlay(window, cx));
+    decibell_shell::register_overlay(cx, |window, cx| {
+        let view = cx.new(ImageViewer::new);
+        cx.set_global(Live(view.downgrade()));
+        let _ = window;
+        view.into()
+    });
+}
+
+/// The viewer the shell draws (for the self-tests).
+struct Live(gpui::WeakEntity<ImageViewer>);
+
+impl Global for Live {}
+
+fn live(cx: &App) -> Option<gpui::Entity<ImageViewer>> {
+    cx.try_global::<Live>().and_then(|l| l.0.upgrade())
+}
+
+/// The open viewer's zoom (self-tests).
+pub fn current_scale(cx: &App) -> Option<f32> {
+    let v = live(cx)?;
+    let v = v.read(cx);
+    v.session.as_ref().map(|s| s.view.scale)
+}
+
+/// The open viewer's pan (self-tests).
+pub fn current_pan(cx: &App) -> Option<(f32, f32)> {
+    let v = live(cx)?;
+    let v = v.read(cx);
+    v.session.as_ref().map(|s| (s.view.x, s.view.y))
 }
 
 /// The viewer's overlay view.
@@ -814,22 +842,6 @@ fn set_hidden(key: Option<SharedString>, cx: &mut App) {
     }
 }
 
-/// `postedAt`: the chat's phrasing with "Today" spelled out.
-fn posted_at(secs: Option<i64>, format: decibell_model::stores::settings::TimeFormat) -> String {
-    use decibell_model::chat::time::{format_clock, local_day};
-    let Some(secs) = secs else { return String::new() };
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let (day, today) = (local_day(secs), local_day(now));
-    let clock = format_clock(secs, format);
-    if day == today {
-        return format!("Today, at {clock}");
-    }
-    if day == local_day(now - 86_400) {
-        return format!("Yesterday, at {clock}");
-    }
-    format!("{}/{}/{}, at {clock}", day / 100 % 100, day % 100, day / 10000)
-}
-
 fn host_of(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())).unwrap_or_else(|| url.to_string())
 }
@@ -1318,7 +1330,7 @@ impl ImageViewer {
         };
         let mut top = div().flex().min_w_0().items_baseline().gap_2().child(div().min_w_0().child(label_in(name, &style.invite_title.color(theme.color_text_primary), Wrapping::TRUNCATE, theme.color_text_primary)));
         if has_sender {
-            let mut when = posted_at(item.timestamp, format);
+            let mut when = crate::fmt::posted_at(item.timestamp, format);
             if let Some(channel) = channel {
                 when.push_str(&format!(" · #{channel}"));
             }

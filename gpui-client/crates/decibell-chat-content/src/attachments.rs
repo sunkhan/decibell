@@ -425,10 +425,16 @@ impl AttachmentSlot {
         };
         let bounds: Rc<Cell<Bounds<Pixels>>> = Rc::default();
         let painted = bounds.clone();
+        let viewer_key = server.map(|s| crate::viewer::attachment_key(s, a.id));
+        let probe_id = a.id;
         let canvas = gpui::canvas(
             |_, _, _| {},
             move |b, _, window, cx| {
                 painted.set(b);
+                if let Some(key) = &viewer_key {
+                    crate::viewer::target_drawn(key.clone(), b, cx);
+                }
+                crate::probes::record(probe_id, b);
                 if !hidden {
                     tile.paint(b, window, cx);
                 }

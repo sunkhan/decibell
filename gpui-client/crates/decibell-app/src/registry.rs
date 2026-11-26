@@ -36,6 +36,7 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_settings::selftests());
     tests.extend(decibell_composer::selftests());
     tests.extend(decibell_home::selftests());
+    tests.extend(decibell_chat_content::selftests());
     tests
 }
 
@@ -62,6 +63,7 @@ pub fn checks() -> Vec<SelfTest> {
     checks.extend(decibell_composer::checks());
     checks.extend(decibell_home::checks());
     checks.extend(decibell_chat::checks());
+    checks.extend(decibell_chat_content::checks());
     checks
 }
 

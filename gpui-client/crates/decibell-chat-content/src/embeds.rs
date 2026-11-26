@@ -540,10 +540,12 @@ impl EmbedsSlot {
         let hidden = crate::viewer::hides_key(&viewer_key, cx);
         let bounds: Rc<std::cell::Cell<Bounds<Pixels>>> = Rc::default();
         let painted = bounds.clone();
+        let target_key = viewer_key.clone();
         let canvas = gpui::canvas(
             |_, _, _| {},
             move |b, _, window, cx| {
                 painted.set(b);
+                crate::viewer::target_drawn(target_key.clone(), b, cx);
                 if !hidden {
                     tile.paint(b, window, cx);
                 }
@@ -698,7 +700,7 @@ impl EmbedsSlot {
         if !view.invalid && (view.members.is_some() || view.joined) {
             let mut meta = div().mt(px(2.)).flex();
             if let Some(n) = view.members {
-                meta = meta.child(label(format!("{n} {}", if n == 1 { "member" } else { "members" }), &style.invite_meta, Wrapping::NOWRAP));
+                meta = meta.child(label(format!("{} {}", crate::fmt::count(n as i64), if n == 1 { "member" } else { "members" }), &style.invite_meta, Wrapping::NOWRAP));
             }
             if view.joined {
                 let text = if view.members.is_some() { "· Joined" } else { "Joined" };

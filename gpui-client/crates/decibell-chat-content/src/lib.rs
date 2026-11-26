@@ -11,12 +11,16 @@ pub mod actions;
 pub mod attachments;
 pub mod downloads;
 pub mod embeds;
+mod fmt;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 pub mod inflight;
 pub mod menu;
 pub mod pictures;
 pub mod player;
+pub mod probes;
+#[cfg(feature = "fixtures")]
+mod selftests;
 #[cfg(feature = "fixtures")]
 mod screens;
 pub mod sizing;
@@ -88,6 +92,22 @@ pub fn install(fetcher: Rc<dyn Fetcher>, fixture: bool, cx: &mut App) {
 pub fn screens() -> Vec<decibell_harness::Screen> {
     #[cfg(feature = "fixtures")]
     return screens::screens();
+    #[cfg(not(feature = "fixtures"))]
+    Vec::new()
+}
+
+/// The content self-tests (local stack; each runs a `--check` child).
+pub fn selftests() -> Vec<decibell_harness::SelfTest> {
+    #[cfg(feature = "fixtures")]
+    return selftests::selftests();
+    #[cfg(not(feature = "fixtures"))]
+    Vec::new()
+}
+
+/// The checks `decibell --check <name>` runs inside the signed-in app.
+pub fn checks() -> Vec<decibell_harness::SelfTest> {
+    #[cfg(feature = "fixtures")]
+    return selftests::checks();
     #[cfg(not(feature = "fixtures"))]
     Vec::new()
 }

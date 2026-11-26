@@ -322,6 +322,16 @@ impl Pictures {
         (self.decoded_bytes, self.encoded.total)
     }
 
+    /// The keys some owner wants on screen now.
+    pub fn visible_keys(&self) -> Vec<PicKey> {
+        self.visible.iter().cloned().collect()
+    }
+
+    /// Decoded bytes of pictures no owner wants (what [`DECODED_BUDGET`] bounds).
+    pub fn unpinned_bytes(&self) -> usize {
+        self.entries.iter().filter(|(k, e)| !self.pinned.contains_key(*k) && e.waiters.is_empty()).map(|(_, e)| e.bytes).sum()
+    }
+
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
