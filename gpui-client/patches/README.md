@@ -12,6 +12,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0004-x11-park-refresh-timer.patch` | On X11 the per-window refresh timer stops after a tick with nothing to draw and restarts from `PlatformWindow::schedule_frame`. | The X11 backend woke the main thread at the monitor's refresh rate for as long as a window was visible (280 times a second here), drawing nothing. |
 | `0005-gpui-surface-fit-filter-device.patch` | On top of `0001`: a surface is fitted (contain / cover / fill) by the renderer from the picture it draws, minified pictures are box-filtered, a picture names its device (and is skipped by a renderer on another), a draw observer reports each picture's first frame, a device loss can be simulated. | What the real stream view (`crates/decibell-video`) needed beyond the prototype: object-fit that survives a resolution change without a repaint, small tiles that do not shimmer, recovery from a lost GPU device, per-picture "presented" times. |
 | `0006-wgpu-keep-lost-instance.patch` | After a device loss the renderer no longer destroys the lost context's wgpu instance. | With two windows open, the second window to recover crashed inside NVIDIA's driver (segfault in `vkGetPhysicalDeviceSurfaceSupportKHR`). Found by the `video-recover` self-test. |
+| `0007-wgpu-retained-frames.patch` | The wgpu renderer keeps what it built on the GPU for the scene it drew last (instance data, bind groups, the list of draw calls) and encodes a frame of the same scene from it, with the pictures the scene's external surfaces hold by then; `Scene::version()` says "the same scene"; counters and a frame capture for testing it. | Every video picture is a present of an unchanged scene (`Window::request_present`), and the renderer wrote the whole scene to the GPU again for each one: half of the UI thread's allocations per picture and a quarter of its time in `draw`. |
 | `0010-gpui-text-engine.patch` | What `decibell-text` needs from GPUI's text system: shaping without GPUI's per-window cache (`TextSystem::shape_line_uncached`), a glyph's unkerned advance, a font's metrics and its glyph for a character; and on Linux, synthesised styles (an italic request on a family without an italic face is slanted by 0.25, a weight of 600 or more on a family lighter than 600 is emboldened by 1/24 em, each as a `FontId` of its own) and families the application added that have no letters (KaTeX's symbol faces) resolving by name. | The client lays text out itself (`crates/decibell-text/README.md`). Chromium synthesises exactly these styles for the renderer, which loads no italic face. |
 | `0011-linux-deferred-system-fonts.patch` | On Linux the text system starts with an empty font database (`CosmicTextSystem::new_with_deferred_system_fonts`) and indexes the installed fonts only if a family is requested that no added font provides. | Indexing 1,095 installed faces and walking that index for every new (family, weight, style) cost about 85 ms of the time to the first frame; the client names only its bundled families, and `decibell-text` adds a fallback font when a character needs one. |
 | `0012-gpui-physical-key-codes.patch` | Key events carry the physical key: `KeyDownEvent::code` / `KeyUpEvent::code` (`KeyCode::Evdev(n)` on Linux, `KeyCode::Windows(scan)` on Windows, `Unknown` elsewhere and for simulated keystrokes), and `ModifiersChangedEvent::key` names the modifier key that went down or up. | Hotkey bindings name keys by position (`KeyboardEvent.code`); GPUI's `Keystroke` has only the character the layout types, so a recorder built on it saved the wrong key on every non-US keyboard (`HANDOFF.md` §5, now closed). |
@@ -198,6 +199,84 @@ lost with two windows open) crashed every time, in the test's own check when the
 draw, or in whatever ran next. After: passes, and the main window draws on the new device. Whether the crash
 is the driver's or wgpu's ordering was not established; a single-window recovery never showed it. Upstream:
 worth reporting to Zed with the trace (any two-window Zed on NVIDIA would hit it after a device loss).
+
+## 0007: the renderer keeps the frame it built
+
+`crates/gpui_wgpu/src/wgpu_renderer.rs` +504 / −190, `wgpu_atlas.rs` +13 / −1, `gpui_wgpu.rs` +5 / −1;
+`crates/gpui/src/scene.rs` +24 (the hook in the core crate). A diff against the pin with `0001`–`0006` applied; it
+touches no file of `0010` / `0011`.
+
+**The problem.** `Window::request_present` (`0001`) presents the scene the window already has: no layout, no paint.
+But `WgpuRenderer::draw` treated that scene as new every time: seven `queue.write_buffer` calls for the
+instance arrays (each a staging buffer inside wgpu and a copy at submit), a bind group per array, the globals,
+the gamma parameters, the atlas bind groups, the walk over the scene's batches. For a stream that is once per
+picture, 120 times a second, on the UI thread.
+
+**What changed.** `render_frame` is two steps:
+
+1. `build_frame` (what the old `record_frame` did before its render pass): writes the scene's uniforms and
+   instance data, makes the bind groups, and lists the draw calls in `RetainedFrame::draws`
+   (`RetainedDraw::Instances { pipeline, instances, texture, range, depth }` or `Surface { index, depth }`).
+2. `encode_frame`: resolves the scene's surfaces to the pictures they hold now (`prepare_surfaces`, as before),
+   begins the pass and issues the listed draws, submits.
+
+Every frame runs step 2. Step 1 is skipped when the frame is of **the scene drawn last, at the same size, with
+the atlas's set of textures unchanged**, and the scene has external surfaces (nothing else presents an
+unchanged scene often enough to matter, so a window without video takes the old path exactly: build, then
+encode). Both paths encode from the same list, which is why they cannot draw different frames.
+
+- **"The same scene"**: `Scene::version()` (gpui), a process-wide counter stamped by `Scene::finish`, by an
+  animation step (`advance_animations` moves sprites in a finished scene) and cleared by `Scene::clear`. A
+  window's two scenes, and two windows' scenes, never share a version.
+- **The atlas**: `WgpuAtlas::before_frame` returns a revision that changes when a texture is created or released
+  (an image dropped between two presents can free one the kept bind groups name). Uploads into existing
+  textures are flushed by `before_frame` every frame, as before.
+- **Invalidated by**: another scene (any repaint: a hover, a theme change, another view of the window), another
+  size (a resize), `set_subpixel_layout`, `update_transparency` / a pipeline rebuild, a failed frame, and a new
+  renderer core (device loss). Each window has its own renderer core, so two windows keep a frame each.
+- **Surface parameters** (bounds, fit, matrix: 144 bytes per surface) are written only when they differ from
+  what the buffer holds for that surface: for a playing stream, on its first frame.
+- `gpui_wgpu::set_frame_reuse(false)` restores "build every frame"; `frame_stats()` counts frames and
+  nanoseconds per kind; `capture_next_surface_frame(rebuild)` renders the next frame of a scene with surfaces
+  into an offscreen texture too, by the same code, and reads it back.
+
+**Measured** (release build, 1440p120 HEVC, Vulkan Video, one stream; `decibell --screen video-test` with
+`DECIBELL_VIDEO_FASTPATH=0` for "before"; allocations with `tools/streamgen/malloc-count.c` on the UI thread;
+time is `WgpuRenderer::draw` per present from `frame_stats()`; the table in `gpui-client/HANDOFF.md` §4 has the
+CPU):
+
+| | Scene written per present (`DECIBELL_VIDEO_FASTPATH=0`: the renderer before `0007`) | Kept frame (`0007`) |
+|---|---|---|
+| UI-thread allocations per present (1 × 1440p120, 366 presents counted, two runs each) | 281, 288 | 140, 145 |
+| `WgpuRenderer::draw` per present, mean of a 9 s run, three runs each, alternating, at load 5 | 263, 237, 281 µs | 183, 188, 175 µs |
+| the same on the quietest machine of the day (load 3.5, one run each, a development build) | 139 µs | 108 µs |
+| UI threads' CPU, 2 × 1440p120 (HEVC + AV1), % of a core, two runs each at load 4.0–4.8 | 6.25, 6.11 | 5.04, 4.83 |
+| whole process, the same runs | 11.0, 10.8 | 9.8, 9.6 |
+| UI threads' CPU, 1 × 1440p120 HEVC, two runs each (load 4.0–8.5) | 3.32, 4.37 | 3.44, 3.62 |
+| whole process, the same runs | 5.8, 7.7 | 6.4, 6.8 |
+
+Two streams present twice as often, which is where the kept frame shows in CPU: the UI threads' share falls by
+a fifth. With one stream the difference (about 0.8 of a point where both runs were at the same load) is inside
+what the machine's load moved the same run by that day; the allocation count is not.
+
+What is left per present is wgpu's own work for any frame, however small (acquire the swapchain texture, a
+view, a command encoder, the pass, submit, present: its resource trackers are resized per command buffer, the
+driver allocates in `vkQueuePresentKHR` for Wayland) and GPUI's effect flush; none of it depends on the scene.
+A "cached UI texture + composite" design was the alternative: it pays exactly that fixed cost too, plus a
+full-window blit per present and the bookkeeping of what is above and below each video, and saves only the
+replay of the draw list, which is small for the scene measured (a few tiles, labels and discs; one draw call
+per batch). It becomes worth another look if a stream view with hundreds of batches ever shows up in a profile:
+that has not been measured.
+
+**Checked by** `decibell --selftest video-fastpath`: a paused stream's window captured both ways (built from the
+scene, and from the kept frame) is identical byte for byte (1280 × 720 and, after a resize, 1120 × 700: 0 bytes
+differ); 240 pictures then cost 240 reused frames and none built; and under
+`crates/decibell-video/tools/alloc-count.c` the UI thread stays within 170 allocations per present (138
+measured). `video-two` covers resizes during playback and two surfaces of one stream, `video-recover` a device
+loss (three in a row), every other self-test of the client the path without surfaces.
+
+Upstream: the idea is general (any present of an unchanged scene), but it only pays with `0001`'s
+`request_present`, and the Metal and DirectX renderers would each need their own version; ours to carry.
 
 ## 0010: what the text engine needs
 

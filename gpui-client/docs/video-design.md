@@ -1,7 +1,8 @@
 # Watching a stream in the GPUI client: design, and the crate built from it
 
-Status: **`crates/decibell-video` is built, tested and measured on Linux / NVIDIA (2026-11-26)**: §0 describes
-it and is the crate's design reference. §1–§14 are the research behind it (decision, what GPUI and wgpu offer,
+Status: **`crates/decibell-video` is built, tested and measured on Linux / NVIDIA (2026-11-26)**, with all three
+hardware decoders (Vulkan Video, NVDEC, VA-API) and the software one: §0 describes it and is the crate's design
+reference. What to run on AMD / Intel hardware, which nobody has yet: [`video-owner-checks.md`](video-owner-checks.md). §1–§14 are the research behind it (decision, what GPUI and wgpu offer,
 the options, the prototype's measurements); where the crate differs from the prototype the section says so. GPUI pin: Zed `a3ce8d5e` (2026-11-26),
 wgpu 30.0.0 at `cddb2f5d` (`Cargo.toml:1017-1018`). Paths starting with `crates/` are in the pin
 (`gpui-client/vendor/zed`), line numbers are the unpatched pin's. wgpu paths are in the pinned wgpu checkout
@@ -12,7 +13,7 @@ Contents: [0 The crate as built](#0-the-crate-as-built-cratesdecibell-video) · 
 [5 Threads, queues, sync](#5-threads-queues-and-synchronisation) · [6 Frame pacing](#6-frame-pacing) ·
 [7 Several streams, two places, changes, device loss](#7-several-streams-one-stream-in-two-places-changes-device-loss) ·
 [8 Windows and macOS](#8-windows-and-macos) · [9 FFmpeg build](#9-the-ffmpeg-build) ·
-[10 Vendor matrix](#10-vendor-matrix) · [11 Measurements](#11-measurements) · [12 Open risks](#12-open-risks-and-what-is-not-proven) ·
+[10 Vendor matrix](#10-vendor-matrix) · [11 Measurements](#11-measurements) (11.4: every decoder; 11.5: the present-only path) · [12 Open risks](#12-open-risks-and-what-is-not-proven) ·
 [13 Building and running](#13-building-and-running) · [14 Files](#14-files)
 
 ## 0. The crate as built (`crates/decibell-video`)
@@ -20,7 +21,8 @@ Contents: [0 The crate as built](#0-the-crate-as-built-cratesdecibell-video) · 
 ### 0.1 What it is
 
 Hardware video decode (H.264, HEVC, AV1) into textures GPUI draws with no CPU copy of the picture, any number
-of streams, software decode as the fallback, on the path §1 chose. It depends on GPUI, `decibell-harness` and
+of streams, on every GPU vendor: Vulkan Video on the renderer's device (§1), then the vendor's own decoder
+(NVDEC on NVIDIA, VA-API on AMD and Intel), software decode only when none of them works (§0.5). It depends on GPUI, `decibell-harness` and
 `decibell-ui` (its test screen), not on `decibell-core` or `decibell-model`: the app moves the core's
 `StreamFrame` into the hub.
 
@@ -31,10 +33,14 @@ of streams, software decode as the fallback, on the path §1 chose. It depends o
 | `Stream`, `Viewer` | `hub.rs` | A stream handle (stats, picture size) and "this stream is on screen" (RAII). |
 | `VideoView` | `view.rs` | The element: backdrop + one scene surface, `Fit::{Contain, Cover, Fill}`, rounded corners. |
 | `Packet`, `PacketBytes` | `packet.rs` | An encoded frame's buffer, owned, handed to FFmpeg without a copy. |
-| `FrameQueue` | `queue.rs` | The 3-frame hand-over with the keyframe gate (16 frames while a new decoder catches up). |
+| `FrameQueue` | `queue.rs` | The 3-frame hand-over with the keyframe gate (64 frames while a new decoder catches up). |
 | `StreamStats`, `StatsSampler` | `stats.rs` | Lock-free counters, histograms, the per-frame trace. |
 | `FfDecoder`, `SoftwareDecoder` | `decode.rs` | FFmpeg plumbing shared by both paths; the software decoder (every platform). |
 | `GpuDevice`, `SlotRing`, `VulkanDecoder`, `VulkanUploader`, `WgpuUploader` | `linux/` | Vulkan Video on the renderer's device; the slots; software pictures into slots. |
+| `NvdecDecoder`, `CudaDevice` | `linux/nvdec.rs`, `linux/cuda.c` | NVDEC through CUDA, copied device to device into slots whose memory CUDA imported (§0.3a). |
+| `VaapiDecoder`, `VaDevice` | `linux/vaapi.rs`, `linux/drm.c` | VA-API surfaces exported as DMA-BUFs, imported into the renderer's device and copied into slots (§0.3b). |
+| `Order`, `Selector` | `select.rs` | Which decoder a stream gets, what was given up and why (§0.5). |
+| the probe | `probe.rs`, `probe/keyframe.*` | The capabilities to advertise, from decoding a test frame on each decoder (§0.5). |
 | `CpuBackend` | `cpu.rs` | Software decode into a counting sink: Windows today, and the unit tests. |
 | `dbv::{StreamFile, Feeder}` | `dbv.rs` | `.dbv` test streams and a thread that replays one into a hub. |
 | screen `video-test`, six self-tests | `screens.rs`, `selftests.rs` | §0.9. |
@@ -48,7 +54,8 @@ hub.push(&frame.key, EncodedFrame { codec, keyframe, timestamp, data: Packet::fr
 let viewer = hub.stream(&key).viewer();                       // held by the view that shows it
 VideoView::new(&viewer).fit(Fit::Cover).rounded(theme.radius_md).backdrop(theme.color_bg_darkest)
 hub.remove(&key);                                             // the stream ended
-hub.capabilities()                                            // [CodecSupport; 3] for the advertised decode caps
+hub.probe_capabilities(|support| …)                           // [CodecSupport; 3] from a real probe, off the UI thread
+hub.capabilities()                                            // the same, as far as known now; never blocks
 ```
 
 ### 0.2 What exists when
@@ -95,6 +102,37 @@ the planes are copied **once** into a staging buffer that stays mapped for the d
 or in one `memcpy`, chroma interleaved on the way if the decoder gave planar U and V), and the GPU copies it
 into a slot (`vkCmdCopyBufferToImage` × 2 on the aux queue, waited for). Same slots, same publish.
 
+**§0.3a NVDEC** replaces steps 5–8 (`linux/nvdec.rs`; the design and why it is this one are in its module
+comment):
+
+| Step | Work | Lock | Alloc | Copy |
+|---|---|---|---|---|
+| 5 | `avcodec_send_packet`: FFmpeg's `nvdec` hwaccel hands the slices to cuvid | none of ours | FFmpeg's | 0 |
+| 6 | `avcodec_receive_frame`: an `AV_PIX_FMT_CUDA` frame, the decoder's own output surface mapped (pitch-linear NV12 in CUDA device memory) | | FFmpeg's (one `NVDECFrame` + buffer ref) | 0 |
+| 7 | a free slot; `cuMemcpy2DAsync` × 2 from the frame into the slot's luma and chroma images, which CUDA holds as arrays since the slots were made (`VK_KHR_external_memory_fd` → `cuImportExternalMemory` → `cuExternalMemoryGetMappedMipmappedArray`); then `cuSignalExternalSemaphoresAsync` on the same stream | | 0 | 1 on the GPU |
+| 8 | `vkQueueSubmit` on the aux queue with no commands, waiting on that semaphore, with our fence; `vkWaitForFences`: the thread sleeps until the copy has run | `device_queue_lock` for the submit | 0 | 0 |
+
+Synchronisation in both directions is explicit: CUDA writes a slot only when the decoder holds its only
+reference (no renderer submission samples it), and the picture is published only when a Vulkan submission that
+waited on the CUDA-signalled semaphore has completed. Made once per decoder: the semaphore and CUDA's import of
+it; once per picture size: five slots with dedicated exportable memory and ten CUDA arrays. The process has a
+CUDA context while an NVDEC decoder exists (created in 65–220 ms, released in 45–90 ms, measured).
+
+**§0.3b VA-API** replaces steps 5–8 (`linux/vaapi.rs`):
+
+| Step | Work | Lock | Alloc | Copy |
+|---|---|---|---|---|
+| 5–6 | `avcodec_send_packet` / `receive_frame`: an `AV_PIX_FMT_VAAPI` frame (a VA surface) | | FFmpeg's | 0 |
+| 7a | `av_hwframe_map` to `AV_PIX_FMT_DRM_PRIME`: `vaSyncSurface` (the decode has finished), `vaExportSurfaceHandle` with a layer per plane: fds, offsets, pitches, the DRM format modifier | | FFmpeg's (descriptor + buffer ref) | 0 |
+| 7b | the surface's two planes as `R8` / `R8G8` images of the renderer's device: looked up by the DMA-BUFs' inodes, offsets and pitches (`fstat` × 2); a surface seen for the first time is imported (`VK_EXT_image_drm_format_modifier` explicit layout + `VK_EXT_external_memory_dma_buf`), which happens once per surface of the decoder's pool | | 0 after the pool has been seen | 0 |
+| 8 | one submission on the aux queue: the planes taken over from the foreign queue family (`GENERAL` → `TRANSFER_SRC`), `vkCmdCopyImage` × 2 into a free slot, the planes handed back; `vkWaitForFences` | `device_queue_lock` for the submit | 0 | 1 on the GPU |
+| 8b | `av_frame_unref` of the mapping: the exported fds are closed (the imports hold their own) | | 0 | 0 |
+
+Why the copy and not the imported image as the texture: the module comment of `linux/vaapi.rs` and §3. Which
+GPU: the DRM render node of the device the window is drawn with (`VK_EXT_physical_device_drm`, else the PCI
+address), so a machine with two GPUs never decodes on one and presents on the other; if that GPU's VA driver
+cannot decode the codec the decoder is skipped.
+
 The assertion: `crates/decibell-video/tests/alloc.rs` runs the whole pipeline (feeder with recycled buffers,
 hub, queue, software decode, publish) under a counting global allocator and requires **0 Rust allocations over
 100 steady-state frames** for each codec, in every thread of the process. The GPU paths add no allocation of
@@ -104,9 +142,16 @@ with `tools/streamgen/malloc-count.c` (§0.8).
 ### 0.4 Queue, gate and keyframes
 
 The queue holds three frames. A decoder that was just opened gets room to catch up: opening one (FFmpeg's
-device context, the frames pool, five slots) takes 10–40 ms, several frame intervals at 120 fps, so until it
-has published a picture and found the queue empty the queue holds up to 16 frames; without that, 7 of 30
-application starts shed frames in the first 40 ms of a 120 fps stream and waited for a second keyframe.
+device context, the frames pool, five slots) takes 10–40 ms with Vulkan Video and much longer with the vendor
+decoders (NVDEC: a CUDA context, 65–270 ms measured; the NVDEC-backed VA driver: 220–670 ms to initialise on a busy
+machine), many
+frame intervals at 120 fps, so until it has published a picture and found the queue empty the queue holds up to
+64 frames (it was 16 before the vendor decoders existed: enough for Vulkan Video, where 7 of 30 application
+starts shed frames in the first 40 ms without it, and too few for a 160 ms open at 120 fps). The backlog is then
+decoded at the decoder's own speed, a millisecond or two per frame, and of such a burst only the newest picture
+reaches the screen (`replaced` in the stats: 3–28 pictures at the start of a stream on NVDEC / VA-API in the
+runs here, 0–2 on Vulkan Video). An open slower than the 64 frames (seen once: 674 ms for the VA driver at
+120 fps with the machine at load 13) sheds to the next keyframe, as any overflow does.
 
 Mirrors `StreamVideoPlayer.tsx`: a decoder starts on a keyframe; a frame that cannot be queued breaks the
 chain, so everything up to the next keyframe is refused at `push` and the streamer is asked for one; a keyframe
@@ -120,22 +165,64 @@ keyframe's hvcC) is decoded by giving FFmpeg the description as extradata; teste
 
 ### 0.5 Choosing and changing the decode path
 
-`Backend::open` per stream, at its first keyframe: hardware when the device was created by the hook, the
-driver answers `vkGetPhysicalDeviceVideoCapabilitiesKHR` for the codec's 8-bit 4:2:0 profile and the hub is
-not forced to software (`DECIBELL_VIDEO=software`, `VideoHub::set_force_software`); otherwise software. If the
-hardware open fails, the same keyframe opens a software decoder. `hub.capabilities()` reports the same probe
-(`Hardware` with the driver's maximum size, `Software`, or `None`), cached per device, with no FFmpeg context
-involved; before the first window exists only the software decoders are reported.
+**The order** (owner's rule, CLAUDE.md "Video codecs: hardware on every vendor"): Vulkan Video on the renderer's
+device → the vendor's decoder → software. `LinuxBackend::order` says what a machine could use:
+
+| GPU of the renderer's device | Order |
+|---|---|
+| NVIDIA, device created with a video decode queue | `vulkan, nvdec, software` |
+| AMD, Intel (anything not NVIDIA), with a video decode queue | `vulkan, vaapi, software` |
+| no Vulkan Video in the driver | `nvdec, software` / `vaapi, software` |
+| renderer not on Vulkan (the OpenGL fallback) or no device yet | `software` |
+
+**A stream's decoder** is opened at its first keyframe: the first of the order that opens (`hub.rs`
+`open_decoder`). What fails is remembered at two levels (`select.rs`):
+
+- *for the session, per codec*: a decoder that does not open, or fails before it has published 30 pictures, never
+  worked for that codec. No stream tries it again; the reason is logged once
+  (`video: H.265 decode with vaapi does not work here and is not tried again this session: …`) and listed by
+  `VideoHub::skipped_decoders()`.
+- *for the stream*: a decoder that fails later (a damaged stream, a driver hiccup) is not used for that stream
+  again; other streams still start on it.
+
+Either way the stream goes on with the next decoder at the next keyframe (asked for at once), and says so:
+`StreamEvent::BackendFailed { backend, reason }` per decoder given up, `FellBackToSoftware { reason }` when it
+ends in software, `StreamStats::backend` and `StreamStats::fallback_reason` (`"vulkan: …"`) for the overlay and
+for bug reports. Nothing is retried in a loop: a decoder is opened at most once per codec per session after a
+failed open, and at most once per stream after a failure. Software is never given up (a failing software
+decoder is reopened at the next keyframe, as before).
+
+**Forcing**: `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` (or a comma-separated list) replaces the order:
+exactly those decoders are tried, software included only if named, so a forced decoder that does not work shows
+as a stream without a picture and an error, never as silent software. `VideoHub::set_decoder_order` is the same
+from code (the self-tests). `DECIBELL_VIDEO=software` is the older spelling of `…_DECODER=software` and also
+leaves the renderer's device as wgpu makes it.
+
+**What to advertise: the probe** (`probe.rs`). "The driver lists the codec" is not "streams of it play": the
+client advertises a codec to the server only after decoding it. `VideoHub::probe_capabilities(done)` runs on a
+thread of its own (`decibell-video-probe`): for each codec it walks the order with one keyframe compiled into
+the binary (320 × 240, 2.5–3.6 KB per codec, made by `tools/streamgen` with the streamer's encoder settings),
+opens the real decoder, decodes, reads a row of the published picture back from the slot texture and compares
+it with the known test picture. The first decoder that returns it is the answer (`CodecSupport { backend, path,
+probed: true, max_size }`); one that fails is given up for the session exactly as if a stream had failed on it,
+so streams never try what the probe found broken. The result is kept per GPU and driver version
+(the adapter's vendor and device id, backend, driver name and driver version: `LinuxBackend::device_key`) in the process and, when the app names a file
+(`set_capabilities_cache`), across runs; a decoder failing later invalidates it. `capabilities()` never
+blocks: the kept answer when there is one, else what the driver and the FFmpeg build list. Cost here:
+64–120 ms for the three codecs when Vulkan Video works (nothing else is opened then); 465 ms with only NVDEC (three CUDA
+contexts created and released).
 
 | Failure | Detected by | What happens |
 |---|---|---|
-| Hardware decoder error (`avcodec_*` or a Vulkan call fails, device alive) | the call's result; then `vkDeviceWaitIdle` under the queue lock to ask whether the device is gone | the stream is marked software-only, `StreamEvent::FellBackToSoftware`, gate + keyframe request, the next keyframe opens the software decoder |
+| Hardware decoder error (`avcodec_*`, a Vulkan or a CUDA call fails, device alive) | the call's result; then `vkDeviceWaitIdle` under the queue lock to ask whether the device is gone | the decoder is given up for the stream (and for the session if it had published fewer than 30 pictures), `StreamEvent::BackendFailed`, gate + keyframe request, the next keyframe opens the next decoder of the order |
 | Software decoder error | the call's result | `StreamEvent::DecoderError`, gate + keyframe request, a new decoder at the next keyframe |
 | GPU device lost | `VK_ERROR_DEVICE_LOST` from any of our calls, the driver probe above, or `WgpuContext::device_lost()` checked before every decode | the decoder (with its slots and, with the last decoder, the `AVHWDeviceContext`) is dropped, the surface cleared, `StreamEvent::DeviceLost`; a present is requested so that GPUI looks at its device, which is where it recreates its context; frames are shed until `shared_context()` is a live device again; then the next keyframe opens a decoder on the new device (the hook ran again when it was created). Pictures of the old device are never drawn on the new one (patch `0005`). |
 
 Nothing in these paths runs on the UI thread. The injected versions (`Stream::inject(Fault::DecodeError |
-Fault::DeviceLost)`, the second through `WgpuContext::simulate_device_loss`) are what `video-recover` runs: the
-renderer really abandons its device and creates another, with a decoder thread in the middle of a stream.
+Fault::DeviceLost)`, the second through `WgpuContext::simulate_device_loss`) are what `video-recover` and
+`video-order` run, on every hardware decoder the machine has: the renderer really abandons its device and
+creates another, with a decoder thread in the middle of a stream (the CUDA context and the VA display are not
+on that device and survive; the slots, the imports and the semaphore are made again).
 
 ### 0.6 Presenting, and freeing
 
@@ -146,8 +233,13 @@ renderer really abandons its device and creates another, with a decoder thread i
   share a present.
 - A stream that is torn down leaves references to its last pictures inside the renderer (the frames that
   sampled them, until the renderer notices the GPU finished them; its bind-group cache, until its next frame).
-  With no stream there may be no next frame, so the presenter runs one sequence per teardown: present, 120 ms,
-  `device.poll`, present, 120 ms, `device.poll`. After it `hub.live_textures()` is 0 (`video-idle`).
+  With no stream there may be no next frame, so each teardown gets one sequence: present, 120 ms,
+  `device.poll`, present, 120 ms, `device.poll`. After it `hub.live_textures()` is 0 (`video-idle`). The
+  sequence runs in a task of its own: it used to run inside the presenter, which then presented nothing for
+  240 ms, so a stream that ended froze every other stream for a quarter of a second (found when the vendor
+  decoders' slower teardown moved the sequence into the next stream's first frames).
+- A present costs the renderer one pass over the frame it kept from the last paint, not a rebuild of the scene
+  (GPUI patch `0007`, §4.1): `frames_reused` in the test screen's stats line.
 
 ### 0.7 Stats and trace
 
@@ -165,21 +257,40 @@ self-test makes the app's main window draw after the loss for that reason.
 
 ### 0.8 Measurements of the crate
 
-`gpui-client/HANDOFF.md` §4 "Stream playback" has the table (CPU, memory, wakeups per thread, GPU, pacing, on
-Wayland and XWayland) and the comparison with the prototype's §11.
+§11.4 (every decoder: CPU, memory, wakeups per thread, GPU, pacing) and §11.5 (the present-only path before and
+after patch `0007`). `gpui-client/HANDOFF.md` §4 "Stream playback" has the same tables, the earlier Vulkan
+Video series (also under XWayland) and the comparison with the prototype's §11.
 
 ### 0.9 Screen, self-tests, tools
 
 - `decibell --screen video-test --dbv a.dbv[,b.dbv] [--mirror]`, with `DECIBELL_VIDEO_STATS=<s>` (counters on
-  stderr from a thread), `DECIBELL_VIDEO_TEST_FRAMES=<n>`, `DECIBELL_VIDEO=software`,
+  stderr from a thread: `backend=`, `frames_built=` / `frames_reused=` and their mean microseconds among them),
+  `DECIBELL_VIDEO_TEST_FRAMES=<n>`, `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` (§0.5),
+  `DECIBELL_VIDEO_FASTPATH=0` (every present builds the scene again: the renderer before patch `0007`),
   `DECIBELL_VIDEO_SHARED_QUEUE=1` (the single-queue mode of §5.4), `DECIBELL_VIDEO_UPLOAD=wgpu` (the OpenGL
-  fallback's uploader on Vulkan), `DECIBELL_VIDEO_FFMPEG_LOG=<level>`.
-- `decibell --selftest video-hw,video-idle,video-two,video-sw,video-recover,video-switch`: real window, real
-  GPU. They need `vendor/streams` and say so and pass when it is missing.
-- `cargo test -p decibell-video`: queue, stats, the hub with software decode (barcodes read back, callbacks,
-  description streams, resolution switch), the zero-allocation test. Same streams; skipped without them.
+  fallback's uploader on Vulkan), `DECIBELL_VIDEO_FFMPEG_LOG=<level>`, `DECIBELL_LOG=info` (which decoder
+  opened and how long it took, what was given up and why, the VA surface layout).
+- Self-tests, real window and real GPU; they need `vendor/streams` and say so and pass when it is missing:
+
+  | Test | What it holds the crate to |
+  |---|---|
+  | `video-hw` | The probe's answer, then each codec on the decoder the probe found: 180 frames in, 180 pictures presented, barcodes read back from the slot texture match, and the window's last frame is the same as software decode's (mean difference ≤ 1 of 255 per channel: colours, planes and matrix, not only luma). HEVC with an hvcC description. |
+  | `video-nvdec`, `video-vaapi` | The same with that decoder forced. Skipped where it does not exist for the GPU, failed instead when `DECIBELL_VIDEO_DECODER` names it. |
+  | `video-order` | Every decoder that works here, forced as one order; each is failed in turn: the stream walks the order, ends on software, each reason is in `StreamStats::fallback_reason`, each decoder was opened once, and nothing is given up for the session (the failures are late ones). |
+  | `video-recover` | A decoder error moves the stream to the next decoder; a lost GPU device is survived on each hardware decoder in turn (the stream reopens on the same decoder on the new device), and the app's main window draws on the new device. |
+  | `video-fastpath` | A paused stream's window drawn from the scene and from the kept frame is identical byte for byte, also after a resize; 240 pictures are 240 reused frames; under `tools/alloc-count.c` at most 170 allocations per present on the UI thread. |
+  | `video-idle`, `video-two`, `video-sw`, `video-switch` | As before: nothing drawn or alive after a stream ends; two streams, a mirror and 12 resizes; the software path; a resolution change mid-stream. |
+
+- `cargo test -p decibell-video`: queue, stats, selection (`select.rs`), the probe (the embedded test frames
+  decode in software to the test picture; the cache file), the hub with software decode (barcodes read back,
+  callbacks, description streams, resolution switch) and **with scripted hardware decoders** (`hub.rs`
+  `Scripted`: a platform whose Vulkan Video does not open, fails in its first pictures, fails late, whose
+  VA-API has no driver: what an AMD or Intel machine with a broken path looks like to the hub; the order per
+  GPU vendor in `linux/mod.rs`), the zero-allocation tests. `--features core` adds the core glue's.
 - `tools/build-ffmpeg.sh` (§9), `tools/streamgen/{build.sh, make-streams.sh, streamgen.c, dbvcat.py}`,
-  `tools/streamgen/measure.sh` (one measured run), `tools/streamgen/malloc-count.c`.
+  `tools/streamgen/measure.sh` (one measured run), `tools/streamgen/malloc-count.c`,
+  `crates/decibell-video/tools/alloc-count.c` (the same counter, readable by the process itself:
+  `video-fastpath`'s budget).
 
 ### 0.10 The core's side (`core` feature)
 
@@ -190,10 +301,15 @@ packet's owner returns it to the core's pool), and `decibell_video::enable_frame
 with the hub's numbers: 40 buffers (8 streams x the 3 queued + 1 decoding + 1 being received) of at most
 1 MiB each (the largest frame of the 30 Mbit/s 2160p test streams is 94 KB).
 
-What is still missing for "no copy": `FrameBuf` promises nothing about the bytes after the frame, so every
-packet is copied once into a padded buffer (20 KB per frame at 20 Mbit/s and 120 fps: 2.5 MB/s). When the
-pool allocates `len + 64` and keeps the tail zeroed (and `FrameBuf` says so), `CoreBuf::zero_padding` in
-`core_glue.rs` returns 64 and the copy is gone: that function is the one line to change.
+The last copy: FFmpeg needs 64 zeroed bytes after a packet. The core is gaining that guarantee
+(`FrameBuf::PADDING`, `FrameBuf::has_padding()`: the pool allocates `len + 64` and keeps the tail zeroed), and
+`core_glue.rs` uses it when the buffer reports it: the frame then reaches `avcodec_send_packet` in the core's own
+buffer. A buffer that does not report it (a core from before the change, or a buffer that did not come from the
+pool) is copied once into a padded buffer of ours, as before (20 KB per frame at 20 Mbit/s and 120 fps:
+2.5 MB/s; `packet_copies()` counts them). One source builds against both cores: `FrameBuf`'s own `PADDING` /
+`has_padding` are found before the fallback trait's defaults (0, false). Tested with a padded and an unpadded
+stand-in and with the linked core's own buffers (`cargo test -p decibell-video --features core`); against the
+core of this branch, which has no padding yet, the copy is still taken.
 
 ## 1. Decision
 
@@ -213,9 +329,11 @@ brief with one change: the renderer samples a GPU copy of each picture, never th
 - No picture data touches the CPU. One code path covers NVIDIA, AMD (RADV) and Intel (ANV); only NVIDIA is
   proven.
 
-**Hardware fallback: NVDEC (FFmpeg `nvdec` hwaccel, CUDA frames) on NVIDIA and VAAPI on AMD / Intel**, each
-ending in the same slot textures (CUDA / Vulkan external memory copy; DRM PRIME DMA-BUF import). Designed, not
-built: on this machine the primary path needed no fallback. The FFmpeg prefix already has both hwaccels.
+**Hardware fallback: NVDEC (FFmpeg `nvdec` hwaccel, CUDA frames) on NVIDIA and VA-API on AMD / Intel**, each
+ending in the same slot textures (CUDA / Vulkan external memory copy; DRM PRIME DMA-BUF import + copy). **Built
+and run for all three codecs on this machine** (§0.3a, §0.3b; VA-API through the NVDEC-backed VA driver, which
+is the only VA driver an NVIDIA machine has): the owner's rule is hardware decode on every vendor, and a
+machine whose Vulkan Video is missing or broken must not land in software.
 
 **Software fallback: FFmpeg's H.264 / HEVC decoders and dav1d, one upload per picture into the same kind of
 slot textures.** Built and run for all three codecs.
@@ -322,11 +440,11 @@ its own copy and nobody else waits for anything.
 | | (a) Vulkan Video on wgpu's device **(chosen)** | (b) Vulkan Video on its own device | (c) NVDEC / VAAPI | (d) video outside the scene |
 |---|---|---|---|---|
 | CPU copies | 0 | 0 | 0 | 0 |
-| GPU copies | 1 (`vkCmdCopyImage`, same device) | 1 (into an image exported to wgpu's device) | NVDEC: 1 (CUDA to Vulkan). VAAPI: 0 (the DMA-BUF is the texture) | 0 (decoder presents) |
+| GPU copies | 1 (`vkCmdCopyImage`, same device) | 1 (into an image exported to wgpu's device) | NVDEC: 1 (CUDA to Vulkan). VA-API: 1 as built (imported DMA-BUF to slot), 0 as first designed | 0 (decoder presents) |
 | CPU cost | measured: ~4 % of a core for 1440p120, ~8 % for two | same plus fd / import bookkeeping | NVDEC: similar. VAAPI: an import + image view per frame | lowest for video; a second swapchain to drive |
 | Wakeups | decoder thread ~4 per frame, UI ~3 per frame (§11) | same | same | UI thread not woken at all by video |
 | Memory | 5 slots per stream (28 MB of VRAM at 1440p) + decoder pool | same + exported images | NVDEC: a CUDA context on top (not measured) | a swapchain per video |
-| NVIDIA today | **works: H.264, HEVC, AV1** (driver 620.73) | should work; two devices' worth of driver memory | works (FFmpeg `nvdec`), needs CUDA interop code | subsurfaces work on KWin; sync with the UI is the hard part |
+| NVIDIA today | **works: H.264, HEVC, AV1** (driver 620.73) | should work; two devices' worth of driver memory | **works: NVDEC, and VA-API through the NVDEC-backed VA driver**, H.264 / HEVC / AV1 | subsurfaces work on KWin; sync with the UI is the hard part |
 | AMD / Intel | same code (RADV, ANV decode H.264 / HEVC / AV1); needs "shared queue" mode, built and run on NVIDIA only (§5.4) | same, external memory per vendor | VAAPI is the mature path there | same |
 | GPUI patch | device hook + queue lock + surface draw | surface draw only | surface draw only (+ DMA-BUF plane import) | none in the renderer, a lot in gpui_linux |
 | Sync | decoder waits for its copy (fence); renderer never waits | same, across devices (shared fence or CPU wait) | NVDEC: `cuStreamSynchronize`; VAAPI: implicit DMA-BUF sync | compositor |
@@ -339,13 +457,35 @@ its own copy and nobody else waits for anything.
   other (`VK_KHR_external_memory_fd`), layouts have to agree across devices by convention, and the driver keeps
   two devices alive. It is the fallback *for (a)'s hook*, not a simpler design: if a future GPUI makes the device
   impossible to hook, (b) keeps the rest of this design unchanged.
-- **(c)** is what to build if Vulkan Video misbehaves on some driver. NVDEC: FFmpeg `nvdec` hwaccel gives CUDA
+- **(c)** is built, as the fallback behind (a) (§0.3a, §0.3b). NVDEC: FFmpeg `nvdec` hwaccel gives CUDA
   frames; a slot image allocated with exportable memory is imported into CUDA (`cuImportExternalMemory`) and
-  filled with `cuMemcpy2DAsync`: a GPU copy, the same slot textures. VAAPI: `av_hwframe_map` to
-  `AV_PIX_FMT_DRM_PRIME`, import each plane as its own image (`R8` / `GR88` with the plane's offset and modifier:
-  `VK_EXT_image_drm_format_modifier`; wgpu's `texture_from_dmabuf_fd` does one plane, `device.rs:541`), the
-  surface holds the `AVFrame` until the GPU is done with it. VA surfaces can be sampled while they serve as
-  references (no layouts there), so no copy.
+  filled with `cuMemcpy2DAsync`: a GPU copy, the same slot textures. VA-API: `av_hwframe_map` to
+  `AV_PIX_FMT_DRM_PRIME`, each plane imported as its own image (`R8` / `R8G8` with the plane's offset, pitch and
+  modifier: `VK_EXT_image_drm_format_modifier`), once per surface of the decoder's pool, and copied into a slot.
+  **VA-API was designed as zero copy (the imported image as the texture) and built with a copy**, for these
+  reasons, in order of weight:
+  1. *Ownership.* A VA surface is the decoder's: it is written again as soon as FFmpeg's pool hands it out, and
+     Vulkan has no implicit synchronisation with VA-API. To sample it the renderer must hold the `AVFrame`
+     until its last submission that samples it has completed, which needs the decoder's fixed-size surface
+     pool enlarged (`extra_hw_frames`) by however many frames the renderer keeps in flight, and Vulkan must be
+     told that another API changed the image between frames: a queue family ownership transfer from and to
+     `VK_QUEUE_FAMILY_FOREIGN_EXT` around each use. wgpu records no barrier for an image it only samples and
+     cannot be made to (§2.2), so those transfers would run on our queue on the renderer's schedule: the
+     problem §3 opens with, in another form. With the copy, acquire → copy → release is one submission of the
+     decoder thread and the renderer sees only slots.
+  2. *What the driver exports.* Intel exports Y-tiled or 4-tiled NV12, radeonsi its own tiling modes: a transfer
+     source is the least a Vulkan driver can be asked to make of such an image; a sampled image with linear
+     filtering is a format feature that must exist per modifier and per plane format, on drivers that cannot
+     be run here.
+  3. *Cost, measured.* An import (two images, two memory imports) takes 0.4–0.8 ms here, which per frame would
+     be 5–10 % of a core at 120 fps. It is not per frame in either design: 4–7 imports for 1,200 pictures (the
+     surfaces are recognised by their DMA-BUFs' inodes), 2.6–4.6 ms in all. The copy is 1.5 bytes per pixel on the GPU, what the
+     Vulkan Video path does too; packet to published picture is 0.85–1.31 ms at 1080p with VA-API against
+     0.66–1.18 ms with Vulkan Video on the same GPU (§11.4), most of the difference being the export
+     (`vaSyncSurface` + `vaExportSurfaceHandle`), which zero copy pays as well.
+  What zero copy would save is that copy's GPU time and memory bandwidth, which matters most on an
+  integrated GPU. If a measurement on AMD / Intel hardware shows it matters, the imports are already there;
+  what is missing is (1).
 - **(d)** is rejected. A `wl_subsurface` with its own swapchain is the cheapest possible video, but the stream
   view in this client has GPUI elements over the picture (name plate, controls, the "+N more" tile), rounded
   corners, and a mini-player that floats over other content. All of those would have to be drawn in a second
@@ -360,7 +500,9 @@ its own copy and nobody else waits for anything.
 files, +574 / -46 lines, of which 150 are the new `wgpu_surface.rs`; per-file table in `patches/README.md`.
 The crate also needs `0005-gpui-surface-fit-filter-device.patch` (same files, gpui_wgpu only): object-fit
 decided by the renderer at draw time, the minification filter, a device on every picture, the draw observer and
-`simulate_device_loss`; described in `patches/README.md` §0005 and used as §0 says. What `0001` adds:
+`simulate_device_loss`; described in `patches/README.md` §0005 and used as §0 says; `0006` (a crash in device
+recovery with two windows); and `0007-wgpu-retained-frames.patch` (§4.1: a present no longer rebuilds the
+scene). What `0001` adds:
 
 **gpui (core), 2 files.**
 
@@ -422,6 +564,27 @@ Properties the patch gives, all exercised by the prototype:
   unreachable. The patch is written so that upstreaming is plausible: it completes a primitive GPUI already
   has on one platform, with an opaque payload, and the video-specific parts (the hook, the lock) are generic
   device facilities. Until then it is carried as one patch file over a pinned GPUI.
+
+### 4.1 The present-only path (patch `0007`)
+
+A new picture is `Window::request_present`: the scene the window already has, drawn again. Until `0007` the
+renderer wrote that scene to the GPU again for every picture (seven instance arrays through
+`queue.write_buffer`, a bind group each, globals, the walk over the batches): the "285 allocations, 0.25 ms per
+presented frame" of the first measurements, on the UI thread. Now `WgpuRenderer` keeps what it built for the
+scene it drew last and encodes a frame of the same scene from the kept list of draw calls; only the surfaces
+are resolved again, to the pictures they hold by then. `patches/README.md` §0007 has the mechanism (how "the
+same scene" is known, what invalidates the kept frame, why not a cached UI texture) and §11.5 the numbers.
+
+- Two candidates were on the table: (1) keep the frame's buffers, bind groups and draw list and re-issue the
+  draws; (2) render the UI once into a texture and composite video + texture per present. Measuring where a
+  present's cost was decided it: of 280 allocations per present, 135 were the scene's writes and bind groups
+  (gone with either design) and 140 are wgpu's and the driver's fixed cost of any frame (acquire, view, encoder,
+  pass, submit, present; paid by either design). (2) would add a full-window blit per present and has to know
+  what is under and what is over each video; (1) replays a short list. So (1).
+- Both paths encode from the same list, so they cannot differ in what they draw; `video-fastpath` compares a
+  captured frame of each anyway (0 bytes differ), also after a resize.
+- A window without external surfaces never reuses a frame: it presents an unchanged scene too rarely to
+  matter, and its path is the old one step for step (build, then encode).
 
 ## 5. Threads, queues and synchronisation
 
@@ -531,9 +694,9 @@ The dedicated path, using what the pin already has:
    at the display's refresh rate without any timer of ours; a picture that arrives while one is waiting
    replaces it ("replaced" in §11: 0 or 1 per run, up to 6 on the loaded machine).
 
-Per video frame the main thread therefore does: one channel wake, `request_present`, one `renderer.draw` of
-the retained scene (instance buffers rewritten, one render pass, submit, present), and the compositor's frame
-callback. Measured (§11): about 2.3 % of a core for the main thread's share at 120 fps, 4.6 % with two 120 fps streams,
+Per video frame the main thread therefore does: one wake, `request_present`, one `renderer.draw` of the
+retained scene (since patch `0007`: one render pass encoded from the frame the renderer kept, submit, present;
+before it the instance buffers were rewritten for every picture, §4.1), and the compositor's frame callback. Measured (§11): about 2.3 % of a core for the main thread's share at 120 fps, 4.6 % with two 120 fps streams,
 about three voluntary wakeups per frame.
 
 Three things to know when building the real stream view on this:
@@ -699,6 +862,11 @@ FFmpeg builds every library unless told not to), no `--enable-libsvtav1` / `--en
 only `--enable-filter=scale`. What the new prefix has beyond the old one, listed from its libraries: the
 `libsvtav1` encoder and the `scale_vaapi` filter, nothing else; same decoders, hwaccels, parsers, bsfs.)
 
+- **Nothing had to change for NVDEC and VA-API** (2026-11-26): the configure line above already had
+  `--enable-nvdec --enable-vaapi --enable-libdrm` and the six hwaccels, which bring the CUDA, VA-API and DRM
+  hwcontexts (`av_hwframe_map` from VA-API to DRM PRIME is part of `hwcontext_vaapi.c` when libdrm is on). The
+  CUDA entry points the copy needs are loaded by the crate itself through `ffnvcodec/dynlink_loader.h`, which the
+  prefix installs with nv-codec-headers; no `--enable-cuda-llvm`, no filter, no rebuild of `vendor/ffmpeg`.
 - `av1` is FFmpeg's native AV1 decoder, which only decodes through a hwaccel; `libdav1d` is the software one
   (`avcodec_find_decoder(AV_CODEC_ID_AV1)` returns dav1d, so the hardware path opens `"av1"` by name).
 - The prefix is 9 static libraries (SVT-AV1's is 9.9 MB, 7.2 MB of it code); the prototype binary (GPUI + wgpu + FFmpeg + dav1d, release, with limited
@@ -718,19 +886,22 @@ only `--enable-filter=scale`. What the new prefix has beyond the old one, listed
 | | Decode path | H.264 / HEVC / AV1 | State |
 |---|---|---|---|
 | Linux, NVIDIA (proprietary driver; here 620.73, RTX 4080) | Vulkan Video on GPUI's device, split queues | yes / yes / yes (AV1: RTX 30 and newer) | **built, measured** |
-| | NVDEC (CUDA) fallback | yes / yes / yes | designed; FFmpeg prefix has it |
+| | NVDEC (CUDA) fallback | yes / yes / yes | **built, measured** (§0.3a, §11.4) |
+| | VA-API through `nvidia-vaapi-driver` (not in NVIDIA's order; forced, to run the VA-API code) | yes / yes / yes | **built, measured**; a DMA-BUF per plane, modifier `0x300000000606014` |
 | Linux, AMD (RADV, a Mesa with Vulkan Video decode enabled) | Vulkan Video, shared-queue mode | expected where the GPU decodes the codec | code path built, run only as forced mode on NVIDIA |
-| | VAAPI + DMA-BUF fallback | yes / yes / yes | designed; FFmpeg prefix has it |
+| | VA-API + DMA-BUF fallback (radeonsi) | expected: yes / yes / yes on current GPUs | **built**; run only against NVIDIA's VA driver. Unverified on Mesa: that RADV imports radeonsi's video surfaces per plane with their modifier as transfer sources; the foreign queue family transfer (`video-owner-checks.md` check 2) |
 | Linux, Intel (ANV with Vulkan Video decode) | Vulkan Video, split or shared mode by its queue families | expected where the GPU decodes the codec | as AMD |
-| | VAAPI + DMA-BUF fallback | yes / yes / yes | designed |
-| Linux, any GPU or none (GL backend, llvmpipe, old drivers) | software: FFmpeg H.264 / HEVC, dav1d | yes / yes / yes | **built**; 1080p60 fine, 1440p120 only H.264 (§11) |
+| | VA-API + DMA-BUF fallback (Intel media driver) | expected: yes / yes / yes on current GPUs | as AMD; additionally unverified: `R8` / `R8G8` images over a Y-tiled / 4-tiled NV12 buffer at a plane offset |
+| Linux, two GPUs | the decoders of the GPU the window is drawn with, never the other one | | by design (§0.3b): no cross-GPU copy path; not run (no such machine) |
+| Linux, any GPU or none (GL backend, llvmpipe, old drivers) | software: FFmpeg H.264 / HEVC, dav1d | yes / yes / yes | **built**; 1080p60 fine, 1440p120 see §11.4 |
 | Windows, NVIDIA / AMD / Intel | D3D11VA on gpui_windows' device, no copy | yes / yes / yes (per GPU generation) | designed (§8); decode half proven by the Qt spike on NVIDIA |
 | Windows, no hardware decoder | software, `UpdateSubresource` into two plane textures | yes / yes / yes | designed |
 | macOS | VideoToolbox into `CVPixelBuffer`, GPUI's existing `paint_surface` | yes / yes / AV1 on M3+ (dav1d otherwise) | GPUI side exists |
 
-Which path a machine gets is decided at run time, in this order: Vulkan Video (the hook found a decode
-family and `av_hwdevice_ctx_init` plus opening the codec succeed), then the vendor fallback, then software. A
-codec the GPU cannot decode (AV1 on an older card) falls to software for that stream only.
+Which path a machine gets is decided at run time, per codec, in this order: Vulkan Video (the hook found a
+decode family, the driver lists the codec, and the decoder opens and decodes), then the vendor's decoder, then
+software (§0.5). A codec the GPU cannot decode at all (AV1 on an older card) ends in software for that codec
+only.
 
 ## 11. Measurements
 
@@ -832,6 +1003,112 @@ Electron's CPU; this path is at about a sixth of it, measured on a busy machine.
 - **Start-up soak**: 150 starts of 2 s (1440p120 HEVC) with the lock in place: 0 failures, no Xid in the kernel
   log. Then 100 starts of two streams (1440p120 AV1 + 1080p60 H.264) in shared-queue mode: 0 failures.
 
+### 11.4 Every decoder (2026-11-26, the crate with NVDEC, VA-API and patch `0007`)
+
+`tools/streamgen/measure.sh <label> 20 <streams>` with `DECIBELL_VIDEO_DECODER=<decoder>`: the release binary's
+`--screen video-test`, 5 s settle, 20 s sampled. "2x" is the same file as two streams. Each row was taken
+twice, in two passes about half an hour apart; the table has the run that started at the lower load average
+and, in the last column, the other run's CPU and load. **The machine was busy throughout** (other agents building: load average 2–26 on 20
+hardware threads), so the CPU column is an upper bound that moves by a factor of two with the load; frame
+counts, wakeups, memory and the GPU columns are stable. "main" is the threads named `decibell` (the UI thread
+and GPUI's helpers), "decoder" the `decibell-video-<n>` threads; VA-API here is NVIDIA's NVDEC-backed VA driver
+(the only one an NVIDIA machine has), forced.
+
+| Run | Decoder | CPU, % of a core | main / decoder threads | Private, MB | Wakeups /s: main; decoder; driver | GPU sm / dec %, fb MB | In 20 s: received / decoded / presented / dropped | Decode p50 / p99, ms | Presented every p50 / p99, ms | Load avg | Other pass: CPU % at load |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1080p60-h264 | vulkan | **4.7** | 2.9 / 1.4 | 94 | 180; 260; 173 | 6.0 / 8.9, 161 | 1200 / 1200 / 1200 / 0 | 2.02 / 4.03 | 16.90 / 18.94 | 4.5 | 3.6 at 5.4 |
+| 1440p120-h264 | vulkan | **6.6** | 4.0 / 2.2 | 77 | 352; 498; 142 | 3.9 / 19.6, 186 | 2400 / 2400 / 2396 / 0 | 1.89 / 2.37 | 8.45 / 8.96 | 4.9 | 11.1 at 8.3 |
+| 2x1440p120-h264 | vulkan | **10.4** | 5.8 / 3.9 | 96 | 574; 1586; 142 | 8.7 / 36.9, 315 | 2401 / 2241 / 2235 / 160 + 2401 / 2401 / 2396 / 0 | 1.82 / 3.26, 2.88 / 3.65 | 8.45 / 12.03, 8.45 / 12.54 | 5.1 | 18.9 at 11.0 |
+| 1080p60-hevc | vulkan | **4.0** | 2.3 / 1.4 | 77 | 178; 182; 171 | 0.2 / 4.5, 303 | 1200 / 1200 / 1200 / 0 | 0.72 / 1.70 | 16.90 / 17.92 | 5.0 | 6.0 at 15.5 |
+| 1440p120-hevc | vulkan | **9.3** | 5.2 / 3.6 | 84 | 358; 390; 142 | 2.7 / 8.7, 332 | 2400 / 2400 / 2401 / 0 | 1.12 / 2.37 | 8.45 / 9.47 | 6.4 | 11.4 at 16.2 |
+| 2x1440p120-hevc | vulkan | **16.3** | 8.4 / 7.1 | 111 | 584; 1320; 142 | 7.8 / 19.9, 606 | 2400 / 2400 / 2395 / 0 + 2400 / 2400 / 2390 / 0 | 1.18 / 2.50, 1.44 / 2.75 | 8.06 / 11.52, 8.06 / 12.03 | 7.9 | 19.9 at 16.0 |
+| 1080p60-av1 | vulkan | **5.2** | 3.2 / 1.6 | 67 | 163; 221; 179 | 2.5 / 4.0, 201 | 1200 / 1201 / 1200 / 0 | 1.25 / 3.52 | 16.90 / 19.97 | 9.2 | 5.8 at 18.9 |
+| 1440p120-av1 | vulkan | **11.1** | 7.0 / 3.5 | 115 | 304; 416; 141 | 3.4 / 12.7, 234 | 2400 / 2401 / 2384 / 0 | 1.70 / 3.78 | 8.45 / 11.52 | 13.5 | 11.7 at 22.4 |
+| 2x1440p120-av1 | vulkan | **19.5** | 12.8 / 5.8 | 124 | 516; 1158; 141 | 5.5 / 25.7, 411 | 2400 / 2400 / 2373 / 0 + 2400 / 2401 / 2375 / 0 | 1.76 / 5.25, 2.24 / 5.50 | 8.45 / 15.62, 7.81 / 14.08 | 16.0 | 17.6 at 25.1 |
+| 1080p60-h264 | nvdec | **6.9** | 3.9 / 2.2 | 204 | 157; 205; 189 | 4.2 / 5.0, 370 | 1200 / 1201 / 1200 / 0 | 1.70 / 4.48 | 16.90 / 22.02 | 20.0 | 6.9 at 26.0 |
+| 1440p120-h264 | nvdec | **13.1** | 7.9 / 4.4 | 238 | 358; 502; 142 | 3.5 / 19.1, 393 | 2401 / 2401 / 2385 / 0 | 2.37 / 4.99 | 8.45 / 13.06 | 23.5 | 12.1 at 23.8 |
+| 2x1440p120-h264 | nvdec | **21.7** | 11.9 / 7.5 (+ cuda-EvtHandlr 1.5) | 293 | 706; 1553; 142 | 7.8 / 52.0, 487 | 2400 / 2400 / 2401 / 0 + 2400 / 2401 / 2401 / 0 | 2.62 / 3.78, 2.88 / 4.22 | 8.45 / 10.50, 7.55 / 11.01 | 22.2 | 23.3 at 27.1 |
+| 1080p60-hevc | nvdec | **7.2** | 3.6 / 2.3 | 234 | 169; 281; 181 | 0.3 / 3.0, 392 | 1200 / 1200 / 1200 / 0 | 2.11 / 6.27 | 16.90 / 20.99 | 21.6 | 7.2 at 25.3 |
+| 1440p120-hevc | nvdec | **13.1** | 6.6 / 4.8 (+ cuda-EvtHandlr 1.1) | 254 | 348; 540; 141 | 12.2 / 11.9, 425 | 2400 / 2401 / 2400 / 0 | 2.11 / 5.25 | 8.45 / 11.52 | 22.1 | 13.1 at 24.3 |
+| 2x1440p120-hevc | nvdec | **13.7** | 5.8 / 6.1 (+ cuda-EvtHandlr 1.2) | 298 | 596; 965; 142 | 7.0 / 17.6, 550 | 2400 / 2400 / 2399 / 0 + 2400 / 2401 / 2397 / 0 | 1.18 / 2.11, 1.12 / 2.02 | 8.06 / 11.52, 8.06 / 12.03 | 22.0 | 21.4 at 22.1 |
+| 1080p60-av1 | nvdec | **4.3** | 2.0 / 1.2 | 215 | 179; 246; 171 | 1.2 / 3.8, 420 | 1200 / 1201 / 1201 / 0 | 1.06 / 1.44 | 16.90 / 16.90 | 17.0 | 6.5 at 22.9 |
+| 1440p120-av1 | nvdec | **5.9** | 2.9 / 1.7 | 228 | 356; 543; 142 | 0.8 / 12.2, 472 | 2400 / 2401 / 2401 / 0 | 1.31 / 1.70 | 8.45 / 8.45 | 12.5 | 11.3 at 19.2 |
+| 2x1440p120-av1 | nvdec | **17.0** | 8.5 / 6.2 (+ cuda-EvtHandlr 1.5) | 267 | 590; 1053; 142 | 3.2 / 25.8, 644 | 2400 / 2400 / 2398 / 0 + 2400 / 2400 / 2397 / 0 | 1.44 / 2.24, 1.38 / 2.11 | 8.45 / 11.52, 8.06 / 12.03 | 8.1 | 20.5 at 16.9 |
+| 1080p60-h264 | vaapi | **6.7** | 3.0 / 2.4 | 238 | 174; 324; 173 | 2.2 / 5.0, 466 | 1200 / 1200 / 1201 / 0 | 1.44 / 3.26 | 16.90 / 18.94 | 9.1 | 7.3 at 20.8 |
+| 1440p120-h264 | vaapi | **11.7** | 5.5 / 4.6 (+ cuda-EvtHandlr 1.2) | 278 | 350; 896; 140 | 2.8 / 22.9, 553 | 2400 / 2400 / 2400 / 0 | 2.75 / 5.50 | 8.45 / 11.52 | 11.1 | 13.5 at 19.5 |
+| 2x1440p120-h264 | vaapi | **15.4** | 6.5 / 6.9 (+ cuda-EvtHandlr 1.3) | 310 | 585; 1873; 142 | 9.2 / 51.2, 805 | 2401 / 2401 / 2393 / 0 + 2400 / 2400 / 2394 / 0 | 2.62 / 4.48, 2.62 / 4.48 | 7.55 / 12.54, 7.55 / 12.54 | 13.1 | 20.0 at 17.6 |
+| 1080p60-hevc | vaapi | **6.2** | 2.5 / 2.3 | 244 | 176; 335; 173 | 0.0 / 2.2, 482 | 1200 / 1200 / 1201 / 0 | 0.98 / 3.65 | 16.90 / 18.94 | 13.1 | 5.7 at 16.9 |
+| 1440p120-hevc | vaapi | **11.0** | 4.5 / 4.7 (+ cuda-EvtHandlr 1.4) | 224 | 360; 792; 142 | 5.3 / 12.4, 578 | 2400 / 2400 / 2398 / 0 | 1.95 / 3.01 | 8.45 / 9.47 | 13.0 | 7.2 at 13.2 |
+| 2x1440p120-hevc | vaapi | **12.8** | 4.6 / 6.6 (+ cuda-EvtHandlr 1.1) | 319 | 594; 1379; 142 | 6.3 / 17.3, 855 | 2400 / 2400 / 2397 / 0 + 2400 / 2400 / 2398 / 0 | 1.12 / 1.89, 1.12 / 1.70 | 7.55 / 11.52, 7.30 / 11.52 | 9.1 | 11.0 at 11.3 |
+| 1080p60-av1 | vaapi | **3.9** | 1.5 / 1.3 | 228 | 179; 331; 171 | 1.5 / 4.0, 474 | 1200 / 1200 / 1201 / 0 | 1.06 / 1.50 | 16.90 / 16.90 | 6.9 | 4.0 at 7.8 |
+| 1440p120-av1 | vaapi | **5.4** | 2.5 / 1.9 | 253 | 358; 771; 142 | 0.7 / 12.6, 570 | 2400 / 2400 / 2401 / 0 | 1.31 / 2.24 | 8.45 / 8.96 | 5.1 | 6.5 at 5.7 |
+| 2x1440p120-av1 | vaapi | **13.7** | 6.0 / 5.9 (+ cuda-EvtHandlr 1.2) | 293 | 603; 1926; 142 | 17.1 / 32.5, 840 | 2400 / 2400 / 2401 / 0 + 2400 / 2400 / 2399 / 0 | 2.11 / 3.14, 3.01 / 4.22 | 7.81 / 11.52, 7.55 / 12.03 | 4.1 | 9.7 at 4.5 |
+| 1080p60-h264 | software | **21.8** | 1.7 / 19.8 | 81 | 182; 158; 172 | 9.9 / 0.0, 74 | 1200 / 1200 / 1200 / 0 | 4.03 / 6.27 | 16.90 / 18.94 | 4.0 | 24.6 at 4.6 |
+| 1440p120-h264 | software | **50.3** | 3.1 / 46.9 | 98 | 362; 288; 142 | 6.0 / 0.0, 86 | 2400 / 2400 / 2400 / 0 | 4.48 / 6.02 | 8.45 / 9.98 | 2.8 | 65.3 at 4.8 |
+| 2x1440p120-h264 | software | **104.8** | 4.5 / 99.8 | 137 | 580; 716; 142 | 15.7 / 0.0, 114 | 2400 / 2400 / 2400 / 0 + 2400 / 2400 / 2401 / 0 | 4.74 / 6.27, 4.74 / 6.02 | 8.45 / 11.52, 8.06 / 11.52 | 2.4 | 138.8 at 7.8 |
+| 1080p60-hevc | software | **31.8** | 1.7 / 29.8 | 91 | 182; 167; 171 | 7.7 / 0.0, 74 | 1200 / 1200 / 1200 / 0 | 5.76 / 7.81 | 16.90 / 18.94 | 2.5 | 33.0 at 8.2 |
+| 1440p120-hevc | software | **84.1** | 2.9 / 80.9 | 116 | 362; 252; 142 | 10.2 / 0.0, 86 | 2400 / 2400 / 2401 / 0 | 7.30 / 9.47 | 8.45 / 10.50 | 2.4 | 83.5 at 6.7 |
+| 2x1440p120-hevc | software | **78.1** | 2.8 / 74.6 | 214 | 230; 192; 70 | 4.0 / 0.0, 108 | 2400 / 883 / 883 / 1466 + 2400 / 885 / 885 / 1463 | 8.06 / 16.90, 8.06 / 16.90 | 9.47 / 18.94, 10.50 / 17.92 | 2.1 | 168.9 at 5.1 |
+| 1080p60-av1 | software | **34.9** | 1.4 / 1.6 (+ dav1d-worker 31.6) | 88 | 182; 188; 171 | 3.3 / 0.0, 74 | 1200 / 1200 / 1200 / 0 | 4.99 / 6.78 | 16.90 / 17.92 | 4.2 | 57.9 at 5.1 |
+| 1440p120-av1 | software | **73.1** | 2.8 / 5.3 (+ dav1d-worker 64.6) | 107 | 227; 181; 104 | 2.8 / 0.0, 85 | 2401 / 1475 / 1474 / 927 | 7.55 / 12.54 | 8.45 / 12.54 | 3.0 | 87.0 at 11.4 |
+| 2x1440p120-av1 | software | **77.9** | 3.1 / 6.6 (+ dav1d-worker 67.5) | 188 | 175; 149; 63 | 2.5 / 0.0, 102 | 2400 / 606 / 606 / 1794 + 2401 / 602 / 602 / 1799 | 11.52 / 17.92, 11.52 / 16.90 | 11.01 / 17.92, 11.01 / 17.92 | 4.4 | 125.6 at 9.9 |
+
+Reading it:
+
+- **Every hardware decoder plays every row**, up to 2 × 1440p120 of each codec, on Vulkan Video, NVDEC and
+  VA-API alike: all frames decoded and none dropped in 53 of the 54 hardware runs. The one exception is in the
+  table: 2 × 1440p120 H.264 on Vulkan Video, second pass, where one of the two streams shed 160 frames (its
+  decoder thread fell more than three frames behind once, and the test file's next keyframe was up to 4 s
+  away; a streamer answers the keyframe request at once). The first pass of the same row, at twice the load,
+  lost nothing; the cause was not found (risk 17). Packet to published picture is 1–3 ms on all three.
+- **CPU**: the three hardware decoders are within each other's noise. In the quietest runs (load 4–8) one
+  1440p120 stream costs 5.4–6.8 % of a core and two cost 9.6–10.4 %, on any of them; rows taken at load 15–26
+  read up to twice that (most NVDEC rows were: both passes reached them while the machine was at its busiest).
+- **Memory is where the vendor decoders cost**: 67–140 MB private with Vulkan Video, 204–307 MB with NVDEC (the
+  CUDA context: about 150 MB of host memory and 200 MB of GPU memory more) and 194–319 MB with the NVDEC-backed
+  VA driver (which brings its own CUDA context). That is the reason Vulkan Video is first in the order on
+  NVIDIA too, and the cost only of a machine where it failed.
+- **Wakeups**: 3 per frame on the UI thread on every path. On the decoder thread 3.6–4.5 per frame with Vulkan
+  Video, 4.5–6 with NVDEC, 6.6–8 with the VA driver; CUDA adds an event-handler thread (`cuda-EvtHandlr`,
+  1–1.5 % of a core at 120 fps).
+- **Software**: 1080p60 of any codec (22–35 % of a core); one 1440p120 stream of H.264 (50 %) or HEVC (84 %);
+  two 1440p120 H.264 streams take a whole core (105 %). HEVC × 2 and AV1 at 1440p120 do not keep up on four
+  slice / tile threads per stream (the rows with frames dropped): the last resort is a last resort.
+- **Allocations per decoded frame on the decoder thread** (`malloc-count`, 1440p120 HEVC, all inside FFmpeg and
+  the drivers; our code allocates nothing per frame on any path): Vulkan Video 38, NVDEC 20 (and 13 on CUDA's
+  event thread), VA-API 35 (and 11 on the VA driver's CUDA thread), software 17.
+- **Decoder start**: Vulkan Video opens in under a millisecond (its frames pool and slots are made with the
+  first picture); NVDEC in 65–270 ms (the CUDA context); the VA driver in 220–670 ms. The queue's
+  64-frame allowance (§0.4) covers them at 120 fps except the slowest VA driver start seen.
+
+### 11.5 The present-only path, before and after (patch `0007`)
+
+Release build, Vulkan Video; "before" is the same binary with `DECIBELL_VIDEO_FASTPATH=0`
+(`gpui_wgpu::set_frame_reuse(false)`: every present writes the scene to the GPU, as the renderer did). Allocations
+with `tools/streamgen/malloc-count.c` on the UI thread over 3.05 s of a 1440p120 stream; CPU from
+`tools/streamgen/measure.sh`, the two settings measured alternately.
+
+| | Scene written per present (`DECIBELL_VIDEO_FASTPATH=0`: the renderer before `0007`) | Kept frame (`0007`) |
+|---|---|---|
+| UI-thread allocations per present (1 × 1440p120, 366 presents counted, two runs each) | 281, 288 | 140, 145 |
+| `WgpuRenderer::draw` per present, mean of a 9 s run, three runs each, alternating, at load 5 | 263, 237, 281 µs | 183, 188, 175 µs |
+| the same on the quietest machine of the day (load 3.5, one run each, a development build) | 139 µs | 108 µs |
+| UI threads' CPU, 2 × 1440p120 (HEVC + AV1), % of a core, two runs each at load 4.0–4.8 | 6.25, 6.11 | 5.04, 4.83 |
+| whole process, the same runs | 11.0, 10.8 | 9.8, 9.6 |
+| UI threads' CPU, 1 × 1440p120 HEVC, two runs each (load 4.0–8.5) | 3.32, 4.37 | 3.44, 3.62 |
+| whole process, the same runs | 5.8, 7.7 | 6.4, 6.8 |
+
+- Allocations per present are halved: what is gone is the scene's seven instance writes (a staging buffer each
+  inside wgpu), its bind groups and the batch walk; what is left is wgpu's and the driver's fixed cost of any
+  frame (§4.1, risk 6).
+- Two unsynchronised 120 fps streams present 240 times a second: there the UI threads' CPU falls by a fifth
+  (6.2 → 4.9 % of a core) and the process's by a tenth. With one stream the gain is within the noise of the
+  day's load in one of the two pairs of runs and 0.75 of a point in the other; the time in `draw` itself falls
+  by 30 % at load 5 and by 22 % on the quiet machine.
+- Pixel identity: `video-fastpath` captures the window's frame both ways (the scene built for it, and the kept
+  frame encoded again): 0 of 3,686,400 bytes differ at 1280 × 720 and 0 of 3,136,000 at 1120 × 700 after a
+  resize.
+
 ## 12. Open risks and what is not proven
 
 (Renumbered for the crate. "Was" refers to the prototype's list.)
@@ -858,18 +1135,23 @@ Electron's CPU; this path is at about a sixth of it, measured on a busy machine.
 3. **AMD and Intel are unproven.** Specifically unknown there: whether RADV / ANV accept `vkCmdCopyImage` from a
    decode-profile image on the general queue (the spec allows it when the image has `TRANSFER_SRC` usage, which
    FFmpeg sets, `vulkan_decode.c:1221`), and the shared-queue mode's behaviour on a real single-queue device
-   (forced on NVIDIA with `DECIBELL_VIDEO_SHARED_QUEUE=1` it passes the self-tests). The NVDEC / VAAPI
-   fallbacks of §3 (c) are not built: on such a machine a failing Vulkan decoder falls back to software.
+   (forced on NVIDIA with `DECIBELL_VIDEO_SHARED_QUEUE=1` it passes the self-tests). The VA-API fallback has
+   run only against NVIDIA's VA driver, whose surfaces are unlike Mesa's and Intel's (a DMA-BUF per plane, an
+   NVIDIA modifier): on Mesa the open questions are whether RADV / ANV import one plane of the VA driver's NV12
+   buffer as an `R8` / `R8G8` transfer-source image with the exported modifier at the exported offset (libplacebo
+   and mpv import VA surfaces plane by plane the same way, which is the evidence that drivers accept it), and
+   the acquire from `VK_QUEUE_FAMILY_FOREIGN_EXT` with `GENERAL` as the foreign layout (wlroots' convention). If
+   either fails the stream is on software and says why (`fallback_reason`): `video-owner-checks.md` is the list
+   to run.
 4. **Layout changes on a non-decode queue.** The copy moves the decoder's image `VIDEO_DECODE_DPB ->
    TRANSFER_SRC -> VIDEO_DECODE_DPB` on a compute / transfer queue. FFmpeg's own `hwdownload` does the same, and
    NVIDIA accepts it; it is the first thing to check under validation (2).
 5. **The patches must be carried.** `0001` + `0005` + `0006`, 7 files against a moving GPUI. The renderer file
    (`wgpu_renderer.rs`) is the one that will conflict on rebases.
-6. **A present costs what GPUI's renderer costs.** Every picture is one `renderer.draw` of the retained scene:
-   instance buffers rewritten, bind groups, a render pass, about 280 heap allocations inside wgpu and GPUI on
-   the main thread (`malloc-count`, §0.8), 0.2–0.25 ms of CPU. It is where most of a stream's CPU goes (the
-   main thread's share in HANDOFF §4). A fast path in the renderer for "same scene, new surface pictures"
-   (reuse the previous frame's buffers and bind groups, re-record only the pass) would cut it; not attempted.
+6. **A present costs what wgpu costs for any frame.** Patch `0007` took the scene out of it (§4.1): what is
+   left per picture is acquire, encoder, one pass over the kept draw list, submit, present, about 140 heap
+   allocations inside wgpu, the driver and libwayland on the UI thread. Going below that means presenting
+   without wgpu (a raw Vulkan pass on its swapchain), which nothing here attempts.
 7. **Software HEVC / AV1 at 1440p120** does not keep up on 4 slice / tile threads (§11). Frame threading would
    (at the cost of one frame of latency per thread); decide when the fallback matters.
 8. **10-bit streams** (P010) are refused by both paths (the stream then shows nothing and reports decoder
@@ -884,21 +1166,39 @@ Electron's CPU; this path is at about a sixth of it, measured on a busy machine.
 11. **Windows** compiles in CI only (not run yet with this crate) and draws nothing (§8). **The GL backend**
     (no Vulkan) gets `WgpuUploader`, which runs on Vulkan under `DECIBELL_VIDEO_UPLOAD=wgpu` but has never run
     on OpenGL (NVIDIA's EGL offers no surface format on this machine).
-12. **FFmpeg and the driver allocate per frame** (§0.3, §0.8): about 38 `malloc` calls per decoded frame on
-    the decoder thread on the hardware path, 16 on the software path, none of them ours. Reducing them means
+12. **FFmpeg and the driver allocate per frame** (§0.3, §11.4): 38 `malloc` calls per decoded frame on the
+    decoder thread with Vulkan Video, and the vendor decoders' own numbers in §11.4, none of them ours. Reducing them means
     patching FFmpeg (its `AVBufferRef` per packet and per frame, the hwaccel's per-picture state).
 13. **Thread names are cut to 15 characters by Linux**: every decoder thread shows as `decibell-video-`.
+14. **NVDEC brings a CUDA context**: host and GPU memory on top of the Vulkan device's (§11.4), 65–270 ms to
+    create at the first NVDEC stream, 45–90 ms to release with the last. It exists only while an NVDEC decoder
+    does, and only on machines where Vulkan Video failed.
+15. **The NVDEC-backed VA driver is slow to start** (220–670 ms per decoder open here) and its export copies each
+    picture into its own backing images before ours copies it into a slot. It is not in NVIDIA's order (NVDEC
+    is); it is how the VA-API code runs on this machine. Mesa's and Intel's VA drivers export the decoder's own
+    buffer.
+16. **The probe opens real decoders**: on a machine where Vulkan Video works it costs 64–120 ms once per GPU and
+    driver version; where it does not, the vendor decoder's start-up per codec (a CUDA context each: 465 ms for
+    three). It runs when the app asks, off the UI thread; the app does not ask yet (nothing advertises
+    capabilities on this branch).
+17. **One unexplained shed.** In 54 measured hardware runs (§11.4) one stream of one run (2 × 1440p120 H.264,
+    Vulkan Video, load average 5) overflowed its three-frame queue once, seconds into the stream, and lost 160 frames until
+    the file's next keyframe; no error, no device loss, the other stream of the same run lost nothing, and the
+    same row at load 11 lost nothing. Two 1440p120 H.264 streams are the heaviest thing the one decode queue is
+    asked for here (`dec` 37–52 %), other processes were using the GPU, and the decoder thread waits for each
+    picture's copy inline (risk 9): any of them stalling it for 25 ms does this. Not reproduced, not explained.
+    With a real streamer the cost is the time to the answered keyframe request, not 4 s.
 
 ## 13. Building and running
 
 ```sh
 cd gpui-client
 tools/build-ffmpeg.sh                    # once: vendor/ffmpeg (about 3 minutes with 8 jobs); a no-op afterwards
-tools/fetch-gpui.sh                      # vendor/gpui-src with patches 0001-0005 applied
+tools/fetch-gpui.sh                      # vendor/gpui-src with patches/*.patch applied
 tools/streamgen/make-streams.sh          # once: vendor/streams (needs NVENC; about 600 MB, 2 minutes)
 cargo build --release -p decibell-app
 cargo test -p decibell-video             # software decode through the hub; skips what needs the streams
-target/release/decibell --selftest video-hw,video-idle,video-two,video-sw,video-recover,video-switch
+target/release/decibell --selftest video-hw,video-idle,video-two,video-sw,video-recover,video-switch,video-nvdec,video-vaapi,video-order,video-fastpath
 target/release/decibell --screen video-test --dbv vendor/streams/1440p120_hevc.dbv,vendor/streams/1080p60_av1.dbv --mirror
 tools/streamgen/measure.sh <label> 30 vendor/streams/1440p120_hevc.dbv      # one measured run (HANDOFF §4)
 ```
@@ -912,7 +1212,8 @@ on (`video-proto/`, its tools, its results in `shots/`); nothing in the reposito
 |---|---|
 | `gpui-client/docs/video-design.md` | this document |
 | `gpui-client/crates/decibell-video/` | the crate (§0.1) |
-| `gpui-client/patches/0001-gpui-external-surfaces.patch`, `0005-gpui-surface-fit-filter-device.patch`, `patches/README.md` | the GPUI side |
+| `gpui-client/patches/0001-gpui-external-surfaces.patch`, `0005-gpui-surface-fit-filter-device.patch`, `0006-wgpu-keep-lost-instance.patch`, `0007-wgpu-retained-frames.patch`, `patches/README.md` | the GPUI side |
+| `gpui-client/docs/video-owner-checks.md` | what to run on AMD / Intel hardware |
 | `gpui-client/tools/build-ffmpeg.sh` | builds `vendor/ffmpeg` (§9) |
 | `gpui-client/tools/streamgen/streamgen.c`, `build.sh`, `make-streams.sh`, `dbvcat.py` | the `.dbv` generator (the Linux twin of the Qt spike's; same format), the standard test set, the resolution-switching stream |
 | `gpui-client/tools/streamgen/measure.sh` | one measured playback run on top of `tools/perf/measure.sh` |

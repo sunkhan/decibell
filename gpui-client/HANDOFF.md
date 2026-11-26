@@ -420,8 +420,86 @@ threads named `decibell` (the main thread and GPUI's helpers), "decoder" the `de
 (0.1–0.3 % of a core, one wakeup per frame) is in the CPU total. "replaced" = published but overtaken by the
 next picture before a frame was drawn; "dropped" = shed by the hub.
 
-**The machine was never quiet** (other agents building): two series, the load average at the start of each
-run in the last column. CPU moves by a factor of two between runs of the same scenario (4.7–7.3 % for one
+**Which decoder.** Hardware on every GPU vendor, software only as the last resort (the owner's rule): Vulkan
+Video on GPUI's own device first; where that is missing or fails, NVDEC on NVIDIA and VA-API on AMD / Intel;
+then software. A decoder that does not open or fails in its first pictures is given up for that codec for the
+session, with the reason logged and in the stream's stats; `VideoHub::probe_capabilities` decodes a test frame
+per codec to know what to advertise; `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` forces one
+(`docs/video-design.md` §0.5). On this machine all four run, VA-API through NVIDIA's NVDEC-backed VA driver;
+**nothing has run on an AMD or Intel GPU**: `docs/video-owner-checks.md` is the list for those.
+
+**Every decoder** (2026-11-26, with GPUI patch `0007`; 5 s settle, 20 s sampled, "2x" the same file as two
+streams; each row taken twice about half an hour apart, the run at the lower load shown, the other run's CPU and
+load in the last column; load average 2–26 during the two passes, so read CPU as an upper bound):
+
+| Run | Decoder | CPU, % of a core | main / decoder threads | Private, MB | Wakeups /s: main; decoder; driver | GPU sm / dec %, fb MB | In 20 s: received / decoded / presented / dropped | Decode p50 / p99, ms | Presented every p50 / p99, ms | Load avg | Other pass: CPU % at load |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1080p60-h264 | vulkan | **4.7** | 2.9 / 1.4 | 94 | 180; 260; 173 | 6.0 / 8.9, 161 | 1200 / 1200 / 1200 / 0 | 2.02 / 4.03 | 16.90 / 18.94 | 4.5 | 3.6 at 5.4 |
+| 1440p120-h264 | vulkan | **6.6** | 4.0 / 2.2 | 77 | 352; 498; 142 | 3.9 / 19.6, 186 | 2400 / 2400 / 2396 / 0 | 1.89 / 2.37 | 8.45 / 8.96 | 4.9 | 11.1 at 8.3 |
+| 2x1440p120-h264 | vulkan | **10.4** | 5.8 / 3.9 | 96 | 574; 1586; 142 | 8.7 / 36.9, 315 | 2401 / 2241 / 2235 / 160 + 2401 / 2401 / 2396 / 0 | 1.82 / 3.26, 2.88 / 3.65 | 8.45 / 12.03, 8.45 / 12.54 | 5.1 | 18.9 at 11.0 |
+| 1080p60-hevc | vulkan | **4.0** | 2.3 / 1.4 | 77 | 178; 182; 171 | 0.2 / 4.5, 303 | 1200 / 1200 / 1200 / 0 | 0.72 / 1.70 | 16.90 / 17.92 | 5.0 | 6.0 at 15.5 |
+| 1440p120-hevc | vulkan | **9.3** | 5.2 / 3.6 | 84 | 358; 390; 142 | 2.7 / 8.7, 332 | 2400 / 2400 / 2401 / 0 | 1.12 / 2.37 | 8.45 / 9.47 | 6.4 | 11.4 at 16.2 |
+| 2x1440p120-hevc | vulkan | **16.3** | 8.4 / 7.1 | 111 | 584; 1320; 142 | 7.8 / 19.9, 606 | 2400 / 2400 / 2395 / 0 + 2400 / 2400 / 2390 / 0 | 1.18 / 2.50, 1.44 / 2.75 | 8.06 / 11.52, 8.06 / 12.03 | 7.9 | 19.9 at 16.0 |
+| 1080p60-av1 | vulkan | **5.2** | 3.2 / 1.6 | 67 | 163; 221; 179 | 2.5 / 4.0, 201 | 1200 / 1201 / 1200 / 0 | 1.25 / 3.52 | 16.90 / 19.97 | 9.2 | 5.8 at 18.9 |
+| 1440p120-av1 | vulkan | **11.1** | 7.0 / 3.5 | 115 | 304; 416; 141 | 3.4 / 12.7, 234 | 2400 / 2401 / 2384 / 0 | 1.70 / 3.78 | 8.45 / 11.52 | 13.5 | 11.7 at 22.4 |
+| 2x1440p120-av1 | vulkan | **19.5** | 12.8 / 5.8 | 124 | 516; 1158; 141 | 5.5 / 25.7, 411 | 2400 / 2400 / 2373 / 0 + 2400 / 2401 / 2375 / 0 | 1.76 / 5.25, 2.24 / 5.50 | 8.45 / 15.62, 7.81 / 14.08 | 16.0 | 17.6 at 25.1 |
+| 1080p60-h264 | nvdec | **6.9** | 3.9 / 2.2 | 204 | 157; 205; 189 | 4.2 / 5.0, 370 | 1200 / 1201 / 1200 / 0 | 1.70 / 4.48 | 16.90 / 22.02 | 20.0 | 6.9 at 26.0 |
+| 1440p120-h264 | nvdec | **13.1** | 7.9 / 4.4 | 238 | 358; 502; 142 | 3.5 / 19.1, 393 | 2401 / 2401 / 2385 / 0 | 2.37 / 4.99 | 8.45 / 13.06 | 23.5 | 12.1 at 23.8 |
+| 2x1440p120-h264 | nvdec | **21.7** | 11.9 / 7.5 (+ cuda-EvtHandlr 1.5) | 293 | 706; 1553; 142 | 7.8 / 52.0, 487 | 2400 / 2400 / 2401 / 0 + 2400 / 2401 / 2401 / 0 | 2.62 / 3.78, 2.88 / 4.22 | 8.45 / 10.50, 7.55 / 11.01 | 22.2 | 23.3 at 27.1 |
+| 1080p60-hevc | nvdec | **7.2** | 3.6 / 2.3 | 234 | 169; 281; 181 | 0.3 / 3.0, 392 | 1200 / 1200 / 1200 / 0 | 2.11 / 6.27 | 16.90 / 20.99 | 21.6 | 7.2 at 25.3 |
+| 1440p120-hevc | nvdec | **13.1** | 6.6 / 4.8 (+ cuda-EvtHandlr 1.1) | 254 | 348; 540; 141 | 12.2 / 11.9, 425 | 2400 / 2401 / 2400 / 0 | 2.11 / 5.25 | 8.45 / 11.52 | 22.1 | 13.1 at 24.3 |
+| 2x1440p120-hevc | nvdec | **13.7** | 5.8 / 6.1 (+ cuda-EvtHandlr 1.2) | 298 | 596; 965; 142 | 7.0 / 17.6, 550 | 2400 / 2400 / 2399 / 0 + 2400 / 2401 / 2397 / 0 | 1.18 / 2.11, 1.12 / 2.02 | 8.06 / 11.52, 8.06 / 12.03 | 22.0 | 21.4 at 22.1 |
+| 1080p60-av1 | nvdec | **4.3** | 2.0 / 1.2 | 215 | 179; 246; 171 | 1.2 / 3.8, 420 | 1200 / 1201 / 1201 / 0 | 1.06 / 1.44 | 16.90 / 16.90 | 17.0 | 6.5 at 22.9 |
+| 1440p120-av1 | nvdec | **5.9** | 2.9 / 1.7 | 228 | 356; 543; 142 | 0.8 / 12.2, 472 | 2400 / 2401 / 2401 / 0 | 1.31 / 1.70 | 8.45 / 8.45 | 12.5 | 11.3 at 19.2 |
+| 2x1440p120-av1 | nvdec | **17.0** | 8.5 / 6.2 (+ cuda-EvtHandlr 1.5) | 267 | 590; 1053; 142 | 3.2 / 25.8, 644 | 2400 / 2400 / 2398 / 0 + 2400 / 2400 / 2397 / 0 | 1.44 / 2.24, 1.38 / 2.11 | 8.45 / 11.52, 8.06 / 12.03 | 8.1 | 20.5 at 16.9 |
+| 1080p60-h264 | vaapi | **6.7** | 3.0 / 2.4 | 238 | 174; 324; 173 | 2.2 / 5.0, 466 | 1200 / 1200 / 1201 / 0 | 1.44 / 3.26 | 16.90 / 18.94 | 9.1 | 7.3 at 20.8 |
+| 1440p120-h264 | vaapi | **11.7** | 5.5 / 4.6 (+ cuda-EvtHandlr 1.2) | 278 | 350; 896; 140 | 2.8 / 22.9, 553 | 2400 / 2400 / 2400 / 0 | 2.75 / 5.50 | 8.45 / 11.52 | 11.1 | 13.5 at 19.5 |
+| 2x1440p120-h264 | vaapi | **15.4** | 6.5 / 6.9 (+ cuda-EvtHandlr 1.3) | 310 | 585; 1873; 142 | 9.2 / 51.2, 805 | 2401 / 2401 / 2393 / 0 + 2400 / 2400 / 2394 / 0 | 2.62 / 4.48, 2.62 / 4.48 | 7.55 / 12.54, 7.55 / 12.54 | 13.1 | 20.0 at 17.6 |
+| 1080p60-hevc | vaapi | **6.2** | 2.5 / 2.3 | 244 | 176; 335; 173 | 0.0 / 2.2, 482 | 1200 / 1200 / 1201 / 0 | 0.98 / 3.65 | 16.90 / 18.94 | 13.1 | 5.7 at 16.9 |
+| 1440p120-hevc | vaapi | **11.0** | 4.5 / 4.7 (+ cuda-EvtHandlr 1.4) | 224 | 360; 792; 142 | 5.3 / 12.4, 578 | 2400 / 2400 / 2398 / 0 | 1.95 / 3.01 | 8.45 / 9.47 | 13.0 | 7.2 at 13.2 |
+| 2x1440p120-hevc | vaapi | **12.8** | 4.6 / 6.6 (+ cuda-EvtHandlr 1.1) | 319 | 594; 1379; 142 | 6.3 / 17.3, 855 | 2400 / 2400 / 2397 / 0 + 2400 / 2400 / 2398 / 0 | 1.12 / 1.89, 1.12 / 1.70 | 7.55 / 11.52, 7.30 / 11.52 | 9.1 | 11.0 at 11.3 |
+| 1080p60-av1 | vaapi | **3.9** | 1.5 / 1.3 | 228 | 179; 331; 171 | 1.5 / 4.0, 474 | 1200 / 1200 / 1201 / 0 | 1.06 / 1.50 | 16.90 / 16.90 | 6.9 | 4.0 at 7.8 |
+| 1440p120-av1 | vaapi | **5.4** | 2.5 / 1.9 | 253 | 358; 771; 142 | 0.7 / 12.6, 570 | 2400 / 2400 / 2401 / 0 | 1.31 / 2.24 | 8.45 / 8.96 | 5.1 | 6.5 at 5.7 |
+| 2x1440p120-av1 | vaapi | **13.7** | 6.0 / 5.9 (+ cuda-EvtHandlr 1.2) | 293 | 603; 1926; 142 | 17.1 / 32.5, 840 | 2400 / 2400 / 2401 / 0 + 2400 / 2400 / 2399 / 0 | 2.11 / 3.14, 3.01 / 4.22 | 7.81 / 11.52, 7.55 / 12.03 | 4.1 | 9.7 at 4.5 |
+| 1080p60-h264 | software | **21.8** | 1.7 / 19.8 | 81 | 182; 158; 172 | 9.9 / 0.0, 74 | 1200 / 1200 / 1200 / 0 | 4.03 / 6.27 | 16.90 / 18.94 | 4.0 | 24.6 at 4.6 |
+| 1440p120-h264 | software | **50.3** | 3.1 / 46.9 | 98 | 362; 288; 142 | 6.0 / 0.0, 86 | 2400 / 2400 / 2400 / 0 | 4.48 / 6.02 | 8.45 / 9.98 | 2.8 | 65.3 at 4.8 |
+| 2x1440p120-h264 | software | **104.8** | 4.5 / 99.8 | 137 | 580; 716; 142 | 15.7 / 0.0, 114 | 2400 / 2400 / 2400 / 0 + 2400 / 2400 / 2401 / 0 | 4.74 / 6.27, 4.74 / 6.02 | 8.45 / 11.52, 8.06 / 11.52 | 2.4 | 138.8 at 7.8 |
+| 1080p60-hevc | software | **31.8** | 1.7 / 29.8 | 91 | 182; 167; 171 | 7.7 / 0.0, 74 | 1200 / 1200 / 1200 / 0 | 5.76 / 7.81 | 16.90 / 18.94 | 2.5 | 33.0 at 8.2 |
+| 1440p120-hevc | software | **84.1** | 2.9 / 80.9 | 116 | 362; 252; 142 | 10.2 / 0.0, 86 | 2400 / 2400 / 2401 / 0 | 7.30 / 9.47 | 8.45 / 10.50 | 2.4 | 83.5 at 6.7 |
+| 2x1440p120-hevc | software | **78.1** | 2.8 / 74.6 | 214 | 230; 192; 70 | 4.0 / 0.0, 108 | 2400 / 883 / 883 / 1466 + 2400 / 885 / 885 / 1463 | 8.06 / 16.90, 8.06 / 16.90 | 9.47 / 18.94, 10.50 / 17.92 | 2.1 | 168.9 at 5.1 |
+| 1080p60-av1 | software | **34.9** | 1.4 / 1.6 (+ dav1d-worker 31.6) | 88 | 182; 188; 171 | 3.3 / 0.0, 74 | 1200 / 1200 / 1200 / 0 | 4.99 / 6.78 | 16.90 / 17.92 | 4.2 | 57.9 at 5.1 |
+| 1440p120-av1 | software | **73.1** | 2.8 / 5.3 (+ dav1d-worker 64.6) | 107 | 227; 181; 104 | 2.8 / 0.0, 85 | 2401 / 1475 / 1474 / 927 | 7.55 / 12.54 | 8.45 / 12.54 | 3.0 | 87.0 at 11.4 |
+| 2x1440p120-av1 | software | **77.9** | 3.1 / 6.6 (+ dav1d-worker 67.5) | 188 | 175; 149; 63 | 2.5 / 0.0, 102 | 2400 / 606 / 606 / 1794 + 2401 / 602 / 602 / 1799 | 11.52 / 17.92, 11.52 / 16.90 | 11.01 / 17.92, 11.01 / 17.92 | 4.4 | 125.6 at 9.9 |
+
+- Every hardware decoder plays every row, packet to published picture in 1–3 ms, nothing dropped in 53 of the
+  54 hardware runs; in one (2 × 1440p120 H.264 on Vulkan Video, the row shown) a stream shed 160 frames once
+  and waited for the file's next keyframe: not reproduced, cause not found (`docs/video-design.md` §11.4). Their
+  CPU is within each other's noise: at load 4–8, one 1440p120 stream is 5.4–6.8 % of a core and two are
+  9.6–10.4 %.
+- The vendor decoders cost memory, not CPU: 67–140 MB private with Vulkan Video, 204–307 MB with NVDEC (a CUDA
+  context: about 150 MB of host and 200 MB of GPU memory more), 194–319 MB with the VA driver here (its own
+  CUDA context). They exist only on a machine where Vulkan Video failed, and only while such a stream plays.
+- Software keeps up with 1080p60 of any codec, with one 1440p120 stream of H.264 (50 % of a core) or HEVC
+  (84 %) and with two of H.264 (105 %); two 1440p120 HEVC streams and AV1 at 1440p120 drop frames on four
+  threads per stream.
+- Decoder start: Vulkan Video under 1 ms, NVDEC 65–270 ms, the VA driver 220–670 ms; frames that arrive
+  meanwhile are queued (up to 64) and worked off in a burst.
+
+**The present-only path** (GPUI patch `0007`: a present for a new picture encodes the frame the renderer kept
+instead of writing the scene to the GPU again; `patches/README.md` §0007), before and after on the same binary:
+
+| | Scene written per present (`DECIBELL_VIDEO_FASTPATH=0`: the renderer before `0007`) | Kept frame (`0007`) |
+|---|---|---|
+| UI-thread allocations per present (1 × 1440p120, 366 presents counted, two runs each) | 281, 288 | 140, 145 |
+| `WgpuRenderer::draw` per present, mean of a 9 s run, three runs each, alternating, at load 5 | 263, 237, 281 µs | 183, 188, 175 µs |
+| the same on the quietest machine of the day (load 3.5, one run each, a development build) | 139 µs | 108 µs |
+| UI threads' CPU, 2 × 1440p120 (HEVC + AV1), % of a core, two runs each at load 4.0–4.8 | 6.25, 6.11 | 5.04, 4.83 |
+| whole process, the same runs | 11.0, 10.8 | 9.8, 9.6 |
+| UI threads' CPU, 1 × 1440p120 HEVC, two runs each (load 4.0–8.5) | 3.32, 4.37 | 3.44, 3.62 |
+| whole process, the same runs | 5.8, 7.7 | 6.4, 6.8 |
+
+**Earlier series** (Vulkan Video only, before patch `0007`; 30 s sampled). **The machine was never quiet**
+(other agents building): two series, the load average at the start of each run in the last column. CPU moves by a factor of two between runs of the same scenario (4.7–7.3 % for one
 1440p120 HEVC stream), and not simply with the load: a quieter machine clocks its cores down, and the figure is
 time on a core, not work. Read the lowest figure of a scenario as "at most this on a quiet machine", and the
 counts, wakeups and GPU columns as stable.
@@ -482,12 +560,12 @@ Series 1 (load average 3.4–8.7), the same code:
   minification filter of patch `0005`): within the noise of the row without it (5.7–6.8 against 4.7–7.3 % CPU,
   13.0–14.4 against 9.8–12.8 % GPU `sm`); with the filter compiled out the mirror row measured 7.2 % CPU and
   18 % `sm`, i.e. the filter has no measurable cost.
-- **Allocations** (`tools/streamgen/malloc-count.c`, 1080p60 HEVC): our Rust code allocates nothing per
-  frame (`cargo test -p decibell-video --test alloc`: 0 over 100 steady-state frames, all three codecs); the
-  decoder thread sees 38 `malloc` calls per frame on the hardware path and 16 on the software path, all inside
-  FFmpeg and the driver; the main thread 285 per presented frame, inside GPUI's renderer and wgpu (each
-  picture is one draw of the retained scene). That last number is where a stream's CPU goes ("main" is
-  about two thirds of every hardware row) and is the next thing to cut (`docs/video-design.md` §12.6).
+- **Allocations** (`tools/streamgen/malloc-count.c`, 1440p120 HEVC): our Rust code allocates nothing per
+  frame (`cargo test -p decibell-video --test alloc`: 0 over 100 steady-state frames, all three codecs, and
+  again after a decoder was replaced); the decoder thread sees 38 `malloc` calls per frame with Vulkan Video,
+  20 with NVDEC, 35 with VA-API and 17 in software, all inside FFmpeg and the drivers; the main thread 140–145
+  per presented frame (281–288 before patch `0007`), what wgpu and the driver need for any frame
+  (`docs/video-design.md` §12.6).
 - **Against the prototype** (`docs/video-design.md` §11: 2.8–3.9 % for 1080p60, 4.1–4.4 % for 1440p120,
   7.5 % for 2 × 1440p120, the quietest runs of its day). The prototype binary measured again today with the
   same tool, between the two series: **8.5 %** for 1 × 1440p120 HEVC (main 5.2, decoder 2.9; 160 MB private)
@@ -499,8 +577,11 @@ Series 1 (load average 3.4–8.7), the same code:
   window visible, and this client doing the same through the model (so the core's receive, FEC and decrypt
   cost is in both). The Qt spike's Windows figures for the same streams (Electron 31.5–33.1 % for one
   1440p120 stream, 52.6 % for two) put the target for two at ≤ 17.5 %.
-- **Modes**: the self-tests also pass with `DECIBELL_VIDEO_SHARED_QUEUE=1` (the single-queue mode AMD / Intel
-  would use, forced on NVIDIA), with `DECIBELL_VIDEO_UPLOAD=wgpu`, and under XWayland.
+- **Modes**: all ten video self-tests (`video-hw`, `-idle`, `-two`, `-sw`, `-recover`, `-switch`, `-nvdec`,
+  `-vaapi`, `-order`, `-fastpath`) also pass with `DECIBELL_VIDEO_SHARED_QUEUE=1` (the single-queue mode AMD /
+  Intel would use, forced on NVIDIA) and under XWayland; `video-sw` and `video-idle` with
+  `DECIBELL_VIDEO_UPLOAD=wgpu`; `video-fastpath` under `crates/decibell-video/tools/alloc-count.c` (137
+  allocations per present on the UI thread, budget 170).
 
 ## 5. Open items
 
