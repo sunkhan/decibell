@@ -902,7 +902,8 @@ async fn quiet(cx: &TestCx, seconds: u64) -> Result<(Frames, bool)> {
         if !disturbed {
             return Ok((frames, true));
         }
-        cx.log(format_args!("try {attempt} disturbed ({} drawn): again", frames.drawn));
+        let panel = cx.update(|_, cx| crate::shown_results(cx).map_or(0, |r| r.read(cx).renders()))?;
+        cx.log(format_args!("try {attempt} disturbed ({} drawn; the panel has rendered {panel} times): again", frames.drawn));
     }
     // Every try disturbed (a shared stack, other windows): the quietest one.
     Ok((least.expect("three tries"), false))
@@ -926,6 +927,8 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     s.run(&cx, SearchQuery { text: "wayland".into(), filters: vec![general()] }).await?;
     cx.update(|window, cx| window.blur(cx))?;
     park_pointer(&cx)?;
+    // The cards' pictures are fetched once they are drawn (the avatar cache): let them land.
+    cx.sleep(Duration::from_secs(2)).await;
     let renders = || -> Result<u64> { cx.update(|_, cx| crate::shown_results(cx).map_or(0, |r| r.read(cx).renders())) };
     let before = renders()?;
     let (f, clean) = quiet(&cx, 5).await?;
