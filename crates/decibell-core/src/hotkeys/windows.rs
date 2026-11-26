@@ -446,11 +446,18 @@ mod tests {
         let ok = reply_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(ok, vec![true], "Ctrl+Alt+Shift+Win+F24 is registered by something else on this machine");
 
-        super::super::tests::FIRED.lock().unwrap().retain(|(a, _)| *a != Action::ToggleMute);
+        // The action is emitted on the hotkey thread, so read it from the recording sink by
+        // predicate (any thread), as the X11 test does.
+        use crate::events::{testing, CoreEvent};
+        let is_mute_press = |e: &CoreEvent| {
+            matches!(e, CoreEvent::HotkeyAction(p) if p.action == Action::ToggleMute && p.pressed)
+        };
+        testing::install_recording_sink();
+        testing::take_events(is_mute_press);
         unsafe { PostThreadMessageW(t.thread_id, WM_HOTKEY, WPARAM(1), LPARAM(0)) }.unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let fired = loop {
-            if super::super::tests::FIRED.lock().unwrap().contains(&(Action::ToggleMute, true)) {
+            if !testing::take_events(is_mute_press).is_empty() {
                 break true;
             }
             if std::time::Instant::now() > deadline {
