@@ -34,8 +34,6 @@ decibell-core = { path = "../../../crates/decibell-core", default-features = fal
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
-# Local dates (the profile's "Joined", "Keys changed", the custom status's "Today").
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde_json = { version = "1", optional = true }
 
 [dev-dependencies]

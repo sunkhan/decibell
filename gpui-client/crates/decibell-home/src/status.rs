@@ -57,11 +57,9 @@ pub fn clear_after_seconds(choice: ClearAfter) -> u32 {
         ClearAfter::ThirtyMinutes => 30 * 60,
         ClearAfter::Never => 0,
         ClearAfter::Today => {
-            use chrono::{Duration, Local, TimeZone};
-            let now = Local::now();
-            let midnight = (now.date_naive() + Duration::days(1)).and_hms_opt(0, 0, 0).and_then(|t| Local.from_local_datetime(&t).earliest());
-            match midnight {
-                Some(m) => ((m - now).num_milliseconds() as f64 / 1000.).round().max(60.) as u32,
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0., |d| d.as_secs_f64());
+            match decibell_model::regional::next_local_midnight(now as i64) {
+                Some(m) => (m as f64 - now).round().max(60.) as u32,
                 None => 86_400,
             }
         }

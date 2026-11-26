@@ -196,6 +196,11 @@ pub struct MessageList {
     last_frame: Option<Instant>,
     pointer: Point<Pixels>,
     today: i32,
+    /// The wall clock, unix seconds (tests inject theirs: [`Self::set_clock`]).
+    clock: fn() -> i64,
+    /// Fires at the next local midnight: "today" moves on and the stamps are built again (a
+    /// list left open past midnight would label yesterday's messages with a bare time).
+    midnight: Option<Task<()>>,
     time_format: TimeFormat,
     pub stats: ListStats,
     copy_sink: Option<Rc<std::cell::RefCell<Option<String>>>>,
@@ -285,7 +290,7 @@ impl MessageList {
         }));
         let time_format = cx.try_global::<Model>().map_or(TimeFormat::Auto, |model| model.settings.read(cx).time_format());
         cx.on_release(|this, cx| this.leave(cx)).detach();
-        Self {
+        let mut this = Self {
             source,
             slice,
             core: ListCore::starting(placement == Placement::Bottom),
@@ -328,6 +333,8 @@ impl MessageList {
             last_frame: None,
             pointer: Point::default(),
             today: decibell_model::chat::time::local_day(chrono_now()),
+            clock: chrono_now,
+            midnight: None,
             time_format,
             stats: ListStats::default(),
             copy_sink: None,
@@ -336,7 +343,9 @@ impl MessageList {
             near_told: (0, 0, 0, 0, u64::MAX),
             list_id: cx.entity_id(),
             _subscriptions: subscriptions,
-        }
+        };
+        this.arm_midnight(cx);
+        this
     }
 
     /// Padding on the right of the rows, inside the scroll box (the scrollbar stays at the
@@ -359,6 +368,35 @@ impl MessageList {
             self.invalidate_where(|_| true);
             cx.notify();
         }
+    }
+
+    /// The day the stamps are relative to (yyyymmdd).
+    pub fn today(&self) -> i32 {
+        self.today
+    }
+
+    /// Tests: the wall clock the list reads (unix seconds): "today" and the midnight timer
+    /// follow it from now on.
+    pub fn set_clock(&mut self, clock: fn() -> i64, cx: &mut Context<Self>) {
+        self.clock = clock;
+        self.set_today(decibell_model::chat::time::local_day(clock()), cx);
+        self.arm_midnight(cx);
+    }
+
+    /// The one timer of a list at rest: the next local midnight, when the stamps' "today" moves
+    /// on (`message_stamp`: today's messages show a bare time, yesterday's "Yesterday, at …").
+    /// It re-arms itself for the next day; an early wake (a DST day) only re-arms.
+    fn arm_midnight(&mut self, cx: &mut Context<Self>) {
+        let now = (self.clock)();
+        let wait = decibell_model::regional::next_local_midnight(now).map_or(86_400, |midnight| (midnight - now).max(1));
+        self.midnight = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(wait as u64)).await;
+            let _ = this.update(cx, |this, cx| {
+                let day = decibell_model::chat::time::local_day((this.clock)());
+                this.set_today(day, cx);
+                this.arm_midnight(cx);
+            });
+        }));
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -1839,3 +1877,82 @@ impl Render for MessageList {
     }
 }
 
+#[cfg(test)]
+mod midnight_tests {
+    //! "Today" follows the clock past midnight: one timer for the next local midnight, on the
+    //! test executor's clock with an injected wall clock.
+
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::time::Duration;
+
+    use decibell_model::chat::MessageSlice;
+    use decibell_model::chat::slice::SliceKind;
+    use decibell_model::{ServerId, regional};
+    use gpui::{App, AppContext as _, Entity, Task, TestAppContext};
+
+    use crate::source::{Jump, ListSource};
+    use crate::MessageList;
+
+    struct Source(Entity<MessageSlice>);
+
+    impl ListSource for Source {
+        fn slice(&self, _: &mut App) -> Entity<MessageSlice> {
+            self.0.clone()
+        }
+        fn server(&self) -> Option<ServerId> {
+            None
+        }
+        fn load_older(&self, _: &mut App) -> Option<Task<Option<bool>>> {
+            None
+        }
+        fn load_newer(&self, _: &mut App) -> Option<Task<Option<bool>>> {
+            None
+        }
+        fn jump_to_present(&self, _: &mut App) {}
+        fn jump_to_message(&self, _: i64, _: &mut App) -> Jump {
+            Jump::Refused
+        }
+        fn jump_landed(&self, _: &mut App) {}
+        fn can_delete_others(&self, _: &App) -> bool {
+            false
+        }
+        fn edit(&self, _: i64, _: &str, _: &mut App) {}
+        fn delete(&self, _: i64, _: &mut App) {}
+    }
+
+    static NOW: AtomicI64 = AtomicI64::new(0);
+
+    fn now() -> i64 {
+        NOW.load(Ordering::Relaxed)
+    }
+
+    #[gpui::test]
+    fn today_moves_on_at_the_next_local_midnight(cx: &mut TestAppContext) {
+        // 30 s before a local midnight, in this machine's zone.
+        let midnight = regional::next_local_midnight(1_764_000_000).expect("a midnight");
+        NOW.store(midnight - 30, Ordering::Relaxed);
+        let before = decibell_model::chat::time::local_day(midnight - 30);
+        let after = decibell_model::chat::time::local_day(midnight + 1);
+        assert_ne!(before, after);
+        let slice = cx.new(|_| MessageSlice::new(SliceKind::Dm { peer: 2 }, 1, false));
+        let list = cx.new(|cx| MessageList::new(Rc::new(Source(slice)), cx));
+        list.update(cx, |list, cx| list.set_clock(now, cx));
+        assert_eq!(list.read_with(cx, |list, _| list.today()), before);
+        // Not before midnight…
+        NOW.store(midnight - 1, Ordering::Relaxed);
+        cx.executor().advance_clock(Duration::from_secs(29));
+        cx.run_until_parked();
+        assert_eq!(list.read_with(cx, |list, _| list.today()), before);
+        // …then the stamps' day is the new one, and the timer is armed for the next midnight.
+        NOW.store(midnight + 1, Ordering::Relaxed);
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(list.read_with(cx, |list, _| list.today()), after);
+        let next = regional::next_local_midnight(midnight + 1).expect("the next one");
+        NOW.store(next + 1, Ordering::Relaxed);
+        cx.executor().advance_clock(Duration::from_secs((next - midnight) as u64 + 1));
+        cx.run_until_parked();
+        assert_eq!(list.read_with(cx, |list, _| list.today()), decibell_model::chat::time::local_day(next + 1));
+    }
+}

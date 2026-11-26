@@ -149,6 +149,15 @@ pub fn local(secs: i64) -> Option<LocalTime> {
     })
 }
 
+/// The first second of the local day after `secs` (unix seconds; the system's zone and its DST
+/// rules): when "today" changes for the chat's stamps and the custom status's "Today". `None`
+/// when unrepresentable.
+pub fn next_local_midnight(secs: i64) -> Option<i64> {
+    let t = Local.timestamp_opt(secs, 0).single()?;
+    let next = t.date_naive().succ_opt()?.and_hms_opt(0, 0, 0)?;
+    Local.from_local_datetime(&next).earliest().map(|m| m.timestamp())
+}
+
 /// How a month is named in a composed date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MonthName {

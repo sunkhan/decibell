@@ -303,6 +303,10 @@ in short:
     its owner is asked to say again with `retell_bottom`). The DM pane's "being read" rule reads it.
 - **Options**: `MessageList::new(source, cx).with_right_padding(16.)` keeps the rows 16 px from the scrollbar
   (the DM list's `className="pr-4"`; the scrollbar stays at the edge).
+- **"Today" moves on at midnight**: a list keeps one timer, for the next local midnight
+  (`regional::next_local_midnight`), that rebuilds its rows' stamps against the new day and re-arms itself (an
+  early wake on a DST day only re-arms); `set_clock` injects the wall clock in tests. The renderer's bubbles are
+  memoised and keep yesterday's "today" until something re-renders them; ours relabel.
 - **CSS that the row layout reproduces by hand** (found by comparing every row's `offsetTop` with the Electron
   client, `tools/electron-captures/chat-rows.mjs`): a block (code, display math) first in a body collapses its
   top margin with the body's `mt-0.5`; two blocks in a row share one margin; a block last in a body collapses
