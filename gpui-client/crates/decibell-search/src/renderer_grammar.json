@@ -1,0 +1,1918 @@
+{
+  "texts": [
+    {
+      "text": "",
+      "token": null,
+      "fold": "",
+      "words": [],
+      "fragments": [],
+      "searchable": false,
+      "searchableInside": false,
+      "has": null
+    },
+    {
+      "text": " ",
+      "token": null,
+      "fold": " ",
+      "words": [],
+      "fragments": [],
+      "searchable": false,
+      "searchableInside": false,
+      "has": null
+    },
+    {
+      "text": "from:",
+      "token": {
+        "op": "from",
+        "value": "",
+        "before": ""
+      },
+      "fold": "from:",
+      "words": [
+        {
+          "folded": "from",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "from:"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "from:da",
+      "token": {
+        "op": "from",
+        "value": "da",
+        "before": ""
+      },
+      "fold": "from:da",
+      "words": [
+        {
+          "folded": "from",
+          "prefix": false
+        },
+        {
+          "folded": "da",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "from:da"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "raid FROM:Da",
+      "token": {
+        "op": "from",
+        "value": "Da",
+        "before": "raid "
+      },
+      "fold": "raid from:da",
+      "words": [
+        {
+          "folded": "raid",
+          "prefix": true
+        },
+        {
+          "folded": "from",
+          "prefix": false
+        },
+        {
+          "folded": "da",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "raid",
+        "from:da"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "raid from:da ",
+      "token": null,
+      "fold": "raid from:da ",
+      "words": [
+        {
+          "folded": "raid",
+          "prefix": true
+        },
+        {
+          "folded": "from",
+          "prefix": false
+        },
+        {
+          "folded": "da",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "raid",
+        "from:da"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "xfrom:da",
+      "token": null,
+      "fold": "xfrom:da",
+      "words": [
+        {
+          "folded": "xfrom",
+          "prefix": false
+        },
+        {
+          "folded": "da",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "xfrom:da"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "in:#gen",
+      "token": {
+        "op": "in",
+        "value": "#gen",
+        "before": ""
+      },
+      "fold": "in:#gen",
+      "words": [
+        {
+          "folded": "in",
+          "prefix": false
+        },
+        {
+          "folded": "gen",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "in:#gen"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "in:",
+      "token": {
+        "op": "in",
+        "value": "",
+        "before": ""
+      },
+      "fold": "in:",
+      "words": [
+        {
+          "folded": "in",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "in:"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "has:",
+      "token": {
+        "op": "has",
+        "value": "",
+        "before": ""
+      },
+      "fold": "has:",
+      "words": [
+        {
+          "folded": "has",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "has:"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "has:IMAGE",
+      "token": {
+        "op": "has",
+        "value": "IMAGE",
+        "before": ""
+      },
+      "fold": "has:image",
+      "words": [
+        {
+          "folded": "has",
+          "prefix": false
+        },
+        {
+          "folded": "image",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "has:image"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "before:2026-10-01",
+      "token": {
+        "op": "before",
+        "value": "2026-10-01",
+        "before": ""
+      },
+      "fold": "before:2026-10-01",
+      "words": [
+        {
+          "folded": "before",
+          "prefix": false
+        },
+        {
+          "folded": "2026",
+          "prefix": false
+        },
+        {
+          "folded": "10",
+          "prefix": false
+        },
+        {
+          "folded": "01",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "before:2026-10-01"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "during:today",
+      "token": {
+        "op": "during",
+        "value": "today",
+        "before": ""
+      },
+      "fold": "during:today",
+      "words": [
+        {
+          "folded": "during",
+          "prefix": false
+        },
+        {
+          "folded": "today",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "during:today"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "after:yesterday",
+      "token": {
+        "op": "after",
+        "value": "yesterday",
+        "before": ""
+      },
+      "fold": "after:yesterday",
+      "words": [
+        {
+          "folded": "after",
+          "prefix": false
+        },
+        {
+          "folded": "yesterday",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "after:yesterday"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "from:in:x",
+      "token": {
+        "op": "from",
+        "value": "in:x",
+        "before": ""
+      },
+      "fold": "from:in:x",
+      "words": [
+        {
+          "folded": "from",
+          "prefix": false
+        },
+        {
+          "folded": "in",
+          "prefix": false
+        },
+        {
+          "folded": "x",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "from:in:x"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "inside:",
+      "token": null,
+      "fold": "inside:",
+      "words": [
+        {
+          "folded": "inside",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "inside:"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ölçü has:im",
+      "token": {
+        "op": "has",
+        "value": "im",
+        "before": "ölçü "
+      },
+      "fold": "olcu has:im",
+      "words": [
+        {
+          "folded": "olcu",
+          "prefix": true
+        },
+        {
+          "folded": "has",
+          "prefix": false
+        },
+        {
+          "folded": "im",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "olcu",
+        "has:im"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "a\tb in:x",
+      "token": {
+        "op": "in",
+        "value": "x",
+        "before": "a\tb "
+      },
+      "fold": "a\tb in:x",
+      "words": [
+        {
+          "folded": "a",
+          "prefix": false
+        },
+        {
+          "folded": "b",
+          "prefix": false
+        },
+        {
+          "folded": "in",
+          "prefix": false
+        },
+        {
+          "folded": "x",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "a",
+        "b",
+        "in:x"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "wayland",
+      "token": null,
+      "fold": "wayland",
+      "words": [
+        {
+          "folded": "wayland",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "wayland"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "Wayland -x11",
+      "token": null,
+      "fold": "wayland -x11",
+      "words": [
+        {
+          "folded": "wayland",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "wayland"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "\"exact phrase\" gg",
+      "token": null,
+      "fold": "\"exact phrase\" gg",
+      "words": [
+        {
+          "folded": "exact",
+          "prefix": false
+        },
+        {
+          "folded": "phrase",
+          "prefix": false
+        },
+        {
+          "folded": "gg",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "exact phrase",
+        "gg"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "-only",
+      "token": null,
+      "fold": "-only",
+      "words": [],
+      "fragments": [],
+      "searchable": false,
+      "searchableInside": false,
+      "has": null
+    },
+    {
+      "text": "e-mail",
+      "token": null,
+      "fold": "e-mail",
+      "words": [
+        {
+          "folded": "e",
+          "prefix": false
+        },
+        {
+          "folded": "mail",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "e-mail"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ab",
+      "token": null,
+      "fold": "ab",
+      "words": [
+        {
+          "folded": "ab",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "ab"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "abc",
+      "token": null,
+      "fold": "abc",
+      "words": [
+        {
+          "folded": "abc",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "abc"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "IŞIK",
+      "token": null,
+      "fold": "isik",
+      "words": [
+        {
+          "folded": "isik",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "isik"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ışık ılık",
+      "token": null,
+      "fold": "isik ilik",
+      "words": [
+        {
+          "folded": "isik",
+          "prefix": true
+        },
+        {
+          "folded": "ilik",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "isik",
+        "ilik"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "Ünlü café",
+      "token": null,
+      "fold": "unlu cafe",
+      "words": [
+        {
+          "folded": "unlu",
+          "prefix": true
+        },
+        {
+          "folded": "cafe",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "unlu",
+        "cafe"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "naïve résumé",
+      "token": null,
+      "fold": "naive resume",
+      "words": [
+        {
+          "folded": "naive",
+          "prefix": true
+        },
+        {
+          "folded": "resume",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "naive",
+        "resume"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "Ⅻ ½",
+      "token": null,
+      "fold": "ⅻ ½",
+      "words": [
+        {
+          "folded": "ⅻ",
+          "prefix": false
+        },
+        {
+          "folded": "½",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "ⅻ",
+        "½"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "日本語 テキスト",
+      "token": null,
+      "fold": "日本語 テキスト",
+      "words": [
+        {
+          "folded": "日本語",
+          "prefix": true
+        },
+        {
+          "folded": "テキスト",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "日本語",
+        "テキスト"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "emoji 🎉 test",
+      "token": null,
+      "fold": "emoji 🎉 test",
+      "words": [
+        {
+          "folded": "emoji",
+          "prefix": true
+        },
+        {
+          "folded": "test",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "emoji",
+        "🎉",
+        "test"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "x \"unterminated",
+      "token": null,
+      "fold": "x \"unterminated",
+      "words": [
+        {
+          "folded": "x",
+          "prefix": false
+        },
+        {
+          "folded": "unterminated",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "x",
+        "unterminated"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "  spaced   out  ",
+      "token": null,
+      "fold": "  spaced   out  ",
+      "words": [
+        {
+          "folded": "spaced",
+          "prefix": true
+        },
+        {
+          "folded": "out",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "spaced",
+        "out"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "C++ c#",
+      "token": null,
+      "fold": "c++ c#",
+      "words": [
+        {
+          "folded": "c",
+          "prefix": false
+        },
+        {
+          "folded": "c",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "c++",
+        "c#"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "Đorđe Łódź",
+      "token": null,
+      "fold": "đorđe łodz",
+      "words": [
+        {
+          "folded": "đorđe",
+          "prefix": true
+        },
+        {
+          "folded": "łodz",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "đorđe",
+        "łodz"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ﬁne ﬂow",
+      "token": null,
+      "fold": "ﬁne ﬂow",
+      "words": [
+        {
+          "folded": "ﬁne",
+          "prefix": true
+        },
+        {
+          "folded": "ﬂow",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "ﬁne",
+        "ﬂow"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ǅungla",
+      "token": null,
+      "fold": "ǆungla",
+      "words": [
+        {
+          "folded": "ǆungla",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "ǆungla"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "Straße",
+      "token": null,
+      "fold": "straße",
+      "words": [
+        {
+          "folded": "straße",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "straße"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "Ångström",
+      "token": null,
+      "fold": "angstrom",
+      "words": [
+        {
+          "folded": "angstrom",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "angstrom"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ﬀ",
+      "token": null,
+      "fold": "ﬀ",
+      "words": [
+        {
+          "folded": "ﬀ",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "ﬀ"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "ά έ",
+      "token": null,
+      "fold": "α ε",
+      "words": [
+        {
+          "folded": "α",
+          "prefix": false
+        },
+        {
+          "folded": "ε",
+          "prefix": false
+        }
+      ],
+      "fragments": [
+        "α",
+        "ε"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "x-y-z",
+      "token": null,
+      "fold": "x-y-z",
+      "words": [
+        {
+          "folded": "x",
+          "prefix": false
+        },
+        {
+          "folded": "y",
+          "prefix": false
+        },
+        {
+          "folded": "z",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "x-y-z"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "-\"no\" yes",
+      "token": null,
+      "fold": "-\"no\" yes",
+      "words": [
+        {
+          "folded": "yes",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "yes"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    },
+    {
+      "text": "- dash",
+      "token": null,
+      "fold": "- dash",
+      "words": [
+        {
+          "folded": "dash",
+          "prefix": true
+        }
+      ],
+      "fragments": [
+        "-",
+        "dash"
+      ],
+      "searchable": true,
+      "searchableInside": true,
+      "has": null
+    }
+  ],
+  "queries": [
+    {
+      "text": "raid from:dana has:image in:general gg",
+      "result": {
+        "text": "raid gg",
+        "filters": [
+          {
+            "kind": "from",
+            "uid": 3,
+            "username": "Dana"
+          },
+          {
+            "kind": "has",
+            "has": "image"
+          },
+          {
+            "kind": "in",
+            "channelId": "general"
+          }
+        ]
+      },
+      "args": {
+        "query": "raid gg",
+        "channelIds": [
+          "general"
+        ],
+        "authorUids": [
+          3
+        ],
+        "has": 2,
+        "matchWithinWords": false
+      }
+    },
+    {
+      "text": "from:@ALICE in:#Off-Topic has:pictures before:2026-10-03",
+      "result": {
+        "text": "",
+        "filters": [
+          {
+            "kind": "from",
+            "uid": 1,
+            "username": "alice"
+          },
+          {
+            "kind": "in",
+            "channelId": "off-topic"
+          },
+          {
+            "kind": "has",
+            "has": "image"
+          },
+          {
+            "kind": "before",
+            "date": "2026-10-03"
+          }
+        ]
+      },
+      "args": {
+        "query": "",
+        "channelIds": [
+          "off-topic"
+        ],
+        "authorUids": [
+          1
+        ],
+        "has": 2,
+        "matchWithinWords": false
+      }
+    },
+    {
+      "text": "from:bobby from:nobody has:nothing in:vault",
+      "result": {
+        "text": "from:nobody has:nothing",
+        "filters": [
+          {
+            "kind": "from",
+            "uid": 2,
+            "username": "bob"
+          },
+          {
+            "kind": "in",
+            "channelId": "vault"
+          }
+        ]
+      },
+      "args": {
+        "query": "from:nobody has:nothing",
+        "channelIds": [
+          "vault"
+        ],
+        "authorUids": [
+          2
+        ],
+        "has": 0,
+        "matchWithinWords": false
+      }
+    },
+    {
+      "text": "during:2026-02-30 after:2026-10-3 before:today",
+      "result": {
+        "text": "during:2026-02-30",
+        "filters": [
+          {
+            "kind": "after",
+            "date": "2026-10-03"
+          },
+          {
+            "kind": "before",
+            "date": "2026-11-26"
+          }
+        ]
+      },
+      "args": {
+        "query": "during:2026-02-30",
+        "channelIds": [],
+        "authorUids": [],
+        "has": 0,
+        "matchWithinWords": false
+      }
+    },
+    {
+      "text": "from:işık from:İLKAY in:oyun-gecesi",
+      "result": {
+        "text": "",
+        "filters": [
+          {
+            "kind": "from",
+            "uid": 5,
+            "username": "ışık"
+          },
+          {
+            "kind": "from",
+            "uid": 4,
+            "username": "İlkay"
+          },
+          {
+            "kind": "in",
+            "channelId": "Oyun-Gecesi"
+          }
+        ]
+      },
+      "args": {
+        "query": "",
+        "channelIds": [
+          "Oyun-Gecesi"
+        ],
+        "authorUids": [
+          5,
+          4
+        ],
+        "has": 0,
+        "matchWithinWords": false
+      }
+    },
+    {
+      "text": "  lots   of   space  ",
+      "result": {
+        "text": "lots of space",
+        "filters": []
+      },
+      "args": {
+        "query": "lots of space",
+        "channelIds": [],
+        "authorUids": [],
+        "has": 0,
+        "matchWithinWords": false
+      }
+    },
+    {
+      "text": "has:doc has:docs has:url has:sound",
+      "result": {
+        "text": "",
+        "filters": [
+          {
+            "kind": "has",
+            "has": "document"
+          },
+          {
+            "kind": "has",
+            "has": "link"
+          },
+          {
+            "kind": "has",
+            "has": "audio"
+          }
+        ]
+      },
+      "args": {
+        "query": "",
+        "channelIds": [],
+        "authorUids": [],
+        "has": 56,
+        "matchWithinWords": false
+      }
+    }
+  ],
+  "resolve": [
+    {
+      "op": "from",
+      "value": "alice",
+      "filter": {
+        "kind": "from",
+        "uid": 1,
+        "username": "alice"
+      }
+    },
+    {
+      "op": "from",
+      "value": "@Dana",
+      "filter": {
+        "kind": "from",
+        "uid": 3,
+        "username": "Dana"
+      }
+    },
+    {
+      "op": "from",
+      "value": "BOBBY",
+      "filter": {
+        "kind": "from",
+        "uid": 2,
+        "username": "bob"
+      }
+    },
+    {
+      "op": "from",
+      "value": "bo",
+      "filter": null
+    },
+    {
+      "op": "from",
+      "value": " ",
+      "filter": null
+    },
+    {
+      "op": "from",
+      "value": "ışık",
+      "filter": {
+        "kind": "from",
+        "uid": 5,
+        "username": "ışık"
+      }
+    },
+    {
+      "op": "from",
+      "value": "IŞIK",
+      "filter": null
+    },
+    {
+      "op": "from",
+      "value": "ilkay",
+      "filter": null
+    },
+    {
+      "op": "in",
+      "value": "#general",
+      "filter": {
+        "kind": "in",
+        "channelId": "general"
+      }
+    },
+    {
+      "op": "in",
+      "value": "OFF-TOPIC",
+      "filter": {
+        "kind": "in",
+        "channelId": "off-topic"
+      }
+    },
+    {
+      "op": "in",
+      "value": "gen",
+      "filter": null
+    },
+    {
+      "op": "has",
+      "value": "Links",
+      "filter": {
+        "kind": "has",
+        "has": "link"
+      }
+    },
+    {
+      "op": "has",
+      "value": "attachment",
+      "filter": {
+        "kind": "has",
+        "has": "file"
+      }
+    },
+    {
+      "op": "has",
+      "value": "x",
+      "filter": null
+    },
+    {
+      "op": "before",
+      "value": "2026-1-5",
+      "filter": {
+        "kind": "before",
+        "date": "2026-01-05"
+      }
+    },
+    {
+      "op": "during",
+      "value": "today",
+      "filter": {
+        "kind": "during",
+        "date": "2026-11-26"
+      }
+    },
+    {
+      "op": "after",
+      "value": "2026-13-01",
+      "filter": null
+    },
+    {
+      "op": "after",
+      "value": "26-10-03",
+      "filter": null
+    },
+    {
+      "op": "before",
+      "value": "yesterday",
+      "filter": {
+        "kind": "before",
+        "date": "2026-11-25"
+      }
+    }
+  ],
+  "days": [
+    {
+      "input": "today",
+      "now": "2026-11-26",
+      "day": "2026-11-26"
+    },
+    {
+      "input": "Yesterday",
+      "now": "2026-11-26",
+      "day": "2026-11-25"
+    },
+    {
+      "input": "yesterday",
+      "now": "2026-03-01",
+      "day": "2026-02-28"
+    },
+    {
+      "input": "2026-10-03",
+      "now": "2026-11-26",
+      "day": "2026-10-03"
+    },
+    {
+      "input": "2026-10-3",
+      "now": "2026-11-26",
+      "day": "2026-10-03"
+    },
+    {
+      "input": "2026-02-30",
+      "now": "2026-11-26",
+      "day": null
+    },
+    {
+      "input": "2024-02-29",
+      "now": "2026-11-26",
+      "day": "2024-02-29"
+    },
+    {
+      "input": "26-10-03",
+      "now": "2026-11-26",
+      "day": null
+    },
+    {
+      "input": " 2026-1-1 ",
+      "now": "2026-11-26",
+      "day": "2026-01-01"
+    },
+    {
+      "input": "2026/10/03",
+      "now": "2026-11-26",
+      "day": null
+    }
+  ],
+  "withFilter": [
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-10-01"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-09-01"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-09-01"
+      },
+      {
+        "kind": "has",
+        "has": "link"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-09-01"
+      },
+      {
+        "kind": "has",
+        "has": "link"
+      },
+      {
+        "kind": "has",
+        "has": "image"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-09-01"
+      },
+      {
+        "kind": "has",
+        "has": "link"
+      },
+      {
+        "kind": "has",
+        "has": "image"
+      },
+      {
+        "kind": "inside"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-09-01"
+      },
+      {
+        "kind": "has",
+        "has": "link"
+      },
+      {
+        "kind": "has",
+        "has": "image"
+      },
+      {
+        "kind": "inside"
+      }
+    ],
+    [
+      {
+        "kind": "from",
+        "uid": 3,
+        "username": "carol2"
+      },
+      {
+        "kind": "before",
+        "date": "2026-09-01"
+      },
+      {
+        "kind": "has",
+        "has": "link"
+      },
+      {
+        "kind": "has",
+        "has": "image"
+      },
+      {
+        "kind": "inside"
+      },
+      {
+        "kind": "in",
+        "channelId": "general"
+      }
+    ]
+  ],
+  "highlight": [
+    {
+      "query": "wayland",
+      "text": "Wayland? waylander wayland's #wayland",
+      "inside": false,
+      "marks": [
+        "Wayland",
+        "waylander",
+        "wayland",
+        "wayland"
+      ]
+    },
+    {
+      "query": "gg",
+      "text": "gg ggs GG! egg",
+      "inside": false,
+      "marks": [
+        "gg",
+        "GG"
+      ]
+    },
+    {
+      "query": "cafe",
+      "text": "Café cafés CAFÉ café",
+      "inside": false,
+      "marks": [
+        "Café",
+        "cafés",
+        "CAFÉ",
+        "café"
+      ]
+    },
+    {
+      "query": "isik",
+      "text": "IŞIK ışık isik ISIK",
+      "inside": false,
+      "marks": [
+        "IŞIK",
+        "ışık",
+        "isik",
+        "ISIK"
+      ]
+    },
+    {
+      "query": "e-mail",
+      "text": "e-mail email mail e mails",
+      "inside": false,
+      "marks": [
+        "e",
+        "mail",
+        "mail",
+        "e",
+        "mails"
+      ]
+    },
+    {
+      "query": "\"exact phrase\"",
+      "text": "an exact phrase, exactly phrased",
+      "inside": false,
+      "marks": [
+        "exact",
+        "phrase"
+      ]
+    },
+    {
+      "query": "ayl",
+      "text": "Wayland waylander",
+      "inside": true,
+      "marks": [
+        "ayl",
+        "ayl"
+      ]
+    },
+    {
+      "query": "aa",
+      "text": "aaaa",
+      "inside": true,
+      "marks": [
+        "aa",
+        "a",
+        "a"
+      ]
+    },
+    {
+      "query": "ıs",
+      "text": "IŞIK ışık",
+      "inside": true,
+      "marks": [
+        "IŞ",
+        "ış"
+      ]
+    },
+    {
+      "query": "e",
+      "text": "café!",
+      "inside": true,
+      "marks": [
+        "é"
+      ]
+    },
+    {
+      "query": "ab-c",
+      "text": "xab-cy ab c",
+      "inside": true,
+      "marks": [
+        "ab-c"
+      ]
+    },
+    {
+      "query": "日本",
+      "text": "日本語のテキスト",
+      "inside": true,
+      "marks": [
+        "日本"
+      ]
+    }
+  ],
+  "calendars": [
+    {
+      "active": "2026-11-15",
+      "days": [
+        "2026-11-01",
+        "2026-11-02",
+        "2026-11-03",
+        "2026-11-04",
+        "2026-11-05",
+        "2026-11-06",
+        "2026-11-07",
+        "2026-11-08",
+        "2026-11-09",
+        "2026-11-10",
+        "2026-11-11",
+        "2026-11-12",
+        "2026-11-13",
+        "2026-11-14",
+        "2026-11-15",
+        "2026-11-16",
+        "2026-11-17",
+        "2026-11-18",
+        "2026-11-19",
+        "2026-11-20",
+        "2026-11-21",
+        "2026-11-22",
+        "2026-11-23",
+        "2026-11-24",
+        "2026-11-25",
+        "2026-11-26",
+        "2026-11-27",
+        "2026-11-28",
+        "2026-11-29",
+        "2026-11-30",
+        "2026-12-01",
+        "2026-12-02",
+        "2026-12-03",
+        "2026-12-04",
+        "2026-12-05"
+      ],
+      "heads": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "title": "November 2026"
+    },
+    {
+      "active": "2026-02-10",
+      "days": [
+        "2026-02-01",
+        "2026-02-02",
+        "2026-02-03",
+        "2026-02-04",
+        "2026-02-05",
+        "2026-02-06",
+        "2026-02-07",
+        "2026-02-08",
+        "2026-02-09",
+        "2026-02-10",
+        "2026-02-11",
+        "2026-02-12",
+        "2026-02-13",
+        "2026-02-14",
+        "2026-02-15",
+        "2026-02-16",
+        "2026-02-17",
+        "2026-02-18",
+        "2026-02-19",
+        "2026-02-20",
+        "2026-02-21",
+        "2026-02-22",
+        "2026-02-23",
+        "2026-02-24",
+        "2026-02-25",
+        "2026-02-26",
+        "2026-02-27",
+        "2026-02-28",
+        "2026-03-01",
+        "2026-03-02",
+        "2026-03-03",
+        "2026-03-04",
+        "2026-03-05",
+        "2026-03-06",
+        "2026-03-07"
+      ],
+      "heads": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "title": "February 2026"
+    },
+    {
+      "active": "2026-03-31",
+      "days": [
+        "2026-03-01",
+        "2026-03-02",
+        "2026-03-03",
+        "2026-03-04",
+        "2026-03-05",
+        "2026-03-06",
+        "2026-03-07",
+        "2026-03-08",
+        "2026-03-09",
+        "2026-03-10",
+        "2026-03-11",
+        "2026-03-12",
+        "2026-03-13",
+        "2026-03-14",
+        "2026-03-15",
+        "2026-03-16",
+        "2026-03-17",
+        "2026-03-18",
+        "2026-03-19",
+        "2026-03-20",
+        "2026-03-21",
+        "2026-03-22",
+        "2026-03-23",
+        "2026-03-24",
+        "2026-03-25",
+        "2026-03-26",
+        "2026-03-27",
+        "2026-03-28",
+        "2026-03-29",
+        "2026-03-30",
+        "2026-03-31",
+        "2026-04-01",
+        "2026-04-02",
+        "2026-04-03",
+        "2026-04-04"
+      ],
+      "heads": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "title": "March 2026"
+    },
+    {
+      "active": "2025-12-01",
+      "days": [
+        "2025-11-30",
+        "2025-12-01",
+        "2025-12-02",
+        "2025-12-03",
+        "2025-12-04",
+        "2025-12-05",
+        "2025-12-06",
+        "2025-12-07",
+        "2025-12-08",
+        "2025-12-09",
+        "2025-12-10",
+        "2025-12-11",
+        "2025-12-12",
+        "2025-12-13",
+        "2025-12-14",
+        "2025-12-15",
+        "2025-12-16",
+        "2025-12-17",
+        "2025-12-18",
+        "2025-12-19",
+        "2025-12-20",
+        "2025-12-21",
+        "2025-12-22",
+        "2025-12-23",
+        "2025-12-24",
+        "2025-12-25",
+        "2025-12-26",
+        "2025-12-27",
+        "2025-12-28",
+        "2025-12-29",
+        "2025-12-30",
+        "2025-12-31",
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-03"
+      ],
+      "heads": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "title": "December 2025"
+    },
+    {
+      "active": "2026-08-01",
+      "days": [
+        "2026-07-26",
+        "2026-07-27",
+        "2026-07-28",
+        "2026-07-29",
+        "2026-07-30",
+        "2026-07-31",
+        "2026-08-01",
+        "2026-08-02",
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07",
+        "2026-08-08",
+        "2026-08-09",
+        "2026-08-10",
+        "2026-08-11",
+        "2026-08-12",
+        "2026-08-13",
+        "2026-08-14",
+        "2026-08-15",
+        "2026-08-16",
+        "2026-08-17",
+        "2026-08-18",
+        "2026-08-19",
+        "2026-08-20",
+        "2026-08-21",
+        "2026-08-22",
+        "2026-08-23",
+        "2026-08-24",
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-29",
+        "2026-08-30",
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-05"
+      ],
+      "heads": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "title": "August 2026"
+    },
+    {
+      "active": "2024-02-29",
+      "days": [
+        "2024-01-28",
+        "2024-01-29",
+        "2024-01-30",
+        "2024-01-31",
+        "2024-02-01",
+        "2024-02-02",
+        "2024-02-03",
+        "2024-02-04",
+        "2024-02-05",
+        "2024-02-06",
+        "2024-02-07",
+        "2024-02-08",
+        "2024-02-09",
+        "2024-02-10",
+        "2024-02-11",
+        "2024-02-12",
+        "2024-02-13",
+        "2024-02-14",
+        "2024-02-15",
+        "2024-02-16",
+        "2024-02-17",
+        "2024-02-18",
+        "2024-02-19",
+        "2024-02-20",
+        "2024-02-21",
+        "2024-02-22",
+        "2024-02-23",
+        "2024-02-24",
+        "2024-02-25",
+        "2024-02-26",
+        "2024-02-27",
+        "2024-02-28",
+        "2024-02-29",
+        "2024-03-01",
+        "2024-03-02"
+      ],
+      "heads": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "title": "February 2024"
+    }
+  ]
+}
