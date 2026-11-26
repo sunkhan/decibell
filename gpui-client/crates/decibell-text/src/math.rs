@@ -36,6 +36,57 @@ macro_rules! katex_fonts {
     };
 }
 
+/// The KaTeX faces whose glyphs are italic. KaTeX's font files mark **every** face Regular
+/// (OS/2 `fsSelection` 0x0040, `macStyle` 0); fontconfig takes the slant from the style name,
+/// which is how Chromium finds them, but GPUI's font database (fontdb) reads `fsSelection` only.
+/// Unmarked, a request for upright `KaTeX_Main` got the italic face (it sorts first) and an italic
+/// `KaTeX_Math` request a synthetic slant on top of the italic glyphs: formulas drew slanted.
+const KATEX_ITALIC: [&str; 5] =
+    ["KaTeX_Main-BoldItalic.ttf", "KaTeX_Main-Italic.ttf", "KaTeX_Math-BoldItalic.ttf", "KaTeX_Math-Italic.ttf", "KaTeX_SansSerif-Italic.ttf"];
+
+static KATEX_FILES: [&str; 20] = [
+    "KaTeX_AMS-Regular.ttf",
+    "KaTeX_Caligraphic-Bold.ttf",
+    "KaTeX_Caligraphic-Regular.ttf",
+    "KaTeX_Fraktur-Bold.ttf",
+    "KaTeX_Fraktur-Regular.ttf",
+    "KaTeX_Main-Bold.ttf",
+    "KaTeX_Main-BoldItalic.ttf",
+    "KaTeX_Main-Italic.ttf",
+    "KaTeX_Main-Regular.ttf",
+    "KaTeX_Math-BoldItalic.ttf",
+    "KaTeX_Math-Italic.ttf",
+    "KaTeX_SansSerif-Bold.ttf",
+    "KaTeX_SansSerif-Italic.ttf",
+    "KaTeX_SansSerif-Regular.ttf",
+    "KaTeX_Script-Regular.ttf",
+    "KaTeX_Size1-Regular.ttf",
+    "KaTeX_Size2-Regular.ttf",
+    "KaTeX_Size3-Regular.ttf",
+    "KaTeX_Size4-Regular.ttf",
+    "KaTeX_Typewriter-Regular.ttf",
+];
+
+/// A copy of an italic KaTeX face marked italic where fontdb looks: `OS/2.fsSelection` ITALIC
+/// (bit 0) set and REGULAR (bit 6) cleared, `head.macStyle` italic (bit 1). The glyphs are
+/// untouched. `None` when the tables aren't where a TrueType file keeps them.
+pub(crate) fn mark_italic(font: &[u8]) -> Option<Vec<u8>> {
+    let tables = u16::from_be_bytes(font.get(4..6)?.try_into().ok()?) as usize;
+    let find = |tag: &[u8; 4]| -> Option<usize> {
+        (0..tables).find_map(|i| {
+            let record = font.get(12 + 16 * i..28 + 16 * i)?;
+            (&record[..4] == tag).then(|| u32::from_be_bytes(record[8..12].try_into().unwrap()) as usize)
+        })
+    };
+    let (os2, head) = (find(b"OS/2")?, find(b"head")?);
+    let mut out = font.to_vec();
+    let selection = u16::from_be_bytes(out.get(os2 + 62..os2 + 64)?.try_into().ok()?);
+    out[os2 + 62..os2 + 64].copy_from_slice(&((selection | 0x0001) & !0x0040).to_be_bytes());
+    let mac = u16::from_be_bytes(out.get(head + 44..head + 46)?.try_into().ok()?);
+    out[head + 44..head + 46].copy_from_slice(&(mac | 0x0002).to_be_bytes());
+    Some(out)
+}
+
 static KATEX_FONTS: [&[u8]; 20] = katex_fonts![
     "KaTeX_AMS-Regular.ttf",
     "KaTeX_Caligraphic-Bold.ttf",
@@ -181,7 +232,14 @@ impl Engine {
             return hit;
         }
         if !self.math.fonts_loaded.replace(true) {
-            let fonts = KATEX_FONTS.iter().map(|bytes| Cow::Borrowed(*bytes)).collect();
+            let fonts = KATEX_FILES
+                .iter()
+                .zip(KATEX_FONTS.iter())
+                .map(|(file, bytes)| match KATEX_ITALIC.contains(file).then(|| mark_italic(bytes)).flatten() {
+                    Some(marked) => Cow::Owned(marked),
+                    None => Cow::Borrowed(*bytes),
+                })
+                .collect();
             if let Err(error) = self.text_system.add_fonts(fonts) {
                 log::error!("loading the KaTeX fonts: {error:#}");
             }

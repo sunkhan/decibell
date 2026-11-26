@@ -583,7 +583,8 @@ pub enum Which {
 }
 
 /// Signs the model in to the shell's fixture, opens `which`'s channel with its newest page
-/// routed, and returns the source a [`MessageList`](crate::MessageList) shows it through.
+/// routed (from a fresh slice: nothing an earlier opening left carries over), and returns the
+/// source a [`MessageList`](crate::MessageList) shows it through.
 pub fn open(which: Which, cx: &mut App) -> Rc<FixtureSource> {
     open_pages(which, 1, cx)
 }
@@ -606,6 +607,9 @@ pub fn open_pages(which: Which, pages: usize, cx: &mut App) -> Rc<FixtureSource>
         Which::Features => (FEATURES, features_payloads()),
     };
     let channel: ChannelId = channel.into();
+    // Each opening starts from the fixture's own seeded state: what an earlier screen or self-test
+    // of this process left in the channel's slice (more pages, a saved position) goes first.
+    model.chat.channels.update(cx, |cache, cx| cache.purge(server, &channel, cx));
     model.nav.update(cx, |nav, cx| nav.set_active_channel(Some(channel.clone()), cx));
     let source = Rc::new(FixtureSource { server, channel, all: Rc::new(all), latency: Cell::new(Duration::ZERO), pages: Cell::new(0) });
     match which {

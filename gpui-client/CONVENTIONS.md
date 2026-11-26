@@ -680,6 +680,10 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
 15. **A key with nothing focused reaches only the window's root node** (`focus_node_id_in_rendered_frame` falls back
     to node 0, the root view): no element's `on_key_down` below it sees it. App-wide handling goes through
     `App::intercept_keystrokes` (before key bindings; `stop_propagation` takes the key).
+14. **KaTeX's font files mark every face Regular** (OS/2 `fsSelection` 0x0040); fontconfig (Chromium) takes the
+    slant from the style name, fontdb (GPUI) from `fsSelection`: upright `KaTeX_Main` resolved to the italic face
+    and italic `KaTeX_Math` got a synthetic slant on top. `decibell-text` marks the five italic faces before it
+    hands them over (`math::mark_italic`; test `katex_faces`).
 
 ## Voice (`decibell-voice`)
 
