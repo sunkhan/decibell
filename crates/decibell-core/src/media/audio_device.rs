@@ -529,23 +529,39 @@ fn pop_voice_sum(guards: &mut [std::sync::MutexGuard<HeapCons<i16>>]) -> i32 {
     sum
 }
 
-/// Voice + stream mix (main output).
-fn output_mix_cb<T>(
-    out_ch: u16,
-    peers_out: PeerList,
-    stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
-    pb_stream_stereo: Arc<std::sync::atomic::AtomicBool>,
+/// The main output's mix, one device callback at a time: every peer's voice
+/// ring summed, plus stream audio when it plays on this device (`stream`),
+/// soft-limited and converted to the device's format. Held by the callback;
+/// `render` is the callback's whole body, so tests drive it without a device.
+pub(crate) struct OutputMix {
+    n: usize,
+    peers: PeerList,
+    /// Stream audio's ring and its stereo flag; None for the voice-only
+    /// output (stream audio on a separate device).
+    stream: Option<(Arc<std::sync::Mutex<HeapCons<i16>>>, Arc<std::sync::atomic::AtomicBool>)>,
     pull_stats: Arc<OutputPullStats>,
-) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
-where
-    T: SizedSample + FromSample<f32>,
-{
-    let n = out_ch.max(1) as usize;
-    let silence = T::from_sample(0.0f32);
-    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+}
+
+impl OutputMix {
+    pub(crate) fn new(
+        out_ch: u16,
+        peers: PeerList,
+        stream: Option<(Arc<std::sync::Mutex<HeapCons<i16>>>, Arc<std::sync::atomic::AtomicBool>)>,
+        pull_stats: Arc<OutputPullStats>,
+    ) -> Self {
+        // `max(1)` guards against a 0-channel device reaching `chunks_exact_mut`.
+        OutputMix { n: out_ch.max(1) as usize, peers, stream, pull_stats }
+    }
+
+    pub(crate) fn render<T>(&mut self, data: &mut [T])
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        let n = self.n;
+        let pull_stats = &self.pull_stats;
         let frames = data.len() / n;
         pull_stats.record(frames);
-        let peer_snapshot = peers_out.load();
+        let peer_snapshot = self.peers.load();
         // Stack-inline for the typical ≤8-peer channel so the real-time output
         // callback does no heap allocation (only a >8-peer channel spills to the
         // heap). Guards live only for this callback, so `pop_voice_sum` still
@@ -558,8 +574,21 @@ where
             pull_stats.note_short();
         }
 
+        let Some((stream_cons_out, pb_stream_stereo)) = &self.stream else {
+            // Voice only.
+            for frame in data.chunks_exact_mut(n) {
+                let v = pop_voice_sum(&mut voice_guards);
+                let m = soft_clip(v as f32 / 32768.0);
+                pull_stats.tap_push(m);
+                let out = T::from_sample(m);
+                for ch in frame.iter_mut() { *ch = out; }
+            }
+            return;
+        };
+
         let Ok(mut stream_guard) = stream_cons_out.try_lock() else {
             drop(voice_guards);
+            let silence = T::from_sample(0.0f32);
             for sample in data.iter_mut() { *sample = silence; }
             return;
         };
@@ -598,60 +627,45 @@ where
     }
 }
 
-/// Voice only (used when stream audio is on a separate device).
-fn voice_only_cb<T>(
-    out_ch: u16,
-    peers_out: PeerList,
-    pull_stats: Arc<OutputPullStats>,
-) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
+/// Voice + stream mix (main output).
+fn output_mix_cb<T>(mix: &SharedMix<OutputMix>) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
 where
     T: SizedSample + FromSample<f32>,
 {
-    let n = out_ch.max(1) as usize;
-    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        let frames = data.len() / n;
-        pull_stats.record(frames);
-        let peer_snapshot = peers_out.load();
-        // Stack-inline for the typical ≤8-peer channel so the real-time output
-        // callback does no heap allocation (only a >8-peer channel spills to the
-        // heap). Guards live only for this callback, so `pop_voice_sum` still
-        // takes it as a `&mut [_]` slice via Deref.
-        let mut voice_guards: SmallVec<[std::sync::MutexGuard<HeapCons<i16>>; 8]> = peer_snapshot
-            .iter()
-            .filter_map(|p| p.cons.try_lock().ok())
-            .collect();
-        if voice_guards.iter().any(|g| { let a = g.occupied_len(); a > 0 && a < frames }) {
-            pull_stats.note_short();
-        }
-        for frame in data.chunks_exact_mut(n) {
-            let v = pop_voice_sum(&mut voice_guards);
-            let m = soft_clip(v as f32 / 32768.0);
-            pull_stats.tap_push(m);
-            let out = T::from_sample(m);
-            for ch in frame.iter_mut() { *ch = out; }
-        }
-    }
+    let mut mix = mix.take();
+    move |data: &mut [T], _: &cpal::OutputCallbackInfo| mix.render(data)
 }
 
 /// Stream audio only (separate stream-output device), with stereo support.
-fn stream_only_cb<T>(
-    out_ch: u16,
+pub(crate) struct StreamMix {
+    n: usize,
     stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
     pb_stereo: Arc<std::sync::atomic::AtomicBool>,
     pull_stats: Arc<OutputPullStats>,
-) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
-where
-    T: SizedSample + FromSample<f32>,
-{
-    let n = out_ch.max(1) as usize;
-    let silence = T::from_sample(0.0f32);
-    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        pull_stats.record(data.len() / n);
-        let Ok(mut guard) = stream_cons_out.try_lock() else {
+}
+
+impl StreamMix {
+    pub(crate) fn new(
+        out_ch: u16,
+        stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
+        pb_stereo: Arc<std::sync::atomic::AtomicBool>,
+        pull_stats: Arc<OutputPullStats>,
+    ) -> Self {
+        StreamMix { n: out_ch.max(1) as usize, stream_cons_out, pb_stereo, pull_stats }
+    }
+
+    pub(crate) fn render<T>(&mut self, data: &mut [T])
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        let n = self.n;
+        self.pull_stats.record(data.len() / n);
+        let Ok(mut guard) = self.stream_cons_out.try_lock() else {
+            let silence = T::from_sample(0.0f32);
             for sample in data.iter_mut() { *sample = silence; }
             return;
         };
-        let is_stereo = pb_stereo.load(std::sync::atomic::Ordering::Relaxed);
+        let is_stereo = self.pb_stereo.load(std::sync::atomic::Ordering::Relaxed);
         if n == 1 {
             for sample in data.iter_mut() {
                 let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
@@ -675,6 +689,63 @@ where
     }
 }
 
+fn stream_only_cb<T>(mix: &SharedMix<StreamMix>) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let mut mix = mix.take();
+    move |data: &mut [T], _: &cpal::OutputCallbackInfo| mix.render(data)
+}
+
+/// A mix on its way into a stream's callback. The build macros below make
+/// one callback per sample format and per buffer-size attempt, each from the
+/// same arguments, but only the stream that is kept runs: the mix moves into
+/// a callback when it is made and back out if that stream is not built.
+pub(crate) struct SharedMix<M>(Arc<std::sync::Mutex<Option<M>>>);
+
+impl<M> Clone for SharedMix<M> {
+    fn clone(&self) -> Self {
+        SharedMix(Arc::clone(&self.0))
+    }
+}
+
+impl<M> SharedMix<M> {
+    pub(crate) fn new(mix: M) -> Self {
+        SharedMix(Arc::new(std::sync::Mutex::new(Some(mix))))
+    }
+    fn take(&self) -> Returning<M> {
+        Returning { mix: self.0.lock().unwrap().take(), home: Arc::clone(&self.0) }
+    }
+}
+
+/// The mix inside a callback; goes back to its `SharedMix` when the callback
+/// is dropped (a failed build, or the stream's end).
+struct Returning<M> {
+    mix: Option<M>,
+    home: Arc<std::sync::Mutex<Option<M>>>,
+}
+
+impl<M> std::ops::Deref for Returning<M> {
+    type Target = M;
+    fn deref(&self) -> &M {
+        self.mix.as_ref().expect("one callback holds the mix")
+    }
+}
+
+impl<M> std::ops::DerefMut for Returning<M> {
+    fn deref_mut(&mut self) -> &mut M {
+        self.mix.as_mut().expect("one callback holds the mix")
+    }
+}
+
+impl<M> Drop for Returning<M> {
+    fn drop(&mut self) {
+        if let (Some(m), Ok(mut home)) = (self.mix.take(), self.home.lock()) {
+            *home = Some(m);
+        }
+    }
+}
+
 /// Dispatch a playback-callback maker across the device's sample format. The
 /// maker is invoked with the concrete `T`; the format arm picks it. `$mk` is a
 /// generic fn and each of its owned args is cloned per arm (Arc clones are
@@ -683,10 +754,10 @@ macro_rules! build_output_dispatch {
     ($device:expr, $cfg:expr, $fmt:expr, $mk:ident ( $($arg:expr),* $(,)? )) => {{
         use cpal::SampleFormat as F;
         match $fmt {
-            F::I16 => $device.build_output_stream($cfg, $mk::<i16>($($arg.clone()),*), playback_stream_err, None),
-            F::U16 => $device.build_output_stream($cfg, $mk::<u16>($($arg.clone()),*), playback_stream_err, None),
-            F::I32 => $device.build_output_stream($cfg, $mk::<i32>($($arg.clone()),*), playback_stream_err, None),
-            _ => $device.build_output_stream($cfg, $mk::<f32>($($arg.clone()),*), playback_stream_err, None),
+            F::I16 => $device.build_output_stream($cfg, $mk::<i16>($($arg),*), playback_stream_err, None),
+            F::U16 => $device.build_output_stream($cfg, $mk::<u16>($($arg),*), playback_stream_err, None),
+            F::I32 => $device.build_output_stream($cfg, $mk::<i32>($($arg),*), playback_stream_err, None),
+            _ => $device.build_output_stream($cfg, $mk::<f32>($($arg),*), playback_stream_err, None),
         }
     }};
 }
@@ -713,9 +784,10 @@ pub fn build_output_stream(
     // Build in the device's native sample format (see build_output_dispatch!).
     // Mixing sums each peer's ring as i32, adds stream audio, soft-limits, and
     // converts to the device format.
+    let mix = SharedMix::new(OutputMix::new(out_ch, peers, Some((stream_cons, stream_stereo)), pull_stats));
     let stream = match build_with_buffer_fallback!(stream_config, "Output", build_output_dispatch!(
         &output_device, stream_config, fmt,
-        output_mix_cb(out_ch, peers, stream_cons, stream_stereo, pull_stats)
+        output_mix_cb(&mix)
     )) {
         Ok(s) => s,
         Err(e) => {
@@ -752,9 +824,10 @@ pub fn build_voice_output_stream(
     let (stream_config, out_ch, fmt) = output_config(&output_device, "Voice output");
     let output_sample_rate = stream_config.sample_rate.0;
 
+    let mix = SharedMix::new(OutputMix::new(out_ch, peers, None, pull_stats));
     let stream = match build_with_buffer_fallback!(stream_config, "Voice output", build_output_dispatch!(
         &output_device, stream_config, fmt,
-        voice_only_cb(out_ch, peers, pull_stats)
+        output_mix_cb(&mix)
     )) {
         Ok(s) => s,
         Err(e) => {
@@ -787,9 +860,10 @@ pub fn build_stream_output_stream(
     let (stream_config, out_ch, fmt) = output_config(&output_device, "Stream output");
     let output_sample_rate = stream_config.sample_rate.0;
 
+    let mix = SharedMix::new(StreamMix::new(out_ch, stream_cons, stream_stereo, pull_stats));
     let stream = match build_with_buffer_fallback!(stream_config, "Stream output", build_output_dispatch!(
         &output_device, stream_config, fmt,
-        stream_only_cb(out_ch, stream_cons, stream_stereo, pull_stats)
+        stream_only_cb(&mix)
     )) {
         Ok(s) => s,
         Err(e) => {

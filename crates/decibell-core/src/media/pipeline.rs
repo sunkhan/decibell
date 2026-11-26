@@ -29,6 +29,7 @@ use super::udp_recv::READ_GUARD;
 use super::udp_recv::{is_oversized, RecvErrors, Waker, RECV_BUF_SIZE};
 use super::speaking::SpeakingDetector;
 use super::voice_gate::Gate as VoiceGate;
+use super::capture_chain::{self, CaptureChain, TxGate};
 
 // ── Control / Event messages ──────────────────────────────────────────────────
 
@@ -228,7 +229,7 @@ pub fn run_audio_pipeline(
     };
 
     // ── Build input (capture) stream ──────────────────────────────────────────
-    let (mut input_stream_opt, mut input_sample_rate): (Option<cpal::Stream>, u32) = match build_input_stream(
+    let (mut input_stream_opt, input_sample_rate): (Option<cpal::Stream>, u32) = match build_input_stream(
         &host,
         initial_input_device.as_deref(),
         Arc::clone(&capture_prod),
@@ -242,31 +243,15 @@ pub fn run_audio_pipeline(
         }
     };
 
-    // ── Main-loop resamplers (all DSP off the audio callback threads) ─────────
-    // Capture: input_device_rate → 48kHz (for Opus encoding)
-    let mut capture_resampler = if input_sample_rate == SAMPLE_RATE {
-        None
-    } else {
-        log::info!("[pipeline] Capture resampler: {}Hz → {}Hz", input_sample_rate, SAMPLE_RATE);
-        Some(make_sinc_resampler(input_sample_rate, SAMPLE_RATE, 480, 1))
-    };
-    let mut capture_accum: Vec<f64> = Vec::new();
+    // ── Capture chain (all DSP off the audio callback threads) ────────────────
+    // input_device_rate → 48kHz, 20 ms frames, AEC / AGC / noise suppression.
+    let mut chain = CaptureChain::new(input_sample_rate);
 
     // Voice resampling is per-peer now — each PeerAudio owns its own resampler
     // to output_sample_rate. Updated on device hot-swap via set_output_rate().
 
     // Playback stream: 48kHz → output_device_rate (stereo)
-    let mut playback_stream_resampler = if output_sample_rate == SAMPLE_RATE {
-        None
-    } else {
-        log::info!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, output_sample_rate);
-        Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2))
-    };
-    let mut playback_stream_accum_l: Vec<f64> = Vec::new();
-    // Reusable resampler input chunks (see peer.rs resamp_scratch).
-    let mut playback_stream_scratch_l: Vec<f64> = Vec::new();
-    let mut playback_stream_scratch_r: Vec<f64> = Vec::new();
-    let mut playback_stream_accum_r: Vec<f64> = Vec::new();
+    let mut stream_out = StreamOut::new(output_sample_rate);
 
     // Separate stream output (None = disabled, stream mixed into main output)
     let mut stream_output: Option<cpal::Stream> = None;
@@ -284,30 +269,8 @@ pub fn run_audio_pipeline(
     let mut stream_volume: f32 = 1.0; // 0.0–1.0 viewer-side stream audio volume
     let mut user_volumes: HashMap<String, f32> = HashMap::new(); // media id (uid) → linear gain
 
-    // Noise gate state: hysteresis + hang time to stop near-threshold flutter.
-    // When the level hovers around voice_threshold_db, raw per-frame thresholding
-    // flip-flops between "send voice" and "send silence" every 20ms. Each flip
-    // creates a waveform discontinuity the listener perceives as a quiet pop.
-    // Gate opens at voice_threshold_db, stays open while rms >= (threshold - 6dB),
-    // and keeps transmitting for GATE_HANG_FRAMES extra frames after falling
-    // below the close threshold. No effect on captured audio — only on whether
-    // the encoded frame is voice or silence.
-    const GATE_HYSTERESIS_DB: f32 = 6.0;
-    const GATE_HANG_FRAMES: u32 = 10; // 200ms @ 20ms/frame
-    let mut gate_open: bool = false;
-    let mut gate_hang_remaining: u32 = 0;
-    // When the gate closes we don't stop dead: we send a few frames of
-    // *encoded* silence at normal cadence first, so the receiver's decoder
-    // renders the voice→silence transition itself (MDCT overlap / LPC decay)
-    // and its playback ring runs out on true zeros. Stopping on the last
-    // voice frame left the receiver to cut the waveform wherever it happened
-    // to be — an audible tick at the end of every talkspurt, louder for
-    // peers the listener has boosted.
-    const GATE_TAIL_FRAMES: u32 = 3; // 60ms
-    let mut gate_tail_remaining: u32 = 0;
-    // The most recent processed frame that was NOT transmitted; sent as
-    // pre-roll when the gate opens so a word's attack isn't chopped.
-    let mut gate_pre_roll: Option<[i16; FRAME_SIZE]> = None;
+    // The transmit gate (hysteresis, hang, fade tail, pre-roll): capture_chain.rs.
+    let mut tx_gate = TxGate::new();
 
     let mut sequence: u16 = 0;
     // Silence-transmission keepalive. When we are not actively transmitting
@@ -331,8 +294,6 @@ pub fn run_audio_pipeline(
         peers.store(Arc::new(snapshot));
     }
 
-    // Accumulator for resampled 48kHz capture PCM — persists across loop iterations
-    let mut capture_48k_buf: Vec<i16> = Vec::with_capacity(FRAME_SIZE * 4);
 
     // The first PING goes out at once: on the community relay it is what
     // binds our voice endpoint (the relay answers an unbound source with a
@@ -397,51 +358,6 @@ pub fn run_audio_pipeline(
     // render flush — same role as PeerAudio::render_fifo for voice.
     let mut stream_render_fifo: std::collections::VecDeque<[f32; FRAME_SIZE]> = std::collections::VecDeque::new();
 
-    // ── Voice processing (AEC / NS / AGC) ──────────────────────────────────
-    // VoipAec3 bundles all three processors. We rebuild it when toggles change.
-    let mut aec_enabled = false;
-    let mut ns_level: u8 = 0; // 0=off, 1=light, 2=moderate, 3=aggressive, 4=very aggressive
-    let mut agc_enabled = false;
-    let mut voice_processor: Option<aec3::voip::VoipAec3> = None;
-
-    // RNNoise deep-learning noise suppressor — much better than WebRTC's spectral NS.
-    // Created when ns_level > 0, processes 480-sample (10ms) frames at 48kHz.
-    let mut rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>> = None;
-
-    // Helper: (re)build the voice processor based on current toggle state.
-    // WebRTC NS is disabled when RNNoise handles suppression (avoids double-filtering).
-    fn build_voice_processor(aec: bool, ns_level: u8, agc: bool) -> Option<aec3::voip::VoipAec3> {
-        // Only use WebRTC processor for AEC and/or AGC — RNNoise handles NS
-        if !aec && !agc {
-            return None;
-        }
-        // 48kHz mono, 10ms frames = 480 samples
-        let builder = aec3::voip::VoipAec3::builder(48000, 1, 1)
-            .enable_noise_suppression(false) // RNNoise handles this
-            .enable_gain_controller2(agc);
-        match builder.build() {
-            Ok(processor) => {
-                log::info!("[pipeline] Voice processor built: aec={}, ns_level={}, agc={}", aec, ns_level, agc);
-                Some(processor)
-            }
-            Err(e) => {
-                log::warn!("[pipeline] Failed to build voice processor: {}", e);
-                None
-            }
-        }
-    }
-
-    fn build_rnnoise(ns_level: u8) -> Option<Box<nnnoiseless::DenoiseState<'static>>> {
-        if ns_level == 0 {
-            return None;
-        }
-        log::info!("[pipeline] RNNoise deep-learning noise suppressor enabled (level={})", ns_level);
-        Some(nnnoiseless::DenoiseState::new())
-    }
-
-    // AEC render reference accumulator (10ms = 480 samples at 48kHz)
-    const AEC_FRAME_SIZE: usize = 480; // 10ms at 48kHz
-    let mut render_ref_accum: Vec<f32> = Vec::with_capacity(AEC_FRAME_SIZE * 2);
 
     // ── Dedicated voice UDP recv thread ─────────────────────────────────────
     // Reads voice packets (AUDIO, STREAM_AUDIO, PING) from the voice socket
@@ -584,19 +500,11 @@ pub fn run_audio_pipeline(
                     input_device_name = name.clone();
                     input_stream_opt = None; // drop old stream
                     { let mut g = capture_cons.lock().unwrap(); while g.try_pop().is_some() {} }
-                    capture_48k_buf.clear();
-                    capture_accum.clear();
+                    chain.clear_capture();
                     match build_input_stream(&host, name.as_deref(), Arc::clone(&capture_prod)) {
                         Some((stream, rate)) => {
                             input_stream_opt = Some(stream);
-                            input_sample_rate = rate;
-                            if rate == SAMPLE_RATE {
-                                capture_resampler = None;
-                                log::info!("[pipeline] Input device {}Hz — passthrough", rate);
-                            } else {
-                                capture_resampler = Some(make_sinc_resampler(rate, SAMPLE_RATE, 480, 1));
-                                log::info!("[pipeline] Input device {}Hz — resampler to {}Hz", rate, SAMPLE_RATE);
-                            }
+                            chain.set_input_rate(rate);
                         }
                         None => {
                             input_stream_opt = None;
@@ -604,9 +512,7 @@ pub fn run_audio_pipeline(
                         }
                     }
                     // Reset voice processor state on device change
-                    if voice_processor.is_some() {
-                        voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
-                        render_ref_accum.clear();
+                    if chain.reset_processor() {
                         if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
                     }
                 }
@@ -616,8 +522,7 @@ pub fn run_audio_pipeline(
                     output_stream = None; // drop old stream
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
-                    playback_stream_accum_l.clear();
-                    playback_stream_accum_r.clear();
+                    stream_out.clear_accum();
                     if separate_stream_enabled {
                         match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
                             Some((stream, rate, _ch)) => {
@@ -642,11 +547,7 @@ pub fn run_audio_pipeline(
                     // Stream resampler: only update if stream plays on the same device
                     if !separate_stream_enabled {
                         stream_output_sample_rate = output_sample_rate;
-                        if output_sample_rate == SAMPLE_RATE {
-                            playback_stream_resampler = None;
-                        } else {
-                            playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, output_sample_rate, 480, 2));
-                        }
+                        stream_out.set_rate(output_sample_rate);
                     }
                 }
                 Ok(ControlMessage::SetSeparateStreamOutput(enabled, device)) => {
@@ -659,8 +560,7 @@ pub fn run_audio_pipeline(
                     // Drain ring buffers to prevent stale audio causing delay
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
-                    playback_stream_accum_l.clear();
-                    playback_stream_accum_r.clear();
+                    stream_out.clear_accum();
                     if enabled {
                         // Main output: voice-only, on the device the user chose
                         if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
@@ -684,11 +584,7 @@ pub fn run_audio_pipeline(
                     for peer in remote_peers.values_mut() {
                         peer.set_output_rate(output_sample_rate);
                     }
-                    if stream_output_sample_rate == SAMPLE_RATE {
-                        playback_stream_resampler = None;
-                    } else {
-                        playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, stream_output_sample_rate, 480, 2));
-                    }
+                    stream_out.set_rate(stream_output_sample_rate);
                 }
                 Ok(ControlMessage::SetStreamOutputDevice(name)) => {
                     if separate_stream_enabled {
@@ -697,40 +593,28 @@ pub fn run_audio_pipeline(
                         stream_output = None;
                         // Drain stream ring buffer
                         { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
-                        playback_stream_accum_l.clear();
-                        playback_stream_accum_r.clear();
+                        stream_out.clear_accum();
                         if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
                             stream_output_sample_rate = rate;
                             stream_output = Some(stream);
                             // Rebuild stream resampler for the new device rate
-                            if rate == SAMPLE_RATE {
-                                playback_stream_resampler = None;
-                            } else {
-                                playback_stream_resampler = Some(make_sinc_resampler(SAMPLE_RATE, rate, 480, 2));
-                            }
+                            stream_out.set_rate(rate);
                         }
                     }
                 }
                 Ok(ControlMessage::SetAecEnabled(enabled)) => {
                     log::info!("[pipeline] AEC enabled={}", enabled);
-                    aec_enabled = enabled;
-                    voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
-                    render_ref_accum.clear();
+                    chain.set_aec(enabled);
                     if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
                 }
                 Ok(ControlMessage::SetNoiseSuppressionLevel(level)) => {
                     log::info!("[pipeline] NS level={}", level);
-                    ns_level = level;
-                    rnnoise = build_rnnoise(ns_level);
-                    voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
-                    render_ref_accum.clear();
+                    chain.set_ns_level(level);
                     if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
                 }
                 Ok(ControlMessage::SetAgcEnabled(enabled)) => {
                     log::info!("[pipeline] AGC enabled={}", enabled);
-                    agc_enabled = enabled;
-                    voice_processor = build_voice_processor(aec_enabled, ns_level, agc_enabled);
-                    render_ref_accum.clear();
+                    chain.set_agc(enabled);
                     if let Ok(mut c) = render_ref_cons.lock() { while c.try_pop().is_some() {} }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -740,18 +624,9 @@ pub fn run_audio_pipeline(
 
         // 1b. Feed AEC render reference from decoded voice audio ──────────────
         // Drain the render ref ring buffer and process 10ms chunks through AEC.
-        if voice_processor.is_some() {
+        if chain.has_processor() {
             if let Ok(mut rr_cons) = render_ref_cons.lock() {
-                while let Some(s) = rr_cons.try_pop() {
-                    render_ref_accum.push(s);
-                }
-            }
-            // Feed complete 10ms render frames to AEC
-            while render_ref_accum.len() >= AEC_FRAME_SIZE {
-                let chunk: Vec<f32> = render_ref_accum.drain(..AEC_FRAME_SIZE).collect();
-                if let Some(ref mut proc) = voice_processor {
-                    let _ = proc.handle_render_frame(&chunk);
-                }
+                chain.feed_render(&mut rr_cons);
             }
         }
 
@@ -761,144 +636,35 @@ pub fn run_audio_pipeline(
         // We drain available samples, resample to 48kHz if needed, and accumulate
         // in capture_48k_buf. When we have a full 960-sample frame, encode + send.
         {
-            // Drain all available samples from the capture ring buffer
+            // Drain all available samples from the capture ring buffer and
+            // resample them to 48kHz (capture_chain.rs).
             {
                 let mut cons = capture_cons.lock().unwrap();
-                let avail = cons.occupied_len();
-                if avail > 0 {
-                    if capture_resampler.is_none() {
-                        // Input device is 48kHz — copy directly to the 48k buffer
-                        for _ in 0..avail {
-                            if let Some(s) = cons.try_pop() {
-                                capture_48k_buf.push(s);
-                            }
-                        }
-                    } else {
-                        // Drain raw samples into the resampler accumulator
-                        for _ in 0..avail {
-                            if let Some(s) = cons.try_pop() {
-                                capture_accum.push(s as f64 / 32768.0);
-                            }
-                        }
-                    }
-                }
+                chain.pull(&mut cons);
             } // release capture_cons lock
 
-            // Resample accumulated raw samples: input_rate → 48kHz
-            if let Some(ref mut resampler) = capture_resampler {
-                let mut needed = resampler.input_frames_next();
-                while capture_accum.len() >= needed {
-                    let chunk: Vec<f64> = capture_accum.drain(..needed).collect();
-                    if let Ok(out) = resampler.process(&[&chunk], None) {
-                        for &s in &out[0] {
-                            capture_48k_buf.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                        }
-                    }
-                    needed = resampler.input_frames_next();
-                }
-            }
-
-            // Try to assemble a full Opus frame (960 samples at 48kHz = 20ms)
-            let frame_opt: Option<[i16; FRAME_SIZE]> = if capture_48k_buf.len() >= FRAME_SIZE {
-                let mut frame = [0i16; FRAME_SIZE];
-                frame.copy_from_slice(&capture_48k_buf[..FRAME_SIZE]);
-                capture_48k_buf.drain(..FRAME_SIZE);
-                Some(frame)
-            } else {
-                None
-            };
-
-            if let Some(mut frame) = frame_opt {
+            // A full Opus frame (960 samples at 48kHz = 20ms), when captured.
+            if let Some(mut frame) = chain.next_frame() {
                 // ── Voice processing (AEC / NS / AGC) ────────────────────────
                 // Process BEFORE threshold check so AGC-boosted levels are what
                 // the threshold sees. Previous order caused AGC to boost quiet
                 // audio after the gate had already decided to fade it out,
                 // producing robotic popping artifacts.
-                if !muted && (voice_processor.is_some() || rnnoise.is_some()) {
-                    let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
-
-                    // Pass 1: WebRTC AEC + AGC (if enabled)
-                    if let Some(ref mut proc) = voice_processor {
-                        let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
-                        for chunk_idx in 0..2 {
-                            let start = chunk_idx * AEC_FRAME_SIZE;
-                            let end = start + AEC_FRAME_SIZE;
-                            if let Ok(_) = proc.process_capture_frame(
-                                &f32_frame[start..end],
-                                false,
-                                &mut output_buf,
-                            ) {
-                                f32_frame[start..end].copy_from_slice(&output_buf);
-                            }
-                        }
-                    }
-
-                    // Pass 2: RNNoise deep-learning noise suppression
-                    if let Some(ref mut rnn) = rnnoise {
-                        let mut rnn_in = [0.0f32; AEC_FRAME_SIZE];
-                        let mut rnn_out = [0.0f32; AEC_FRAME_SIZE];
-                        for chunk_idx in 0..2 {
-                            let start = chunk_idx * AEC_FRAME_SIZE;
-                            let end = start + AEC_FRAME_SIZE;
-                            // RNNoise expects samples in [-32768, 32767] range
-                            for (j, s) in f32_frame[start..end].iter().enumerate() {
-                                rnn_in[j] = s * 32768.0;
-                            }
-                            let _vad = rnn.process_frame(&mut rnn_out, &rnn_in);
-                            // Convert back to [-1, 1] range
-                            for (j, s) in rnn_out.iter().enumerate() {
-                                f32_frame[start + j] = s / 32768.0;
-                            }
-                        }
-                    }
-
-                    for (i, s) in f32_frame.iter().enumerate() {
-                        frame[i] = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
-                    }
+                if !muted {
+                    chain.process(&mut frame);
                 }
 
-                // Compute RMS in dB on the PROCESSED frame (post-AGC/NS)
-                let rms = {
-                    let sum_sq: f64 = frame.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                    (sum_sq / frame.len() as f64).sqrt() as f32
-                };
-                let rms_db = if rms > 0.0 {
-                    20.0 * (rms / 32768.0).log10()
-                } else {
-                    -96.0
-                };
+                // RMS in dB on the PROCESSED frame (post-AGC/NS)
+                let rms_db = capture_chain::rms_db(&frame);
                 let open_threshold = voice_threshold_db;
-                let close_threshold = voice_threshold_db - GATE_HYSTERESIS_DB;
                 // Push-to-talk / push-to-mute (global hotkeys) force the gate
-                // either way; a forced close is a closed gate, not a mute, so
-                // peers see "not speaking" and the fade tail still runs.
+                // either way (capture_chain.rs `TxGate`, with the edge shaping).
                 let hotkey_gate = crate::media::voice_gate::gate();
-                let gate_was_open = gate_open;
-                if muted || hotkey_gate == VoiceGate::Closed {
-                    gate_open = false;
-                    gate_hang_remaining = 0;
-                } else if hotkey_gate == VoiceGate::Open {
-                    gate_open = true;
-                    gate_hang_remaining = 0;
-                } else if rms_db >= open_threshold {
-                    gate_open = true;
-                    gate_hang_remaining = GATE_HANG_FRAMES;
-                } else if gate_open {
-                    if rms_db >= close_threshold {
-                        // Soft zone — keep open and refresh hang.
-                        gate_hang_remaining = GATE_HANG_FRAMES;
-                    } else if gate_hang_remaining > 0 {
-                        gate_hang_remaining -= 1;
-                    } else {
-                        gate_open = false;
-                    }
-                }
-                let transmit_voice = gate_open;
-                let gate_opened = !gate_was_open && gate_open;
-                let gate_closed = gate_was_open && !gate_open;
-                if gate_closed {
-                    gate_tail_remaining = GATE_TAIL_FRAMES;
-                }
+                let tx = tx_gate.step(&mut frame, rms_db, voice_threshold_db, muted, hotkey_gate);
+                let transmit_voice = tx.transmit_voice;
+                let tail_index = tx.tail_index;
+                let gate_opened = tx.opened;
+                let pre_roll_frame = tx.pre_roll;
 
                 // Emit input level for the UI meter (~every 60ms) — only
                 // while Settings → Audio's meter has reporting switched on
@@ -925,57 +691,6 @@ pub fn run_audio_pipeline(
                         event_tx.send(VoiceEvent::SpeakingChanged("__local__".to_string(), state));
                 }
 
-                // ── Gate edges ───────────────────────────────────────────
-                // A 20ms-grid gate chops the waveform at its edges, and the
-                // codec only smooths ~2.5ms of that:
-                //  - Opening: the frame that crossed the threshold is already
-                //    loud (a word's attack rises 30dB inside one frame), so the
-                //    listener gets silence → loud with the attack cut off — a
-                //    pop at every word start. Fix: pre-roll. Send the previous,
-                //    sub-threshold frame first (one frame of lookahead paid
-                //    only at talkspurt starts, never in steady state) with a
-                //    10ms fade-in on it, so the natural attack is transmitted.
-                //  - Closing: after the hang the signal is the room's noise
-                //    floor, often lifted by AGC; a zero frame after it is a
-                //    step. Fix: the three tail frames are the real signal
-                //    faded out over 60ms, not encoded silence.
-                const GATE_FADE_IN: usize = 480; // 10ms
-                let mut pre_roll_frame: Option<[i16; FRAME_SIZE]> = None;
-                if gate_opened {
-                    // No pre-roll on a push-to-talk press: that frame is audio
-                    // from before the key went down. Fade this one in instead.
-                    let held_back = gate_pre_roll.take();
-                    match if hotkey_gate == VoiceGate::Open { None } else { held_back } {
-                        Some(mut pr) => {
-                            for (i, s) in pr.iter_mut().take(GATE_FADE_IN).enumerate() {
-                                *s = (*s as f32 * (i as f32 / GATE_FADE_IN as f32)) as i16;
-                            }
-                            pre_roll_frame = Some(pr);
-                        }
-                        None => {
-                            // Nothing held back (previous frame was sent as a
-                            // tail frame, or first frame ever): ramp this one.
-                            for (i, s) in frame.iter_mut().take(GATE_FADE_IN).enumerate() {
-                                *s = (*s as f32 * (i as f32 / GATE_FADE_IN as f32)) as i16;
-                            }
-                        }
-                    }
-                }
-                let tail_index = if !transmit_voice && gate_tail_remaining > 0 {
-                    Some(GATE_TAIL_FRAMES - gate_tail_remaining) // 0, 1, 2
-                } else {
-                    None
-                };
-                if let Some(t) = tail_index {
-                    let n = frame.len() as f32;
-                    let g0 = 1.0 - t as f32 / GATE_TAIL_FRAMES as f32;
-                    let g1 = 1.0 - (t + 1) as f32 / GATE_TAIL_FRAMES as f32;
-                    for (i, s) in frame.iter_mut().enumerate() {
-                        let g = g0 + (g1 - g0) * (i as f32 / n);
-                        *s = (*s as f32 * g) as i16;
-                    }
-                }
-
                 // ── Silence-transmission gating ──────────────────────────
                 // When actively transmitting voice, send every 20ms frame.
                 // Otherwise (muted, VAD gate closed, or the speech tail ended)
@@ -988,7 +703,6 @@ pub fn run_audio_pipeline(
                     last_voice_send = loop_start;
                     true
                 } else if tail_index.is_some() {
-                    gate_tail_remaining -= 1;
                     last_voice_send = loop_start;
                     true
                 } else if last_voice_send.elapsed() >= KEEPALIVE_INTERVAL {
@@ -997,8 +711,6 @@ pub fn run_audio_pipeline(
                 } else {
                     false
                 };
-                // Hold back an unsent frame as next talkspurt's pre-roll.
-                gate_pre_roll = if transmit_voice || tail_index.is_some() { None } else { Some(frame) };
 
                 if should_send {
                     if let Some(d) = audio_dump.as_mut() {
@@ -1121,7 +833,6 @@ pub fn run_audio_pipeline(
 
         // 4b. Drain jitter buffers → decode → push to per-peer ring ─────────
         let drain_now = Instant::now();
-        let frame_dur = Duration::from_millis(20);
         // Clock-paced fallback only: cap how far behind drain times can fall
         // so a stall doesn't fire dozens of frames in one burst.
         let max_behind = Duration::from_millis(100);
@@ -1182,114 +893,25 @@ pub fn run_audio_pipeline(
                 low_water: voice_low_water,
                 prime: voice_prime,
                 deafened,
-                aec_enabled,
+                aec_enabled: chain.aec_enabled(),
                 user_volumes: &user_volumes,
                 event_tx: &event_tx,
                 dump: audio_dump.as_mut(),
             });
 
             // ── Stream audio jitter buffer ──
-            if let Some(ref mut decoder) = peer.stream_audio_decoder {
-                peer.stream_jitter.set_prime_frames(if stream_ring_paced { stream_prime } else { 0 });
-                let mut produced = 0usize;
-                loop {
-                    let due = if stream_ring_paced {
-                        let len = stream_prod.lock().map(|p| p.occupied_len()).unwrap_or(usize::MAX);
-                        len < stream_low_water
-                    } else {
-                        drain_now.duration_since(peer.stream_drain_time) >= frame_dur
-                    };
-                    if !due || produced >= MAX_FRAMES_PER_TICK { break; }
-                    if !stream_ring_paced { peer.stream_drain_time += frame_dur; }
-
-                    let frame = peer.stream_jitter.drain();
-                    if frame == Frame::Idle {
-                        if !stream_ring_paced { peer.stream_drain_time = drain_now; }
-                        break;
-                    }
-                    produced += 1;
-                    let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
-                    let decode_ok = match &frame {
-                        Frame::Packet(data) => decoder.decode(data, &mut pcm).is_ok(),
-                        Frame::Lost | Frame::Expand => decoder.decode(&[], &mut pcm).is_ok(), // PLC
-                        Frame::Idle => unreachable!(),
-                    };
-                    if let Frame::Packet(data) = frame {
-                        peer.stream_jitter.recycle(data);
-                    }
-                    if !decode_ok { continue; }
-                    let quiet = {
-                        let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                        let rms = (sum_sq / pcm.len() as f64).sqrt() as f32;
-                        rms < 32768.0 * 0.0056 // ≈ -45 dBFS
-                    };
-                    if peer.stream_jitter.should_drop_excess(quiet) {
-                        if !stream_ring_paced { peer.stream_drain_time -= frame_dur; }
-                        continue;
-                    }
-                    if playback_stream_resampler.is_none() {
-                        // Output device is 48kHz — push directly
-                        if let Ok(mut prod) = stream_prod.lock() {
-                            for i in 0..STEREO_FRAME_SIZE {
-                                let l = pcm[i * 2] as i32;
-                                let r = pcm[i * 2 + 1] as i32;
-                                if stream_is_stereo {
-                                    let sl = ((l as f32) * stream_volume) as i32;
-                                    let sr = ((r as f32) * stream_volume) as i32;
-                                    let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
-                                    let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
-                                } else {
-                                    let mono = (l + r) / 2;
-                                    let scaled = ((mono as f32) * stream_volume) as i32;
-                                    let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
-                                }
-                            }
-                        }
-                    } else if let Some(ref mut resampler) = playback_stream_resampler {
-                        // Resample stereo 48kHz → output device rate, then push
-                        for i in 0..STEREO_FRAME_SIZE {
-                            let l = pcm[i * 2] as f32 * stream_volume / 32768.0;
-                            let r = pcm[i * 2 + 1] as f32 * stream_volume / 32768.0;
-                            playback_stream_accum_l.push(l as f64);
-                            playback_stream_accum_r.push(r as f64);
-                        }
-                        let mut needed = resampler.input_frames_next();
-                        while playback_stream_accum_l.len() >= needed && playback_stream_accum_r.len() >= needed {
-                            playback_stream_scratch_l.clear();
-                            playback_stream_scratch_l.extend(playback_stream_accum_l.drain(..needed));
-                            playback_stream_scratch_r.clear();
-                            playback_stream_scratch_r.extend(playback_stream_accum_r.drain(..needed));
-                            if let Ok(out) = resampler.process(&[&playback_stream_scratch_l, &playback_stream_scratch_r], None) {
-                                if let Ok(mut prod) = stream_prod.lock() {
-                                    let len = out[0].len().min(out[1].len());
-                                    for i in 0..len {
-                                        if stream_is_stereo {
-                                            let _ = prod.try_push((out[0][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                            let _ = prod.try_push((out[1][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                        } else {
-                                            let mono = (out[0][i] + out[1][i]) / 2.0;
-                                            let _ = prod.try_push((mono * 32768.0).clamp(-32768.0, 32767.0) as i16);
-                                        }
-                                    }
-                                }
-                            }
-                            needed = resampler.input_frames_next();
-                        }
-                    }
-                    // Queue stream audio for the AEC render reference (mono,
-                    // volume applied); summed with voice in 4c.
-                    if aec_enabled {
-                        let mut mono = [0.0f32; FRAME_SIZE];
-                        for i in 0..STEREO_FRAME_SIZE {
-                            let l = pcm[i * 2] as f32;
-                            let r = pcm[i * 2 + 1] as f32;
-                            mono[i] = ((l + r) / 2.0) * stream_volume / 32768.0;
-                        }
-                        if stream_render_fifo.len() >= RENDER_FIFO_MAX { stream_render_fifo.pop_front(); }
-                        stream_render_fifo.push_back(mono);
-                    }
-                }
-            }
+            drain_peer_stream(peer, &mut StreamDrain {
+                now: drain_now,
+                ring_paced: stream_ring_paced,
+                low_water: stream_low_water,
+                prime: stream_prime,
+                stereo: stream_is_stereo,
+                volume: stream_volume,
+                aec_enabled: chain.aec_enabled(),
+                prod: &stream_prod,
+                out: &mut stream_out,
+                render_fifo: &mut stream_render_fifo,
+            });
         }
 
         // 4b'. Debug dump: device output tap + ring-dry detection ─────────
@@ -1317,7 +939,7 @@ pub fn run_audio_pipeline(
         // catches up if the loop fell behind; the 100ms guard caps a burst
         // after a long stall. Keeps render:capture at 1:1 whatever the peer
         // count — the fix for AEC breaking with 3+ people in the channel.
-        if aec_enabled {
+        if chain.aec_enabled() {
             if last_render_flush.elapsed() > Duration::from_millis(100) {
                 last_render_flush = drain_now;
             }
@@ -1815,6 +1437,166 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
                 peer.render_fifo.push_back(f32_frame);
             }
             peer.push_voice_frame(&f32_frame);
+        }
+    }
+}
+
+/// The stream-audio playback resampler (48 kHz stereo → the device that
+/// plays stream audio) with its buffers.
+pub(crate) struct StreamOut {
+    /// None when that device runs at 48 kHz.
+    resampler: Option<rubato::SincFixedOut<f64>>,
+    accum_l: Vec<f64>,
+    accum_r: Vec<f64>,
+    // Reusable resampler input chunks (see peer.rs resamp_scratch).
+    scratch_l: Vec<f64>,
+    scratch_r: Vec<f64>,
+}
+
+impl StreamOut {
+    pub fn new(rate: u32) -> Self {
+        let mut s = StreamOut { resampler: None, accum_l: Vec::new(), accum_r: Vec::new(), scratch_l: Vec::new(), scratch_r: Vec::new() };
+        if rate != SAMPLE_RATE {
+            log::info!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, rate);
+        }
+        s.set_rate(rate);
+        s
+    }
+
+    /// The device's rate (a new device): a fresh resampler.
+    pub fn set_rate(&mut self, rate: u32) {
+        self.resampler = if rate == SAMPLE_RATE { None } else { Some(make_sinc_resampler(SAMPLE_RATE, rate, 480, 2)) };
+    }
+
+    pub fn clear_accum(&mut self) {
+        self.accum_l.clear();
+        self.accum_r.clear();
+    }
+}
+
+/// What `drain_peer_stream` needs from the pipeline (section 4b).
+pub(crate) struct StreamDrain<'a> {
+    pub now: Instant,
+    /// Decode when the stream ring is below `low_water`; else on the 20 ms clock.
+    pub ring_paced: bool,
+    pub low_water: usize,
+    pub prime: usize,
+    pub stereo: bool,
+    /// 0.0–1.0, the viewer's stream volume.
+    pub volume: f32,
+    pub aec_enabled: bool,
+    pub prod: &'a std::sync::Mutex<ringbuf::HeapProd<i16>>,
+    pub out: &'a mut StreamOut,
+    pub render_fifo: &'a mut std::collections::VecDeque<[f32; FRAME_SIZE]>,
+}
+
+/// Decode a peer's due stream-audio frames into the stream ring (section 4b).
+pub(crate) fn drain_peer_stream(peer: &mut PeerAudio, cx: &mut StreamDrain<'_>) {
+    let drain_now = cx.now;
+    let frame_dur = Duration::from_millis(20);
+    let stream_ring_paced = cx.ring_paced;
+    let stream_is_stereo = cx.stereo;
+    let stream_volume = cx.volume;
+    let stream_prod = cx.prod;
+    if let Some(ref mut decoder) = peer.stream_audio_decoder {
+        peer.stream_jitter.set_prime_frames(if stream_ring_paced { cx.prime } else { 0 });
+        let mut produced = 0usize;
+        loop {
+            let due = if stream_ring_paced {
+                let len = stream_prod.lock().map(|p| p.occupied_len()).unwrap_or(usize::MAX);
+                len < cx.low_water
+            } else {
+                drain_now.duration_since(peer.stream_drain_time) >= frame_dur
+            };
+            if !due || produced >= MAX_FRAMES_PER_TICK { break; }
+            if !stream_ring_paced { peer.stream_drain_time += frame_dur; }
+
+            let frame = peer.stream_jitter.drain();
+            if frame == Frame::Idle {
+                if !stream_ring_paced { peer.stream_drain_time = drain_now; }
+                break;
+            }
+            produced += 1;
+            let mut pcm = [0i16; STEREO_FRAME_SAMPLES];
+            let decode_ok = match &frame {
+                Frame::Packet(data) => decoder.decode(data, &mut pcm).is_ok(),
+                Frame::Lost | Frame::Expand => decoder.decode(&[], &mut pcm).is_ok(), // PLC
+                Frame::Idle => unreachable!(),
+            };
+            if let Frame::Packet(data) = frame {
+                peer.stream_jitter.recycle(data);
+            }
+            if !decode_ok { continue; }
+            let quiet = {
+                let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                let rms = (sum_sq / pcm.len() as f64).sqrt() as f32;
+                rms < 32768.0 * 0.0056 // ≈ -45 dBFS
+            };
+            if peer.stream_jitter.should_drop_excess(quiet) {
+                if !stream_ring_paced { peer.stream_drain_time -= frame_dur; }
+                continue;
+            }
+            if cx.out.resampler.is_none() {
+                // Output device is 48kHz — push directly
+                if let Ok(mut prod) = stream_prod.lock() {
+                    for i in 0..STEREO_FRAME_SIZE {
+                        let l = pcm[i * 2] as i32;
+                        let r = pcm[i * 2 + 1] as i32;
+                        if stream_is_stereo {
+                            let sl = ((l as f32) * stream_volume) as i32;
+                            let sr = ((r as f32) * stream_volume) as i32;
+                            let _ = prod.try_push(sl.clamp(-32768, 32767) as i16);
+                            let _ = prod.try_push(sr.clamp(-32768, 32767) as i16);
+                        } else {
+                            let mono = (l + r) / 2;
+                            let scaled = ((mono as f32) * stream_volume) as i32;
+                            let _ = prod.try_push(scaled.clamp(-32768, 32767) as i16);
+                        }
+                    }
+                }
+            } else if let Some(ref mut resampler) = cx.out.resampler {
+                // Resample stereo 48kHz → output device rate, then push
+                for i in 0..STEREO_FRAME_SIZE {
+                    let l = pcm[i * 2] as f32 * stream_volume / 32768.0;
+                    let r = pcm[i * 2 + 1] as f32 * stream_volume / 32768.0;
+                    cx.out.accum_l.push(l as f64);
+                    cx.out.accum_r.push(r as f64);
+                }
+                let mut needed = resampler.input_frames_next();
+                while cx.out.accum_l.len() >= needed && cx.out.accum_r.len() >= needed {
+                    cx.out.scratch_l.clear();
+                    cx.out.scratch_l.extend(cx.out.accum_l.drain(..needed));
+                    cx.out.scratch_r.clear();
+                    cx.out.scratch_r.extend(cx.out.accum_r.drain(..needed));
+                    if let Ok(out) = resampler.process(&[&cx.out.scratch_l, &cx.out.scratch_r], None) {
+                        if let Ok(mut prod) = stream_prod.lock() {
+                            let len = out[0].len().min(out[1].len());
+                            for i in 0..len {
+                                if stream_is_stereo {
+                                    let _ = prod.try_push((out[0][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                    let _ = prod.try_push((out[1][i] * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                } else {
+                                    let mono = (out[0][i] + out[1][i]) / 2.0;
+                                    let _ = prod.try_push((mono * 32768.0).clamp(-32768.0, 32767.0) as i16);
+                                }
+                            }
+                        }
+                    }
+                    needed = resampler.input_frames_next();
+                }
+            }
+            // Queue stream audio for the AEC render reference (mono,
+            // volume applied); summed with voice in 4c.
+            if cx.aec_enabled {
+                let mut mono = [0.0f32; FRAME_SIZE];
+                for i in 0..STEREO_FRAME_SIZE {
+                    let l = pcm[i * 2] as f32;
+                    let r = pcm[i * 2 + 1] as f32;
+                    mono[i] = ((l + r) / 2.0) * stream_volume / 32768.0;
+                }
+                if cx.render_fifo.len() >= RENDER_FIFO_MAX { cx.render_fifo.pop_front(); }
+                cx.render_fifo.push_back(mono);
+            }
         }
     }
 }

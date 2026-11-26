@@ -23,6 +23,7 @@
 
 pub mod audio_device;
 pub mod audio_stream_pipeline;
+pub(crate) mod capture_chain;
 pub mod call_crypto;
 pub mod capture;
 #[cfg(target_os = "linux")]
