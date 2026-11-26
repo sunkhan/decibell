@@ -1,3 +1,67 @@
 [workspace]
 resolver = "2"
-members = ["crates/decibell-theme"]
+members = [
+    "crates/decibell-theme",
+    "crates/decibell-harness",
+    "crates/decibell-ui",
+    "crates/decibell-app",
+    "crates/decibell-attachments",
+    "crates/decibell-unfurl",
+    "crates/decibell-highlight",
+    "crates/decibell-tex",
+    "crates/decibell-richtext",
+    "crates/decibell-model",
+]
+# Path dependencies under the workspace directory would otherwise become members: GPUI's
+# crates must keep resolving `workspace = true` against Zed's own root manifest.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# GPUI is built from vendor/gpui-src: Zed at GPUI_PIN with patches/*.patch applied
+# (tools/fetch-gpui.sh creates it; run it once after cloning and after a patch changes).
+# Every crate takes these with `gpui.workspace = true` so there is one definition.
+[workspace.dependencies]
+gpui = { path = "vendor/gpui-src/crates/gpui", default-features = false }
+gpui_platform = { path = "vendor/gpui-src/crates/gpui_platform", default-features = false, features = ["wayland", "x11"] }
+gpui_wgpu = { path = "vendor/gpui-src/crates/gpui_wgpu" }
+decibell-theme = { path = "crates/decibell-theme" }
+decibell-harness = { path = "crates/decibell-harness" }
+decibell-ui = { path = "crates/decibell-ui" }
+anyhow = "1"
+futures = "0.3"
+libc = "0.2"
+log = "0.4"
+
+# Zed's workspace patches do not reach an out-of-tree build: these are the ones on GPUI's
+# dependency path (vendor/zed/Cargo.toml, [patch.crates-io]). Cargo.lock started as a copy of
+# Zed's, so the versions are the ones Zed ships at the pin.
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task", rev = "41fd3359c75e221bd8b187a8ee361aa309c1714c" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
+khronos-egl = { git = "https://github.com/zed-industries/khronos-egl", rev = "42214b36347b108fd9630ca6254b96dde59e04fe" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+
+# The same build optimised for size, kept to compare. On the skeleton (2026-11-26): binary
+# 18.2 MB instead of 23.5, 3.3 MB less private memory, first frame about 10 ms later.
+[profile.release-s]
+inherits = "release"
+opt-level = "s"
+
+# Debug builds: our crates unoptimised with line tables only; dependencies (GPUI, wgpu,
+# text shaping) optimised once, so a debug build stays usable and rebuilds stay quick.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1

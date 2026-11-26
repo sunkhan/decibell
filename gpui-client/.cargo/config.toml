@@ -1,0 +1,7 @@
+# The core (crates/decibell-core, used by decibell-model) links FFmpeg statically:
+# point pkg-config at this client's own prefix (vendor/ffmpeg: FFmpeg 8.1 with the
+# decoders, built by the video work; gitignored) so ffmpeg-sys-next never binds the
+# system's shared libav*. `relative = true` resolves against gpui-client/, whatever
+# the cwd below it. Harmless on Windows (vcpkg) and macOS.
+[env]
+PKG_CONFIG_PATH = { value = "vendor/ffmpeg/lib/pkgconfig", relative = true }

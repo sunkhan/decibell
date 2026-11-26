@@ -1,0 +1,162 @@
+diff --git a/crates/gpui_linux/src/linux/x11/client.rs b/crates/gpui_linux/src/linux/x11/client.rs
+index f75979c..d5bc281 100644
+--- a/crates/gpui_linux/src/linux/x11/client.rs
++++ b/crates/gpui_linux/src/linux/x11/client.rs
+@@ -115,6 +115,11 @@ enum RefreshState {
+     Hidden {
+         refresh_rate: Duration,
+     },
++    /// Visible, but nothing to draw: no timer runs until the window asks for a frame
++    /// (`PlatformWindow::schedule_frame` → [`X11ClientStatePtr::resume_refresh_loop`]).
++    Parked {
++        refresh_rate: Duration,
++    },
+     PeriodicRefresh {
+         refresh_rate: Duration,
+         event_loop_token: RegistrationToken,
+@@ -249,6 +254,27 @@ impl X11ClientStatePtr {
+         self.0.upgrade().map(X11Client)
+     }
+ 
++    /// Restarts the refresh timer of a window whose timer parked itself for lack of demand.
++    pub fn resume_refresh_loop(&self, x_window: xproto::Window) {
++        let Some(client) = self.get_client() else {
++            return;
++        };
++        let mut state = client.0.borrow_mut();
++        let Some(window_ref) = state.windows.get_mut(&x_window) else {
++            return;
++        };
++        let Some(RefreshState::Parked { refresh_rate }) = window_ref.refresh_state else {
++            return;
++        };
++        let event_loop_token = state.start_refresh_loop(x_window, refresh_rate);
++        if let Some(window_ref) = state.windows.get_mut(&x_window) {
++            window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
++                refresh_rate,
++                event_loop_token,
++            });
++        }
++    }
++
+     pub fn drop_window(&self, x_window: u32) {
+         let Some(client) = self.get_client() else {
+             return;
+@@ -1978,9 +2004,13 @@ impl X11ClientState {
+         match (is_visible, window_ref.refresh_state.take()) {
+             (false, refresh_state @ Some(RefreshState::Hidden { .. }))
+             | (false, refresh_state @ None)
+-            | (true, refresh_state @ Some(RefreshState::PeriodicRefresh { .. })) => {
++            | (true, refresh_state @ Some(RefreshState::PeriodicRefresh { .. }))
++            | (true, refresh_state @ Some(RefreshState::Parked { .. })) => {
+                 window_ref.refresh_state = refresh_state;
+             }
++            (false, Some(RefreshState::Parked { refresh_rate })) => {
++                window_ref.refresh_state = Some(RefreshState::Hidden { refresh_rate });
++            }
+             (
+                 false,
+                 Some(RefreshState::PeriodicRefresh {
+@@ -2063,12 +2093,12 @@ impl X11ClientState {
+                     let Some(client) = this.get_client() else {
+                         return calloop::timer::TimeoutAction::Drop;
+                     };
+-                    let xcb_connection = {
++                    let (xcb_connection, window) = {
+                         let mut state = client.0.borrow_mut();
+                         let xcb_connection = state.xcb_connection.clone();
+-                        if let Some(window) = state.windows.get_mut(&x_window) {
+-                            let window = window.window.clone();
+-                            drop(state);
++                        let window = state.windows.get_mut(&x_window).map(|w| w.window.clone());
++                        drop(state);
++                        if let Some(window) = &window {
+                             window.refresh(RequestFrameOptions {
+                                 require_presentation: false,
+                                 force_render: false,
+@@ -2076,10 +2106,27 @@ impl X11ClientState {
+                                 signal_source: FrameRequestSource::LocalSchedule,
+                             });
+                         }
+-                        xcb_connection
++                        (xcb_connection, window)
+                     };
+                     client.process_x11_events(&xcb_connection).log_err();
+ 
++                    // Nothing was drawn or asked for during this tick: stop waking at the
++                    // refresh rate. The window's `schedule_frame` restarts the timer.
++                    if let Some(window) = window {
++                        let mut window_state = window.state.borrow_mut();
++                        if !std::mem::take(&mut window_state.frame_demand) {
++                            window_state.refresh_parked = true;
++                            drop(window_state);
++                            if let Some(window_ref) =
++                                client.0.borrow_mut().windows.get_mut(&x_window)
++                            {
++                                window_ref.refresh_state =
++                                    Some(RefreshState::Parked { refresh_rate });
++                            }
++                            return calloop::timer::TimeoutAction::Drop;
++                        }
++                    }
++
+                     // Take into account that some frames have been skipped
+                     let now = Instant::now();
+                     while instant < now {
+diff --git a/crates/gpui_linux/src/linux/x11/window.rs b/crates/gpui_linux/src/linux/x11/window.rs
+index fc280b8..76dd625 100644
+--- a/crates/gpui_linux/src/linux/x11/window.rs
++++ b/crates/gpui_linux/src/linux/x11/window.rs
+@@ -285,6 +285,11 @@ pub struct X11WindowState {
+     visibility: WindowVisibility,
+     hovered: bool,
+     force_render_after_recovery: bool,
++    /// Set whenever a frame was drawn or asked for; the client's refresh timer takes it
++    /// each tick and parks itself after a tick that found it unset.
++    pub(crate) frame_demand: bool,
++    /// The refresh timer is parked: the next `schedule_frame` restarts it.
++    pub(crate) refresh_parked: bool,
+     fullscreen: bool,
+     client_side_decorations_supported: bool,
+     decorations: WindowDecorations,
+@@ -849,6 +854,8 @@ impl X11WindowState {
+                 visibility: WindowVisibility::Hidden,
+                 hovered: false,
+                 force_render_after_recovery: false,
++                frame_demand: false,
++                refresh_parked: false,
+                 fullscreen: false,
+                 maximized_vertical: false,
+                 maximized_horizontal: false,
+@@ -1782,6 +1789,10 @@ impl PlatformWindow for X11Window {
+     fn draw(&self, scene: &Scene) {
+         let mut inner = self.0.state.borrow_mut();
+         let inner = &mut *inner;
++        // A presented frame can be followed by another without a `schedule_frame` (presenting
++        // after high-rate input, recovery from a lost device): keep the refresh timer for
++        // one more tick.
++        inner.frame_demand = true;
+         let Some(renderer) = &mut inner.renderer else {
+             return;
+         };
+@@ -1813,6 +1824,20 @@ impl PlatformWindow for X11Window {
+         }
+     }
+ 
++    fn schedule_frame(&self) {
++        let mut state = self.0.state.borrow_mut();
++        state.frame_demand = true;
++        if std::mem::take(&mut state.refresh_parked) {
++            // From a task, because this can be called while the client is borrowed.
++            let client = state.client.clone();
++            let x_window = self.0.x_window;
++            state
++                .executor
++                .spawn(async move { client.resume_refresh_loop(x_window) })
++                .detach();
++        }
++    }
++
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         self.0
+             .state

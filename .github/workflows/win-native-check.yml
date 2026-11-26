@@ -15,6 +15,7 @@ on:
     paths:
       - "electron-client/native/**"
       - "crates/**"
+      - "gpui-client/**"
       - "proto/messages.proto"
       - ".github/workflows/win-native-check.yml"
 
@@ -129,3 +130,114 @@ jobs:
           git add -A
           git commit -q -m "win-native-check ${GITHUB_SHA} (${CHECK_OUTCOME})"
           git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci/win-native-check-log
+
+  # The GPUI client (gpui-client/): compile-checks its workspace for Windows, where GPUI
+  # uses another backend (gpui_windows: Direct3D 11 + DirectWrite) than on the Linux dev
+  # box. The workspace reaches crates/decibell-core (through decibell-model), so it needs
+  # protoc and FFmpeg exactly as the job above; a debug `cargo check` does not need
+  # fxc.exe (release builds compile GPUI's HLSL shaders with it). Output goes to
+  # ci/win-gpui-check-log, like the job above.
+  gpui-client:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gpui-client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: gpui-client
+          shared-key: win-gpui-check
+
+      # The pinned Zed clone and the patched copy cargo builds GPUI from. On a hit
+      # fetch-gpui.sh finds its stamp and does nothing, which also keeps the sources'
+      # timestamps, so cargo does not rebuild GPUI.
+      - name: Cache the patched GPUI sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            gpui-client/vendor/zed
+            gpui-client/vendor/gpui-src
+            gpui-client/vendor/gpui-src.stamp
+          key: gpui-src-${{ hashFiles('gpui-client/GPUI_PIN', 'gpui-client/patches/*.patch', 'gpui-client/tools/fetch-gpui.sh') }}
+
+      - name: Fetch and patch GPUI
+        shell: bash
+        run: tools/fetch-gpui.sh
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same pinned vcpkg FFmpeg, and the same binary cache, as the job above.
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-archives-ffmpeg-e5a1490e-x64-windows
+
+      - name: Install FFmpeg via vcpkg
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv]:x64-windows"
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: cargo check
+        id: check
+        shell: bash
+        env:
+          # As above: audiopus_sys's vendored libopus and CMake 4.
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        # The workspace with its tests, then the capture tool behind its feature (it is
+        # not a default target, so that GPUI's test-support stays out of `decibell`).
+        run: |
+          set -o pipefail
+          status=0
+          cargo check --locked --workspace --all-targets 2>&1 | tee cargo-check.log || status=1
+          cargo check --locked -p decibell-app --features capture --all-targets 2>&1 \
+            | tee -a cargo-check.log || status=1
+          exit $status
+
+      - name: Upload compiler output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-gpui-check-log
+          path: gpui-client/cargo-check.log
+          if-no-files-found: ignore
+
+      - name: Publish compiler output to ci/win-gpui-check-log
+        if: always()
+        shell: bash
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        run: |
+          set -e
+          rm -rf /tmp/win-gpui-log && mkdir -p /tmp/win-gpui-log
+          if [ -f gpui-client/cargo-check.log ]; then
+            cp gpui-client/cargo-check.log /tmp/win-gpui-log/
+          else
+            echo "(no cargo-check.log: a step before cargo check failed)" > /tmp/win-gpui-log/cargo-check.log
+          fi
+          cd /tmp/win-gpui-log
+          printf 'run=%s\nsha=%s\noutcome=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$CHECK_OUTCOME" > meta.txt
+          git init -q
+          git config user.name "decibell-ci"
+          git config user.email "ci@decibell.invalid"
+          git checkout -q -b ci/win-gpui-check-log
+          git add -A
+          git commit -q -m "win-gpui-check ${GITHUB_SHA} (${CHECK_OUTCOME})"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci/win-gpui-check-log

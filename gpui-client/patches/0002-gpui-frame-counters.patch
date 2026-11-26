@@ -1,0 +1,73 @@
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 3b3650c..f71f85a 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -68,6 +68,12 @@ use std::{
+ };
+ use uuid::Uuid;
+ 
++/// Frames drawn by every window of this process since it started ([`Window::frames_drawn`]
++/// summed). An atomic so that a signal handler can read it.
++pub static FRAMES_DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// Frames presented by every window of this process ([`Window::frames_presented`] summed).
++pub static FRAMES_PRESENTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ pub(crate) mod a11y;
+ mod native_view;
+ mod prompts;
+@@ -1290,6 +1296,8 @@ pub struct Window {
+         SingleSubscriberSet<Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
+     hovered: Rc<Cell<bool>>,
+     pub(crate) needs_present: Rc<Cell<bool>>,
++    frames_drawn: u64,
++    frames_presented: u64,
+     /// The rendered scene's [`Scene::animation_frame_interval`]. While it is
+     /// `Some`, the scene must keep being presented even when nothing is redrawn.
+     scene_animation_interval: Rc<Cell<Option<Duration>>>,
+@@ -2488,6 +2496,8 @@ impl Window {
+             visibility_observers: SingleSubscriberSet::new(),
+             hovered,
+             needs_present,
++            frames_drawn: 0,
++            frames_presented: 0,
+             scene_animation_interval,
+             input_rate_tracker,
+             #[cfg(feature = "profiler")]
+@@ -3999,6 +4009,8 @@ impl Window {
+             self.refresh();
+         }
+         self.needs_present.set(true);
++        self.frames_drawn += 1;
++        FRAMES_DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+ 
+         #[cfg(feature = "profiler")]
+         {
+@@ -4042,6 +4054,8 @@ impl Window {
+         #[cfg(feature = "profiler")]
+         let present_start = Instant::now();
+         self.platform_window.draw(&self.rendered_frame.scene);
++        self.frames_presented += 1;
++        FRAMES_PRESENTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         #[cfg(feature = "profiler")]
+         self.window_profiler.record_present(
+             present_start,
+@@ -5727,6 +5741,19 @@ impl Window {
+         self.platform_window.schedule_frame();
+     }
+ 
++    /// How many frames this window has drawn: the element tree rebuilt, laid out and painted
++    /// into a new scene.
++    pub fn frames_drawn(&self) -> u64 {
++        self.frames_drawn
++    }
++
++    /// How many times this window has handed a scene to the platform window to present. At
++    /// least [`Self::frames_drawn`] once the window is idle: a scene can be presented again
++    /// without being redrawn.
++    pub fn frames_presented(&self) -> u64 {
++        self.frames_presented
++    }
++
+     /// Removes an image from the sprite atlas.
+     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+         for frame_index in 0..data.frame_count() {

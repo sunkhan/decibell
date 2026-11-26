@@ -46,7 +46,8 @@ screens in all seven themes beside Electron's.
 | Decision recorded (CLAUDE.md, design record, pin) | done (2026-11-26) |
 | Core split step 1 (move + event sink) | done `76b77c3`: Electron's bar on Linux (tsc 0 errors, napi build with `index.d.ts` / `index.js` byte-identical, 322 + 2 tests, smoke load) and Windows Native Check run 45797141001 green |
 | Core split step 2 (typed `CoreEvent`) | on the branch `1930905` + `ebb65d2`: 85 variants, `to_json()` pinned byte-for-byte by a golden test recorded from the old path; Linux bar passed (tsc 0, napi build with `index.d.ts` / `index.js` unchanged, 327 + 2 tests, smoke); Windows Native Check run 45806591240 green (after `34f6527` fixed a Windows-only test) |
-| Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle) | in progress, worktree `.worktrees/core-api` (branch `wip/core-api`) |
+| Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle `rt`) | done `a67554d` + `79b7eba`: 132 functions in 16 areas returning `CoreError`, structs defined once in core (optional `napi` feature), every async api fn awaitable from any executor; Linux bar passed (tsc 0, napi build with `index.js` identical and `index.d.ts` identical in content, 340 core tests, `smoke-load.cjs`, `smoke-stack.cjs` signing in against the local stack); Windows Native Check run 45808677484 green |
+| Client state model (`crates/decibell-model`): core handle, event pump, first stores, headless driver | in progress |
 | Core split step 5 (pooled receive path) | not started (with stream playback) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
 | Linux measurement tools | done `5285180`: `tools/perf/measure.sh`, `startup.sh`, `winctl.sh`, `install-size.sh` (README has the Linux section) |
@@ -77,7 +78,7 @@ with fontTools (`tools/gen-fonts.sh` finds or creates one); refetching assets ne
 
 ```sh
 tools/fetch-gpui.sh                     # once after cloning, and whenever GPUI_PIN or patches/ change
-cargo build --release -p decibell-app   # → target/release/decibell (about 4 min clean, fat LTO)
+cargo build --release -p decibell-app   # → target/release/decibell (about 3 min clean, fat LTO)
 cargo build -p decibell-app             # debug: our crates unoptimised, dependencies at opt-level 1
 ```
 
@@ -120,9 +121,10 @@ tools/gen-theme/check.sh                         # the theme tokens match global
 Self-tests (`--selftest list`; one name, several separated by commas, or `all`) drive the real app on the
 real platform: `boot` (first frame, every bundled font face resolves to itself), `idle-frames` (0 frames
 drawn or presented and a sleeping main thread over 5 s; `DECIBELL_SELFTEST_IDLE_SECS` changes the window),
-`themes` (each theme switch costs exactly one frame). They open a visible window for a few seconds: GPUI
-cannot create a hidden one on Linux. Keep the pointer off it; a hover is a frame (the idle test retries
-twice before failing).
+`window-frame` (maximise and restore: the client-side margin goes and comes back), `themes` (each theme
+switch costs exactly one frame). They open a visible window for about 12 s and maximise it once: GPUI cannot
+create a hidden window on Linux. Keep the pointer off it; a hover is a frame (the idle test retries twice
+before failing).
 
 **Capture** (no window, no display server needed; Linux only)
 

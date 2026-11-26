@@ -77,12 +77,35 @@ Fidelity notes for the UI layer:
   style and features only: cosmic-text (Linux) drives `wght` from the weight and leaves other axes at their defaults;
   DirectWrite (Windows) picks named instances, all at wdth 100. So 112.5 % / 125 % need either static instances (the
   Google Fonts API serves one per request, e.g. `css2?family=Mona+Sans:wdth,wght@112.5,600`, or fontTools'
-  instancer) registered under their own family names, or axis support added to GPUI. Not done here.
+  instancer) registered under their own family names, or axis support added to GPUI. Done with static
+  instances: "Static faces" below.
 - **Italics** are synthesised in the renderer (no italic face is loaded); bundle none.
 
 Re-pinning: when the renderer bumps a fontsource package the script fails until `FONTSOURCE` in the script is updated.
 Check what Google now serves (`metadata.json` `version`, the TTF's name ID 5), update the URLs / commit and the
 SHA-256s (`--print`), and redo the glyph comparison above.
+
+### Static faces (`fonts/static/`, committed, generated)
+
+What the GPUI client actually loads. GPUI at the pin sets no variable-font axes and its font query has no width
+(`docs/gpui-notes.md` §5.3), so `tools/gen-fonts.sh` cuts one static TTF per (family, width, weight) in use with
+fontTools' instancer, and gives each width its own family name with ordinary weight classes inside:
+
+| Family (name ID 1 / 16) | Cut from | Weights | Bytes each |
+|---|---|---|---|
+| `Decibell Inter` | `InterVariable.ttf` at `opsz` 14 | 400 500 600 700 | ~342,000 |
+| `Decibell Sans` | `MonaSansVariable.ttf` at `wdth` 100 | 400 500 600 700 | ~101,000 |
+| `Decibell Sans SemiExpanded` | … at `wdth` 112.5 (server tiles) | 400 500 600 700 | ~101,000 |
+| `Decibell Sans Expanded` | … at `wdth` 125 (the wordmark) | 600 | ~101,000 |
+| `Decibell Mono` | the four `JetBrainsMono-*.ttf`, renamed only | 400 500 600 700 | ~112,000 |
+
+17 files, 2.73 MB. The families are renamed because Mona Sans reserves the font name "Mona" for unmodified copies
+(`OFL-MonaSans.txt`; an instance is a Modified Version) and because an installed font of the same name would win ties
+against the embedded one in GPUI's Linux matcher. Outlines, metrics and layout tables are those of the sources
+(the `STAT` table is dropped, `OS/2` weight / `fsSelection` and the `name` table rewritten). The script is
+deterministic: `tools/gen-fonts.sh --check` regenerates in memory and fails if a committed file differs; it also
+writes `crates/decibell-ui/src/fonts_generated.rs`, the table the faces are registered and checked from. To add a
+weight or width, edit `FAMILIES` in `tools/gen-fonts.py`. The same OFL 1.1 texts apply.
 
 ## Twemoji (`twemoji/`, fetched)
 

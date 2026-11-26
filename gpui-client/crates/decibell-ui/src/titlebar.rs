@@ -1,0 +1,166 @@
+//! The 32 px title bar every window carries (the renderer's `layouts/Titlebar.tsx`): the title
+//! centred, and at the right end a slot for window-level actions (the Transfers button), a
+//! divider, and minimise / maximise / close.
+
+use gpui::{
+    AnyElement, App, ClickEvent, Decorations, Div, Hsla, IntoElement, MouseButton, Pixels,
+    RenderOnce, SharedString, Stateful, Window, WindowControlArea, div, prelude::*, px,
+};
+
+use crate::window_frame::decorations;
+use crate::{ActiveTheme as _, FontRole, Icon, Label, window_corner_radius};
+
+/// `h-8`.
+pub const TITLEBAR_HEIGHT: Pixels = px(32.);
+
+#[derive(IntoElement)]
+pub struct TitleBar {
+    title: SharedString,
+    actions: Option<AnyElement>,
+}
+
+impl TitleBar {
+    /// `title` is what the renderer shows: the open server's or conversation's name, else
+    /// "Decibell".
+    pub fn new(title: impl Into<SharedString>) -> Self {
+        Self {
+            title: title.into(),
+            actions: None,
+        }
+    }
+
+    /// What sits left of the divider: full-height buttons, laid out in a row.
+    pub fn actions(mut self, actions: impl IntoElement) -> Self {
+        self.actions = Some(actions.into_any_element());
+        self
+    }
+}
+
+impl RenderOnce for TitleBar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let chrome = &cx.theme().chrome;
+        // Windows always has our title bar (and reports no client decorations); on Linux the
+        // buttons exist only when no server-side title bar already has them.
+        let own_controls = cfg!(target_os = "windows")
+            || matches!(decorations(window, cx), Decorations::Client { .. });
+        let controls = window.window_controls();
+        let maximized = window.is_maximized();
+        let corner_radius = window_corner_radius(window, cx);
+
+        div()
+            .id("titlebar")
+            .relative()
+            .flex()
+            .flex_none()
+            .h(TITLEBAR_HEIGHT)
+            .items_center()
+            .justify_center()
+            .rounded_t(corner_radius)
+            .bg(chrome.color_bg_titlebar)
+            .border_b_1()
+            .border_color(chrome.color_border)
+            .window_control_area(WindowControlArea::Drag)
+            .when(own_controls, |bar| {
+                bar.on_mouse_down(MouseButton::Left, |event, window, _| {
+                    if event.click_count == 2 {
+                        window.zoom_window();
+                    } else {
+                        window.start_window_move();
+                    }
+                })
+                .on_mouse_down(MouseButton::Right, |event, window, _| {
+                    window.show_window_menu(event.position);
+                })
+            })
+            .child(
+                Label::new(self.title)
+                    .font(FontRole::Channel)
+                    .size(12.)
+                    .weight(500.)
+                    .color(chrome.color_text_secondary),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .flex()
+                    .children(self.actions)
+                    .when(own_controls, |group| {
+                        group
+                            .child(div().my_2().w(px(1.)).bg(chrome.color_border))
+                            .when(controls.minimize, |group| {
+                                group.child(title_button(
+                                    "minimize",
+                                    "icons/window/minimize.svg",
+                                    WindowControlArea::Min,
+                                    chrome.color_surface_active,
+                                    chrome.color_text_primary,
+                                    cx,
+                                    |_, window, _| window.minimize_window(),
+                                ))
+                            })
+                            .when(controls.maximize, |group| {
+                                group.child(title_button(
+                                    "maximize",
+                                    if maximized {
+                                        "icons/window/restore.svg"
+                                    } else {
+                                        "icons/window/maximize.svg"
+                                    },
+                                    WindowControlArea::Max,
+                                    chrome.color_surface_active,
+                                    chrome.color_text_primary,
+                                    cx,
+                                    |_, window, _| window.zoom_window(),
+                                ))
+                            })
+                            .child(
+                                title_button(
+                                    "close",
+                                    "icons/window/close.svg",
+                                    WindowControlArea::Close,
+                                    chrome.color_error,
+                                    gpui::white(),
+                                    cx,
+                                    |_, window, _| window.remove_window(),
+                                )
+                                .rounded_tr(corner_radius),
+                            )
+                    }),
+            )
+    }
+}
+
+/// `w-11`, full height; the icon is 14 px in `text-secondary` and takes `hover_icon` over
+/// `hover_bg` under the pointer.
+fn title_button(
+    id: &'static str,
+    icon: &'static str,
+    area: WindowControlArea,
+    hover_bg: Hsla,
+    hover_icon: Hsla,
+    cx: &App,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .group(id)
+        .flex()
+        .h_full()
+        .w(px(44.))
+        .items_center()
+        .justify_center()
+        .hover(|style| style.bg(hover_bg))
+        .window_control_area(area)
+        // The bar under the button starts a window move on mouse-down.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(on_click)
+        .child(
+            Icon::new(icon)
+                .size(px(14.))
+                .color(cx.theme().chrome.color_text_secondary)
+                .group_hover(id, hover_icon),
+        )
+}

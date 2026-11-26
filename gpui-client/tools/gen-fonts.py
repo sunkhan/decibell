@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Cuts the static font faces the GPUI client embeds, from the committed font files.
+
+GPUI at our pin cannot set variable-font axes (Linux rasterises the default instance, Windows
+snaps to named instances; gpui-client/docs/gpui-notes.md §5.3) and its font query has no width.
+So every (family, width, weight) the renderer draws becomes one static TTF here, and each width
+gets its own family name, with ordinary weight classes inside:
+
+    Decibell Inter              Inter at opsz 14 (the renderer never varies opsz)   400 500 600 700
+    Decibell Sans               Mona Sans at wdth 100                               400 500 600 700
+    Decibell Sans SemiExpanded  Mona Sans at wdth 112.5 (server tiles)              400 500 600 700
+    Decibell Sans Expanded      Mona Sans at wdth 125 (the wordmark)                600
+    Decibell Mono               JetBrains Mono (already static), renamed            400 500 600 700
+
+The families are renamed because (a) Mona Sans reserves the font name "Mona" for unmodified
+copies (OFL-MonaSans.txt), and an instance is a modified copy, and (b) a font of the same name
+installed on the system would win ties against the embedded one in GPUI's Linux matcher
+(gpui-notes §5.2). Outlines, metrics and layout tables are untouched.
+
+Writes gpui-client/assets/fonts/static/*.ttf and the table GPUI registers them from,
+gpui-client/crates/decibell-ui/src/fonts_generated.rs. Deterministic: `--check` regenerates
+into memory and fails if a committed file differs. Needs fontTools (tools/gen-fonts.sh finds it).
+"""
+
+import io
+import sys
+from pathlib import Path
+
+from fontTools.ttLib import TTFont
+from fontTools.varLib import instancer
+
+ROOT = Path(__file__).resolve().parent.parent
+FONTS = ROOT / "assets" / "fonts"
+OUT = FONTS / "static"
+TABLE = ROOT / "crates" / "decibell-ui" / "src" / "fonts_generated.rs"
+
+WEIGHT_NAMES = {400: "Regular", 500: "Medium", 600: "SemiBold", 700: "Bold"}
+UI_WEIGHTS = (400, 500, 600, 700)
+
+# (family, file stem, source file, pinned axes or None for a static source, weights)
+FAMILIES = [
+    ("Decibell Inter", "DecibellInter", "InterVariable.ttf", {"opsz": 14}, UI_WEIGHTS),
+    ("Decibell Sans", "DecibellSans", "MonaSansVariable.ttf", {"wdth": 100}, UI_WEIGHTS),
+    ("Decibell Sans SemiExpanded", "DecibellSansSemiExpanded", "MonaSansVariable.ttf", {"wdth": 112.5}, UI_WEIGHTS),
+    ("Decibell Sans Expanded", "DecibellSansExpanded", "MonaSansVariable.ttf", {"wdth": 125}, (600,)),
+    ("Decibell Mono", "DecibellMono", "JetBrainsMono-{style}.ttf", None, UI_WEIGHTS),
+]
+
+
+def rename(font, family, weight):
+    """Names the face `family` / `<weight name>` the way static families are named."""
+    style = WEIGHT_NAMES[weight]
+    ribbi = weight in (400, 700)
+    name = font["name"]
+    # 3 unique id, 16/17 typographic names, 21/22 WWS names, 25 variations PostScript prefix
+    name.names = [n for n in name.names if n.nameID not in (1, 2, 3, 4, 6, 16, 17, 21, 22, 25)]
+    postscript = f"{family.replace(' ', '')}-{style}"
+    values = {
+        1: family if ribbi else f"{family} {style}",
+        2: style if ribbi else "Regular",
+        3: f"{font['head'].fontRevision:.3f};DCBL;{postscript}",
+        4: f"{family} {style}",
+        6: postscript,
+        16: family,
+        17: style,
+    }
+    for name_id, value in values.items():
+        name.setName(value, name_id, 3, 1, 0x409)
+    os2 = font["OS/2"]
+    os2.usWeightClass = weight
+    os2.usWidthClass = 5  # the width is in the family name; GPUI always asks for normal width
+    # fsSelection: bit 0 italic, 5 bold, 6 regular; keep the others (use-typo-metrics, …)
+    os2.fsSelection = (os2.fsSelection & ~0b110_0001) | (1 << 5 if weight == 700 else 1 << 6 if weight == 400 else 0)
+    font["head"].macStyle = 1 if weight == 700 else 0
+
+
+def build_face(family, stem, source, axes, weight):
+    style = WEIGHT_NAMES[weight]
+    path = FONTS / source.format(style=style)
+    font = TTFont(path, recalcTimestamp=False)
+    if axes is not None:
+        font = instancer.instantiateVariableFont(font, {**axes, "wght": weight}, inplace=True)
+    # A static face has no axis values to describe, and the source's would name the old
+    # family. (DirectWrite groups faces into families by them.)
+    if "STAT" in font:
+        del font["STAT"]
+    rename(font, family, weight)
+    buffer = io.BytesIO()
+    font.save(buffer)
+    data = buffer.getvalue()
+
+    check = TTFont(io.BytesIO(data))
+    assert "fvar" not in check and "gvar" not in check, f"{stem}-{style} is still variable"
+    glyph = check.getBestCmap()[ord("m")]
+    return {
+        "family": family,
+        "weight": weight,
+        "file": f"{stem}-{style}.ttf",
+        "data": data,
+        "units_per_em": check["head"].unitsPerEm,
+        "advance_m": check["hmtx"][glyph][0],
+        "ink_width_m": check["glyf"][glyph].xMax - check["glyf"][glyph].xMin,
+    }
+
+
+def table(faces):
+    lines = [
+        "// @generated by gpui-client/tools/gen-fonts.py from gpui-client/assets/fonts. Do not edit:",
+        "// run gpui-client/tools/gen-fonts.sh (and `--check` to verify).",
+        "",
+        "use super::Face;",
+        "",
+        f"pub static FACES: [Face; {len(faces)}] = [",
+    ]
+    for face in faces:
+        lines += [
+            "    Face {",
+            f"        family: \"{face['family']}\",",
+            f"        weight: {face['weight']},",
+            f"        file: \"{face['file']}\",",
+            f"        units_per_em: {face['units_per_em']},",
+            f"        advance_m: {face['advance_m']},",
+            f"        ink_width_m: {face['ink_width_m']},",
+            f"        bytes: include_bytes!(\"../../../assets/fonts/static/{face['file']}\"),",
+            "    },",
+        ]
+    lines += ["];", ""]
+    return "\n".join(lines).encode()
+
+
+def main():
+    check = sys.argv[1:] == ["--check"]
+    if sys.argv[1:] and not check:
+        sys.exit("usage: gen-fonts.py [--check]")
+
+    faces = [
+        build_face(family, stem, source, axes, weight)
+        for family, stem, source, axes, weights in FAMILIES
+        for weight in weights
+    ]
+    outputs = {OUT / face["file"]: face["data"] for face in faces}
+    outputs[TABLE] = table(faces)
+
+    stale = [p for p, data in outputs.items() if not p.exists() or p.read_bytes() != data]
+    extra = [p for p in OUT.glob("*.ttf") if p not in outputs] if OUT.exists() else []
+    if check:
+        for p in stale + extra:
+            print(f"stale: {p.relative_to(ROOT)}", file=sys.stderr)
+        if stale or extra:
+            sys.exit("gen-fonts: the static fonts are stale; run gpui-client/tools/gen-fonts.sh")
+        print(f"gen-fonts: {len(faces)} faces up to date")
+        return
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    for p in extra:
+        p.unlink()
+    for p in stale:
+        p.write_bytes(outputs[p])
+    total = sum(len(face["data"]) for face in faces)
+    for face in faces:
+        print(f"  {face['file']:<44} {len(face['data']):>8} B  {face['family']} {face['weight']}")
+    print(f"gen-fonts: {len(faces)} faces, {total} bytes, {len(stale)} written")
+
+
+if __name__ == "__main__":
+    main()

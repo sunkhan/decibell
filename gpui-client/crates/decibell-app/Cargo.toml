@@ -1,0 +1,41 @@
+[package]
+name = "decibell-app"
+description = "The Decibell desktop client (binary `decibell`)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "decibell_app"
+
+[[bin]]
+name = "decibell"
+path = "src/main.rs"
+
+# Renders registered screens to PNG files without a window. It needs GPUI's `test-support`
+# feature, which must never be compiled into `decibell`: hence a feature, off by default.
+#   cargo run -p decibell-app --features capture --bin decibell-capture -- --help
+[[bin]]
+name = "decibell-capture"
+path = "src/bin/capture.rs"
+required-features = ["capture"]
+
+[features]
+capture = ["gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu", "dep:image"]
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_wgpu = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
