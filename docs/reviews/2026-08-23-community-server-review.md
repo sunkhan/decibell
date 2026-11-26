@@ -4948,8 +4948,11 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   before): a wait + read pair measured ~10 µs later at the median than the old single blocking read, so
   `decibell-voice-recv` now sleeps in the read itself on Unix (its stop shuts the read side down; a sealed
   P2P socket gets a loopback byte, since `recv_from` after a shutdown makes std panic) and only Windows waits
-  in `WSAPoll`. `handoff_is_as_prompt_as_the_1ms_poll` compares the two loops on the same socket and channel:
-  p50 72–83 µs both, p90 / p99 within run-to-run noise.
+  in `WSAPoll`. `handoff_is_as_prompt_as_the_1ms_poll` runs both loops at once, alternating datagrams, and
+  stamps when each becomes visible to the audio thread: over six runs the blocking read is 2–5 µs later at
+  p10–p90 (27–30 → 32–34 µs at p50; the 1 kHz loop kept its core out of deep idle) and lower at p99
+  (205–458 → 260–409 µs). Against the audio thread's 5 ms tick that moves about 0.1 % of packets to the next
+  tick, below the tail both loops already have.
 - **The video receive thread runs only when it has a use** (`media/video_recv_host.rs`). It existed for every voice
   session though nobody streamed. Now it starts on the session's first watch (`watch_stream_add`) or when a
   `VideoEngine` streams on its media socket (it holds a `VideoRecvDemand`: watchers' keyframe requests arrive
@@ -4988,3 +4991,23 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   nothing yet (86 events). Not done: an audio-device-list event (Linux has no hot-plug watcher to surface:
   PipeWire moves streams itself; it would be a PipeWire registry listener, `IMMNotificationClient` on Windows,
   a CoreAudio property listener on macOS, which would also replace `default_device_watch`'s 1 s poll there).
+
+Measured after all of the above (`decibell-headless` release, `tools/perf/measure.sh`, 20 s settle + 60 s;
+own-thread wakeups/s; "null sinks" = every client's audio on PipeWire null sinks through the pulse PCM):
+
+| Scenario | Before | After | voice-recv | video-recv | `decibell-audio` | `decibell-rt` | device threads (unchanged) |
+|---|---|---|---|---|---|---|---|
+| A alone, muted, default devices | 1,380 / 2.67 % | 766 / 2.10 % | 435 → 0.3 | 159 → 0 | 198 → 198 | 24.7 → 5.1 | 563 |
+| A alone, muted, null sinks | 1,343 / 3.03 % | 688 / 1.77 % | 418 → 0.3 | 157 → 0 | 194 → 198 | 24.7 → 5.2 | 486 |
+| B alone, unmuted, silent input | 1,320 / 3.85 % | 689 / 2.33 % | 431 → 0.3 | 159 → 0 | 196 → 198 | 24.7 → 5.1 | 485 |
+| C two clients, both muted | 1,347 / 3.40 % | 702 / 2.04 % | 431 → 2.3 | 159 → 0 | 194 → 197 | 24.7 → 5.1 | 497 |
+| D listener (other sends a tone) | 1,339 / 2.84 % | 738 / 2.48 % | 470 → 50.3 | 159 → 0 | 198 → 198 | 24.6 → 5.2 | 484 |
+| D sender | 1,303 / 3.71 % | 690 / 3.12 % | 435 → 2.3 | 159 → 0 | 198 → 198 | 24.7 → 5.0 | 485 |
+
+Left as they were, by owner decision the same day ("absolutely no audio popping; top-notch audio quality"
+outranks wakeups in a voice session): `decibell-audio`'s 5 ms tick (~198/s; an idle mode while muted with no
+remote audio in flight would have made it ~3/s, capture-driven wakes ~50/s in B), pausing capture while muted
+(cpal + one PipeWire data loop, ~281/s on the default devices) and pausing output while nobody talks (~281/s).
+Those change when samples are produced or handed to a device: device restart latency (PipeWire suspends an idle
+node after ~5 s; HDMI / Bluetooth / USB wake), OS microphone indicators, Bluetooth profile switching, and the
+2026-08-21 ring-starvation lesson.
