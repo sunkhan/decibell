@@ -53,6 +53,7 @@ tests! {
     "composer-edit", "ArrowUp on an empty box edits the last own message inline; Enter saves (\"(edited)\"), Escape cancels", check_edit;
     "composer-reply", "Reply on a message: the bar and the rail; the sent row carries the reply", check_reply;
     "composer-attach", "a generated PNG and a text file attached as the dialog delivers them: chips, sent, the message has both", check_attach;
+    "composer-drop", "a file dragged over the window pulses the card (the overlay over it), dropped anywhere on the window it becomes a chip", check_drop;
     "composer-paste-image", "X11: an image on the clipboard pasted into the box becomes a chip (the clipboard is restored)", check_paste_image;
     "emoji-picker", "open the picker (open time, frames), 0 frames at rest, search \"smile\", pick: an atom in the box, sent as the character", check_emoji_picker;
     "gif-picker", "GIFs tab: search (debounced), pick: the URL is sent (the canned provider without a key)", check_gif_picker;
@@ -387,7 +388,7 @@ async fn check_burst(cx: TestCx) -> Result<()> {
     cx.log(format_args!("15 sends in {} ms", started.elapsed().as_millis()));
     // When each echo lands (and whether a refusal put a text back in the box).
     let mut landed: Vec<Option<u128>> = vec![None; texts.len()];
-    while landed.iter().any(Option::is_none) && started.elapsed() < Duration::from_secs(20) {
+    while landed.iter().any(Option::is_none) && started.elapsed() < Duration::from_secs(15) {
         let now = started.elapsed().as_millis();
         cx.update(|_, cx| {
             for (i, text) in texts.iter().enumerate() {
@@ -399,14 +400,17 @@ async fn check_burst(cx: TestCx) -> Result<()> {
         cx.sleep(Duration::from_millis(10)).await;
     }
     cx.log(format_args!("echoes at (ms): {landed:?}; the box holds {:?}", value(&cx, &composer)?));
-    let mut ids = Vec::new();
-    for text in &texts {
-        ids.push(echoed(&cx, OFF_TOPIC, text).await?);
-    }
-    cx.log(format_args!("all 15 stored after {} ms (paced: 10 at once, then 2.7 / s)", started.elapsed().as_millis()));
+    // Whatever was stored goes, whatever the verdict.
+    let ids: Vec<i64> = cx.update(|_, cx| {
+        texts.iter().filter_map(|text| own_rows(OFF_TOPIC, text, cx).into_iter().find(|(id, _)| *id > 0).map(|(id, _)| id)).collect()
+    })?;
+    set_value(&cx, &composer, "")?;
+    delete(&cx, OFF_TOPIC, &ids).await?;
+    ensure!(ids.len() == texts.len(), "{} of 15 stored: the server refused the rest (its rate limit), their text came back to the box", ids.len());
+    cx.log(format_args!("all 15 stored after {} ms (paced: 10 at once, then 2.7 / s)", landed.iter().flatten().max().copied().unwrap_or(0)));
     ensure!(ids.windows(2).all(|pair| pair[0] < pair[1]), "stored in the order sent: {ids:?}");
-    ensure!(started.elapsed() >= Duration::from_millis(1500), "the burst was not paced ({} ms)", started.elapsed().as_millis());
-    delete(&cx, OFF_TOPIC, &ids).await
+    ensure!(landed.iter().flatten().max().copied().unwrap_or(0) >= 1500, "the burst was not paced");
+    Ok(())
 }
 
 async fn check_slowmode(cx: TestCx) -> Result<()> {
@@ -576,6 +580,43 @@ async fn send_with_attachments(cx: &TestCx, composer: &Entity<Composer>, text: &
     Ok(())
 }
 
+async fn check_drop(cx: TestCx) -> Result<()> {
+    use gpui::{ExternalPaths, FileDropEvent, InputEvent as _};
+    let composer = open(&cx, OFF_TOPIC).await?;
+    let dir = TempDir::new("composer-drop")?;
+    let png = dir.0.join("dropped.png");
+    write_png(&png)?;
+    let (card, viewport) = cx.update(|window, cx| (composer.read(cx).card_bounds(), window.viewport_size()))?;
+    // Over the message list, far above the card.
+    let over_list = gpui::point(card.center().x, card.top() - gpui::px(200.));
+    let send_drop = |event: FileDropEvent| cx.update(|window, cx| {
+        window.dispatch_event(event.to_platform_input(), cx);
+    });
+    send_drop(FileDropEvent::Entered { position: over_list, paths: ExternalPaths([png.clone()].into_iter().collect()) })?;
+    send_drop(FileDropEvent::Pending { position: over_list })?;
+    cx.sleep(Duration::from_millis(100)).await;
+    ensure!(cx.update(|_, cx| model(cx).chat.drag.read(cx).active)?, "a file drag over the window shows (dragActive)");
+    // Over the card: the overlay.
+    send_drop(FileDropEvent::Pending { position: card.center() })?;
+    cx.sleep(Duration::from_millis(100)).await;
+    let hovered = cx.update(|_, cx| model(cx).chat.drag.read(cx).hovered.clone())?;
+    ensure!(hovered.as_deref() == Some("active-input"), "over the card: {hovered:?}");
+    // Back over the list and dropped there: the window takes it for the open channel.
+    send_drop(FileDropEvent::Pending { position: over_list })?;
+    send_drop(FileDropEvent::Submit { position: over_list })?;
+    wait_for(&cx, Duration::from_secs(10), "a chip from the dropped file", |cx| {
+        model(cx).chat.composer.read(cx).for_channel(daily_gaming(), OFF_TOPIC).any(|p| &*p.filename == "dropped.png")
+    })
+    .await?;
+    ensure!(!cx.update(|_, cx| model(cx).chat.drag.read(cx).active)?, "the drag state ended with the drop");
+    cx.log(format_args!("the drag pulsed the card, the overlay showed over it, the drop on the list made a chip (window {viewport:?})"));
+    let id = cx.update(|_, cx| model(cx).chat.composer.read(cx).for_channel(daily_gaming(), OFF_TOPIC).next().map(|p| p.id.clone()))?;
+    if let Some(id) = id {
+        cx.update(|_, cx| model(cx).chat.composer.update(cx, |c, cx| c.remove(&id, cx)))?;
+    }
+    Ok(())
+}
+
 /// The Wayland clipboard as `wl-copy` / `wl-paste` see it (KWin bridges it to X11).
 fn wl(tool: &str, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
     let display = std::env::var("DECIBELL_TEST_WAYLAND_DISPLAY").unwrap_or_default();
@@ -641,9 +682,17 @@ async fn check_paste_image(cx: TestCx) -> Result<()> {
     Ok(())
 }
 
+/// This process's resident and private-dirty memory, KB (`/proc/self/smaps_rollup`).
+fn memory_kb() -> (u64, u64) {
+    let text = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
+    let field = |name: &str| text.lines().find(|l| l.starts_with(name)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+    (field("Rss:"), field("Private_Dirty:"))
+}
+
 async fn check_emoji_picker(cx: TestCx) -> Result<()> {
     let composer = open(&cx, OFF_TOPIC).await?;
     let before = settle_window(&cx, Duration::from_millis(300)).await?;
+    let memory_before = memory_kb();
     let button = cx.update(|_, cx| composer.read(cx).emoji_button_bounds())?;
     cx.click(button.center())?;
     wait_for(&cx, Duration::from_secs(5), "the picker", |cx| composer.read(cx).picker().is_some_and(|p| p.read(cx).open_time.is_some())).await?;
@@ -679,8 +728,20 @@ async fn check_emoji_picker(cx: TestCx) -> Result<()> {
     ensure!(value.contains(picked), "the emoji is in the box: {value:?}");
     ensure!(shown.contains('\u{FFFC}'), "as an atom: {shown:?}");
     cx.log(format_args!("\"smile\": {found} results; picked {picked} (an atom in the box)"));
+    let memory_open = memory_kb();
     cx.keystroke("escape")?;
     wait_for(&cx, Duration::from_secs(2), "Escape to close the picker", |cx| composer.read(cx).picker().is_none()).await?;
+    settle_window(&cx, Duration::from_millis(300)).await?;
+    let memory_closed = memory_kb();
+    cx.log(format_args!(
+        "memory (RSS / private dirty, MB): before {:.1} / {:.1}, open {:.1} / {:.1}, closed {:.1} / {:.1}",
+        memory_before.0 as f64 / 1024.,
+        memory_before.1 as f64 / 1024.,
+        memory_open.0 as f64 / 1024.,
+        memory_open.1 as f64 / 1024.,
+        memory_closed.0 as f64 / 1024.,
+        memory_closed.1 as f64 / 1024.
+    ));
     let text = format!("{picked} {}", tag());
     let id = send(&cx, &composer, OFF_TOPIC, &text).await?;
     cx.log("sent as the character");

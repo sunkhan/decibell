@@ -1020,7 +1020,8 @@ impl Picker {
                             .cursor_pointer()
                             .tooltip(title_tooltip(g.title.clone()))
                             .on_click(cx.listener(move |this, _, window, cx| this.send_gif(url.clone(), window, cx)))
-                            .children(image.map(|image| img(image).size_full().object_fit(ObjectFit::Cover)))
+                            // An id: GPUI animates only an image with one (and only while the window is active).
+                            .children(image.map(|image| img(image).id(ElementId::Name(format!("gif-img-{}", g.id).into())).size_full().object_fit(ObjectFit::Cover)))
                             // `outline-accent -outline-offset-2 hover:outline-2`.
                             .child(
                                 div()
@@ -1187,5 +1188,27 @@ impl Element for StickyHeader {
         let Some(index) = *shown else { return };
         let mask = Bounds::new(bounds.origin, gpui::size(px(INNER - BAR), px(HEADER)));
         window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| self.sections[index].2.paint(window, cx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gif(id: &str, w: f64, h: f64) -> GifResult {
+        GifResult { id: id.into(), title: String::new(), url: String::new(), width: w, height: h, preview: String::new(), preview_width: 0., preview_height: 0. }
+    }
+
+    /// `cellHeight` and `intoColumns`: heights from the 166 px column, clamped 60–300; each GIF
+    /// into the shorter column (ties to the left).
+    #[test]
+    fn the_masonry_places_as_the_renderer_does() {
+        assert_eq!(cell_height(&gif("a", 200., 100.)), 83.);
+        assert_eq!(cell_height(&gif("b", 100., 1000.)), 300.);
+        assert_eq!(cell_height(&gif("c", 1000., 10.)), 60.);
+        assert_eq!(cell_height(&gif("d", 0., 0.)), 166.);
+        let results = [gif("1", 100., 200.), gif("2", 100., 50.), gif("3", 100., 50.), gif("4", 100., 50.)];
+        let [left, right] = into_columns(&results);
+        assert_eq!((left, right), (vec![0], vec![1, 2, 3]));
     }
 }

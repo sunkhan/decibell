@@ -376,3 +376,41 @@ pub fn drop_pulse(cx: &App) -> AnyElement {
         )
         .into_any_element()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SlowmodeIndicator's three formats.
+    #[test]
+    fn slowmode_labels_read_as_the_renderers() {
+        assert_eq!(slowmode_short(30), "30s");
+        assert_eq!(slowmode_short(90), "1m 30s");
+        assert_eq!(slowmode_short(7200), "2h");
+        assert_eq!(slowmode_short(0), "0s");
+        assert_eq!(slowmode_spoken(1), "1 second");
+        assert_eq!(slowmode_spoken(90), "1 minute 30 seconds");
+        assert_eq!(slowmode_spoken(3601), "1 hour 1 second");
+        assert_eq!(slowmode_clock(24), "0:24");
+        assert_eq!(slowmode_clock(299), "4:59");
+        assert_eq!(slowmode_clock(3900), "1:05:00");
+    }
+
+    /// The reply bar's label for a parent with attachments only.
+    #[test]
+    fn attachment_only_parents_are_named_by_kind() {
+        assert_eq!(kinds_label(&[AttachmentKind::Image]), "Image");
+        assert_eq!(kinds_label(&[AttachmentKind::Video, AttachmentKind::Video]), "2 Videos");
+        assert_eq!(kinds_label(&[AttachmentKind::Document, AttachmentKind::Image, AttachmentKind::Audio]), "3 Attachments");
+        assert_eq!(kinds_glyph(&[AttachmentKind::Audio, AttachmentKind::Image]), IconName::ChatKindMixed);
+    }
+
+    /// barNudge's keyframes: at rest at both ends, −6 px a fifth of the way in.
+    #[test]
+    fn the_nudge_shakes_and_settles() {
+        assert_eq!(nudge_x(0.), 0.);
+        assert!((nudge_x(0.2) + 6.).abs() < 1e-4);
+        assert!((nudge_x(0.4) - 5.).abs() < 1e-4);
+        assert_eq!(nudge_x(1.), 0.);
+    }
+}

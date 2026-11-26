@@ -315,6 +315,20 @@ pub fn screens() -> Vec<Screen> {
             },
         },
         Screen {
+            name: "composer-dm",
+            about: "The DM composer (no attach button, rounded-sm buttons) with a failed send's inline error above it",
+            build: |window, cx| {
+                let target: Rc<dyn ComposerTarget> = Rc::new(crate::DmTarget { peer: 3 });
+                build(window, cx, Some(target), |pane, _, cx| {
+                    let model = Model::global(cx).clone();
+                    model.dm.list.update(cx, |list, cx| list.set_send_error(Some((3, "Error: Not connected".into())), cx));
+                    let composer = pane.read(cx).composer.clone();
+                    composer.update(cx, |c, cx| c.refresh_gate(cx));
+                    type_draft(pane, "see you tonight", cx);
+                })
+            },
+        },
+        Screen {
             name: "emoji-picker",
             about: "The emoji picker open over the composer, with frequently used emoji",
             build: |window, cx| {

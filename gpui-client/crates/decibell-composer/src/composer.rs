@@ -716,9 +716,15 @@ fn track_bounds(cell: Rc<Cell<Bounds<Pixels>>>) -> impl IntoElement {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.stats.renders += 1;
-        // A drag that ended (dropped elsewhere, left the window) leaves no pulse behind.
+        // A drag that ended (dropped elsewhere, left the window) leaves no pulse behind, and the
+        // drag state ends after this frame.
         if self.file_drag.is_some() && !cx.has_active_drag() {
             self.file_drag = None;
+            window.defer(cx, |_, cx| {
+                if let Some(model) = cx.try_global::<Model>().cloned() {
+                    model.chat.drag.update(cx, |drag, cx| drag.set_active(false, cx));
+                }
+            });
         }
         let dm = self.variant == Variant::Dm;
         let theme = cx.theme();
@@ -871,11 +877,10 @@ impl Render for Composer {
             .child(track_bounds(self.emoji_anchor.clone()))
             .children(picker);
         let sendable = if dm { self.has_text } else { self.has_text || live_pendings };
+        // Disabled without anything to send; in a slowmode wait it looks off but still takes the
+        // click, which holds the send and shakes the pill.
         let send = chrome::send_button(sendable, remaining > 0, dm, cx).on_click(cx.listener(move |this, _, window, cx| {
             if sendable {
-                this.send(window, cx);
-            } else if remaining > 0 {
-                // A held send's click still shakes the pill.
                 this.send(window, cx);
             }
         }));
@@ -968,7 +973,7 @@ impl Render for Composer {
             }))
             .children(send_error.map(|error| div().px_4().child(Label::new(error).size(12.).color(theme.color_error))))
             .child(div().px_3().py_2().child(card))
-            .when(dragging, |this| this.child(drop_catcher(cx)))
+            .when(dragging, |this| this.child(drop_catcher(window, cx)))
             .into_any_element()
     }
 }
@@ -986,19 +991,19 @@ impl Composer {
 /// A window-sized, invisible layer that exists only while a file is dragged over the window:
 /// it takes the drop anywhere (`useDragDrop` attaches to the active channel), unless a drop
 /// target of its own claimed the drag (`DragState::hovered` set to another key).
-fn drop_catcher(cx: &mut Context<Composer>) -> AnyElement {
+fn drop_catcher(window: &Window, cx: &mut Context<Composer>) -> AnyElement {
     deferred(
-        div()
-            .id("drop-catcher")
-            .absolute()
-            .top_0()
-            .left_0()
-            .size(px(100_000.))
-            .can_drop(|value, _, cx| {
-                value.downcast_ref::<ExternalPaths>().is_some()
-                    && cx.try_global::<Model>().is_none_or(|m| m.chat.drag.read(cx).hovered.as_ref().is_none_or(|key| key == "active-input"))
-            })
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.dropped(paths, cx))),
+        gpui::anchored().position_mode(gpui::AnchoredPositionMode::Window).position(gpui::point(px(0.), px(0.))).child(
+            div()
+                .id("drop-catcher")
+                .w(window.viewport_size().width)
+                .h(window.viewport_size().height)
+                .can_drop(|value, _, cx| {
+                    value.downcast_ref::<ExternalPaths>().is_some()
+                        && cx.try_global::<Model>().is_none_or(|m| m.chat.drag.read(cx).hovered.as_ref().is_none_or(|key| key == "active-input"))
+                })
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.dropped(paths, cx))),
+        ),
     )
     .with_priority(0)
     .into_any_element()
