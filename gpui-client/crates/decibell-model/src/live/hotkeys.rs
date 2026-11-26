@@ -471,6 +471,12 @@ impl Hotkeys {
         self.fallback.is_some()
     }
 
+    /// Puts `backend` in place of the core's and returns the one it replaced: the app's
+    /// focused-fallback self-test counts what would reach the core, then puts it back.
+    pub fn swap_backend(&mut self, backend: HotkeyBackend) -> HotkeyBackend {
+        std::mem::replace(&mut self.backend, backend)
+    }
+
     /// Keep the core in step with the settings (called when `Settings` changed).
     pub fn sync(&mut self, settings: &AppSettings, cx: &mut Context<Self>) {
         let bindings = bindings(settings);
@@ -681,6 +687,32 @@ mod tests {
         assert_eq!(calls.borrow().paused, vec![true]);
         assert_eq!(calls.borrow().injected.last().unwrap(), &(Action::PushToTalk, false, "p".into()));
         assert!(!h.read_with(cx, |h, _| h.fallback_armed()));
+    }
+
+    /// Our window going to the background releases what the fallback holds (the key's release
+    /// never reaches us), once; not armed, nothing is injected.
+    #[gpui::test]
+    fn a_blurred_window_releases_held_keys(cx: &mut TestAppContext) {
+        let calls: Rc<RefCell<Calls>> = Rc::default();
+        let executor = cx.executor();
+        let h = cx.new(|_| Hotkeys::new(backend(calls.clone(), executor)));
+        let s = AppSettings { hotkeys: vec![binding("p", "push_to_talk", &["KeyV"])], ..AppSettings::default() };
+        h.update(cx, |h, cx| {
+            h.sync(&s, cx);
+            h.window_blurred();
+        });
+        assert!(calls.borrow().injected.is_empty(), "not armed");
+        h.update(cx, |h, cx| {
+            h.set_status(status(true), &s, cx);
+            h.key("KeyV", true);
+            h.window_blurred();
+            h.window_blurred();
+            h.key("KeyV", false);
+        });
+        assert_eq!(
+            calls.borrow().injected,
+            vec![(Action::PushToTalk, true, "p".into()), (Action::PushToTalk, false, "p".into())]
+        );
     }
 
     /// The names here are the core's: every one is in its table, the numbers round-trip,

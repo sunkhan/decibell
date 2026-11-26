@@ -133,6 +133,14 @@ impl Model {
             }
         })
         .detach();
+        // The attachment speed caps follow the settings (loaded, or Settings → Network) into the
+        // attachment service, running or made later (the renderer's upload loop reads the store
+        // per chunk; downloads were told through `setDownloadLimit`).
+        cx.observe(&settings, |settings, cx| {
+            let s = settings.read(cx).get();
+            chat::CoreAttachmentService::set_limits(s.upload_limit_bps, s.download_limit_bps);
+        })
+        .detach();
         Model {
             auth: cx.new(|_| AuthStore::default()),
             users: cx.new(|_| UsersStore::default()),

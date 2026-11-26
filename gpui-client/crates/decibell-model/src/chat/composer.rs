@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use decibell_attachments::upload::{PreparedUpload, UploadControl, UploadProgress, UploadSource, UploadedAttachment};
@@ -410,6 +411,24 @@ pub struct CoreAttachmentService {
 
 static SERVICE: OnceLock<Arc<Attachments>> = OnceLock::new();
 
+/// The saved speed caps (`upload_limit_bps`, `download_limit_bps`; bytes per second, 0 =
+/// unlimited), as [`CoreAttachmentService::set_limits`] last had them.
+static LIMITS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+fn apply_limits(svc: &Attachments) {
+    svc.limits().set_upload(LIMITS[0].load(Ordering::SeqCst));
+    svc.limits().set_download(LIMITS[1].load(Ordering::SeqCst));
+}
+
+/// The process's `Attachments`, made on the first use with the saved caps applied.
+fn service() -> Arc<Attachments> {
+    let svc = SERVICE.get_or_init(|| Attachments::new(Arc::new(CoreTls), tokio::runtime::Handle::current())).clone();
+    // Again after it exists: caps changed while it was being made reach it either here or in
+    // `set_limits` (which applies to a service that exists).
+    apply_limits(&svc);
+    svc
+}
+
 impl CoreAttachmentService {
     /// The process's `Attachments` once the queue started (the media readers of the views
     /// use it too).
@@ -422,9 +441,20 @@ impl CoreAttachmentService {
     /// community authenticated). Dropped when the core isn't running.
     pub fn with_attachments(f: impl FnOnce(Arc<Attachments>) + Send + 'static) {
         crate::core::spawn_detached(async move {
-            let svc = SERVICE.get_or_init(|| Attachments::new(Arc::new(CoreTls), tokio::runtime::Handle::current())).clone();
-            f(svc);
+            f(service());
         });
+    }
+
+    /// The speed caps the settings hold (the renderer's `uploadLimitBps` / `downloadLimitBps`).
+    /// The model calls it whenever `Settings` changes (loaded, or Settings → Network): a running
+    /// service applies them at once (the pacers read them per slice, mid-transfer too), one made
+    /// later starts with them.
+    pub fn set_limits(upload: u64, download: u64) {
+        LIMITS[0].store(upload, Ordering::SeqCst);
+        LIMITS[1].store(download, Ordering::SeqCst);
+        if let Some(svc) = SERVICE.get() {
+            apply_limits(svc);
+        }
     }
 
     fn send(&self, op: Op) {
@@ -435,9 +465,7 @@ impl CoreAttachmentService {
             }
             let (tx, mut rx) = mpsc::unbounded::<Op>();
             crate::core::spawn_detached(async move {
-                let svc = SERVICE
-                    .get_or_init(|| Attachments::new(Arc::new(CoreTls), tokio::runtime::Handle::current()))
-                    .clone();
+                let svc = service();
                 while let Some(op) = rx.next().await {
                     match op {
                         Op::SetTarget(server, Some(t)) => svc.set_target(&server, t),
@@ -666,5 +694,19 @@ mod tests {
             c.remove(&ids[0], cx);
             assert_eq!(c.for_channel(server, "general").count(), MAX_ATTACHMENTS_PER_MESSAGE - 1);
         });
+    }
+
+    /// The saved caps reach a service made after they were set (the first upload or download
+    /// comes long after the settings loaded), and a running one at once.
+    #[test]
+    fn the_service_starts_with_the_saved_speed_caps() {
+        const MB: u64 = 1024 * 1024;
+        CoreAttachmentService::set_limits(5 * MB, 3 * MB);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let svc = runtime.block_on(async { service() });
+        assert_eq!((svc.limits().upload_rate(), svc.limits().download_rate()), (5 * MB, 3 * MB));
+        CoreAttachmentService::set_limits(0, 7 * MB);
+        assert_eq!((svc.limits().upload_rate(), svc.limits().download_rate()), (0, 7 * MB), "applied to the running service");
+        assert!(Arc::ptr_eq(&svc, &CoreAttachmentService::attachments().unwrap()));
     }
 }

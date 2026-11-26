@@ -490,3 +490,52 @@ fn a_call_rings_every_device() {
     assert_eq!(dumps(&caller_seen, "call").last().unwrap()["status"], "idle");
     assert_eq!(dumps(&d1_seen, "call").last().unwrap()["status"], "idle", "the hang-up reached the device that answered");
 }
+
+/// Log Out during a call (Settings → Account, `actions::auth::log_out`): the call is hung up
+/// first, so the peer sees "Call ended" (the HANGUP central relays: a session that just goes
+/// away ends nothing at the peer's side), and then the session closes.
+#[test]
+fn logging_out_hangs_up_first() {
+    if !stack() {
+        return;
+    }
+    let (caller_p, callee_p) = (tmp(), tmp());
+    let go = caller_p.path().join("go");
+    let mut callee = Live::start(
+        "perf4",
+        callee_p.path(),
+        &[
+            "login", "perf4", "wait", "logged-in", "e2ee-ready", PASSPHRASE, "deafen", "print", "ready", "wait", "call", "incoming",
+            "idle", "1", "answer", "wait", "call", "connecting|active", "print", "answered", "wait", "call", "idle", "print", "hung-up",
+            "dump", "call", "logout", "wait", "logged-out",
+        ],
+    );
+    callee.until("MARK ready", Duration::from_secs(40));
+    let mut caller = Live::start(
+        "perf3",
+        caller_p.path(),
+        &[
+            "login", "perf3", "wait", "logged-in", "e2ee-ready", PASSPHRASE, "deafen", "idle", "1", "wait-file", go.to_str().unwrap(), "call", "perf4",
+            "wait", "call", "connecting|active", "idle", "3", "dump", "call", "logout", "wait", "logged-out", "print", "logged-out",
+            "dump", "call", "dump", "auth",
+        ],
+    );
+    std::fs::write(&go, b"").unwrap();
+    callee.until("MARK answered", Duration::from_secs(40));
+    callee.until("MARK hung-up", Duration::from_secs(30));
+    caller.until("MARK logged-out", Duration::from_secs(30));
+    let callee_seen = callee.finish();
+    let caller_seen = caller.finish();
+    let dumps = |seen: &[String], what: &str| -> Vec<Value> {
+        seen.iter().filter_map(|l| parse_dump(l)).filter(|(n, _)| n == what).map(|(_, v)| v).collect()
+    };
+    let during = &dumps(&caller_seen, "call")[0];
+    assert!(during["status"] == "active" || during["status"] == "connecting", "in the call before logging out: {during}");
+    let peer = &dumps(&callee_seen, "call")[0];
+    assert_eq!(peer["status"], "idle");
+    assert_eq!(peer["endReason"], "Call ended", "the peer got the hang-up: {peer}");
+    let after = dumps(&caller_seen, "call").pop().unwrap();
+    assert_eq!(after["status"], "idle", "{after}");
+    let auth = dumps(&caller_seen, "auth").pop().unwrap();
+    assert_eq!(auth["authenticated"], false, "{auth}");
+}

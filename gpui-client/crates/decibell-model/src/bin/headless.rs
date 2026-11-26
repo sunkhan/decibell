@@ -49,7 +49,7 @@ with a saved sign-in — always comes first); any mix of the groups below.
 
 Account and communities:
   login <account>                 password sign-in as an account of the stack's accounts.json
-  logout
+  logout                          Settings → Account's Log Out: hangs up a call first, then signs out
   wait booted | logged-in | logged-out
   wait connected <community>      it answered our authentication
   wait roster <community>         its first roster page is in
@@ -526,7 +526,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             let password = stack_password(account)?;
             cx.update(|cx| actions::auth::sign_in(account.clone(), password, cx));
         }
-        Step::Logout => cx.update(actions::auth::sign_out),
+        Step::Logout => cx.update(actions::auth::log_out),
         Step::Wait(wait) => {
             if !wait_for(wait, model, timeout, cx).await {
                 let auth = cx.update(|cx| dump(&["auth".to_string()], model, cx));

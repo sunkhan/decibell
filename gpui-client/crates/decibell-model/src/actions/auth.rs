@@ -73,10 +73,22 @@ pub fn register(username: String, email: String, password: String, cx: &mut App)
     });
 }
 
-/// Log out (`AccountTab.handleLogout`): the core forgets this device at central, drops
-/// every connection and the saved sign-in, and emits `logged_out`, which clears the
-/// stores. A failure is only logged, as in the renderer. (Ending a call first is the
-/// call feature's to add in front of this.)
+/// Log out, as Settings → Account's button does (`AccountTab.handleLogout`): hang up
+/// first and tell the peer (`await endCall(null)`: before the central session that
+/// carries the hang-up goes away), then [`sign_out`].
+pub fn log_out(cx: &mut App) {
+    let Some(model) = cx.try_global::<Model>().cloned() else { return };
+    cx.spawn(async move |cx| {
+        crate::actions::calls::end_call_async(&model, None, true, cx).await;
+        cx.update(sign_out);
+    })
+    .detach();
+}
+
+/// Sign out without touching a call (the core's `logout`): the core forgets this device at
+/// central, drops every connection and the saved sign-in, and emits `logged_out`, which
+/// clears the stores. A failure is only logged, as in the renderer. The app's Log Out is
+/// [`log_out`].
 pub fn sign_out(cx: &mut App) {
     call(cx, api::auth::logout(), |result, _| {
         if let Err(e) = result {
