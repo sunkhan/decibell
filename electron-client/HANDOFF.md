@@ -646,10 +646,13 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   prefer `log::` macros and never log per frame.
 - **napi-rs 2 leaks a TSFN value on `QueueFull`.** `ThreadsafeFunction::call` boxes the value before the
   call and never frees it on a failed enqueue; a bounded "drop when full" TSFN leaks every dropped item.
-  Cap in-flight items yourself (`events.rs` `reserve_stream_slot`).
+  Cap in-flight items yourself (`native/src/napi_sink.rs` `reserve_stream_slot`).
 - **`cargo test` can't link the event bus** (`napi_call_threadsafe_function` exists only inside Node).
   Keep emits reachable from tests behind a `#[cfg(not(test))]` wrapper with a no-op twin
-  (`hotkeys/mod.rs`, `e2ee/session.rs`), not a global change to `events.rs`.
+  (`hotkeys/mod.rs`, `e2ee/session.rs`), not a global change to `events.rs`. Since the core split
+  (2026-11-26) this only bites tests in `electron-client/native`: `crates/decibell-core` has no napi
+  symbols and its emits are no-ops until a sink is installed, so the existing wrappers there are
+  redundant (kept until tests get a recording sink).
 - **No CPU↔GPU sync in capture loops.** A per-send staging `Map` waited out the game's GPU queue and
   held a 60 fps DXGI share at ~32 fps. Keep capture / composite fully asynchronous on the GPU
   (`cursor_gpu.rs`); readbacks only on the encoder thread at low rate. The tell is a large `send_max` in
@@ -672,7 +675,8 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
 
 - **Windows code from Linux**: `cargo test --lib` on Linux never compiles `cfg(windows)`. Push, let
   **Windows Native Check** (`.github/workflows/win-native-check.yml`, `cargo check --all-targets` on
-  windows-latest; log on the orphan branch `ci/win-native-check-log`: `git fetch origin
+  windows-latest, in `electron-client/native` and then in `crates/decibell-core`; runs on `main` and
+  `gpui-client` pushes touching either; log on the orphan branch `ci/win-native-check-log`: `git fetch origin
   ci/win-native-check-log && git show FETCH_HEAD:cargo-check.log`) go green, *then* tag `ev*` (a blind
   Windows API mismatch failed the ev0.7.11 release). Select a run by head sha, not by time:
   `gh run list --workflow "Windows Native Check" --json databaseId,headSha`. On a Windows machine, just
@@ -711,6 +715,18 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
 
 ## 6. How to test from a fresh checkout
 
+**Where the native code lives (2026-11-26, core split step 1):** `crates/decibell-core/` is the shared
+core (net, media, e2ee, hotkeys, config, presence, system_idle, state, events + the `EventSink` trait,
+`api/`; prost runs in its `build.rs`); `electron-client/native/` is the thin napi addon over it (`lib.rs`,
+`napi_sink.rs`, `commands/`) and stays the build root (`Cargo.lock`, `target/`, `[profile]`s,
+`.cargo/config.toml`). `npm run build:native*` and `npx napi build` work as before. Core's unit tests
+run from `crates/decibell-core` (`cargo test --lib`; its own `.cargo/config.toml` points pkg-config at
+`electron-client/native/vendor/ffmpeg`, its `Cargo.lock` is the addon's trimmed, see CLAUDE.md), the
+napi crate's from `electron-client/native`. `node scripts/smoke-load.cjs` (in `native/`) loads a
+built addon outside Electron, inits it, checks an event arrives and shuts it down. Paths below that say
+`native/src/{net,media,e2ee,hotkeys}/…` or `native/src/{config,presence,system_idle,state,events}.rs`
+mean the same file under `crates/decibell-core/src/`.
+
 ```bash
 git clone git@github.com:sunkhan/decibell.git
 cd decibell/electron-client
@@ -732,7 +748,7 @@ npm run build:native        # release build
 A debug build connects to central at `DECIBELL_CENTRAL=host:port` when that's
 set (e.g. `DECIBELL_CENTRAL=127.0.0.1:8080 npm run dev` against a local central
 from `src/server/tests`); release builds compile the override out
-(`native/src/net/central.rs` `central_addr`).
+(`crates/decibell-core/src/net/central.rs` `central_addr`).
 
 Type checking:
 
@@ -767,7 +783,7 @@ Everything client-side builds natively on Windows (CI's Windows job is the refer
 - **Rust stable, MSVC toolchain** (`rustup default stable-x86_64-pc-windows-msvc`).
 - **Visual Studio 2022** "Desktop development with C++" (MSVC + Windows SDK) and **CMake** (audiopus
   builds its vendored libopus with it).
-- **protoc** on `PATH` (CI pins 27.x); `native/build.rs` runs prost over `proto/messages.proto`.
+- **protoc** on `PATH` (CI pins 27.x); `crates/decibell-core/build.rs` runs prost over `proto/messages.proto`.
 - **LLVM / libclang** for ffmpeg-sys-next's bindgen (preinstalled on the CI image; on a fresh machine
   install LLVM and set `LIBCLANG_PATH` to its `bin` if the build can't find `libclang.dll`).
 - **FFmpeg through vcpkg, at CI's pinned commit** (newer FFmpeg 8 ports broke the d3d11va + NVENC path):
@@ -809,7 +825,7 @@ What runs where:
 |---|---|---|
 | Renderer typecheck `npx tsc -p tsconfig.web.json --noEmit` (+ `npm run typecheck` for main) | yes | yes |
 | `npx napi build --platform --js index.js --dts index.d.ts` (in `native/`) | yes | yes |
-| `cargo test --lib` (in `native/`) | host cfg only | host cfg, incl. the Windows-only tests CI never runs |
+| `cargo test --lib` (in `crates/decibell-core/`, then `native/`) | host cfg only | host cfg, incl. the Windows-only tests CI never runs |
 | Community / central e2e harnesses (`src/*/tests/`: bash, g++, Python, a bundled PostgreSQL) | yes | Linux only: use WSL2 or the Linux box |
 | Linux-only native code (PipeWire, portal, X11 hotkeys, `system_idle`) | yes | no: rely on the Linux box or CI |
 
@@ -997,7 +1013,7 @@ Also open, lower priority:
 
 - `native/src/media/video_receiver.rs` — UDP receive thread,
   reassembles packets into frames.
-- `native/src/events.rs::send_stream_frame` — per-stream Buffer TSFN
+- `crates/decibell-core/src/events.rs::send_stream_frame` → `native/src/napi_sink.rs` — per-stream Buffer TSFN
   pushing binary frames to JS.
 - `electron/main/addon.ts` — fans `decibell:stream_frame` over
   `webContents.send`.

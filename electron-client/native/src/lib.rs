@@ -1,18 +1,22 @@
 #![deny(clippy::all)]
 
+//! The Electron addon: a thin napi layer over `decibell-core`
+//! (crates/decibell-core). This crate owns `init` / `shutdown` / `ping`, the
+//! napi event sink (`napi_sink.rs`) and the `#[napi]` commands; everything
+//! they drive lives in the core.
+
 #[macro_use]
 extern crate napi_derive;
 
 mod commands;
-mod config;
-mod e2ee;
-mod events;
-mod hotkeys;
-mod media;
-mod net;
-mod presence;
-mod system_idle;
-mod state;
+mod napi_sink;
+
+// The core's modules under their old crate-root names, so `crate::state`,
+// `crate::net::…`, `crate::events::…` in commands/ keep resolving.
+#[allow(unused_imports)]
+pub(crate) use decibell_core::{
+    api, config, e2ee, events, hotkeys, media, net, presence, state, system_idle,
+};
 
 use napi::JsFunction;
 
@@ -64,6 +68,9 @@ pub struct InitOptions {
     pub local_key_protected: Option<bool>,
 }
 
+// (The doc comment below is copied into index.d.ts by napi: keep it as is.
+// "The EventBus TSFN" is now the napi event sink, `napi_sink::NapiSink`, over
+// all three callbacks, installed into decibell-core's `events`.)
 /// Called once from Electron main after `app.whenReady()` and the
 /// first BrowserWindow has been created. Installs the EventBus TSFN
 /// (so any thread can `events::send(...)`) and stashes BootConfig so
@@ -78,15 +85,15 @@ pub fn init(
     stream_bus: JsFunction,
     stream_thumbnail_bus: JsFunction,
 ) -> napi::Result<()> {
-    events::install(bus)?;
-    // PR7c: dedicated TSFN for encoded video frames. Carries Buffer
-    // payloads (zero-copy view over Vec<u8>) instead of base64+JSON
-    // through the main bus. ~3 MB/s saved per stream at 60fps.
-    events::install_stream_bus(stream_bus)?;
-    // Same idea for per-stream JPEG thumbnails — raw Buffer instead of
-    // a base64-encoded `data:image/jpeg;base64,…` string riding the
-    // JSON bus. Renderer wraps the bytes in a blob: URL.
-    events::install_stream_thumbnail_bus(stream_thumbnail_bus)?;
+    // `bus` carries the named JSON events. PR7c: `stream_bus` is a
+    // dedicated TSFN for encoded video frames. Carries Buffer payloads
+    // (zero-copy view over Vec<u8>) instead of base64+JSON through the
+    // main bus. ~3 MB/s saved per stream at 60fps. Same idea for
+    // per-stream JPEG thumbnails (`stream_thumbnail_bus`) — raw Buffer
+    // instead of a base64-encoded `data:image/jpeg;base64,…` string
+    // riding the JSON bus. Renderer wraps the bytes in a blob: URL.
+    let sink = napi_sink::NapiSink::new(bus, stream_bus, stream_thumbnail_bus)?;
+    events::install_sink(std::sync::Arc::new(sink));
     let e2ee_local_key = opts.e2ee_local_key.as_deref().and_then(|b64| {
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;

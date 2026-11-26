@@ -485,7 +485,7 @@ impl CentralClient {
                             let host = info.host_ip.clone();
                             let port = info.port as u16;
                             tokio::spawn(async move {
-                                if let Err(e) = crate::commands::servers::connect_with_invite(
+                                if let Err(e) = crate::api::servers::connect_with_invite(
                                     server_id, host, port, None,
                                 )
                                 .await
@@ -509,7 +509,7 @@ impl CentralClient {
                         // saying why.
                         if resp.signed_out {
                             log::info!("[auth] central says this device was signed out");
-                            tokio::spawn(crate::commands::auth::signed_out_elsewhere("signed_out"));
+                            tokio::spawn(crate::api::auth::signed_out_elsewhere("signed_out"));
                             continue;
                         }
                         let mut refused = None;
@@ -771,7 +771,7 @@ impl CentralClient {
                     // Invisible is the account's: this device's communities
                     // follow it too.
                     let invisible = own.status == crate::net::proto::PresenceStatus::PresenceInvisible as i32;
-                    tokio::spawn(crate::commands::presence::apply_hidden(invisible));
+                    tokio::spawn(crate::api::presence::apply_hidden(invisible));
                     events::emit_own_presence(own_presence_payload(&own));
                 }
                 Some(packet::Payload::MembershipAdded(added)) => {
@@ -791,7 +791,7 @@ impl CentralClient {
                         // rather than reconnecting.
                         log::info!("[auth] central signed this device out");
                         let reason = if password_changed { "password_changed" } else { "signed_out" };
-                        tokio::spawn(crate::commands::auth::signed_out_elsewhere(reason));
+                        tokio::spawn(crate::api::auth::signed_out_elsewhere(reason));
                     } else {
                         // Another connection signed in with our device id while
                         // we are connected: this install was copied. Become a
@@ -1077,7 +1077,7 @@ async fn join_added_membership(
             picture_version: info.picture_version,
         },
     );
-    if let Err(e) = crate::commands::servers::connect_with_invite(server_id, host, port, None).await {
+    if let Err(e) = crate::api::servers::connect_with_invite(server_id, host, port, None).await {
         log::info!("[membership] connect to a community joined elsewhere failed: {e}");
     }
 }

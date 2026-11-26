@@ -945,7 +945,7 @@ impl CommunityClient {
                     // this loop already find the new driver.
                     if moved {
                         let mut s = state.lock().await;
-                        match crate::commands::voice::rebind_voice_group(
+                        match crate::api::voice::rebind_voice_group(
                             &mut s,
                             state.clone(),
                             &server_id,

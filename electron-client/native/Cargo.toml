@@ -5,182 +5,48 @@ edition = "2021"
 license = "Proprietary"
 publish = false
 
+# The Electron addon: a thin napi layer over crates/decibell-core (init /
+# shutdown, the napi event sink, the #[napi] commands). Everything else —
+# connections, media, E2EE, hotkeys, settings — and its dependencies live in
+# the core crate. This crate stays the build root: its Cargo.lock, target/,
+# .cargo/config.toml (the static FFmpeg's PKG_CONFIG_PATH) and [profile]s
+# apply to the core when the addon is built.
+
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
+decibell-core = { path = "../../crates/decibell-core" }
 napi = { version = "2", default-features = false, features = ["napi9", "tokio_rt", "serde-json", "async"] }
 napi-derive = { version = "2", features = ["type-def"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-rustls-pki-types = "1"
-prost = "0.13"
-bytes = "1"
-tokio-util = { version = "0.7", features = ["codec"] }
-futures-util = { version = "0.3", features = ["sink"] }
 log = "0.4"
 env_logger = "0.11"
-aes-gcm = "0.10"
 base64 = "0.22"
-sha2 = "0.10"
-hostname = "0.4"
 cpal = "0.15"
-audiopus = "0.3.0-rc.0"
-rubato = "0.16"
-ringbuf = "0.4"
-smallvec = "1"
-aec3 = "0.1"
-nnnoiseless = { version = "0.5.2", default-features = false }
-arc-swap = "1"
-# P2P DM calls: X25519 + HKDF for the per-call media keys (ring is already
-# in the tree through rustls) and local interface enumeration for host
-# candidates.
 ring = "0.17"
+# P2P DM calls: local interface enumeration for host candidates
+# (commands/call.rs).
 if-addrs = "0.13"
-# E2EE DMs (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md):
-# static X25519 identities (ring only does ephemeral agreement), Ed25519
-# bundle signatures, Argon2id for the passphrase backup, zeroising
-# secrets. AES-GCM / HKDF / random come from aes-gcm and ring above.
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-ed25519-dalek = "2"
-argon2 = "0.5"
-zeroize = { version = "1", features = ["derive"] }
-openmls = "0.9"
-openmls_rust_crypto = "0.6"
-openmls_basic_credential = "0.6"
-openmls_traits = "0.6"
 
-# libc is used in cfg(unix) socket tuning code that runs on Linux *and*
-# macOS — must be available for both, not just Linux.
+# on_load clears O_NONBLOCK on stdout / stderr (lib.rs), Linux and macOS.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-pipewire = "0.9"
-zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
-# Global hotkeys on X11 (and through XWayland on Wayland desktops without
-# the GlobalShortcuts portal): XInput2 raw key/button events. Pure-Rust
-# protocol client — no libX11/libXi link.
-x11rb = { version = "0.13", default-features = false, features = ["xinput"] }
-# wlroots compositors (Niri, Sway, Hyprland, river) — capture goes
-# straight through wlr-screencopy + a self-allocated SHM buffer,
-# bypassing xdg-desktop-portal entirely. Mutter/KWin fall through to
-# the portal path in capture_pipewire.rs.
-wayland-client = "0.31"
-wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-# Auto-away: ext-idle-notify-v1 (staging), the compositor's idle signal on
-# Wayland, where Electron's powerMonitor reads no idle time (system_idle.rs).
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }
-memfd = "0.6"
-# EGL + GL bindings for the GPU zero-copy path (DMA-BUF import on
-# Intel/AMD VAAPI, CUDA registration on NVIDIA). Loaded dynamically
-# via libloading so missing system libs degrade to CPU readback at
-# runtime instead of failing at link.
-khronos-egl = { version = "6", features = ["dynamic"] }
-gl = "0.14"
-# libcuda.so.1 is dlopened at runtime (gpu_interop) so a machine without
-# the NVIDIA driver still loads the addon and falls back to VAAPI/sw.
-libloading = "0.8"
-# STATICALLY-linked FFmpeg 8 (NVENC/VAAPI, LGPL). The `static` feature is
-# essential on Linux: Electron bundles Chromium's libffmpeg.so which
-# exports decode-only FFmpeg symbols into the global scope, shadowing a
-# dynamically-linked system libavcodec so the encoder probe finds nothing
-# (and RTLD_DEEPBIND, which would fix the symbols, breaks CUDA's cuInit).
-# Static-linking makes libav* symbols internal to the .node — nothing for
-# Electron's libffmpeg to interpose — and NVENC's libnvidia-encode loads
-# normally. Build the static libs first: `scripts/build-ffmpeg-linux.sh`,
-# then build with PKG_CONFIG_PATH=vendor/ffmpeg/lib/pkgconfig (FFMPEG_DIR
-# unset) so pkg-config resolves the transitive deps (libva/libdrm) from
-# Libs.private. See docs/superpowers/specs/2026-05-15-linux-native-ffmpeg-
-# encoder-design.md.
-ffmpeg-next = { version = "8", features = ["static"] }
-# Stream thumbnail JPEG encoder (Linux native capture path), same crate
-# the Windows encoder thread uses.
-jpeg-encoder = "0.6"
-
-# The X11 hotkey listener's end-to-end test drives a disposable X server
-# with XTEST (hotkeys/mod.rs, ignored by default).
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-x11rb = { version = "0.13", default-features = false, features = ["xinput", "xtest"] }
-
 [target.'cfg(target_os = "windows")'.dependencies]
-# windows-core must be a direct dep so the `#[implement]` macro's
-# generated `::windows_core::IUnknownImpl` paths resolve at our crate
-# root. As a transitive dep through `windows`, Rust 2018+ won't expose
-# it to user code or proc-macro output. Pinned to match the windows
-# crate's own windows-core dep version.
-windows-core = "0.61"
-windows = { version = "0.61", features = [
-    "Win32_Networking_WinSock",
-    "Win32_Foundation",
-    # WASAPI for stream-audio loopback capture
-    "Win32_Media_Audio",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    # PROPVARIANT / VT_BLOB live under Variant in 0.61+; without this
-    # feature even Win32_Media_Audio fails to compile internally.
-    "Win32_System_Variant",
-    # OVERLAPPED + LPWSAOVERLAPPED_COMPLETION_ROUTINE for WSAIoctl.
-    "Win32_System_IO",
-    "Win32_System_Threading",
-    # Toolhelp process snapshot — parent-PID map so the stream-audio
-    # mixer can dedupe an app's child processes against its tree root
-    # (one WASAPI process-loopback client already covers a whole tree).
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_Devices_FunctionDiscovery",
-    # IPropertyStore — return type of IMMDevice::OpenPropertyStore.
-    # Without this feature the method itself isn't exposed.
-    "Win32_UI_Shell_PropertiesSystem",
-    # GetWindowThreadProcessId for resolving a Chromium-desktopCapturer
-    # window HWND to the owning process PID, so stream-audio capture can
-    # target that process tree via WASAPI Process Loopback.
-    "Win32_UI_WindowsAndMessaging",
-    # Global hotkeys (hotkeys/windows.rs): GetAsyncKeyState on the bound
-    # keys only, MapVirtualKey for layout-dependent ones.
-    "Win32_UI_Input_KeyboardAndMouse",
-    # Windows Graphics Capture + D3D11 surfaces for the native HW
-    # encoder pipeline (see docs/superpowers/specs/2026-05-12-windows-
-    # native-ffmpeg-encoder-design.md §5-§6).
-    "Graphics_Capture",
-    # ApiInformation — capture backend routing asks whether
-    # GraphicsCaptureSession.IsBorderRequired exists (Win11+): if yes,
-    # WGC captures borderless and stays preferred; if no (Win10),
-    # monitors go through DXGI duplication instead.
-    "Foundation_Metadata",
-    "Graphics_DirectX",
-    "Graphics_DirectX_Direct3D11",
-    "Win32_Graphics_Direct3D",
-    # D3DCompile for the cursor compositor's two tiny shaders
-    # (cursor_gpu.rs) — d3dcompiler_47.dll ships with Windows 10/11.
-    "Win32_Graphics_Direct3D_Fxc",
-    "Win32_Graphics_Direct3D11",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-    "Win32_Graphics_Gdi",
-    "Win32_System_WinRT",
-    "Win32_System_WinRT_Direct3D11",
-    "Win32_System_WinRT_Graphics_Capture",
-] }
-# Dynamic-linked FFmpeg via vcpkg-built DLLs. LGPL — see
-# THIRD_PARTY_LICENSES.md (added in a later task) for compliance details.
-ffmpeg-next = "8"
-# Pure-Rust JPEG encoder for stream thumbnails. The renderer-encoded
-# path on Linux/macOS uses canvas.convertToBlob; on Windows we
-# read back BGRA from the encoder thread and JPEG-encode here.
-jpeg-encoder = "0.6"
+# DXGI adapter enumeration for the encoder vendor order
+# (commands/streaming.rs read_primary_gpu_vendor_id). The core crate turns on
+# the rest of the windows crate's features.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dxgi"] }
 
 [dev-dependencies]
-# tokio test-util adds tokio::time::advance and Builder::start_paused
-# which the codec_selection unit tests use to fake the wall clock.
-# Not pulled in by `features = ["full"]`; opt-in only.
-tokio = { version = "1", features = ["full", "test-util"] }
+# commands/voice.rs tests decode the packets a join sends.
+prost = "0.13"
 
 [build-dependencies]
 napi-build = "2"
-prost-build = "0.13"
 
 [profile.release]
 lto = true
@@ -188,9 +54,11 @@ strip = "symbols"
 codegen-units = 1
 
 [features]
-# DECIBELL_STREAM_DUMP (src/media/stream_dump.rs): record watched streams to .dbv files for the Qt client's video
-# spike. Off in every shipped build; opt in with `npx napi build --platform --release --features stream-dump`.
-stream-dump = []
-# DECIBELL_CENTRAL=host:port in an optimised build (src/net/central.rs), for tests and measurements against the
-# local servers of src/server/tests + src/community/tests. Off in every shipped build.
-local-central = []
+# Both live in the core crate (crates/decibell-core/Cargo.toml); forwarded so
+# `npx napi build --features …` keeps working from here.
+# DECIBELL_STREAM_DUMP (core src/media/stream_dump.rs): record watched streams to .dbv files for the Qt client's
+# video spike. Off in every shipped build; opt in with `npx napi build --platform --release --features stream-dump`.
+stream-dump = ["decibell-core/stream-dump"]
+# DECIBELL_CENTRAL=host:port in an optimised build (core src/net/central.rs), for tests and measurements against
+# the local servers of src/server/tests + src/community/tests. Off in every shipped build.
+local-central = ["decibell-core/local-central"]

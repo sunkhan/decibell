@@ -12,6 +12,9 @@ rules that matter and where each piece lives. Use it as the parity checklist for
 
 Path shorthand: `R/` = `electron-client/src/`, `M/` = `electron-client/electron/main/`,
 `N/` = `electron-client/native/src/`, `C/` = `src/community/`, `Z/` = `src/server/` (central).
+Since the core split (2026-11-26), `N/` paths under `net/`, `media/`, `e2ee/`, `hotkeys/`, and
+`N/config.rs`, `N/presence.rs`, `N/system_idle.rs`, `N/state.rs`, `N/events.rs` live in
+`crates/decibell-core/src/` (same relative path); `N/commands/` and `N/lib.rs` stay in the addon.
 "Live test pending" marks features built and covered by tests but not yet exercised by real users on
 real networks / hardware (see HANDOFF §7 for the full list).
 

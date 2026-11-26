@@ -43,8 +43,9 @@ much as by someone changing the existing ones.
 | Central server | `src/server/` | Production: root `CMakeLists.txt` target `decibell_server`, built on the owner's Hetzner box. Tests: `src/server/tests/` (own deps, bundled PostgreSQL 16). |
 | Community server | `src/community/` | Production: root `CMakeLists.txt` target `decibell_community` (pinned SQLite 3.53.4 via `cmake/DecibellSQLite.cmake`). Tests: `src/community/tests/`. |
 | Shared C++ | `src/common/` | `net_utils.hpp` (framing), `udp_packet.hpp` (UDP layouts), `ed25519_keys.hpp`. `src/common/proto/messages.pb.*` are stale; protoc regenerates them at build time. |
-| Wire contract | `proto/messages.proto` | protoc (C++), prost via `electron-client/native/build.rs` (Rust). |
-| Client | `electron-client/` | Electron (castlabs fork, v33) + React 18 / zustand / Tailwind v4 renderer + napi-rs native addon (`native/`, tokio, prost). See §7. |
+| Wire contract | `proto/messages.proto` | protoc (C++), prost via `crates/decibell-core/build.rs` (Rust). |
+| Client | `electron-client/` | Electron (castlabs fork, v33) + React 18 / zustand / Tailwind v4 renderer + a thin napi-rs native addon (`native/`) over the shared core. See §7. |
+| Shared native core | `crates/decibell-core/` | Rust lib (tokio, prost): connections, protocol state machines, media, E2EE, hotkeys, settings; built by path from each client (no root Cargo workspace). See §7.3. |
 | Retired | `src/client/` (Qt/QML), `tauri-client/`, `.github/workflows/release.yml`, `CMakeLists-{linux,windows}.txt` | Nothing builds against them. Don't build on them. |
 
 Deployment today: central runs on the owner's server; the owner hosts the only community server.
@@ -215,7 +216,7 @@ HTTPS host is pinned to the same fingerprint.
 ## 3. TCP wire protocol
 
 - **Framing**: `[u32 big-endian length][protobuf Packet]` (`src/common/net_utils.hpp`,
-  `native/src/net/framing.rs`). Frames are capped at **2 MiB**; servers budget every response to fit, and
+  `crates/decibell-core/src/net/framing.rs`). Frames are capped at **2 MiB**; servers budget every response to fit, and
   the client reads and skips (rather than disconnects on) a slightly larger frame.
 - **Envelope**: `Packet { Type type = 1; int64 timestamp = 2; string auth_token = 16; oneof payload }`.
   Central checks `auth_token` (the session token) on every post-login packet; community sessions are
@@ -425,7 +426,7 @@ What one device does reaches the account's others: `OWN_PRESENCE`, DM echoes / e
 
 ## 5. End-to-end encryption
 
-All client crypto lives in the native crate (`electron-client/native/src/e2ee/`); servers store and
+All client crypto lives in the native core (`crates/decibell-core/src/e2ee/`); servers store and
 relay opaque bytes and never hold a private key.
 
 ### 5.1 DMs (`2026-09-03-e2ee-dms-design.md`)
@@ -501,7 +502,7 @@ once on joining, then every 500 ms until the first echo; a NAT rebinding re-bind
 ### 6.3 Packet layouts
 
 Packed (`#pragma pack(1)`), little-endian host order as written by both sides (`src/common/udp_packet.hpp`
-and `native/src/media/{packet,video_packet}.rs` are the source of truth and agree).
+and `crates/decibell-core/src/media/{packet,video_packet}.rs` are the source of truth and agree).
 `SENDER_ID_SIZE` 32, `UDP_MAX_PAYLOAD` 1200 (MTU-safe incl. PPPoE / VPN), `NACK_MAX_ENTRIES` 64,
 `FEC_GROUP_SIZE` 5. Clients send header + actual payload (not the full struct); the relay forwards the
 received length and drops audio / FEC / NACK datagrams larger than their structs.
@@ -560,7 +561,7 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
 |---|---|---|
 | Renderer | `src/` (React 18, zustand, Tailwind v4) | All UI and view state; video encode (WebCodecs fallback) and **all video decode** (WebCodecs); ThumbHash + thumbnails for uploads; attachment encryption before upload; voice-view / stream UI; message list. Stores keyed by uid (`stores/usersStore.ts` is the only name source). |
 | Electron main | `electron/main/` | Window, deep links, auto-update, Sentry, the attachment protocol (`decibell-attachment://`, decrypting encrypted attachments) and a loopback media server for Range playback, downloads + pacing, link-preview unfurling, GIF search, clipboard, global-hotkey glue, idle, the E2EE local key from `safeStorage`, IPC routing to the addon. |
-| Native addon | `native/` (Rust, napi-rs 2, tokio, prost) | Every server connection (TLS, framing, pins, reconnect, resume), the protocol state machines, voice capture / processing / playback, UDP send / receive / relay protocol, native screen capture + hardware encode, stream-audio capture, STUN / punch / sealed transport, all E2EE (identities, envelopes, backup, MLS, channel keys), global hotkeys, system idle on Wayland, settings (`config.json`). |
+| Native core + addon | `crates/decibell-core/` (Rust lib, tokio, prost) under `native/` (napi-rs 2: `init` / `shutdown`, the event sink, the `#[napi]` commands) | Every server connection (TLS, framing, pins, reconnect, resume), the protocol state machines, voice capture / processing / playback, UDP send / receive / relay protocol, native screen capture + hardware encode, stream-audio capture, STUN / punch / sealed transport, all E2EE (identities, envelopes, backup, MLS, channel keys), global hotkeys, system idle on Wayland, settings (`config.json`). |
 
 ### 7.2 Media pipelines in the client
 
@@ -597,39 +598,54 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
 
 ### 7.3 Reusing the native crate in another client
 
-The native crate (`electron-client/native/`) is where the protocol knowledge lives: connections, every
-packet router, voice, UDP media, native capture / encode, and all E2EE. A native (e.g. GPUI) client
-should reuse it rather than re-implement it. What stands in the way today (mapped 2026-11-07):
+The native code is where the protocol knowledge lives: connections, every packet router, voice, UDP
+media, native capture / encode, and all E2EE. A native (e.g. GPUI) client reuses it rather than
+re-implementing it. Mapped 2026-11-07; the split's step 1 (design `2026-11-07-qt-native-client-design.md`
+§6) landed 2026-11-26 on the `gpui-client` branch:
 
-- **It is not a library.** `crate-type = ["cdylib"]` only and every module in `lib.rs` is a private
-  `mod`. Step one is a workspace split: a plain `decibell-core` lib crate (net, media, e2ee, hotkeys,
-  config, presence, system_idle, state) and a thin napi crate on top.
-- **napi lives only in `lib.rs`, `events.rs` and `commands/`.** `net/`, `media/`, `e2ee/`, `hotkeys/`,
-  `config.rs`, `presence.rs`, `system_idle.rs` and `state.rs` have no napi types. Exceptions to move out
-  of `commands/` first: `net/central.rs` calls `commands::…::connect_with_invite` (returns
-  `napi::Result`), `signed_out_elsewhere` and `apply_hidden`; `net/community.rs` calls
-  `rebind_voice_group`.
-- **Events have one seam, but no trait.** Everything reaches the UI through `events.rs`: `send(name,
-  payload)` (a `{name, payload}` JSON envelope; ~77 named events, payload structs `Serialize` in
-  camelCase), `send_stream_frame` (encoded video frames, a queue capped at 8 with a discontinuity flag)
-  and `emit_stream_thumbnail_updated`. They sit on three `OnceLock` ThreadsafeFunctions installed by
-  `init`. Replacing them with a `dyn Fn(&'static str, serde_json::Value)` plus two binary callbacks is
-  the whole UI coupling. (`STREAM_FRAME_SINKS` and input-level reporting state live there too.) Tests
-  can't reach an emit today because the TSFN symbols only link inside Node, hence the `cfg(not(test))`
-  wrappers (`hotkeys/mod.rs`, `e2ee/session.rs`, `video_pipeline.rs`, `encoder_thread_linux.rs`).
+- **The core is a library.** `crates/decibell-core/` (lib `decibell_core`) holds `net/`, `media/`,
+  `e2ee/`, `hotkeys/`, `config.rs`, `presence.rs`, `system_idle.rs`, `state.rs`, `events.rs`, `api/` and
+  the prost `build.rs`, all `pub`. `electron-client/native/` is the thin napi crate (cdylib) depending on
+  it by path. No root Cargo workspace (design D3): the addon keeps its `Cargo.lock`, `target/`,
+  `.cargo/config.toml` (static FFmpeg's `PKG_CONFIG_PATH`) and `[profile]`s; core's own `Cargo.lock` and
+  `.cargo/config.toml` only serve `cargo test --lib` there. Features `stream-dump` and `local-central`
+  live in core; the addon forwards them. The addon's `lib.rs` re-exports the core modules under their
+  old names (`pub(crate) use decibell_core::{config, …, state}`), so `crate::state::…` in `commands/`
+  is unchanged.
+- **napi lives only in the addon**: `lib.rs`, `napi_sink.rs`, `commands/`. The core had four call-outs
+  into `commands/`; they are core functions now, which the napi commands wrap:
+  `api::servers::connect_with_invite` (`Result<(), String>`), `api::auth::{signed_out_elsewhere,
+  sign_out_locally}`, `api::presence::{apply_hidden, tell_communities_hidden}`,
+  `api::voice::rebind_voice_group`.
+- **Events go through one trait** (`decibell_core::events`). Everything reaches the UI through
+  `send(name, payload)` (~77 named events, payload structs `Serialize` in camelCase),
+  `send_stream_frame` (whole encoded frames, dropped here unless the key is in `STREAM_FRAME_SINKS`, i.e.
+  on screen) and `emit_stream_thumbnail_updated`, into the `EventSink` the host installs once
+  (`install_sink(Arc<dyn EventSink>)`; until then every emit is a no-op):
+  `event(&self, name: &'static str, payload: serde_json::Value)`, `stream_frame(&self, StreamFrame)`,
+  `stream_thumbnail(&self, StreamThumbnail)`, and a defaulted `stream_frame_sink_removed(&self, key)`
+  so a sink can drop per-key shedding state. The addon's `NapiSink` holds the three ThreadsafeFunctions
+  `init` receives, builds the `{name, payload}` envelope, and owns the stream-frame queue (capped at 8,
+  slots reserved before the call because napi-rs 2 leaks a value on `QueueFull`, a discontinuity flag on
+  the next frame after a shed one). Input-level reporting state stays in core. Still untyped
+  (`&'static str` + JSON): the typed `CoreEvent` enum is the design's step 2. Core tests can reach emits
+  now (no napi symbols in core), but the `cfg(not(test))` wrappers (`hotkeys/mod.rs`, `e2ee/session.rs`,
+  `video_pipeline.rs`, `encoder_thread_linux.rs`) stay until tests get a recording sink.
 - **Commands**: 132 `#[napi]` functions in `commands/*.rs` (auth 7, call 6, channels 15, community 23,
   devices 3, dm 5, e2ee 6, friends 3, hotkeys 6, messaging 1, presence 5, servers 11, settings 4,
   stream_audio 2, streaming 18, voice 17), each taking one args struct; plus `init` / `shutdown` / `ping`
-  in `lib.rs`. They are thin: lock `AppState`, build a packet or call into `media` / `e2ee`. A native
-  client calls the same functions directly.
+  in `lib.rs`. They are thin: lock `AppState`, build a packet or call into `media` / `e2ee`. They still
+  live in the addon; the design's step 3 moves their bodies into `decibell_core::api::<area>` next to the
+  four above, so a native client calls the same functions directly.
 - **Runtime**: the crate never builds a tokio runtime; it relies on napi's `tokio_rt`. A native client
   must own a multi-thread runtime and call in from inside it (e.g. `media/mod.rs` `tokio::spawn`s from
   stream start). State is one global `AppState` (`state.rs`, `OnceLock<Arc<tokio::Mutex<…>>>`) plus a few
   globals (`WATCHED_STREAMS`, the voice gate, the hotkeys hub).
 - **`InitOptions`**: `user_data_dir`, `app_version`, `e2ee_local_key` (32 bytes, base64; from the OS
   keychain), `local_key_protected`.
-- **Dead code to leave behind**: `capture_wlr_screencopy.rs` (unreachable), `gpu_interop.rs` and the
-  DMA-BUF / CUDA / VAAPI encode branches (never fed), `codec_selection.rs` (tests only),
+- **Dead code** (moved into the core as it was; delete when convenient): `capture_wlr_screencopy.rs`
+  (unreachable), `gpu_interop.rs` and the DMA-BUF / CUDA / VAAPI encode branches (never fed),
+  `codec_selection.rs` (tests only),
   `emit_stream_gpu_fallback`, `emit_caps_refreshed`, `watcher_event_tx` (no subscriber). Several file
   headers still claim "FFmpeg removed entirely" (`lib.rs`, `media/mod.rs`, `video_pipeline.rs`) — false.
 
@@ -684,7 +700,9 @@ CMakeLists.txt                  production build of both servers
 electron-client/                the client (HANDOFF.md, PACKAGING.md)
   src/                          renderer: features/, stores/, components/, layouts/, lib/, hooks/, utils/
   electron/main, electron/preload
-  native/                       Rust addon: net/, media/, e2ee/, hotkeys/, commands/, events.rs, state.rs
+  native/                       Rust napi addon: lib.rs (init / shutdown), napi_sink.rs, commands/
+crates/decibell-core/           shared native core: net/, media/, e2ee/, hotkeys/, api/, events.rs (EventSink),
+                                state.rs, config.rs, presence.rs, system_idle.rs; build.rs (prost)
 aur/                            decibell-bin PKGBUILD + .SRCINFO
 .github/workflows/              electron-release.yml (ev* tags), win-native-check.yml; release.yml is dead
 docs/FEATURES.md                feature catalogue

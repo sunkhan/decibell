@@ -766,7 +766,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
-name = "decibell-native"
+name = "decibell-core"
 version = "0.0.1"
 dependencies = [
  "aec3",
@@ -778,21 +778,16 @@ dependencies = [
  "bytes",
  "cpal",
  "ed25519-dalek",
- "env_logger",
  "ffmpeg-next",
  "futures-util",
  "gl",
  "hostname",
- "if-addrs",
  "jpeg-encoder",
  "khronos-egl",
  "libc",
  "libloading",
  "log",
  "memfd",
- "napi",
- "napi-build",
- "napi-derive",
  "nnnoiseless",
  "openmls",
  "openmls_basic_credential",
@@ -822,6 +817,28 @@ dependencies = [
  "x25519-dalek 2.0.1",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "decibell-native"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "cpal",
+ "decibell-core",
+ "env_logger",
+ "if-addrs",
+ "libc",
+ "log",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "prost",
+ "ring",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "windows 0.61.3",
 ]
 
 [[package]]

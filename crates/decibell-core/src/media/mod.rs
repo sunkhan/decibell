@@ -1434,7 +1434,7 @@ impl Drop for AudioStreamEngine {
 /// setsockopt on Unix, WSAIoctl + setsockopt on Windows.
 /// SIO_UDP_CONNRESET is also disabled on Windows so a bogus ICMP
 /// unreachable from one peer doesn't tear down the entire socket.
-pub(crate) fn configure_udp_socket(socket: &UdpSocket) {
+pub fn configure_udp_socket(socket: &UdpSocket) {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;

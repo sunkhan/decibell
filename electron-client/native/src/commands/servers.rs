@@ -6,7 +6,6 @@
 
 use tokio::sync::oneshot;
 
-use crate::net::community::CommunityClient;
 use crate::net::connection::build_packet;
 use crate::net::proto::{
     packet, FetchServerPictureReq, InviteResolveRequest, InviteResolveResponse,
@@ -360,46 +359,16 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-pub(crate) async fn connect_with_invite(
+/// Core `api::servers::connect_with_invite` (central's router calls it too).
+async fn connect_with_invite(
     server_id: String,
     host: String,
     port: u16,
     invite_code: Option<String>,
 ) -> napi::Result<()> {
-    let state_arc = state::shared();
-
-    let jwt = {
-        let s = state_arc.lock().await;
-        s.token
-            .clone()
-            .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?
-    };
-
-    // Tear down any existing client for this server_id first — a fresh
-    // connect should replace it, otherwise we'd leak its tasks.
-    {
-        let mut s = state_arc.lock().await;
-        crate::e2ee::channel_keys::forget_server(&mut s, &server_id);
-        if let Some(mut existing) = s.communities.remove(&server_id) {
-            existing.disconnect();
-        }
-    }
-
-    let client = CommunityClient::connect(
-        server_id.clone(),
-        host,
-        port,
-        jwt,
-        invite_code,
-        state_arc.clone(),
-    )
-    .await
-    .map_err(napi::Error::from_reason)?;
-
-    let mut s = state_arc.lock().await;
-    s.communities.insert(server_id, client);
-
-    Ok(())
+    crate::api::servers::connect_with_invite(server_id, host, port, invite_code)
+        .await
+        .map_err(napi::Error::from_reason)
 }
 
 #[napi(object)]

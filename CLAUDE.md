@@ -10,9 +10,10 @@ deeper docs are linked at the bottom.
 |---|---|---|
 | Community server (one per hosted community) | `src/community/` | C++20, Boost.Asio single io_context/thread, SQLite (WAL) |
 | Central server (accounts, DMs, friends, community index) | `src/server/` | C++20, Boost.Asio, Postgres via libpqxx, Ed25519 JWTs |
-| Client | `electron-client/` | Electron; React + zustand + Tailwind v4 renderer; Rust napi-rs native backend (`electron-client/native/`, tokio, prost) |
+| Client | `electron-client/` | Electron; React + zustand + Tailwind v4 renderer; thin Rust napi-rs addon (`electron-client/native/`: `init`, the napi event sink, the `#[napi]` commands) over the shared core |
+| Shared native core | `crates/decibell-core/` | Rust lib (tokio, prost): connections + packet routers, voice / UDP media, capture + encode, all E2EE, hotkeys, settings; reaches the UI only through the `events::EventSink` a client installs. No root Cargo workspace: each client builds it by path with its own `Cargo.lock` / `target/` |
 | Native client (in progress, branch `gpui-client`) | `gpui-client/` | Rust + GPUI (Zed's UI framework, pinned commit) over the shared core; replaces Electron once it reaches parity |
-| Wire contract | `proto/messages.proto` | Shared by C++ (protoc) and Rust (prost via `native/build.rs`) |
+| Wire contract | `proto/messages.proto` | Shared by C++ (protoc) and Rust (prost via `crates/decibell-core/build.rs`) |
 | Community e2e harness | `src/community/tests/` | Standalone build + Python black-box tests (see its README) |
 | Central e2e + load harness | `src/server/tests/` | Standalone build against a bundled PostgreSQL 16 + Python tests, `load.py` (see its README) |
 
@@ -35,10 +36,11 @@ Any change to `proto/messages.proto` must be carried through all three sides:
 1. **Community**: `src/community/tests/setup_deps.sh` regenerates the C++ pb into the deps
    dir; the tracked `src/common/proto/messages.pb.*` are stale and regenerated at build time.
 2. **Central**: same protoc regen on the host (it is built on the Hetzner box, not locally).
-3. **Rust**: `npx napi build` regenerates prost. Prost struct literals are **exhaustive** —
-   every `ChannelMessage { .. }` / `DirectMessage { .. }` literal in `native/src` must gain
-   any new field or the build fails. Renderer payload types are hand-written in
-   `electron-client/src/types/index.ts`; mirror new fields there.
+3. **Rust**: `npx napi build` regenerates prost (core's `build.rs`). Prost struct literals are
+   **exhaustive** — every `ChannelMessage { .. }` / `DirectMessage { .. }` literal in
+   `crates/decibell-core/src` and `electron-client/native/src` must gain any new field or the build
+   fails. Renderer payload types are hand-written in `electron-client/src/types/index.ts`; mirror new
+   fields there.
 - napi args: fields declared non-`Option` in Rust (e.g. `beforeId`) are **required** at
   runtime — omitting them from an `invoke()` fails silently-ish. Large `i64` event fields
   can arrive as `BigInt`; coerce with `Number()` at the listener.
@@ -48,9 +50,12 @@ Any change to `proto/messages.proto` must be carried through all three sides:
 ```sh
 # Renderer typecheck (0 errors expected)
 cd electron-client && npx tsc -p tsconfig.web.json --noEmit
-# Native (also regenerates prost + index.d.ts)
+# Native (also regenerates prost + index.d.ts; builds crates/decibell-core by path)
 cd electron-client/native && npx napi build --platform --js index.js --dts index.d.ts
-# Native unit tests (transport / crypto / STUN / punch / voice sim)
+# The addon loads, inits, emits through the event sink and shuts down, outside Electron (no network)
+cd electron-client/native && node scripts/smoke-load.cjs
+# Native unit tests: the core's (transport / crypto / STUN / punch / voice sim), then the napi crate's
+cd crates/decibell-core && cargo test --lib
 cd electron-client/native && cargo test --lib
 # Community server build + e2e (proto regen included) — see src/community/tests/README.md
 cd src/community/tests && D=/tmp/decibell-deps && ./setup_deps.sh "$D" ../../.. \
@@ -63,6 +68,11 @@ cd src/server/tests && D=/tmp/decibell-central-deps && ./setup_deps.sh "$D" ../.
 # Central is multi-threaded: after touching src/server, also run the suite under ThreadSanitizer and
 # AddressSanitizer + UBSan (README §Sanitizers; both must report nothing)
 ```
+`crates/decibell-core` has its own `.cargo/config.toml` (pkg-config at `electron-client/native/vendor/`'s
+static FFmpeg, built by the addon's `scripts/build-ffmpeg-linux.sh`) and its own `Cargo.lock`, which only
+serves its tests and CI's check: it is the addon's lock trimmed, same versions. After a dependency change,
+update the addon's lock, then re-seed core's: in `crates/decibell-core`,
+`cp ../../electron-client/native/Cargo.lock . && cargo metadata --format-version 1 >/dev/null`.
 For a change that could move central's capacity (threads, locks, per-connection memory, the login
 path), rerun `src/server/tests/load.py` (see its README section) and compare with the numbers in the
 review log.
@@ -75,7 +85,7 @@ range-for loops instead. New community e2e checks go in `e2e.py`; per-session me
 limit is 10 burst / 3 per s, so seed bulk rows via `sql(...)`, not `CHANNEL_MSG`.
 
 **On Windows** (setup: `electron-client/HANDOFF.md` §6.1): the typecheck, `npx napi build` and
-`cargo test --lib` run natively (and `cargo test` then covers the `cfg(windows)` code CI only
+`cargo test --lib` (both crates) run natively (and `cargo test` then covers the `cfg(windows)` code CI only
 compile-checks). The server harnesses are bash + g++ + Python + a bundled PostgreSQL: run them in WSL2
 or on the Linux box. Native code that is Linux-only (PipeWire, portal, X11, Wayland idle) can't be built
 there. **On Linux**, a change to `cfg(windows)` code is verified by the Windows Native Check workflow:
@@ -303,7 +313,7 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   `connect()` (peer learned from the last authenticated datagram); peer PINGs are reflected in
   `MediaSocket::recv`; `sender_id` = own uid (decimal). A call and a voice channel are mutually
   exclusive (one engine, one mic). `features/call/` + `native/src/commands/call.rs` +
-  `native/src/media/{media_socket,call_crypto,stun,punch}.rs`; design in
+  `crates/decibell-core/src/media/{media_socket,call_crypto,stun,punch}.rs`; design in
   `docs/superpowers/specs/2026-08-28-p2p-dm-calls-design.md`.
 - **DM messages are end-to-end encrypted** when both users have set up encryption; plaintext
   otherwise, shown as such; a peer whose identity is pinned is never downgraded. Static
@@ -312,7 +322,7 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   private keys on central, TOFU pins + safety numbers. Another device of the account gets the identity only
   from that backup (it reports locked; setup never publishes over a backup); a new identity on one device
   locks the others (`E2EE_KEYS_CHANGED`, or at their next bootstrap if they were away). **All crypto lives in native
-  (`native/src/e2ee/`)** — the renderer only ever sees decrypted events with `encrypted` /
+  (`crates/decibell-core/src/e2ee/`)** — the renderer only ever sees decrypted events with `encrypted` /
   `decryptError`, and DM packets go through the ordered crypto worker (never decrypt inside
   `route_packets`: key fetches reply on that same loop). Central stores envelopes opaquely and
   gates the feature with `LoginResponse.e2ee_keys`. Design:

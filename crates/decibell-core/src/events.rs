@@ -1,54 +1,72 @@
-//! EventBus: a single ThreadsafeFunction shared across the entire addon.
+//! Events: the one seam between the core and a client's UI.
 //!
-//! Mirrors Tauri's `app.emit(name, payload)` shape one-for-one so the
-//! renderer-side `listen(name, handler)` shim works unchanged. The
-//! handful of high-volume per-stream channels (encoded video frames)
-//! get their own TSFN registered separately — they don't go through
-//! this bus.
+//! The host installs an [`EventSink`] once ([`install_sink`]) and every core
+//! thread reaches the UI through it, on three channels:
+//!   - [`send`]: a named event with a JSON payload. Mirrors Tauri's
+//!     `app.emit(name, payload)` shape one-for-one: the napi sink wraps it in
+//!     the `{name, payload}` envelope the renderer-side `listen(name,
+//!     handler)` shim reads.
+//!   - [`send_stream_frame`]: encoded video frames, binary, filtered here by
+//!     who is on screen (`STREAM_FRAME_SINKS`); the sink owns the queueing and
+//!     shedding.
+//!   - [`emit_stream_thumbnail_updated`]: per-stream JPEG thumbnails, binary.
+//!
+//! Until a sink is installed (very early startup, unit tests) every emit is a
+//! no-op.
 //!
 //! Event name constants live alongside the helpers so call sites get
 //! one canonical string per event (compile-time typo check).
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use napi::bindgen_prelude::*;
-use napi::threadsafe_function::{
-    ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
-};
-use napi::{JsFunction, JsUnknown};
 use serde::{Deserialize, Serialize};
 
-type Bus = ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal>;
-static BUS: OnceLock<Bus> = OnceLock::new();
-
-/// Convert the JS-side bus callback into a TSFN. Called once from
-/// `init(opts, bus)` — the JS side passes a function `(env) => void`
-/// that broadcasts to every BrowserWindow.
-pub fn install(callback: JsFunction) -> Result<()> {
-    let tsfn: Bus = callback.create_threadsafe_function(
-        0,
-        |ctx: ThreadSafeCallContext<serde_json::Value>| -> Result<Vec<JsUnknown>> {
-            // serde-json feature on napi gives us Env::to_js_value for
-            // any Serialize. Turns the envelope into a real JS object
-            // instead of round-tripping through a JSON string.
-            let v: JsUnknown = ctx.env.to_js_value(&ctx.value)?;
-            Ok(vec![v])
-        },
-    )?;
-    let _ = BUS.set(tsfn);
-    Ok(())
+/// Where events go. Implemented by the host: the Electron addon's napi sink
+/// (three ThreadsafeFunctions). Every method is called from core threads —
+/// tokio workers, network receivers, the voice / video receive threads,
+/// capture and encoder threads — and must not block.
+pub trait EventSink: Send + Sync + 'static {
+    /// A named UI event (one of the constants below). `payload` is the
+    /// serialised payload struct, `Value::Null` for the payload-less ones.
+    fn event(&self, name: &'static str, payload: serde_json::Value);
+    /// A whole, decrypted, encoded frame of a watched stream (or our own
+    /// preview) whose key a UI subscriber wants (`is_stream_frame_sink`,
+    /// already checked). Called on the video receive / encoder threads. The
+    /// sink owns its queueing and shedding, and sets
+    /// [`StreamFrame::discontinuity`] on the next frame for a key it shed one
+    /// of.
+    fn stream_frame(&self, frame: StreamFrame);
+    /// A stream's JPEG thumbnail.
+    fn stream_thumbnail(&self, thumb: StreamThumbnail);
+    /// `key` stopped being a frame sink (`set_stream_frame_sink(key, false)`):
+    /// forget its shedding state — a pending discontinuity is moot once
+    /// nobody displays the stream, the next subscriber starts on a keyframe
+    /// gate anyway. Not called by `clear_stream_frame_sinks`.
+    fn stream_frame_sink_removed(&self, _key: &str) {}
 }
 
-// ── Stream frame bus ──────────────────────────────────────────────
-// Encoded video frames don't go through the JSON bus — at 60 fps with
-// 30 KB frames per watcher that's 1.8 MB/s of base64 + JSON.parse work
-// per stream. This dedicated TSFN carries the raw bytes as Node Buffer
-// (zero-copy view over a Vec) plus a small metadata bag, so the
-// renderer's WebCodecs decoder gets the bitstream directly.
+static SINK: OnceLock<Arc<dyn EventSink>> = OnceLock::new();
 
-/// Owned binary payload that crosses the TSFN boundary. The Buffer
-/// fields wrap Vec<u8> — napi-rs hands the underlying allocation to V8
-/// as a real Uint8Array view (no copy on the way out).
+/// Install the event sink. Once per process (the addon's `init`); a later
+/// call is ignored and returns false, as a second install of the old
+/// ThreadsafeFunctions was.
+pub fn install_sink(sink: Arc<dyn EventSink>) -> bool {
+    SINK.set(sink).is_ok()
+}
+
+fn sink() -> Option<&'static Arc<dyn EventSink>> {
+    SINK.get()
+}
+
+// ── Stream frames ─────────────────────────────────────────────────
+// Encoded video frames don't go through the JSON events — at 60 fps with
+// 30 KB frames per watcher that's 1.8 MB/s of base64 + JSON.parse work
+// per stream. They reach the sink as raw bytes plus a small metadata bag,
+// so the renderer's WebCodecs decoder gets the bitstream directly.
+
+/// Owned binary payload handed to [`EventSink::stream_frame`]. The byte
+/// fields are owned `Vec<u8>`s so a sink can pass the allocation on without
+/// a copy (the napi sink hands it to V8 as a real Uint8Array view).
 pub struct StreamFrame {
     /// The streamer's media key: their uid in decimal (ours for the
     /// self-preview).
@@ -58,157 +76,11 @@ pub struct StreamFrame {
     pub timestamp: i64,
     pub data: Vec<u8>,
     pub description: Option<Vec<u8>>,
-    /// Set by `send_stream_frame` (callers pass `false`): an earlier frame
-    /// for this streamer was shed by the bounded queue, so this one's
+    /// Set by the sink (callers pass `false`): an earlier frame for this
+    /// streamer was shed by the sink's bounded queue, so this one's
     /// reference chain is broken. The renderer gates deltas on the next
     /// keyframe and asks the streamer for one.
     pub discontinuity: bool,
-}
-
-type StreamBus = ThreadsafeFunction<StreamFrame, ErrorStrategy::Fatal>;
-static STREAM_BUS: OnceLock<StreamBus> = OnceLock::new();
-
-/// Frames handed to the stream TSFN that JS hasn't picked up yet. We
-/// reserve a slot here BEFORE calling the TSFN and refuse the call when
-/// all are taken, instead of letting napi report QueueFull: napi-rs 2
-/// boxes the value with `Box::into_raw` before `napi_call_threadsafe_function`
-/// and never reclaims it on failure, so every QueueFull drop leaked the
-/// whole encoded frame. With the cap mirrored here the napi queue can't
-/// overflow and a drop is ours to account for (the frame is freed).
-const STREAM_QUEUE_CAP: usize = 8;
-static STREAM_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn reserve_stream_slot() -> bool {
-    use std::sync::atomic::Ordering;
-    let mut n = STREAM_IN_FLIGHT.load(Ordering::Acquire);
-    loop {
-        if n >= STREAM_QUEUE_CAP {
-            return false;
-        }
-        match STREAM_IN_FLIGHT.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return true,
-            Err(cur) => n = cur,
-        }
-    }
-}
-
-fn release_stream_slot() {
-    use std::sync::atomic::Ordering;
-    // Saturating: a slot is only ever released once per reservation, but
-    // never let a logic slip wrap the counter and wedge every later frame.
-    let mut n = STREAM_IN_FLIGHT.load(Ordering::Acquire);
-    while n > 0 {
-        match STREAM_IN_FLIGHT.compare_exchange_weak(n, n - 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return,
-            Err(cur) => n = cur,
-        }
-    }
-}
-
-/// Install the stream-frame bus. Called from `init(...)` alongside the
-/// main bus install. The JS callback receives a single object:
-/// `{ key, codec, keyframe, timestamp, data: Uint8Array,
-///    description: Uint8Array | null, discontinuity: boolean }`.
-pub fn install_stream_bus(callback: JsFunction) -> Result<()> {
-    // Bounded queue. With the previous unbounded queue (0), NonBlocking
-    // could never report saturation, and a busy renderer buffered encoded
-    // frames in main-process memory without limit, turning a stall into
-    // permanent added stream latency. 8 frames ≈ 130ms at 60fps: enough to
-    // ride out a GC pause, small enough that a real stall sheds frames and
-    // stays live. A shed frame breaks the decoder's reference chain, so the
-    // next frame queued for that streamer carries `discontinuity: true`
-    // (see send_stream_frame) — the player then gates deltas on a keyframe
-    // and requests one instead of smearing until the next natural IDR.
-    let tsfn: StreamBus = callback.create_threadsafe_function(
-        STREAM_QUEUE_CAP,
-        |ctx: ThreadSafeCallContext<StreamFrame>| -> Result<Vec<JsUnknown>> {
-            // Popped off the napi queue — free the slot first so an error
-            // below can't strand it.
-            release_stream_slot();
-            let env = &ctx.env;
-            let mut obj = env.create_object()?;
-            obj.set_named_property("key", env.create_string(&ctx.value.key)?)?;
-            obj.set_named_property("codec", env.create_uint32(ctx.value.codec as u32)?)?;
-            obj.set_named_property("keyframe", env.get_boolean(ctx.value.keyframe)?)?;
-            obj.set_named_property("timestamp", env.create_int64(ctx.value.timestamp)?)?;
-            obj.set_named_property(
-                "discontinuity",
-                env.get_boolean(ctx.value.discontinuity)?,
-            )?;
-            // Buffer::with_data hands V8 the Vec's backing allocation
-            // directly — no copy.
-            let data_buf = env.create_buffer_with_data(ctx.value.data)?;
-            obj.set_named_property("data", data_buf.into_raw())?;
-            match ctx.value.description {
-                Some(d) => {
-                    let desc_buf = env.create_buffer_with_data(d)?;
-                    obj.set_named_property("description", desc_buf.into_raw())?;
-                }
-                None => {
-                    obj.set_named_property("description", env.get_null()?)?;
-                }
-            }
-            Ok(vec![obj.into_unknown()])
-        },
-    )?;
-    let _ = STREAM_BUS.set(tsfn);
-    Ok(())
-}
-
-/// Frames discarded because the JS-side TSFN queue was saturated (a
-/// busy/stalled renderer). Voice counts its drops; without this, video
-/// drops were invisible and "stream stutters" had no diagnosable trail.
-static STREAM_FRAME_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Not yet surfaced in the stats event — kept for the wiring when
-/// voice_connection_stats grows a video section.
-#[allow(dead_code)]
-pub fn stream_frame_drop_count() -> u64 {
-    STREAM_FRAME_DROPS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-fn note_stream_frame_drop() {
-    let n = STREAM_FRAME_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    // First drop and every 100th after — visible in logs without
-    // becoming its own hot path during a sustained renderer stall.
-    if n == 1 || n % 100 == 0 {
-        log::warn!("stream frame bus saturated — {} frames dropped so far", n);
-    }
-}
-
-// ── Discontinuity marks ──
-// Usernames that lost a frame to the bounded queue and whose next queued
-// frame must carry `discontinuity: true`. The AtomicBool is a lock-free
-// "set is non-empty" fast path so the common case never touches the mutex.
-// Per streamer key there is a single producer thread (the voice event bridge
-// for remote streams, the encoder thread for our own), so mark → take for
-// one name always happens in program order on one thread.
-static DISCONTINUITY_ANY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn discontinuity_set() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static SET: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
-    SET.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-}
-
-fn mark_discontinuity(username: &str) {
-    let mut set = discontinuity_set().lock().unwrap_or_else(|e| e.into_inner());
-    if !set.contains(username) {
-        set.insert(username.to_string());
-    }
-    DISCONTINUITY_ANY.store(true, std::sync::atomic::Ordering::Release);
-}
-
-/// Remove `username`'s mark, returning whether it was marked.
-fn take_discontinuity(username: &str) -> bool {
-    if !DISCONTINUITY_ANY.load(std::sync::atomic::Ordering::Acquire) {
-        return false;
-    }
-    let mut set = discontinuity_set().lock().unwrap_or_else(|e| e.into_inner());
-    let was = set.remove(username);
-    if set.is_empty() {
-        DISCONTINUITY_ANY.store(false, std::sync::atomic::Ordering::Release);
-    }
-    was
 }
 
 // ── Stream frame sinks ──
@@ -247,9 +119,11 @@ pub fn set_stream_frame_sink(username: &str, enabled: bool) {
         next.insert(username.to_string());
     } else {
         next.remove(username);
-        // A pending mark is moot once nobody displays the stream — the
-        // next subscriber starts on a keyframe gate anyway.
-        let _ = take_discontinuity(username);
+        // A pending discontinuity mark is moot once nobody displays the
+        // stream — the next subscriber starts on a keyframe gate anyway.
+        if let Some(sink) = sink() {
+            sink.stream_frame_sink_removed(username);
+        }
     }
     sinks.store(std::sync::Arc::new(next));
 }
@@ -259,20 +133,19 @@ pub fn clear_stream_frame_sinks() {
     stream_frame_sinks().store(std::sync::Arc::new(std::collections::HashSet::new()));
 }
 
-/// Push an encoded video frame to JS. Safe from any thread.
-/// Drops silently if the stream bus hasn't been installed yet (the
-/// renderer's video receive thread starts before the bus is installed
-/// during init() in rare ordering — fine, no frames are flowing yet), or
-/// if no renderer subscriber wants this username's frames (see
-/// STREAM_FRAME_SINKS).
-pub fn send_stream_frame(mut frame: StreamFrame) {
-    let Some(bus) = STREAM_BUS.get() else {
+/// Push an encoded video frame to the UI. Safe from any thread.
+/// Drops silently if no event sink is installed yet (the renderer's video
+/// receive thread starts before `init` installs it in rare ordering — fine,
+/// no frames are flowing yet), or if no renderer subscriber wants this
+/// username's frames (see STREAM_FRAME_SINKS).
+pub fn send_stream_frame(frame: StreamFrame) {
+    let Some(sink) = sink() else {
         return;
     };
     if !is_stream_frame_sink(&frame.key) {
         return;
     }
-    // The `stream-dump` feature: DECIBELL_STREAM_DUMP records the stream as it arrived (before any shedding below).
+    // The `stream-dump` feature: DECIBELL_STREAM_DUMP records the stream as it arrived (before the sink's shedding).
     #[cfg(feature = "stream-dump")]
     crate::media::stream_dump::record(
         &frame.key,
@@ -281,33 +154,7 @@ pub fn send_stream_frame(mut frame: StreamFrame) {
         &frame.data,
         frame.description.as_deref(),
     );
-    if !reserve_stream_slot() {
-        // Queue full (busy/stalled renderer): shed this frame — it is freed
-        // here — and flag the streamer so its next queued frame tells the
-        // player the reference chain broke.
-        mark_discontinuity(&frame.key);
-        note_stream_frame_drop();
-        return;
-    }
-    // Unmark before the call; if the call itself fails, re-mark so the
-    // flag rides the next frame instead. The name is only cloned on this
-    // (rare) path.
-    let remark = if take_discontinuity(&frame.key) {
-        frame.discontinuity = true;
-        Some(frame.key.clone())
-    } else {
-        None
-    };
-    let status = bus.call(frame, ThreadsafeFunctionCallMode::NonBlocking);
-    if status != napi::Status::Ok {
-        // Only reachable while the TSFN is closing (shutdown) — the slot
-        // reservation above keeps the napi queue from ever filling.
-        release_stream_slot();
-        if let Some(name) = remark {
-            mark_discontinuity(&name);
-        }
-        note_stream_frame_drop();
-    }
+    sink.stream_frame(frame);
 }
 
 // ── Mic input level gate ──
@@ -325,64 +172,36 @@ pub fn set_input_level_reporting(enabled: bool) {
     INPUT_LEVEL_REPORTING.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
-// ── Stream thumbnail bus ──────────────────────────────────────────
+// ── Stream thumbnails ─────────────────────────────────────────────
 // Per-stream JPEG thumbnails (one every few seconds per active stream
 // the user isn't watching) used to ride the JSON bus base64-encoded as
 // a `data:image/jpeg;base64,…` URL. That cost ~33% inflation on every
 // payload and forced two encode/decode passes per thumbnail (Rust
-// base64 encode + Chromium image decode). This dedicated TSFN ships
-// the raw bytes as a Node Buffer so the renderer can wrap them in a
-// blob: URL with no transcoding.
+// base64 encode + Chromium image decode). They reach the sink as raw
+// bytes now (the napi sink: a Node Buffer on a dedicated TSFN) so the
+// renderer can wrap them in a blob: URL with no transcoding.
 
+/// Owned binary payload handed to [`EventSink::stream_thumbnail`].
 pub struct StreamThumbnail {
     pub owner_username: String,
     pub owner_uid: i64,
     pub data: Vec<u8>,
 }
 
-type StreamThumbnailBus = ThreadsafeFunction<StreamThumbnail, ErrorStrategy::Fatal>;
-static STREAM_THUMBNAIL_BUS: OnceLock<StreamThumbnailBus> = OnceLock::new();
-
-pub fn install_stream_thumbnail_bus(callback: JsFunction) -> Result<()> {
-    let tsfn: StreamThumbnailBus = callback.create_threadsafe_function(
-        0,
-        |ctx: ThreadSafeCallContext<StreamThumbnail>| -> Result<Vec<JsUnknown>> {
-            let env = &ctx.env;
-            let mut obj = env.create_object()?;
-            obj.set_named_property(
-                "ownerUsername",
-                env.create_string(&ctx.value.owner_username)?,
-            )?;
-            // f64: a uid fits exactly, and the renderer gets a number, not
-            // a BigInt.
-            obj.set_named_property("ownerUid", env.create_double(ctx.value.owner_uid as f64)?)?;
-            // Buffer::with_data hands V8 the Vec's backing allocation
-            // directly — no copy on the way out.
-            let data_buf = env.create_buffer_with_data(ctx.value.data)?;
-            obj.set_named_property("data", data_buf.into_raw())?;
-            Ok(vec![obj.into_unknown()])
-        },
-    )?;
-    let _ = STREAM_THUMBNAIL_BUS.set(tsfn);
-    Ok(())
-}
-
 /// Send an event. Safe to call from any thread (including std::thread
-/// workers — capture, encode, network receivers). NonBlocking: if the
-/// renderer-side queue saturates the call is dropped silently. For the
-/// ~30 named events this is fine; encoded-video frames bypass this bus
-/// entirely.
+/// workers — capture, encode, network receivers). Never blocks: the sink
+/// drops what it can't queue (the napi sink: NonBlocking). For the named
+/// events this is fine; encoded-video frames bypass it entirely.
 pub fn send<P: Serialize>(name: &'static str, payload: P) {
-    let Some(bus) = BUS.get() else {
-        // init(opts, bus) hasn't run yet — happens during very early
-        // startup. Drop the event silently.
+    let Some(sink) = sink() else {
+        // No sink yet (very early startup, before init; unit tests). Drop
+        // the event silently.
         return;
     };
-    let value = serde_json::json!({
-        "name": name,
-        "payload": serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
-    });
-    bus.call(value, ThreadsafeFunctionCallMode::NonBlocking);
+    sink.event(
+        name,
+        serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
+    );
 }
 
 // ── Event name constants ──────────────────────────────────────────
@@ -447,13 +266,13 @@ pub const VOICE_PING_UPDATED: &str = "voice_ping_updated";
 pub const VOICE_CONNECTION_STATS: &str = "voice_connection_stats";
 pub const VOICE_ERROR: &str = "voice_error";
 pub const STREAM_PRESENCE_UPDATED: &str = "stream_presence_updated";
-// stream_thumbnail_updated removed — thumbnails ride the dedicated
-// binary STREAM_THUMBNAIL_BUS now (see install_stream_thumbnail_bus).
+// stream_thumbnail_updated removed — thumbnails ride the sink's
+// binary channel now (see EventSink::stream_thumbnail).
 pub const STREAM_CODEC_CHANGED: &str = "stream_codec_changed";
 pub const STREAM_GPU_FALLBACK: &str = "stream_gpu_fallback";
 pub const STREAM_CAPTURE_ENDED: &str = "stream_capture_ended";
-// stream_frame removed — encoded frames ride the binary STREAM_BUS
-// TSFN now (see install_stream_bus / send_stream_frame).
+// stream_frame removed — encoded frames ride the sink's binary
+// channel now (see EventSink::stream_frame / send_stream_frame).
 pub const CAPS_REFRESHED: &str = "caps_refreshed";
 pub const DM_CONVERSATIONS_RECEIVED: &str = "dm_conversations_received";
 pub const DM_HISTORY_RECEIVED: &str = "dm_history_received";
@@ -1766,7 +1585,7 @@ pub struct StreamGpuFallbackPayload {
 
 // StreamFramePayload + emit_stream_frame removed — PR7c's promise
 // landed: encoded video frames now ride the dedicated binary
-// STREAM_BUS TSFN above (see install_stream_bus / send_stream_frame),
+// stream-frame channel above (see EventSink::stream_frame / send_stream_frame),
 // which carries raw Buffer payloads with no base64 wrapping and no
 // JSON serialise. The legacy String-shaped payload here had no
 // remaining callers.
@@ -1786,21 +1605,18 @@ pub fn emit_stream_presence_updated(
     );
 }
 
-/// Push a JPEG thumbnail to JS. Bytes ride the dedicated binary TSFN —
+/// Push a JPEG thumbnail to the UI. Bytes ride the sink's binary channel —
 /// no base64 encode, no JSON serialise, no data: URL wrapping. The
 /// renderer turns them into a blob: URL via `URL.createObjectURL`.
 pub fn emit_stream_thumbnail_updated(owner_username: String, owner_uid: i64, thumbnail_data: Vec<u8>) {
-    let Some(bus) = STREAM_THUMBNAIL_BUS.get() else {
+    let Some(sink) = sink() else {
         return;
     };
-    bus.call(
-        StreamThumbnail {
-            owner_username,
-            owner_uid,
-            data: thumbnail_data,
-        },
-        ThreadsafeFunctionCallMode::NonBlocking,
-    );
+    sink.stream_thumbnail(StreamThumbnail {
+        owner_username,
+        owner_uid,
+        data: thumbnail_data,
+    });
 }
 
 pub fn emit_stream_codec_changed(payload: StreamCodecChangedPayload) {

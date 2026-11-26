@@ -1,18 +1,20 @@
 name: Windows Native Check
 
 # Compile-checks the cfg(target_os = "windows") half of the native
-# addon, which the Linux dev box can't build (`cargo test --lib` only
-# covers the host cfg). Runs on pushes touching native/ so a Windows
-# compile break surfaces before the next `ev*` release tag, and the
-# full compiler output is uploaded as an artifact — run logs need
-# admin-scoped tokens to download, artifacts don't.
+# addon (electron-client/native + the crates/decibell-core it builds on),
+# which the Linux dev box can't build (`cargo test --lib` only covers the
+# host cfg). Runs on pushes touching either so a Windows compile break
+# surfaces before the next `ev*` release tag, and the full compiler
+# output is uploaded as an artifact — run logs need admin-scoped tokens
+# to download, artifacts don't.
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, gpui-client]
     paths:
       - "electron-client/native/**"
+      - "crates/**"
       - "proto/messages.proto"
       - ".github/workflows/win-native-check.yml"
 
@@ -74,9 +76,20 @@ jobs:
           # cmake_minimum_required(VERSION 3.1); CMake 4.x on the runner
           # refuses that without this shim (same as electron-release.yml).
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        # Two checks, one log. The addon: `--all-targets` reaches only its
+        # own package, so decibell-core (a path dependency) is checked
+        # there as a plain lib. Then decibell-core on its own, tests
+        # included (its cfg(windows) test code lives there now), against
+        # its own Cargo.lock but the addon's target dir, so the
+        # dependencies built by the first check are reused.
         run: |
           set -o pipefail
-          cargo check --locked --all-targets 2>&1 | tee cargo-check.log
+          status=0
+          cargo check --locked --all-targets 2>&1 | tee cargo-check.log || status=1
+          ( cd ../../crates/decibell-core \
+            && CARGO_TARGET_DIR=../../electron-client/native/target cargo check --locked --all-targets ) \
+            2>&1 | tee -a cargo-check.log || status=1
+          exit $status
 
       - name: Upload compiler output
         if: always()

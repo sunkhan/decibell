@@ -1,0 +1,16 @@
+# Same as electron-client/native/.cargo/config.toml, for cargo run from this
+# directory (`cargo test --lib` here): point pkg-config at the addon's
+# statically-built FFmpeg (electron-client/native/scripts/build-ffmpeg-
+# linux.sh → electron-client/native/vendor/ffmpeg) so ffmpeg-sys-next's
+# probe resolves OUR static libav* (the `static` feature on ffmpeg-next)
+# instead of the system shared libs. See the ffmpeg-next comment in
+# Cargo.toml and docs/superpowers/specs/2026-05-15-linux-native-ffmpeg-
+# encoder-design.md.
+#
+# Cargo reads config from the directory it runs in, not per package: a build
+# of the addon from electron-client/native uses that directory's config, not
+# this one. `relative = true` resolves against this file's package dir
+# (crates/decibell-core/), so the path holds regardless of cwd below it.
+# Harmless on Windows (vcpkg, not pkg-config) and macOS (no FFmpeg dep).
+[env]
+PKG_CONFIG_PATH = { value = "../../electron-client/native/vendor/ffmpeg/lib/pkgconfig", relative = true }
