@@ -1,0 +1,37 @@
+[package]
+name = "decibell-voice"
+description = "The voice view: the stage of participant and stream tiles, watching streams (focus, fullscreen, the mini-player), Go Live, per-user controls, connection stats, the incoming call and the call stage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# The deterministic fixtures the screens are drawn from (hand-built core events through the
+# model's router), their JSON export for the Electron captures, and the screens themselves.
+fixtures = ["dep:serde_json", "dep:base64", "decibell-shell/fixtures"]
+
+[[bin]]
+name = "decibell-voice-fixture"
+path = "src/bin/voice-fixture.rs"
+required-features = ["fixtures"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-shell.workspace = true
+decibell-video.workspace = true
+# The core's API (stream volume, keyframe requests) and its event payloads (the fixtures).
+# zbus on async-io, as every crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

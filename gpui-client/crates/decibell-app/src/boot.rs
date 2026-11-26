@@ -64,6 +64,9 @@ pub fn run(args: Args) -> ExitCode {
     // Before the first window: the renderer's GPU device is then created able to decode video
     // (two idle queues; nothing else exists until a stream is displayed).
     decibell_video::VideoDevice::install();
+    // The core's received frames come in pooled buffers sized for the hub (docs/video-design.md
+    // §0.10); before the first stream is watched.
+    decibell_video::enable_frame_pool();
 
     let exit_code = Arc::new(AtomicU8::new(0));
     gpui_platform::application().with_assets(Assets).run({

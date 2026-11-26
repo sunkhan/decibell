@@ -6,10 +6,11 @@
 //! a subscriber for the sound / attention cues (silent until the audio layer exists), and in
 //! development builds (`dev-local`) `--login` and the perf control pipe.
 //!
+//! The video crate's glue (frames, keyframes, frame sinks, decode caps) is [`crate::video`]; the
+//! native encoder probe runs when Go Live first opens or the first voice session starts
+//! (`decibell_voice::codecs::ensure_caps`), never at start.
+//!
 //! Named TODOs for the features that own them:
-//! - TODO(voice/video): `actions::voice::init_codec_caps` after the video crate's decode probe is
-//!   installed (`codecs.set_decoder_probe`); not run here, because the native encoder probe it
-//!   starts opens a GPU encode session at every start.
 //! - TODO(audio): play `Cue::Play` / ring on `Cue::StartRing` (assets/sounds), flash on `Cue::Flash`.
 //! - TODO(hotkeys): window key events → `hotkeys.key`, blur → `window_blurred` (M3.2).
 //! - TODO(devices): audio hot-plug → `devices.hotplug`.
@@ -74,6 +75,7 @@ pub fn start_core(model: &Model, cx: &mut App) {
     // answers "unsupported" on X11, where the app is to supply its own).
     let source = Rc::new(decibell_model::actions::presence::CoreIdleSource);
     model.live.presence.auto_away.update(cx, |a, cx| a.set_source(source, cx));
+    crate::video::install(model, cx);
     Model::start_core(
         cx,
         CoreOptions {

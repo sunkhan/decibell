@@ -1,0 +1,2 @@
+<!-- MiniStreamPlayer.tsx's resize grip, rotated 270° (`HANDLE[corner].rot`): one file per corner, GPUI can't rotate a box -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><g transform="rotate(270 8 8)"><path d="M14 6 L6 14 M14 11 L11 14"/></g></svg>

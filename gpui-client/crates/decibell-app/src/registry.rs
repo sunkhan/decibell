@@ -16,6 +16,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_video::screens());
     screens.extend(decibell_shell::screens());
     screens.extend(decibell_chat::screens());
+    screens.extend(decibell_voice::screens());
     screens
 }
 
@@ -27,6 +28,7 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_video::selftests());
     tests.extend(decibell_shell::selftests());
     tests.extend(decibell_chat::selftests());
+    tests.extend(decibell_voice::selftests());
     tests
 }
 
@@ -35,12 +37,15 @@ pub fn selftests() -> Vec<SelfTest> {
 /// the window opens (app and screens alike).
 pub fn init_features(cx: &mut gpui::App) {
     decibell_chat::init(cx);
+    decibell_voice::init(cx);
 }
 
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the
 /// app that way in a child process, with its own profile).
 pub fn checks() -> Vec<SelfTest> {
-    decibell_shell::checks()
+    let mut checks = decibell_shell::checks();
+    checks.extend(decibell_voice::checks());
+    checks
 }
 
 pub fn screen(name: &str) -> Result<Screen> {

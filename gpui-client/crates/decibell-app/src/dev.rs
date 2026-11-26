@@ -7,7 +7,10 @@
 //! - Markers on stdout for scripts (`tools/perf/clients/gpui.sh`): `decibell: signed-in <name>`,
 //!   `decibell: connected <community>`, `decibell: control <command> ok`.
 //! - `DECIBELL_DEV_CONTROL=<fifo>`: one command per line — `home`, `channel <community>\t<channel>`,
-//!   `minimize`, `quit` — read by a thread blocked on the pipe (no wakeups while nothing comes).
+//!   `minimize`, `quit`, and for the voice measurements (`tools/perf` watch scenarios): `unlock
+//!   <passphrase>` (the E2EE keys, as the passphrase dialog would), `voice <community>\t<channel>`
+//!   (muted and deafened first, then the sidebar's join), `watch <uid>` (focus a stream: watch it
+//!   large), `leave` — read by a thread blocked on the pipe (no wakeups while nothing comes).
 
 use std::collections::HashSet;
 use std::io::BufRead as _;
@@ -160,6 +163,73 @@ fn run_command(command: &str, window: AnyWindowHandle, cx: &mut App) -> bool {
             true
         }
         "minimize" => window.update(cx, |_, window, _| window.minimize_window()).is_ok(),
+        "unlock" => {
+            use decibell_model::live::e2ee::{E2eeStatus, PassphraseMode};
+            let status = model.live.e2ee.read(cx).status;
+            let mode = match status {
+                E2eeStatus::Ready => return true,
+                E2eeStatus::Locked => PassphraseMode::Unlock,
+                E2eeStatus::NotSetUp => PassphraseMode::Setup,
+                E2eeStatus::Unavailable => return false,
+            };
+            model.live.e2ee.update(cx, |e, cx| e.open(mode, cx));
+            actions::e2ee::submit_passphrase(rest.to_string(), rest.to_string(), cx);
+            true
+        }
+        "voice" => {
+            let (server_name, channel_name) = rest.split_once('\t').unwrap_or((rest, "Lounge"));
+            let Some(server) = model.servers.read(cx).servers().iter().find(|s| &*s.name == server_name).map(|s| s.id) else {
+                return false;
+            };
+            let Some(community) = model.community(server, cx) else { return false };
+            let channel = community.channels.read(cx).list().iter().find(|c| &*c.name == channel_name).map(|c| c.id.clone());
+            let Some(channel): Option<ChannelId> = channel else { return false };
+            // Nothing is captured or played: muted and deafened before the engine starts.
+            actions::voice::set_mute(true, cx);
+            actions::voice::set_deafen(true, cx);
+            actions::servers::open_server(server, cx);
+            actions::voice::click_voice_channel(server, channel, cx);
+            true
+        }
+        "watch" => match rest.trim().parse::<decibell_model::Uid>() {
+            Ok(uid) => {
+                actions::voice::focus_stream(uid, cx);
+                true
+            }
+            Err(_) => false,
+        },
+        "leave" => {
+            actions::voice::leave_voice_channel(cx);
+            true
+        }
+        // One line `decibell: video-stats <uid> <json>`: the hub's counters of a watched stream
+        // (received / decoded / presented / dropped …), for the watch scenarios' rates.
+        "video-stats" => match rest.trim().parse::<decibell_model::Uid>() {
+            Ok(uid) => {
+                let s = decibell_video::VideoHub::global(cx).stream(&uid.to_string()).stats();
+                println!(
+                    "decibell: video-stats {uid} {}",
+                    serde_json::json!({
+                        "codec": s.codec.map(|c| c.label()),
+                        "path": s.path.map(|p| p.label()),
+                        "width": s.width,
+                        "height": s.height,
+                        "received": s.received,
+                        "decoded": s.decoded,
+                        "published": s.published,
+                        "presented": s.presented,
+                        "replaced": s.replaced,
+                        "dropped": s.dropped,
+                        "errors": s.errors,
+                        "keyframeRequests": s.keyframe_requests,
+                        "queue": s.queue,
+                        "monotonicMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+                    })
+                );
+                true
+            }
+            Err(_) => false,
+        },
         "quit" => {
             cx.quit();
             true

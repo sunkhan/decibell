@@ -352,3 +352,38 @@ overrides). The Electron client formats by its UI language instead (`docs/electr
    callback after a present (the compositor's frame callback on Wayland).
 10. Monospace faces of one family share every metric GPUI exposes; only their outlines tell the weights
     apart (the font tests rasterise an `m`).
+
+## Voice (`decibell-voice`)
+
+The voice view, streams, Go Live, the voice menus and DM calls (`crates/decibell-voice/src/lib.rs` maps the files).
+What it registers: `Slot::Voice` (the stage), `Slot::DmCallStage` (the call stage the DM pane shows above its message
+list during a call with that conversation's peer), five overlays (mini-player, Go Live, the user context menu, the user
+panel's popovers, the incoming call) and the user panel's voice controls (`register_user_panel_action`).
+
+- **Layout in observers, never in `render`.** The stage and the filmstrip recompute their layout (`layout.rs`: the
+  renderer's `fitGrid` / `gridCapacity` / "+N more" / hidden-speaker swap, unit-tested) when a store they show changes
+  or their measured size moves, push each tile its data (a tile notifies only when its data changed) and notify
+  themselves only when their own layout moved. A tile subscribes to its own keyed events (speaking for its uid, its
+  person, its stream's poster and first picture).
+- **GPUI re-renders nested cached views with their parent** (`prepaint_view` sets `window.refreshing` while a dirty
+  cached view renders): a tile's notify marks the stage dirty, and the stage's render re-renders every tile. Frames are
+  still one per change; keep the stage's and the tiles' `render` cheap (no layout maths, no allocation beyond the
+  elements).
+- **Video**: a view that shows a stream holds a `decibell_video::Viewer` (`players::viewer(uid, cx)`) and paints
+  `VideoView`; the hub decodes a stream while any viewer of it exists (one decoder for any number of views) and the
+  core delivers its frames only then (the app's `HubCallbacks::interest`). `players::Players` holds the loaded stream's
+  viewer (`watching.pip`, the renderer's persistent player) so moving between the stage, the focused view and the
+  mini-player never restarts the decoder; create the new viewer before dropping the old one. The spinner shows until
+  `video_events::StreamStates` has the stream's first picture.
+- **Timers with a live reason only**: the focused view's overlay hide (2.5 s, while shown), the stats overlay's 500 ms
+  refresh (while open), the stream-audio picker's 2 s app list (while shown, the renderer's poll), the hidden-speaker
+  swap (while a hidden speaker waits), the call's 1 s duration (while live and shown), the incoming card's "answered
+  elsewhere" 3 s. The ringing outline breathes by re-presenting a retained sprite (`TimedTransformation`, ≤ 30 fps),
+  never by re-rendering; the mini-player's drag, spring and entrance request frames only while they move.
+- **The native encoder probe never runs at start**: `codecs::ensure_caps` (Go Live's first open, the first voice
+  session) runs the model's `init_codec_caps` and reads the core's cached probe (`cached_native_encoders`: backend, label,
+  a software encoder's pixel-rate ceiling) into `codecs::Encoders`; presets past that ceiling are greyed.
+- **Self-tests** (`selftests.rs`) run the app as `perf3` and a `decibell-headless` peer as `perf4` (both have E2EE keys;
+  passphrase `decibell-m3-test-passphrase`), everyone muted and deafened before joining. The headless `stream-file`
+  step and `tools/perf/streambot.sh` stream `.dbv` recordings into a channel through the real path.
+  `DECIBELL_VOICE_TRACE=1` logs every render of the voice views (which view drew a frame).

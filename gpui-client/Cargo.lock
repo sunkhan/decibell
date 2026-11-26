@@ -1744,6 +1744,7 @@ dependencies = [
  "decibell-theme",
  "decibell-ui",
  "decibell-video",
+ "decibell-voice",
  "futures",
  "gpui",
  "gpui_platform",
@@ -2044,6 +2045,26 @@ dependencies = [
  "log",
  "parking_lot",
  "pkg-config",
+]
+
+[[package]]
+name = "decibell-voice"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "decibell-common",
+ "decibell-core",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-shell",
+ "decibell-theme",
+ "decibell-ui",
+ "decibell-video",
+ "futures",
+ "gpui",
+ "log",
+ "serde_json",
 ]
 
 [[package]]

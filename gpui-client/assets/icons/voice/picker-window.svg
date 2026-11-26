@@ -1,0 +1,2 @@
+<!-- CaptureSourcePicker.tsx's SystemPickerArt, the window's outline, title bar and dots (accent) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 -6 56 56" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="22" y="12" width="33" height="23" rx="3.5"/><path d="M22 18h33"/><circle cx="26" cy="15" r="1" fill="currentColor" stroke="none"/><circle cx="29.5" cy="15" r="1" fill="currentColor" stroke="none"/></svg>

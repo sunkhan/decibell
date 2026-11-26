@@ -1,0 +1,853 @@
+//! The voice feature's self-tests, against the local test stack (`tools/dev/README.md`) as
+//! `perf3`, with a `decibell-headless` peer as `perf4` (both have E2EE keys: MLS voice needs
+//! them; passphrase `decibell-m3-test-passphrase`).
+//!
+//! Each `voice-*` / `call-*` test starts the app again in a child process (`decibell --check <name>
+//! --login perf3`, its own temporary profile, `DECIBELL_TEST_PROBES=1`), as the shell's do, and the
+//! check inside it starts the headless peer when it needs one. They refuse unless `DECIBELL_CENTRAL`
+//! is loopback, skip (saying so) when the stack is down, the binary has no `--login` (`dev-local`)
+//! or `decibell-headless` isn't built next to it.
+//!
+//! **Nothing plays or captures sound**: the app is muted and deafened before it joins (the engine
+//! keeps the state for the session), the peer joins muted and deafened, the streamer sends video
+//! only, and the app has no sound layer yet. Every process the checks start is killed when the
+//! check ends, pass or fail.
+
+use std::io::BufRead as _;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context as _, Result, bail, ensure};
+use decibell_harness::{Frames, SelfTest, TestCx};
+use decibell_model::live::calls::CallStatus;
+use decibell_model::live::e2ee::{E2eeStatus, PassphraseMode};
+use decibell_model::live::voice::session::VoiceE2eePhase;
+use decibell_model::stores::navigation::ActiveView;
+use decibell_model::{Model, ServerId, Uid, actions};
+use decibell_shell::probes;
+use gpui::{App, Bounds, Pixels, point};
+
+const ACCOUNT: &str = "perf3";
+const PEER: &str = "perf4";
+const PASSPHRASE: &str = "decibell-m3-test-passphrase";
+const COMMUNITY: &str = "Daily Gaming";
+/// The stack's voice channels of Daily Gaming (ids as seeded: `tools/dev/seed.py`).
+const LOUNGE: &str = "voice-lounge";
+const SQUAD: &str = "voice-lounge-2";
+
+// ── the parents ─────────────────────────────────────────────────────────────────────────
+
+const TESTS: &[(&str, &str)] = &[
+    ("voice-join", "join Lounge from the sidebar: our tile; a headless peer joins and leaves; frames only on those changes"),
+    ("voice-speaking-idle", "in Lounge with a quiet peer: 0 frames drawn over 10 s (unfocused, then focused)"),
+    ("voice-mute", "the dock's mute / deafen reach the model and the peer"),
+    ("voice-watch", "a headless peer streams a .dbv recording: watched through the whole path at its rate, 0 dropped; mini-player; stop frees the decoder"),
+    ("voice-golive-dialog", "the Go Live dialog opens, presets switch, software-only caps grey presets out (no capture)"),
+    ("call-ring", "perf4 calls: the card rings, decline; again, answer, the call stage connects (P2P over loopback), hang up"),
+    ("voice-switch", "switching voice channels shows us in the new one at once"),
+];
+
+fn about(name: &str) -> &'static str {
+    TESTS.iter().find(|(n, _)| *n == name).map(|(_, a)| *a).unwrap_or("")
+}
+
+pub fn selftests() -> Vec<SelfTest> {
+    vec![
+        SelfTest { name: "voice-join", about: about("voice-join"), run: |cx| Box::pin(parent(cx, "voice-join")) },
+        SelfTest { name: "voice-speaking-idle", about: about("voice-speaking-idle"), run: |cx| Box::pin(parent(cx, "voice-speaking-idle")) },
+        SelfTest { name: "voice-mute", about: about("voice-mute"), run: |cx| Box::pin(parent(cx, "voice-mute")) },
+        SelfTest { name: "voice-watch", about: about("voice-watch"), run: |cx| Box::pin(parent(cx, "voice-watch")) },
+        SelfTest { name: "voice-golive-dialog", about: about("voice-golive-dialog"), run: |cx| Box::pin(parent(cx, "voice-golive-dialog")) },
+        SelfTest { name: "call-ring", about: about("call-ring"), run: |cx| Box::pin(parent(cx, "call-ring")) },
+        SelfTest { name: "voice-switch", about: about("voice-switch"), run: |cx| Box::pin(parent(cx, "voice-switch")) },
+    ]
+}
+
+/// The stack as `accounts.json` describes it.
+struct Stack {
+    central: String,
+    password: String,
+}
+
+fn dev_dir() -> PathBuf {
+    std::env::var_os("DECIBELL_DEV_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/decibell-dev"))
+}
+
+fn json_str(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let at = text.find(&needle)? + needle.len();
+    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+fn stack() -> Result<Option<Stack>> {
+    let path = dev_dir().join("run/accounts.json");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(None) };
+    let central = std::env::var("DECIBELL_CENTRAL").ok().or_else(|| json_str(&text, "central")).context("no central address")?;
+    let password = json_str(&text, "password").context("accounts.json has no password")?;
+    let host = central.rsplit_once(':').map_or(central.as_str(), |(h, _)| h);
+    let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    ensure!(loopback, "DECIBELL_CENTRAL={central} is not loopback: the voice tests run against the local stack only");
+    let reachable = central
+        .parse::<std::net::SocketAddr>()
+        .ok()
+        .is_some_and(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok());
+    Ok(reachable.then_some(Stack { central, password }))
+}
+
+/// A temporary profile, removed when dropped.
+struct Profile(PathBuf);
+
+impl Profile {
+    fn new(name: &str) -> Result<Profile> {
+        let dir = std::env::temp_dir().join(format!("decibell-{name}-{}-{}", std::process::id(), rand_tag()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(Profile(dir))
+    }
+}
+
+impl Drop for Profile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn rand_tag() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0)
+}
+
+/// `decibell-headless` next to this binary.
+fn headless_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let candidate = exe.parent()?.join("decibell-headless");
+    candidate.exists().then_some(candidate)
+}
+
+async fn parent(cx: TestCx, name: &'static str) -> Result<()> {
+    let Some(stack) = stack()? else {
+        cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
+        return Ok(());
+    };
+    if headless_exe().is_none() {
+        cx.log("SKIP: decibell-headless is not built next to this binary (cargo build -p decibell-model --features local-central --bin decibell-headless, same profile)");
+        return Ok(());
+    }
+    let profile = Profile::new(name)?;
+    let exe = std::env::current_exe()?;
+    let mut command = Command::new(exe);
+    command
+        .arg("--check")
+        .arg(name)
+        .arg("--login")
+        .arg(ACCOUNT)
+        .env("DECIBELL_USER_DATA_DIR", &profile.0)
+        .env("DECIBELL_CENTRAL", &stack.central)
+        .env("DECIBELL_DEV_PASSWORD", &stack.password)
+        .env("DECIBELL_TEST_PROBES", "1")
+        .env_remove("DECIBELL_PERF")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let started = Instant::now();
+    let mut child = command.spawn().context("starting the app")?;
+    let stdout = child.stdout.take().expect("piped");
+    let stderr = child.stderr.take().expect("piped");
+    let (status, out, err) = cx
+        .app()
+        .background_executor()
+        .spawn(async move {
+            let err = std::thread::Builder::new()
+                .name("voice-test-stderr".into())
+                .spawn(move || std::io::BufReader::new(stderr).lines().map_while(Result::ok).collect::<Vec<_>>())
+                .ok();
+            let out: Vec<String> = std::io::BufReader::new(stdout).lines().map_while(Result::ok).collect();
+            let status = child.wait();
+            (status, out, err.and_then(|h| h.join().ok()).unwrap_or_default())
+        })
+        .await;
+    let status = status?;
+    for line in out.iter().filter(|l| !l.starts_with("selftest:")) {
+        cx.log(format_args!("│ {line}"));
+    }
+    if err.iter().any(|l| l.contains("--login refused")) && err.iter().any(|l| l.contains("dev-local")) {
+        cx.log("SKIP: this binary has no --login (build with --features dev-local)");
+        return Ok(());
+    }
+    if !status.success() {
+        for line in err.iter().rev().take(16).rev() {
+            cx.log(format_args!("│ stderr: {line}"));
+        }
+        bail!("{name} failed in the app ({status}, after {:.1} s)", started.elapsed().as_secs_f64());
+    }
+    Ok(())
+}
+
+// ── the checks, inside the signed-in app ────────────────────────────────────────────────
+
+pub fn checks() -> Vec<SelfTest> {
+    vec![
+        SelfTest { name: "voice-join", about: "(in the app) join, a peer comes and goes", run: |cx| Box::pin(check_join(cx)) },
+        SelfTest { name: "voice-speaking-idle", about: "(in the app) idle in voice", run: |cx| Box::pin(check_idle(cx)) },
+        SelfTest { name: "voice-mute", about: "(in the app) the dock's mute / deafen", run: |cx| Box::pin(check_mute(cx)) },
+        SelfTest { name: "voice-watch", about: "(in the app) watch a real stream", run: |cx| Box::pin(check_watch(cx)) },
+        SelfTest { name: "voice-golive-dialog", about: "(in the app) the Go Live dialog", run: |cx| Box::pin(check_golive(cx)) },
+        SelfTest { name: "call-ring", about: "(in the app) an incoming call", run: |cx| Box::pin(check_call(cx)) },
+        SelfTest { name: "voice-switch", about: "(in the app) switching channels", run: |cx| Box::pin(check_switch(cx)) },
+    ]
+}
+
+fn model(cx: &App) -> Model {
+    Model::global(cx).clone()
+}
+
+fn daily_gaming() -> ServerId {
+    ServerId::from_central(1)
+}
+
+/// Poll `ready` every 50 ms for at most `limit`.
+async fn wait_for(cx: &TestCx, limit: Duration, what: &str, ready: impl Fn(&mut App) -> bool) -> Result<Duration> {
+    let started = Instant::now();
+    loop {
+        if cx.update(|_, cx| ready(cx))? {
+            return Ok(started.elapsed());
+        }
+        ensure!(started.elapsed() < limit, "timed out after {} s waiting for {what}", limit.as_secs());
+        cx.sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_probe(cx: &TestCx, key: &str) -> Result<Bounds<Pixels>> {
+    let owned = key.to_string();
+    wait_for(cx, Duration::from_secs(15), &format!("{key} on screen"), move |_| probes::bounds(&owned).is_some()).await?;
+    probes::bounds(key).context("probe vanished")
+}
+
+/// Rest the pointer where nothing reacts to it: the middle of the voice header's empty stretch,
+/// else the middle of the channel header (no hover, no tooltip there).
+fn park_pointer(cx: &TestCx) -> Result<()> {
+    let at = probes::bounds("voice-header")
+        .filter(|_| probes::flag_set("voice-pane"))
+        .map(|b| point(b.left() + b.size.width * 0.6, b.center().y))
+        .unwrap_or_else(|| point(gpui::px(700.), gpui::px(128.)));
+    cx.mouse_move(at)
+}
+
+async fn click_probe(cx: &TestCx, key: &str) -> Result<()> {
+    let bounds = wait_probe(cx, key).await?;
+    cx.click(bounds.center())?;
+    park_pointer(cx)
+}
+
+/// Waits until nothing has been drawn for 1 s and returns the counters.
+async fn settle_drawn(cx: &TestCx) -> Result<Frames> {
+    let started = Instant::now();
+    let mut last = cx.frames()?;
+    let mut quiet_since = Instant::now();
+    loop {
+        cx.sleep(Duration::from_millis(50)).await;
+        let now = cx.frames()?;
+        if now.drawn != last.drawn {
+            quiet_since = Instant::now();
+        } else if quiet_since.elapsed() >= Duration::from_secs(1) {
+            return Ok(now);
+        }
+        last = now;
+        ensure!(started.elapsed() < Duration::from_secs(20), "the window was still drawing after 20 s");
+    }
+}
+
+/// One change: the frames it drew, then a second without one.
+async fn frames_of(cx: &TestCx, what: &str, act: impl AsyncFnOnce(&TestCx) -> Result<()>) -> Result<Frames> {
+    let before = settle_drawn(cx).await?;
+    act(cx).await?;
+    let after = settle_drawn(cx).await?;
+    let frames = after.since(before);
+    cx.sleep(Duration::from_secs(1)).await;
+    let idle = cx.frames()?.since(after);
+    cx.log(format_args!("{what}: {} drawn / {} presented; then {} drawn in 1 s", frames.drawn, frames.presented, idle.drawn));
+    Ok(frames)
+}
+
+/// Signed in, E2EE unlocked, Daily Gaming connected and open, and muted + deafened (before any
+/// voice session: nothing is captured or played).
+async fn ready(cx: &TestCx) -> Result<()> {
+    wait_for(cx, Duration::from_secs(30), "the sign-in", |cx| model(cx).auth.read(cx).is_authenticated).await?;
+    wait_for(cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
+    // Unlock the identity keys (the passphrase dialog is another feature's; the check types into
+    // the model as the dialog would).
+    let started = Instant::now();
+    loop {
+        let status = cx.update(|_, cx| model(cx).live.e2ee.read(cx).status)?;
+        match status {
+            E2eeStatus::Ready => break,
+            E2eeStatus::Locked | E2eeStatus::NotSetUp => {
+                let busy = cx.update(|_, cx| model(cx).live.e2ee.read(cx).passphrase.as_ref().is_some_and(|f| f.busy))?;
+                if !busy {
+                    let mode = if status == E2eeStatus::Locked { PassphraseMode::Unlock } else { PassphraseMode::Setup };
+                    cx.update(|_, cx| {
+                        let m = model(cx);
+                        m.live.e2ee.update(cx, |e, cx| e.open(mode, cx));
+                        actions::e2ee::submit_passphrase(PASSPHRASE.into(), PASSPHRASE.into(), cx);
+                    })?;
+                }
+            }
+            E2eeStatus::Unavailable => {}
+        }
+        ensure!(started.elapsed() < Duration::from_secs(30), "the E2EE keys never became ready ({status:?})");
+        cx.sleep(Duration::from_millis(100)).await;
+    }
+    cx.update(|_, cx| {
+        actions::voice::set_mute(true, cx);
+        actions::voice::set_deafen(true, cx);
+    })?;
+    click_probe(cx, "server-tile:1").await?;
+    wait_for(cx, Duration::from_secs(10), "Daily Gaming's channels", |cx| {
+        let m = model(cx);
+        m.nav.read(cx).active_server == Some(daily_gaming()) && m.community(daily_gaming(), cx).is_some_and(|c| !c.channels.read(cx).list().is_empty())
+    })
+    .await?;
+    Ok(())
+}
+
+/// An account's uid from the stack's `accounts.json` (the stack's uids are fixed).
+fn account_uid(name: &str) -> Result<Uid> {
+    let text = std::fs::read_to_string(dev_dir().join("run/accounts.json"))?;
+    let needle = format!("\"name\": \"{name}\"");
+    let at = text.find(&needle).with_context(|| format!("{name} is not in accounts.json"))?;
+    let rest = &text[at..];
+    let uid_at = rest.find("\"uid\"").context("no uid")? + 5;
+    let digits: String = rest[uid_at..].chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
+    Ok(digits.parse()?)
+}
+
+fn me(cx: &TestCx) -> Result<Uid> {
+    cx.update(|_, cx| model(cx).auth.read(cx).uid)
+}
+
+fn in_channel(cx: &mut App, channel: &str, uid: Uid) -> bool {
+    let key = (daily_gaming(), decibell_model::ChannelId::from(channel));
+    model(cx).live.voice.rosters.read(cx).roster(&key).contains(&uid)
+}
+
+/// Click the voice channel in the sidebar and wait until we're connected with MLS ready.
+async fn join(cx: &TestCx, channel: &str) -> Result<()> {
+    click_probe(cx, &format!("voice:{channel}")).await?;
+    let ch = channel.to_string();
+    let t = wait_for(cx, Duration::from_secs(20), "the voice session with MLS ready", move |cx| {
+        let s = model(cx).live.voice.session.read(cx);
+        s.is_connected_to(daily_gaming(), &ch) && s.e2ee.as_ref().is_some_and(|e| e.phase == VoiceE2eePhase::Ready)
+    })
+    .await?;
+    cx.log(format_args!("in {channel}, MLS ready after {} ms", t.as_millis()));
+    Ok(())
+}
+
+async fn leave(cx: &TestCx) -> Result<()> {
+    cx.update(|_, cx| actions::voice::leave_voice_channel(cx))?;
+    wait_for(cx, Duration::from_secs(10), "leaving voice", |cx| !model(cx).live.voice.session.read(cx).media_session_active()).await?;
+    Ok(())
+}
+
+/// Counts what may legitimately redraw a quiet voice view: the latency readout changing (the
+/// header and the user panel show it; a ping lands every ~2 s), the channel's MLS state (epoch /
+/// members in the badge's title), and any change of the voice rosters, the session's
+/// participants, the streams or a watched person's presence (what the stage and the sidebar
+/// draw). Started before a window, read after it.
+struct Changes {
+    latency: std::rc::Rc<std::cell::Cell<u32>>,
+    e2ee: std::rc::Rc<std::cell::Cell<u32>>,
+    other: std::rc::Rc<std::cell::Cell<u32>>,
+    _subs: Vec<gpui::Subscription>,
+}
+
+impl Changes {
+    fn start(cx: &TestCx) -> Result<Changes> {
+        cx.update(|_, cx| {
+            let m = model(cx);
+            let latency = std::rc::Rc::new(std::cell::Cell::new(0));
+            let e2ee = std::rc::Rc::new(std::cell::Cell::new(0));
+            let other = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut last_latency = m.live.voice.stats.read(cx).latency_ms;
+            let mut last_e2ee = m.live.voice.session.read(cx).e2ee.clone();
+            let bump = |c: &std::rc::Rc<std::cell::Cell<u32>>| {
+                let c = c.clone();
+                move || c.set(c.get() + 1)
+            };
+            let (b1, b2, b3, b4) = (bump(&other), bump(&other), bump(&other), bump(&other));
+            let subs = vec![
+                cx.observe(&m.live.voice.stats, {
+                    let latency = latency.clone();
+                    move |stats, cx| {
+                        let now = stats.read(cx).latency_ms;
+                        if now != last_latency {
+                            last_latency = now;
+                            latency.set(latency.get() + 1);
+                        }
+                    }
+                }),
+                cx.observe(&m.live.voice.session, {
+                    let e2ee = e2ee.clone();
+                    move |session, cx| {
+                        let now = session.read(cx).e2ee.clone();
+                        if now != last_e2ee {
+                            last_e2ee = now;
+                            e2ee.set(e2ee.get() + 1);
+                        }
+                    }
+                }),
+                cx.observe(&m.live.voice.participants, move |_, _| b1()),
+                cx.observe(&m.live.voice.rosters, move |_, _| b2()),
+                cx.observe(&m.live.voice.streams, move |_, _| b3()),
+                cx.observe(&m.live.presence.statuses, move |_, _| b4()),
+            ];
+            Changes { latency, e2ee, other, _subs: subs }
+        })
+    }
+
+    fn count(&self) -> u32 {
+        self.latency.get() + self.e2ee.get() + self.other.get()
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} latency changes, {} MLS state changes, {} roster / participant / stream / presence changes",
+            self.latency.get(),
+            self.e2ee.get(),
+            self.other.get()
+        )
+    }
+}
+
+// ── the headless peer ───────────────────────────────────────────────────────────────────
+
+/// A `decibell-headless` process as `perf4`, killed when dropped.
+struct Peer {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+    cues: PathBuf,
+    _profile: Profile,
+}
+
+impl Peer {
+    /// Signs in, unlocks, and runs `steps` (cue files are `<cues>/<name>`).
+    fn start(steps: &[String]) -> Result<Peer> {
+        let exe = headless_exe().context("decibell-headless not built")?;
+        let profile = Profile::new("voice-peer")?;
+        let cues = profile.0.join("cues");
+        std::fs::create_dir_all(&cues)?;
+        let mut args: Vec<String> = vec!["--user-data-dir".into(), profile.0.display().to_string(), "--timeout".into(), "60".into()];
+        args.extend(
+            ["login", PEER, "wait", "connected", COMMUNITY, "open-server", COMMUNITY, "e2ee-ready", PASSPHRASE, "mute", "deafen"]
+                .map(String::from),
+        );
+        args.extend(steps.iter().map(|s| s.replace("@cue:", &format!("{}/", cues.display()))));
+        let mut child = Command::new(exe)
+            .args(&args)
+            .env("DECIBELL_CENTRAL", std::env::var("DECIBELL_CENTRAL").unwrap_or_default())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("starting decibell-headless")?;
+        let stdout = child.stdout.take().expect("piped");
+        let (tx, lines) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("voice-test-peer".into())
+            .spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Peer { child, lines, cues, _profile: profile })
+    }
+
+    /// Wait for a line starting with `prefix` (a `MARK`, `STREAMING`, `DONE`); FAILED fails.
+    async fn wait_line(&self, cx: &TestCx, prefix: &str, limit: Duration) -> Result<String> {
+        let started = Instant::now();
+        loop {
+            while let Ok(line) = self.lines.try_recv() {
+                if line.starts_with(prefix) {
+                    return Ok(line);
+                }
+                if line.starts_with("FAILED") {
+                    bail!("the peer failed: {line}");
+                }
+            }
+            ensure!(started.elapsed() < limit, "the peer never printed {prefix:?}");
+            cx.sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn cue(&self, name: &str) -> Result<()> {
+        std::fs::write(self.cues.join(name), b"")?;
+        Ok(())
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn steps(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+// ── voice-join ──────────────────────────────────────────────────────────────────────────
+
+async fn check_join(cx: TestCx) -> Result<()> {
+    ready(&cx).await?;
+    let me = me(&cx)?;
+    frames_of(&cx, "joining Lounge from the sidebar", async |cx| join(cx, LOUNGE).await).await?;
+    ensure!(cx.update(|_, cx| model(cx).nav.read(cx).active_view == ActiveView::Voice)?, "the voice view didn't open");
+    wait_probe(&cx, &format!("participant-tile:{me}")).await?;
+    cx.log("our tile is on the stage");
+    let peer = Peer::start(&steps(&[
+        "print", "ready", "wait-file", "@cue:join", "voice-join", "Lounge", "wait", "mls", "ready", "print", "joined",
+        "wait-file", "@cue:leave", "voice-leave", "print", "left", "wait-file", "@cue:quit", "logout",
+    ]))?;
+    let peer_uid = account_uid(PEER)?;
+    peer.wait_line(&cx, "MARK ready", Duration::from_secs(60)).await?;
+    let joined = frames_of(&cx, "the peer joins", async |cx| {
+        peer.cue("join")?;
+        peer.wait_line(cx, "MARK joined", Duration::from_secs(60)).await?;
+        wait_probe(cx, &format!("participant-tile:{peer_uid}")).await?;
+        Ok(())
+    })
+    .await?;
+    ensure!(joined.drawn >= 1, "the peer's tile drew nothing");
+    let left = frames_of(&cx, "the peer leaves", async |cx| {
+        peer.cue("leave")?;
+        peer.wait_line(cx, "MARK left", Duration::from_secs(30)).await?;
+        wait_for(cx, Duration::from_secs(10), "the peer's tile to go", move |cx| !in_channel(cx, LOUNGE, peer_uid)).await?;
+        Ok(())
+    })
+    .await?;
+    ensure!(left.drawn >= 1, "the peer's leaving drew nothing");
+    let before = settle_drawn(&cx).await?;
+    let changes = Changes::start(&cx)?;
+    log::info!("[voice-test] idle window starts");
+    cx.sleep(Duration::from_secs(5)).await;
+    log::info!("[voice-test] idle window ends");
+    let idle = cx.frames()?.since(before);
+    cx.log(format_args!("then {} drawn / {} presented in 5 s; {}", idle.drawn, idle.presented, changes.describe()));
+    ensure!(idle.drawn as u32 <= changes.count(), "frames drawn while nothing on screen changed");
+    peer.cue("quit")?;
+    leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-speaking-idle ─────────────────────────────────────────────────────────────────
+
+async fn check_idle(cx: TestCx) -> Result<()> {
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    let peer = Peer::start(&steps(&["voice-join", "Lounge", "wait", "mls", "ready", "print", "joined", "wait-file", "@cue:quit", "voice-leave", "logout"]))?;
+    peer.wait_line(&cx, "MARK joined", Duration::from_secs(60)).await?;
+    wait_probe(&cx, &format!("participant-tile:{}", account_uid(PEER)?)).await?;
+    // Nobody speaks (both muted): the stage draws nothing. Measured as the window is (focused
+    // or not); the server bar's active tile glow may re-present while focused (it draws nothing).
+    let mut last = String::new();
+    let mut passed = false;
+    for attempt in 1..=4 {
+        let before = settle_drawn(&cx).await?;
+        let events_before = cx.update(|_, cx| model(cx).pump_stats().events)?;
+        let active = cx.update(|window, _| window.is_window_active())?;
+        let changes = Changes::start(&cx)?;
+        cx.sleep(Duration::from_secs(10)).await;
+        let frames = cx.frames()?.since(before);
+        let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events_before;
+        last = format!(
+            "try {attempt}: {} drawn, {} presented in 10 s ({}); {events} core events (voice pings / stats every ~2 s); {}",
+            frames.drawn,
+            frames.presented,
+            if active { "focused" } else { "unfocused" },
+            changes.describe()
+        );
+        cx.log(&last);
+        if frames.drawn as u32 <= changes.count() {
+            passed = true;
+            break;
+        }
+    }
+    ensure!(passed, "the voice view drew while nothing on screen changed: {last}");
+    peer.cue("quit")?;
+    leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-mute ──────────────────────────────────────────────────────────────────────────
+
+async fn check_mute(cx: TestCx) -> Result<()> {
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    let me = me(&cx)?;
+    let peer = Peer::start(&steps(&[
+        "voice-join", "Lounge", "wait", "mls", "ready", "print", "joined",
+        "wait", "voice-state", ACCOUNT, "unmuted", "print", "saw-unmuted",
+        "wait", "voice-state", ACCOUNT, "muted", "print", "saw-muted",
+        "wait-file", "@cue:quit", "voice-leave", "logout",
+    ]))?;
+    peer.wait_line(&cx, "MARK joined", Duration::from_secs(60)).await?;
+    // We joined muted and deafened. Undeafen first (the peer is muted: nothing plays), then
+    // unmute (Discord's rule: unmuting also undeafens) and mute again.
+    let state = |cx: &mut App| {
+        let s = model(cx).live.voice.session.read(cx);
+        (s.muted, s.deafened)
+    };
+    ensure!(cx.update(|_, cx| state(cx))? == (true, true), "not muted and deafened after joining");
+    click_probe(&cx, "dock-mute").await?;
+    wait_for(&cx, Duration::from_secs(5), "the dock's unmute to land", move |cx| state(cx) == (false, false)).await?;
+    cx.log("dock: unmuted (and undeafened) in the model");
+    peer.wait_line(&cx, "MARK saw-unmuted", Duration::from_secs(10)).await?;
+    cx.log("the peer saw us unmuted");
+    click_probe(&cx, "dock-mute").await?;
+    wait_for(&cx, Duration::from_secs(5), "the dock's mute to land", move |cx| state(cx).0).await?;
+    peer.wait_line(&cx, "MARK saw-muted", Duration::from_secs(10)).await?;
+    cx.log("dock: muted; the peer saw it");
+    click_probe(&cx, "dock-deafen").await?;
+    wait_for(&cx, Duration::from_secs(5), "the dock's deafen to land", move |cx| state(cx) == (true, true)).await?;
+    cx.log("dock: deafened");
+    let _ = me;
+    peer.cue("quit")?;
+    leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-watch ─────────────────────────────────────────────────────────────────────────
+
+fn stream_file() -> Option<PathBuf> {
+    let name = std::env::var("DECIBELL_WATCH_DBV").unwrap_or_else(|_| "1080p60_h264.dbv".into());
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors().map(|d| d.join("vendor/streams").join(&name)).find(|p| p.exists())
+}
+
+async fn check_watch(cx: TestCx) -> Result<()> {
+    let Some(file) = stream_file() else {
+        cx.log("SKIP: vendor/streams/*.dbv not found above the binary");
+        return Ok(());
+    };
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    let peer_uid = account_uid(PEER)?;
+    let path = file.display().to_string();
+    let peer = Peer::start(&steps(&[
+        "voice-join", "Lounge", "wait", "mls", "ready", "stream-file", &path, "print", "streaming",
+        "wait-file", "@cue:stop", "stream-stop", "voice-leave", "logout",
+    ]))?;
+    peer.wait_line(&cx, "STREAMING", Duration::from_secs(60)).await?;
+    wait_probe(&cx, &format!("stream-tile:{peer_uid}")).await?;
+    cx.log(format_args!("{} is live in Lounge", file.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
+    // Watch: a click on the tile focuses it (its first hover action).
+    click_probe(&cx, &format!("stream-tile:{peer_uid}")).await?;
+    let key = peer_uid.to_string();
+    let t = wait_for(&cx, Duration::from_secs(15), "the first picture", {
+        let key = key.clone();
+        move |cx| crate::video_events::StreamStates::global(cx).read(cx).get(peer_uid).picture.is_some() && !key.is_empty()
+    })
+    .await?;
+    cx.log(format_args!("first picture {} ms after the click", t.as_millis()));
+    cx.sleep(Duration::from_secs(2)).await;
+    // The rates over 10 s, from the hub's own counters (what the stats overlay reads).
+    let hub = cx.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+    let stream = hub.stream(&key);
+    let a = stream.stats();
+    let frames_a = cx.frames()?;
+    let window = Duration::from_secs(10);
+    cx.sleep(window).await;
+    let b = stream.stats();
+    let frames = cx.frames()?.since(frames_a);
+    let secs = window.as_secs_f64();
+    let received = (b.received - a.received) as f64 / secs;
+    let decoded = (b.decoded - a.decoded) as f64 / secs;
+    let presented = (b.presented - a.presented) as f64 / secs;
+    let dropped = b.dropped - a.dropped;
+    cx.log(format_args!(
+        "{} {}x{} via {}: received {received:.1} / decoded {decoded:.1} / presented {presented:.1} per s, {dropped} dropped, {} replaced, queue {}, {} keyframe requests so far; window: {} drawn / {} presented in {secs} s",
+        b.codec.map(|c| c.label()).unwrap_or("?"),
+        b.width,
+        b.height,
+        b.path.map(|p| p.label()).unwrap_or("?"),
+        b.replaced - a.replaced,
+        b.queue,
+        b.keyframe_requests,
+        frames.drawn,
+        frames.presented,
+    ));
+    let fps = 60.;
+    ensure!(received > fps * 0.95, "received {received:.1} frames/s of a {fps} fps stream");
+    ensure!(presented > fps * 0.9, "presented {presented:.1} pictures/s of a {fps} fps stream");
+    ensure!(dropped == 0, "{dropped} frames dropped");
+    ensure!(frames.drawn < 30, "the watched stream drew {} frames (a picture should cost a present, not a draw)", frames.drawn);
+    // The stats overlay shows the codec and the size.
+    click_probe(&cx, "focus-stats").await.ok();
+    // Leave the voice view: the mini-player keeps the same pictures coming.
+    click_probe(&cx, "channel:general").await?;
+    wait_for(&cx, Duration::from_secs(5), "the mini-player", |_| probes::flag_set("mini-player")).await?;
+    let a = stream.stats();
+    cx.sleep(Duration::from_secs(3)).await;
+    let b = stream.stats();
+    let mini = (b.presented - a.presented) as f64 / 3.;
+    cx.log(format_args!("mini-player: {mini:.1} pictures/s presented"));
+    ensure!(mini > fps * 0.9, "the mini-player presented {mini:.1} pictures/s");
+    // Stop watching from the mini-player: the decoder goes.
+    click_probe(&cx, "mini-player").await.ok();
+    cx.update(|_, cx| actions::voice::stop_watching_stream(peer_uid, cx))?;
+    let t = wait_for(&cx, Duration::from_secs(5), "the decoder to stop", {
+        let hub = hub.clone();
+        move |_| hub.decoder_threads() == 0
+    })
+    .await?;
+    cx.sleep(Duration::from_millis(500)).await;
+    cx.log(format_args!("stopped watching: decoder threads {} after {} ms, {} live textures", hub.decoder_threads(), t.as_millis(), hub.live_textures()));
+    ensure!(hub.live_textures() == 0, "{} textures still alive", hub.live_textures());
+    peer.cue("stop")?;
+    if let Ok(line) = peer.wait_line(&cx, "STREAM-STOPPED", Duration::from_secs(15)).await {
+        cx.log(format_args!("the streamer: {line}"));
+    }
+    leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-golive-dialog ─────────────────────────────────────────────────────────────────
+
+async fn check_golive(cx: TestCx) -> Result<()> {
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    // The probe's answer is faked: software only (SVT-AV1, 1080p30 a second).
+    cx.update(|_, cx| {
+        let encoders = crate::codecs::Encoders::global(cx);
+        encoders.update(cx, |e, cx| e.pin(software_caps(), cx));
+    })?;
+    let settings = |cx: &mut App| decibell_model::live::voice::go_live::StreamSettings::of(model(cx).settings.read(cx).get());
+    let start = cx.update(|_, cx| settings(cx))?;
+    frames_of(&cx, "the Go Live dialog opens", async |cx| {
+        click_probe(cx, "dock-share").await?;
+        wait_for(cx, Duration::from_secs(5), "the dialog", |_| probes::flag_set("go-live-open")).await?;
+        Ok(())
+    })
+    .await?;
+    // Slides and Data saver encode in software: they switch.
+    for preset in ["slides", "saver"] {
+        click_probe(&cx, &format!("preset:{preset}")).await?;
+        let p = preset.to_string();
+        wait_for(&cx, Duration::from_secs(3), &format!("the {preset} preset"), move |cx| settings(cx).preset().is_some_and(|x| x.id == p)).await?;
+        cx.log(format_args!("{preset}: switched"));
+    }
+    // Smooth (1080p60) is past the software ceiling: greyed, a click changes nothing.
+    click_probe(&cx, "preset:smooth").await?;
+    cx.sleep(Duration::from_millis(300)).await;
+    let now = cx.update(|_, cx| settings(cx))?;
+    ensure!(now.preset().map(|p| p.id) == Some("saver"), "Smooth switched although software can't encode it");
+    cx.log("smooth: greyed out (software-only caps), the click did nothing");
+    click_probe(&cx, "go-live-close").await?;
+    wait_for(&cx, Duration::from_secs(5), "the dialog to close", |_| !probes::flag_set("go-live-open")).await?;
+    // Put the settings back as they were.
+    cx.update(move |_, cx| actions::voice::update_stream_settings(|s| *s = start.clone(), cx))?;
+    leave(&cx).await?;
+    Ok(())
+}
+
+fn software_caps() -> Vec<crate::codecs::EncoderCap> {
+    vec![crate::codecs::EncoderCap {
+        codec: decibell_model::live::voice::VideoCodec::Av1,
+        hardware: false,
+        backend: "software".into(),
+        label: "Software (SVT-AV1)".into(),
+        max_width: 3840,
+        max_height: 2160,
+        max_fps: 60,
+        max_pixel_rate: 1920 * 1080 * 30,
+    }]
+}
+
+// ── call-ring ───────────────────────────────────────────────────────────────────────────
+
+async fn check_call(cx: TestCx) -> Result<()> {
+    // Without the DM pane (another crate's) the call stage needs a host to show in.
+    cx.update(|_, cx| crate::calls::host_stage_in_dm_stand_in(cx))?;
+    ready(&cx).await?;
+    let status = |cx: &mut App| model(cx).live.calls.read(cx).status;
+    let peer = Peer::start(&steps(&[
+        "call", ACCOUNT, "print", "calling", "wait", "call", "idle", "print", "declined",
+        "wait-file", "@cue:again", "call", ACCOUNT, "wait", "call", "active", "print", "connected",
+        "wait", "call", "idle", "print", "ended", "logout",
+    ]))?;
+    peer.wait_line(&cx, "MARK calling", Duration::from_secs(60)).await?;
+    wait_for(&cx, Duration::from_secs(15), "the incoming card", |_| probes::flag_set("incoming-call")).await?;
+    cx.log("ringing: the card is up");
+    click_probe(&cx, "call-decline").await?;
+    peer.wait_line(&cx, "MARK declined", Duration::from_secs(15)).await?;
+    wait_for(&cx, Duration::from_secs(5), "idle after declining", move |cx| status(cx) == CallStatus::Idle).await?;
+    cx.log("declined: the caller saw it end");
+    peer.cue("again")?;
+    wait_for(&cx, Duration::from_secs(15), "the second ring", move |cx| status(cx) == CallStatus::Incoming).await?;
+    click_probe(&cx, "call-accept").await?;
+    let t = wait_for(&cx, Duration::from_secs(20), "the call to connect", move |cx| status(cx) == CallStatus::Active).await?;
+    let (path, verified) = cx.update(|_, cx| {
+        let c = model(cx).live.calls.read(cx);
+        (c.path, c.verified)
+    })?;
+    cx.log(format_args!("answered: connected after {} ms ({path:?}, verified {verified:?})", t.as_millis()));
+    peer.wait_line(&cx, "MARK connected", Duration::from_secs(10)).await?;
+    wait_probe(&cx, "call-hang-up").await?;
+    cx.log("the call stage shows the call");
+    click_probe(&cx, "call-hang-up").await?;
+    wait_for(&cx, Duration::from_secs(5), "idle after hanging up", move |cx| status(cx) == CallStatus::Idle).await?;
+    peer.wait_line(&cx, "MARK ended", Duration::from_secs(10)).await?;
+    cx.log("hung up: both sides idle");
+    Ok(())
+}
+
+// ── voice-switch ────────────────────────────────────────────────────────────────────────
+
+async fn check_switch(cx: TestCx) -> Result<()> {
+    ready(&cx).await?;
+    let me = me(&cx)?;
+    join(&cx, LOUNGE).await?;
+    // The click shows us in Squad and out of Lounge at once (the optimistic switch, the next turn
+    // of the event loop), before the server confirms it.
+    let bounds = wait_probe(&cx, &format!("voice:{SQUAD}")).await?;
+    let frames_before = cx.frames()?;
+    let clicked = Instant::now();
+    cx.click(bounds.center())?;
+    let mut shown_after = None;
+    let mut mls_ready_before = false;
+    while clicked.elapsed() < Duration::from_secs(2) {
+        let (squad, lounge, ready) = cx.update(move |_, cx| {
+            let s = model(cx).live.voice.session.read(cx);
+            let ready = s.is_connected_to(daily_gaming(), SQUAD) && s.e2ee.as_ref().is_some_and(|e| e.phase == VoiceE2eePhase::Ready);
+            (in_channel(cx, SQUAD, me), in_channel(cx, LOUNGE, me), ready)
+        })?;
+        if squad && !lounge {
+            shown_after = Some(clicked.elapsed());
+            mls_ready_before = ready;
+            break;
+        }
+        cx.sleep(Duration::from_millis(5)).await;
+    }
+    let shown_after = shown_after.context("the switch didn't show within 2 s")?;
+    let frames = cx.frames()?.since(frames_before);
+    cx.log(format_args!(
+        "shown in Squad {} ms after the click ({} frames drawn by then; the server's confirmation {})",
+        shown_after.as_millis(),
+        frames.drawn,
+        if mls_ready_before { "had already come" } else { "still pending" }
+    ));
+    ensure!(shown_after < Duration::from_millis(100), "the switch took {} ms to show", shown_after.as_millis());
+    let t = wait_for(&cx, Duration::from_secs(20), "the server's confirmation (MLS ready in Squad)", move |cx| {
+        let s = model(cx).live.voice.session.read(cx);
+        s.is_connected_to(daily_gaming(), SQUAD) && s.e2ee.as_ref().is_some_and(|e| e.phase == VoiceE2eePhase::Ready)
+    })
+    .await?;
+    cx.log(format_args!("Squad confirmed, MLS ready after {} ms", t.as_millis()));
+    leave(&cx).await?;
+    Ok(())
+}

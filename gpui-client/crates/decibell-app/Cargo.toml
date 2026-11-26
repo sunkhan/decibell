@@ -34,17 +34,20 @@ decibell-theme.workspace = true
 decibell-harness.workspace = true
 decibell-ui.workspace = true
 decibell-text-gallery = { path = "../decibell-text/gallery" }
-decibell-video.workspace = true
+# `core`: the core's frames into the hub (`push_frame`, the frame pool).
+decibell-video = { workspace = true, features = ["core"] }
 decibell-model.workspace = true
 decibell-shell = { workspace = true, features = ["fixtures"] }
 decibell-chat = { workspace = true, features = ["fixtures"] }
+decibell-voice = { workspace = true, features = ["fixtures"] }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde_json = { version = "1", optional = true }
-# The `encoder-software` self-test opens the core's software encoder (SVT-AV1) directly. The
-# same line as decibell-model's, so the core's features do not diverge.
+# The video glue's core calls (keyframe requests, the frame-sink flag, the decode caps), and the
+# `encoder-software` self-test, which opens the core's software encoder (SVT-AV1) directly. The
+# same line as decibell-model's, so the core's features do not diverge (zbus on async-io).
 decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
 
 # build.rs refuses an FFmpeg without SVT-AV1 and the software decoders (Linux: reads the static
