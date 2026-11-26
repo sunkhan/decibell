@@ -71,11 +71,12 @@ screens in all seven themes beside Electron's.
 | DMs, friends, profile popup / modal, custom status, user menu (`decibell-home`) | merged (five commits): its ten self-tests passed on its branch (49 / 49 in its full run). Open with `wip/integrate-c`: the owner's DM read rule (CLAUDE.md), one user menu with the voice entries, the emoji picker in the status dialog |
 | Server Settings, Channel Settings, picture editor (`decibell-server-settings`, `decibell-picture-editor`) | merged (five commits ending `4fae600`'s pick): every tab, saves settling on the echo, the leave guard, the editor (EXIF upright); its eleven self-tests passed on its branch. Open: the avatar caller in Settings → Account (`PictureEvent::ChangeAvatar` → `PictureEditor`), Alt+arrow role reordering |
 | Channel header + message search (`decibell-search`) | merged (ten commits ending `c90684e`'s pick): header with the E2EE badge, search box with chips / suggestions / date picker, results panel with Jump; the grammar equals the renderer's TypeScript on 108 cases; 9 of its 11 self-tests passed on its branch (`search-typing-cost` needs patch 0014: re-run; `search-idle` is sensitive to the shared stack) |
-| Servers: browse / join, invites, server menu, channel create / reorder, welcome banner (`decibell-servers`) | in progress, worktree `.worktrees/servers` (`wip/servers`) |
+| Servers: browse / join, invites, server menu, channel create / reorder, welcome banner (`decibell-servers`) | merged (eleven commits ending `34df720`): browse grid, join by link / code / address, the deep-link join dialog (`decibell_servers::open_invite_link(url, cx)`), invites and invite-friends (the friend list never goes to a community), create dialog, drag reorder with the Sync / Keep / Cancel prompt, welcome banner through the chat pane's welcome slot; its nine self-tests passed on its branch. Open with `wip/integrate-d`: the shell's menu and leave confirm in the chrome palette |
 | Platform: Copy image on Linux and the keyring label (GPUI patches from 0015), dev builds off the real profile, single instance, `decibell://` arguments, `--hotkey=`, attention, taskbar progress, window state (`decibell-platform`) | in progress, worktree `.worktrees/platform` (`wip/platform`) |
 | Media playback of attachments (`decibell-media`) | in progress, worktree `.worktrees/media` (`wip/media`) |
 | Core audio: interface sounds, the mic test outside voice, device changes without polling, the click audit's fixes | in progress, worktree `.worktrees/core-audio` (`wip/core-audio`) |
-| Conversations joined (`wip/integrate-c`): DM read rule, composer in DMs, one user menu, pacing, type-to-focus, regional sweep, headless `register` | in progress, worktree `.worktrees/integrate-c` |
+| Conversations joined (DM read rule, composer in DMs, one user menu, pacing, type-to-focus, regional sweep, headless `register` / `login-as`) | merged (nine commits ending `269a573`'s pick): the owner's DM read rule with `dm-read-rules` (four cases) passing on its branch; `MessageList` tells `AtBottom`; send pacing spends its token when the send returns (`composer-burst` in a debug build); KaTeX italic faces marked (formulas drew slanted); one midnight timer per list re-labels. Open with `wip/integrate-d`: type-to-focus against the root that holds focus and bare-key hotkeys |
+| Cross-crate joins and the self-test suite as one run (`wip/integrate-d`): type-to-compose vs hotkeys, `render-cost`, the avatar editor in Settings → Account, kit layering inside modals, the shell's menus in the chrome palette, legacy refusal rows, the regional sweep of every crate, two clean full self-test runs | in progress, worktree `.worktrees/integrate-d` |
 | Regional formats (`decibell_model::regional`: dates, times of day and counts follow the system's settings; English words) | done `1d2e9e1` (owner decision 2026-11-26 in CLAUDE.md): chat stamps, day dividers, member counts, ban expiry; 42 stamp cases equal the renderer's under en-US; self-test `regional` reads the drawn labels under four environments; Windows path compiled only. **Sweep each crate that merges later** with the grep in CONVENTIONS "Regional formats" |
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
 | Video, part 2: NVDEC and VA-API hardware fallbacks, decoder order and failure handling, a capability probe that really decodes, retained frames in the renderer (GPUI patch 0007) | done `7266df6`..`825cb99`: Vulkan Video, then NVDEC on NVIDIA / VA-API elsewhere, then software; `DECIBELL_VIDEO_DECODER` forces one; all three hardware decoders ran here for H.264 / HEVC / AV1 and match software decode pixel for pixel; 17 self-tests passed one at a time on the merged tree (load 4–11). AMD / Intel unrun: `docs/video-owner-checks.md`. Open: the probe is not called by the app yet, queue depth under a starved decoder thread, both with `wip/integrate-b` |
@@ -111,8 +112,7 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/servers` / `wip/servers` | browse / join, invites, server menu, channel create / reorder, category-sync prompt, welcome banner |
-| `.worktrees/integrate-c` / `wip/integrate-c` | conversations joined: DM read rule, composer in DMs, one user menu, pacing, type-to-focus, headless `register` |
+| `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
 | `.worktrees/platform` / `wip/platform` | GPUI patches 0015+ (clipboard image write, keyring label), single instance, links, attention, progress, window state |
 | `.worktrees/media` / `wip/media` | attachment video / audio playback; extends the shared FFmpeg prefix (every target dir then needs `cargo clean -p ffmpeg-sys-next`) |
 | `.worktrees/core-audio` / `wip/core-audio` | interface sounds, mic test, device events, click fixes (touches `crates/decibell-core`: Electron's bar + Windows check after merging) |
@@ -779,6 +779,25 @@ and 941 → 873 µs; a message arriving 3.0 → 2.0 views and no time difference
 - **`message_stamp` costs ~117 ns** a call, of which ~58 ns is formatting and the rest `chrono::Local`'s
   zone conversion (it re-checks `TZ` / `/etc/localtime` at most once a second per thread). Rows cache
   their labels, so it is not on the scroll path; cache the local time per message if a profile ever shows it.
+
+- **Leaving a community right after joining it** (owner's side agent, 2026-11-26). Central tells every device of
+  an account "you joined" (MEMBERSHIP_ADDED) a moment after a join, the joining device included; the core waits
+  3 s and connects if it isn't connected, and connecting to a *public* community without an invite makes the
+  account a member. A leave inside that window (or before a late push) therefore did not stick. Fixed in the
+  core (`6b9de79`: `AppState::left_communities`; a push for a community this device just left or was removed
+  from is ignored for 60 s, until the user joins again; unit test `a_membership_push_right_after_leaving_is_stale`).
+  **Not covered, and it needs a server change**: another device of the account that was online during a join
+  and a leave within that window never saw the leave (central sends no "you left"), so it connects and re-adds
+  the account. Decision for the owner: a MEMBERSHIP_REMOVED push from central, or the community refusing an
+  auto-join for N seconds after a leave. Electron shares the core and the race; not run there.
+- **Admin actions are not in the model.** `decibell-servers`, `decibell-server-settings` and `decibell-home` call
+  `decibell_core::api` directly for invites, channels, roles, bans, kick / timeout / nickname, member search and
+  the audit log (each behind its own small request type). Moving them into `actions::` would give one place for
+  pending state and toasts; nothing depends on it.
+- **`voice-watch` under load**: once, the child exited with SIGSEGV on its failure path in the video crate
+  (conversation-integration run, load high, 53.7 pictures / s). The exit-time crash in NVIDIA's driver was fixed
+  by `decibell_video::shutdown` in the quit hook (video / voice integration); check whether a failing self-test
+  leaves by another path that skips it.
 
 ## 6. Needs owner
 
