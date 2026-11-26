@@ -13,7 +13,9 @@
 
 pub mod auth;
 pub mod calls;
+pub mod chat;
 pub mod connection;
+pub mod dm;
 pub mod e2ee;
 pub mod friends;
 pub mod misc;

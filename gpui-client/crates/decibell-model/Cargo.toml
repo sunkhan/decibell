@@ -28,7 +28,8 @@ decibell-theme.workspace = true
 # zbus on async-io, as GPUI's own dependencies use it: with the core's default (`zbus-tokio`, the
 # Electron addon's) cargo would unify the features and GPUI's D-Bus calls would need a tokio context.
 decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
-# The downloads manager the Transfers panel mirrors (M3).
+# The attachment service: the composer's uploads (M2) and the downloads manager the
+# Transfers panel mirrors (M3).
 decibell-attachments = { path = "../decibell-attachments" }
 anyhow.workspace = true
 futures.workspace = true
@@ -39,6 +40,12 @@ serde_json = "1"
 base64 = "0.22"
 getrandom = "0.2"
 arc-swap = "1"
+# M2 (messages): the link-preview service, local days for the message list (chrono's
+# clock is already in GPUI's tree), the TLS connector type of the attachment service's
+# pin (`chat::composer::CoreTls`; the core's own copy).
+decibell-unfurl = { path = "../decibell-unfurl" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio-rustls = { version = "0.26", default-features = false }
 
 # Only `core::prepare` (see its module doc): entering the runtime on smol's executor
 # thread, where GPUI's Linux platform runs its sleep / power listeners.

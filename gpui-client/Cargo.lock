@@ -1852,9 +1852,11 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "base64 0.22.1",
+ "chrono",
  "decibell-attachments",
  "decibell-core",
  "decibell-theme",
+ "decibell-unfurl",
  "futures",
  "getrandom 0.2.16",
  "gpui",
@@ -1865,6 +1867,7 @@ dependencies = [
  "smol",
  "tempfile",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

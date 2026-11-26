@@ -4,7 +4,9 @@
 
 pub mod auth;
 pub mod calls;
+pub mod chat;
 pub mod devices;
+pub mod dm;
 pub mod e2ee;
 pub mod friends;
 pub mod hotkeys;

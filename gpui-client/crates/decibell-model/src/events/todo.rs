@@ -21,92 +21,92 @@ pub mod m2 {
 
     /// Central renewed the session token: the attachment endpoints' tokens are read again (`electron/main/attachmentRegistry.ts` `refreshTargetsFromNative`).
     pub fn session_token_updated(model: &Model, cx: &mut App) {
-        let _ = (model, cx);
+        crate::events::chat::session_token_updated(model, cx);
     }
 
     /// A channel message or DM arrived, or our own echo (`features/chat/useChatEvents.ts`, `features/dm/useDmEvents.ts`).
     pub fn message_received(model: &Model, p: MessageReceivedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::message_received(model, p, cx);
     }
 
     /// A page of channel history (`useChatEvents.ts`, `lib/historyMerge.ts`, `features/chat/historyRequests.ts`).
     pub fn channel_history_received(model: &Model, p: ChannelHistoryReceivedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_history_received(model, p, cx);
     }
 
     /// Retention pruned messages and attachments (`useChatEvents.ts` → `chatStore.applyChannelPruned`, attachment tombstones).
     pub fn channel_pruned(model: &Model, p: &ChannelPrunedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_pruned(model, p, cx);
     }
 
     /// A channel's history was wiped (`useChatEvents.ts` → `chatStore.applyChannelWiped`).
     pub fn channel_wiped(model: &Model, p: &ChannelWipedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_wiped(model, p, cx);
     }
 
     /// The community refused one of our messages: withdraw that bubble, give the text back, correct slowmode (`features/chat/sendPacing.ts`, `slowmode.ts`).
     pub fn channel_message_rejected(model: &Model, p: &ChannelMessageRejectedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_message_rejected(model, p, cx);
     }
 
     /// A page of search results (`features/search/useSearchEvents.ts`).
     pub fn message_search_received(model: &Model, p: MessageSearchReceivedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::message_search_received(model, p, cx);
     }
 
     /// The DM conversation list (`features/dm/useDmEvents.ts`).
     pub fn dm_conversations_received(model: &Model, p: DmConversationsReceivedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_conversations_received(model, p, cx);
     }
 
     /// A page of DM history (`useDmEvents.ts`).
     pub fn dm_history_received(model: &Model, p: DmHistoryReceivedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_history_received(model, p, cx);
     }
 
     /// Another device of ours read a conversation (`useDmEvents.ts`).
     pub fn dm_read_synced(model: &Model, p: &DmReadSyncedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_read_synced(model, p, cx);
     }
 
     /// Central answered our DM delete (`useDmEvents.ts`).
     pub fn dm_message_delete_responded(model: &Model, p: &DmMessageDeleteRespondedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_message_delete_responded(model, p, cx);
     }
 
     /// A DM was deleted (`useDmEvents.ts`).
     pub fn dm_message_deleted(model: &Model, p: &DmMessageDeletedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_message_deleted(model, p, cx);
     }
 
     /// The community answered our message delete: restore the bubble and toast on refusal (`useServerEvents.ts`, `chatStore.restorePendingDeletion`).
     pub fn channel_message_delete_responded(model: &Model, p: &ChannelMessageDeleteRespondedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_message_delete_responded(model, p, cx);
     }
 
     /// A channel message was deleted (`useServerEvents.ts` → `chatStore.removeMessage`).
     pub fn channel_message_deleted(model: &Model, p: &ChannelMessageDeletedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_message_deleted(model, p, cx);
     }
 
     /// Central answered our DM edit (`useDmEvents.ts`).
     pub fn dm_message_edit_responded(model: &Model, p: &DmMessageEditRespondedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_message_edit_responded(model, p, cx);
     }
 
     /// A DM was edited (`useDmEvents.ts`).
     pub fn dm_message_edited(model: &Model, p: DmMessageEditedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::dm::dm_message_edited(model, p, cx);
     }
 
     /// The community answered our edit: toast "Couldn't edit message" on refusal (`useServerEvents.ts`).
     pub fn channel_message_edit_responded(model: &Model, p: &ChannelMessageEditRespondedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_message_edit_responded(model, p, cx);
     }
 
     /// A channel message was edited (`useServerEvents.ts` → `chatStore.applyEdit`).
     pub fn channel_message_edited(model: &Model, p: ChannelMessageEditedPayload, cx: &mut App) {
-        let _ = (model, p, cx);
+        crate::events::chat::channel_message_edited(model, p, cx);
     }
 
     // ── Hooks out of the handlers the foundation owns ──
@@ -115,20 +115,20 @@ pub mod m2 {
     /// (`request_dm_conversations`); when `again` (the same account signed back in after
     /// a dropped connection) also `abandonDmRequests()` and `dmStore.markHistoriesStale()`.
     pub fn signed_in(model: &Model, again: bool, cx: &mut App) {
-        let _ = (model, again, cx);
+        crate::events::chat::signed_in(model, again, cx);
     }
 
     /// `logged_out`: close the image viewer and the image context menu, clear the
     /// attachment endpoints and decryption keys, the DM store, the drafts, the retained
     /// images, the message caches (`chatStore.resetForLogout`'s message half).
     pub fn logged_out(model: &Model, cx: &mut App) {
-        let _ = (model, cx);
+        crate::events::chat::logged_out(model, cx);
     }
 
     /// A community authenticated (first time or again): its message bucket is full
     /// again (`resetSendPacing(serverId)`).
     pub fn reset_send_pacing(model: &Model, server: ServerId, cx: &mut App) {
-        let _ = (model, server, cx);
+        crate::events::chat::reset_send_pacing(model, server, cx);
     }
 
     /// A community authenticated, before its new channel list is stored (review B4):
@@ -136,24 +136,24 @@ pub mod m2 {
     /// channelIds)` (slices of channels gone from `channels` are dropped, caught-up ones
     /// refetch on the next visit, scrolled-up ones go windowed; bumps `resyncEpoch`).
     pub fn community_authenticated(model: &Model, server: ServerId, channels: &[Channel], cx: &mut App) {
-        let _ = (model, server, channels, cx);
+        crate::events::chat::community_authenticated(model, server, channels, cx);
     }
 
     /// A community that serves attachments authenticated: read its endpoint and token
     /// (`api::servers::get_attachment_target`) into the attachment service's registry.
     pub fn attachment_target_changed(model: &Model, server: ServerId, cx: &mut App) {
-        let _ = (model, server, cx);
+        crate::events::chat::attachment_target_changed(model, server, cx);
     }
 
     /// A community's connection dropped: `abandonChannelRequests(serverId)` (their
     /// replies went down with it) and forget its attachment endpoint.
     pub fn community_connection_lost(model: &Model, server: ServerId, cx: &mut App) {
-        let _ = (model, server, cx);
+        crate::events::chat::community_connection_lost(model, server, cx);
     }
 
     /// A channel no longer exists (`channel_list_updated`): `chatStore.purgeChannelState`.
     pub fn purge_channel_state(model: &Model, server: ServerId, channel: &ChannelId, cx: &mut App) {
-        let _ = (model, server, channel, cx);
+        crate::events::chat::purge_channel_state(model, server, channel, cx);
     }
 
     /// `legacyRejectionSuppressed()` (`sendPacing.ts`): a refused message was already
@@ -161,8 +161,7 @@ pub mod m2 {
     /// echo of it stays silent. Until send pacing is ported this is false, which shows
     /// the community's refusal text as a toast.
     pub fn legacy_rejection_suppressed(model: &Model, cx: &mut App) -> bool {
-        let _ = (model, cx);
-        false
+        crate::events::chat::legacy_rejection_suppressed(model, cx)
     }
 }
 
