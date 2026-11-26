@@ -49,7 +49,7 @@ pub enum Slot {
     UnreadDms,
     /// The P2P call stage (`CallStage`) the DM pane shows above the conversation while a call
     /// with its peer is outgoing, connecting or active. Built by the DM pane through
-    /// [`build_pane`]; the view sizes itself (drawn uncached) and reads the call store for
+    /// [`build_slot`]; the view sizes itself (drawn uncached) and reads the call store for
     /// the peer.
     DmCallStage,
 }
@@ -171,12 +171,6 @@ pub fn is_registered(cx: &App, slot: Slot) -> bool {
 
 pub(crate) fn pane_builder(cx: &App, slot: Slot) -> Option<PaneBuilder> {
     cx.try_global::<Registry>().and_then(|r| r.panes.get(&slot).cloned())
-}
-
-/// The view a feature registered for `slot`, built now (a pane that hosts another crate's
-/// slot inside itself: the DM pane's call stage). `None` while nothing is registered.
-pub fn build_pane(slot: Slot, window: &mut Window, cx: &mut App) -> Option<AnyView> {
-    pane_builder(cx, slot).map(|build| build(window, cx))
 }
 
 pub(crate) fn overlay_builders(cx: &App) -> Vec<PaneBuilder> {

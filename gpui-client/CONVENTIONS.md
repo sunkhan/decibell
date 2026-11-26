@@ -221,7 +221,7 @@ opens):
   panel), `RightPanel` (default: `MembersList` while the members panel is on; a registered one decides
   itself, e.g. search results or `cx.new(MembersList::new)`), `HeaderSearch` (244 px at the header's end),
   `Voice`, `Browse` (the whole workspace, no sidebar), `DmList` (default: the shell's rows from `dm.list`),
-  `UnreadDms` (default: the shell's tiles), `DmCallStage` (built by the DM pane: `build_pane`). A pane is built when its place first shows, dropped when it
+  `UnreadDms` (default: the shell's tiles), `DmCallStage` (built by the DM pane: `build_slot`). A pane is built when its place first shows, dropped when it
   goes (React's mount / unmount), drawn `.cached(…)`: it must watch what it reads. Unregistered places show
   `Placeholder` (the slot's name).
 - **An overlay** (a modal, popup, menu over the main layout): `register_overlay(cx, |window, cx| …)`; it
@@ -530,7 +530,7 @@ shell's (`DmRows`, `UnreadDmTiles`).
   draft in `chat.drafts` (`DraftKey::Dm`, `DraftsEvent::Restored` brings a refused send back). Until one is
   registered `dm::composer::FallbackComposer` stands in: the renderer's card with a working one-line field.
 - **The call stage slot**: `decibell_shell::register_pane(cx, Slot::DmCallStage, |window, cx| view)`. The
-  conversation builds it (`decibell_shell::build_pane`) while `calls.status` is outgoing, connecting or active
+  conversation builds it (`decibell_shell::build_slot`) while `calls.status` is outgoing, connecting or active
   with its peer, draws it above the list **uncached** (size it yourself: `call_stage_voice_height` /
   `_stream_height`, or the panel in theater), and drops it when the call ends; in theater (`calls.theater`)
   the list and composer are hidden and the header shows "Show chat".

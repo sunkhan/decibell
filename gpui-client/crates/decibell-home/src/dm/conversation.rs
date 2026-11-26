@@ -277,7 +277,7 @@ impl Render for Conversation {
         // The stage: built while it shows, dropped when it goes.
         if self.stage_shown(cx) {
             if self.stage.is_none() {
-                self.stage = decibell_shell::build_pane(Slot::DmCallStage, window, cx);
+                self.stage = decibell_shell::build_slot(Slot::DmCallStage, window, cx);
             }
         } else {
             self.stage = None;
