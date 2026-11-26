@@ -81,6 +81,10 @@ pub(crate) struct CaptureChain {
     /// The frame before the one being processed, as captured: what a new
     /// processor is warmed up on.
     last_raw: [i16; FRAME_SIZE],
+    /// Reusable: the resampler's input chunk and its output (allocated with
+    /// it), so the per-frame path allocates nothing.
+    resamp_scratch: Vec<f64>,
+    resamp_out: Vec<Vec<f64>>,
 }
 
 impl CaptureChain {
@@ -98,6 +102,8 @@ impl CaptureChain {
             outgoing_processor: None,
             outgoing_rnnoise: None,
             last_raw: [0; FRAME_SIZE],
+            resamp_scratch: Vec::with_capacity(1024),
+            resamp_out: Vec::new(),
         };
         c.set_input_rate(input_rate);
         c
@@ -112,6 +118,7 @@ impl CaptureChain {
             self.resampler = Some(make_sinc_resampler(rate, SAMPLE_RATE, 480, 1));
             log::info!("[pipeline] Input device {}Hz — resampler to {}Hz", rate, SAMPLE_RATE);
         }
+        self.resamp_out = self.resampler.as_ref().map(|r| r.output_buffer_allocate(true)).unwrap_or_default();
     }
 
     /// Drop captured audio not yet cut into a frame (the device is changing).
@@ -201,10 +208,10 @@ impl CaptureChain {
             self.render_accum.push(s);
         }
         while self.render_accum.len() >= AEC_FRAME_SIZE {
-            let chunk: Vec<f32> = self.render_accum.drain(..AEC_FRAME_SIZE).collect();
             if let Some(ref mut proc) = self.processor {
-                let _ = proc.handle_render_frame(&chunk);
+                let _ = proc.handle_render_frame(&self.render_accum[..AEC_FRAME_SIZE]);
             }
+            self.render_accum.drain(..AEC_FRAME_SIZE);
         }
     }
 
@@ -233,9 +240,10 @@ impl CaptureChain {
         if let Some(ref mut resampler) = self.resampler {
             let mut needed = resampler.input_frames_next();
             while self.accum.len() >= needed {
-                let chunk: Vec<f64> = self.accum.drain(..needed).collect();
-                if let Ok(out) = resampler.process(&[&chunk], None) {
-                    for &s in &out[0] {
+                self.resamp_scratch.clear();
+                self.resamp_scratch.extend(self.accum.drain(..needed));
+                if let Ok((_, frames)) = resampler.process_into_buffer(&[&self.resamp_scratch], &mut self.resamp_out, None) {
+                    for &s in &self.resamp_out[0][..frames] {
                         self.buf_48k.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
                     }
                 }
@@ -264,19 +272,25 @@ impl CaptureChain {
         if self.processor.is_none() && self.rnnoise.is_none() && outgoing_processor.is_none() && outgoing_rnnoise.is_none() {
             return;
         }
-        let mut f32_frame: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
+        let mut f32_frame = [0.0f32; FRAME_SIZE];
+        for (f, &s) in f32_frame.iter_mut().zip(frame.iter()) {
+            *f = s as f32 / 32768.0;
+        }
 
         // Pass 1: WebRTC AEC + AGC (if enabled)
         match outgoing_processor {
             None => run_processor(self.processor.as_mut(), &mut f32_frame),
             Some(mut old) => {
-                let mut old_out = f32_frame.clone();
+                let mut old_out = f32_frame;
                 run_processor(old.as_mut(), &mut old_out);
                 // A new processor's gain controller steps its gain 5 ms into
                 // the first audio it is given (a jump of a third of the
                 // wave's value, measured). It takes that start on the frame
                 // before this one, whose output is not used.
-                let mut warm_up: Vec<f32> = previous.iter().map(|&s| s as f32 / 32768.0).collect();
+                let mut warm_up = [0.0f32; FRAME_SIZE];
+                for (f, &s) in warm_up.iter_mut().zip(previous.iter()) {
+                    *f = s as f32 / 32768.0;
+                }
                 run_processor(self.processor.as_mut(), &mut warm_up);
                 run_processor(self.processor.as_mut(), &mut f32_frame);
                 crossfade(&old_out, &mut f32_frame);
@@ -287,7 +301,7 @@ impl CaptureChain {
         match outgoing_rnnoise {
             None => run_rnnoise(self.rnnoise.as_deref_mut(), &mut f32_frame),
             Some(mut old) => {
-                let mut old_out = f32_frame.clone();
+                let mut old_out = f32_frame;
                 run_rnnoise(old.as_deref_mut(), &mut old_out);
                 run_rnnoise(self.rnnoise.as_deref_mut(), &mut f32_frame);
                 crossfade(&old_out, &mut f32_frame);
@@ -303,7 +317,7 @@ impl CaptureChain {
 /// `frame` through the WebRTC processor (AEC + AGC), two 10 ms halves.
 fn run_processor(processor: Option<&mut aec3::voip::VoipAec3>, f32_frame: &mut [f32]) {
     let Some(proc) = processor else { return };
-    let mut output_buf = vec![0.0f32; AEC_FRAME_SIZE];
+    let mut output_buf = [0.0f32; AEC_FRAME_SIZE];
     for chunk_idx in 0..2 {
         let start = chunk_idx * AEC_FRAME_SIZE;
         let end = start + AEC_FRAME_SIZE;
@@ -504,4 +518,113 @@ impl TxGate {
 
         TxFrame { pre_roll: pre_roll_frame, transmit_voice, tail_index, opened }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_alloc::allocations_on_this_thread;
+    use ringbuf::{traits::{Producer, Split}, HeapRb};
+
+    fn talker(i: usize) -> i16 {
+        let t = i as f64 / 48_000.0;
+        let level = 0.55 + 0.45 * (2.0 * std::f64::consts::PI * 3.0 * t).sin();
+        ((2.0 * std::f64::consts::PI * 190.0 * t).sin() * 7_000.0 * level) as i16
+    }
+
+    /// Run `frames` 20 ms frames of the talker through the chain as the
+    /// pipeline does (capture ring → pull → frame → render reference →
+    /// process → gate) at `rate`; the frames that came out, and the
+    /// allocations made after the first second.
+    fn run(chain: &mut CaptureChain, rate: u32, frames: usize) -> (Vec<[i16; FRAME_SIZE]>, u64) {
+        let (mut prod, mut cons) = HeapRb::<i16>::new(FRAME_SIZE * 48).split();
+        let (mut rprod, mut rcons) = HeapRb::<f32>::new(FRAME_SIZE * 48).split();
+        let mut gate = TxGate::new();
+        let mut out = Vec::with_capacity(frames + 4);
+        let per_step = (rate / 50) as usize;
+        let mut i = 0usize;
+        let mut warm = 0;
+        for step in 0..frames {
+            if step == 50 {
+                warm = allocations_on_this_thread();
+            }
+            for _ in 0..per_step {
+                let _ = prod.try_push(talker(i * 48_000 / rate as usize));
+                i += 1;
+            }
+            // What is played, for the echo canceller: one frame per frame.
+            for k in 0..FRAME_SIZE {
+                let _ = rprod.try_push(talker(step * FRAME_SIZE + k + 4_000) as f32 / 65_536.0);
+            }
+            chain.feed_render(&mut rcons);
+            chain.pull(&mut cons);
+            while let Some(mut frame) = chain.next_frame() {
+                chain.process(&mut frame);
+                let level = rms_db(&frame);
+                let _ = gate.step(&mut frame, level, -50.0, false, VoiceGate::Vad);
+                out.push(frame);
+            }
+        }
+        (out, allocations_on_this_thread() - warm)
+    }
+
+    /// Audit 12: the capture path's own code allocates nothing per frame
+    /// once running (it made five to eight heap allocations per 20 ms frame:
+    /// the float copy of the frame, the processor's output buffer, the
+    /// resampler's chunk and output, the render reference's chunk). Not a
+    /// click by itself; an allocation can stall the audio thread.
+    #[test]
+    fn the_capture_path_allocates_nothing_per_frame() {
+        for rate in [48_000u32, 44_100] {
+            let mut plain = CaptureChain::new(rate);
+            let (frames, allocations) = run(&mut plain, rate, 250);
+            assert!(frames.len() >= 245);
+            assert_eq!(allocations, 0, "no processing, {rate} Hz");
+
+            let mut processed = CaptureChain::new(rate);
+            processed.set_aec(true);
+            processed.set_agc(true);
+            processed.set_ns_level(2);
+            let (frames, allocations) = run(&mut processed, rate, 250);
+            assert!(frames.len() >= 245);
+            // What is left is inside the WebRTC processor (the `aec3` crate
+            // allocates in its per-frame path; nothing here can change that).
+            println!("{rate} Hz with AEC + AGC + noise suppression: {allocations} allocations in 200 frames, all inside the processor");
+
+            let mut suppressed = CaptureChain::new(rate);
+            suppressed.set_ns_level(2);
+            let (_, allocations) = run(&mut suppressed, rate, 250);
+            assert_eq!(allocations, 0, "noise suppression only, {rate} Hz");
+        }
+    }
+
+    /// The same samples as before the buffers became reusable: the chain's
+    /// output for a talker, at the device's rate and through the resampler,
+    /// pinned by a checksum taken from the allocating code.
+    #[test]
+    fn the_capture_path_gives_the_same_samples() {
+        fn sum(frames: &[[i16; FRAME_SIZE]]) -> u64 {
+            let mut h = 0xcbf29ce484222325u64;
+            for f in frames {
+                for s in f {
+                    h = (h ^ (*s as u16 as u64)).wrapping_mul(0x100000001b3);
+                }
+            }
+            h
+        }
+        let mut sums = Vec::new();
+        for rate in [48_000u32, 44_100] {
+            let mut plain = CaptureChain::new(rate);
+            sums.push(sum(&run(&mut plain, rate, 120).0));
+            let mut processed = CaptureChain::new(rate);
+            processed.set_aec(true);
+            processed.set_agc(true);
+            processed.set_ns_level(2);
+            sums.push(sum(&run(&mut processed, rate, 120).0));
+        }
+        println!("capture checksums: {sums:#x?}");
+        assert_eq!(sums, CHECKSUMS, "the capture path's output changed");
+    }
+
+    const CHECKSUMS: [u64; 4] = [0x3d12d1a38494c87f, 0x7bd574d95f76eb2b, 0xe54219fa620a6e7b, 0xc01487d39881ac38];
 }
