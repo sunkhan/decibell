@@ -610,7 +610,11 @@ and the runtime handle):
   it by path. No root Cargo workspace (design D3): the addon keeps its `Cargo.lock`, `target/`,
   `.cargo/config.toml` (static FFmpeg's `PKG_CONFIG_PATH`) and `[profile]`s; core's own `Cargo.lock` and
   `.cargo/config.toml` only serve `cargo test --lib` there. Features `stream-dump` and `local-central`
-  live in core; the addon forwards them, and turns on core's `napi` feature (below).
+  live in core; the addon forwards them, and turns on core's `napi` feature (below). zbus's runtime
+  (Linux D-Bus: the portals, screen lock) is a core feature too: `zbus-tokio` (default, the addon's)
+  or `zbus-async-io`, which a host whose own tree runs zbus on async-io takes instead (the GPUI client:
+  `default-features = false, features = ["zbus-async-io"]`; tokio-mode zbus panics on its threads).
+  Core's D-Bus call sites work in both (`src/zbus_runtime_tests.rs`).
 - **napi lives only in the addon** (`lib.rs`, `napi_sink.rs`, `commands/`) and, behind core's optional
   `napi` feature, on `api`'s structs. A core build without the feature compiles no napi crate.
 - **Events go through one trait** (`decibell_core::events`). Every named event is a typed `CoreEvent`

@@ -17,7 +17,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The `napi` feature puts `#[napi(object)]` on the core's api structs (one
-# definition, used by the wrappers in commands/ as they are).
+# definition, used by the wrappers in commands/ as they are). The core's
+# default features stay on: `zbus-tokio`, D-Bus on tokio as it always was.
 decibell-core = { path = "../../crates/decibell-core", features = ["napi"] }
 napi = { version = "2", default-features = false, features = ["napi9", "tokio_rt", "serde-json", "async"] }
 napi-derive = { version = "2", features = ["type-def"] }

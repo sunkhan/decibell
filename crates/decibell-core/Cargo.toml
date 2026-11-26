@@ -75,7 +75,9 @@ libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.9"
-zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+# The runtime zbus runs on is a feature of this crate (`zbus-tokio`, the
+# default, or `zbus-async-io`; see [features]), not fixed here.
+zbus = { version = "5", default-features = false, features = ["blocking-api"] }
 # Global hotkeys on X11 (and through XWayland on Wayland desktops without
 # the GlobalShortcuts portal): XInput2 raw key/button events. Pure-Rust
 # protocol client — no libX11/libXi link.
@@ -202,6 +204,23 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "crypt
 prost-build = "0.13"
 
 [features]
+# zbus's runtime on Linux (D-Bus: the GlobalShortcuts and ScreenCast portals,
+# screen lock / GNOME idle in system_idle.rs). `zbus-tokio` (default, what the
+# Electron addon builds with): zbus's I/O and tasks run on tokio, and its
+# blocking API on a runtime zbus builds for it. `zbus-async-io`: zbus runs its
+# own executor thread per connection plus async-io's reactor, and its futures
+# complete on any thread; for a host whose own tree uses zbus on async-io (the
+# GPUI client depends on this crate with `default-features = false, features
+# = ["zbus-async-io"]`), where tokio-mode zbus would panic on the host's
+# threads. With both on, zbus uses tokio. src/zbus_runtime_tests.rs checks the
+# crate's D-Bus patterns in either mode. In async-io mode zbus also uses the
+# `blocking` crate's pool around connects: keep that at 1.6.x in the lock
+# (`cargo update -p blocking --precise 1.6.2` after re-seeding this crate's
+# lock; the GPUI lock has 1.6.2): 1.7.0 never retires an idle pool thread,
+# which then wakes every 500 ms for good.
+default = ["zbus-tokio"]
+zbus-tokio = ["zbus/tokio"]
+zbus-async-io = ["zbus/async-io"]
 # The Electron addon (electron-client/native) turns this on: `api`'s argument and
 # result structs get `#[napi(object)]`, and `CoreError` converts into
 # `napi::Error`. A build without it never compiles napi (`cargo tree -p

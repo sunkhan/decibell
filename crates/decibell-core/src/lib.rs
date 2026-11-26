@@ -28,3 +28,5 @@ pub mod state;
 pub mod system_idle;
 #[cfg(test)]
 mod test_alloc;
+#[cfg(all(test, target_os = "linux"))]
+mod zbus_runtime_tests;
