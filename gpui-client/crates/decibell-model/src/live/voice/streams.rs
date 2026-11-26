@@ -75,6 +75,8 @@ pub struct StreamsChanged {
 #[derive(Default)]
 pub struct StreamPresence {
     by_user: HashMap<Uid, StreamLocation>,
+    /// Each channel's streams in the server's order (`activeStreams` keeps the list as it came).
+    order: HashMap<VoiceKey, Vec<Uid>>,
     /// A DM call's streams (announced over central: STREAM_START / STREAM_STOP).
     call: Vec<StreamInfo>,
 }
@@ -99,7 +101,10 @@ impl StreamPresence {
         }
         let Some(key) = connected else { return Vec::new() };
         let mut list: Vec<StreamInfo> = self.in_channel(key).cloned().collect();
-        list.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
+        // The server's order (`activeStreams`), the stream id where it is unknown.
+        let order = self.order.get(key);
+        let rank = |s: &StreamInfo| order.and_then(|o| o.iter().position(|u| *u == s.owner_uid)).unwrap_or(usize::MAX);
+        list.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.stream_id.cmp(&b.stream_id)));
         list
     }
 
@@ -111,8 +116,10 @@ impl StreamPresence {
     /// listed there go; the listed ones are (re)placed. Returns the owners listed.
     pub fn apply(&mut self, key: VoiceKey, streams: Vec<StreamInfo>, cx: &mut Context<Self>) -> HashSet<Uid> {
         let owners: HashSet<Uid> = streams.iter().map(|s| s.owner_uid).collect();
+        let order: Vec<Uid> = streams.iter().map(|s| s.owner_uid).collect();
         let before = self.by_user.len();
-        let mut changed = false;
+        let mut changed = self.order.get(&key) != Some(&order);
+        self.order.insert(key.clone(), order);
         self.by_user.retain(|uid, l| !(l.server == key.0 && l.channel == key.1 && !owners.contains(uid)));
         changed |= self.by_user.len() != before;
         for info in streams {
@@ -169,6 +176,7 @@ impl StreamPresence {
         });
         keys.sort();
         keys.dedup();
+        self.order.retain(|k, _| !(k.0 == server && !keep.is_some_and(|keep| keep.contains(&k.1))));
         for key in &keys {
             cx.emit(StreamsChanged { key: Some(key.clone()) });
         }
@@ -179,6 +187,7 @@ impl StreamPresence {
 
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.by_user.clear();
+        self.order.clear();
         self.call.clear();
         cx.emit(StreamsChanged { key: None });
         cx.notify();
@@ -513,11 +522,23 @@ mod tests {
             assert_eq!(p.of_user(3).unwrap().channel.as_ref(), "lounge");
             assert_eq!(p.of_user(4).unwrap().channel.as_ref(), "squad");
             assert_eq!(p.session(Some(&lounge), false).len(), 1);
+            assert_eq!(p.session(Some(&squad), false)[0].owner_uid, 4);
             assert!(p.session(None, false).is_empty());
         });
         let keep: HashSet<ChannelId> = ["squad".into()].into();
         p.update(cx, |p, cx| p.clear_server(ServerId::from_central(1), Some(&keep), cx));
         p.read_with(cx, |p, _| assert!(p.of_user(3).is_none() && p.of_user(4).is_some()));
+    }
+
+    #[gpui::test]
+    fn the_session_keeps_the_servers_order(cx: &mut TestAppContext) {
+        let p = cx.new(|_| StreamPresence::default());
+        let lounge: VoiceKey = (ServerId::from_central(1), "lounge".into());
+        p.update(cx, |p, cx| p.apply(lounge.clone(), vec![info(3), info(2)], cx));
+        p.read_with(cx, |p, _| {
+            let order: Vec<Uid> = p.session(Some(&lounge), false).iter().map(|s| s.owner_uid).collect();
+            assert_eq!(order, [3, 2], "carol's (listed first) before bob's, not by stream id");
+        });
     }
 
     #[gpui::test]
