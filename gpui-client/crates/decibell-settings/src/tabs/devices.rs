@@ -19,7 +19,8 @@ use gpui::{AnyElement, App, Context, IntoElement, Render, SharedString, Subscrip
 
 use super::TabId;
 use crate::hooks::SettingsHooks;
-use crate::rows::{Btn, TextLink, danger_soft_look, format_ago, local_date, section_label};
+use crate::fmt;
+use crate::rows::{Btn, TextLink, danger_soft_look, section_label};
 use crate::window::CloseLink;
 
 pub struct DevicesTab {
@@ -130,7 +131,7 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
         )
     } else {
         activity.child(
-            Label::new(SharedString::from(format!("Last active {}", format_ago(d.last_active_at, now)))).size(12.).color(muted),
+            Label::new(SharedString::from(format!("Last active {}", fmt::ago(d.last_active_at, now)))).size(12.).color(muted),
         )
     };
     if !d.address.is_empty() {
@@ -138,7 +139,7 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
     }
     activity = activity
         .child(Label::new("·").size(12.).color(muted))
-        .child(Label::new(SharedString::from(format!("Signed in {}", local_date(d.signed_in_at, true)))).size(12.).color(muted));
+        .child(Label::new(SharedString::from(format!("Signed in {}", fmt::medium_date(d.signed_in_at)))).size(12.).color(muted));
 
     div()
         .flex()
@@ -293,7 +294,10 @@ impl Render for DevicesTab {
             Some(Confirming::AllOthers { count }) => (
                 "Sign out of all other devices?",
                 "Sign out all",
-                format!("Every device but this one ({count}) will be signed out and need your password to sign in again."),
+                format!(
+                    "Every device but this one ({}) will be signed out and need your password to sign in again.",
+                    fmt::count(*count)
+                ),
             ),
             Some(Confirming::One(id)) => {
                 let d = list.iter().flatten().find(|d| d.id == *id);

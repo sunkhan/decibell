@@ -11,7 +11,6 @@ use decibell_common::{UserAvatar, Watch};
 use decibell_model::live::presence::avatars::AvatarsChanged;
 use decibell_model::stores::users::NamesChanged;
 use decibell_model::Model;
-use decibell_model::chat::time::format_clock;
 use decibell_model::stores::settings::TimeFormat;
 use decibell_theme::{
     DEFAULT_ROW_SCALE, DEFAULT_TEXT_SIZE_PX, ROW_SCALE_MAX, ROW_SCALE_MIN, ROW_SCALE_STEP, TEXT_SIZE_MAX_PX,
@@ -27,14 +26,9 @@ use gpui::{
 };
 
 use super::TabId;
+use crate::fmt;
 use crate::rows::{Btn, Look, hover, section_label};
 use crate::window::CloseLink;
-
-/// An afternoon time, so the 12- and 24-hour samples differ (`SAMPLE_TIME`, 2026-01-01 14:32 local).
-fn sample_time() -> i64 {
-    use chrono::{Local, TimeZone as _};
-    Local.with_ymd_and_hms(2026, 1, 1, 14, 32, 0).single().map_or(0, |t| t.timestamp())
-}
 
 #[derive(Clone, Copy, PartialEq)]
 struct Shown {
@@ -308,7 +302,7 @@ impl Render for AppearanceTab {
 
         // Text size: a real message row (the sample scales as the chat will).
         let name_color = decibell_ui::identity::name_color(theme, person_slot(me, username.as_deref().unwrap_or("?")));
-        let time_label = format!("Today at {}", format_clock(sample_time(), s.time_format));
+        let time_label = format!("Today at {}", fmt::clock(fmt::sample_time(), s.time_format));
         let scaled = theme.scaled;
         let avatar: AnyElement = match &username {
             Some(name) => UserAvatar::new(me, name.clone(), 38.).into_any_element(),
@@ -441,11 +435,13 @@ impl Render for AppearanceTab {
         );
 
         let theme = cx.theme();
-        let sample = sample_time();
+        let sample = fmt::sample_time();
+        // The renderer said "Follows your system language": here Automatic is the system's
+        // regional format (owner, 2026-11-26), and the text says so.
         let note = if s.time_format == TimeFormat::Auto {
-            format!("Follows your system language: {}.", format_clock(sample, TimeFormat::Auto))
+            format!("Follows your system's regional format: {}.", fmt::clock(sample, TimeFormat::Auto))
         } else {
-            format!("Times show as {}.", format_clock(sample, s.time_format))
+            format!("Times show as {}.", fmt::clock(sample, s.time_format))
         };
         let time = div()
             .mt_6()

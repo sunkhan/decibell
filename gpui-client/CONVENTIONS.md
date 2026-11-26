@@ -349,6 +349,9 @@ avatar editor subscribes and opens over Settings).
   is Network's typed custom speed (applied on Enter or blur): while it is unapplied the tab shows the
   `SaveBar` and leaving (Esc, ✕, the backdrop, another tab) shakes it (`TabView::dirty` / `nudge`). A new
   drafted field: make the tab's `dirty()` say so and give it a `SaveBar`; the window does the rest.
+- **Dates, times of day and counts** go through `fmt.rs` only (en-US for now; the system's regional
+  format through `decibell_model::regional` replaces its bodies). Automatic time format means the
+  system's regional setting (the renderer said "system language").
 - **Text fields** are drawn by `fields.rs` (`Input` + `InputBox`: the dialogs' `bg-bg-dark rounded-sm` look
   and Network's compact box, which the kit's `TextField` doesn't have). Until `decibell-text`'s editor is
   wired, the views hold the text and the self-tests set it (`set_fields`, `set_rename_fields`,

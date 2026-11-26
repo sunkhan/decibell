@@ -416,33 +416,6 @@ pub fn away_after_label(minutes: u32) -> String {
     if minutes == 1 { "1 minute".into() } else { format!("{minutes} minutes") }
 }
 
-/// `formatAgo` (`features/transfers/format.ts`): "just now", "5 min ago", "3 h ago", "yesterday",
-/// else the local date ("Nov 20").
-pub fn format_ago(at: i64, now: i64) -> String {
-    let s = (now - at).max(0);
-    if s < 60 {
-        return "just now".into();
-    }
-    if s < 3600 {
-        return format!("{} min ago", s / 60);
-    }
-    if s < 86_400 {
-        return format!("{} h ago", s / 3600);
-    }
-    if s < 2 * 86_400 {
-        return "yesterday".into();
-    }
-    local_date(at, false)
-}
-
-/// `toLocaleDateString(undefined, { month: "short", day: "numeric" [, year: "numeric"] })` in an
-/// English locale: "Nov 20" / "Nov 20, 2026".
-pub fn local_date(at: i64, year: bool) -> String {
-    use chrono::{Local, TimeZone as _};
-    let Some(date) = Local.timestamp_opt(at, 0).single() else { return String::new() };
-    if year { date.format("%b %-d, %Y").to_string() } else { date.format("%b %-d").to_string() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,11 +427,5 @@ mod tests {
         assert_eq!(away_after_label(15), "15 minutes");
         assert_eq!(away_after_label(60), "1 hour");
         assert_eq!(away_after_label(120), "2 hours");
-        let now = 1_800_000_000;
-        assert_eq!(format_ago(now - 10, now), "just now");
-        assert_eq!(format_ago(now - 5 * 60, now), "5 min ago");
-        assert_eq!(format_ago(now - 3 * 3600, now), "3 h ago");
-        assert_eq!(format_ago(now - 30 * 3600, now), "yesterday");
-        assert_eq!(format_ago(now + 50, now), "just now", "a clock ahead of ours");
     }
 }

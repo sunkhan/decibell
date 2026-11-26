@@ -1155,6 +1155,26 @@ async fn check_shake(cx: TestCx) -> Result<()> {
     log_out(&cx).await
 }
 
+/// Sleeps `duration` watching what draws a frame that isn't ours: the focus changing hands, the
+/// pointer moving over the window. Returns what happened ("" when nothing).
+async fn watched_sleep(cx: &TestCx, duration: Duration) -> Result<String> {
+    let state = |cx: &TestCx| cx.update(|window, _| (window.is_window_active(), window.mouse_position()));
+    let mut last = state(cx)?;
+    let (mut flips, mut moved) = (0, false);
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        cx.sleep(Duration::from_millis(100)).await;
+        let now = state(cx)?;
+        flips += usize::from(now.0 != last.0);
+        moved |= now.1 != last.1;
+        last = now;
+    }
+    Ok(match (flips, moved) {
+        (0, false) => String::new(),
+        (flips, moved) => format!("; disturbed: {flips} focus changes{}", if moved { ", the pointer moved" } else { "" }),
+    })
+}
+
 async fn check_idle(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     let tabs: Vec<TabId> = TabId::ALL.into_iter().collect();
@@ -1162,23 +1182,24 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     for tab in tabs {
         open_on(&cx, tab).await?;
         park(&cx)?;
-        // The stack is shared (other clients of perf1 sign in and out, presence moves): a try
-        // counts only when no core event arrived in it; up to five tries.
+        // The stack is shared (other clients of perf1 sign in and out, presence moves) and other
+        // windows take and give the focus (GPUI redraws the whole window then): a try that drew
+        // counts only when no core event arrived and nothing disturbed the window; five tries.
         let mut last = String::new();
         let mut ok = false;
         for attempt in 1..=5 {
             let before = settle_drawn(&cx).await?;
             let events_before = cx.update(|_, cx| model(cx).pump_stats().events)?;
-            cx.sleep(Duration::from_secs(5)).await;
+            let disturbed = watched_sleep(&cx, Duration::from_secs(5)).await?;
             let frames = cx.frames()?.since(before);
             let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events_before;
             last = format!(
-                "{}: {} drawn, {} presented in 5 s (try {attempt}; {events} core events)",
+                "{}: {} drawn, {} presented in 5 s (try {attempt}; {events} core events{disturbed})",
                 tab.label(),
                 frames.drawn,
                 frames.presented
             );
-            if events > 0 && frames.drawn > 0 {
+            if (events > 0 || !disturbed.is_empty()) && frames.drawn > 0 {
                 continue;
             }
             ok = frames.drawn == 0;
