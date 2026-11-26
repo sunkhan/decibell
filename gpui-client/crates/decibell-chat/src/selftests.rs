@@ -784,6 +784,8 @@ struct RegionalCase {
     stamp: fn(&decibell_model::regional::LocalTime) -> String,
     day_first: bool,
     online: &'static str,
+    /// A 12-hour clock ("2:32 PM"); else "14:32".
+    hour12: bool,
 }
 
 /// Starts the app as a child (`--screen main-server --selftest regional-read`) under each case's
@@ -813,15 +815,16 @@ async fn regional(cx: TestCx) -> Result<()> {
         format!("{:02}/{:02}/{}, at {hour}:{:02} {}", t.date.month, t.date.day, t.date.year, t.minute, if t.hour < 12 { "AM" } else { "PM" })
     }
     let cases = [
-        RegionalCase { name: "LC_TIME=de_DE.UTF-8", env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "de_DE.UTF-8"), ("LC_NUMERIC", "de_DE.UTF-8")], stamp: de, day_first: true, online: "ONLINE — 1.234" },
-        RegionalCase { name: "LC_TIME=C", env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "C"), ("LC_NUMERIC", "C")], stamp: neutral, day_first: true, online: "ONLINE — 1234" },
-        RegionalCase { name: "LC_ALL=en_US.UTF-8", env: &[("LC_ALL", "en_US.UTF-8")], stamp: en_us, day_first: false, online: "ONLINE — 1,234" },
+        RegionalCase { name: "LC_TIME=de_DE.UTF-8", env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "de_DE.UTF-8"), ("LC_NUMERIC", "de_DE.UTF-8")], stamp: de, day_first: true, online: "ONLINE — 1.234", hour12: false },
+        RegionalCase { name: "LC_TIME=C", env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "C"), ("LC_NUMERIC", "C")], stamp: neutral, day_first: true, online: "ONLINE — 1234", hour12: false },
+        RegionalCase { name: "LC_ALL=en_US.UTF-8", env: &[("LC_ALL", "en_US.UTF-8")], stamp: en_us, day_first: false, online: "ONLINE — 1,234", hour12: true },
         RegionalCase {
             name: "the owner's: LANG=en_US.UTF-8 LC_TIME=C LC_NUMERIC=de_DE.UTF-8",
             env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "C"), ("LC_NUMERIC", "de_DE.UTF-8")],
             stamp: neutral,
             day_first: true,
             online: "ONLINE — 1.234",
+            hour12: false,
         },
     ];
     // The per-row cost in this (release) build: the header time of a message from last week, as a
@@ -856,7 +859,8 @@ async fn regional(cx: TestCx) -> Result<()> {
     let exe = std::env::current_exe()?;
     for case in &cases {
         let mut command = std::process::Command::new(&exe);
-        command.args(["--screen", "main-server", "--selftest", "regional-read"]);
+        // `regional-read-crates` is the app's: the labels of the crates this one can't reach.
+        command.args(["--screen", "main-server", "--selftest", "regional-read,regional-read-crates"]);
         for name in ["LC_ALL", "LC_TIME", "LC_NUMERIC", "LANG"] {
             command.env_remove(name);
         }
@@ -889,6 +893,42 @@ async fn regional(cx: TestCx) -> Result<()> {
         let online = line("members").with_context(|| format!("{}: the child printed no member count:\n{stdout}", case.name))?;
         ensure!(online == case.online, "{}: the member list's header reads {online:?}, expected {:?}", case.name, case.online);
         cx.log(format_args!("{}: {stamp:?} · {divider:?} · {online:?}", case.name));
+
+        // One label of each crate that draws a date, a time or a count, 40 days ago.
+        let clock = |t: &LocalTime| {
+            if case.hour12 {
+                let hour = if t.hour.is_multiple_of(12) { 12 } else { t.hour % 12 };
+                format!("{hour}:{:02} {}", t.minute, if t.hour < 12 { "AM" } else { "PM" })
+            } else {
+                format!("{:02}:{:02}", t.hour, t.minute)
+            }
+        };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let today = decibell_model::regional::local(now).context("today")?;
+        let (at, audit) = timed("audit")?;
+        let (day, year) = (at.date.day, at.date.year);
+        let (long, short) = (decibell_model::regional::month_name(at.date.month), MONTHS[at.date.month as usize - 1]);
+        let expected = match (case.day_first, year == today.date.year) {
+            (true, true) => format!("{day} {long}"),
+            (true, false) => format!("{day} {long} {year}"),
+            (false, true) => format!("{long} {day}"),
+            (false, false) => format!("{long} {day}, {year}"),
+        };
+        ensure!(audit == expected, "{}: the audit log's day heading reads {audit:?}, expected {expected:?}", case.name);
+        let (_, ago) = timed("ago")?;
+        let expected = if case.day_first { format!("{day} {short}") } else { format!("{short} {day}") };
+        ensure!(ago == expected, "{}: the Transfers panel's time reads {ago:?}, expected {expected:?}", case.name);
+        let (_, viewer) = timed("viewer")?;
+        let expected = (case.stamp)(&at);
+        ensure!(viewer == expected, "{}: the viewer's posted line reads {viewer:?}, expected {expected:?}", case.name);
+        let (_, invite) = timed("invite")?;
+        let expected = format!("{} members", case.online.trim_start_matches("ONLINE — "));
+        ensure!(invite == expected, "{}: the invite card reads {invite:?}, expected {expected:?}", case.name);
+        let (_, search) = timed("search")?;
+        let medium = if case.day_first { format!("{day} {short} {year}") } else { format!("{short} {day}, {year}") };
+        let expected = format!("{medium} at {}", clock(&at));
+        ensure!(search == expected, "{}: the search result's time reads {search:?}, expected {expected:?}", case.name);
+        cx.log(format_args!("{}: audit {audit:?} · transfers {ago:?} · viewer {viewer:?} · invite {invite:?} · search {search:?}", case.name));
     }
     Ok(())
 }

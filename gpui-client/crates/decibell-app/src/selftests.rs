@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
 use decibell_harness::{SelfTest, TestCx, perf};
 use decibell_theme::ThemeId;
 use decibell_ui::{ActiveTheme as _, Theme, fonts};
@@ -33,6 +33,11 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         crate::software_codecs::selftest(),
         crate::hotkeys::selftest(),
+        SelfTest {
+            name: "regional-read-crates",
+            about: "(the regional self-test's child) the labels other crates draw in this process's regional formats: the audit log's day heading, the Transfers panel's time, the viewer's posted line, the invite card's member count, a search result's time",
+            run: |cx| Box::pin(regional_read_crates(cx)),
+        },
         SelfTest {
             name: "render-cost",
             about: "what one change costs in views rendered and main-thread time, with nested cached views replayed (GPUI patch 0014) and as GPUI was",
@@ -250,5 +255,27 @@ async fn themes(cx: TestCx) -> Result<()> {
     cx.update(|_, cx| Theme::set(cx, original))?;
     cx.settle().await?;
     cx.log("F8 steps the theme in one frame");
+    Ok(())
+}
+
+/// The child half of `decibell-chat`'s `regional` self-test for the crates it can't reach: one label
+/// from each crate that draws a date, a time of day or a count, as that crate composes it, for a
+/// moment 40 days ago (so every one takes its dated form), printed as `regional-read: <key> <secs>
+/// <label>` for the parent to compare with the case's formats.
+async fn regional_read_crates(cx: TestCx) -> Result<()> {
+    use decibell_model::regional::{Regional, local};
+    use decibell_model::stores::settings::TimeFormat;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+    let then = now - 40 * 86_400;
+    let (at, today) = (local(then).context("a local time")?, local(now).context("today")?);
+    cx.log(format_args!("regional formats: {}", Regional::get().origin()));
+    let mut labels = vec![("audit", decibell_server_settings::server::audit::day_heading(at.date, today.date).0)];
+    labels.extend(decibell_chat_content::regional_labels(then, now, 1234, TimeFormat::Auto));
+    let today_day = cx.update(|_, cx| decibell_search::format::today(cx))?;
+    labels.push(("search", decibell_search::format::result_stamp(then, today_day, TimeFormat::Auto)));
+    for (key, label) in labels {
+        println!("regional-read: {key} {then} {label}");
+        cx.log(format_args!("{key}: {label:?}"));
+    }
     Ok(())
 }

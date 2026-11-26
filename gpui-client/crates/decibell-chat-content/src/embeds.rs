@@ -738,7 +738,7 @@ impl EmbedsSlot {
         if !view.invalid && (view.members.is_some() || view.joined) {
             let mut meta = div().mt(px(2.)).flex();
             if let Some(n) = view.members {
-                meta = meta.child(label(format!("{} {}", crate::fmt::count(n as i64), if n == 1 { "member" } else { "members" }), &style.invite_meta, Wrapping::NOWRAP));
+                meta = meta.child(label(invite_members(n as i64), &style.invite_meta, Wrapping::NOWRAP));
             }
             if view.joined {
                 let text = if view.members.is_some() { "· Joined" } else { "Joined" };
@@ -922,4 +922,9 @@ mod tests {
         assert_eq!(parse_hex("#5865f2"), Some(gpui::rgb(0x5865f2).into()));
         assert_eq!(parse_hex("red"), None);
     }
+}
+
+/// The invite card's member count ("1,234 members", in the system's digit grouping).
+pub(crate) fn invite_members(n: i64) -> String {
+    format!("{} {}", crate::fmt::count(n), if n == 1 { "member" } else { "members" })
 }

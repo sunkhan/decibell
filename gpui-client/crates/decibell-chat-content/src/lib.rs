@@ -56,6 +56,18 @@ pub fn fixture_mode(cx: &App) -> bool {
 
 /// Once at start-up (the app's `registry::init_features`): the picture pipeline on the core's
 /// fetcher, the row slots, the image menu.
+/// The labels this crate draws in the system's regional formats, as it draws them, for the app's
+/// `regional` self-test: the Transfers panel's time of a download finished at `then` (unix
+/// seconds), the image viewer's "posted" line of a picture sent then, the invite card's member
+/// count.
+pub fn regional_labels(then: i64, now: i64, members: i64, format: decibell_model::stores::settings::TimeFormat) -> Vec<(&'static str, String)> {
+    vec![
+        ("ago", fmt::ago(then * 1000, now * 1000)),
+        ("viewer", fmt::posted_at(Some(then), format)),
+        ("invite", embeds::invite_members(members)),
+    ]
+}
+
 pub fn init(cx: &mut App) {
     install(decibell_unfurl_fetcher(), false, cx);
 }

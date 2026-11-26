@@ -637,8 +637,8 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
   its pixels tell). Never make a height depend on whether a picture has loaded otherwise.
 - **The player seam** (`src/player.rs`): the video / audio cards set `model.chat.video` / `chat.audio` and record
   where each video surface was drawn (`VideoHosts`); the persistent players (another crate) serve that.
-- **Dates, times of day and counts** go through the private `fmt.rs` only (owner decision 2026-11-26: they will
-  follow the system's regional formats); sizes, speeds and durations keep the renderer's formatting.
+- **Dates, times of day and counts** go through the private `fmt.rs` only, which writes them with
+  `decibell_model::regional` (the system's formats); sizes, speeds and durations keep the renderer's formatting.
 - **Groups fade as one layer in CSS, not in GPUI**: `.opacity()` fades every primitive on its own, so whatever is
   painted under a faded picture or label shows through it (a thumbnail over its blur, a button label over its
   fill). Paint nothing under a faded picture once it is in, or mix the faded colours yourself (the invite card's
