@@ -646,14 +646,18 @@ draws it (`metal_renderer.rs:1237`). Its limits today: full-range 4:2:0 bi-plana
 
 A second prefix, **`gpui-client/vendor/ffmpeg`**, built by **`gpui-client/tools/build-ffmpeg.sh`** (a variant
 of `electron-client/native/scripts/build-ffmpeg-linux.sh`; the Electron script and prefix are untouched). The
-script pins every source it fetches by version and SHA-256 (FFmpeg 8.1.3, dav1d 1.5.3, nasm 2.16.03,
-nv-codec-headers n13.0.19.0, Vulkan-Headers v1.4.335; the hashes are those of the archives as downloaded on
-2026-11-26, not checked against upstream signatures), is a no-op when the prefix's stamp matches, refuses
-`--enable-gpl` / `--enable-nonfree` / `--enable-version3` and fails if the configured tree's `config.h` is not
-"LGPL version 2.1 or later" or lacks a component the client opens by name. The client links this one FFmpeg
-for decode (this crate) and encode (`crates/decibell-core`, `ffmpeg-next` with `static`: the same libraries and
-the same NVENC / VAAPI encoder set as the Electron prefix). FFmpeg **8.1.3**, static, LGPL (no `--enable-gpl`, no `--enable-nonfree`), linked through
-`ffmpeg-sys-next` 8.1 with the `static` feature and `PKG_CONFIG_PATH=gpui-client/vendor/ffmpeg/lib/pkgconfig`.
+script pins every source it fetches by version and SHA-256 (FFmpeg 8.1.3, dav1d 1.5.3, SVT-AV1 v4.2.0, nasm
+2.16.03, nv-codec-headers n13.0.19.0, Vulkan-Headers v1.4.335; the hashes are those of the archives as
+downloaded on 2026-11-26, not checked against upstream signatures), is a no-op when the prefix's stamp matches,
+refuses `--enable-gpl` / `--enable-nonfree` / `--enable-version3` and fails if the configured tree's `config.h`
+is not "LGPL version 2.1 or later" or lacks a component the client opens by name. The client links this one
+FFmpeg for decode (this crate) and encode (`crates/decibell-core`, `ffmpeg-next` with `static`: the Electron
+prefix's NVENC / VAAPI encoders plus `scale_vaapi`, the VAAPI encoders' GPU conversion, and **SVT-AV1**, the
+software encoder of a machine with no working hardware one: `crates/decibell-core/tools/ffmpeg-encoders.md`).
+FFmpeg **8.1.3**, static, LGPL (no `--enable-gpl`, no `--enable-nonfree`), linked through `ffmpeg-sys-next` 8.1
+with the `static` feature and `PKG_CONFIG_PATH=gpui-client/vendor/ffmpeg/lib/pkgconfig`. `decibell-app`'s
+`build.rs` refuses to build against a prefix without `libsvtav1`, `libdav1d`, `h264` and `hevc`, and
+`decibell --selftest encoder-software` encodes with SVT-AV1 and decodes back with this crate's software path.
 
 - **Why static, why a second prefix**: static keeps one self-contained binary and the exact FFmpeg the Vulkan
   code was tested with (the hwaccel is young: distributions ship 7.x to 9.x). The Electron addon's prefix has
@@ -663,18 +667,22 @@ the same NVENC / VAAPI encoder set as the Electron prefix). FFmpeg **8.1.3**, st
   uses and they bind 8.0 / 8.1. The system FFmpeg 9.1 decodes all three codecs with `-hwaccel vulkan` on this
   driver too (checked with the CLI before building anything).
 - **The script fetches and builds, with no sudo**: nasm 2.16.03 (not installed here; without it the software
-  decoders lose their SIMD), Vulkan-Headers v1.4.335 (header-only; not installed here; FFmpeg `dlopen`s
-  `libvulkan.so.1` at run time), nv-codec-headers n13.0.19.0 (as Electron), meson in a venv and **dav1d 1.5.3
-  as a static library** (BSD-2-Clause). Needs from the system: a C toolchain, make, curl, tar, python3, ninja,
-  pkg-config, libva and libdrm headers (libdrm is required, not probed: the prefix must not differ between
-  machines).
+  decoders and SVT-AV1 lose their SIMD), Vulkan-Headers v1.4.335 (header-only; not installed here; FFmpeg
+  `dlopen`s `libvulkan.so.1` at run time), nv-codec-headers n13.0.19.0 (as Electron), meson in a venv, **dav1d
+  1.5.3 as a static library** (BSD-2-Clause) and **SVT-AV1 v4.2.0 as a static library** (cmake, PIC, LTO off:
+  BSD-3-Clause-Clear with the Alliance for Open Media Patent License 1.0; 4.0+ is needed, it takes a key frame
+  request in low-delay mode). Licence files go to `<prefix>/share/licenses`. Needs from the system: a C / C++
+  toolchain, make, cmake, curl, tar, python3, ninja, pkg-config, libva and libdrm headers (libdrm is required,
+  not probed: the prefix must not differ between machines). `--stage <dir>` builds beside the prefix with
+  pkg-config files that already name it, so a prefix other worktrees link is replaced by two renames.
 
 ```
 ./configure --prefix=$PREFIX --pkg-config-flags=--static --extra-cflags=-I$PREFIX/include --extra-ldflags=-L$PREFIX/lib \
   --enable-static --disable-shared --enable-pic \
   --disable-programs --disable-doc --disable-network --disable-autodetect --disable-everything \
-  --enable-avcodec --enable-avutil --enable-swscale --enable-avformat --enable-swresample \
-  --enable-vulkan --enable-ffnvcodec --enable-nvenc --enable-nvdec --enable-vaapi --enable-libdrm --enable-libdav1d \
+  --enable-avcodec --enable-avutil --enable-swscale --enable-avformat --enable-swresample --enable-avfilter \
+  --enable-vulkan --enable-ffnvcodec --enable-nvenc --enable-nvdec --enable-vaapi --enable-libdrm \
+  --enable-libdav1d --enable-libsvtav1 \
   --enable-decoder=h264,hevc,av1,libdav1d \
   --enable-parser=h264,hevc,av1 \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,av1_frame_split,av1_frame_merge,extract_extradata \
@@ -682,12 +690,18 @@ the same NVENC / VAAPI encoder set as the Electron prefix). FFmpeg **8.1.3**, st
   --enable-hwaccel=h264_nvdec,hevc_nvdec,av1_nvdec \
   --enable-hwaccel=h264_vaapi,hevc_vaapi,av1_vaapi \
   --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc --enable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi \
-  --enable-filter=scale --enable-protocol=file
+  --enable-encoder=libsvtav1 \
+  --enable-filter=scale,scale_vaapi --enable-protocol=file
 ```
+
+(Before 2026-11-26's software encoder work the line had no `--enable-avfilter` (libavfilter was built anyway:
+FFmpeg builds every library unless told not to), no `--enable-libsvtav1` / `--enable-encoder=libsvtav1` and
+only `--enable-filter=scale`. What the new prefix has beyond the old one, listed from its libraries: the
+`libsvtav1` encoder and the `scale_vaapi` filter, nothing else; same decoders, hwaccels, parsers, bsfs.)
 
 - `av1` is FFmpeg's native AV1 decoder, which only decodes through a hwaccel; `libdav1d` is the software one
   (`avcodec_find_decoder(AV_CODEC_ID_AV1)` returns dav1d, so the hardware path opens `"av1"` by name).
-- The prefix is 8 static libraries; the prototype binary (GPUI + wgpu + FFmpeg + dav1d, release, with limited
+- The prefix is 9 static libraries (SVT-AV1's is 9.9 MB, 7.2 MB of it code); the prototype binary (GPUI + wgpu + FFmpeg + dav1d, release, with limited
   debug info) is 34.6 MB stripped (316 MB with its debug info). It loads `libva.so.2`, `libva-drm.so.2` and `libdrm.so.2`
   dynamically (FFmpeg's VAAPI support, as in the Electron prefix): present on every desktop distribution, but a
   hard dependency of the binary.

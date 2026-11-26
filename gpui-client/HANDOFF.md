@@ -73,7 +73,7 @@ screens in all seven themes beside Electron's.
 | Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
 | Core: voice / media plane without polling | done `344068e`..`5840094` (Electron's bar passed on the merged tree: 419 core tests; Windows check run 45855500083 green): UDP receive loops block instead of polling at 1 ms, the video receive thread exists only while a stream is watched or sent, a talking peer allocates nothing per packet (PCM sample-identical in tests), `FrameBuf` keeps FFmpeg's padding, system idle as an event on Wayland. **No audio stream or processing is paused** (owner rule). In a voice channel alone and muted: 1,380 → 766 wakeups/s; what remains is the device clock and the 5 ms audio tick |
 | Encoder quality (NVENC HEVC bitrate undershoot, per-codec tuning, colour signalling) | in progress, worktree `.worktrees/core-quality` (`wip/core-quality`) |
-| Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software (**against a scratch FFmpeg prefix: the client's own `tools/build-ffmpeg.sh` and the Windows vcpkg FFmpeg don't include SVT-AV1 yet, so the software fallback is not in the client's build until the `wip/ffmpeg-sw` work lands**); VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
+| Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software. **The software fallback is in the client's build** (`4e4c737`, Windows `14ff419`): `tools/build-ffmpeg.sh` builds SVT-AV1 4.2.0 into `vendor/ffmpeg` (rebuilt and swapped in on this machine; `scale_vaapi` too), `crates/decibell-app/build.rs` refuses an FFmpeg without `libsvtav1` and the software decoders, self-test `encoder-software` and `decibell-headless dump codecs` show it (`DECIBELL_ENCODER=software` → AV1 on `software`); Windows: vcpkg overlay ports `tools/vcpkg-overlay` (the pinned FFmpeg 8.0.1 + upstream's `svt-av1` feature + FFmpeg's own `libsvtav1.c` fix for SVT-AV1 4.x, SVT-AV1 4.2.0), installed by the Windows job's `gpui-client` step, **never built on Windows yet** (the first CI run is the check; checked on Linux: 8.0.1 + the fix + 4.2.0 passes the core's software tests); VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
 | Shell (`decibell-common`, `decibell-shell`, app boot with core + model) | done `f4ac4fe`: sign-in / register pages, server bar, channel sidebar with voice rosters, user panel, member list, friends frame, pane / overlay / menu registration (CONVENTIONS "Shell"); self-tests `shell-signin`, `-navigate`, `-members`, `-idle`, `-signout`, `-no-keyring`; captures within 0.3–1.2 % of Electron's; numbers in §4 "Shell". Left: channel drag-to-reorder, panes of the other features |
 | Voice view, stream watching, mini-player, Go Live, calls (`decibell-voice`) + the stream bot for measurements | in progress, worktree `.worktrees/voice` (`wip/voice`) |
 | Settings window (all tabs) + passphrase dialog (`decibell-settings`) | in progress, worktree `.worktrees/settings` (`wip/settings`) |
@@ -138,11 +138,48 @@ cargo build -p decibell-app             # debug: our crates unoptimised, depende
   `patches/README.md`. `Cargo.lock` started as Zed's own, so GPUI's dependencies are at the versions Zed ships.
 - **FFmpeg**: the client links one static, LGPL FFmpeg 8.1 for decode (`crates/decibell-video`) and encode
   (`crates/decibell-core`), from `vendor/ffmpeg`; `.cargo/config.toml` points pkg-config at it.
-  `tools/build-ffmpeg.sh` builds it (no sudo; about 3 minutes; a no-op when the prefix is current): it fetches
-  FFmpeg 8.1.3, dav1d, nasm, nv-codec-headers and the Vulkan headers, each checked against a pinned SHA-256,
-  and fails if the configured tree is not LGPL-2.1+. It needs a C toolchain, make, curl, python3, ninja and
-  the libva + libdrm headers. A prefix built before the script existed has no stamp and is rebuilt on the first
-  run. Test streams for the video tests: `tools/streamgen/make-streams.sh` (needs NVENC) → `vendor/streams`.
+  `tools/build-ffmpeg.sh` builds it (no sudo; under 2 minutes with 8 jobs; a no-op when the prefix is current):
+  it fetches FFmpeg 8.1.3, dav1d 1.5.3, SVT-AV1 4.2.0, nasm, nv-codec-headers and the Vulkan headers, each
+  checked against a pinned SHA-256, and fails if the configured tree is not LGPL-2.1+ or lacks a component the
+  client opens by name. It needs a C / C++ toolchain, make, cmake, curl, python3, ninja and the libva + libdrm
+  headers. In it: the hardware decoders (Vulkan, NVDEC, VAAPI hwaccels) and the software ones (H.264, HEVC,
+  dav1d for AV1); the NVENC and VAAPI encoders with `scale_vaapi` (the VAAPI encoders' GPU conversion), and
+  **SVT-AV1, the software encoder** of a machine without a working hardware one; licence files in
+  `vendor/ffmpeg/share/licenses` (SVT-AV1: BSD-3-Clause-Clear + the AOM patent licence; a release adds them to
+  `THIRD_PARTY_LICENSES.md`). The prefix is 79 MB (69 MB before SVT-AV1); the stripped release `decibell`
+  grows by 9.5 MB (53.7 → 63.1 MB, measured 2026-11-26: `.text` +8.3 MB, SVT-AV1's encoder kernels) and links
+  no new shared library. `crates/decibell-app/build.rs` refuses to build against an FFmpeg without `libsvtav1`
+  and the software decoders; `decibell --selftest encoder-software` checks the binary itself (SVT-AV1 encodes
+  through the stream's encoder, a requested key frame comes, the video crate's software path decodes every
+  frame back). A prefix built before the script existed has no stamp and is rebuilt on the first run. Test
+  streams for the video tests: `tools/streamgen/make-streams.sh` (needs NVENC) → `vendor/streams`.
+- **Replacing `vendor/ffmpeg`** (worktrees link it, and their builds may be running): build beside it,
+  `tools/build-ffmpeg.sh --stage vendor/ffmpeg.new` (the stage's pkg-config files already name
+  `vendor/ffmpeg`), check it, then `mv vendor/ffmpeg vendor/ffmpeg.old && mv vendor/ffmpeg.new vendor/ffmpeg`.
+  **A target directory that linked the old prefix keeps it**: ffmpeg-sys-next bundles the static libraries
+  into its rlib and its build script does not re-run when they change, so run `cargo clean -p ffmpeg-sys-next`
+  in each target directory (`build.rs` reads the new prefix and passes while the binary still holds the old
+  one; `--selftest encoder-software` / `decibell-headless dump codecs` tell).
+- **FFmpeg on Windows** is vcpkg's, at CI's pin, with **the client's overlay ports**
+  (`tools/vcpkg-overlay`: an `ffmpeg` 8.0.1 port with an `svt-av1` feature and an `svt-av1` 4.2.0 port; what
+  differs from upstream: `crates/decibell-core/tools/ffmpeg-encoders.md`, Windows). In its own vcpkg tree,
+  not the Electron addon's: one tree holds one FFmpeg, and the addon's build copies only the FFmpeg DLLs, so an
+  FFmpeg that needs `SvtAv1Enc.dll` / `dav1d.dll` would not load there. The binary cache is shared, so ports
+  both trees use are built once. From PowerShell, in the checkout:
+  ```powershell
+  git clone https://github.com/microsoft/vcpkg C:\dev\vcpkg-gpui
+  git -C C:\dev\vcpkg-gpui checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+  C:\dev\vcpkg-gpui\bootstrap-vcpkg.bat -disableMetrics
+  C:\dev\vcpkg-gpui\vcpkg.exe install "ffmpeg[nvcodec,amf,qsv,dav1d,svt-av1]:x64-windows" `
+      "--overlay-ports=$PWD\gpui-client\tools\vcpkg-overlay"
+  # every dev shell for the GPUI client:
+  $env:VCPKG_ROOT = "C:\dev\vcpkg-gpui"                                  # ffmpeg-sys-next and build.rs read it
+  $env:Path = "C:\dev\vcpkg-gpui\installed\x64-windows\bin;$env:Path"   # the DLLs, to run decibell / tests
+  $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"                             # audiopus_sys's libopus vs CMake 4
+  ```
+  The Windows Native Check's `gpui-client` job installs the same line. After a change to the overlay:
+  `vcpkg.exe remove ffmpeg svt-av1 --recurse`, then the `install` line again (classic mode does not rebuild an
+  installed port whose recipe changed). Not yet run on Windows: the first CI run is the check.
 - **Never build the shipped binary with `--features capture` or `--all-features`**: that feature turns on
   GPUI's test platform. `cargo build --workspace` is fine (the capture tool is skipped without its feature).
 
