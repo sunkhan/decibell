@@ -365,7 +365,8 @@ every other setting with `settings.update(cx, |s, cx| s.change(|v| v.aec_enabled
 
 The core and every store of the model with no window, driven by a script on the command line; one process per
 client. `cargo run -p decibell-model --bin decibell-headless -- --help` documents every step in one text, grouped:
-account and communities (`login <account>`, `logout`, `wait booted | logged-in | logged-out | connected
+account and communities (`login <account>`, `logout` (`actions::auth::log_out`: Settings → Account's Log Out,
+which hangs up a call first; `actions::auth::sign_out` is the bare sign-out), `wait booted | logged-in | logged-out | connected
 <community> | roster <community> | online / offline <community> <user>`, `open-server`, `open-channel`, `idle
 <seconds>`, `print`, `wait-file`), messages (`history`, `send`, `edit`, `delete`, `dm-*`, `search`, `wait-*`: §15),
 live (`voice-join`, `mute` / `deafen`, `status`, `friends`, `e2ee-ready`, `call`, `watch`, `wait voice | mls |
@@ -756,8 +757,9 @@ their two `…::new(cx)` lines in `Model::build`, and `model.chat.follow_navigat
   (M3 adopts the account's value, `actions::dm::set_friends_only_dms` is the Privacy toggle). The E2EE status
   the DM composer's banner shows is read from `model.live.e2ee`.
 - **The app**: a `MediaProbe` for video / audio facts at attach time (the composer probes pictures
-  only: `upload::prepare(source, None)`); the Settings → Network speed caps (`Attachments::limits()`,
-  reachable through `CoreAttachmentService::attachments()`).
+  only: `upload::prepare(source, None)`). The Settings → Network speed caps are the model's: it calls
+  `CoreAttachmentService::set_limits(upload, download)` on every `Settings` change (loaded or edited), which
+  applies them to a running `Attachments` at once and to one made later at its creation.
 
 ### 15.8 Tests and measurements
 
@@ -863,7 +865,7 @@ creating / dropping hundreds of entities with their observers.
 | Uploads | done by the model (§16): `bridge::install` sets the composer as the `UploadControl` and mirrors its pendings through `actions::transfers::sync_uploads` | Nothing for the app. Rows: `go_to_upload` / `go_to_download` for "Go to message". |
 | Taskbar / quit guard | observe `transfers`: `progress()` (fraction or none, paused-only) and `uploads_in_flight()` | Electron throttled the platform call to 4 / s. |
 | Window | observe `voice.watching.fullscreen`; `live::window_title(model, cx)` (reads the open DM itself) when `nav`, `servers`, `dm.list` or `NamesChanged` fire | Set the title only when it differs. |
-| Hotkeys | window key events → `hotkeys.update(|h, _| h.key_event(event.code, Some(&event.keystroke), down))` (modifier keys: `ModifiersChangedEvent::key` → `h.key_event(key.code, None, key.pressed)`), blur → `window_blurred()`; the Keybinds tab feeds a `live::hotkeys::Recorder` the same events; `actions::hotkeys::inject_cli(arg)` from the single-instance glue (`--hotkey=<action>[:down\|:up]`) | Codes are `KeyboardEvent.code` names, from the event's physical key (`live::hotkeys::code_of`, GPUI patch 0012: layout-independent). Only where the platform reports none (macOS at the patch) is the name guessed from the character (`code_from_gpui_key`, US layout). |
+| Hotkeys | (wired: `decibell-app/src/hotkeys.rs`, on the root view, which holds the focus when nothing else does) window key events → `hotkeys.update(|h, _| h.key_event(event.code, Some(&event.keystroke), down))` (modifier keys: `ModifiersChangedEvent::key` → `h.key_event(key.code, None, key.pressed)`), blur → `window_blurred()`; the Keybinds tab feeds a `live::hotkeys::Recorder` the same events; `actions::hotkeys::inject_cli(arg)` from the single-instance glue (`--hotkey=<action>[:down\|:up]`) | Codes are `KeyboardEvent.code` names, from the event's physical key (`live::hotkeys::code_of`, GPUI patch 0012: layout-independent). Only where the platform reports none (macOS at the patch) is the name guessed from the character (`code_from_gpui_key`, US layout). |
 | Frame sinks | the video views: `actions::voice::show_stream(uid)` on mount, `hide_stream(uid)` on unmount | |
 
 ### M3.3 Overlay requests
