@@ -996,13 +996,13 @@ async fn check_audio(cx: TestCx) -> Result<()> {
 fn key_event(key: &'static str, modifiers: Modifiers) -> Result<PlatformInput> {
     let mut keystroke = Keystroke::parse(key)?;
     keystroke.modifiers = modifiers;
-    Ok(PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke, is_held: false, prefer_character_input: false }))
+    Ok(PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke, code: gpui::KeyCode::Unknown, is_held: false, prefer_character_input: false }))
 }
 
 fn key_up(key: &'static str, modifiers: Modifiers) -> Result<PlatformInput> {
     let mut keystroke = Keystroke::parse(key)?;
     keystroke.modifiers = modifiers;
-    Ok(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+    Ok(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke, code: gpui::KeyCode::Unknown }))
 }
 
 fn input(cx: &TestCx, event: PlatformInput) -> Result<()> {
@@ -1024,11 +1024,11 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     click_probe(&cx, "keybind-add").await?;
     wait_for(&cx, Duration::from_secs(3), "the new row to record", move |cx| recording(cx) && hotkeys(cx).len() == 1).await?;
     let ctrl_shift = Modifiers { control: true, shift: true, ..Default::default() };
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers { control: true, ..Default::default() }, capslock: Default::default() }))?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: ctrl_shift, capslock: Default::default() }))?;
+    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers { control: true, ..Default::default() }, capslock: Default::default(), key: None }))?;
+    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: ctrl_shift, capslock: Default::default(), key: None }))?;
     input(&cx, key_event("f9", ctrl_shift)?)?;
     input(&cx, key_up("f9", ctrl_shift)?)?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default() }))?;
+    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default(), key: None }))?;
     wait_for(&cx, Duration::from_secs(3), "the combo to be recorded", move |cx| {
         !recording(cx) && hotkeys(cx).first().is_some_and(|b| b.keys == ["Control", "Shift", "F9"])
     })
@@ -1044,9 +1044,9 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     // The same combo on a second action is named as a conflict.
     click_probe(&cx, "keybind-add").await?;
     wait_for(&cx, Duration::from_secs(3), "the third row to record", move |cx| recording(cx) && hotkeys(cx).len() == 2).await?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: ctrl_shift, capslock: Default::default() }))?;
+    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: ctrl_shift, capslock: Default::default(), key: None }))?;
     input(&cx, key_event("f9", ctrl_shift)?)?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default() }))?;
+    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default(), key: None }))?;
     wait_for(&cx, Duration::from_secs(3), "the second combo", move |cx| !recording(cx) && hotkeys(cx).iter().all(|b| !b.keys.is_empty())).await?;
     let all = cx.update(move |_, cx| hotkeys(cx))?;
     let problem = crate::tabs::keybinds::binding_problem(&all[1], &all, Some(&status));

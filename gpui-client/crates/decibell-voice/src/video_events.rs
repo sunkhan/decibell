@@ -23,7 +23,10 @@ pub fn video_event(key: &str, event: StreamEvent) {
         StreamEvent::FellBackToSoftware { reason } => log::warn!("[video] {key}: hardware decode failed, software from here: {reason}"),
         StreamEvent::DecoderError { reason } => log::warn!("[video] {key}: decoder error: {reason}"),
         StreamEvent::DeviceLost => log::warn!("[video] {key}: GPU device lost"),
-        StreamEvent::DecoderOpened { codec, path } => log::info!("[video] {key}: {} decoder ({})", codec.label(), path.label()),
+        StreamEvent::DecoderOpened { codec, path, backend } => {
+            log::info!("[video] {key}: {} decoder ({}, {})", codec.label(), backend.label(), path.label())
+        }
+        StreamEvent::BackendFailed { backend, reason } => log::warn!("[video] {key}: {} gave up, trying the next decoder: {reason}", backend.label()),
         StreamEvent::Picture { .. } => {}
     }
     if let Some(tx) = TX.get().and_then(|m| m.lock().ok()).and_then(|g| g.clone()) {
@@ -75,7 +78,8 @@ impl StreamStates {
             StreamEvent::DecoderOpened { path, .. } => state.path = Some(*path),
             StreamEvent::FellBackToSoftware { .. } => state.path = Some(DecodePath::Software),
             // A new decoder waits for a keyframe: the last picture stays on screen meanwhile.
-            StreamEvent::DecoderError { .. } | StreamEvent::DeviceLost => {}
+            // (A decoder given up for the next in the order is the same: `DecoderOpened` follows.)
+            StreamEvent::DecoderError { .. } | StreamEvent::BackendFailed { .. } | StreamEvent::DeviceLost => {}
         }
         if *state != before {
             cx.emit(StreamStateChanged(uid));
