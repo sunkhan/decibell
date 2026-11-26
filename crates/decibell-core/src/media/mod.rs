@@ -101,9 +101,12 @@ pub mod voice_sim_tests;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
+mod video_recv;
 pub mod voice_gate;
 pub mod default_device_watch;
 pub mod frame_crypto;
+// Recycled frame buffers for the video receive path (off unless the host enables it).
+pub mod frame_pool;
 
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -339,6 +342,9 @@ impl VoiceEngine {
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
+        // Monotonic epoch for stream-frame presentation timestamps (see
+        // video_recv.rs).
+        let video_ts_epoch = std::time::Instant::now();
         let video_recv_stop = Arc::new(AtomicBool::new(false));
         let video_recv_stop_thread = video_recv_stop.clone();
         let media_socket_for_video_recv = media_socket.clone();
@@ -360,6 +366,7 @@ impl VoiceEngine {
                         event_tx_video,
                         video_recv_stop_thread,
                         ring_video,
+                        video_ts_epoch,
                     );
                 }));
                 if let Err(e) = outcome {
@@ -377,15 +384,8 @@ impl VoiceEngine {
             })
             .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
 
-        // Monotonic epoch for stream-frame presentation timestamps. The old
-        // `frame_id * 33_333` hardcoded a 30fps clock: 60fps streams advanced
-        // at half real rate, and a stream restart (frame_id resets to 0) made
-        // the timestamp jump backwards — both confuse the renderer decoder's
-        // pacing/ordering. A real monotonic clock is correct at any frame rate
-        // and never rewinds. Frames are painted on arrival, so wall-time
-        // presentation timestamps are exactly right here.
-        let video_ts_epoch = std::time::Instant::now();
-        // Voice + video event bridge. Runs on Tokio's blocking pool so it
+        // Voice event bridge (video frames go from the receive thread straight
+        // to the event sink). Runs on Tokio's blocking pool so it
         // never holds a worker thread (a previous `tokio::spawn` +
         // `block_in_place` pattern in tauri-client permanently stole
         // runtime workers).
@@ -413,26 +413,6 @@ impl VoiceEngine {
                         packet_loss_pct,
                     } => {
                         events::emit_voice_connection_stats(latency_ms, packet_loss_pct);
-                    }
-                    VoiceEvent::VideoFrameReady(frame) => {
-                        // PR8: WebCodecs encoders set `description` on
-                        // keyframes (hvcC / av1C — for H.264, avcC if the
-                        // encoder is configured AVCC, otherwise inline
-                        // SPS/PPS in Annex B). Receiver-side
-                        // strip_keyframe_description fills frame.description
-                        // when the sender prefixed it with the magic tag;
-                        // otherwise None and the renderer's
-                        // WebCodecs.VideoDecoder reads from the bitstream.
-                        // No more native avcC fallback — encoder.rs is gone.
-                        events::send_stream_frame(events::StreamFrame {
-                            key: frame.streamer_id,
-                            codec: frame.codec,
-                            keyframe: frame.is_keyframe,
-                            timestamp: video_ts_epoch.elapsed().as_micros() as i64,
-                            data: frame.data,
-                            description: frame.description,
-                            discontinuity: false,
-                        });
                     }
                     VoiceEvent::KeyframeRequested => {
                         // PR8: forward to the renderer instead of the
@@ -600,21 +580,22 @@ impl Drop for VoiceEngine {
 
 /// Dedicated thread for video packet reassembly + NACK/PLI bookkeeping.
 /// Reads directly from the media UDP socket — VIDEO, FEC,
-/// KEYFRAME_REQUEST, NACK. Reassembled frames flow back to the voice
-/// event bridge via `event_tx`.
+/// KEYFRAME_REQUEST, NACK. Whole frames go straight to the event sink
+/// (`events::send_stream_frame`, through `video_recv::VideoRecvPath`);
+/// keyframe requests and errors go to the voice event bridge via `event_tx`.
 fn run_video_recv_thread(
     socket: Arc<MediaSocket>,
     sender_id: String,
     event_tx: mpsc::Sender<pipeline::VoiceEvent>,
     stop: Arc<AtomicBool>,
     ring: Option<frame_crypto::SharedKeyRing>,
+    ts_epoch: std::time::Instant,
 ) {
     use std::time::{Duration, Instant};
-    use video_packet::{UdpKeyframeRequest, UdpNackPacket, UdpVideoPacket};
-    use video_receiver::VideoReceiver;
+    use video_packet::{UdpKeyframeRequest, UdpNackPacket};
 
-    let mut video_receiver = VideoReceiver::new();
-    let mut video_frames_received: u64 = 0;
+    let mut path = video_recv::VideoRecvPath::new(ring, ts_epoch, frame_pool::global());
+    let mut deliver = events::send_stream_frame;
     let mut last_maintenance = Instant::now();
 
     // Periodic media-socket PING — binds + keeps this client's media UDP
@@ -630,83 +611,6 @@ fn run_video_recv_thread(
     let media_ping_interval = Duration::from_secs(3);
     const MEDIA_PING_INTERVAL_UNANSWERED: Duration = Duration::from_millis(500);
 
-    // For HEVC/AV1 keyframes the sender prepends a magic-tagged
-    // length-prefixed hvcC / av1C blob:
-    //   [MAGIC][u32 BE: desc_len][desc][bitstream]
-    // Strip it here so frame.data carries only the bitstream and
-    // frame.description carries the WebCodecs decoder configuration
-    // record. H.264 keyframes don't use this — the bridge derives avcC
-    // from inline SPS/PPS NALs.
-    let strip_keyframe_description =
-        |mut frame: video_receiver::ReassembledFrame| -> video_receiver::ReassembledFrame {
-            let magic = &video_packet::WIRE_DESCRIPTION_MAGIC;
-            if frame.is_keyframe
-                && (frame.codec == 3 || frame.codec == 4)
-                && frame.data.len() >= magic.len() + 4
-                && &frame.data[..magic.len()] == magic.as_slice()
-            {
-                let len_off = magic.len();
-                let len = u32::from_be_bytes([
-                    frame.data[len_off],
-                    frame.data[len_off + 1],
-                    frame.data[len_off + 2],
-                    frame.data[len_off + 3],
-                ]) as usize;
-                let payload_off = len_off + 4;
-                if len > 0 && len < 1024 && frame.data.len() >= payload_off + len {
-                    frame.description = Some(frame.data[payload_off..payload_off + len].to_vec());
-                    frame.data.drain(..payload_off + len);
-                }
-            }
-            frame
-        };
-    let emit_frame = |mut frame: video_receiver::ReassembledFrame| {
-        // Only forward frames for streams we're actually watching. See
-        // WATCHED_STREAMS above: defense against spoofed/over-relayed senders,
-        // and it drops the IPC/renderer work for frames nobody subscribed to.
-        if !is_watched(&frame.streamer_id) {
-            return;
-        }
-        // Watched but not on screen (no renderer subscriber — e.g. the
-        // focused view hides the grid's other watched streams): skip the
-        // decrypt and the bridge/IPC hops. send_stream_frame re-checks; the
-        // player asks for a keyframe when it subscribes again.
-        if !events::is_stream_frame_sink(&frame.streamer_id) {
-            return;
-        }
-        // Encrypted channel: the reassembled bytes are one sealed frame —
-        // open it under the streamer's epoch key (drop it if that fails).
-        if let Some(r) = &ring {
-            match frame_crypto::open_video_frame(
-                &r.load(),
-                &frame.streamer_id,
-                frame.frame_id,
-                frame.is_keyframe,
-                frame.codec,
-                &frame.data,
-            ) {
-                Some(plain) => frame.data = plain,
-                None => {
-                    log::debug!(
-                        "[video-recv] frame {} from '{}' did not open (epoch/key)",
-                        frame.frame_id,
-                        frame.streamer_id
-                    );
-                    return;
-                }
-            }
-        }
-        let frame = strip_keyframe_description(frame);
-        let _ = event_tx.send(pipeline::VoiceEvent::VideoFrameReady(frame));
-    };
-    // Strict: an encrypted channel accepts only VIDEO_SEALED chunks; the
-    // plain (P2P) path only VIDEO. FEC / PLI / NACK are shared.
-    let accepted_video_type = if ring.is_some() {
-        frame_crypto::PACKET_TYPE_VIDEO_SEALED
-    } else {
-        video_packet::PACKET_TYPE_VIDEO
-    };
-
     // Without the timeout the loop would block in recv and never see its
     // stop flag, so it doesn't run without one.
     if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(5))) {
@@ -718,7 +622,8 @@ fn run_video_recv_thread(
         return;
     }
     // Every receive error is transient; only the stop flag ends this loop
-    // (review A2, udp_recv.rs).
+    // (review A2, udp_recv.rs). Datagrams are read in place: on the P2P path
+    // they are opened where they landed (`MediaSocket::recv_in_place`).
     let mut recv_buf = [0u8; udp_recv::RECV_BUF_SIZE];
     let mut recv_errors = udp_recv::RecvErrors::new("video-recv");
 
@@ -726,72 +631,22 @@ fn run_video_recv_thread(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match socket.recv(&mut recv_buf) {
+        match socket.recv_in_place(&mut recv_buf) {
             // Cut short to fit the buffer: bigger than anything we send.
-            Ok(n) if udp_recv::is_oversized(n) => recv_errors.ok(),
-            Ok(n) if n >= 1 => {
+            Ok(inner) if udp_recv::is_oversized(inner.len()) => recv_errors.ok(),
+            Ok(inner) if !inner.is_empty() => {
                 recv_errors.ok();
-                let packet_type = recv_buf[0];
-
-                if packet_type == accepted_video_type {
-                    if let Some(pkt) = UdpVideoPacket::from_bytes(&recv_buf[..n]) {
-                        // The receiver keys every piece of state by
-                        // sender, so concurrent streams reassemble
-                        // independently and frames come back already
-                        // in delivery order per streamer.
-                        for frame in video_receiver.process_packet(&pkt) {
-                            video_frames_received += 1;
-                            if frame.is_keyframe || video_frames_received % 300 == 1 {
-                                log::debug!(
-                                    "[video-recv] Frame {} from '{}': {} bytes, keyframe={} (total={})",
-                                    frame.frame_id,
-                                    frame.streamer_id,
-                                    frame.data.len(),
-                                    frame.is_keyframe,
-                                    video_frames_received
-                                );
-                            }
-                            emit_frame(frame);
-                        }
+                match path.on_datagram(&recv_buf[inner], &mut deliver) {
+                    video_recv::Control::KeyframeRequested => {
+                        log::debug!("[video-recv] Keyframe request received, signaling encoder");
+                        let _ = event_tx.send(pipeline::VoiceEvent::KeyframeRequested);
                     }
-                } else if packet_type == video_packet::PACKET_TYPE_FEC {
-                    // FEC packets are always serialized at full struct
-                    // size (the XOR payload is the whole 1400-byte
-                    // window — see UdpFecPacket::to_bytes). A shorter
-                    // datagram is malformed; accepting it would leave a
-                    // zero-filled payload tail that silently corrupts
-                    // XOR recovery.
-                    if n >= std::mem::size_of::<video_packet::UdpFecPacket>() {
-                        let fec_pkt = unsafe {
-                            let mut pkt: video_packet::UdpFecPacket = std::mem::zeroed();
-                            std::ptr::copy_nonoverlapping(
-                                recv_buf.as_ptr(),
-                                &mut pkt as *mut video_packet::UdpFecPacket as *mut u8,
-                                std::mem::size_of::<video_packet::UdpFecPacket>(),
-                            );
-                            pkt
-                        };
-                        for frame in video_receiver.process_fec_packet(&fec_pkt) {
-                            video_frames_received += 1;
-                            log::debug!(
-                                "[video-recv] Frame {} from '{}' completed via FEC: {} bytes, keyframe={}",
-                                frame.frame_id, frame.streamer_id,
-                                frame.data.len(), frame.is_keyframe
-                            );
-                            emit_frame(frame);
-                        }
-                    }
-                } else if packet_type == video_packet::PACKET_TYPE_KEYFRAME_REQUEST
-                    && n >= std::mem::size_of::<UdpKeyframeRequest>()
-                {
-                    log::debug!("[video-recv] Keyframe request received, signaling encoder");
-                    let _ = event_tx.send(pipeline::VoiceEvent::KeyframeRequested);
-                } else if packet_type == packet::PACKET_TYPE_PING {
                     // Our PING's echo: the relay only echoes to a bound
                     // endpoint, so from here on the 3 s cadence will do.
-                    // (Bind challenges are answered inside MediaSocket::recv,
+                    // (Bind challenges are answered inside MediaSocket,
                     // which hands this loop an empty read for them.)
-                    media_ping_answered = true;
+                    video_recv::Control::PingEcho => media_ping_answered = true,
+                    video_recv::Control::None => {}
                 }
             }
             Ok(_) => recv_errors.ok(),
@@ -824,7 +679,7 @@ fn run_video_recv_thread(
         // reacts within ~75ms at negligible cost (the loop already
         // wakes every 5ms on the socket read timeout).
         if last_maintenance.elapsed() > Duration::from_millis(25) {
-            let (nacks, pli_targets) = video_receiver.check_missing();
+            let (nacks, pli_targets) = path.receiver().check_missing();
             for nack in &nacks {
                 let nack_pkt =
                     UdpNackPacket::new(&sender_id, &nack.target, nack.frame_id, &nack.missing);
@@ -837,7 +692,7 @@ fn run_video_recv_thread(
                 let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
                 let _ = socket.send(&pli_pkt.to_bytes());
             }
-            video_receiver.cleanup_stale();
+            path.receiver().cleanup_stale();
             last_maintenance = Instant::now();
         }
     }
@@ -1124,7 +979,7 @@ impl VideoEngine {
                 fps,
                 bitrate_kbps,
                 detail,
-                local_username: self.self_username.clone(),
+                local_username: Arc::from(self.self_username.as_str()),
                 video_sender: self.sender.clone(),
                 thumbnail_tx: thumb_tx,
             },
@@ -1248,7 +1103,7 @@ impl VideoEngine {
                 fps,
                 bitrate_kbps,
                 detail,
-                local_username: self.self_username.clone(),
+                local_username: Arc::from(self.self_username.as_str()),
                 video_sender: self.sender.clone(),
                 thumbnail_tx: thumb_tx,
             },
@@ -1558,7 +1413,7 @@ mod video_recv_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let handle = {
             let (socket, stop) = (socket.clone(), stop.clone());
-            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, None))
+            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, None, Instant::now()))
         };
         for _ in 0..20 {
             let _ = socket.send(b"\x05ping");

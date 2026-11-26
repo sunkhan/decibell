@@ -66,7 +66,9 @@ pub struct EncoderThreadConfig {
     pub bitrate_kbps: u32,
     /// A 5 fps stream: tune the encoder for detail (see bitrate_preset).
     pub detail: bool,
-    pub local_username: String,
+    /// Our media key: the self-preview's `StreamFrame::key`, shared by
+    /// every frame.
+    pub local_username: Arc<str>,
     pub video_sender: Arc<VideoSender>,
     /// Sender for thumbnail JPEG bytes. The encoder thread produces a
     /// thumbnail on the ThumbnailSchedule and pushes through this; a
@@ -239,7 +241,9 @@ fn run_encode_loop(
         // Because we set pts from wall-clock above, this round-trips
         // to ~ stream_start.elapsed().as_micros().
         // Only when a player is subscribed to our own stream — checked
-        // before to_vec() so an unwatched self-preview copies nothing.
+        // before the copy so an unwatched self-preview copies nothing. The
+        // packet is FFmpeg's, so its bytes are copied, into a frame-pool
+        // buffer when the host enabled the pool (`data.to_vec()` otherwise).
         // The player force_keyframe()s on subscribe to resume on an IDR.
         if events::is_stream_frame_sink(&cfg.local_username) {
             let timestamp_us = pkt_pts.saturating_mul(1_000_000) / cfg.fps.max(1) as i64;
@@ -248,7 +252,7 @@ fn run_encode_loop(
                 codec: cfg.codec_wire_byte,
                 keyframe: is_key,
                 timestamp: timestamp_us,
-                data: data.to_vec(),
+                data: super::frame_pool::take_copy(data),
                 description: None,
                 discontinuity: false,
             });

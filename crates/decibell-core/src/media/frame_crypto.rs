@@ -40,11 +40,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::aead::{Aead, AeadInPlace, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Nonce, Tag};
 use arc_swap::ArcSwap;
 use ring::hkdf;
 
+use super::frame_pool::FrameBuf;
 use super::packet::SENDER_ID_SIZE;
 
 pub const PACKET_TYPE_AUDIO_SEALED: u8 = 7;
@@ -353,6 +354,59 @@ pub fn open_video_frame(
     cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: &sealed[8..], aad: &aad }).ok()
 }
 
+/// Open a reassembled sealed frame from `sender` where it lies: on success
+/// `frame` holds the plaintext. A pooled buffer is decrypted in place and
+/// drops the seal header and tag without moving a byte; an unpooled one (the
+/// frame pool off, as in the Electron addon) is replaced by
+/// [`open_video_frame`]'s output, exactly as before the pool existed. False
+/// = wrong/unknown epoch or member, or tampered (drop the frame).
+pub fn open_video_frame_buf(
+    ring: &KeyRing,
+    sender: &str,
+    frame_id: u32,
+    is_keyframe: bool,
+    codec: u8,
+    frame: &mut FrameBuf,
+) -> bool {
+    if !frame.is_pooled() {
+        return match open_video_frame(ring, sender, frame_id, is_keyframe, codec, &frame[..]) {
+            Some(plain) => {
+                *frame = FrameBuf::from(plain);
+                true
+            }
+            None => false,
+        };
+    }
+    let n = frame.len();
+    if n < VIDEO_SEAL_OVERHEAD {
+        return false;
+    }
+    let (Ok(epoch), Ok(salt)) = (frame[0..4].try_into(), frame[4..8].try_into()) else {
+        return false;
+    };
+    let (epoch, salt) = (u32::from_le_bytes(epoch), u32::from_le_bytes(salt));
+    let Some(key) = ring.peer_key(sender, epoch, Kind::Video) else {
+        return false;
+    };
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(&salt.to_le_bytes());
+    nonce[4..8].copy_from_slice(&frame_id.to_le_bytes());
+    let Ok(cipher) = Aes256Gcm::new_from_slice(key) else {
+        return false;
+    };
+    let aad = video_aad(sender, frame_id, is_keyframe, codec);
+    let tag = *Tag::<aes_gcm::aead::consts::U16>::from_slice(&frame[n - 16..]);
+    if cipher
+        .decrypt_in_place_detached(Nonce::from_slice(&nonce), &aad, &mut frame[8..n - 16], &tag)
+        .is_err()
+    {
+        return false;
+    }
+    frame.truncate(n - 16);
+    frame.advance(8);
+    true
+}
+
 /// The `stream_salt` for a new video stream: a process-wide sequence with a
 /// random 32-bit start. Each `VideoSender` restarts its frame ids at 0 under
 /// the same epoch key, so the salt is what keeps nonces apart; drawing it at
@@ -437,6 +491,40 @@ mod tests {
         assert!(open_video_frame(&bob, "alice", 43, true, 3, &sealed).is_none());
         assert!(open_video_frame(&bob, "alice", 42, false, 3, &sealed).is_none());
         assert!(open_video_frame(&bob, "alice", 42, true, 4, &sealed).is_none());
+    }
+
+    /// In place (pooled buffer) and allocating (unpooled) open the same frame
+    /// to the same plaintext, and refuse the same tampering.
+    #[test]
+    fn video_frame_opens_in_place_or_not_alike() {
+        use super::super::frame_pool::FramePool;
+        let pool: &'static FramePool = Box::leak(Box::new(FramePool::new(4, 1 << 20)));
+        let ex = [6u8; 32];
+        let (alice, bob) = (ring_for("alice", 1, &ex), ring_for("bob", 1, &ex));
+        let frame: Vec<u8> = (0..5000u32).map(|i| (i * 7) as u8).collect();
+        let sealed = seal_video_frame(&alice, next_stream_salt(), 9, false, 1, &frame).unwrap();
+
+        let mut pooled = pool.take_copy(&sealed);
+        let base = pooled.as_ptr();
+        assert!(open_video_frame_buf(&bob, "alice", 9, false, 1, &mut pooled));
+        assert_eq!(pooled, frame);
+        assert_eq!(pooled.as_ptr(), unsafe { base.add(8) }, "decrypted where it lay");
+
+        let mut plain = FrameBuf::from(sealed.clone());
+        assert!(open_video_frame_buf(&bob, "alice", 9, false, 1, &mut plain));
+        assert_eq!(plain, frame);
+        assert!(!plain.is_pooled());
+
+        for mut bad in [pool.take_copy(&sealed), FrameBuf::from(sealed.clone())] {
+            let last = bad.len() - 1;
+            bad[last] ^= 1;
+            assert!(!open_video_frame_buf(&bob, "alice", 9, false, 1, &mut bad));
+        }
+        for mut wrong in [pool.take_copy(&sealed), FrameBuf::from(sealed.clone())] {
+            assert!(!open_video_frame_buf(&bob, "alice", 10, false, 1, &mut wrong));
+        }
+        let mut short = pool.take_copy(&sealed[..VIDEO_SEAL_OVERHEAD - 1]);
+        assert!(!open_video_frame_buf(&bob, "alice", 9, false, 1, &mut short));
     }
 
     #[test]

@@ -46,6 +46,7 @@
 
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -394,6 +395,22 @@ impl MediaSocket {
     /// WouldBlock and errors propagate exactly like `UdpSocket::recv`; the
     /// loops treat every error as transient (udp_recv.rs).
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Mode::Plain = &self.mode {
+            return self.recv_in_place(buf).map(|inner| inner.end);
+        }
+        let mut outer = [0u8; RECV_BUF_SIZE];
+        let inner = self.recv_in_place(&mut outer)?;
+        let len = inner.len().min(buf.len());
+        buf[..len].copy_from_slice(&outer[inner.start..inner.start + len]);
+        Ok(len)
+    }
+
+    /// [`recv`](Self::recv) without the copy out: the datagram lands in `buf`
+    /// (give it `RECV_BUF_SIZE` bytes) and the inner datagram is `buf[range]`:
+    /// all of it on the relay path, the plaintext opened where it arrived on
+    /// the sealed one. An empty range is a read with nothing for the caller,
+    /// as `recv`'s `Ok(0)`.
+    pub fn recv_in_place(&self, buf: &mut [u8]) -> io::Result<Range<usize>> {
         let st = match &self.mode {
             Mode::Plain => {
                 let n = self.inner.recv(buf)?;
@@ -404,35 +421,32 @@ impl MediaSocket {
                     // receive loops already skip. Returning (not looping)
                     // keeps a flood of challenges from pinning a loop past
                     // its stop flag.
-                    return Ok(0);
+                    return Ok(0..0);
                 }
-                return Ok(n);
+                return Ok(0..n);
             }
             Mode::Sealed(st) => st,
         };
-        let mut outer = [0u8; RECV_BUF_SIZE];
         for _ in 0..MAX_SKIPPED_PER_RECV {
-            let (n, src) = self.inner.recv_from(&mut outer)?;
-            let Some(len) = st.open(&mut outer[..n]) else {
+            let (n, src) = self.inner.recv_from(buf)?;
+            let Some(len) = st.open(&mut buf[..n]) else {
                 continue;
             };
             self.touch_rx();
             self.learn_peer(st, src);
-            let inner = &outer[OUTER_HEADER..OUTER_HEADER + len];
-            if self.is_peer_ping(inner) {
+            let inner = OUTER_HEADER..OUTER_HEADER + len;
+            if self.is_peer_ping(&buf[inner.clone()]) {
                 // Echo it back re-sealed (fresh counter) to the address it
                 // came from; never surface it to the pipeline.
                 let mut echo = [0u8; MAX_OUTER];
-                if let Ok(m) = st.seal(inner, &mut echo) {
+                if let Ok(m) = st.seal(&buf[inner], &mut echo) {
                     let _ = self.inner.send_to(&echo[..m], src);
                 }
                 continue;
             }
-            let len = len.min(buf.len());
-            buf[..len].copy_from_slice(&outer[OUTER_HEADER..OUTER_HEADER + len]);
-            return Ok(len);
+            return Ok(inner);
         }
-        Ok(0)
+        Ok(0..0)
     }
 
     /// Relay path: echo a bind challenge straight back from this socket so
@@ -515,6 +529,30 @@ mod tests {
         let mut buf = [0u8; 1500];
         let n = b.recv(&mut buf).unwrap();
         assert_eq!(&buf[..n], &pkt[..]);
+    }
+
+    /// The video loop's read: the inner datagram where it landed, the same
+    /// bytes `recv` copies out; peer PINGs are still reflected, never surfaced.
+    #[test]
+    fn recv_in_place_opens_where_it_lands() {
+        let (a, b) = pair();
+        let ping = UdpAudioPacket::new_ping("alice", 7).to_bytes();
+        let pkt = UdpAudioPacket::new_audio("alice", 9, b"in place").unwrap().to_bytes();
+        a.send(&ping).unwrap();
+        a.send(&pkt).unwrap();
+        let mut buf = [0u8; RECV_BUF_SIZE];
+        let inner = b.recv_in_place(&mut buf).unwrap();
+        assert_eq!(inner.start, OUTER_HEADER);
+        assert_eq!(&buf[inner], &pkt[..]);
+        // a gets its own PING back, reflected by b's read above.
+        let inner = a.recv_in_place(&mut buf).unwrap();
+        assert_eq!(&buf[inner], &ping[..]);
+
+        let (relay, client, client_addr) = relay_and_client();
+        relay.send_to(b"relayed bytes", client_addr).unwrap();
+        let inner = client.recv_in_place(&mut buf).unwrap();
+        assert_eq!(inner, 0..13);
+        assert_eq!(&buf[inner], b"relayed bytes");
     }
 
     #[test]

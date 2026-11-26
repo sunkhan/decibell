@@ -16,6 +16,7 @@
 use std::sync::OnceLock;
 
 use decibell_core::events::{CoreEvent, EventSink, StreamFrame, StreamThumbnail};
+use decibell_core::media::frame_pool::FrameBuf;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{
     ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
@@ -190,8 +191,8 @@ fn create_stream_bus(callback: JsFunction) -> Result<StreamBus> {
                 env.get_boolean(ctx.value.discontinuity)?,
             )?;
             // Buffer::with_data hands V8 the Vec's backing allocation
-            // directly — no copy.
-            let data_buf = env.create_buffer_with_data(ctx.value.data)?;
+            // directly — no copy (see frame_bytes).
+            let data_buf = env.create_buffer_with_data(frame_bytes(ctx.value.data))?;
             obj.set_named_property("data", data_buf.into_raw())?;
             match ctx.value.description {
                 Some(d) => {
@@ -205,6 +206,14 @@ fn create_stream_bus(callback: JsFunction) -> Result<StreamBus> {
             Ok(vec![obj.into_unknown()])
         },
     )
+}
+
+/// A frame's bytes as the `Vec` V8 adopts. The addon never enables the core's
+/// frame pool, so `data` is a plain `Vec` (the reassembly buffer, the decrypt's
+/// output, or the encoder's buffer for the self-preview) and `into_vec` hands
+/// that very allocation on, as before `FrameBuf` existed.
+fn frame_bytes(data: FrameBuf) -> Vec<u8> {
+    data.into_vec()
 }
 
 /// Frames discarded because the JS-side TSFN queue was saturated (a
@@ -287,4 +296,38 @@ fn create_stream_thumbnail_bus(callback: JsFunction) -> Result<StreamThumbnailBu
             Ok(vec![obj.into_unknown()])
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use decibell_core::media::frame_pool;
+    use decibell_core::media::video_packet::UdpVideoPacket;
+    use decibell_core::media::video_receiver::VideoReceiver;
+
+    /// No extra copy on the way to V8: what the core delivers is handed on as
+    /// the same allocation (the pool stays off in the addon).
+    #[test]
+    fn frames_reach_v8_as_the_allocation_the_core_filled() {
+        assert!(!frame_pool::global().is_enabled());
+        // A frame reassembled by the core's receive path, as the sink gets it.
+        let mut rx = VideoReceiver::new();
+        let mut frames = Vec::new();
+        for i in 0..3u16 {
+            let chunk = vec![i as u8 + 1; 1200];
+            frames.extend(rx.process_packet(&UdpVideoPacket::new("42", 0, i, 3, true, &chunk)));
+        }
+        assert_eq!(frames.len(), 1);
+        let data = frames.pop().unwrap().data;
+        assert!(!data.is_pooled());
+        let (ptr, len) = (data.as_ptr(), data.len());
+        let v = frame_bytes(data);
+        assert_eq!((v.as_ptr(), v.len()), (ptr, len));
+
+        // The Linux self-preview's encoder buffer, moved in.
+        let encoded = vec![9u8; 4096];
+        let ptr = encoded.as_ptr();
+        let v = frame_bytes(FrameBuf::from(encoded));
+        assert_eq!(v.as_ptr(), ptr);
+    }
 }

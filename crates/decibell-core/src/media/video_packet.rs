@@ -85,6 +85,78 @@ pub struct UdpFecPacket {
     pub payload: [u8; UDP_MAX_PAYLOAD],
 }
 
+/// Bytes before a VIDEO / VIDEO_SEALED packet's payload.
+pub const VIDEO_HEADER_SIZE: usize = std::mem::size_of::<UdpVideoPacket>() - UDP_MAX_PAYLOAD;
+
+/// A VIDEO / VIDEO_SEALED datagram read in place: its header fields and a
+/// borrow of its payload, so the receive loop copies a fragment's bytes only
+/// once, into the frame being reassembled (`UdpVideoPacket::from_bytes`
+/// copies the whole datagram into the struct first). Parsed by the same
+/// rules as `from_bytes`.
+#[derive(Clone, Copy)]
+pub struct VideoFragment<'a> {
+    pub sender_id: &'a [u8; SENDER_ID_SIZE],
+    pub frame_id: u32,
+    pub packet_index: u16,
+    pub total_packets: u16,
+    pub is_keyframe: bool,
+    pub codec: u8,
+    pub payload: &'a [u8],
+}
+
+impl<'a> VideoFragment<'a> {
+    pub fn parse(buf: &'a [u8]) -> Option<Self> {
+        if buf.len() < VIDEO_HEADER_SIZE {
+            return None;
+        }
+        let u16_at = |o: usize| u16::from_le_bytes([buf[o], buf[o + 1]]);
+        // Like from_bytes: however many payload bytes arrived, up to
+        // payload_size and UDP_MAX_PAYLOAD.
+        let size = (u16_at(41) as usize)
+            .min(buf.len() - VIDEO_HEADER_SIZE)
+            .min(UDP_MAX_PAYLOAD);
+        Some(VideoFragment {
+            sender_id: buf[1..1 + SENDER_ID_SIZE].try_into().ok()?,
+            frame_id: u32::from_le_bytes(buf[33..37].try_into().ok()?),
+            packet_index: u16_at(37),
+            total_packets: u16_at(39),
+            is_keyframe: buf[43] != 0,
+            codec: buf[44],
+            payload: &buf[VIDEO_HEADER_SIZE..VIDEO_HEADER_SIZE + size],
+        })
+    }
+}
+
+/// A FEC datagram read in place (see [`VideoFragment`]). Only a full-size one
+/// parses: a shorter datagram would leave a zero-filled payload tail that
+/// silently corrupts XOR recovery.
+#[derive(Clone, Copy)]
+pub struct FecFragment<'a> {
+    pub sender_id: &'a [u8; SENDER_ID_SIZE],
+    pub frame_id: u32,
+    pub group_start: u16,
+    pub group_count: u16,
+    pub payload_size_xor: u16,
+    pub payload: &'a [u8; UDP_MAX_PAYLOAD],
+}
+
+impl<'a> FecFragment<'a> {
+    pub fn parse(buf: &'a [u8]) -> Option<Self> {
+        if buf.len() < std::mem::size_of::<UdpFecPacket>() {
+            return None;
+        }
+        let u16_at = |o: usize| u16::from_le_bytes([buf[o], buf[o + 1]]);
+        Some(FecFragment {
+            sender_id: buf[1..1 + SENDER_ID_SIZE].try_into().ok()?,
+            frame_id: u32::from_le_bytes(buf[33..37].try_into().ok()?),
+            group_start: u16_at(37),
+            group_count: u16_at(39),
+            payload_size_xor: u16_at(41),
+            payload: buf[43..43 + UDP_MAX_PAYLOAD].try_into().ok()?,
+        })
+    }
+}
+
 fn fill_id(dest: &mut [u8; SENDER_ID_SIZE], src: &str) {
     let bytes = src.as_bytes();
     let len = bytes.len().min(SENDER_ID_SIZE);
@@ -218,6 +290,19 @@ impl UdpVideoPacket {
     pub fn is_keyframe(&self) -> bool {
         self.is_keyframe != 0
     }
+
+    /// This packet as the receive path's borrowed view.
+    pub fn fragment(&self) -> VideoFragment<'_> {
+        VideoFragment {
+            sender_id: &self.sender_id,
+            frame_id: { self.frame_id },
+            packet_index: { self.packet_index },
+            total_packets: { self.total_packets },
+            is_keyframe: self.is_keyframe(),
+            codec: self.codec,
+            payload: self.payload_data(),
+        }
+    }
 }
 
 impl UdpKeyframeRequest {
@@ -268,6 +353,18 @@ impl UdpFecPacket {
             group_count,
             payload_size_xor,
             payload: *xor_payload,
+        }
+    }
+
+    /// This packet as the receive path's borrowed view.
+    pub fn fragment(&self) -> FecFragment<'_> {
+        FecFragment {
+            sender_id: &self.sender_id,
+            frame_id: { self.frame_id },
+            group_start: { self.group_start },
+            group_count: { self.group_count },
+            payload_size_xor: { self.payload_size_xor },
+            payload: &self.payload,
         }
     }
 
@@ -440,6 +537,50 @@ mod tests {
         let ps = { parsed.payload_size };
         assert_eq!(ps, 4); // clamped to what actually arrived
         assert_eq!(parsed.payload_data(), b"data"); // and no panic
+    }
+
+    /// The receive loop's in-place views read exactly what the struct copies
+    /// read, lying sizes and short datagrams included.
+    #[test]
+    fn fragment_views_match_the_struct_parsers() {
+        let pkt = UdpVideoPacket::new_with_codec("4242", 0xA1B2_C3D4, 7, 9, true, 3, b"payload bytes");
+        let mut cases = vec![pkt.to_bytes()];
+        // payload_size lies high (clamped to what arrived) and above the cap.
+        let mut lying = pkt.to_bytes();
+        lying[41] = 0xFF;
+        lying[42] = 0x00;
+        cases.push(lying.clone());
+        lying.extend(std::iter::repeat_n(0xEE, 2000));
+        cases.push(lying);
+        cases.push(pkt.to_bytes()[..VIDEO_HEADER_SIZE].to_vec());
+        for bytes in &cases {
+            let a = UdpVideoPacket::from_bytes(bytes).unwrap();
+            let b = VideoFragment::parse(bytes).unwrap();
+            let f = a.fragment();
+            for v in [b, f] {
+                assert_eq!(v.sender_id, &a.sender_id);
+                assert_eq!(v.frame_id, { a.frame_id });
+                assert_eq!(v.packet_index, { a.packet_index });
+                assert_eq!(v.total_packets, { a.total_packets });
+                assert_eq!(v.is_keyframe, a.is_keyframe());
+                assert_eq!(v.codec, a.codec);
+                assert_eq!(v.payload, a.payload_data());
+            }
+        }
+        assert!(VideoFragment::parse(&cases[0][..VIDEO_HEADER_SIZE - 1]).is_none());
+
+        let mut xor = [0u8; UDP_MAX_PAYLOAD];
+        xor[0] = 0xAB;
+        xor[UDP_MAX_PAYLOAD - 1] = 0xCD;
+        let fec = UdpFecPacket::new("4242", 42, 5, 5, 1234, &xor);
+        let bytes = fec.to_bytes();
+        let v = FecFragment::parse(&bytes).unwrap();
+        assert_eq!(v.sender_id, &fec.sender_id);
+        assert_eq!((v.frame_id, v.group_start, v.group_count, v.payload_size_xor), (42, 5, 5, 1234));
+        assert_eq!(v.payload, &xor);
+        let f = fec.fragment();
+        assert_eq!((f.frame_id, f.group_start, f.group_count, f.payload_size_xor), (42, 5, 5, 1234));
+        assert!(FecFragment::parse(&bytes[..bytes.len() - 1]).is_none());
     }
 
     #[test]

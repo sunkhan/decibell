@@ -126,7 +126,9 @@ pub struct LinuxEncoderThreadConfig {
     pub bitrate_kbps: u32,
     /// A 5 fps stream: tune the encoder for detail (see bitrate_preset).
     pub detail: bool,
-    pub local_username: String,
+    /// Our media key: the self-preview's `StreamFrame::key`, shared by
+    /// every frame.
+    pub local_username: Arc<str>,
     pub video_sender: Arc<VideoSender>,
     /// Bounded depth=1 drop-newest (via try_send) — a slow server never
     /// back-pressures the encoder thread.
@@ -210,7 +212,7 @@ impl LinuxEncoderThread {
                 if exit == LoopExit::Stopped {
                     let mut frames_sent = 0;
                     for ef in encoder.flush() {
-                        emit_encoded(&ef, &cfg, stream_start, &mut frames_sent);
+                        emit_encoded(ef, &cfg, stream_start, &mut frames_sent);
                     }
                 }
             });
@@ -285,9 +287,10 @@ struct CaptureInput {
 }
 
 /// Packetise + ship one encoded frame: UDP wire (with HEVC/AV1 keyframe
-/// description prefix) and the renderer self-preview TSFN.
+/// description prefix) and the renderer self-preview TSFN. Takes the frame:
+/// the preview gets the encoder's own buffer once the wire is done with it.
 fn emit_encoded(
-    ef: &EncodedFrame,
+    ef: EncodedFrame,
     cfg: &LinuxEncoderThreadConfig,
     stream_start: Instant,
     frames_sent: &mut u32,
@@ -321,17 +324,18 @@ fn emit_encoded(
     // Self-preview: same encoded bytes to the renderer keyed by local
     // username (StreamVideoPlayer renders the user's own tile via the
     // unified stream-frame bus). Description travels as a separate field.
-    // Only when a player is actually subscribed to our own stream — checked
-    // before cloning so an unwatched self-preview costs nothing. The player
-    // force_keyframe()s on subscribe, so resuming starts on an IDR.
+    // Only when a player is actually subscribed to our own stream. The
+    // bytes are the encoder's own buffer, moved (no copy, no allocation);
+    // an unwatched self-preview just drops it. The player force_keyframe()s
+    // on subscribe, so resuming starts on an IDR.
     if events::is_stream_frame_sink(&cfg.local_username) {
         events::send_stream_frame(events::StreamFrame {
             key: cfg.local_username.clone(),
             codec,
             keyframe: ef.is_keyframe,
             timestamp: stream_start.elapsed().as_micros() as i64,
-            data: ef.data.clone(),
-            description: ef.avcc_description.clone(),
+            data: ef.data.into(),
+            description: ef.avcc_description,
             discontinuity: false,
         });
     }
@@ -454,7 +458,7 @@ fn run_encode_loop(
             Ok(encoded) => {
                 consecutive_failures = 0;
                 if let Some(ef) = encoded {
-                    emit_encoded(&ef, cfg, stream_start, &mut frames_sent);
+                    emit_encoded(ef, cfg, stream_start, &mut frames_sent);
                 }
             }
             Err(e) => {

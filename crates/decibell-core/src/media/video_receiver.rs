@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::frame_pool::{self, FrameBuf, FramePool};
 use super::video_packet::{
-    UdpFecPacket, UdpVideoPacket, FEC_GROUP_SIZE, SENDER_ID_SIZE, UDP_MAX_PAYLOAD,
+    FecFragment, UdpFecPacket, UdpVideoPacket, VideoFragment, FEC_GROUP_SIZE, SENDER_ID_SIZE,
+    UDP_MAX_PAYLOAD,
 };
 
 /// Wire-safety caps. `total_packets` comes straight off an untrusted
@@ -53,13 +56,24 @@ const MAX_FEC_GROUPS: usize = (MAX_PACKETS_PER_FRAME as usize / FEC_GROUP_SIZE a
 /// Senders with no packets for this long are forgotten entirely.
 const SENDER_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Finished assemblies' bookkeeping (slot sizes, FEC groups) kept for the
+/// next frames, so a steady stream doesn't allocate it per frame. A FEC
+/// store that grew past `MAX_SPARE_FEC_GROUPS` (1.2 KB a group) is freed
+/// instead of kept.
+const MAX_SPARE_SCRATCH: usize = 8;
+const MAX_SPARE_FEC_GROUPS: usize = 32;
+
 /// A reassembled video frame ready for decoding.
 #[derive(Debug, Clone)]
 pub struct ReassembledFrame {
     pub frame_id: u32,
-    pub data: Vec<u8>,
+    /// The frame's bytes, in the buffer it was reassembled in (from the
+    /// frame pool when that is on, `frame_pool.rs`).
+    pub data: FrameBuf,
     pub is_keyframe: bool,
-    pub streamer_id: String,
+    /// The streamer's media key, shared by all their frames (no per-frame
+    /// allocation).
+    pub streamer_id: Arc<str>,
     /// Codec byte from the per-packet UdpVideoPacket.codec field
     /// (taken from the first packet of the frame). Drives WebCodecs
     /// decoder configuration on the viewer side.
@@ -91,15 +105,25 @@ struct FecGroup {
     used: bool,
 }
 
+/// An assembly's bookkeeping vectors, recycled between frames.
+#[derive(Default)]
+struct AssemblyScratch {
+    sizes: Vec<Option<u16>>,
+    fec_groups: Vec<FecGroup>,
+}
+
 /// Tracks in-progress frame assembly.
 ///
 /// Hot-path layout: one contiguous buffer with a fixed slot per packet
-/// index, plus a per-slot size table. One allocation per *frame*;
-/// compacts in place when the frame completes.
+/// index, plus a per-slot size table. One buffer per *frame*, taken from
+/// the frame pool (a fresh one when the pool is off); every fragment is
+/// copied once, into its slot. Senders fill every fragment but the last,
+/// so the slots already sit where the frame's bytes go and compaction
+/// moves nothing.
 struct FrameAssembly {
     total_packets: u16,
     /// Slot i occupies buf[i*UDP_MAX_PAYLOAD ..][..sizes[i]].
-    buf: Vec<u8>,
+    buf: FrameBuf,
     /// Per-slot payload size; None = not received yet.
     sizes: Vec<Option<u16>>,
     received_count: u16,
@@ -119,12 +143,23 @@ struct FrameAssembly {
 }
 
 impl FrameAssembly {
-    fn new(total_packets: u16, is_keyframe: bool, codec: u8, after_silence: bool) -> Self {
+    fn new(
+        total_packets: u16,
+        is_keyframe: bool,
+        codec: u8,
+        after_silence: bool,
+        buf: FrameBuf,
+        scratch: AssemblyScratch,
+    ) -> Self {
+        let AssemblyScratch { mut sizes, mut fec_groups } = scratch;
+        sizes.clear();
+        sizes.resize(total_packets as usize, None);
+        fec_groups.clear();
         let now = Instant::now();
         FrameAssembly {
             total_packets,
-            buf: vec![0u8; total_packets as usize * UDP_MAX_PAYLOAD],
-            sizes: vec![None; total_packets as usize],
+            buf,
+            sizes,
             received_count: 0,
             is_keyframe,
             created_at: now,
@@ -132,7 +167,7 @@ impl FrameAssembly {
             highest_index: 0,
             after_silence,
             codec,
-            fec_groups: Vec::new(),
+            fec_groups,
         }
     }
 
@@ -160,19 +195,34 @@ impl FrameAssembly {
     }
 
     /// Add a FEC group, bounded and deduplicated by group_start (NACK-era
-    /// retransmit duplicates would otherwise pile up).
-    fn add_fec_group(&mut self, group: FecGroup) {
+    /// retransmit duplicates would otherwise pile up). A group whose
+    /// fragments have all arrived can never recover anything, so its
+    /// payload isn't stored (a lossless stream copies no FEC payloads).
+    fn add_fec_group(&mut self, fec: &FecFragment<'_>) {
+        let group_end = fec
+            .group_start
+            .saturating_add(fec.group_count)
+            .min(self.total_packets);
+        if (fec.group_start..group_end).all(|i| self.sizes[i as usize].is_some()) {
+            return;
+        }
         if self.fec_groups.len() >= MAX_FEC_GROUPS {
             return;
         }
         if self
             .fec_groups
             .iter()
-            .any(|g| g.group_start == group.group_start)
+            .any(|g| g.group_start == fec.group_start)
         {
             return;
         }
-        self.fec_groups.push(group);
+        self.fec_groups.push(FecGroup {
+            group_start: fec.group_start,
+            group_count: fec.group_count,
+            payload_size_xor: fec.payload_size_xor,
+            payload: *fec.payload,
+            used: false,
+        });
     }
 
     /// Try FEC recovery. Each group can independently recover one missing
@@ -214,9 +264,14 @@ impl FrameAssembly {
                     continue;
                 }
 
-                // Reconstruct: XOR the FEC payload with all received packets
-                // in the group
-                let mut recovered = self.fec_groups[gi].payload;
+                // Reconstruct in the missing fragment's own slot: the FEC
+                // payload XOR every received packet in the group (received
+                // packets are variable-length, but FEC was computed with
+                // zero-padding to UDP_MAX_PAYLOAD). The slot is unused until
+                // its size is set, so a size that fails validation below
+                // leaves nothing behind.
+                let dst = missing_idx as usize * UDP_MAX_PAYLOAD;
+                self.buf[dst..dst + UDP_MAX_PAYLOAD].copy_from_slice(&self.fec_groups[gi].payload);
                 let mut recovered_size = self.fec_groups[gi].payload_size_xor;
 
                 for i in group_start..group_end {
@@ -224,24 +279,13 @@ impl FrameAssembly {
                         continue;
                     }
                     if let Some(size) = self.sizes[i as usize] {
-                        // XOR payload bytes (received packets are variable-
-                        // length, but FEC was computed with zero-padding to
-                        // UDP_MAX_PAYLOAD)
-                        let start = i as usize * UDP_MAX_PAYLOAD;
-                        for (j, &b) in
-                            self.buf[start..start + size as usize].iter().enumerate()
-                        {
-                            recovered[j] ^= b;
-                        }
+                        xor_slot(&mut self.buf, dst, i as usize * UDP_MAX_PAYLOAD, size as usize);
                         recovered_size ^= size;
                     }
                 }
 
                 // Validate recovered size
                 if recovered_size as usize <= UDP_MAX_PAYLOAD {
-                    let start = missing_idx as usize * UDP_MAX_PAYLOAD;
-                    self.buf[start..start + recovered_size as usize]
-                        .copy_from_slice(&recovered[..recovered_size as usize]);
                     self.sizes[missing_idx as usize] = Some(recovered_size);
                     self.received_count += 1;
                     self.fec_groups[gi].used = true;
@@ -265,28 +309,70 @@ impl FrameAssembly {
 
     /// Compact the slot buffer into contiguous frame data, in packet
     /// order, reusing the buffer itself (copy_within is a memmove and
-    /// every destination offset is <= its source offset).
-    fn into_data(mut self) -> Vec<u8> {
+    /// every destination offset is <= its source offset), and hand back
+    /// the bookkeeping for the next frame.
+    fn into_parts(self) -> (FrameBuf, AssemblyScratch) {
+        let FrameAssembly { total_packets, mut buf, sizes, fec_groups, .. } = self;
         let mut write = 0usize;
-        for i in 0..self.total_packets as usize {
-            let size = match self.sizes[i] {
-                Some(s) => s as usize,
+        for (i, size) in sizes.iter().enumerate().take(total_packets as usize) {
+            let size = match size {
+                Some(s) => *s as usize,
                 None => continue,
             };
             let start = i * UDP_MAX_PAYLOAD;
             if start != write {
-                self.buf.copy_within(start..start + size, write);
+                buf.copy_within(start..start + size, write);
             }
             write += size;
         }
-        self.buf.truncate(write);
-        self.buf
+        buf.truncate(write);
+        (buf, AssemblyScratch { sizes, fec_groups })
     }
+
+    /// The bookkeeping of an assembly that is being dropped (its buffer
+    /// goes back to the pool with it).
+    fn take_scratch(&mut self) -> AssemblyScratch {
+        AssemblyScratch {
+            sizes: std::mem::take(&mut self.sizes),
+            fec_groups: std::mem::take(&mut self.fec_groups),
+        }
+    }
+}
+
+/// `buf[dst..][..len] ^= buf[src..][..len]` for two distinct slots.
+fn xor_slot(buf: &mut [u8], dst: usize, src: usize, len: usize) {
+    let (to, from) = if src < dst {
+        let (lo, hi) = buf.split_at_mut(dst);
+        (&mut hi[..len], &lo[src..src + len])
+    } else {
+        let (lo, hi) = buf.split_at_mut(src);
+        (&mut lo[dst..dst + len], &hi[..len])
+    };
+    for (d, s) in to.iter_mut().zip(from) {
+        *d ^= s;
+    }
+}
+
+/// Keep a finished assembly's bookkeeping for the next frame (bounded).
+fn spare_put(spare: &mut Vec<AssemblyScratch>, mut scratch: AssemblyScratch) {
+    if spare.len() >= MAX_SPARE_SCRATCH {
+        return;
+    }
+    if scratch.fec_groups.capacity() > MAX_SPARE_FEC_GROUPS {
+        scratch.fec_groups = Vec::new();
+    }
+    spare.push(scratch);
 }
 
 /// Wrap-aware "a strictly before b" for u32 frame ids.
 fn seq_before(a: u32, b: u32) -> bool {
     a != b && b.wrapping_sub(a) < 0x8000_0000
+}
+
+/// The sender id as a string (up to the first NUL).
+fn sender_id_str(id: &[u8; SENDER_ID_SIZE]) -> Arc<str> {
+    let end = id.iter().position(|&b| b == 0).unwrap_or(SENDER_ID_SIZE);
+    Arc::from(String::from_utf8_lossy(&id[..end]).as_ref())
 }
 
 /// Per-streamer receive state. Everything is keyed per sender because
@@ -296,7 +382,7 @@ fn seq_before(a: u32, b: u32) -> bool {
 /// happened to arrive last.
 struct SenderState {
     /// The streamer's media id (their uid in decimal, stamped by the relay).
-    id: String,
+    id: Arc<str>,
     frames_in_progress: HashMap<u32, FrameAssembly>,
     /// Completed frames waiting for their predecessor (in flight via
     /// NACK/FEC) so delivery stays in frame_id order. Only ever holds
@@ -318,7 +404,7 @@ struct SenderState {
 }
 
 impl SenderState {
-    fn new(id: String, now: Instant) -> Self {
+    fn new(id: Arc<str>, now: Instant) -> Self {
         SenderState {
             id,
             frames_in_progress: HashMap::new(),
@@ -332,8 +418,8 @@ impl SenderState {
         }
     }
 
-    /// Route a completed frame through the ordered-delivery gate.
-    /// Returns every frame that is now deliverable, in order. Out-of-
+    /// Route a completed frame through the ordered-delivery gate, pushing
+    /// every frame that is now deliverable onto `out`, in order. Out-of-
     /// order completions (NACK/FEC finishing an older frame after a
     /// newer one) used to be handed to the decoder as-is, which fed it
     /// deltas with missing references — corruption until the next PLI.
@@ -342,7 +428,8 @@ impl SenderState {
         frame: ReassembledFrame,
         now: Instant,
         after_silence: bool,
-    ) -> Vec<ReassembledFrame> {
+        out: &mut Vec<ReassembledFrame>,
+    ) {
         let fid = frame.frame_id;
         if frame.is_keyframe {
             // A keyframe *slightly* behind the cursor is a late NACK
@@ -354,7 +441,7 @@ impl SenderState {
                 let behind = next.wrapping_sub(fid);
                 let restarted = fid == 0 || after_silence;
                 if behind > 0 && behind < RESTART_THRESHOLD && !restarted {
-                    return Vec::new();
+                    return;
                 }
             }
             // A keyframe is always decodable and resets the chain.
@@ -362,37 +449,33 @@ impl SenderState {
             self.pending_delivery.retain(|&k, _| seq_before(fid, k));
             self.next_delivery = Some(fid.wrapping_add(1));
             self.has_keyframe = true;
-            let mut out = vec![frame];
-            out.extend(self.flush_pending());
-            return out;
+            out.push(frame);
+            self.flush_pending(out);
+            return;
         }
         match self.next_delivery {
             // No keyframe yet (or the chain was abandoned after a lost
             // gap): a delta has nothing to predict from.
-            None => Vec::new(),
+            None => {}
             Some(next) => {
                 if fid == next {
                     self.next_delivery = Some(fid.wrapping_add(1));
-                    let mut out = vec![frame];
-                    out.extend(self.flush_pending());
-                    out
+                    out.push(frame);
+                    self.flush_pending(out);
                 } else if seq_before(fid, next) {
                     // Late duplicate / already-superseded frame.
-                    Vec::new()
                 } else {
                     // Gap before this frame — hold briefly; the missing
                     // frame is usually a NACK round-trip away.
                     if self.pending_delivery.len() < MAX_PENDING_DELIVERY {
                         self.pending_delivery.insert(fid, (now, frame));
                     }
-                    Vec::new()
                 }
             }
         }
     }
 
-    fn flush_pending(&mut self) -> Vec<ReassembledFrame> {
-        let mut out = Vec::new();
+    fn flush_pending(&mut self, out: &mut Vec<ReassembledFrame>) {
         while let Some(next) = self.next_delivery {
             match self.pending_delivery.remove(&next) {
                 Some((_, f)) => {
@@ -402,7 +485,6 @@ impl SenderState {
                 None => break,
             }
         }
-        out
     }
 
     /// Give up on delivery gaps older than DELIVERY_HOLD. Once the gap
@@ -435,6 +517,11 @@ impl SenderState {
 /// keyed per streamer.
 pub struct VideoReceiver {
     senders: HashMap<[u8; SENDER_ID_SIZE], SenderState>,
+    /// Where reassembly buffers come from (the process-wide frame pool,
+    /// which is off unless the host enabled it).
+    pool: &'static FramePool,
+    /// Bookkeeping of finished assemblies, reused by the next ones.
+    spare: Vec<AssemblyScratch>,
     nack_timeout: Duration,
     /// STALE_FRAME_TIMEOUT and MAX_FRAME_AGE (fields so tests can shorten them).
     stale_timeout: Duration,
@@ -445,10 +532,23 @@ pub struct VideoReceiver {
     pli_interval_warm: Duration,
 }
 
+impl Default for VideoReceiver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VideoReceiver {
     pub fn new() -> Self {
+        Self::with_pool(frame_pool::global())
+    }
+
+    /// A receiver taking its reassembly buffers from `pool`.
+    pub fn with_pool(pool: &'static FramePool) -> Self {
         VideoReceiver {
             senders: HashMap::new(),
+            pool,
+            spare: Vec::with_capacity(MAX_SPARE_SCRATCH),
             nack_timeout: Duration::from_millis(50),
             stale_timeout: STALE_FRAME_TIMEOUT,
             max_frame_age: MAX_FRAME_AGE,
@@ -458,47 +558,61 @@ impl VideoReceiver {
         }
     }
 
-    fn sender_entry(&mut self, id: &[u8; SENDER_ID_SIZE], id_str: impl FnOnce() -> String, now: Instant) -> &mut SenderState {
-        if !self.senders.contains_key(id) && self.senders.len() >= MAX_SENDERS {
+    fn sender_entry<'a>(
+        senders: &'a mut HashMap<[u8; SENDER_ID_SIZE], SenderState>,
+        id: &[u8; SENDER_ID_SIZE],
+        now: Instant,
+    ) -> &'a mut SenderState {
+        if !senders.contains_key(id) && senders.len() >= MAX_SENDERS {
             // Evict the least-recently-active sender.
-            if let Some(&stale) = self
-                .senders
+            if let Some(&stale) = senders
                 .iter()
                 .min_by_key(|(_, s)| s.last_activity)
                 .map(|(k, _)| k)
             {
-                self.senders.remove(&stale);
+                senders.remove(&stale);
             }
         }
-        self.senders
+        senders
             .entry(*id)
-            .or_insert_with(|| SenderState::new(id_str(), now))
+            .or_insert_with(|| SenderState::new(sender_id_str(id), now))
     }
 
     /// Process an incoming video packet. Returns every frame that became
     /// deliverable, in decode order (usually empty or one).
     pub fn process_packet(&mut self, pkt: &UdpVideoPacket) -> Vec<ReassembledFrame> {
-        // Copy fields from packed struct to avoid unaligned access UB
-        let frame_id = { pkt.frame_id };
-        let packet_index = { pkt.packet_index };
-        let total_packets = { pkt.total_packets };
-        let is_keyframe = pkt.is_keyframe();
-        let pkt_codec = { pkt.codec };
+        let mut out = Vec::new();
+        self.process_fragment(&pkt.fragment(), &mut out);
+        out
+    }
+
+    /// Process one video fragment read in place off the socket, pushing
+    /// every frame that became deliverable onto `out`, in decode order
+    /// (usually none or one). The receive loop's path: with a reused `out`
+    /// and the frame pool on, a steady stream allocates nothing here.
+    pub fn process_fragment(&mut self, frag: &VideoFragment<'_>, out: &mut Vec<ReassembledFrame>) {
+        let frame_id = frag.frame_id;
+        let packet_index = frag.packet_index;
+        let total_packets = frag.total_packets;
+        let is_keyframe = frag.is_keyframe;
+        let pkt_codec = frag.codec;
 
         // Wire safety: a frame with zero packets or an index outside
         // its own declared range is malformed.
         if total_packets == 0 || packet_index >= total_packets {
-            return Vec::new();
+            return;
         }
 
         // Wire safety: cap the declared fragment count so a single crafted
         // packet can't force a huge (~75 MB) reassembly-buffer allocation.
         if total_packets > MAX_PACKETS_PER_FRAME {
-            return Vec::new();
+            return;
         }
 
         let now = Instant::now();
-        let sender = self.sender_entry(&pkt.sender_id, || pkt.sender_id_str(), now);
+        let pool = self.pool;
+        let spare = &mut self.spare;
+        let sender = Self::sender_entry(&mut self.senders, frag.sender_id, now);
         let after_silence = now.duration_since(sender.last_activity) >= RESTART_SILENCE;
         sender.last_activity = now;
 
@@ -507,7 +621,7 @@ impl VideoReceiver {
         // otherwise rebuild a whole assembly that can never deliver.
         if let Some(next) = sender.next_delivery {
             if !is_keyframe && seq_before(frame_id, next) {
-                return Vec::new();
+                return;
             }
         }
 
@@ -522,80 +636,90 @@ impl VideoReceiver {
                 .min_by_key(|(_, a)| a.created_at)
                 .map(|(&id, _)| id);
             if let Some(oldest) = oldest {
-                sender.frames_in_progress.remove(&oldest);
+                if let Some(mut evicted) = sender.frames_in_progress.remove(&oldest) {
+                    spare_put(spare, evicted.take_scratch());
+                }
                 sender.nack_tracking.retain(|&(fid, _), _| fid != oldest);
             }
         }
 
-        let frame = sender
-            .frames_in_progress
-            .entry(frame_id)
-            .or_insert_with(|| FrameAssembly::new(total_packets, is_keyframe, pkt_codec, after_silence));
+        // The frame's size is known from its fragment count: its buffer is
+        // taken once, here, and every fragment is copied straight into it.
+        let frame = sender.frames_in_progress.entry(frame_id).or_insert_with(|| {
+            FrameAssembly::new(
+                total_packets,
+                is_keyframe,
+                pkt_codec,
+                after_silence,
+                pool.take(total_packets as usize * UDP_MAX_PAYLOAD),
+                spare.pop().unwrap_or_default(),
+            )
+        });
 
-        frame.insert(packet_index, pkt.payload_data());
+        frame.insert(packet_index, frag.payload);
 
         // Check if frame is complete (directly or after FEC recovery)
         let complete = frame.is_complete() || frame.try_fec_recovery();
 
         if complete {
-            let assembly = sender.frames_in_progress.remove(&frame_id).unwrap();
-            sender.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
-            let after_silence = assembly.after_silence;
-            let reassembled = ReassembledFrame {
-                frame_id,
-                is_keyframe: assembly.is_keyframe,
-                streamer_id: sender.id.clone(),
-                codec: assembly.codec,
-                description: None,
-                data: assembly.into_data(),
-            };
-            return sender.accept_completed(reassembled, now, after_silence);
+            Self::complete(sender, spare, frame_id, now, out);
         }
-
-        Vec::new()
     }
 
     /// Process an incoming FEC packet. Returns frames that became
     /// deliverable through recovery.
     pub fn process_fec_packet(&mut self, pkt: &UdpFecPacket) -> Vec<ReassembledFrame> {
-        let frame_id = { pkt.frame_id };
-        let group_start = { pkt.group_start };
-        let group_count = { pkt.group_count };
-        let payload_size_xor = { pkt.payload_size_xor };
+        let mut out = Vec::new();
+        self.process_fec(&pkt.fragment(), &mut out);
+        out
+    }
 
+    /// Process one FEC packet read in place, pushing frames that became
+    /// deliverable through recovery onto `out`.
+    pub fn process_fec(&mut self, fec: &FecFragment<'_>, out: &mut Vec<ReassembledFrame>) {
         let now = Instant::now();
-        let Some(sender) = self.senders.get_mut(&pkt.sender_id) else {
-            return Vec::new();
+        let spare = &mut self.spare;
+        let Some(sender) = self.senders.get_mut(fec.sender_id) else {
+            return;
         };
         sender.last_activity = now;
-        let Some(frame) = sender.frames_in_progress.get_mut(&frame_id) else {
-            return Vec::new();
+        let Some(frame) = sender.frames_in_progress.get_mut(&fec.frame_id) else {
+            return;
         };
 
-        frame.add_fec_group(FecGroup {
-            group_start,
-            group_count,
-            payload_size_xor,
-            payload: pkt.payload,
-            used: false,
-        });
+        frame.add_fec_group(fec);
 
         if frame.try_fec_recovery() {
-            let assembly = sender.frames_in_progress.remove(&frame_id).unwrap();
-            sender.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
-            let after_silence = assembly.after_silence;
-            let reassembled = ReassembledFrame {
-                frame_id,
-                is_keyframe: assembly.is_keyframe,
-                streamer_id: sender.id.clone(),
-                codec: assembly.codec,
-                description: None,
-                data: assembly.into_data(),
-            };
-            return sender.accept_completed(reassembled, now, after_silence);
+            Self::complete(sender, spare, fec.frame_id, now, out);
         }
+    }
 
-        Vec::new()
+    /// `frame_id` of `sender` is complete: take it out of the assemblies and
+    /// through the delivery gate.
+    fn complete(
+        sender: &mut SenderState,
+        spare: &mut Vec<AssemblyScratch>,
+        frame_id: u32,
+        now: Instant,
+        out: &mut Vec<ReassembledFrame>,
+    ) {
+        let Some(assembly) = sender.frames_in_progress.remove(&frame_id) else {
+            return;
+        };
+        sender.nack_tracking.retain(|&(fid, _), _| fid != frame_id);
+        let after_silence = assembly.after_silence;
+        let (is_keyframe, codec) = (assembly.is_keyframe, assembly.codec);
+        let (data, scratch) = assembly.into_parts();
+        spare_put(spare, scratch);
+        let reassembled = ReassembledFrame {
+            frame_id,
+            is_keyframe,
+            streamer_id: sender.id.clone(),
+            codec,
+            description: None,
+            data,
+        };
+        sender.accept_completed(reassembled, now, after_silence, out);
     }
 
     /// Periodic maintenance: expire delivery holds, compute NACK
@@ -644,7 +768,7 @@ impl VideoReceiver {
                     }
                     if !missing.is_empty() {
                         nacks.push(NackRequest {
-                            target: sender.id.clone(),
+                            target: sender.id.to_string(),
                             frame_id,
                             missing,
                         });
@@ -665,7 +789,7 @@ impl VideoReceiver {
                 if due {
                     sender.last_pli = Some(now);
                     sender.want_pli = false;
-                    plis.push(sender.id.clone());
+                    plis.push(sender.id.to_string());
                 }
             }
         }
@@ -679,12 +803,14 @@ impl VideoReceiver {
     pub fn cleanup_stale(&mut self) {
         let mut dropped = 0u32;
         let (stale_timeout, max_frame_age) = (self.stale_timeout, self.max_frame_age);
+        let spare = &mut self.spare;
         for sender in self.senders.values_mut() {
             sender.frames_in_progress.retain(|_frame_id, assembly| {
                 if assembly.last_packet_at.elapsed() >= stale_timeout
                     || assembly.created_at.elapsed() >= max_frame_age
                 {
                     dropped += 1;
+                    spare_put(spare, assembly.take_scratch());
                     false
                 } else {
                     true
@@ -740,7 +866,7 @@ mod tests {
         assert_eq!(frame.frame_id, 0);
         assert_eq!(frame.data, b"keyframe data");
         assert!(frame.is_keyframe);
-        assert_eq!(frame.streamer_id, "streamer1");
+        assert_eq!(&*frame.streamer_id, "streamer1");
     }
 
     #[test]
@@ -797,11 +923,11 @@ mod tests {
         let a = receiver.process_packet(&a1);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].data, b"aaaaAAAA");
-        assert_eq!(a[0].streamer_id, "alice");
+        assert_eq!(&*a[0].streamer_id, "alice");
         let b = receiver.process_packet(&b1);
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].data, b"bbbbBBBB");
-        assert_eq!(b[0].streamer_id, "bob");
+        assert_eq!(&*b[0].streamer_id, "bob");
     }
 
     #[test]
@@ -1274,6 +1400,53 @@ mod tests {
             .max()
             .unwrap_or(0);
         assert_eq!(groups, 1, "duplicate group_start must dedupe to one entry");
+    }
+
+    /// A FEC packet for a group whose fragments all arrived can't recover
+    /// anything: its payload isn't stored (a lossless stream copies none).
+    #[test]
+    fn fec_for_a_complete_group_is_not_stored() {
+        let mut receiver = VideoReceiver::new();
+        seed_keyframe(&mut receiver, "streamer1");
+        for i in 0..5 {
+            assert!(receiver.process_packet(&make_packet(1, i, 7, false, b"x")).is_empty());
+        }
+        let xor = [0u8; UDP_MAX_PAYLOAD];
+        assert!(receiver
+            .process_fec_packet(&UdpFecPacket::new("streamer1", 1, 0, 5, 0, &xor))
+            .is_empty());
+        let groups = |r: &VideoReceiver| {
+            r.senders.values().flat_map(|s| s.frames_in_progress.values()).map(|a| a.fec_groups.len()).sum::<usize>()
+        };
+        assert_eq!(groups(&receiver), 0, "complete group: nothing stored");
+        // The tail group is missing a fragment: its FEC is kept.
+        assert!(receiver
+            .process_fec_packet(&UdpFecPacket::new("streamer1", 1, 5, 2, 0, &xor))
+            .is_empty());
+        assert_eq!(groups(&receiver), 1);
+    }
+
+    /// With a pool, reassembly buffers and the bookkeeping vectors are
+    /// reused frame after frame.
+    #[test]
+    fn a_pooled_receiver_reuses_its_buffers() {
+        use super::super::frame_pool::FramePool;
+        let pool: &'static FramePool = Box::leak(Box::new(FramePool::new(4, 1 << 20)));
+        let mut receiver = VideoReceiver::with_pool(pool);
+        let mut out = Vec::new();
+        for fid in 0..20u32 {
+            for i in 0..3u16 {
+                let pkt = make_packet(fid, i, 3, fid == 0, &[fid as u8; UDP_MAX_PAYLOAD]);
+                receiver.process_fragment(&pkt.fragment(), &mut out);
+            }
+            assert_eq!(out.len(), 1);
+            let frame = out.pop().unwrap();
+            assert!(frame.data.is_pooled());
+            assert_eq!(frame.data, vec![fid as u8; 3 * UDP_MAX_PAYLOAD]);
+        }
+        let s = pool.stats();
+        assert_eq!((s.takes, s.misses), (20, 1), "{s:?}");
+        assert_eq!(receiver.spare.len(), 1, "one assembly's bookkeeping, reused");
     }
 
     #[test]

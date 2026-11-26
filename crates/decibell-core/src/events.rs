@@ -77,17 +77,20 @@ fn sink() -> Option<&'static Arc<dyn EventSink>> {
 // per stream. They reach the sink as raw bytes plus a small metadata bag,
 // so the renderer's WebCodecs decoder gets the bitstream directly.
 
-/// Owned binary payload handed to [`EventSink::stream_frame`]. The byte
-/// fields are owned `Vec<u8>`s so a sink can pass the allocation on without
-/// a copy (the napi sink hands it to V8 as a real Uint8Array view).
+/// Owned binary payload handed to [`EventSink::stream_frame`]. The bytes are
+/// owned so a sink can pass the allocation on without a copy: `data` is the
+/// buffer the frame was reassembled (or encoded) in, from the frame pool when
+/// the host enabled it (`media::frame_pool`; dropping it returns it there),
+/// else a plain `Vec` that `FrameBuf::into_vec` hands back as is (the napi
+/// sink gives it to V8 as a real Uint8Array view).
 pub struct StreamFrame {
     /// The streamer's media key: their uid in decimal (ours for the
-    /// self-preview).
-    pub key: String,
+    /// self-preview). Shared by all of a stream's frames.
+    pub key: Arc<str>,
     pub codec: u8,
     pub keyframe: bool,
     pub timestamp: i64,
-    pub data: Vec<u8>,
+    pub data: crate::media::frame_pool::FrameBuf,
     pub description: Option<Vec<u8>>,
     /// Set by the sink (callers pass `false`): an earlier frame for this
     /// streamer was shed by the sink's bounded queue, so this one's

@@ -25,7 +25,6 @@ use super::packet::{
 use super::udp_recv::{is_oversized, RecvErrors, RECV_BUF_SIZE};
 use super::speaking::SpeakingDetector;
 use super::voice_gate::Gate as VoiceGate;
-use super::video_receiver::ReassembledFrame;
 
 // ── Control / Event messages ──────────────────────────────────────────────────
 
@@ -71,7 +70,6 @@ pub enum VoiceEvent {
     /// loss percentage over the last sample window. latency_ms is None
     /// until the first PING reply lands.
     ConnectionStats { latency_ms: Option<u32>, packet_loss_pct: f32 },
-    VideoFrameReady(ReassembledFrame),
     KeyframeRequested,
     Error(String),
 }

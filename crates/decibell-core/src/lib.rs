@@ -26,3 +26,5 @@ pub mod presence;
 pub mod rt;
 pub mod state;
 pub mod system_idle;
+#[cfg(test)]
+mod test_alloc;

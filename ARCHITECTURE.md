@@ -629,6 +629,15 @@ and the runtime handle):
   `tests/golden/events.json` pins every event's JSON byte for byte (`events::golden_tests`, which also
   checks the renderer's listener list), and core tests read emits through a recording sink
   (`events::testing`), so emits need no `cfg(not(test))` wrappers.
+- **Frame buffers** (`media/frame_pool.rs`, design §6 item 6): `StreamFrame.data` is a `FrameBuf` and
+  `StreamFrame.key` an `Arc<str>` shared by a stream's frames. `decibell-video-recv` reads each datagram in
+  place (`MediaSocket::recv_in_place`, `VideoFragment`), copies every fragment once into the frame's buffer,
+  opens a sealed frame there and calls the sink itself (`media/video_recv.rs`; no bridge hop). A host that
+  turns the process-wide pool on once (`frame_pool::enable(max_buffers, max_retained_bytes)`, before the
+  first voice session) gets pooled buffers, decrypted in place, that go back to the pool when dropped: a
+  watched stream allocates nothing per frame in steady state (asserted by a counting allocator in
+  `video_recv.rs`'s tests). The Electron addon never enables it: each frame is then a plain `Vec`, as
+  before, and `FrameBuf::into_vec` hands that allocation to V8 without a copy.
 - **Commands are `decibell_core::api`** (step 3): 132 functions, one module per area with the addon's
   names (auth 7, call 6, channels 15, community 23, devices 3, dm 5, e2ee 6, friends 3, hotkeys 6,
   messaging 1, presence 5, servers 11, settings 4, stream_audio 2, streaming 18, voice 17), plus
