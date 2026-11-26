@@ -1852,6 +1852,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "base64 0.22.1",
+ "decibell-attachments",
  "decibell-core",
  "decibell-theme",
  "futures",

@@ -12,12 +12,18 @@
 //! goes through `crate::call`.
 
 pub mod auth;
+pub mod calls;
 pub mod connection;
+pub mod e2ee;
+pub mod friends;
+pub mod misc;
+pub mod presence;
 pub mod servers;
 #[cfg(test)]
 mod tests;
 pub mod todo;
 pub mod users;
+pub mod voice;
 
 use decibell_core::events::CoreEvent;
 use gpui::App;

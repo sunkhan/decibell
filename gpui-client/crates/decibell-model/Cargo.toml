@@ -28,6 +28,8 @@ decibell-theme.workspace = true
 # zbus on async-io, as GPUI's own dependencies use it: with the core's default (`zbus-tokio`, the
 # Electron addon's) cargo would unify the features and GPUI's D-Bus calls would need a tokio context.
 decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+# The downloads manager the Transfers panel mirrors (M3).
+decibell-attachments = { path = "../decibell-attachments" }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true

@@ -22,6 +22,7 @@ pub mod error;
 pub mod events;
 pub mod ids;
 pub mod invite_link;
+pub mod live;
 pub mod local_key;
 pub mod pump;
 pub mod save_echo;
@@ -71,6 +72,8 @@ pub struct Model {
     pub invites: Entity<InviteResolve>,
     pub update: Entity<UpdateStore>,
     pub answers: Entity<Answers>,
+    /// Voice, streams, calls, presence, friends, E2EE, hotkeys, devices, transfers (M3).
+    pub live: live::LiveStores,
     sink: Arc<ModelSink>,
     _pump: Rc<Task<()>>,
 }
@@ -84,6 +87,7 @@ impl Model {
     pub fn init(cx: &mut App, user_data_dir: Option<PathBuf>) -> Model {
         let model = Model::build(cx, user_data_dir);
         cx.set_global(model.clone());
+        live::install(&model, cx);
         // Quit: what is still inside a debounce is written now.
         cx.on_app_quit(|cx| {
             Model::flush(cx);
@@ -132,6 +136,7 @@ impl Model {
             invites: cx.new(|_| InviteResolve::new(Rc::new(actions::servers::resolve_invite))),
             update: cx.new(|_| UpdateStore::default()),
             answers: cx.new(|_| Answers),
+            live: live::LiveStores::new(cx),
             sink,
             _pump: Rc::new(pump),
         }
