@@ -51,7 +51,8 @@ screens in all seven themes beside Electron's.
 | Core split step 2 (typed `CoreEvent`) | on the branch `1930905` + `ebb65d2`: 85 variants, `to_json()` pinned byte-for-byte by a golden test recorded from the old path; Linux bar passed (tsc 0, napi build with `index.d.ts` / `index.js` unchanged, 327 + 2 tests, smoke); Windows Native Check run 45806591240 green (after `34f6527` fixed a Windows-only test) |
 | Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle `rt`) | done `a67554d` + `79b7eba`: 132 functions in 16 areas returning `CoreError`, structs defined once in core (optional `napi` feature), every async api fn awaitable from any executor; Linux bar passed (tsc 0, napi build with `index.js` identical and `index.d.ts` identical in content, 340 core tests, `smoke-load.cjs`, `smoke-stack.cjs` signing in against the local stack); Windows Native Check run 45808677484 green |
 | Client state model, foundation (`crates/decibell-model`, `docs/model.md`) | done `7b45b47`: core handle (2-worker runtime), one-wake-per-burst pump (10,000 events from 8 threads = 5 wakes), router over all 85 events, stores for auth / users / navigation / servers / communities / roster / permissions / settings, `decibell-headless`; 65 tests incl. stack tests |
-| State model, chat half (messages, DMs, pacing, slowmode, drafts, search) and live half (voice, streams, calls, presence, friends, e2ee, hotkeys, devices, transfers) | in progress, worktrees `.worktrees/model-chat` (`wip/model-chat`) and `.worktrees/model-live` (`wip/model-live`) |
+| State model, live half (voice, streams, calls, presence, friends, e2ee, hotkeys, devices, transfers) | on the branch `a92fd4d`..`173c8e9`: 120 unit tests, 6 stack tests (two test clients in an MLS voice channel, a P2P call connected over loopback, statuses by subscription, devices, friends, E2EE setup) |
+| State model, chat half (message slices with a change log for the list, history merge, pacing, slowmode, drafts, DMs, search) | done on `wip/model-chat` (107 unit tests, 6 stack tests; 340 bytes retained per message); being integrated with the live half in `.worktrees/integrate` (`wip/integrate`) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
 | Linux measurement tools | done `5285180`: `tools/perf/measure.sh`, `startup.sh`, `winctl.sh`, `install-size.sh` (README has the Linux section) |
 | Electron baseline on this machine (Linux) | runner being built (`tools/perf/electron-local.sh`, `scenarios.sh`); the full run needs a quiet machine |
@@ -59,7 +60,10 @@ screens in all seven themes beside Electron's.
 | Video research + prototype (`docs/video-design.md`) | in progress |
 | Theme generator + assets | done `e846392`: `crates/decibell-theme` (162 tokens × 7 themes, 12 scaled, scopes), `tools/gen-theme`, `tools/fetch-assets.mjs`, `docs/css-component-rules.md` |
 | Skeleton (workspace, patched GPUI copy, static font faces, window frame, theme gallery, capture + self-test harness, perf markers, Windows check job) | done `b120b2f`; `CONVENTIONS.md`; self-tests `boot`, `idle-frames`, `window-frame`, `themes` pass on Wayland and XWayland |
-| Text engine (`decibell-text`), component kit (in `decibell-ui`), video crate (`decibell-video`) | in progress |
+| Component kit (in `decibell-ui`) + Electron capture harness (`tools/electron-captures/`) | done, **uncommitted in the main tree** until the text engine lands (it shares `decibell-ui/Cargo.toml` and `text.rs`): `ScrollAnimator` / `ScrollArea` (11 wheel vectors within 0.005 px), buttons, forms, `Select`, overlays, `SettingsWindow`, `SaveBar`, identity bits, 153 icons; 56 capture pairs against the real React components differ in ≤ 1.08 % of pixels |
+| Text engine (`decibell-text`), video crate (`decibell-video`) | in progress |
+| Encoders on every vendor + software fallback (core) | in progress, worktree `.worktrees/core-encoders` (`wip/core-encoders`) |
+| Shell (boot with core + model, sign-in pages, server bar, channel sidebar, user panel, member list; `decibell-common`, `decibell-shell`) | in progress |
 | Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
 | Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
 | Rich-text grammar (`crates/decibell-richtext`) | done `497ab53`: 0 mismatches against the renderer over 120,570 committed + 1.6M stress cases |
@@ -238,6 +242,12 @@ its 298-member roster loaded, 20 s settle + 60 s): **14.2 MB private** (2.6 dirt
 0.0004 % of a core, **0.17 wakeups/s** for the whole process (10 in 60 s, all on one runtime worker: the
 connections' keep-alives), 26 threads, all named, every other thread parked.
 
+**Core + model in a voice channel** (headless, alone in Lounge, muted): 23.5 MB private, 2.75 % of a core,
+**1,388 wakeups/s**, all from the shared core: `decibell-voice-recv` 442/s (a 1 ms read-timeout loop),
+`decibell-audio` 197/s (5 ms pacing), PipeWire data loops 2 × 187/s, `decibell-video-recv` 160/s (runs in voice
+although nobody streams), cpal in / out 94/s each, runtime 24/s; the model itself 0.9/s. Signed in with 100
+users watched and not in voice: 16.2 MB private, 0.23 wakeups/s.
+
 - **Lever not yet taken**: cosmic-text scans all installed fonts and walks them per (family, weight, style)
   query: ~70 ms of the 225 ms to first frame. The text engine work starts with bundled faces only and loads
   system fonts lazily for fallback.
@@ -267,6 +277,13 @@ the attachment tests read git-ignored `*.key` / `*.crt` files (they generate the
   `cargo tree -e features -i zbus` shows no `tokio`. `decibell_model::core::prepare` (the earlier workaround) can
   go when the app's boot is wired. Keep `blocking` at 1.6.x in the lockfile (1.7.0 keeps an idle pool thread
   waking every 500 ms).
+- **Voice costs ~1,400 wakeups/s at rest in a channel, in the shared core** (numbers in §4): the voice socket is
+  read with a 1 ms timeout loop instead of blocking, and the video receive thread runs for every voice session
+  whether or not a stream is watched. Both clients pay it. To fix in the core (blocking receive with a wake on
+  shutdown; start the video receiver with the first watched stream), with Electron's bar.
+- `system_idle` can only be queried, not subscribed to: auto-away is late by up to one threshold on Wayland.
+  There is no device-change notification from the core and no mic test outside a voice session (Electron used
+  Web Audio for the out-of-voice meter).
 - **Voice receive path allocates per packet** (~5 allocations per voice packet per talking peer; the core
   follow-up measured it and left a plan in its notes: fixed datagram slots on the existing ring, peers keyed by
   the 32-byte sender id, in-place open, preallocated Opus slots). Not done; do it if voice CPU / wakeups need it.
