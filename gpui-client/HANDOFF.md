@@ -29,6 +29,9 @@ startup time and install size; every design choice is judged by those.
 - **RAM and the GPU driver** (owner, 2026-11-26): keep the GPU; the driver's own memory (~60 MB of any Vulkan
   process on NVIDIA) doesn't fail the RAM target. Report total private memory first; if it is over, report the
   driver's share (a minimal Vulkan window, same tool) beside it and judge the row on what is ours.
+- **Media quality first** (owner, 2026-11-26): no audio popping, top-notch audio and video; never pause or
+  restart audio streams or processing to save wakeups; anything that could change audible output needs the
+  owner's listening test (CLAUDE.md, "Audio and video quality outrank resource savings").
 - **Codecs on every vendor** (owner, 2026-11-26): hardware encode and decode on NVIDIA, AMD and Intel on both
   OSes, integrated GPUs with a hardware codec included; software (dav1d / FFmpeg decode, SVT-AV1 encode) only
   when no hardware path works. Design record §7.0.
@@ -140,11 +143,30 @@ cargo build -p decibell-app             # debug: our crates unoptimised, depende
 target/release/decibell [--theme <id>] [--screen <name>] [--perf]
 ```
 
+Without `--screen` / `--selftest` this is the app: the state model and the core start (profile:
+`$DECIBELL_USER_DATA_DIR`, else `~/.config/decibell`; the at-rest key in the keychain), the window shows the
+sign-in page or, with a saved sign-in, the main layout (`decibell-shell`). **A build without `dev-local`
+talks to the live central**: for the local test stack build `--features dev-local` (honours
+`DECIBELL_CENTRAL`, adds `--login`; never ship it) and use your own profile:
+
+```sh
+cargo build --release -p decibell-app --features dev-local
+eval "$(../tools/dev/local-stack.sh client-env)"            # DECIBELL_CENTRAL=127.0.0.1:18080
+DECIBELL_USER_DATA_DIR=/tmp/p DECIBELL_DEV_PASSWORD=decibell-test-1 target/release/decibell --login perf1
+```
+
+`--login <account>` (dev-local only) signs in without typing (the text fields are display-only until the
+editor lands): refused unless `DECIBELL_CENTRAL` is loopback and the account is in the stack's
+`accounts.json`. dev-local builds also print `decibell: signed-in <name>` / `connected <community>` on stdout
+and read commands from the pipe `DECIBELL_DEV_CONTROL` names (`home`, `channel <community>\t<channel>`,
+`minimize`, `quit`): what `tools/perf/clients/gpui.sh` drives.
+
 `--theme`: nocturne (default), matinee, graphite, graphite-light, console, console-light, console-split;
-F8 / Shift-F8 step through them while the window is open. `--screen <name>` shows one registered screen
-(`--screen list`); without it the window shows the default screen (the token gallery until the app shell
-exists). The session's display is used: Wayland if `WAYLAND_DISPLAY` is set, else X11 (`WAYLAND_DISPLAY=
-target/release/decibell` forces XWayland). Nothing here talks to a server yet.
+it wins over the saved appearance for that run. F8 / Shift-F8 step through them while the window is open.
+`--screen <name>` shows one registered screen (`--screen list`; the shell's are `auth`, `auth-register`,
+`main-server`, `main-home`, drawn from a fixture without a core); `--selftest` runs in the token gallery's
+window. The session's display is used: Wayland if `WAYLAND_DISPLAY` is set, else X11 (`WAYLAND_DISPLAY=
+target/release/decibell` forces XWayland).
 
 `--perf` (or `DECIBELL_PERF=1`) prints on stderr `decibell: first-frame <ms> ms since start
 monotonic_ns=<ns>` when the first frame reached the screen and `decibell: frames drawn=<n> presented=<n>` at
@@ -169,6 +191,14 @@ drawn or presented and a sleeping main thread over 5 s; `DECIBELL_SELFTEST_IDLE_
 switch costs exactly one frame). They open a visible window for about 12 s and maximise it once: GPUI cannot
 create a hidden window on Linux. Keep the pointer off it; a hover is a frame (the idle test retries twice
 before failing).
+
+The shell's self-tests (`shell-signin`, `shell-navigate`, `shell-members`, `shell-idle`, `shell-signout`,
+`shell-no-keyring`) need a `dev-local` binary and the local stack (`tools/dev/local-stack.sh up`; they skip,
+saying so, when it is down, and refuse a non-loopback `DECIBELL_CENTRAL`). Each starts the app again as a
+child — `decibell --check <name> --login perf1` with a temporary profile and `DECIBELL_TEST_PROBES=1` — and
+relays its log; `shell-no-keyring` runs it twice on a private session bus with no Secret Service.
+`shell-idle` moves the focus with `tools/perf/winctl.sh` (KDE) and retries a measurement that another window,
+the pointer or a core event from another client of the shared stack disturbed.
 
 **Capture** (no window, no display server needed; Linux only)
 
@@ -287,6 +317,35 @@ users watched and not in voice: 16.2 MB private, 0.23 wakeups/s.
 - Private memory counts a single-process app's own binary pages (Private_Clean), which a multi-process app
   shares between its processes: quote private dirty and PSS beside it (Electron, same scenario: 341.7 private,
   253.4 private dirty, 476.7 PSS).
+
+**Shell** (2026-11-26; `target/release/decibell` built `--features dev-local`, 52.9 MB stripped; signed in as `perf1`
+with the saved sign-in, Daily Gaming connected with its 298-member roster; `tools/perf/scenarios.sh gpui <scenario>
+--settle 20 --duration 60`, hooks `tools/perf/clients/gpui.sh`, results `tools/perf/results/gpui-*-20261126-15*`). **The
+chat pane is still a placeholder** (the chat agent's slot), so the `#general` rows hold the shell — server bar, channel
+list with voice rosters, member list, user panel — beside an empty pane, not 10k messages. The machine was busy (other
+agents compiling): load average 14.5 / 8.3 / 3.3 / 9.3 at the start of startup / idle-home / idle-channel / hidden.
+
+| | Electron 0.9.4 (quick run, §4 above) | This client (shell) |
+|---|---|---|
+| Startup to a visible window (warm, saved sign-in; median of 5, min–max) | 671 ms (settled 1,178) | **199 ms** (176–209; settled 200) |
+| Idle private memory, `#general` open, visible, unfocused (private dirty / PSS / RSS) | 341.7 MB (253.4 / 476.7 / 947.1) | **124.6 MB** (36.0 / 129.6 / 141.1) |
+| Same, minimized | 335.6 MB | 102.2 MB (36.2 / 117.8 / 140.7) |
+| Home, focused | 315.3 MB | 98.6 MB (21.1 / 107.0 / 121.2) |
+| Idle CPU, `#general` visible unfocused / minimized / Home | 14.5 % / 0.54 % / 0.49 % of a core | **0.01 %** / 0.01 % / 0.01 % |
+| Idle wakeups, own threads (p50) | 4,292 / s visible; 4 / s minimized | **1 / s** in all three (`system-idle` 1.0 — the core's idle source —, `decibell-rt` 0.2; main thread 0.0); driver threads 0 / s |
+| Frames at idle | 276 / s visible; 0 minimized | **0** in all three |
+| GPU memory; threads | 43.3 MB; 9 processes / 152 threads | 58.2 MB; 1 process / 38 threads |
+| The active tile's glow, window focused | the whole client composites at 276 Hz: 14.5 % of a core, ~4,300 wakeups / s | re-presents only (0 frames drawn): **28 presents / s** (cap 30); ~2.5 % of a core and ~125 own + ~170 driver wakeups / s while focused (p95 of a 30 s run focused 43 % of the time; the focus kept moving on the busy desktop); 0 when unfocused |
+
+- Memory against the target (≤ 114 MB): the visible `#general` row is 124.6 MB total; the NVIDIA Vulkan driver's
+  share measured for the skeleton is ~37 MB (§4 above), so the client's own is ~88 MB. Private dirty is 36 MB with the
+  roster and the shell's layouts; the ~22 MB between visible and minimized is clean (file-backed binary and driver
+  pages touched by drawing) and reclaimable — a 30 s run focused on the same state read 77.5–124.7 MB as the kernel
+  dropped them. Not yet broken down further.
+- The glow (owner decision, §6): breathing costs ~2.5 % of a core while focused at 30 presents / s, against
+  Electron's 14.5 % always. Halving `decibell_shell::BREATHE_FPS` to 15 halves it; 0 if it should not breathe.
+- Startup is the window with the shell booting (the core reads its configuration and signs in with the saved sign-in
+  meanwhile: `decibell: signed-in` follows ~0.3 s later in the dev markers).
 
 **Windows compile status**: Windows Native Check run 45819750197 (`fc19cdf`) is green for both jobs: `check` (the
 addon and the core) and `gpui-client` (`fetch-gpui.sh` + `cargo check --locked --workspace --all-targets` of

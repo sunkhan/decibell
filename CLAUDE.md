@@ -150,6 +150,14 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   Protocol, media and crypto stay in `crates/decibell-core`, shared with the Electron addon; anything
   touching it must pass Electron's whole bar too. The client is tested against the local stack
   (`tools/dev/local-stack.sh`) with test accounts, never the owner's account or the live servers.
+- **Audio and video quality outrank resource savings in the media path** (owner, 2026-11-26: "absolutely no
+  audio popping; top-notch audio and video quality"). Never stop, pause or restart capture, processing
+  (AEC / NS / AGC / gate), the mixer, the output stream or a device stream to save wakeups or CPU, and
+  don't change when samples are produced, consumed or handed to a device; the device-clock wakeups of a
+  live voice session are accepted. Savings come only from what doesn't touch samples (blocking socket
+  reads instead of polling, threads that exist only while they have work, no allocation per packet).
+  Any change that could alter audible output needs a sample-exact test **and** the owner's two-person
+  listening test before it counts as done; it can't be judged by ear in an agent session.
 - **Video codecs: hardware on every vendor, software only as the last resort** (owner, 2026-11-26). Screen
   share encode and stream decode use the GPU's codec on **NVIDIA, AMD and Intel, on Linux and Windows**,
   integrated GPUs with a working hardware codec included (Intel Quick Sync, AMD APUs); only a machine with
