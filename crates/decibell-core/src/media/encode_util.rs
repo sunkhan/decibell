@@ -119,6 +119,8 @@ pub fn insert_parameter_sets(packet: &[u8], param_sets: &[u8], codec: NalCodec) 
 /// all, may outgrow the average. Four frames is 67 ms at 60 fps, and at 5 fps
 /// it was 800 ms: keyframes of over a megabyte, sent in one burst, that the
 /// receiver gave up on before they had arrived. Unchanged from 10 fps up.
+/// (NVENC's H.264 and HEVC get more at high frame rates:
+/// `bitrate_preset::rate_buffer_bits`.)
 pub fn vbv_bits(bitrate_kbps: u32, fps: u32) -> i32 {
     let bps = bitrate_kbps as u64 * 1000;
     let four_frames = bps * 4 / fps.max(1) as u64;

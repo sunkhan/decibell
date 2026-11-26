@@ -746,25 +746,13 @@ impl H264Encoder {
 
             let mut opts = ffmpeg_next::Dictionary::new();
             match backend {
-                // ── NVENC family (H.264 / HEVC / AV1) — same option vocabulary ──
+                // ── NVENC (H.264 / HEVC / AV1): bitrate_preset::nvenc_linux_opts ──
                 Backend::Nvenc => {
-                    opts.set("forced-idr", "1");
-                    opts.set("preset", "p5");
-                    opts.set("rc", "cbr");
-                    // hevc_nvenc with tune=ull was producing pictures that
-                    // Chromium's WebCodecs decoder rendered as just the top-left
-                    // ~1280x720 region. Switching to tune=ll (still low-latency,
-                    // less aggressive) and forcing single-slice produces a
-                    // bitstream the decoder handles correctly. H.264 and AV1
-                    // NVENC remain on tune=ull where they work fine.
-                    if codec_name == "hevc_nvenc" {
-                        opts.set("tune", "ll");
-                        opts.set("slices", "1");
-                    } else {
-                        opts.set("tune", "ull");
+                    for (k, v) in super::bitrate_preset::nvenc_linux_opts(codec_name, config.width, config.height, fps) {
+                        opts.set(k, v);
                     }
-                    // VBV buffer: four frames of headroom for rate control, at most 400 ms
-                    let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, fps);
+                    // The rate-control buffer (bitrate_preset::rate_buffer_bits).
+                    let vbv_bits = super::bitrate_preset::rate_buffer_bits(codec_name, config.bitrate_kbps, fps);
                     unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
                 }
                 // ── VAAPI (AMD radeonsi, Intel iHD): bitrate_preset::vaapi_opts ──
@@ -775,8 +763,8 @@ impl H264Encoder {
                     if let Some(mode) = rc_mode {
                         opts.set("rc_mode", mode);
                     }
-                    // The HRD buffer (VAEncMiscParameterHRD): the same four
-                    // frames / 400 ms as NVENC's VBV.
+                    // The HRD buffer (VAEncMiscParameterHRD): four frames,
+                    // at most 400 ms.
                     let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, fps);
                     unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
                 }
@@ -786,6 +774,21 @@ impl H264Encoder {
             if config.detail {
                 for (k, v) in super::bitrate_preset::detail_opts(codec_name) {
                     opts.set(k, v);
+                }
+            }
+            // DECIBELL_NVENC_OPTS=key=value:… laid over the options above,
+            // for measuring a setting without a rebuild (the quality bench
+            // in encoder_bench.rs). `vbv_ms=<n>` sets the VBV buffer.
+            if backend == Backend::Nvenc {
+                for (k, v) in super::bitrate_preset::env_overrides("DECIBELL_NVENC_OPTS") {
+                    if k == "vbv_ms" {
+                        if let Ok(ms) = v.parse::<u64>() {
+                            let bits = (config.bitrate_kbps as u64 * ms).min(i32::MAX as u64) as i32;
+                            unsafe { (*context.as_mut_ptr()).rc_buffer_size = bits; }
+                        }
+                    } else {
+                        opts.set(&k, &v);
+                    }
                 }
             }
 

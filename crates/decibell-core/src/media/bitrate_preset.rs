@@ -46,32 +46,193 @@ pub fn detail_opts(encoder_name: &str) -> &'static [(&'static str, &'static str)
 /// this is only the safety net.
 pub const DETAIL_KEYFRAME_SECS: u32 = 60;
 
+/// What every NVENC stream is opened with, whatever the codec and the OS
+/// (libavcodec/nvenc.c and nvenc_{h264,hevc,av1}.c, FFmpeg 8.0 / 8.1; each
+/// measured on an RTX 4080, design record "Quality"):
+///
+///  - `forced-idr=1`: a forced keyframe (pict_type = I) is otherwise a
+///    non-IDR intra frame (NV_ENC_PIC_FLAG_FORCEINTRA) that a watcher
+///    cannot join on.
+///  - `zerolatency=1`: no reordering delay in the driver (there are no
+///    B-frames to reorder; stated so a preset cannot bring one in).
+///
+/// `delay` and `multipass` come from `nvenc_sized_opts` (they depend on
+/// the stream's size) and `rc` from `nvenc_rc`.
+const NVENC_STREAM: [(&str, &str); 2] = [("forced-idr", "1"), ("zerolatency", "1")];
+
+/// The pixel rate (width × height × fps) of 1080p60.
+const PIXEL_RATE_1080P60: u64 = 1920 * 1080 * 60;
+
+/// NVENC's `delay`: how many frames FFmpeg queues before it hands a
+/// packet back (nvenc.c `output_ready`: a packet is released once `delay`
+/// frames are in the encoder). Its default is the surface count less one,
+/// 3: every stream ran **two frames late**, 67 ms at 30 fps, 33 ms at
+/// 60 fps and 400 ms at 5 fps, on both OSes.
+///
+///  - `0` up to 1080p60's pixel rate (every preset on a screen up to
+///    1440p): the packet comes back from the call that sent its frame.
+///    It also leaves no room for a look-ahead: a `detail` stream's
+///    `preset=p7 tune=hq` brought h264_nvenc a 28-frame one, over five
+///    seconds at 5 fps (FFmpeg now logs "Lookahead not enabled" when such
+///    a stream opens).
+///    That call then waits for the upload and the encode instead of
+///    returning when the frame is queued: on Linux (BGRA frames copied
+///    from the capture) it measured 2.4 ms at 720p, 6.5 ms at 1080p,
+///    10 ms at 1440p and 28 ms at 4K (queued: 1 ms at 720p, 4 ms at
+///    1440p, 14 ms at 4K).
+///  - `2` above it: one frame late (17 ms at 60 fps), and the call returns
+///    as soon as the frame is queued. Past 1080p60 the waiting call would
+///    take more than half the frame interval, and at 1440p120 or 4K60 more
+///    than all of it: the stream would lose frames to save a frame of
+///    delay.
+pub fn nvenc_delay(width: u32, height: u32, fps: u32) -> &'static str {
+    if width as u64 * height as u64 * fps as u64 <= PIXEL_RATE_1080P60 {
+        "0"
+    } else {
+        "2"
+    }
+}
+
+/// The NVENC options that follow the stream's size, for both OSes.
+pub fn nvenc_sized_opts(width: u32, height: u32, fps: u32) -> [(&'static str, &'static str); 2] {
+    [("delay", nvenc_delay(width, height, fps)), ("multipass", nvenc_multipass(width, height, fps))]
+}
+
+/// NVENC's `multipass` for a stream: a first pass over each frame before
+/// it is coded, inside the same encode call (no frame is held back).
+/// Single-pass low-delay rate control has to guess a frame's size: it
+/// overshot the buffer on keyframes (HEVC 67 KB and AV1 126 KB into a
+/// 50 KB buffer) and then starved the frames after them, left HEVC at 56
+/// to 88% of its bitrate on scrolling text, and ran AV1 21 to 29% over on
+/// noisy video. With the first pass all three stay within 2% of the
+/// target and keyframes fit the buffer.
+///
+///  - `fullres` up to 4K30's pixel rate (1440p60 is just under it): the
+///    first pass at full size. It costs NVENC time, not delay: the
+///    encoder's utilisation on an RTX 4080 went from 15% to 20% at 1440p60
+///    (about 0.8 ms a frame more).
+///  - `qres` above that, up to 4K60: a quarter-size first pass, for the
+///    sizes where an older or smaller GPU has the least time to spare.
+///  - `disabled` beyond 4K60.
+pub fn nvenc_multipass(width: u32, height: u32, fps: u32) -> &'static str {
+    let pixel_rate = width as u64 * height as u64 * fps as u64;
+    if pixel_rate <= 3840 * 2160 * 30 {
+        "fullres"
+    } else if pixel_rate <= 3840 * 2160 * 60 {
+        "qres"
+    } else {
+        "disabled"
+    }
+}
+
+/// NVENC rate control per codec. HEVC and AV1: `cbr`. H.264: `vbr`, which
+/// with the peak equal to the target (`rc_max_rate == bit_rate`) and the
+/// same buffer is the same constraint without the padding: h264_nvenc in
+/// CBR fills every frame up to the bitrate with filler NAL units (FFmpeg
+/// always asks it for HRD timing SEI), so a still screen uploaded its
+/// whole bitrate in stuffing: 11 KB of filler in every 12.5 KB frame at
+/// 3 Mbps. On moving content the two modes measured the same bitrate and
+/// quality; HEVC's CBR output is bit-identical to its VBR already.
+fn nvenc_rc(encoder_name: &str) -> &'static str {
+    if encoder_name == "h264_nvenc" {
+        "vbr"
+    } else {
+        "cbr"
+    }
+}
+
+/// The rate-control buffer (VBV / HRD) an encoder is opened with, in bits:
+/// `encode_util::vbv_bits` (four frames, at most 400 ms), and for NVENC's
+/// H.264 and HEVC at least 133 ms, which is four frames at 30 fps: what
+/// every 30 fps stream has always had. The buffer bounds a keyframe (it
+/// leaves as one burst of datagrams) and how far any second of the stream
+/// can run over its bitrate (by the buffer: 13% at 133 ms).
+///
+/// Four frames at 60 fps is 67 ms, and a keyframe squeezed into it comes
+/// out at half the detail: on 1080p60 text at 10 Mbps, 133 ms measured 1.4
+/// to 1.9 dB better over the whole stream than 67 ms for these two codecs,
+/// with keyframes no larger, in time at the stream's bitrate, than a
+/// 30 fps stream's. Larger buffers keep gaining on text (200 ms: another
+/// 1.5 to 2 dB at 720p30) and keep growing the bursts; that trade is the
+/// owner's (design record, "Quality").
+///
+/// Not AV1: with more than four frames of buffer av1_nvenc's two-pass rate
+/// control ran 61% over its bitrate on noisy 1080p60 video (19% at 4K60);
+/// at four frames it holds within 2%. And not the encoders that have not
+/// been measured (AMF, Quick Sync, VAAPI, software), which keep what they
+/// had.
+pub fn rate_buffer_bits(encoder_name: &str, bitrate_kbps: u32, fps: u32) -> i32 {
+    let frames = super::encode_util::vbv_bits(bitrate_kbps, fps);
+    match encoder_name {
+        "h264_nvenc" | "hevc_nvenc" => {
+            let floor = (bitrate_kbps as u64 * 1000 * 2 / 15).min(i32::MAX as u64) as i32;
+            frames.max(floor)
+        }
+        _ => frames,
+    }
+}
+
+/// The Linux encoder's NVENC options (BGRA in; `encoder_linux.rs`).
+///  - `preset=p5`: p4 to p7 measured within 0.3 dB of each other once
+///    B-frames and look-ahead are off; left as it was.
+///  - HEVC: `tune=ll slices=1`. With `tune=ull` Chromium's WebCodecs
+///    decoder rendered only the top-left quarter of the picture; H.264 and
+///    AV1 stay on `ull`. (With these settings `ll`, `ull` and `hq` produce
+///    the same bitstream: the tuning only picks defaults that are all set
+///    here.)
+pub fn nvenc_linux_opts(encoder_name: &str, width: u32, height: u32, fps: u32) -> Vec<(&'static str, &'static str)> {
+    let mut opts = vec![("preset", "p5"), ("rc", nvenc_rc(encoder_name))];
+    opts.extend(nvenc_sized_opts(width, height, fps));
+    if encoder_name == "hevc_nvenc" {
+        opts.extend([("tune", "ll"), ("slices", "1")]);
+    } else {
+        opts.push(("tune", "ull"));
+    }
+    opts.extend(NVENC_STREAM);
+    opts
+}
+
 pub fn preset_for(encoder_name: &str) -> PresetOptions {
     match encoder_name {
-        // forced-idr: a forced keyframe (pict_type = I) is otherwise a
-        // non-IDR intra frame (NV_ENC_PIC_FLAG_FORCEINTRA) — a watcher
-        // joining on it can't start decoding until the next GOP IDR.
+        // NVENC on Windows (D3D11 NV12 in). `NVENC_STREAM` and `nvenc_rc`
+        // spelled out (a test keeps them in step with the Linux block):
+        // forced-idr=1, zerolatency=1; rc=vbr for H.264 (no filler), cbr
+        // for the others. `delay` and `multipass` are laid over these by
+        // the encoder (`nvenc_sized_opts`: they depend on the stream's
+        // size).
         // SPS/PPS repeat on every IDR without GLOBAL_HEADER (repeatSPSPPS).
-        "h264_nvenc" | "hevc_nvenc" => PresetOptions {
+        "h264_nvenc" => PresetOptions {
+            opts: &[
+                ("preset", "p4"),
+                ("tune", "ull"),
+                ("rc", "vbr"),
+                ("b_ref_mode", "disabled"),
+                ("forced-idr", "1"),
+                ("zerolatency", "1"),
+            ],
+        },
+        "hevc_nvenc" => PresetOptions {
             opts: &[
                 ("preset", "p4"),
                 ("tune", "ull"),
                 ("rc", "cbr"),
                 ("b_ref_mode", "disabled"),
-                ("zerolatency", "1"),
                 ("forced-idr", "1"),
+                ("zerolatency", "1"),
             ],
         },
         // NVENC repeats the AV1 sequence header on every keyframe
-        // unconditionally (repeatSeqHdr = 1).
+        // unconditionally (repeatSeqHdr = 1). (This block listed
+        // `tile_columns` / `tile_rows`: av1_nvenc spells them `tile-columns`
+        // / `tile-rows`, so they never took effect and are gone; the
+        // encoder keeps choosing its tiles, as it always did.)
         "av1_nvenc" => PresetOptions {
             opts: &[
                 ("preset", "p4"),
                 ("tune", "ull"),
                 ("rc", "cbr"),
-                ("tile_columns", "2"),
-                ("tile_rows", "1"),
                 ("forced-idr", "1"),
+                ("zerolatency", "1"),
             ],
         },
         // AMF, common to all three:
@@ -248,6 +409,20 @@ pub fn software_opts(width: u32, height: u32, fps: u32, logical_cpus: usize, det
     vec![("preset", preset.to_string()), ("svtav1-params", params)]
 }
 
+/// `key=value:key=value` from a development environment variable (empty
+/// when unset): options laid over an encoder's block to measure a setting
+/// without a rebuild. Never set by the clients.
+pub fn env_overrides(var: &str) -> Vec<(String, String)> {
+    let Ok(text) = std::env::var(var) else {
+        return Vec::new();
+    };
+    text.split(':')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
+}
+
 /// h264_amf's `header_spacing` option range is -1..=1000; a larger value
 /// makes avcodec_open2 fail outright.
 const AMF_MAX_HEADER_SPACING: u32 = 1000;
@@ -279,7 +454,107 @@ mod tests {
     #[test]
     fn nvenc_h264_uses_p4_preset() {
         assert!(has("h264_nvenc", "preset", "p4"));
-        assert!(has("h264_nvenc", "rc", "cbr"));
+    }
+
+    fn linux_hevc() -> Vec<(&'static str, &'static str)> {
+        nvenc_linux_opts("hevc_nvenc", 1920, 1080, 30)
+    }
+
+    #[test]
+    fn nvenc_holds_no_frame_up_to_1080p60_and_one_above() {
+        // Data saver, 1080p30, Smooth, Sharp on a 1440p screen, Slides.
+        for (w, h, fps) in [(1280, 720, 30), (1920, 1080, 30), (1920, 1080, 60), (2560, 1440, 30), (3840, 2160, 5)] {
+            assert_eq!(nvenc_delay(w, h, fps), "0", "{w}x{h}@{fps}");
+        }
+        // Where the waiting call would not fit: one frame, never the
+        // default's two.
+        for (w, h, fps) in [(2560, 1440, 60), (3840, 2160, 30), (2560, 1440, 120), (3840, 2160, 60), (1920, 1080, 120)] {
+            assert_eq!(nvenc_delay(w, h, fps), "2", "{w}x{h}@{fps}");
+        }
+        assert_eq!(nvenc_sized_opts(1280, 720, 30), [("delay", "0"), ("multipass", "fullres")]);
+    }
+
+    #[test]
+    fn nvenc_first_pass_follows_the_pixel_rate() {
+        // Every preset: Data saver, Smooth, Sharp and Slides on a 1440p or
+        // 4K screen.
+        assert_eq!(nvenc_multipass(1280, 720, 30), "fullres");
+        assert_eq!(nvenc_multipass(1920, 1080, 60), "fullres");
+        assert_eq!(nvenc_multipass(2560, 1440, 30), "fullres");
+        assert_eq!(nvenc_multipass(2560, 1440, 60), "fullres");
+        assert_eq!(nvenc_multipass(3840, 2160, 30), "fullres");
+        assert_eq!(nvenc_multipass(3840, 2160, 5), "fullres");
+        assert_eq!(nvenc_multipass(1920, 1080, 120), "fullres");
+        // Advanced, past 4K30's pixel rate.
+        assert_eq!(nvenc_multipass(2560, 1440, 120), "qres");
+        assert_eq!(nvenc_multipass(3840, 2160, 60), "qres");
+        assert_eq!(nvenc_multipass(3840, 2160, 120), "disabled");
+    }
+
+    #[test]
+    fn nvenc_streams_share_their_rate_and_latency_rules_on_both_oses() {
+        for name in ["h264_nvenc", "hevc_nvenc", "av1_nvenc"] {
+            let linux = nvenc_linux_opts(name, 1920, 1080, 60);
+            assert!(linux.contains(&("multipass", "fullres")), "{name}");
+            assert!(linux.contains(&("delay", "0")), "{name}");
+            for (k, v) in NVENC_STREAM.into_iter().chain([("rc", nvenc_rc(name))]) {
+                assert!(has(name, k, v), "{name} on Windows: {k}={v}");
+                assert!(linux.contains(&(k, v)), "{name} on Linux: {k}={v}");
+            }
+            // One value per key.
+            for (i, (k, _)) in linux.iter().enumerate() {
+                assert!(!linux[i + 1..].iter().any(|(k2, _)| k2 == k), "{name}: duplicate {k}");
+            }
+            // Nothing that looks ahead or reorders.
+            for opts in [linux.as_slice(), preset_for(name).opts] {
+                assert!(!opts.iter().any(|(k, _)| matches!(*k, "rc-lookahead" | "bf" | "temporal-aq")), "{name}");
+            }
+        }
+        // H.264 in CBR pads every frame with filler up to the bitrate.
+        assert_eq!(nvenc_rc("h264_nvenc"), "vbr");
+        assert_eq!(nvenc_rc("hevc_nvenc"), "cbr");
+        assert_eq!(nvenc_rc("av1_nvenc"), "cbr");
+        // HEVC on Linux keeps the tuning Chromium decodes whole.
+        assert!(linux_hevc().contains(&("tune", "ll")));
+        assert!(linux_hevc().contains(&("slices", "1")));
+    }
+
+    #[test]
+    fn nvenc_option_names_are_spelled_as_ffmpeg_spells_them() {
+        // An unknown name is silently ignored by avcodec_open2: these are
+        // the spellings in libavcodec/nvenc_{h264,hevc,av1}.c.
+        const KNOWN: [&str; 9] =
+            ["preset", "tune", "rc", "b_ref_mode", "delay", "multipass", "forced-idr", "zerolatency", "slices"];
+        for name in ["h264_nvenc", "hevc_nvenc", "av1_nvenc"] {
+            for (k, _) in preset_for(name).opts.iter().chain(nvenc_linux_opts(name, 1280, 720, 30).iter()) {
+                assert!(KNOWN.contains(k), "{name}: {k}");
+            }
+        }
+        // b_ref_mode is an H.264 / HEVC B-frame option here; av1_nvenc's
+        // tiles are `tile-columns` / `tile-rows` (the underscore spelling
+        // did nothing).
+        assert!(!preset_for("av1_nvenc").opts.iter().any(|(k, _)| k.starts_with("tile")));
+    }
+
+    #[test]
+    fn nvenc_h264_and_hevc_get_133_ms_of_buffer_at_high_frame_rates() {
+        use super::super::encode_util::vbv_bits;
+        for name in ["h264_nvenc", "hevc_nvenc"] {
+            // 60 and 120 fps: 133 ms (four frames would be 67 and 33 ms).
+            assert_eq!(rate_buffer_bits(name, 10_000, 60), 1_333_333, "{name}");
+            assert_eq!(rate_buffer_bits(name, 10_000, 120), 1_333_333, "{name}");
+            // 30 fps and below: the four frames / 400 ms they always had.
+            for fps in [30, 20, 15, 10, 5] {
+                assert_eq!(rate_buffer_bits(name, 12_000, fps), vbv_bits(12_000, fps), "{name} at {fps}");
+            }
+        }
+        // AV1 (its two-pass rate control overshoots with more than four
+        // frames) and every unmeasured encoder: unchanged.
+        for name in ["av1_nvenc", "h264_amf", "hevc_qsv", "h264_vaapi", "libsvtav1"] {
+            for fps in [120, 60, 30, 5] {
+                assert_eq!(rate_buffer_bits(name, 10_000, fps), vbv_bits(10_000, fps), "{name} at {fps}");
+            }
+        }
     }
 
     #[test]

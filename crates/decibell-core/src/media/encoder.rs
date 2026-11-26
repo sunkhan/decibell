@@ -332,8 +332,9 @@ impl Encoder {
                     (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref.as_ptr());
                 }
             }
-            // VBV: four frames of headroom for rate control, at most 400 ms.
-            (*ctx_ptr).rc_buffer_size = super::encode_util::vbv_bits(bitrate_kbps, fps);
+            // VBV: four frames of headroom for rate control, at most 400 ms
+            // (NVENC H.264 / HEVC: at least 133 ms; rate_buffer_bits).
+            (*ctx_ptr).rc_buffer_size = super::bitrate_preset::rate_buffer_bits(encoder_name, bitrate_kbps, fps);
 
             // AV1 GLOBAL_HEADER: NVENC then also fills extradata with the
             // sequence header (nvenc_setup_extradata). It does NOT move the
@@ -366,6 +367,13 @@ impl Encoder {
         }
         for (k, v) in dynamic_opts(encoder_name, gop) {
             opts.set(k, &v);
+        }
+        // NVENC: how many frames are held and the first pass, by the
+        // stream's pixel rate.
+        if encoder_name.contains("nvenc") {
+            for (k, v) in super::bitrate_preset::nvenc_sized_opts(width, height, fps) {
+                opts.set(k, v);
+            }
         }
         if detail {
             for (k, v) in super::bitrate_preset::detail_opts(encoder_name) {
