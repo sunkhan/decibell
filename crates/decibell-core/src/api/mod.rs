@@ -40,3 +40,6 @@ pub mod streaming;
 pub mod voice;
 
 pub use error::{CoreError, ErrorKind};
+
+#[cfg(test)]
+mod tests;

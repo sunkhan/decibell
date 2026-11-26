@@ -751,3 +751,29 @@ pub async fn call_watch_stream(args: CallWatchStreamArgs) -> Result<(), CoreErro
     })
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_candidates_keep_usable_ipv4_addresses_once() {
+        let cands = vec![
+            candidate("VOICE", "HOST", "192.168.1.5", 4000),
+            candidate("VOICE", "SRFLX", "203.0.113.7", 4001),
+            candidate("VOICE", "HOST", "192.168.1.5", 4000), // duplicate
+            candidate("VOICE", "HOST", "::1", 4002),         // not IPv4
+            candidate("VOICE", "HOST", "10.0.0.1", 0),       // no port
+            candidate("VOICE", "HOST", "not an ip", 1),
+            candidate("MEDIA", "HOST", "192.168.1.5", 5000), // other socket
+            CallCandidateArg { socket: "VOICE".into(), kind: "HOST".into(), ip: "10.0.0.2".into(), port: 70000 },
+        ];
+        let voice = parse_remote(&cands, "VOICE");
+        let got: Vec<_> = voice.iter().map(|r| (r.addr.to_string(), matches!(r.kind, CandidateKind::Host))).collect();
+        assert_eq!(
+            got,
+            vec![("192.168.1.5:4000".to_string(), true), ("203.0.113.7:4001".to_string(), false)]
+        );
+        assert_eq!(parse_remote(&cands, "MEDIA").len(), 1);
+    }
+}

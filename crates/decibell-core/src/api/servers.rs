@@ -553,3 +553,47 @@ pub(crate) async fn connect_with_invite(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(url: &str) -> Result<(String, u16, String), String> {
+        parse_invite_link(ParseInviteLinkArgs { url: url.into() })
+            .map(|p| (p.host, p.port, p.code))
+            .map_err(|e| e.into_message())
+    }
+
+    #[test]
+    fn invite_links_parse_in_every_accepted_shape() {
+        assert_eq!(parse("decibell://invite/abc12"), Ok((String::new(), 0, "ABC12".into())));
+        assert_eq!(parse(" decibell://invite/example.org:8082/abc/ "), Ok(("example.org".into(), 8082, "ABC".into())));
+        assert_eq!(parse("decibell://invite/example.org/8082/abc"), Ok(("example.org".into(), 8082, "ABC".into())));
+        assert_eq!(parse("decibell:invite/10.0.0.1:9/x"), Ok(("10.0.0.1".into(), 9, "X".into())));
+        assert_eq!(parse("decibell:///invite/h%41st:1/x"), Ok(("hAst".into(), 1, "X".into())));
+    }
+
+    #[test]
+    fn bad_invite_links_answer_as_before() {
+        for (url, err) in [
+            ("https://invite/abc", "Not a decibell:// URL"),
+            ("decibell://join/abc", "URL is not an invite link"),
+            ("decibell://invite/", "Invite code missing"),
+            ("decibell://invite/host/abc", "Invite link missing port"),
+            ("decibell://invite/host:99999/abc", "Invalid port in invite link"),
+            ("decibell://invite/host/port/abc", "Invalid port in invite link"),
+            ("decibell://invite/:8082/abc", "Host missing in invite link"),
+        ] {
+            assert_eq!(parse(url), Err(err.to_string()), "{url}");
+        }
+        let e = parse_invite_link(ParseInviteLinkArgs { url: "x".into() }).err().expect("refused");
+        assert_eq!(e.kind(), crate::api::ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn percent_decoding_leaves_bad_escapes_alone() {
+        assert_eq!(percent_decode("a%20b"), "a b");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+    }
+}

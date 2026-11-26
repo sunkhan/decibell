@@ -1324,3 +1324,20 @@ fn read_primary_gpu_vendor_id() -> u32 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codec_caps_map_by_wire_byte_and_drop_unknown_ones() {
+        for codec in 1u8..=4 {
+            let v = CodecCapValue { codec, max_width: 1920, max_height: 1080, max_fps: 60 };
+            let back = cap_to_value(&value_to_cap(&v).expect("a known codec"));
+            assert_eq!((back.codec, back.max_width, back.max_height, back.max_fps), (codec, 1920, 1080, 60));
+        }
+        for codec in [0u8, 5, 255] {
+            assert!(value_to_cap(&CodecCapValue { codec, max_width: 1, max_height: 1, max_fps: 1 }).is_none());
+        }
+    }
+}
