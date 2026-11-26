@@ -291,6 +291,46 @@ table() {
   say "table written to $out"
 }
 
+# The watch scenarios' own table (the baseline table has no rows for them): $RESULTS/<client>-watch.md, one row per
+# run, every watch run in $RESULTS (each run is taken twice: both rows stay).
+watch_table() {
+  local out="$RESULTS/$client-watch$suffix.md" all=()
+  mapfile -t all < <(ls -d "$RESULTS/$client-watch-"* 2>/dev/null | grep -E -- "/$client-watch-[12]-[0-9]{8}-[0-9]{6}$suffix\$" | sort)
+  python3 -I - "$out" "$client" "${all[@]}" <<'PY'
+import json, os, sys
+out, client, dirs = sys.argv[1], sys.argv[2], sys.argv[3:]
+rows = []
+for d in dirs:
+    try:
+        j = json.load(open(os.path.join(d, "summary.json"))); m = json.load(open(os.path.join(d, "scenario.json")))
+    except (OSError, ValueError):
+        continue
+    s = j["summary"]; f = lambda k, st="mean", nd=1: "%.*f" % (nd, s[k][st]) if k in s else "–"
+    try:
+        v = json.load(open(os.path.join(d, "video-rates.json")))
+    except (OSError, ValueError):
+        v = []
+    vid = "; ".join("%s %s %s: %.1f / %.1f / %.1f, %d dropped" % (r["codec"], r["size"], r["path"], r["received"],
+                    r["decoded"], r["presented"], r["dropped"]) for r in v) or "–"
+    load = (m.get("load_at_start") or {}).get("loadavg") or ["?"]
+    rows.append("| %s | %s | %s (%s); swap %s | %s / %s | %s / %s / %s | %s / %s | %s | %s | %s | %s |" % (
+        m["scenario"], ", ".join(os.path.basename(x) for x in (m.get("dbv") or "").split()) or "–",
+        f("private_mb"), f("private_mb", "p95"), f("swap_mb"), f("cpu_core_pct", "mean", 2), f("cpu_core_pct", "p95", 2),
+        f("own_wakeups_s", "p50", 0), f("driver_wakeups_s", "p50", 0), f("ctxsw_vol_s", "p50", 0),
+        f("gpu_dec_pct"), f("gpu_sm_pct"), f("frames_s", "mean", 1), vid, load[0], os.path.basename(d)))
+head = ["# %s watching live streams (Linux)" % client, "",
+        "From `tools/perf/scenarios.sh " + client + " watch-1 | watch-2` (streambot.sh streams; the client in voice, the stream(s) "
+        "watched large, the desktop focused, the client visible). Video: the client's own hub counters over the "
+        "measured window, received / decoded / presented per second.", "",
+        "| Scenario | Recording(s) | Private MB mean (p95); swapped out, mean | CPU %% core mean / p95 | Wakeups/s own / driver / all "
+        "voluntary (p50) | GPU dec %% / SM %% | Frames to the compositor /s | Video | Load avg at start | Result |"
+        .replace("%%", "%"), "|---|---|---|---|---|---|---|---|---|---|"]
+open(out, "w").write("\n".join(head + rows) + "\n")
+print("\n".join(head + rows))
+PY
+  say "watch table: $out"
+}
+
 newest() { # newest result dir of a scenario (quick or not, as asked)
   local s="$1"
   ls -d "$RESULTS/$client-$s-"* 2>/dev/null | grep -E -- "/$client-$s-[0-9]{8}-[0-9]{6}$suffix\$" | sort | tail -1
@@ -310,8 +350,9 @@ case "$what" in
   startup) sc_startup; table ;;
   idle-home|idle-channel|idle-channel-hidden) sc_idle "$what"; table ;;
   scroll) sc_scroll; table ;;
-  watch-1) sc_watch watch-1 1; table ;;
-  watch-2) sc_watch watch-2 2; table ;;
+  watch-1) sc_watch watch-1 1; watch_table ;;
+  watch-2) sc_watch watch-2 2; watch_table ;;
+  watch-table) watch_table ;;
   table)
     for s in install-size startup idle-home idle-channel idle-channel-hidden scroll; do
       n="$(newest "$s")"; [[ -n "$n" ]] && DIRS+=("$n")
@@ -319,5 +360,5 @@ case "$what" in
     ((${#DIRS[@]})) || die "no results for $client$suffix"
     table
     ;;
-  *) die "unknown scenario $what (install-size startup idle-home idle-channel idle-channel-hidden scroll watch-1 watch-2 all table)" ;;
+  *) die "unknown scenario $what (install-size startup idle-home idle-channel idle-channel-hidden scroll watch-1 watch-2 watch-table all table)" ;;
 esac
