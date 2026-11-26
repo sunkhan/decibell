@@ -30,8 +30,9 @@ use serde_json::{Value, json};
 const USAGE: &str = "\
 decibell-headless [options] <step>...
 
-Runs the Decibell core and the client's stores without a window, against the local test
-stack only (DECIBELL_CENTRAL must be a loopback address; tools/dev/local-stack.sh).
+Runs the Decibell core and the client's whole state model without a window: the account and
+community stores, messages and DMs, voice / people / calls. Against the local test stack only
+(DECIBELL_CENTRAL must be a loopback address; tools/dev/local-stack.sh).
 
 Options
   --user-data-dir <dir>   the profile (default: $DECIBELL_USER_DATA_DIR, else the platform's)
@@ -39,8 +40,10 @@ Options
                           the core's machine-derived one; tests never touch the keychain)
   --timeout <seconds>     how long a `wait` may take (default 20)
 
-Steps, run in order (the boot — start the core, read config.json, sign in with a saved
-sign-in — always comes first):
+Steps run in order, in one process (the boot — start the core, read config.json, sign in
+with a saved sign-in — always comes first); any mix of the groups below.
+
+Account and communities:
   login <account>                 password sign-in as an account of the stack's accounts.json
   logout
   wait booted | logged-in | logged-out
@@ -48,17 +51,35 @@ sign-in — always comes first):
   wait roster <community>         its first roster page is in
   wait online <community> <user>  that member shows as online (offline: `wait offline …`)
   open-server <community>         as clicking its tile
-  open-channel <channel>          in the open community
-  dump <what>                     one line `DUMP <what> <json>`; what = auth | users | servers |
-                                  connections | nav | settings | layout | toasts | pump | core |
-                                  channels <community> | roles <community> | roster <community> |
-                                  permissions <community> <channel>
+  open-channel <channel>          in the open community (navigation only: `history` loads it)
   idle <seconds>                  do nothing (measure it from outside)
   print <text>                    one line `MARK <text>` (a test's cue)
-  wait-file <path>                until that file exists (a cue from a test)
+  wait-file <path>                until that file exists (a cue from a test)";
+
+const DUMPS: &str = "\
+Dumps (each prints one line `DUMP <what> <json>`):
+  dump all                        every dump below that applies now: the account stores, the open
+                                  community's channels / roles / roster and the open channel's
+                                  permissions and messages, the open DM, search, every live store
+  dump auth | users | servers | connections | nav | settings | layout | toasts | pump | core
+  dump channels <community> | roles <community> | roster <community>
+  dump permissions <community> <channel>
+  dump chat <channel> | dm <user> | search
+  dump voice | presence | own | friends | e2ee | call | transfers | devices | hotkeys | cues
+
+Example: one client through both halves (perf3 has E2EE keys on the stack: voice needs them)
+  decibell-headless --user-data-dir /tmp/p login perf3 wait connected \"Daily Gaming\" \\
+      open-server \"Daily Gaming\" e2ee-ready decibell-m3-test-passphrase open-channel general \\
+      history general send off-topic hello wait-sent off-topic deafen voice-join Lounge \\
+      wait mls ready status dnd watch-roster \"Daily Gaming\" 100 dump all \\
+      voice-leave status online delete off-topic last wait-deleted off-topic logout wait logged-out
 
 Exit status: 0 when every step ran, 1 when one failed or timed out, 2 for bad usage or an
 unsafe environment.";
+
+fn usage() -> String {
+    format!("{USAGE}\n\n{}\n\n{}\n\n{DUMPS}", chat::USAGE, live::USAGE)
+}
 
 #[derive(Debug, Clone)]
 enum Step {
@@ -445,6 +466,47 @@ fn dump(parts: &[String], model: &Model, cx: &App) -> Result<Value, String> {
     })
 }
 
+/// `dump all`: every dump that applies in the current state, one `(what, json)` each; one
+/// that can't be made (a community that hasn't answered) carries `{"error": …}` instead.
+fn dump_all(model: &Model, cx: &App) -> Vec<(String, Value)> {
+    let mut what: Vec<Vec<String>> = ["auth", "users", "servers", "connections", "nav", "settings", "layout", "toasts", "pump", "core"]
+        .iter()
+        .map(|w| vec![w.to_string()])
+        .collect();
+    let nav = model.nav.read(cx);
+    if let Some(server) = nav.active_server
+        && let Some(name) = model.servers.read(cx).get(server).map(|s| s.name.to_string())
+    {
+        for w in ["channels", "roles", "roster"] {
+            what.push(vec![w.into(), name.clone()]);
+        }
+        let channel = nav.active_channel.as_ref().and_then(|id| {
+            let community = model.community(server, cx)?;
+            let channels = community.channels.read(cx);
+            channels.get(id).map(|c| (c.name.to_string(), c.kind))
+        });
+        if let Some((channel, kind)) = channel {
+            what.push(vec!["permissions".into(), name.clone(), channel.clone()]);
+            if kind == ChannelKind::Text {
+                what.push(vec!["chat".into(), channel]);
+            }
+        }
+    }
+    if let Some(peer) = model.dm.list.read(cx).active_peer {
+        what.push(vec!["dm".into(), model.name_of(peer, &SharedString::default(), cx).to_string()]);
+    }
+    what.push(vec!["search".into()]);
+    for w in ["voice", "presence", "own", "friends", "e2ee", "call", "transfers", "devices", "hotkeys", "cues"] {
+        what.push(vec![w.into()]);
+    }
+    what.into_iter()
+        .map(|parts| {
+            let value = dump(&parts, model, cx).unwrap_or_else(|e| json!({ "error": e }));
+            (parts.join(" "), value)
+        })
+        .collect()
+}
+
 async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncApp) -> Result<(), String> {
     match step {
         Step::Login(account) => {
@@ -479,6 +541,11 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             model.nav.update(cx, |nav, cx| nav.set_active_channel(Some(id), cx));
             Ok::<_, String>(())
         })?,
+        Step::Dump(parts) if parts[0] == "all" => {
+            for (what, value) in cx.update(|cx| dump_all(model, cx)) {
+                say(format!("DUMP {what} {value}"));
+            }
+        }
         Step::Dump(parts) => {
             let value = cx.update(|cx| dump(parts, model, cx))?;
             say(format!("DUMP {} {value}", parts.join(" ")));
@@ -506,13 +573,13 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.is_empty() || raw.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}\n\n{}\n\n{}", chat::USAGE, live::USAGE);
+        println!("{}", usage());
         return ExitCode::SUCCESS;
     }
     let args = match parse(raw) {
         Ok(args) => args,
         Err(e) => {
-            eprintln!("decibell-headless: {e}\n\n{USAGE}");
+            eprintln!("decibell-headless: {e}\n\n{}", usage());
             return ExitCode::from(2);
         }
     };

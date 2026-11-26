@@ -449,3 +449,68 @@ fn a_member_and_the_owner_in_a_restricted_community() {
     assert_eq!(names(member.dump(&format!("roles {RUST}")), "name"), ["Core", "Rustacean", "everyone"]);
     assert_eq!(member.dump(&format!("roles {RUST}")), owner.dump(&format!("roles {RUST}")));
 }
+
+/// One client through both halves of the model in one process (the headless usage's
+/// example): perf3 signs in, unlocks its E2EE keys (the stack's test passphrase; voice
+/// needs them), reads `#off-topic` and posts there, joins Lounge deafened (no audio leaves
+/// or plays), sets Do Not Disturb, watches 100 members of Daily Gaming, then `dump all`;
+/// afterwards it leaves voice, goes back online, deletes its post and signs out.
+#[test]
+fn one_client_through_both_halves_and_dump_all() {
+    if !stack() {
+        return;
+    }
+    const PASSPHRASE: &str = "decibell-m3-test-passphrase";
+    let profile = tempfile::tempdir().unwrap();
+    let id = format!(
+        "combined-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+    );
+    let text = format!("{id} hello from both halves");
+    let prefix = format!("prefix:{id}");
+    let run = run_ok(
+        profile.path(),
+        &[
+            "login", "perf3", "wait", "connected", GAMING, "wait", "roster", GAMING, "open-server", GAMING,
+            "e2ee-ready", PASSPHRASE, "wait", "e2ee", "ready",
+            "open-channel", "off-topic", "history", "off-topic", "send", "off-topic", &text, "wait-sent", "off-topic",
+            "deafen", "voice-join", "Lounge", "wait", "voice", "Lounge", "perf3", "wait", "mls", "ready",
+            "status", "dnd", "watch-roster", GAMING, "100", "idle", "1",
+            "dump", "all",
+            "voice-leave", "status", "online", "delete", "off-topic", &prefix, "wait-deleted", "off-topic",
+            "history", "off-topic", "dump", "chat", "off-topic", "logout", "wait", "logged-out",
+        ],
+    );
+    // Every store of both halves answered in one go.
+    for what in [
+        "auth", "users", "servers", "connections", "nav", "settings", "layout", "toasts", "pump", "core",
+        &format!("channels {GAMING}"), &format!("roles {GAMING}"), &format!("roster {GAMING}"),
+        &format!("permissions {GAMING} off-topic"), "search", "voice", "presence", "own", "friends", "e2ee", "call",
+        "transfers", "devices", "hotkeys", "cues",
+    ] {
+        // A dump that couldn't be made is `{"error": "…"}` alone.
+        let d = run.dump(what);
+        assert!(!d.as_object().is_some_and(|o| o.len() == 1 && o["error"].is_string()), "dump {what}: {d}");
+    }
+    let me = run.dump("auth")["uid"].as_i64().unwrap();
+    assert_eq!(run.dump("auth")["username"], "perf3");
+    assert_eq!(run.dump("nav")["channel"], "off-topic");
+    // The post, echoed (a stored id) — the dump of `all` came before the cleanup.
+    let messages = run.stdout.lines().filter_map(parse_dump).find(|(w, _)| w == "chat off-topic").unwrap().1;
+    let posted = messages["messages"].as_array().unwrap().iter().find(|m| m["content"] == text.as_str()).cloned();
+    assert!(posted.as_ref().is_some_and(|m| m["id"].as_i64().unwrap() > 0), "echoed: {messages}");
+    // Voice: in Lounge, deafened, MLS ready, us on the stage.
+    let voice = run.dump("voice");
+    assert!(voice["channel"].is_string(), "{voice}");
+    assert_eq!(voice["deafened"], true);
+    assert_eq!(voice["e2ee"]["phase"], "ready", "{voice}");
+    assert!(voice["participants"].as_array().unwrap().iter().any(|p| p["uid"] == me), "{voice}");
+    assert_eq!(run.dump("own")["status"], "dnd");
+    assert_eq!(run.dump("e2ee")["status"], "ready");
+    let watched = run.dump("presence")["watched"].as_u64().unwrap();
+    assert!((90..=100).contains(&watched), "watched {watched}");
+    assert!(run.dump("pump")["events"].as_u64().unwrap() > 0);
+    // Cleaned up: the post is gone from a fresh page (the last `chat off-topic` dump).
+    let after = run.dump("chat off-topic");
+    assert!(!after["messages"].as_array().unwrap().iter().any(|m| m["content"] == text.as_str()), "deleted: {after}");
+}

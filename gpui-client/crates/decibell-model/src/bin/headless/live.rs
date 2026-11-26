@@ -42,8 +42,7 @@ Live steps (voice, people, calls):
   wait friend <user> <status|none>   (a|b: either)
   wait call <idle|outgoing|incoming|connecting|active>   (a|b: either)
   wait incoming-ended             another device of ours took / declined the ringing call
-  wait devices                    the device list is loaded
-  dump voice | presence | friends | e2ee | call | transfers | devices | hotkeys | own | cues";
+  wait devices                    the device list is loaded";
 
 #[derive(Debug, Clone)]
 pub enum LiveStep {

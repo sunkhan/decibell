@@ -29,7 +29,7 @@ Message steps (the open community):
   dm-send <user> <text>           send a DM
   dm-delete <user> <id|last|prefix:<text>>  delete our DM(s)
   dm-read <user>                  read it up to its newest message (mark read)
-  search <query…>                 one server-side search (the rest of the line); waits
+  search <query>                  one server-side search (one argument: quote it); waits
   wait-history <channel>          its newest page is in
   wait-message <channel> <text>   a row with that text arrived (another client's message)
   wait-edited <channel> <text>    a row now reads that text
@@ -41,8 +41,7 @@ Message steps (the open community):
   wait-free <channel>             … and no longer would
   wait-dm <user> <text>           a DM with that text arrived
   wait-dm-gone <user> <text>      no DM reads that text any more
-  wait-unread <user> <n>          the conversation shows n unread
-  dump chat <channel> | dm <user> | search";
+  wait-unread <user> <n>          the conversation shows n unread";
 
 #[derive(Debug, Clone)]
 pub enum ChatStep {
