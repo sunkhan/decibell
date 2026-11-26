@@ -17,14 +17,18 @@ crates/decibell-model/
   src/pump.rs           EventQueue, ModelSink (the core's EventSink), the pump task, StreamFrameSink
   src/events/           the router (one exhaustive match) and a module per event area
   src/stores/           the stores (§5)
+  src/chat/, src/dm/    messages and DMs (§15)
+  src/live/             voice, streams, calls, presence, friends, E2EE, hotkeys, devices, transfers (§M3)
+  src/bridge.rs         the seams between the two halves (§16)
   src/actions/          what the UI asks for: store updates + the core call
   src/call.rs           `call`, `call_or_toast`, `show_error`, `offer_retrust`
   src/error.rs          UiError: the one place a CoreError becomes what is shown
   src/save_echo.rs      EchoSave: a settings save that settles on the server's echo
   src/invite_link.rs    the `decibell://invite/…` grammar
   src/ids.rs            Uid, ServerId, ChannelId
-  src/bin/headless.rs   decibell-headless (§8)
-  tests/                invalidation.rs, pump_real_loop.rs, stack.rs (§9)
+  src/bin/headless.rs   decibell-headless (§8); its message steps in bin/headless/chat.rs, live in live.rs
+  tests/                invalidation.rs, pump_real_loop.rs, retained.rs, stack.rs, stack_chat.rs,
+                        stack_live.rs (§9, §15.8, §M3.8)
 ```
 
 Depends on `gpui`, `decibell-theme` (for `ThemeId`; pure data) and `decibell-core`. Never on `decibell-ui`
@@ -213,40 +217,42 @@ arithmetic of the sidebar is `stores/member_window.rs`, roster order `stores/ros
 ## 6. The 85 events
 
 `events::route` matches every `CoreEvent` variant with no wildcard, and so does `events::users::directory`
-(the users directory sees each event first). "answers" = also emitted on `Model::answers` for a view that
+(the users directory sees each event first). Since the two halves landed every variant has a handler: the M2
+ones (messages, DMs) and the M3 ones (live, people) go through `events/todo.rs`' `m2` / `m3` functions, whose
+bodies are each one call into the module named here; no variant is handled by both halves (§16.2). "answers" = also emitted on `Model::answers` for a view that
 listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEvent, cx| …)`).
 "dir: central / community" = feeds the users directory with that precedence.
 
 | # | Event | Handled by |
 |---|---|---|
-| 1 | `connection_lost` | `events/connection.rs` (central banner) + `events/servers.rs` (community: disconnected; hooks `m2::community_connection_lost`, `m3::clear_server_presence`) |
+| 1 | `connection_lost` | `events/connection.rs` (central banner) + `events/servers.rs` (community: disconnected; hooks `m2::community_connection_lost`, `m3::clear_server_presence`) + `events/dm.rs` (central: DM history waits end, §16) |
 | 2 | `connection_restored` | the same two |
 | 3 | `login_succeeded` | `events/auth.rs`; dir: central; hooks `m2::signed_in`, `m3::signed_in`, `m3::seed_own_avatar` |
 | 4 | `user_renamed` | `events/auth.rs` (ours); dir: central |
-| 5 | `avatar_changed` | follow-up: M3 (avatars) |
+| 5 | `avatar_changed` | `events/presence.rs` (avatars) |
 | 6 | `login_failed` | `events/auth.rs` |
 | 7 | `register_responded` | `events/auth.rs` |
 | 8 | `logged_out` | `events/auth.rs`; hooks `m2::logged_out`, `m3::logged_out` |
-| 9 | `devices_changed` | follow-up: M3 (devices; the "New sign-in" toast) |
-| 10 | `session_token_updated` | follow-up: M2 (attachment tokens) |
+| 9 | `devices_changed` | `events/misc.rs` (devices; the "New sign-in" toast) |
+| 10 | `session_token_updated` | `events/chat.rs` (attachment tokens) |
 | 11 | `server_list_received` | `events/servers.rs` |
 | 12 | `memberships_received` | `events/servers.rs` |
 | 13 | `membership_added` | `events/servers.rs` |
 | 14 | `community_auth_responded` | `events/servers.rs`; dir: community (owner); hooks `m2::reset_send_pacing`, `m2::community_authenticated`, `m2::attachment_target_changed`, `m3::clear_server_presence` |
-| 15 | `message_received` | follow-up: M2; dir: central (DM) / community (channel) |
-| 16 | `channel_history_received` | follow-up: M2; dir: community |
-| 17 | `channel_pruned` | follow-up: M2 |
+| 15 | `message_received` | `events/chat.rs` (channels) / `events/dm.rs` (`context == "dm"`); dir: central (DM) / community (channel) |
+| 16 | `channel_history_received` | `events/chat.rs`; dir: community |
+| 17 | `channel_pruned` | `events/chat.rs` |
 | 18 | `channel_updated` | `events/servers.rs`; answers; hook `m3::channel_updated` (live bitrate) |
 | 19 | `channel_wipe_responded` | answers (channel settings) |
-| 20 | `channel_wiped` | follow-up: M2 |
-| 21 | `user_list_updated` | follow-up: M3 (presence); dir: central |
-| 22 | `presence_delta` | follow-up: M3; dir: central |
-| 23 | `own_presence` | follow-up: M3 |
-| 24 | `friend_list_received` | follow-up: M3; dir: central |
-| 25 | `friend_action_responded` | follow-up: M3 |
+| 20 | `channel_wiped` | `events/chat.rs` |
+| 21 | `user_list_updated` | `events/presence.rs` (presence); dir: central |
+| 22 | `presence_delta` | `events/presence.rs`; dir: central |
+| 23 | `own_presence` | `events/presence.rs` |
+| 24 | `friend_list_received` | `events/friends.rs`; dir: central |
+| 25 | `friend_action_responded` | `events/friends.rs` |
 | 26 | `member_list_received` | `events/servers.rs`; dir: community |
 | 27 | `mod_action_responded` | `events/servers.rs`; answers; hook `m2::legacy_rejection_suppressed` |
-| 28 | `channel_message_rejected` | follow-up: M2 (send pacing, slowmode) |
+| 28 | `channel_message_rejected` | `events/chat.rs` (send pacing, slowmode) |
 | 29 | `membership_revoked` | `events/servers.rs`; hook `m3::clear_server_presence` |
 | 30 | `role_list_received` | `events/servers.rs` |
 | 31 | `member_upsert` | `events/servers.rs`; dir: community |
@@ -256,9 +262,9 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 35 | `server_update_responded` | answers (Server Settings → Overview) |
 | 36 | `audit_log_received` | answers (Audit Log tab) |
 | 37 | `member_search_received` | answers (`useMemberSearch`); dir: community |
-| 38 | `message_search_received` | follow-up: M2 (search); dir: community |
+| 38 | `message_search_received` | `events/chat.rs` (search); dir: community |
 | 39 | `storage_info_received` | answers (Storage tab) |
-| 40 | `voice_force_notify` | follow-up: M3 |
+| 40 | `voice_force_notify` | `events/voice.rs` |
 | 41 | `channel_overwrites_received` | `events/servers.rs` |
 | 42 | `role_action_responded` | `events/servers.rs`; answers |
 | 43 | `channel_list_updated` | `events/servers.rs`; hooks `m2::purge_channel_state`, `m3::clear_server_presence` |
@@ -266,45 +272,45 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 45 | `invite_list_received` | `events/servers.rs` |
 | 46 | `invite_create_responded` | `events/servers.rs`; answers (a personal invite's caller) |
 | 47 | `invite_revoke_responded` | `events/servers.rs` |
-| 48 | `voice_presence_updated` | follow-up: M3; dir: community |
-| 49 | `voice_state_changed` | follow-up: M3 |
-| 50 | `hotkey_action` | follow-up: M3 |
-| 51 | `hotkeys_status` | follow-up: M3 |
-| 52 | `voice_user_speaking` | follow-up: M3 |
-| 53 | `voice_user_state_changed` | follow-up: M3 |
-| 54 | `voice_input_level` | follow-up: M3 |
-| 55 | `voice_ping_updated` | follow-up: M3 |
-| 56 | `voice_connection_stats` | follow-up: M3 |
-| 57 | `voice_error` | follow-up: M3 |
-| 58 | `stream_presence_updated` | follow-up: M3; dir: community |
-| 59 | `stream_codec_changed` | follow-up: M3 |
-| 60 | `stream_gpu_fallback` | follow-up: M3 (no emitter in the core today) |
-| 61 | `stream_capture_ended` | follow-up: M3 |
-| 62 | `keyframe_requested` | follow-up: M3 |
-| 63 | `native_stream_failed` | follow-up: M3 |
-| 64 | `caps_refreshed` | follow-up: M3 (no emitter in the core today) |
-| 65 | `dm_conversations_received` | follow-up: M2; dir: central |
-| 66 | `dm_history_received` | follow-up: M2; dir: central |
-| 67 | `dm_read_synced` | follow-up: M2 |
-| 68 | `dm_message_delete_responded` | follow-up: M2 |
-| 69 | `dm_message_deleted` | follow-up: M2 |
-| 70 | `channel_message_delete_responded` | follow-up: M2 |
-| 71 | `channel_message_deleted` | follow-up: M2 |
-| 72 | `dm_message_edit_responded` | follow-up: M2 |
-| 73 | `dm_message_edited` | follow-up: M2 |
-| 74 | `e2ee_status_changed` | follow-up: M3 |
-| 75 | `e2ee_peer_changed` | follow-up: M3 |
-| 76 | `voice_e2ee_state` | follow-up: M3 |
-| 77 | `channel_message_edit_responded` | follow-up: M2 |
-| 78 | `channel_message_edited` | follow-up: M2 |
+| 48 | `voice_presence_updated` | `events/voice.rs`; dir: community |
+| 49 | `voice_state_changed` | `events/voice.rs` |
+| 50 | `hotkey_action` | `events/misc.rs` |
+| 51 | `hotkeys_status` | `events/misc.rs` |
+| 52 | `voice_user_speaking` | `events/voice.rs` |
+| 53 | `voice_user_state_changed` | `events/voice.rs` |
+| 54 | `voice_input_level` | `events/voice.rs` |
+| 55 | `voice_ping_updated` | `events/voice.rs` |
+| 56 | `voice_connection_stats` | `events/voice.rs` |
+| 57 | `voice_error` | `events/voice.rs` |
+| 58 | `stream_presence_updated` | `events/voice.rs`; dir: community |
+| 59 | `stream_codec_changed` | `events/voice.rs` |
+| 60 | `stream_gpu_fallback` | `events/voice.rs` (no emitter in the core today) |
+| 61 | `stream_capture_ended` | `events/voice.rs` |
+| 62 | `keyframe_requested` | `events/voice.rs` |
+| 63 | `native_stream_failed` | `events/voice.rs` |
+| 64 | `caps_refreshed` | `events/voice.rs` (no emitter in the core today) |
+| 65 | `dm_conversations_received` | `events/dm.rs`; dir: central |
+| 66 | `dm_history_received` | `events/dm.rs`; dir: central |
+| 67 | `dm_read_synced` | `events/dm.rs` |
+| 68 | `dm_message_delete_responded` | `events/dm.rs` |
+| 69 | `dm_message_deleted` | `events/dm.rs` |
+| 70 | `channel_message_delete_responded` | `events/chat.rs` |
+| 71 | `channel_message_deleted` | `events/chat.rs` |
+| 72 | `dm_message_edit_responded` | `events/dm.rs` |
+| 73 | `dm_message_edited` | `events/dm.rs` |
+| 74 | `e2ee_status_changed` | `events/e2ee.rs` |
+| 75 | `e2ee_peer_changed` | `events/e2ee.rs` |
+| 76 | `voice_e2ee_state` | `events/voice.rs` |
+| 77 | `channel_message_edit_responded` | `events/chat.rs` |
+| 78 | `channel_message_edited` | `events/chat.rs` |
 | 79 | `server_picture_update_responded` | `events/servers.rs`; answers (the picture editor) |
 | 80 | `server_picture_received` | `events/servers.rs` |
 | 81 | `server_picture_changed` | `events/servers.rs` |
-| 82 | `call_signal` | follow-up: M3; dir: central |
-| 83 | `call_connected` | follow-up: M3 |
-| 84 | `call_failed` | follow-up: M3 |
-| 85 | `call_dropped` | follow-up: M3 |
-| — | `stream_thumbnail` (the sink's own method) | follow-up: M3 (`todo::m3::stream_thumbnail`) |
+| 82 | `call_signal` | `events/calls.rs`; dir: central |
+| 83 | `call_connected` | `events/calls.rs` |
+| 84 | `call_failed` | `events/calls.rs` |
+| 85 | `call_dropped` | `events/calls.rs` |
+| — | `stream_thumbnail` (the sink's own method) | `events/voice.rs` (`todo::m3::stream_thumbnail`) |
 | — | `stream_frame`, `stream_frame_sink_removed` | `StreamFrameSink`, off the UI thread (the video crate) |
 
 Not core events in Electron either: `deep_link_received` (main process) → `actions::servers::open_invite_link(url)`
@@ -356,11 +362,17 @@ every other setting with `settings.update(cx, |s, cx| s.change(|v| v.aec_enabled
 
 ## 8. `decibell-headless`
 
-The core and the stores with no window, driven by a script on the command line; one process per client.
-`cargo run -p decibell-model --bin decibell-headless -- --help` lists the steps (`login <account>`,
-`logout`, `wait booted | logged-in | logged-out | connected <community> | roster <community> | online /
-offline <community> <user>`, `open-server`, `open-channel`, `dump <store>`, `idle <seconds>`, `print`,
-`wait-file`). Each `dump` prints one line `DUMP <what> <json>`; the last line is `DONE` or `FAILED …`.
+The core and every store of the model with no window, driven by a script on the command line; one process per
+client. `cargo run -p decibell-model --bin decibell-headless -- --help` documents every step in one text, grouped:
+account and communities (`login <account>`, `logout`, `wait booted | logged-in | logged-out | connected
+<community> | roster <community> | online / offline <community> <user>`, `open-server`, `open-channel`, `idle
+<seconds>`, `print`, `wait-file`), messages (`history`, `send`, `edit`, `delete`, `dm-*`, `search`, `wait-*`: §15),
+live (`voice-join`, `mute` / `deafen`, `status`, `friends`, `e2ee-ready`, `call`, `watch`, `wait voice | mls |
+presence | call …`: §M3), and the dumps. Each `dump` prints one line `DUMP <what> <json>`; **`dump all`** prints
+every dump that applies in the current state (the account stores, the open community's channels / roles / roster,
+the open channel's permissions and messages, the open DM, search, every live store), one line each, a dump that
+can't be made carrying `{"error": …}`. The last line is `DONE` or `FAILED …`. Steps of every group mix freely in
+one script (one process, one core): the usage's example, also `tests/stack.rs`' combined test.
 
 It only talks to the local stack: it exits 2 unless `DECIBELL_CENTRAL` is a loopback address **and** the
 build honours that variable (a debug build, or `--features local-central`), and `login` takes only accounts
@@ -371,6 +383,12 @@ of the stack's `accounts.json`. Default: no keychain (`--keychain` opts in), pro
 eval "$(../tools/dev/local-stack.sh client-env)"
 target/debug/decibell-headless --user-data-dir /tmp/p login perf2 wait connected "Daily Gaming" \
     wait roster "Daily Gaming" dump roster "Daily Gaming" dump pump logout wait logged-out
+# Both halves in one client (perf3 has E2EE keys on the stack; voice needs them):
+target/debug/decibell-headless --user-data-dir /tmp/p login perf3 wait connected "Daily Gaming" \
+    open-server "Daily Gaming" e2ee-ready decibell-m3-test-passphrase open-channel off-topic \
+    history off-topic send off-topic hello wait-sent off-topic deafen voice-join Lounge wait mls ready \
+    status dnd watch-roster "Daily Gaming" 100 dump all voice-leave status online \
+    delete off-topic last wait-deleted off-topic logout wait logged-out
 # Measuring core + model alone (release, never shipped: it has `local-central`):
 cargo build --release -p decibell-model --features local-central --bin decibell-headless
 target/release/decibell-headless --user-data-dir /tmp/p wait connected "Daily Gaming" idle 100 &
@@ -380,10 +398,11 @@ target/release/decibell-headless --user-data-dir /tmp/p wait connected "Daily Ga
 ## 9. Tests
 
 ```sh
-cargo test -p decibell-model                         # unit + router + invalidation + pump; stack tests skip
+cargo test -p decibell-model                         # unit + router + invalidation + pump + retained; stack tests skip
 cargo clippy -p decibell-model --all-targets
 eval "$(../tools/dev/local-stack.sh client-env)"     # the stack must be up
-DECIBELL_STACK=1 cargo test -p decibell-model --test stack -- --nocapture
+DECIBELL_STACK=1 cargo test -p decibell-model --features local-central \
+    --test stack --test stack_chat --test stack_live -- --test-threads 1
 ```
 
 - **Unit tests** live beside the code. Store logic that needs timers or notifications uses
@@ -394,13 +413,16 @@ DECIBELL_STACK=1 cargo test -p decibell-model --test stack -- --nocapture
   and delivered through the real queue and pump (`deliver`). Every core call a handler makes answers "not
   running" (deferred, so a handler may update the entity that called).
 - **`tests/invalidation.rs`**: the GPUI rule of §4. **`tests/pump_real_loop.rs`**: §3 on the real loop.
-- **Stack tests** (`tests/stack.rs`) drive `decibell-headless`; each client has its own temporary user data
+- **The seams** (`src/bridge/tests.rs`, router tests across both halves): §16.1.
+- **Stack tests** (`tests/stack.rs`; the halves' own in `stack_chat.rs` §15.8 and `stack_live.rs` §M3.8) drive `decibell-headless`; each client has its own temporary user data
   directory. They cover: password sign-in as `perf2`; memberships → Daily Gaming connects; its channel tree,
   roles and first roster window against what `tools/dev` seeded (298 members, alice owns it, role counts,
   `slow-lane` 30 s, `vault` encrypted, Staff hidden); a member's effective permissions; the saved sign-in
   on the next start; Log out clearing it; a second client (`perf4` or `perf1`, whichever is offline)
   coming online and leaving as live roster deltas seen by `perf3`; and in Rustaceans what `dave` (member)
-  and `bob` (owner) may do in `core-team` / `announcements` / `showcase`. Not covered: resume after a
+  and `bob` (owner) may do in `core-team` / `announcements` / `showcase`; and one client through both halves
+  (`perf3`: unlock, read and post in `#off-topic`, Lounge deafened with MLS ready, Do Not Disturb, 100 members
+  watched, `dump all`, then everything undone). Not covered: resume after a
   forced disconnect (nothing cheap drops one connection without restarting central, which other work
   shares).
 - A new stack test: write the steps as a `&[&str]`, `run_ok(profile.path(), steps)`, assert on
@@ -517,6 +539,8 @@ target**, and its share of the wakeup budget (≤ 30 / s) is 0.17 / s. The 20 pa
 address space, not memory (they are in the 14 MB).
 
 ## 14. For the two follow-ups
+
+Both landed (§15, §M3) and are wired together in §16; this section is the brief they were written from.
 
 Both: read §4 before designing a store; fill in `events/todo.rs`; add `dump`s to `headless.rs` and tests to
 `tests/stack.rs`; keep every thread named and every timer owned.
@@ -721,14 +745,12 @@ their two `…::new(cx)` lines in `Model::build`, and `model.chat.follow_navigat
 
 ### 15.7 Needed from elsewhere
 
-- **Core**: `tls::exact_connector(fingerprint)` (side-effect free). `chat::composer::CoreTls` today
-  calls `pins::set_expected(host, port, fp)` then `tls::create_pinned_connector(host, port).0`; the
-  switch is that one body. A hook for **central's** `connection_lost` to abandon DM history waits
-  (`useDmEvents`' listener): today they end by their 10 s timeout or at the next sign-in.
-- **M3**: nothing is read from M3's stores. The E2EE status (locked / not set up) that the DM
-  composer's banner shows is M3's `e2eeStore`; after an unlock the renderer calls
-  `invalidateAllHistory`: `DmList::invalidate_all_history` is here for M3's unlock handler to call
-  (then the active conversation's `open_history`). `friends_only_dms` is a `Settings` field.
+- **Core** — done (§16): `CoreTls` is the core's `tls::exact_connector(host, port, fingerprint)`; central's
+  `connection_lost` ends DM history waits (`events::dm::connection_lost`).
+- **M3** — done (§16): the unlock reloads DM history (`events::dm::reload_after_unlock` on
+  `E2eeEvent::BecameReady`); a call we answered opens its DM; `friends_only_dms` is one `Settings` field
+  (M3 adopts the account's value, `actions::dm::set_friends_only_dms` is the Privacy toggle). The E2EE status
+  the DM composer's banner shows is read from `model.live.e2ee`.
 - **The app**: a `MediaProbe` for video / audio facts at attach time (the composer probes pictures
   only: `upload::prepare(source, None)`); the Settings → Network speed caps (`Attachments::limits()`,
   reachable through `CoreAttachmentService::attachments()`).
@@ -833,10 +855,10 @@ creating / dropping hundreds of entities with their observers.
 | Codec caps at boot | `actions::voice::init_codec_caps(false, cx)` once after `start_core` | As `main.tsx` did: decode probe, the core's `probe_native_encoders` (cached `extra["native_encoder_caps.v2"]`, one re-probe 15 s after a cached boot), shipped to the core (its caps are in memory: every start). Before it, a voice join advertises no caps. |
 | Idle source | `auto_away.update(|a, cx| a.set_source(Rc::new(CoreIdleSource), cx))` or the platform's own `IdleSource` | The core's answers Wayland + GNOME, "unsupported" on X11 / Windows / macOS (Electron used `powerMonitor`): the app supplies `XScreenSaver` / `GetLastInputInfo` / `CGEventSource` sources there, ideally with `idle_for`. Also `set_locked(bool)` on lock / sleep, `poke()` on resume pushes and on input in our window. |
 | Device hot-plug | `devices.update(|d, cx| d.hotplug(cx))` | Electron had `devicechange`; GPUI has none (PipeWire / WASAPI notifications are the app's). 400 ms debounce, timer only while pending. Pickers call `ensure_loaded`. |
-| Downloads | `transfers.update(|t, cx| t.attach_downloads(Rc<dyn DownloadControl>, cx))` → `DownloadEvents`; give `move |e| events.push(e)` to `DownloadManager::new` | `ManagerControl { manager, runtime }` implements the trait. Then `actions::transfers::configure_downloads`. |
-| Uploads | **M2**: `actions::transfers::sync_uploads(&[PendingUpload], cx)` when pendings change; `t.set_upload_control(Rc<dyn UploadControl>)` | Assumed: M2's pending has a status (queued / pending / uploading / ready / failed), paused, cancelled, error, preview image, attachment id, sizes. |
+| Downloads | `transfers.update(|t, cx| t.attach_downloads(Rc<dyn DownloadControl>, cx))` → `DownloadEvents`; give `move |e| events.push(e)` to `DownloadManager::new` | `ManagerControl { manager, runtime }` implements the trait. Then `actions::transfers::configure_downloads`. A view starts one with `start_download(actions::chat::download_request(server, attachment_id, Some(&attachment), save_to, cx), cx)`. |
+| Uploads | done by the model (§16): `bridge::install` sets the composer as the `UploadControl` and mirrors its pendings through `actions::transfers::sync_uploads` | Nothing for the app. Rows: `go_to_upload` / `go_to_download` for "Go to message". |
 | Taskbar / quit guard | observe `transfers`: `progress()` (fraction or none, paused-only) and `uploads_in_flight()` | Electron throttled the platform call to 4 / s. |
-| Window | observe `voice.watching.fullscreen`; `live::window_title(model, M2's active DM, cx)` | |
+| Window | observe `voice.watching.fullscreen`; `live::window_title(model, cx)` (reads the open DM itself) when `nav`, `servers`, `dm.list` or `NamesChanged` fire | Set the title only when it differs. |
 | Hotkeys | window key events → `hotkeys.update(|h, _| h.key(code, down))`, blur → `window_blurred()`; `actions::hotkeys::inject_cli(arg)` from the single-instance glue (`--hotkey=<action>[:down\|:up]`) | Codes are `KeyboardEvent.code` names: `live::hotkeys::code_from_gpui_key` maps GPUI's `Keystroke::key` **assuming a US layout** (no physical code at the pin). |
 | Frame sinks | the video views: `actions::voice::show_stream(uid)` on mount, `hide_stream(uid)` on unmount | |
 
@@ -981,3 +1003,104 @@ floor of ~1,390 wakeups / s and 2.75 % of a core is the core's media loops: `voi
 idle `video-recv` are the candidates (blocking receives, or a video receiver only while a stream is watched)
 before the client's voice targets are set. Measured under load from other builds (load average ~10); one presence
 run was disturbed by memory reclaim and was repeated.
+
+## 16. The halves together
+
+M2 (§15) and M3 (§M3) were written in parallel from the foundation (`7b45b47`) and integrated on one branch:
+M2's three commits picked onto M3, the shared lines of both kept (`lib.rs`: both module lines, the fields
+`chat`, `dm`, `live` and their `new` in `build`, `follow_navigation` then `live::install` then `bridge::install`
+in `init`; `events/mod.rs`, `actions/mod.rs`: both module lists; `todo.rs`: M2's `m2` bodies and M3's `m3`
+bodies; `bin/headless.rs`: both `#[path]` modules, both `Step` variants, the chat parse arm before the live
+fallback, the `chat | dm | search` dump arm before the live fallback; `Cargo.toml`: `decibell-attachments`
+once, M2's `decibell-unfurl`, `chrono`, `tokio-rustls`; this file: §15 before §M3). Then the seams each half
+had left for the other were made true, `core::prepare` went (§2), and `decibell-headless` learnt one usage and
+`dump all` (§8).
+
+### 16.1 The seams
+
+`src/bridge.rs` holds the subscriptions (installed by `Model::init` after both halves exist; none holds a
+timer); the rest are direct calls. Each mirrors the renderer file named, and has a test.
+
+| Seam | Renderer | Here | Test |
+|---|---|---|---|
+| Answering a call lands on the caller's DM | `callActions.ts` `acceptCall`: `setActiveDmUser(inc.fromUid)`, `setActiveView("dm")` | `live.calls` emits `ShowConversation(uid)` → `actions::dm::open_dm(uid, name)` (the users store's name; the conversation is created when new, M2's idiom where the renderer let the first page create it). The DM view loads its history on mount, as `DmChatPanel` does | `bridge::tests::answering_a_call_opens_the_callers_conversation` |
+| Unlock / setup reloads DMs | `useE2eeEvents.ts` `reloadDms` | `E2eeEvent::BecameReady` → `events::dm::reload_after_unlock`: `DmList::invalidate_all_history`, `request_dm_conversations`, `actions::dm::open_history` for the open conversation (whether or not the DM view shows, as the renderer) | `unlocking_reloads_dm_history` |
+| Central's drop ends DM history waits | `useDmEvents.ts` `connection_lost` → `abandonDmRequests()` | the router's `ConnectionLost` arm → `events::dm::connection_lost` (`HistoryRequests::abandon(Scope::Central)`); a community's drop is M2's own hook | `central_connection_lost_ends_dm_history_waits` |
+| The Uploads tab mirrors the composer | `features/transfers/uploads.ts` (`initUploads`, `pauseUpload`, `cancelUpload`, `messageIdForAttachment` + `goToMessage`) | the bridge observes `chat.composer` → `bridge::pending_uploads` → `actions::transfers::sync_uploads`; `ComposerUploads` is the Transfers store's `UploadControl` (pause / resume / cancel the composer's upload); `PendingAttachment::preview` (the probe's 320 px thumbnail, once per file) stands for `previewUrl` and is shared with the row; `actions::transfers::go_to_upload` (`actions::chat::message_id_for_attachment` + `go_to_message`) | `the_uploads_tab_mirrors_the_composer`, `sign_out_cancels_uploads_and_keeps_their_rows` |
+| Downloads from a message's attachment | `features/transfers/downloads.ts` `locate` + `startDownload`; `TransfersPanel.tsx`' go-to | `actions::chat::download_request(server, attachment_id, fallback, save_to, cx)` → `actions::transfers::start_download`; `actions::transfers::go_to_download` | `a_download_is_described_by_its_message` |
+| The window title | `hooks/useWindowTitle.ts` | `live::window_title(model, cx)` reads `dm.list`'s open conversation (its row's name as the fallback) | `live::tests::the_window_title` |
+| `friends_only_dms`: one copy | `usePresenceEvents.ts` (adopt on `own_presence`), `PrivacyTab.tsx` `handleToggleDms` | `Settings` only. Writers: `events::presence::own_presence` (only when it differs) and the Privacy toggle `actions::dm::set_friends_only_dms` (new: `Settings` + `set_dm_privacy`). Nothing in M2 writes it | `friends_only_dms_has_one_copy` |
+| The attachment host's TLS | `electron/main/attachmentRegistry.ts` `verifyHostFingerprint` | `CoreTls` = the core's `tls::exact_connector(host, port, fingerprint)`: no pins-store side effect; an empty or malformed fingerprint is refused (as Electron's "mismatch") | `chat::composer::tests::core_tls_pins_exactly_without_the_pins_store` |
+| Sign-out resets both halves | `useAuthEvents.ts` `logged_out` | `events::auth::logged_out`: `m3::logged_out`, overlays, `m2::logged_out` | `sign_out_resets_both_halves` |
+
+### 16.2 The router, once through
+
+Every `CoreEvent` variant has exactly one handler (§6); where an event matters to both halves the foundation's
+handler calls a hook of each on disjoint state, and nothing contradicts:
+
+- `connection_lost`: central → the banner (foundation), statuses marked stale (M3's observer of
+  `Connections`), DM history waits ended (§16.1); a community → its connection dropped (foundation), its
+  history waits and attachment endpoint (M2), its voice / stream rosters (M3).
+- `login_succeeded`: `m2::signed_in` (DM previews; after a dropped connection the central waits end and loaded
+  DMs go stale) and `m3::signed_in` (the friend list again) + `seed_own_avatar`. A sign-in whose E2EE status
+  then reports "ready" asks for the DM previews a second time through §16.1's reload: the renderer does too
+  (mirrored).
+- `logged_out`: M3 first (ring, call, voice, rosters, presence, friends, devices), the overlays, then M2
+  (viewer and menus, attachment endpoints and keys, the composer — uploads cancelled —, channel slices,
+  history waits, pacing, slowmode, drafts, previews, search, players, the DM list). The Transfers store keeps
+  this session's rows and the downloads (the renderer's `transfersStore` is not reset either; an upload cut by
+  the sign-out shows "Cancelled").
+- `community_auth_responded`, `channel_list_updated`, `membership_revoked`, `channel_updated`: M2's and M3's
+  hooks touch different state.
+- `message_received` is M2's alone (`context == "dm"` → DMs); M3 has no reaction to messages (the renderer
+  plays no message sound). `own_presence` and `e2ee_status_changed` are M3's alone; M2 follows the latter only
+  through `BecameReady`.
+
+### 16.3 What the halves assumed that turned out otherwise
+
+- M3's `PendingUpload` expected a "pending" status and a preview image on M2's pendings: M2 has `queued` only
+  (the renderer's "pending" is an alias of it) and kept no preview. The preview was added to
+  `PendingAttachment`; `queued` maps to `Queued`.
+- M3's `ShowConversation` doc said M2's DM store subscribes, and `window_title` took M2's active DM as an
+  argument: M2 had neither. The bridge subscribes; `window_title` reads the DM list itself.
+- M2 said "M2 reads `friends_only_dms` from `Settings`": nothing in M2 reads it (the renderer shows it in
+  Settings → Privacy only), and neither half had the Privacy toggle: added.
+- Neither half had the "download from a message" helper M3's `DownloadRequest` waited for: added to M2's
+  actions (`download_request`).
+- M2's `CoreTls` fell back to trust-on-first-use for an empty fingerprint (`pins::set_expected` ignores one):
+  `exact_connector` refuses it, as Electron does.
+- `decibell-attachments`' crate doc still describes `CoreTls` through `pins::set_expected` (that crate was out of
+  this change's reach).
+
+### 16.4 Measured together (2026-11-26, this machine; release `decibell-headless`, `--features local-central`)
+
+`tools/perf/measure.sh --pid … --settle 20 --duration 60 --gpu none --no-frames`. Signed in as `perf2`, Daily
+Gaming connected and its roster in, `#general` open with its newest page (50 rows), presence interest for 100
+members (99 statuses known), not in voice, then idle. The binary is 40.0 MB (stripped by the release profile;
+FFmpeg static: no `libav*` / `libsw*`), from 28.6 (M2) and 36.5 (M3).
+
+| Metric | Together | M2 alone (`#general` open) | M3 alone (100 watched) |
+|---|---|---|---|
+| Private memory (`Private_Clean + Private_Dirty`) | **19.6 MB** | 15.9 MB | 16.2 MB |
+| Private dirty | **3.36 MB** | 2.89 MB | 3.0 MB |
+| PSS / RSS | 19.7 / 22.4 MB | 16.1 / 18.9 MB | — |
+| CPU | 0.0004 % of one core | — | 0.001 % |
+| Wakeups, whole process | **0.17 / s** (10 in 60 s, all `decibell-rt`) | 0.17 / s | 0.23 / s |
+| Threads / file descriptors | 28 / 25 | 26 | 26 |
+| Events through the pump during the window | 0 (`dump pump`: 13 events, 9 wakes before and after the 100 s idle) | — | — |
+
+Where the 19.6 MB is (a second run in the same state, `/proc/<pid>/smaps` by mapping): **15.6 MB is the binary's
+own code and read-only data** (private *clean*: file-backed pages only this process maps; the kernel can drop and
+re-read them), 0.9 MB its writable data, 1.35 MB anonymous mappings (thread stacks, the runtime's and GPUI's
+arenas), 0.8 MB the malloc heap. So against either half alone the stores and the core's state together add
+**+0.4 – 0.5 MB of dirty memory**; the rest of the +3.4 – 3.7 MB is more resident code from the larger binary.
+
+| Thread (count) | Wakeups in 60 s | Why |
+|---|---|---|
+| `decibell-rt` (2) | 10 (one of the two) | the core's 30 s keep-alives on its two connections (central, Daily Gaming) and their answers |
+| main (1) | 0 | parked in `epoll_wait`: no event reached the pump |
+| `Worker-0` … `Worker-19` (20), `Timer` (1), `smol-1`, `async-io` (2) | 0 | GPUI's, parked (the `Timer` thread holds the script's `idle`) |
+| `zbus::Connectio…` (2) | 0 | **new since `prepare` went**: with `zbus` on `async-io`, each D-Bus connection runs zbus's internal executor on a thread of its own (with the `tokio` feature they were tokio tasks). One is GPUI's system-bus connection for the sleep / wake listener, opened at platform start; the other is a second connection (GPUI's or the core's: not attributed). Parked |
+
+Nothing besides the core's keep-alives wakes: no timer of either half exists at rest (the presence watch set's
+600 ms flush and the history waits ended before the window; nothing polls).
