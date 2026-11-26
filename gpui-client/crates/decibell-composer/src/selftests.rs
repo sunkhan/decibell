@@ -37,9 +37,10 @@ macro_rules! tests {
             vec![$(SelfTest { name: $name, about: $about, run: |cx| Box::pin(parent(cx, $name)) },)*]
         }
 
-        /// The checks, inside the signed-in child app.
+        /// The checks, inside the signed-in child app. A check that fails still deletes what
+        /// it posted ([`guarded`]).
         pub fn checks() -> Vec<SelfTest> {
-            vec![$(SelfTest { name: $name, about: concat!("(in the app) ", $about), run: |cx| Box::pin($check(cx)) },)*]
+            vec![$(SelfTest { name: $name, about: concat!("(in the app) ", $about), run: |cx| Box::pin(guarded(cx, |cx| Box::pin($check(cx)))) },)*]
         }
     };
 }
@@ -166,6 +167,31 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
 }
 
 // ── Helpers inside the app ─────────────────────────────────────────────────────────────────────
+
+/// Runs a check; when it fails, deletes every message of ours in the channels the checks post
+/// in that carries this process's tag (`ct<pid>-`), then reports the failure.
+async fn guarded(cx: TestCx, check: fn(TestCx) -> futures::future::LocalBoxFuture<'static, Result<()>>) -> Result<()> {
+    let sweep_cx = TestCx::new(cx.app().clone(), cx.window());
+    let result = check(cx).await;
+    if result.is_err() {
+        let mark = format!("ct{}-", std::process::id());
+        for channel in [OFF_TOPIC, SLOW_LANE] {
+            let ids: Vec<i64> = sweep_cx
+                .update(|_, cx| {
+                    let model = model(cx);
+                    let me = model.auth.read(cx).uid;
+                    model.chat.channels.read(cx).get(daily_gaming(), channel).map_or(Vec::new(), |slice| {
+                        slice.read(cx).rows().iter().filter(|m| m.sender_uid == me && m.id > 0 && m.content.contains(&mark)).map(|m| m.id).collect()
+                    })
+                })
+                .unwrap_or_default();
+            if !ids.is_empty() {
+                let _ = delete(&sweep_cx, channel, &ids).await;
+            }
+        }
+    }
+    result
+}
 
 fn model(cx: &App) -> Model {
     Model::global(cx).clone()
