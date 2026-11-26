@@ -63,7 +63,7 @@ pub fn is_available() -> bool {
 /// CaptureSource.id. Names match what the compositor reports (DP-1, eDP-1,
 /// HDMI-A-1, etc.) so users see the same labels other Linux tools show.
 pub async fn list_sources() -> Result<Vec<CaptureSource>, String> {
-    tokio::task::spawn_blocking(|| -> Result<Vec<CaptureSource>, String> {
+    crate::rt::spawn_blocking(|| -> Result<Vec<CaptureSource>, String> {
         let conn = Connection::connect_to_env().map_err(|e| format!("wl connect: {}", e))?;
         let display = conn.display();
         let mut event_queue = conn.new_event_queue();
@@ -103,7 +103,7 @@ pub async fn start_capture(
         .ok_or_else(|| format!("not a wlr source id: {}", source_id))?
         .to_string();
     let config = config.clone();
-    tokio::task::spawn_blocking(move || -> Result<CaptureOutput, String> {
+    crate::rt::spawn_blocking(move || -> Result<CaptureOutput, String> {
         let conn = Connection::connect_to_env().map_err(|e| format!("wl connect: {}", e))?;
         // Resolve the output handle and dimensions on the spawning thread —
         // the capture thread needs to know what size to allocate before it

@@ -57,7 +57,7 @@ pub async fn adopt(state: &Arc<Mutex<AppState>>, jwt: String) {
 /// by the CentralClient (aborted with it); the reply lands in its router,
 /// which calls `adopt`.
 pub fn spawn_refresh_loop(state: Arc<Mutex<AppState>>) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::rt::spawn(async move {
         loop {
             tokio::time::sleep(REFRESH_EVERY).await;
             let send = {

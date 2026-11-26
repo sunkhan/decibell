@@ -182,7 +182,7 @@ pub fn start(
         last_state: String::new(),
         prefetches: HashMap::new(),
     };
-    let task = tokio::spawn(driver.run(rx, info_requested));
+    let task = crate::rt::spawn(driver.run(rx, info_requested));
     Ok(GroupHandle { tx, ring, server_id, channel_id, task })
 }
 
@@ -706,7 +706,7 @@ impl Driver {
                 continue;
             }
             let state = self.state.clone();
-            let task = tokio::spawn(async move {
+            let task = crate::rt::spawn(async move {
                 if let Err(e) = e2ee::resolve_peer_current(&state, uid, "").await {
                     log::debug!("[mls] prefetch of uid {uid}'s keys failed: {e}");
                 }

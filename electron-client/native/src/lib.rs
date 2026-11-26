@@ -2,8 +2,9 @@
 
 //! The Electron addon: a thin napi layer over `decibell-core`
 //! (crates/decibell-core). This crate owns `init` / `shutdown` / `ping`, the
-//! napi event sink (`napi_sink.rs`) and the `#[napi]` commands; everything
-//! they drive lives in the core.
+//! napi event sink (`napi_sink.rs`) and the `#[napi]` commands, each a
+//! one-line wrapper over `decibell_core::api` (where the bodies, and the
+//! argument / result structs, live); everything they drive lives in the core.
 
 #[macro_use]
 extern crate napi_derive;
@@ -11,13 +12,9 @@ extern crate napi_derive;
 mod commands;
 mod napi_sink;
 
-// The core's modules under their old crate-root names, so `crate::state`,
-// `crate::net::…`, `crate::events::…` in commands/ keep resolving.
-#[allow(unused_imports)]
-pub(crate) use decibell_core::{
-    api, config, e2ee, events, hotkeys, media, net, presence, state, system_idle,
-};
+pub(crate) use decibell_core::{api, state};
 
+use decibell_core::api::lifecycle::InitOptions;
 use napi::JsFunction;
 
 /// Runs once when Node loads the addon, before any command. Stands up
@@ -44,33 +41,10 @@ fn on_load() {
     state::init();
 }
 
-/// Boot-time options pushed in from Electron main. Everything platform-
-/// path-shaped (userData) is resolved Node-side via
-/// `app.getPath()` and shipped here so Rust never has to figure out
-/// platform-specific dirs itself — the Electron main process is the
-/// authority.
-#[napi(object)]
-pub struct InitOptions {
-    pub user_data_dir: String,
-    pub app_version: String,
-    /// base64 of a random 32-byte key that Electron main keeps wrapped by
-    /// `safeStorage` — the at-rest key for the E2EE key store. Absent when
-    /// safeStorage isn't available on this machine (config.rs derivation
-    /// is used instead). Named explicitly: napi's camel-casing splits on
-    /// the digit (`e2EeLocalKey`), so main's `e2eeLocalKey` was never read
-    /// and every store fell back to the derived key.
-    #[napi(js_name = "e2eeLocalKey")]
-    pub e2ee_local_key: Option<String>,
-    /// True when that key is wrapped by a real OS keychain — false (or
-    /// absent) for Linux's `basic_text` safeStorage backend, which wraps
-    /// with a hard-coded password. The saved sign-in uses the key only
-    /// when it is (config.rs).
-    pub local_key_protected: Option<bool>,
-}
-
 // (The doc comment below is copied into index.d.ts by napi: keep it as is.
 // "The EventBus TSFN" is now the napi event sink, `napi_sink::NapiSink`, over
-// all three callbacks, installed into decibell-core's `events`.)
+// all three callbacks, installed into decibell-core's `events`. The rest of
+// the start-up is the core's, `api::lifecycle::init`.)
 /// Called once from Electron main after `app.whenReady()` and the
 /// first BrowserWindow has been created. Installs the EventBus TSFN
 /// (so any thread can `events::send(...)`) and stashes BootConfig so
@@ -93,97 +67,23 @@ pub fn init(
     // instead of a base64-encoded `data:image/jpeg;base64,…` string
     // riding the JSON bus. Renderer wraps the bytes in a blob: URL.
     let sink = napi_sink::NapiSink::new(bus, stream_bus, stream_thumbnail_bus)?;
-    events::install_sink(std::sync::Arc::new(sink));
-    let e2ee_local_key = opts.e2ee_local_key.as_deref().and_then(|b64| {
-        use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-        if bytes.len() != 32 {
-            log::warn!("[e2ee] ignoring at-rest key of {} bytes", bytes.len());
-            return None;
-        }
-        let mut k = [0u8; 32];
-        k.copy_from_slice(&bytes);
-        Some(k)
-    });
-    config::set_local_key_protected(
-        e2ee_local_key.is_some() && opts.local_key_protected.unwrap_or(false),
-    );
-    state::set_boot(state::BootConfig {
-        user_data_dir: opts.user_data_dir.into(),
-        app_version: opts.app_version,
-        e2ee_local_key,
-    });
 
     // env_logger so log::warn! / log::info! land in the Electron main
     // stdout. Defaults to `info`; override with RUST_LOG. Idempotent:
     // try_init silently no-ops if a previous init() call already set
-    // it (HMR reload-the-addon scenarios).
+    // it (HMR reload-the-addon scenarios). The host's job, not the core's:
+    // set up before the core starts so its start-up logs land too.
     let _ = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
     )
     .try_init();
 
-    // rustls TLS-1.2/1.3 cipher provider. Required before any
-    // ClientConfig::with_root_certificates / TlsConnector usage —
-    // rustls 0.23 dropped the default-set behavior. Idempotent.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    #[cfg(target_os = "windows")]
-    pin_amf_runtime();
-
-    // PR8: FFmpeg removed from the addon entirely. Encode lives in the
-    // renderer (Chromium WebCodecs); decode lives there too. The native
-    // side just packetises encoded chunks onto UDP and doesn't link
-    // against libavcodec at all anymore. Removed: `ffmpeg_next::init()`
-    // and the libavcodec runtime-version diagnostic.
-
+    // napi runs sync functions inside its tokio runtime's context
+    // (`within_runtime_if_available`), so this is napi's runtime: every
+    // command already runs on it, and the core spawns onto it from threads
+    // outside it.
+    api::lifecycle::init(opts, std::sync::Arc::new(sink), tokio::runtime::Handle::current());
     Ok(())
-}
-
-/// Load AMD's AMF runtime once and never free it.
-///
-/// Every AMF encoder probe/open loads amfrt64.dll (FFmpeg's
-/// hwcontext_amf dlopen) and `amf_device_uninit` unloads it again. A
-/// driver/AMF worker thread that outlives AMFContext::Terminate then
-/// executes in unmapped code — the classic `<Unloaded_amfrt64.dll>`
-/// access violation. Holding our own reference keeps the module mapped for
-/// the life of the process (OBS does the same: load once, never free).
-///
-/// Same search flags FFmpeg's win32_dlopen uses (application dir +
-/// System32), so we pin exactly the module FFmpeg will resolve, and never
-/// pick a planted copy from the current directory / PATH. Missing on
-/// non-AMD machines — that's fine, nothing to pin. Declared by hand
-/// because the windows crate's LibraryLoader feature isn't enabled.
-#[cfg(target_os = "windows")]
-fn pin_amf_runtime() {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn LoadLibraryExW(
-            lp_lib_file_name: *const u16,
-            h_file: *mut std::ffi::c_void,
-            dw_flags: u32,
-        ) -> *mut std::ffi::c_void;
-    }
-    const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
-    const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
-
-    static PINNED: std::sync::Once = std::sync::Once::new();
-    PINNED.call_once(|| {
-        let name: Vec<u16> = "amfrt64.dll\0".encode_utf16().collect();
-        // The module handle is intentionally leaked (never FreeLibrary'd).
-        let module = unsafe {
-            LoadLibraryExW(
-                name.as_ptr(),
-                std::ptr::null_mut(),
-                LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
-            )
-        };
-        if module.is_null() {
-            log::info!("[amf] amfrt64.dll not present (no AMD driver) — nothing to pin");
-        } else {
-            log::info!("[amf] amfrt64.dll pinned for the process lifetime");
-        }
-    });
 }
 
 /// Called from Electron main on `before-quit`. Drops engines, joins
@@ -206,59 +106,7 @@ fn pin_amf_runtime() {
 ///   - CommunityClient / CentralClient drops close their TLS sockets
 #[napi]
 pub async fn shutdown() -> napi::Result<()> {
-    let state_arc = state::shared();
-    let mut s = state_arc.lock().await;
-
-    // A DM call in progress: tell the peer we're gone (best effort, short
-    // timeout) so their side ends now instead of after the 15 s watchdog,
-    // and stop the punch / watchdog.
-    s.pending_call = None;
-    if let Some(ac) = s.active_call.take() {
-        ac.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = ac.watchdog {
-            h.abort();
-        }
-        let hangup = s.central.as_ref().and_then(|c| c.connection_write_tx()).map(|tx| {
-            use crate::net::proto::{call_signal, packet, CallSignal};
-            let pkt = crate::net::connection::build_packet(
-                packet::Type::CallSignal,
-                packet::Payload::CallSignal(CallSignal {
-                    kind: call_signal::Kind::Hangup as i32,
-                    call_id: ac.call_id.clone(),
-                    from: String::new(),
-                    to: ac.peer.clone(),
-                    pub_key: Vec::new(),
-                    candidates: Vec::new(),
-                    stream: None,
-                    timestamp: 0,
-                    pub_key_sig: Vec::new(),
-                    key_id: 0,
-                    from_uid: 0,
-                    to_uid: ac.peer_uid,
-                }),
-                s.token.as_deref(),
-            );
-            (tx, pkt)
-        });
-        if let Some((tx, pkt)) = hangup {
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), tx.send(pkt)).await;
-        }
-    }
-    media::watched_streams_clear();
-
-    // Drop in reverse start-up order: media engines first (they may
-    // still be pushing packets through the voice socket), then voice
-    // (owns the sockets), then network connections.
-    s.video_engine = None;
-    s.audio_stream_engine = None;
-    s.voice_engine = None;
-    s.communities.clear();
-    s.central = None;
-    s.credentials = None;
-    s.pending_invite_resolves.clear();
-    s.pending_friends_in_community.clear();
-
-    Ok(())
+    api::lifecycle::shutdown().await.map_err(napi::Error::from)
 }
 
 // ── Diagnostic exports ────────────────────────────────────────────

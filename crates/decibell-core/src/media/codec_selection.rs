@@ -255,7 +255,7 @@ impl CodecSelector {
 
         let inner = self.inner.clone();
         let swap_tx = self.swap_tx.clone();
-        let handle = tokio::spawn(async move {
+        let handle = crate::rt::spawn(async move {
             tokio::time::sleep(delay).await;
             let mut state = inner.lock().unwrap();
             if state.timer_generation != gen { return; }

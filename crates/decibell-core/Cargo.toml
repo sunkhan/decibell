@@ -42,9 +42,10 @@ aec3 = "0.1"
 nnnoiseless = { version = "0.5.2", default-features = false }
 arc-swap = "1"
 # P2P DM calls: X25519 + HKDF for the per-call media keys (ring is already
-# in the tree through rustls). The host-candidate interface enumeration
-# (if-addrs) is the napi crate's (commands/call.rs).
+# in the tree through rustls), and local interface enumeration for host
+# candidates (api/call.rs).
 ring = "0.17"
+if-addrs = "0.13"
 # E2EE DMs (see docs/superpowers/specs/2026-09-03-e2ee-dms-design.md):
 # static X25519 identities (ring only does ephemeral agreement), Ed25519
 # bundle signatures, Argon2id for the passphrase backup, zeroising
@@ -57,6 +58,11 @@ openmls = "0.9"
 openmls_rust_crypto = "0.6"
 openmls_basic_credential = "0.6"
 openmls_traits = "0.6"
+# Only with the `napi` feature (the Electron addon's): the argument / result
+# structs of `api` derive napi's `#[napi(object)]`, so the addon uses the one
+# definition and its index.d.ts gets their types. No other client compiles napi.
+napi = { version = "2", default-features = false, optional = true }
+napi-derive = { version = "2", features = ["type-def"], optional = true }
 
 # libc is used in cfg(unix) socket tuning code that runs on Linux *and*
 # macOS — must be available for both, not just Linux.
@@ -189,6 +195,11 @@ tokio = { version = "1", features = ["full", "test-util"] }
 prost-build = "0.13"
 
 [features]
+# The Electron addon (electron-client/native) turns this on: `api`'s argument and
+# result structs get `#[napi(object)]`, and `CoreError` converts into
+# `napi::Error`. A build without it never compiles napi (`cargo tree -p
+# decibell-core` shows no napi crate).
+napi = ["dep:napi", "dep:napi-derive"]
 # DECIBELL_STREAM_DUMP (src/media/stream_dump.rs): record watched streams to .dbv files for the Qt client's video
 # spike. Off in every shipped build; opt in with `npx napi build --platform --release --features stream-dump`
 # (electron-client/native forwards the feature here).

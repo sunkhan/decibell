@@ -139,7 +139,7 @@ impl CentralClient {
         let (host, port) = central_addr();
         let (connection, read_rx) = Connection::connect(&host, port).await?;
 
-        let router_task = tokio::spawn(Self::route_packets(read_rx, state.clone()));
+        let router_task = crate::rt::spawn(Self::route_packets(read_rx, state.clone()));
 
         // Keepalive ping every 30s. Without this, a dead TCP connection
         // can go undetected for minutes.
@@ -151,7 +151,7 @@ impl CentralClient {
         // entire UI deadlocks. Instead, clone the write_tx sender and
         // send directly without the lock.
         let ping_write_tx = connection.clone_write_tx();
-        let ping_task = tokio::spawn(async move {
+        let ping_task = crate::rt::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let data = build_packet(
@@ -234,7 +234,7 @@ impl CentralClient {
 
     /// Start reconnection loop. Called when the read loop ends unexpectedly.
     pub fn start_reconnect(&mut self, state: Arc<Mutex<AppState>>) {
-        let task = tokio::spawn(async move {
+        let task = crate::rt::spawn(async move {
             events::emit_connection_lost("central", None);
 
             let mut attempt = DEVICE_LIMIT_STREAK.load(Ordering::Relaxed);
@@ -277,11 +277,11 @@ impl CentralClient {
                         };
                         let login_tx = connection.clone_write_tx();
 
-                        let router = tokio::spawn(Self::route_packets(read_rx, state.clone()));
+                        let router = crate::rt::spawn(Self::route_packets(read_rx, state.clone()));
 
                         // Restart keepalive ping task (lock-free, see connect())
                         let ping_write_tx = connection.clone_write_tx();
-                        let ping_task = tokio::spawn(async move {
+                        let ping_task = crate::rt::spawn(async move {
                             loop {
                                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                                 let data = build_packet(
@@ -431,7 +431,7 @@ impl CentralClient {
                             persist_credentials(creds, only_if_saved).await;
                         }
                         if let (Some(tx), false) = (central_tx, resend.is_empty()) {
-                            tokio::spawn(async move {
+                            crate::rt::spawn(async move {
                                 for pkt in resend {
                                     if tx.send(pkt).await.is_err() {
                                         break;
@@ -450,7 +450,7 @@ impl CentralClient {
                             account_idle: false,
                         });
                         events::emit_login_succeeded(username, resp.uid, resp.renames, resp.devices);
-                        tokio::spawn(crate::e2ee::session::bootstrap(state.clone()));
+                        crate::rt::spawn(crate::e2ee::session::bootstrap(state.clone()));
 
                         // Auto-rejoin: ship memberships to the renderer
                         // for placeholder tile rendering, then auto-
@@ -484,7 +484,7 @@ impl CentralClient {
                             let server_id = info.id.to_string();
                             let host = info.host_ip.clone();
                             let port = info.port as u16;
-                            tokio::spawn(async move {
+                            crate::rt::spawn(async move {
                                 if let Err(e) = crate::api::servers::connect_with_invite(
                                     server_id, host, port, None,
                                 )
@@ -509,7 +509,7 @@ impl CentralClient {
                         // saying why.
                         if resp.signed_out {
                             log::info!("[auth] central says this device was signed out");
-                            tokio::spawn(crate::api::auth::signed_out_elsewhere("signed_out"));
+                            crate::rt::spawn(crate::api::auth::signed_out_elsewhere("signed_out"));
                             continue;
                         }
                         let mut refused = None;
@@ -561,7 +561,7 @@ impl CentralClient {
                                     packet::Payload::LoginReq(ThisDevice::read().login(user, pass, true)),
                                     None,
                                 );
-                                tokio::spawn(async move {
+                                crate::rt::spawn(async move {
                                     let _ = tx.send(data).await;
                                 });
                             }
@@ -764,7 +764,7 @@ impl CentralClient {
                     // Invisible is the account's: this device's communities
                     // follow it too.
                     let invisible = own.status == crate::net::proto::PresenceStatus::PresenceInvisible as i32;
-                    tokio::spawn(crate::api::presence::apply_hidden(invisible));
+                    crate::rt::spawn(crate::api::presence::apply_hidden(invisible));
                     events::emit_own_presence(own_presence_payload(&own));
                 }
                 Some(packet::Payload::MembershipAdded(added)) => {
@@ -772,7 +772,7 @@ impl CentralClient {
                         crate::net::pins::set_expected(&info.host_ip, info.port as u16, &info.cert_fingerprint);
                         crate::net::directory::record(info.id.into(), &info.host_ip, info.port.into());
                         let uid = state.lock().await.uid;
-                        tokio::spawn(join_added_membership(state.clone(), uid, info));
+                        crate::rt::spawn(join_added_membership(state.clone(), uid, info));
                     }
                 }
                 Some(packet::Payload::SessionClosed(closed)) => {
@@ -784,13 +784,13 @@ impl CentralClient {
                         // rather than reconnecting.
                         log::info!("[auth] central signed this device out");
                         let reason = if password_changed { "password_changed" } else { "signed_out" };
-                        tokio::spawn(crate::api::auth::signed_out_elsewhere(reason));
+                        crate::rt::spawn(crate::api::auth::signed_out_elsewhere(reason));
                     } else {
                         // Another connection signed in with our device id while
                         // we are connected: this install was copied. Become a
                         // device of our own before the reconnect that follows
                         // (central closes this connection) signs in.
-                        let id = tokio::task::spawn_blocking(crate::config::renew_device_id).await;
+                        let id = crate::rt::spawn_blocking(crate::config::renew_device_id).await;
                         log::warn!(
                             "[auth] another copy of this install signed in with our device id; now {}",
                             id.unwrap_or_default()
@@ -902,7 +902,7 @@ impl CentralClient {
                             is_self: true,
                         });
                         if let Some((tx, data)) = refresh {
-                            tokio::spawn(async move {
+                            crate::rt::spawn(async move {
                                 let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(data)).await;
                             });
                         }
@@ -1084,7 +1084,7 @@ fn is_definitive_refusal(message: &str) -> bool {
 /// Save credentials central just accepted. `only_if_saved`: just keep an
 /// existing saved sign-in current (a rename), don't create one.
 async fn persist_credentials(creds: crate::config::Credentials, only_if_saved: bool) {
-    let result = tokio::task::spawn_blocking(move || {
+    let result = crate::rt::spawn_blocking(move || {
         let cfg = crate::config::load()?;
         if only_if_saved && cfg.credentials.is_none() {
             return Ok(());
@@ -1101,7 +1101,7 @@ async fn persist_credentials(creds: crate::config::Credentials, only_if_saved: b
 
 async fn forget_saved_credentials(username: String, password: String) {
     let result =
-        tokio::task::spawn_blocking(move || crate::config::forget_credentials_if(&username, &password)).await;
+        crate::rt::spawn_blocking(move || crate::config::forget_credentials_if(&username, &password)).await;
     match result {
         Ok(Ok(true)) => log::info!("[auth] central refused the saved password; saved sign-in forgotten"),
         Ok(Ok(false)) => {}

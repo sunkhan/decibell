@@ -986,7 +986,7 @@ struct PublishGuard(Arc<Mutex<AppState>>);
 impl Drop for PublishGuard {
     fn drop(&mut self) {
         let state = self.0.clone();
-        tokio::spawn(async move {
+        crate::rt::spawn(async move {
             state.lock().await.e2ee.publish_in_flight = false;
         });
     }
@@ -1024,7 +1024,7 @@ pub async fn setup(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(
     let store = KeyStore::new(0, vec![identity]);
     let payload = backup_payload(&store);
     let pass = passphrase.clone();
-    let blob = tokio::task::spawn_blocking(move || backup::wrap(&pass, &payload))
+    let blob = crate::rt::spawn_blocking(move || backup::wrap(&pass, &payload))
         .await
         .map_err(|e| e.to_string())??;
     let key_id = publish(state, Some(bundle), blob, false).await?;
@@ -1060,7 +1060,7 @@ pub async fn unlock(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<
             .await?
             .ok_or("No encryption backup found for this account. Set up encryption instead.")?,
     };
-    let payload = tokio::task::spawn_blocking(move || backup::unwrap(&passphrase, &blob))
+    let payload = crate::rt::spawn_blocking(move || backup::unwrap(&passphrase, &blob))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| match e {
@@ -1100,7 +1100,7 @@ pub async fn unlock(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<
         emit_status(&s);
     }
     let st = state.clone();
-    tokio::spawn(async move { rebind_if_needed(&st).await });
+    crate::rt::spawn(async move { rebind_if_needed(&st).await });
     Ok(())
 }
 
@@ -1114,7 +1114,7 @@ pub async fn change_passphrase(state: &Arc<Mutex<AppState>>, passphrase: String)
         backup_payload(s.e2ee.store.as_ref().ok_or("Encryption keys not loaded")?)
     };
     let _guard = PublishGuard(state.clone());
-    let blob = tokio::task::spawn_blocking(move || backup::wrap(&passphrase, &payload))
+    let blob = crate::rt::spawn_blocking(move || backup::wrap(&passphrase, &payload))
         .await
         .map_err(|e| e.to_string())??;
     publish(state, None, blob, false).await?;
@@ -1146,7 +1146,7 @@ pub async fn reset(state: &Arc<Mutex<AppState>>, passphrase: String) -> Result<(
     keys.push(identity);
     let payload = backup::BackupPayload { current_key_id: 0, keys: keys.clone() };
     let pass = passphrase.clone();
-    let blob = tokio::task::spawn_blocking(move || backup::wrap(&pass, &payload))
+    let blob = crate::rt::spawn_blocking(move || backup::wrap(&pass, &payload))
         .await
         .map_err(|e| e.to_string())??;
     let key_id = publish(state, Some(bundle), blob, false).await?;
@@ -1328,7 +1328,7 @@ pub async fn enqueue(state: &Arc<Mutex<AppState>>, job: DmJob) {
             None => {
                 let (tx, rx) = mpsc::channel(256);
                 s.dm_crypto_tx = Some(tx.clone());
-                tokio::spawn(run_worker(rx, state.clone()));
+                crate::rt::spawn(run_worker(rx, state.clone()));
                 tx
             }
         }
@@ -1536,7 +1536,7 @@ fn conversations_req(before_id: i64) -> packet::Payload {
 pub async fn request_conversations_page(state: &Arc<Mutex<AppState>>, before_id: i64) -> Result<(), String> {
     let generation = conversations_walk().requested(before_id);
     send_central(state, packet::Type::DmConversationsReq, conversations_req(before_id)).await?;
-    tokio::spawn(watch_conversations_page(state.clone(), generation));
+    crate::rt::spawn(watch_conversations_page(state.clone(), generation));
     Ok(())
 }
 
@@ -1599,7 +1599,7 @@ async fn handle_conversations(state: &Arc<Mutex<AppState>>, res: DmConversations
     if let Some(next) = next.filter(|&id| has_more && (before_id == 0 || id < before_id)) {
         let state = state.clone();
         // Spawned: the worker doesn't wait on the central write queue.
-        tokio::spawn(async move {
+        crate::rt::spawn(async move {
             if let Err(e) = request_conversations_page(&state, next).await {
                 log::warn!("[dm] next conversations page not requested: {e}");
             }

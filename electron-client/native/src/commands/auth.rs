@@ -1,39 +1,30 @@
-//! Login / register / logout. The flow:
-//!
-//!   1. login(args) opens a TLS connection to the central server (if
-//!      one isn't already up), sends LoginReq and returns Ok. The actual
-//!      `login_succeeded` event fires asynchronously when central's
-//!      LoginRes arrives — see net/central.rs::route_packets, which is
-//!      also where the typed credentials are saved (only once central
-//!      accepts them) or forgotten (when it refuses the password).
-//!      auto_login() does the same with the saved sign-in, which never
-//!      leaves native.
-//!   2. register(args) reuses the central connection and sends a
-//!      RegisterReq. Response goes through `register_responded`.
-//!   3. logout(args) asks central to forget this device (devices design),
-//!      tears down all connections, clears in-memory and on-disk
-//!      credentials, and emits `logged_out`. A device signed out from
-//!      elsewhere goes the same way (core `api::auth::signed_out_elsewhere`),
-//!      with the reason in the event.
+//! `#[napi]` wrappers over `decibell_core::api::auth`, where the bodies
+//! live. Doc comments stay here: napi copies them into index.d.ts.
 
-use crate::config;
-use crate::events;
-use crate::net::central::CentralClient;
-use crate::net::connection::build_packet;
-use crate::net::proto::{packet, FetchAvatarReq, RegisterRequest, RenameRequest, UpdateAvatarReq};
-use crate::state;
-use tokio::sync::oneshot;
+use crate::api;
+use crate::api::auth::{
+    FetchAvatarArgs, LoginArgs, RegisterArgs, RenameAccountArgs, RenameAccountResult,
+    UploadAvatarResult,
+};
+
+// The two structs with a JS Buffer stay here (the core's take / give plain
+// bytes); every other argument and result struct is the core's.
 
 #[napi(object)]
-pub struct LoginArgs {
-    pub username: String,
-    pub password: String,
+pub struct UploadAvatarArgs {
+    pub jpeg: napi::bindgen_prelude::Buffer,
+}
+
+#[napi(object)]
+pub struct FetchAvatarResult {
+    pub version: String,
+    /// Empty Buffer when version == '' (no avatar).
+    pub data: napi::bindgen_prelude::Buffer,
 }
 
 #[napi]
 pub async fn login(args: LoginArgs) -> napi::Result<()> {
-    let LoginArgs { username, password } = args;
-    password_login(username, password, true).await
+    api::auth::login(args).await.map_err(napi::Error::from)
 }
 
 /// Sign in with the saved credentials, if there are any (the renderer
@@ -42,60 +33,7 @@ pub async fn login(args: LoginArgs) -> napi::Result<()> {
 /// open on this machine any more): show the sign-in page.
 #[napi]
 pub async fn auto_login() -> napi::Result<bool> {
-    let saved = config::load().ok().and_then(|c| c.credentials);
-    match saved {
-        Some(c) => {
-            password_login(c.username, c.password, false).await?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// `save`: the user typed these; persist them once central accepts them.
-async fn password_login(username: String, password: String, save: bool) -> napi::Result<()> {
-    let state_arc = state::shared();
-
-    // Disconnect any existing central client first. Stash credentials
-    // for reconnect-time re-authentication.
-    let old_central = {
-        let mut s = state_arc.lock().await;
-        s.credentials = Some((username.clone(), password.clone()));
-        s.save_credentials_on_login = save;
-        // A new password sign-in hands out its own resume token.
-        s.resume_token = None;
-        s.resume_pending = false;
-        s.central.take()
-    };
-    if let Some(mut old) = old_central {
-        old.disconnect();
-    }
-
-    let client = CentralClient::connect(state_arc.clone())
-        .await
-        .map_err(napi::Error::from_reason)?;
-    // Not typed: central accepts it only on a device the account has.
-    client
-        .login(&username, &password, !save)
-        .await
-        .map_err(napi::Error::from_reason)?;
-
-    let mut s = state_arc.lock().await;
-    s.central = Some(client);
-    drop(s);
-
-    Ok(())
-}
-
-#[napi(object)]
-pub struct RenameAccountArgs {
-    pub new_username: String,
-    pub password: String,
-}
-
-#[napi(object)]
-pub struct RenameAccountResult {
-    pub username: String,
+    api::auth::auto_login().await.map_err(napi::Error::from)
 }
 
 /// Change our username (uid design, stage 5). Central checks the password
@@ -107,159 +45,19 @@ pub struct RenameAccountResult {
 /// plane identifies people by uid).
 #[napi]
 pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccountResult> {
-    let state_arc = state::shared();
-    // A bundle still signed over our old name would read as "no keys" to
-    // peers once the name changes: rebind it to the uid first (a no-op
-    // when it already is).
-    crate::e2ee::session::rebind_if_needed(&state_arc).await;
-    let (write_tx, data, rx) = {
-        let mut s = state_arc.lock().await;
-        let central = s
-            .central
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
-        let tx = central
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
-        let (wtx, wrx) = oneshot::channel();
-        s.pending_rename = Some(wtx);
-        let data = build_packet(
-            packet::Type::RenameReq,
-            packet::Payload::RenameReq(RenameRequest {
-                new_username: args.new_username.trim().to_string(),
-                password: args.password,
-            }),
-            s.token.as_deref(),
-        );
-        (tx, data, wrx)
-    };
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => {}
-        _ => {
-            state_arc.lock().await.pending_rename = None;
-            return Err(napi::Error::from_reason("Couldn't reach the server"));
-        }
-    }
-    let res = match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
-        Ok(Ok(res)) => res,
-        Ok(Err(_)) => return Err(napi::Error::from_reason("Connection closed before the reply")),
-        Err(_) => {
-            state_arc.lock().await.pending_rename = None;
-            return Err(napi::Error::from_reason("The server didn't answer"));
-        }
-    };
-    if !res.success {
-        return Err(napi::Error::from_reason(res.message));
-    }
-
-    let uid = {
-        let mut s = state_arc.lock().await;
-        s.username = Some(res.username.clone());
-        if let Some((_, pass)) = s.credentials.clone() {
-            s.credentials = Some((res.username.clone(), pass));
-        }
-        s.uid
-    };
-    // Auto-login uses the saved credentials: they follow the new name.
-    if let Ok(cfg) = config::load() {
-        if let Some(saved) = cfg.credentials {
-            let creds = config::Credentials { username: res.username.clone(), password: saved.password };
-            let _ = config::save(Some(&creds), &cfg.settings);
-        }
-    }
-    events::emit_user_renamed(events::UserRenamedPayload {
-        uid,
-        username: res.username.clone(),
-        is_self: true,
-    });
-    // Without a fresh token the communities catch up at the next sign-in.
-    crate::net::token::adopt(&state_arc, res.jwt_token).await;
-    Ok(RenameAccountResult { username: res.username })
-}
-
-#[napi(object)]
-pub struct RegisterArgs {
-    pub username: String,
-    pub email: String,
-    pub password: String,
+    api::auth::rename_account(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn register(args: RegisterArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-
-    // If not connected yet, open a central connection on the way in
-    // so the register packet has somewhere to land.
-    {
-        let s = state_arc.lock().await;
-        if s.central.is_none() {
-            drop(s);
-            let client = CentralClient::connect(state_arc.clone())
-                .await
-                .map_err(napi::Error::from_reason)?;
-            let mut s = state_arc.lock().await;
-            s.central = Some(client);
-        }
-    }
-
-    // Build the packet + clone the write_tx under lock, then drop the
-    // lock before awaiting the bounded-channel send. Same pattern as
-    // every other AppState-touching network path — never hold the lock
-    // across an await that can block on a dead socket.
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let client = s
-            .central
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
-        let tx = client
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
-        let pkt = build_packet(
-            packet::Type::RegisterReq,
-            packet::Payload::RegisterReq(RegisterRequest {
-                username: args.username,
-                password: args.password,
-                email: args.email,
-            }),
-            None,
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
+    api::auth::register(args).await.map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn logout() -> napi::Result<()> {
-    // Central forgets this device first, while the connection is up.
-    crate::commands::devices::forget_this_device().await;
-    crate::api::auth::sign_out_locally(None).await;
-    Ok(())
-}
-
-// ─── Avatar upload / fetch ───────────────────────────────────────────
-// In-band protobuf round-trips against the central server (see docs/
-// superpowers/specs/2026-05-12-custom-profile-pictures-design.md §6).
-// The central router (net/central.rs route_packets) resolves the
-// oneshot Sender we stash on AppState when the matching response
-// arrives.
-
-#[napi(object)]
-pub struct UploadAvatarResult {
-    pub success: bool,
-    pub message: String,
-    /// sha256-hex of the uploaded bytes; '' on removal.
-    pub version: String,
-}
-
-#[napi(object)]
-pub struct UploadAvatarArgs {
-    pub jpeg: napi::bindgen_prelude::Buffer,
+    api::auth::logout().await.map_err(napi::Error::from)
 }
 
 /// Upload or remove the authenticated user's avatar. Empty `jpeg`
@@ -267,78 +65,9 @@ pub struct UploadAvatarArgs {
 /// on success.
 #[napi]
 pub async fn upload_avatar(args: UploadAvatarArgs) -> napi::Result<UploadAvatarResult> {
-    let UploadAvatarArgs { jpeg } = args;
-    let state_arc = state::shared();
-
-    let (write_tx, data, rx) = {
-        let mut s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::UpdateAvatarReq,
-            packet::Payload::UpdateAvatarReq(UpdateAvatarReq {
-                data: jpeg.as_ref().to_vec(),
-            }),
-            token.as_deref(),
-        );
-        let (otx, orx) = oneshot::channel();
-        // Single-slot — replace any earlier in-flight upload's
-        // waiter (the previous .await will time out).
-        s.pending_avatar_update = Some(otx);
-        (tx, pkt, orx)
-    };
-
-    if tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+    api::auth::upload_avatar(args.jpeg)
         .await
-        .is_err()
-    {
-        state_arc.lock().await.pending_avatar_update = None;
-        return Err(napi::Error::from_reason("Failed to send avatar"));
-    }
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(resp)) => {
-            if resp.success {
-                // Central tells an account's watchers about its new picture,
-                // and we don't watch ourselves: announce our own here.
-                let (uid, username) = {
-                    let s = state_arc.lock().await;
-                    (s.uid, s.username.clone().unwrap_or_default())
-                };
-                events::emit_avatar_changed(uid, username, resp.version.clone());
-            }
-            Ok(UploadAvatarResult {
-                success: resp.success,
-                message: resp.message,
-                version: resp.version,
-            })
-        }
-        Ok(Err(_)) => Err(napi::Error::from_reason(
-            "Central connection closed before response",
-        )),
-        Err(_) => {
-            state_arc.lock().await.pending_avatar_update = None;
-            Err(napi::Error::from_reason("Upload timed out"))
-        }
-    }
-}
-
-#[napi(object)]
-pub struct FetchAvatarResult {
-    pub version: String,
-    /// Empty Buffer when version == '' (no avatar).
-    pub data: napi::bindgen_prelude::Buffer,
-}
-
-#[napi(object)]
-pub struct FetchAvatarArgs {
-    /// The account whose avatar to fetch (users by uid).
-    pub uid: i64,
+        .map_err(napi::Error::from)
 }
 
 /// Fetch a specific user's avatar bytes + current version. Empty
@@ -346,58 +75,9 @@ pub struct FetchAvatarArgs {
 /// exist — same response shape).
 #[napi]
 pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResult> {
-    let FetchAvatarArgs { uid } = args;
-    let slot = uid.to_string();
-    let state_arc = state::shared();
-
-    let (write_tx, data, rx) = {
-        let mut s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::FetchAvatarReq,
-            packet::Payload::FetchAvatarReq(FetchAvatarReq {
-                username: String::new(),
-                uid,
-            }),
-            token.as_deref(),
-        );
-        let (otx, orx) = oneshot::channel();
-        // Last-request-wins per account — a previous in-flight
-        // fetch for the same user gets its oneshot replaced; the
-        // earlier .await times out, no harm.
-        s.pending_avatar_fetches.insert(slot.clone(), otx);
-        (tx, pkt, orx)
-    };
-
-    if tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
-        .await
-        .is_err()
-    {
-        state_arc.lock().await.pending_avatar_fetches.remove(&slot);
-        return Err(napi::Error::from_reason("Failed to send fetch request"));
-    }
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(resp)) => Ok(FetchAvatarResult {
-            version: resp.version,
-            data: resp.data.into(),
-        }),
-        Ok(Err(_)) => Err(napi::Error::from_reason(
-            "Central connection closed before response",
-        )),
-        Err(_) => {
-            state_arc
-                .lock()
-                .await
-                .pending_avatar_fetches
-                .remove(&slot);
-            Err(napi::Error::from_reason("Fetch timed out"))
-        }
-    }
+    let res = api::auth::fetch_avatar(args).await?;
+    Ok(FetchAvatarResult {
+        version: res.version,
+        data: res.data.into(),
+    })
 }

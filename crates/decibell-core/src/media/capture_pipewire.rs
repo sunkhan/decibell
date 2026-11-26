@@ -51,7 +51,7 @@ pub async fn start_capture(
 
     // Run portal dialog + PipeWire setup on a blocking thread
     // (portal dialog blocks until user picks a source)
-    let (output, watch) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+    let (output, watch) = crate::rt::spawn_blocking(move || -> Result<_, String> {
         // Step 1: Portal D-Bus interaction (shows picker dialog)
         let (pw_fd, node_id, dbus_conn, session) = portal_screencast_session(config.include_cursor)?;
 
@@ -145,7 +145,7 @@ fn watch_portal_session(
     done: tokio::sync::oneshot::Receiver<()>,
 ) {
     use futures_util::StreamExt;
-    tokio::spawn(async move {
+    crate::rt::spawn(async move {
         let closed = async {
             let proxy = zbus::proxy::Builder::<zbus::Proxy>::new(&conn)
                 .destination(PORTAL_BUS)?

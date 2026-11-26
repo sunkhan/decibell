@@ -186,7 +186,7 @@ pub struct AppState {
     pub pending_backup_fetch: Option<oneshot::Sender<E2eeFetchBackupRes>>,
     /// In-flight RENAME_REQ (one at a time, from the account settings).
     pub pending_rename: Option<oneshot::Sender<crate::net::proto::RenameResponse>>,
-    /// Devices and passwords (commands/devices.rs): the command waiting on
+    /// Devices and passwords (api/devices.rs): the command waiting on
     /// each answer.
     pub pending_device_list: Option<oneshot::Sender<crate::net::proto::DeviceListResponse>>,
     pub pending_device_sign_out: Option<oneshot::Sender<crate::net::proto::DeviceSignOutResponse>>,

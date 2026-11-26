@@ -782,12 +782,15 @@ dependencies = [
  "futures-util",
  "gl",
  "hostname",
+ "if-addrs",
  "jpeg-encoder",
  "khronos-egl",
  "libc",
  "libloading",
  "log",
  "memfd",
+ "napi",
+ "napi-derive",
  "nnnoiseless",
  "openmls",
  "openmls_basic_credential",
@@ -823,22 +826,15 @@ dependencies = [
 name = "decibell-native"
 version = "0.0.1"
 dependencies = [
- "base64",
- "cpal",
  "decibell-core",
  "env_logger",
- "if-addrs",
  "libc",
  "log",
  "napi",
  "napi-build",
  "napi-derive",
- "prost",
- "ring",
- "rustls",
  "serde_json",
  "tokio",
- "windows 0.61.3",
 ]
 
 [[package]]

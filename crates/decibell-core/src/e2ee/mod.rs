@@ -12,7 +12,7 @@
 //!
 //! The renderer never touches any of this directly: it sees decrypted DM
 //! events with `encrypted` / `decryptError` flags, a status event, and the
-//! `e2ee_*` commands in `commands/e2ee.rs`.
+//! `e2ee_*` commands in `api/e2ee.rs`.
 
 pub mod backup;
 pub mod call_auth;

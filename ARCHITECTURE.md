@@ -601,7 +601,8 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
 The native code is where the protocol knowledge lives: connections, every packet router, voice, UDP
 media, native capture / encode, and all E2EE. A native (e.g. GPUI) client reuses it rather than
 re-implementing it. Mapped 2026-11-07; the split's step 1 (design `2026-11-07-qt-native-client-design.md`
-§6) landed 2026-11-26 on the `gpui-client` branch:
+§6) landed 2026-11-26 on the `gpui-client` branch, then step 2 (typed events) and step 3 (the command API
+and the runtime handle):
 
 - **The core is a library.** `crates/decibell-core/` (lib `decibell_core`) holds `net/`, `media/`,
   `e2ee/`, `hotkeys/`, `config.rs`, `presence.rs`, `system_idle.rs`, `state.rs`, `events.rs`, `api/` and
@@ -609,14 +610,9 @@ re-implementing it. Mapped 2026-11-07; the split's step 1 (design `2026-11-07-qt
   it by path. No root Cargo workspace (design D3): the addon keeps its `Cargo.lock`, `target/`,
   `.cargo/config.toml` (static FFmpeg's `PKG_CONFIG_PATH`) and `[profile]`s; core's own `Cargo.lock` and
   `.cargo/config.toml` only serve `cargo test --lib` there. Features `stream-dump` and `local-central`
-  live in core; the addon forwards them. The addon's `lib.rs` re-exports the core modules under their
-  old names (`pub(crate) use decibell_core::{config, …, state}`), so `crate::state::…` in `commands/`
-  is unchanged.
-- **napi lives only in the addon**: `lib.rs`, `napi_sink.rs`, `commands/`. The core had four call-outs
-  into `commands/`; they are core functions now, which the napi commands wrap:
-  `api::servers::connect_with_invite` (`Result<(), String>`), `api::auth::{signed_out_elsewhere,
-  sign_out_locally}`, `api::presence::{apply_hidden, tell_communities_hidden}`,
-  `api::voice::rebind_voice_group`.
+  live in core; the addon forwards them, and turns on core's `napi` feature (below).
+- **napi lives only in the addon** (`lib.rs`, `napi_sink.rs`, `commands/`) and, behind core's optional
+  `napi` feature, on `api`'s structs. A core build without the feature compiles no napi crate.
 - **Events go through one trait** (`decibell_core::events`). Every named event is a typed `CoreEvent`
   (85 variants, one per name constant, each carrying its payload struct, `Serialize` in camelCase;
   `events/core_event.rs` is the catalogue) built by the `emit_*` helpers (nothing emits an untyped event);
@@ -633,18 +629,32 @@ re-implementing it. Mapped 2026-11-07; the split's step 1 (design `2026-11-07-qt
   `tests/golden/events.json` pins every event's JSON byte for byte (`events::golden_tests`, which also
   checks the renderer's listener list), and core tests read emits through a recording sink
   (`events::testing`), so emits need no `cfg(not(test))` wrappers.
-- **Commands**: 132 `#[napi]` functions in `commands/*.rs` (auth 7, call 6, channels 15, community 23,
-  devices 3, dm 5, e2ee 6, friends 3, hotkeys 6, messaging 1, presence 5, servers 11, settings 4,
-  stream_audio 2, streaming 18, voice 17), each taking one args struct; plus `init` / `shutdown` / `ping`
-  in `lib.rs`. They are thin: lock `AppState`, build a packet or call into `media` / `e2ee`. They still
-  live in the addon; the design's step 3 moves their bodies into `decibell_core::api::<area>` next to the
-  four above, so a native client calls the same functions directly.
-- **Runtime**: the crate never builds a tokio runtime; it relies on napi's `tokio_rt`. A native client
-  must own a multi-thread runtime and call in from inside it (e.g. `media/mod.rs` `tokio::spawn`s from
-  stream start). State is one global `AppState` (`state.rs`, `OnceLock<Arc<tokio::Mutex<…>>>`) plus a few
+- **Commands are `decibell_core::api`** (step 3): 132 functions, one module per area with the addon's
+  names (auth 7, call 6, channels 15, community 23, devices 3, dm 5, e2ee 6, friends 3, hotkeys 6,
+  messaging 1, presence 5, servers 11, settings 4, stream_audio 2, streaming 18, voice 17), plus
+  `api::lifecycle::{init, shutdown}`. Each takes the addon's args struct and returns `Result<T,
+  CoreError>`; `CoreError` carries the old error text verbatim (the renderer shows / matches some) and an
+  `ErrorKind` (`NotConnected`, `NotSignedIn`, `Refused`, `InvalidArgument`, `Other`). The structs are
+  defined once, in core, with `#[cfg_attr(feature = "napi", napi_derive::napi(object))]`; napi-derive
+  writes their TypeScript into the CLI's type-def file while core compiles (core's `build.rs` reruns when
+  that file's path changes or it was wiped). Only the six structs with a JS `Buffer` stay in the addon,
+  which converts (core takes `AsRef<[u8]>` / `&[u8]`, gives `Vec<u8>`). The addon's `#[napi]` commands are
+  one-line wrappers keeping their doc comments (index.d.ts); napi resolves a struct's JS name only in the
+  crate defining it, so a wrapper naming a core struct whose JS name differs (`E2eeStatus` →
+  `E2EeStatus`) states `ts_return_type`. Most calls only queue a request and return; the answer is an
+  event. The `pub(crate)` functions in `api` are the routers' own call-outs (`connect_with_invite`,
+  `signed_out_elsewhere`, `sign_out_locally`, `apply_hidden`, `tell_communities_hidden`,
+  `rebind_voice_group`).
+- **Runtime** (`decibell_core::rt`): the crate never builds a tokio runtime; `api::lifecycle::init`
+  takes the host's `Handle` (the addon passes napi's). Every spawn goes through `rt::spawn` /
+  `rt::spawn_blocking`: the current runtime when called inside one (as a bare `tokio::spawn` did), else
+  the stored one. Every `pub async fn` in `api` runs its body through `rt::run` (inline inside a runtime,
+  else spawned on the stored one and awaited), so a client awaits it on any executor; the sync ones need
+  no runtime. State is one global `AppState` (`state.rs`, `OnceLock<Arc<tokio::Mutex<…>>>`) plus a few
   globals (`WATCHED_STREAMS`, the voice gate, the hotkeys hub).
-- **`InitOptions`**: `user_data_dir`, `app_version`, `e2ee_local_key` (32 bytes, base64; from the OS
-  keychain), `local_key_protected`.
+- **Starting the core**: `api::lifecycle::init(InitOptions, Arc<dyn EventSink>, Handle)` once, first
+  (`InitOptions`: `user_data_dir`, `app_version`, `e2ee_local_key` (32 bytes, base64; from the OS
+  keychain), `local_key_protected`); the host sets up its own logger. `api::lifecycle::shutdown()` last.
 - **Dead code** (moved into the core as it was; delete when convenient): `capture_wlr_screencopy.rs`
   (unreachable), `gpu_interop.rs` and the DMA-BUF / CUDA / VAAPI encode branches (never fed),
   `codec_selection.rs` (tests only),

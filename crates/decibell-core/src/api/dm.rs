@@ -1,0 +1,226 @@
+//! Persistent DM commands. Three fire-and-emit napi calls:
+//!
+//!   - `request_dm_conversations()`: pulls conversation previews from
+//!     central; response arrives as `dm_conversations_received`.
+//!   - `request_dm_history(peer, before_id, limit)`: pulls one page
+//!     of messages; response arrives as `dm_history_received`.
+//!   - `mark_dm_read(peer, up_to_id)`: fire-and-forget read cursor
+//!     update; no response.
+//!
+//! All three send through the central server's TCP/TLS connection.
+//! Pattern mirrors the existing avatar request/response in
+//! api/auth.rs — the difference is that the response handling
+//! is event-emit (not oneshot waiter) since the renderer is the
+//! caller of last resort, not a pending future.
+
+use crate::api::CoreError;
+use crate::e2ee::session::{self as e2ee, Outbound, PLACEHOLDER};
+use crate::net::connection::build_packet;
+use crate::net::proto::{packet, DmDeleteReq, DmEditReq, DmHistoryReq, DmMarkReadReq};
+use crate::state;
+
+pub async fn request_dm_conversations() -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        // The newest page; the DM worker asks for the rest, and again for any
+        // page that doesn't come (e2ee/session.rs handle_conversations).
+        e2ee::request_conversations_page(&state::shared(), 0)
+            .await
+            .map_err(CoreError::other)
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct RequestDmHistoryArgs {
+    /// The peer's current name (a label).
+    pub peer: String,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
+    pub before_id: i64,
+    pub limit: i32,
+    /// >0: fetch a context window centered on this DM id (windowed jump).
+    pub around_id: Option<i64>,
+    /// >0: page newer than this DM id (downward pagination).
+    pub after_id: Option<i64>,
+}
+
+pub async fn request_dm_history(args: RequestDmHistoryArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let state_arc = state::shared();
+        let (write_tx, data) = {
+            let s = state_arc.lock().await;
+            let central = s.central.as_ref().ok_or_else(|| {
+                CoreError::other("Not connected to central server")
+            })?;
+            let tx = central.connection_write_tx().ok_or_else(|| {
+                CoreError::other("Central connection lost")
+            })?;
+            let token = s.token.clone();
+            let pkt = build_packet(
+                packet::Type::DmHistoryReq,
+                packet::Payload::DmHistoryReq(DmHistoryReq {
+                    peer: args.peer,
+                    before_id: args.before_id,
+                    limit: args.limit,
+                    around_id: args.around_id.unwrap_or(0),
+                    after_id: args.after_id.unwrap_or(0),
+                    peer_uid: args.peer_uid,
+                }),
+                token.as_deref(),
+            );
+            (tx, pkt)
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+            .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(CoreError::other("Connection closed")),
+            Err(_) => Err(CoreError::other("Send timed out")),
+        }
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct MarkDmReadArgs {
+    /// The peer's current name (a label).
+    pub peer: String,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
+    pub up_to_id: i64,
+}
+
+pub async fn mark_dm_read(args: MarkDmReadArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let state_arc = state::shared();
+        let (write_tx, data) = {
+            let s = state_arc.lock().await;
+            let central = s.central.as_ref().ok_or_else(|| {
+                CoreError::other("Not connected to central server")
+            })?;
+            let tx = central.connection_write_tx().ok_or_else(|| {
+                CoreError::other("Central connection lost")
+            })?;
+            let token = s.token.clone();
+            let pkt = build_packet(
+                packet::Type::DmMarkReadReq,
+                packet::Payload::DmMarkReadReq(DmMarkReadReq {
+                    peer: args.peer,
+                    up_to_id: args.up_to_id,
+                    peer_uid: args.peer_uid,
+                }),
+                token.as_deref(),
+            );
+            (tx, pkt)
+        };
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await;
+        Ok(())
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct DeleteDmMessageArgs {
+    /// The peer's current name (a label).
+    pub peer: String,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
+    pub message_id: i64,
+}
+
+/// Sends DM_DELETE_REQ over the JWT-authed central session. The
+/// ack arrives as the `dm_message_delete_responded` event; the
+/// broadcast (if successful) arrives as `dm_message_deleted`. Both
+/// land in useDmEvents on the renderer side.
+pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let state_arc = state::shared();
+        let (write_tx, data) = {
+            let s = state_arc.lock().await;
+            let central = s.central.as_ref().ok_or_else(|| {
+                CoreError::other("Not connected to central server")
+            })?;
+            let tx = central.connection_write_tx().ok_or_else(|| {
+                CoreError::other("Central connection lost")
+            })?;
+            let token = s.token.clone();
+            let pkt = build_packet(
+                packet::Type::DmDeleteReq,
+                packet::Payload::DmDeleteReq(DmDeleteReq {
+                    peer: args.peer,
+                    message_id: args.message_id,
+                    peer_uid: args.peer_uid,
+                }),
+                token.as_deref(),
+            );
+            (tx, pkt)
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(CoreError::other("Connection closed")),
+            Err(_) => Err(CoreError::other("Send timed out")),
+        }
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct EditDmMessageArgs {
+    /// The peer's current name (a label).
+    pub peer: String,
+    /// The peer's uid (users by uid): the conversation is theirs.
+    pub peer_uid: i64,
+    pub message_id: i64,
+    pub content: String,
+}
+
+/// Sends DM_EDIT_REQ over the JWT-authed central session. The ack arrives as
+/// `dm_message_edit_responded`; on success the broadcast arrives as
+/// `dm_message_edited`. Central enforces own-message-only.
+pub async fn edit_dm_message(args: EditDmMessageArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let state_arc = state::shared();
+        // E2EE: the new body is sealed exactly like a fresh send (same
+        // policy — encrypted when both sides have keys).
+        let (content, envelope) =
+            match e2ee::seal_outbound(&state_arc, args.peer_uid, &args.peer, &args.content)
+            .await
+            .map_err(CoreError::other)?
+        {
+            Outbound::Plain => (args.content, Vec::new()),
+            Outbound::Sealed(wire) => (PLACEHOLDER.to_string(), wire),
+        };
+        let (write_tx, data) = {
+            let s = state_arc.lock().await;
+            let central = s.central.as_ref().ok_or_else(|| {
+                CoreError::other("Not connected to central server")
+            })?;
+            let tx = central.connection_write_tx().ok_or_else(|| {
+                CoreError::other("Central connection lost")
+            })?;
+            let token = s.token.clone();
+            let pkt = build_packet(
+                packet::Type::DmEditReq,
+                packet::Payload::DmEditReq(DmEditReq {
+                    peer: args.peer,
+                    message_id: args.message_id,
+                    content,
+                    envelope,
+                    peer_uid: args.peer_uid,
+                }),
+                token.as_deref(),
+            );
+            (tx, pkt)
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(CoreError::other("Connection closed")),
+            Err(_) => Err(CoreError::other("Send timed out")),
+        }
+    })
+    .await
+}

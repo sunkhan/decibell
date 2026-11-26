@@ -73,7 +73,7 @@ impl Connection {
         // Read channel: read loop sends decoded packets here
         let (read_tx, read_rx) = mpsc::channel::<Packet>(64);
 
-        let write_task = tokio::spawn(async move {
+        let write_task = crate::rt::spawn(async move {
             while let Some(data) = write_rx.recv().await {
                 if sink.send(data).await.is_err() {
                     break;
@@ -81,7 +81,7 @@ impl Connection {
             }
         });
 
-        let read_task = tokio::spawn(async move {
+        let read_task = crate::rt::spawn(async move {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(data) => {

@@ -530,7 +530,7 @@ fn spawn_fill(state: &Arc<Mutex<AppState>>, server_id: &str, channel_id: &str, r
     }
     let st = state.clone();
     let (sid, cid) = (server_id.to_string(), channel_id.to_string());
-    tokio::spawn(async move {
+    crate::rt::spawn(async move {
         let slot = load_slot(&mut *st.lock().await, &sid, &cid);
         if slot.filling.swap(true, Ordering::AcqRel) {
             slot.fill_again.store(true, Ordering::Release);
@@ -1083,7 +1083,7 @@ pub async fn on_keys_changed(state: &Arc<Mutex<AppState>>, server_id: &str, b: C
     }
     let st = state.clone();
     let sid = server_id.to_string();
-    tokio::spawn(async move {
+    crate::rt::spawn(async move {
         let r = if b.rotate {
             // The rotation keeps a removed member out of what's said next:
             // worth two more tries (the server keeps it owed, but asks again
@@ -1144,7 +1144,7 @@ pub async fn enqueue(state: &Arc<Mutex<AppState>>, job: ChannelJob) {
         None => job,
     };
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_worker(rx, state.clone()));
+    crate::rt::spawn(run_worker(rx, state.clone()));
     let _ = tx.send(job);
     s.channel_crypto_tx.insert(sid, tx);
 }

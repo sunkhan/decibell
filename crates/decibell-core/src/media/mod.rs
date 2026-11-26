@@ -389,7 +389,7 @@ impl VoiceEngine {
         // never holds a worker thread (a previous `tokio::spawn` +
         // `block_in_place` pattern in tauri-client permanently stole
         // runtime workers).
-        let event_bridge = tokio::task::spawn_blocking(move || loop {
+        let event_bridge = crate::rt::spawn_blocking(move || loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(event) => match event {
                     VoiceEvent::SpeakingChanged(key, speaking) => {
@@ -941,7 +941,7 @@ fn spawn_thumbnail_sender(
     target: AnnounceTarget,
 ) -> (tokio::sync::mpsc::Sender<Vec<u8>>, tokio::task::JoinHandle<()>) {
     let (thumb_tx, mut thumb_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-    let task = tokio::spawn(async move {
+    let task = crate::rt::spawn(async move {
         while let Some(jpeg) = thumb_rx.recv().await {
             let Some(target) = target.load_full() else {
                 continue;
@@ -1369,7 +1369,7 @@ impl AudioStreamEngine {
             })
             .expect("spawn audio stream pipeline thread");
 
-        let event_bridge = tokio::task::spawn_blocking(move || loop {
+        let event_bridge = crate::rt::spawn_blocking(move || loop {
             match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(audio_stream_pipeline::AudioStreamEvent::Error(msg)) => {
                     events::emit_voice_error(format!("Stream audio: {}", msg));

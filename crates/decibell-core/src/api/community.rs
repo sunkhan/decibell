@@ -1,0 +1,677 @@
+//! Community-server admin operations: member list, kick, ban, leave.
+//! Invite admin (create / list / revoke) ports with the invites PR.
+//!
+//! Each of these dispatches a packet to the matching community
+//! connection and returns immediately. The result lands later as a
+//! `member_list_received` / `mod_action_responded` /
+//! `membership_revoked` bus event — see net/community.rs::route_packets.
+
+use crate::api::CoreError;
+use crate::net::connection::build_packet;
+use crate::net::proto::*;
+use crate::state;
+
+async fn send_for_server(
+    server_id: &str,
+    pkt_type: packet::Type,
+    payload: packet::Payload,
+) -> Result<(), CoreError> {
+    let state_arc = state::shared();
+    let (write_tx, data) = {
+        let s = state_arc.lock().await;
+        let client = s.communities.get(server_id).ok_or_else(|| {
+            CoreError::other(format!("Not connected to community {}", server_id))
+        })?;
+        let tx = client
+            .connection_write_tx()
+            .ok_or_else(|| CoreError::other("Community connection lost"))?;
+        let pkt = build_packet(pkt_type, payload, None);
+        (tx, pkt)
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(CoreError::other("Connection closed")),
+        Err(_) => Err(CoreError::other("Send timed out")),
+    }
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct ListMembersArgs {
+    pub server_id: String,
+    /// Opaque cursor: omit/"" for the first page, else `nextAfter` of the
+    /// previous page. Pages run through every online member, then every
+    /// offline member, in roster order.
+    pub after: Option<String>,
+    /// Members per page (server clamps to [1, 1000]; default 100).
+    pub limit: Option<i32>,
+    /// A lookup instead of a page: these members (at most 200), wherever
+    /// they sort. The reply carries them in `extra` and echoes the uids in
+    /// `lookupUids`.
+    pub uids: Option<Vec<i64>>,
+}
+
+/// Fetch one page of the roster, or look members up by uid. Live changes
+/// arrive as member_upsert / member_remove; this is only for the initial
+/// load, scroll paging and the members a view shows before paging reaches
+/// them.
+pub async fn list_members(args: ListMembersArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::MemberListReq,
+            packet::Payload::MemberListReq(MemberListRequest {
+                after: args.after.unwrap_or_default(),
+                limit: args.limit.unwrap_or(0),
+                uids: args.uids.unwrap_or_default(),
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct SearchMembersArgs {
+    pub server_id: String,
+    /// Matches usernames and nicknames; "" matches everyone.
+    pub query: Option<String>,
+    /// 0 = any role, > 0 = holds that role, -1 = holds no role.
+    pub role_id: Option<i64>,
+    /// Username cursor: omit/"" for the first page, else `nextAfter`.
+    pub after: Option<String>,
+    /// Server clamps to [1, 200]; default 100.
+    pub limit: Option<i32>,
+    /// Echoed on member_search_received.
+    pub seq: Option<u32>,
+}
+
+/// Server-settings member search across the whole membership (online or
+/// not). The page arrives as member_search_received; it never touches the
+/// roster.
+pub async fn search_members(args: SearchMembersArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::MemberSearchReq,
+            packet::Payload::MemberSearchReq(MemberSearchRequest {
+                query: args.query.unwrap_or_default(),
+                role_id: args.role_id.unwrap_or(0),
+                after: args.after.unwrap_or_default(),
+                limit: args.limit.unwrap_or(0),
+                seq: args.seq.unwrap_or(0),
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct UpdateServerArgs {
+    pub server_id: String,
+    pub name: String,
+    pub description: String,
+    /// Optional public-listing toggle; omit to leave it unchanged on a
+    /// name/description-only edit.
+    pub public_listing: Option<bool>,
+}
+
+/// MANAGE_SERVER: rename / re-describe the server and/or toggle public
+/// listing. Result arrives as server_update_responded; everyone gets
+/// server_meta_updated.
+pub async fn update_server(args: UpdateServerArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::ServerUpdateReq,
+            packet::Payload::ServerUpdateReq(ServerUpdateRequest {
+                name: args.name,
+                description: args.description,
+                public_listing: args.public_listing,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct ListAuditLogArgs {
+    pub server_id: String,
+    /// 0 = newest.
+    pub before_id: Option<i64>,
+    pub limit: Option<i32>,
+    /// Text search over names, nicknames, channels, roles and details.
+    pub query: Option<String>,
+    /// Only these action verbs; omit/empty = all.
+    pub actions: Option<Vec<String>>,
+    /// Echoed on audit_log_received.
+    pub seq: Option<u32>,
+}
+
+pub async fn list_audit_log(args: ListAuditLogArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::AuditLogReq,
+            packet::Payload::AuditLogReq(AuditLogRequest {
+                before_id: args.before_id.unwrap_or(0),
+                limit: args.limit.unwrap_or(50),
+                query: args.query.unwrap_or_default(),
+                actions: args.actions.unwrap_or_default(),
+                seq: args.seq.unwrap_or(0),
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct StorageInfoArgs {
+    pub server_id: String,
+}
+
+/// MANAGE_SERVER: fetch host disk state + this server's footprint. Result
+/// arrives as storage_info_received.
+pub async fn get_storage_info(args: StorageInfoArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::StorageInfoReq,
+            packet::Payload::StorageInfoReq(StorageInfoRequest {}),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct SetStorageMinFreeArgs {
+    pub server_id: String,
+    /// Minimum free bytes to keep on the store's volume; clamped server-side
+    /// to [0, volume capacity].
+    pub min_free_bytes: i64,
+}
+
+/// MANAGE_SERVER: set the upload headroom. Server replies with a fresh
+/// storage_info_received reflecting the applied (clamped) value.
+pub async fn set_storage_min_free(args: SetStorageMinFreeArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::StorageConfigSetReq,
+            packet::Payload::StorageConfigSetReq(StorageConfigSetRequest {
+                min_free_bytes: args.min_free_bytes,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct TimeoutMemberArgs {
+    pub server_id: String,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+    /// Unix seconds; 0 clears an active timeout.
+    pub until: i64,
+    pub reason: Option<String>,
+}
+
+/// MODERATE_MEMBERS + hierarchy. Response via mod_action_responded
+/// action="timeout"; the member_upsert delta carries timedOutUntil.
+pub async fn timeout_member(args: TimeoutMemberArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::TimeoutMemberReq,
+            packet::Payload::TimeoutMemberReq(TimeoutMemberRequest {
+                username: args.username.unwrap_or_default(),
+                until: args.until,
+                reason: args.reason.unwrap_or_default(),
+                uid: args.uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct VoiceModArgs {
+    pub server_id: String,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+    /// "server_mute" | "server_unmute" | "server_deafen" | "server_undeafen" | "move" | "disconnect"
+    pub action: String,
+    /// "move" only.
+    pub channel_id: Option<String>,
+}
+
+pub async fn voice_mod(args: VoiceModArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let action = match args.action.as_str() {
+            "server_mute" => voice_mod_request::Action::ServerMute,
+            "server_unmute" => voice_mod_request::Action::ServerUnmute,
+            "server_deafen" => voice_mod_request::Action::ServerDeafen,
+            "server_undeafen" => voice_mod_request::Action::ServerUndeafen,
+            "move" => voice_mod_request::Action::Move,
+            "disconnect" => voice_mod_request::Action::Disconnect,
+            other => {
+                return Err(CoreError::invalid(format!(
+                    "Unknown voice_mod action '{}'",
+                    other
+                )))
+            }
+        };
+        send_for_server(
+            &args.server_id,
+            packet::Type::VoiceModReq,
+            packet::Payload::VoiceModReq(VoiceModRequest {
+                username: args.username.unwrap_or_default(),
+                action: action as i32,
+                channel_id: args.channel_id.unwrap_or_default(),
+                uid: args.uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct TransferOwnershipArgs {
+    pub server_id: String,
+    pub new_owner: String,
+    /// The new owner's uid (users by uid).
+    pub new_owner_uid: i64,
+}
+
+/// Owner only. Response via mod_action_responded action="transfer";
+/// everyone gets server_meta_updated + member_upsert for both users.
+pub async fn transfer_ownership(args: TransferOwnershipArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::TransferOwnershipReq,
+            packet::Payload::TransferOwnershipReq(TransferOwnershipRequest {
+                new_owner: args.new_owner,
+                new_owner_uid: args.new_owner_uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct ListBansArgs {
+    pub server_id: String,
+}
+
+/// Fetch the ban list (BAN_MEMBERS). Also pushed by the server on change.
+pub async fn list_bans(args: ListBansArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::BanListReq,
+            packet::Payload::BanListReq(BanListRequest {}),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct KickMemberArgs {
+    pub server_id: String,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+    /// Optional — the UI doesn't collect a reason yet. A required
+    /// String here made napi reject every kick with "Missing field
+    /// 'reason'".
+    pub reason: Option<String>,
+}
+
+pub async fn kick_member(args: KickMemberArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let KickMemberArgs {
+            server_id,
+            username,
+            uid,
+            reason,
+        } = args;
+        send_for_server(
+            &server_id,
+            packet::Type::KickMemberReq,
+            packet::Payload::KickMemberReq(KickMemberRequest {
+                username: username.unwrap_or_default(),
+                reason: reason.unwrap_or_default(),
+                uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct BanMemberArgs {
+    pub server_id: String,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+    /// Optional — see KickMemberArgs.
+    pub reason: Option<String>,
+    /// Unix seconds when the ban lifts; omit / 0 = permanent.
+    pub expires_at: Option<i64>,
+    /// Also delete the member's messages from the last N seconds (≤ 7 days).
+    pub delete_message_seconds: Option<i32>,
+}
+
+pub async fn ban_member(args: BanMemberArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let BanMemberArgs {
+            server_id,
+            username,
+            uid,
+            reason,
+            expires_at,
+            delete_message_seconds,
+        } = args;
+        send_for_server(
+            &server_id,
+            packet::Type::BanMemberReq,
+            packet::Payload::BanMemberReq(BanMemberRequest {
+                username: username.unwrap_or_default(),
+                reason: reason.unwrap_or_default(),
+                expires_at: expires_at.unwrap_or(0),
+                delete_message_seconds: delete_message_seconds.unwrap_or(0),
+                uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct LeaveServerArgs {
+    pub server_id: String,
+}
+
+pub async fn leave_server(args: LeaveServerArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::LeaveServerReq,
+            packet::Payload::LeaveServerReq(LeaveServerRequest {}),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct CreateInviteArgs {
+    pub server_id: String,
+    /// Unix epoch seconds. 0 means "never expires".
+    pub expires_at: i64,
+    /// 0 means "unlimited uses".
+    pub max_uses: i32,
+    /// Personal invite: only this user can redeem it (single-use; the
+    /// server hands back their live one if it exists).
+    pub for_user: Option<String>,
+    /// A personal invite's account uid (users by uid; `for_user` only labels it).
+    pub for_uid: Option<i64>,
+    /// Echoed on invite_create_responded.
+    pub request_id: Option<u32>,
+}
+
+pub async fn create_invite(args: CreateInviteArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::InviteCreateReq,
+            packet::Payload::InviteCreateReq(InviteCreateRequest {
+                expires_at: args.expires_at,
+                max_uses: args.max_uses,
+                for_user: args.for_user.unwrap_or_default(),
+                request_id: args.request_id.unwrap_or(0),
+                for_uid: args.for_uid.unwrap_or(0),
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct ListInvitesArgs {
+    pub server_id: String,
+}
+
+pub async fn list_invites(args: ListInvitesArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::InviteListReq,
+            packet::Payload::InviteListReq(InviteListRequest {}),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct RevokeInviteArgs {
+    pub server_id: String,
+    pub code: String,
+}
+
+pub async fn revoke_invite(args: RevokeInviteArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::InviteRevokeReq,
+            packet::Payload::InviteRevokeReq(InviteRevokeRequest { code: args.code }),
+        )
+        .await
+    })
+    .await
+}
+
+// ── Roles + permissions ──────────────────────────────────────────
+//
+// Results land as `role_action_responded`; the authoritative state
+// follows as pushed `role_list_received` / `member_list_received`
+// broadcasts. Permission bitfields ride as i64 — every defined bit is
+// far below 2^53 so JS numbers round-trip losslessly.
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct ListRolesArgs {
+    pub server_id: String,
+}
+
+pub async fn list_roles(args: ListRolesArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::RoleListReq,
+            packet::Payload::RoleListReq(RoleListRequest {}),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct CreateRoleArgs {
+    pub server_id: String,
+    pub name: String,
+    /// 0xRRGGBB; 0 = default color.
+    pub color: u32,
+    pub permissions: i64,
+    /// Members whose highest role is this one may manage each other.
+    pub manage_each_other: Option<bool>,
+}
+
+pub async fn create_role(args: CreateRoleArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::RoleCreateReq,
+            packet::Payload::RoleCreateReq(RoleCreateRequest {
+                name: args.name,
+                color: args.color,
+                permissions: args.permissions.max(0) as u64,
+                manage_each_other: args.manage_each_other.unwrap_or(false),
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct UpdateRoleArgs {
+    pub server_id: String,
+    pub role_id: i64,
+    pub name: String,
+    pub color: u32,
+    pub permissions: i64,
+    pub position: i32,
+    /// Full snapshot like the rest: omitting it clears the flag.
+    pub manage_each_other: Option<bool>,
+}
+
+pub async fn update_role(args: UpdateRoleArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::RoleUpdateReq,
+            packet::Payload::RoleUpdateReq(RoleUpdateRequest {
+                role_id: args.role_id,
+                name: args.name,
+                color: args.color,
+                permissions: args.permissions.max(0) as u64,
+                position: args.position,
+                manage_each_other: args.manage_each_other.unwrap_or(false),
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct DeleteRoleArgs {
+    pub server_id: String,
+    pub role_id: i64,
+}
+
+pub async fn delete_role(args: DeleteRoleArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::RoleDeleteReq,
+            packet::Payload::RoleDeleteReq(RoleDeleteRequest {
+                role_id: args.role_id,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct SetMemberRolesArgs {
+    pub server_id: String,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+    /// The member's full desired role set (default role implicit).
+    pub role_ids: Vec<i64>,
+}
+
+pub async fn set_member_roles(args: SetMemberRolesArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::MemberRolesUpdateReq,
+            packet::Payload::MemberRolesUpdateReq(MemberRolesUpdateRequest {
+                username: args.username.unwrap_or_default(),
+                role_ids: args.role_ids,
+                uid: args.uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct UnbanMemberArgs {
+    pub server_id: String,
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+}
+
+pub async fn unban_member(args: UnbanMemberArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        send_for_server(
+            &args.server_id,
+            packet::Type::UnbanMemberReq,
+            packet::Payload::UnbanMemberReq(UnbanMemberRequest {
+                username: args.username.unwrap_or_default(),
+                uid: args.uid,
+            }),
+        )
+        .await
+    })
+    .await
+}
+
+#[cfg_attr(feature = "napi", napi_derive::napi(object))]
+pub struct SetNicknameArgs {
+    pub server_id: String,
+    /// Target member — may be the local user (self-changes are always
+    /// allowed; others need MANAGE_NICKNAMES + a strictly higher role).
+    /// Only labels the request; the server goes by `uid`.
+    pub username: Option<String>,
+    /// The target's account uid (users by uid).
+    pub uid: i64,
+    /// Empty clears the nickname.
+    pub nickname: String,
+}
+
+pub async fn set_nickname(args: SetNicknameArgs) -> Result<(), CoreError> {
+    crate::rt::run(async move {
+        let SetNicknameArgs {
+            server_id,
+            username,
+            uid,
+            nickname,
+        } = args;
+        send_for_server(
+            &server_id,
+            packet::Type::SetNicknameReq,
+            packet::Payload::SetNicknameReq(SetNicknameRequest { username: username.unwrap_or_default(), nickname, uid }),
+        )
+        .await
+    })
+    .await
+}

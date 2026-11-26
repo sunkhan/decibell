@@ -13,7 +13,7 @@
 //!     hostname+user derivation below — obfuscation only — and says so in
 //!     the log; the file records which key sealed it;
 //!   - never handed to the renderer: `load_config` reports only the
-//!     username, and native signs in itself (`commands::auth::auto_login`);
+//!     username, and native signs in itself (`api::auth::auto_login`);
 //!   - saved only once central accepts a password sign-in, and forgotten
 //!     when central refuses that password outright (net/central.rs);
 //!   - the old format (derived key, clock-seeded nonce) is opened once and

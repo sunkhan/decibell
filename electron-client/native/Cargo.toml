@@ -16,34 +16,19 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-decibell-core = { path = "../../crates/decibell-core" }
+# The `napi` feature puts `#[napi(object)]` on the core's api structs (one
+# definition, used by the wrappers in commands/ as they are).
+decibell-core = { path = "../../crates/decibell-core", features = ["napi"] }
 napi = { version = "2", default-features = false, features = ["napi9", "tokio_rt", "serde-json", "async"] }
 napi-derive = { version = "2", features = ["type-def"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
 log = "0.4"
 env_logger = "0.11"
-base64 = "0.22"
-cpal = "0.15"
-ring = "0.17"
-# P2P DM calls: local interface enumeration for host candidates
-# (commands/call.rs).
-if-addrs = "0.13"
 
 # on_load clears O_NONBLOCK on stdout / stderr (lib.rs), Linux and macOS.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-# DXGI adapter enumeration for the encoder vendor order
-# (commands/streaming.rs read_primary_gpu_vendor_id). The core crate turns on
-# the rest of the windows crate's features.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dxgi"] }
-
-[dev-dependencies]
-# commands/voice.rs tests decode the packets a join sends.
-prost = "0.13"
 
 [build-dependencies]
 napi-build = "2"

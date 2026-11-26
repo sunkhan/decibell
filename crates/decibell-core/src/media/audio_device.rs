@@ -127,7 +127,7 @@ pub fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device
 
 // ── Linux: route a stored device selection through PulseAudio / PipeWire ──────
 //
-// On Linux we enumerate devices with `pactl` (commands/settings.rs), so the
+// On Linux we enumerate devices with `pactl` (api/settings.rs), so the
 // stored device name is a Pulse/PipeWire *node* name (e.g.
 // "alsa_input.pci-0000_00_1f.3.analog-stereo"). CPAL's ALSA host cannot open a
 // device by that name, so the old `find(|d| d.name() == name)` never matched and

@@ -210,7 +210,7 @@ impl CommunityClient {
 
         let sid = server_id.clone();
         let terminated = Arc::new(AtomicBool::new(false));
-        let router_task = tokio::spawn(Self::route_packets(
+        let router_task = crate::rt::spawn(Self::route_packets(
             read_rx,
             state.clone(),
             sid,
@@ -219,7 +219,7 @@ impl CommunityClient {
 
         // Keepalive ping every 30s. Same lock-free pattern as central.
         let ping_write_tx = connection.clone_write_tx();
-        let ping_task = tokio::spawn(async move {
+        let ping_task = crate::rt::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 let data = build_packet(
@@ -365,7 +365,7 @@ impl CommunityClient {
     ) {
         let sid_for_task = server_id.clone();
         let state_for_store = state.clone();
-        let task = tokio::spawn(async move {
+        let task = crate::rt::spawn(async move {
             events::emit_connection_lost("community", Some(sid_for_task.clone()));
 
             let mut attempt = 0u32;
@@ -402,7 +402,7 @@ impl CommunityClient {
                         let _ = connection.send(auth_data).await;
 
                         let sid = sid_for_task.clone();
-                        let router = tokio::spawn(Self::route_packets(
+                        let router = crate::rt::spawn(Self::route_packets(
                             read_rx,
                             state.clone(),
                             sid,
@@ -411,7 +411,7 @@ impl CommunityClient {
 
                         // Restart keepalive ping task
                         let ping_write_tx = connection.clone_write_tx();
-                        let ping_task = tokio::spawn(async move {
+                        let ping_task = crate::rt::spawn(async move {
                             loop {
                                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                                 let data = build_packet(
@@ -461,7 +461,7 @@ impl CommunityClient {
         });
 
         // Store the reconnect task handle
-        tokio::spawn(async move {
+        crate::rt::spawn(async move {
             let mut s = state_for_store.lock().await;
             if let Some(client) = s.communities.get_mut(&server_id) {
                 client.reconnect_task = Some(task);

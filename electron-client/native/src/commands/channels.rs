@@ -1,141 +1,26 @@
-//! Channel-scoped commands: text-message send, history paging, message
-//! search, retention edit, and owner-only history wipe.
-//!
-//! Each command builds and queues a single TCP packet for the matching
-//! community connection. Responses arrive asynchronously as bus events
-//! (`message_received`, `channel_history_received`,
-//! `channel_pruned`, `channel_updated`, `channel_wipe_responded`,
-//! `channel_wiped`) — see net/community.rs::route_packets.
+//! `#[napi]` wrappers over `decibell_core::api::channels`, where the bodies
+//! live. Doc comments stay here: napi copies them into index.d.ts.
 
-use crate::net::connection::build_packet;
-use crate::net::proto::*;
-use crate::state;
-
-async fn send_for_server(
-    server_id: &str,
-    pkt_type: packet::Type,
-    payload: packet::Payload,
-) -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let client = s.communities.get(server_id).ok_or_else(|| {
-            napi::Error::from_reason(format!("Not connected to community {}", server_id))
-        })?;
-        let tx = client
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
-        let pkt = build_packet(pkt_type, payload, None);
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct RequestChannelHistoryArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    /// 0 means most-recent; non-zero gets older messages for pagination.
-    pub before_id: i64,
-    pub limit: i32,
-    /// Jump-to-message: fetch a window centered on this id (replaces the view).
-    pub around_id: Option<i64>,
-    /// Downward pagination: fetch messages newer than this id.
-    pub after_id: Option<i64>,
-}
+use crate::api;
+use crate::api::channels::{
+    CreateChannelArgs, DeleteChannelArgs, DeleteChannelMessageArgs, EditChannelMessageArgs,
+    ListChannelOverwritesArgs, RenameChannelArgs, ReorderChannelsArgs, RequestChannelHistoryArgs,
+    SearchMessagesArgs, SendChannelMessageArgs, SetCategorySyncArgs, SetChannelOverwriteArgs,
+    SyncChannelPermissionsArgs, UpdateChannelRetentionArgs, WipeChannelHistoryArgs,
+};
 
 #[napi]
 pub async fn request_channel_history(args: RequestChannelHistoryArgs) -> napi::Result<()> {
-    let RequestChannelHistoryArgs {
-        server_id,
-        channel_id,
-        before_id,
-        limit,
-        around_id,
-        after_id,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelHistoryReq,
-        packet::Payload::ChannelHistoryReq(ChannelHistoryRequest {
-            channel_id,
-            before_id,
-            limit,
-            around_id: around_id.unwrap_or(0),
-            after_id: after_id.unwrap_or(0),
-        }),
-    )
-    .await
-}
-
-/// Message search (spec 2026-10-14). Everything but `server_id` is
-/// optional; the answer arrives as `message_search_received` with `seq`.
-#[napi(object)]
-pub struct SearchMessagesArgs {
-    pub server_id: String,
-    /// Echoed back so the renderer can drop answers to superseded searches.
-    pub seq: Option<u32>,
-    /// Free text: words, "phrases", -excluded words.
-    pub query: Option<String>,
-    /// Empty / absent = every text channel the user can read.
-    pub channel_ids: Option<Vec<String>>,
-    /// Senders by account uid (every name they posted under).
-    pub author_uids: Option<Vec<i64>>,
-    /// Unix seconds; after inclusive, before exclusive.
-    pub after: Option<i64>,
-    pub before: Option<i64>,
-    /// MessageSearchRequest.Has bits (file 1, image 2, video 4, audio 8,
-    /// document 16, link 32).
-    pub has: Option<u32>,
-    /// "newest" (default) | "oldest" | "relevance"
-    pub sort: Option<String>,
-    /// Newest / oldest paging: the previous page's nextCursor.
-    pub cursor: Option<i64>,
-    /// Relevance paging: the previous page's nextOffset.
-    pub offset: Option<i32>,
-    pub limit: Option<i32>,
-    /// Match words anywhere inside words ("abc" finds "xabcy"): a scan on
-    /// the server, sorted newest first.
-    pub match_within_words: Option<bool>,
+    api::channels::request_channel_history(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
-    let sort = match args.sort.as_deref() {
-        Some("oldest") => message_search_request::Sort::Oldest,
-        Some("relevance") => message_search_request::Sort::Relevance,
-        _ => message_search_request::Sort::Newest,
-    };
-    send_for_server(
-        &args.server_id,
-        packet::Type::MessageSearchReq,
-        packet::Payload::MessageSearchReq(MessageSearchRequest {
-            seq: args.seq.unwrap_or(0),
-            query: args.query.unwrap_or_default(),
-            channel_ids: args.channel_ids.unwrap_or_default(),
-            after: args.after.unwrap_or(0),
-            before: args.before.unwrap_or(0),
-            has: args.has.unwrap_or(0),
-            sort: sort as i32,
-            cursor: args.cursor.unwrap_or(0),
-            offset: args.offset.unwrap_or(0),
-            limit: args.limit.unwrap_or(0),
-            match_within_words: args.match_within_words.unwrap_or(false),
-            author_uids: args.author_uids.unwrap_or_default(),
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct WipeChannelHistoryArgs {
-    pub server_id: String,
-    pub channel_id: String,
+    api::channels::search_messages(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Owner-only: nuke every message and attachment in `channel_id`.
@@ -147,35 +32,9 @@ pub struct WipeChannelHistoryArgs {
 /// bus event.
 #[napi]
 pub async fn wipe_channel_history(args: WipeChannelHistoryArgs) -> napi::Result<()> {
-    let WipeChannelHistoryArgs {
-        server_id,
-        channel_id,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelWipeReq,
-        packet::Payload::ChannelWipeReq(ChannelWipeRequest { channel_id }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct UpdateChannelRetentionArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    pub retention_days_text: i32,
-    pub retention_days_image: i32,
-    pub retention_days_video: i32,
-    pub retention_days_document: i32,
-    pub retention_days_audio: i32,
-    /// Voice channels only: Opus bitrate in kbps, 0 = client default.
-    /// None/undefined = leave unchanged (the wire field has explicit
-    /// presence, so retention-only updates can't reset it).
-    pub voice_bitrate_kbps: Option<i32>,
-    /// Text channels: slowmode seconds (0 = off). None = leave unchanged.
-    pub slowmode_seconds: Option<i32>,
-    /// Text channels: the topic ("" clears it). None = leave unchanged.
-    pub topic: Option<String>,
+    api::channels::wipe_channel_history(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// MANAGE_CHANNELS edit. All five retention values are sent as a
@@ -183,213 +42,16 @@ pub struct UpdateChannelRetentionArgs {
 /// provided.
 #[napi]
 pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi::Result<()> {
-    let UpdateChannelRetentionArgs {
-        server_id,
-        channel_id,
-        retention_days_text,
-        retention_days_image,
-        retention_days_video,
-        retention_days_document,
-        retention_days_audio,
-        voice_bitrate_kbps,
-        slowmode_seconds,
-        topic,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelUpdateReq,
-        packet::Payload::ChannelUpdateReq(ChannelUpdateRequest {
-            channel_id,
-            retention_days_text,
-            retention_days_image,
-            retention_days_video,
-            retention_days_document,
-            retention_days_audio,
-            voice_bitrate_kbps,
-            slowmode_seconds,
-            topic,
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct SendChannelMessageArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    pub message: String,
-    /// Previously-uploaded attachment ids to bind to this message.
-    /// Server verifies ownership, channel scope, and 'ready' status —
-    /// anything that doesn't pass is silently dropped from the broadcast.
-    /// PR4 only sends text; this stays in the contract so PR-attachments
-    /// can light it up without an API change.
-    pub attachment_ids: Option<Vec<i64>>,
-    /// Client-generated UUID for optimistic-bubble dedup. Server echoes
-    /// it in the broadcast so the sending client can match the real
-    /// message back to its own optimistic placeholder.
-    pub nonce: Option<String>,
-    /// Id of the message being replied to (0/absent = not a reply). Server
-    /// validates it points at a message in this channel, else stores 0.
-    pub reply_to: Option<i64>,
-    /// The channel's `encrypted` flag (from ChannelInfo): seal the body
-    /// under the channel's epoch key and send only the placeholder in
-    /// `content`. The server enforces the format either way.
-    pub encrypted: Option<bool>,
-    /// Encrypted channel: the real metadata + per-file key of each
-    /// attachment in `attachment_ids` — sealed inside the envelope.
-    pub encrypted_attachments: Option<Vec<EncryptedAttachmentArg>>,
-}
-
-/// Mirror of proto `EncryptedAttachmentMeta` with a base64 key.
-#[napi(object)]
-#[derive(Clone)]
-pub struct EncryptedAttachmentArg {
-    pub id: i64,
-    pub key_b64: String,
-    pub filename: String,
-    pub mime: String,
-    pub size_bytes: i64,
-    pub width: u32,
-    pub height: u32,
-    pub duration_ms: u32,
-    pub placeholder: String,
-    pub chunk_bytes: u32,
-    pub thumbnail_sizes_mask: u32,
-}
-
-fn attachment_metas(args: Option<Vec<EncryptedAttachmentArg>>) -> Vec<crate::e2ee::channel_keys::AttachmentMeta> {
-    args.unwrap_or_default()
-        .into_iter()
-        .map(|a| crate::e2ee::channel_keys::AttachmentMeta {
-            id: a.id,
-            key_b64: a.key_b64,
-            filename: a.filename,
-            mime: a.mime,
-            size_bytes: a.size_bytes,
-            width: a.width,
-            height: a.height,
-            duration_ms: a.duration_ms,
-            placeholder: a.placeholder,
-            chunk_bytes: a.chunk_bytes,
-            thumbnail_sizes_mask: a.thumbnail_sizes_mask,
-        })
-        .collect()
+    api::channels::update_channel_retention(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-
-    let SendChannelMessageArgs {
-        server_id,
-        channel_id,
-        message,
-        attachment_ids,
-        nonce,
-        reply_to,
-        encrypted,
-        encrypted_attachments,
-    } = args;
-
-    // Encrypted channel: seal before taking the lock (fetching the epoch
-    // key can be a round-trip through the community server).
-    let (message, envelope) = if encrypted.unwrap_or(false) {
-        let metas = attachment_metas(encrypted_attachments);
-        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &message, &metas)
-            .await
-            .map_err(napi::Error::from_reason)?;
-        (crate::e2ee::channel_keys::PLACEHOLDER.to_string(), wire)
-    } else {
-        (message, Vec::new())
-    };
-
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let sender = s
-            .username
-            .clone()
-            .ok_or_else(|| napi::Error::from_reason("Not authenticated"))?;
-        let client = s.communities.get(&server_id).ok_or_else(|| {
-            napi::Error::from_reason(format!("Not connected to community {}", server_id))
-        })?;
-        let tx = client
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Community connection lost"))?;
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        // Stub attachment rows by id only; server replaces them with
-        // authoritative entries before broadcast, so every other field
-        // is irrelevant here.
-        let attachments: Vec<Attachment> = attachment_ids
-            .unwrap_or_default()
-            .into_iter()
-            .map(|id| Attachment {
-                id,
-                message_id: 0,
-                kind: 0,
-                filename: String::new(),
-                mime: String::new(),
-                size_bytes: 0,
-                url: String::new(),
-                position: 0,
-                created_at: 0,
-                purged_at: 0,
-                width: 0,
-                height: 0,
-                thumbnail_size_bytes: 0,
-                thumbnail_sizes_mask: 0,
-                duration_ms: 0,
-                encrypted: false,
-                placeholder: String::new(),
-            })
-            .collect();
-
-        let pkt = build_packet(
-            packet::Type::ChannelMsg,
-            packet::Payload::ChannelMsg(ChannelMessage {
-                sender,
-                channel_id,
-                content: message,
-                timestamp,
-                id: 0, // server assigns on persist
-                attachments,
-                nonce: nonce.unwrap_or_default(),
-                edited_at: 0,
-                reply_to: reply_to.unwrap_or(0),
-                // Server-resolved on broadcast; never set by the client.
-                reply_to_sender: String::new(),
-                reply_to_content: String::new(),
-                reply_to_attachment_kinds: Vec::new(),
-                envelope,
-                reply_to_envelope: Vec::new(),
-                // Server-set from the sender's EMBED_LINKS; ignored if sent.
-                suppress_embeds: false,
-                sender_uid: 0,
-                reply_to_sender_uid: 0,
-                sealed_sender: String::new(),
-                reply_to_sealed_sender: String::new(),
-            }),
-            None,
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct DeleteChannelMessageArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    pub message_id: i64,
+    api::channels::send_channel_message(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Sends MESSAGE_DELETE_REQ over the community session for server_id.
@@ -398,33 +60,9 @@ pub struct DeleteChannelMessageArgs {
 /// Server-side handler enforces self-or-can_delete_others.
 #[napi]
 pub async fn delete_channel_message(args: DeleteChannelMessageArgs) -> napi::Result<()> {
-    let DeleteChannelMessageArgs {
-        server_id,
-        channel_id,
-        message_id,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::MessageDeleteReq,
-        packet::Payload::MessageDeleteReq(MessageDeleteReq {
-            channel_id,
-            message_id,
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct EditChannelMessageArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    pub message_id: i64,
-    pub content: String,
-    /// See SendChannelMessageArgs.encrypted.
-    pub encrypted: Option<bool>,
-    /// The message's existing encrypted attachments (an edit re-seals
-    /// the whole body, so their metadata rides along again).
-    pub encrypted_attachments: Option<Vec<EncryptedAttachmentArg>>,
+    api::channels::delete_channel_message(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
@@ -432,145 +70,30 @@ pub struct EditChannelMessageArgs {
 /// `channel_message_edited`. Server enforces own-message-only.
 #[napi]
 pub async fn edit_channel_message(args: EditChannelMessageArgs) -> napi::Result<()> {
-    let EditChannelMessageArgs {
-        server_id,
-        channel_id,
-        message_id,
-        content,
-        encrypted,
-        encrypted_attachments,
-    } = args;
-    let (content, envelope) = if encrypted.unwrap_or(false) {
-        let state_arc = state::shared();
-        let metas = attachment_metas(encrypted_attachments);
-        let wire = crate::e2ee::channel_keys::seal_message(&state_arc, &server_id, &channel_id, &content, &metas)
-            .await
-            .map_err(napi::Error::from_reason)?;
-        (crate::e2ee::channel_keys::PLACEHOLDER.to_string(), wire)
-    } else {
-        (content, Vec::new())
-    };
-    send_for_server(
-        &server_id,
-        packet::Type::MessageEditReq,
-        packet::Payload::MessageEditReq(MessageEditReq {
-            channel_id,
-            message_id,
-            content,
-            envelope,
-        }),
-    )
-    .await
-}
-
-// ── Channel management (MANAGE_CHANNELS) ─────────────────────────
-//
-// Results land as `channel_action_responded`; the authoritative list
-// follows as a pushed `channel_list_updated` broadcast.
-
-#[napi(object)]
-pub struct CreateChannelArgs {
-    pub server_id: String,
-    pub name: String,
-    /// "text" | "voice" | "category"
-    pub channel_type: String,
-    /// Voice channels only. 0 = client default.
-    pub voice_bitrate_kbps: i32,
-    /// Category to create the channel inside (end of its block).
-    /// None/empty = end of the uncategorized area. Ignored for
-    /// categories, which always append at the very end.
-    pub category_id: Option<String>,
-    /// Text channels: end-to-end encrypted, for good — it can't be
-    /// changed after creation.
-    pub encrypted: Option<bool>,
+    api::channels::edit_channel_message(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
-    let CreateChannelArgs {
-        server_id,
-        name,
-        channel_type,
-        voice_bitrate_kbps,
-        category_id,
-        encrypted,
-    } = args;
-    let r#type = match channel_type.as_str() {
-        "voice" => channel_info::Type::Voice,
-        "category" => channel_info::Type::Category,
-        _ => channel_info::Type::Text,
-    };
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelCreateReq,
-        packet::Payload::ChannelCreateReq(ChannelCreateRequest {
-            name,
-            r#type: r#type as i32,
-            voice_bitrate_kbps,
-            category_id: category_id.unwrap_or_default(),
-            encrypted: encrypted.unwrap_or(false),
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct ReorderChannelsArgs {
-    pub server_id: String,
-    /// The complete new sidebar order (channels + categories). Must
-    /// exactly match the server's current channel set or the reorder
-    /// is rejected wholesale.
-    pub channel_ids: Vec<String>,
+    api::channels::create_channel(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn reorder_channels(args: ReorderChannelsArgs) -> napi::Result<()> {
-    let ReorderChannelsArgs {
-        server_id,
-        channel_ids,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelReorderReq,
-        packet::Payload::ChannelReorderReq(ChannelReorderRequest { channel_ids }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct RenameChannelArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    pub name: String,
+    api::channels::reorder_channels(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn rename_channel(args: RenameChannelArgs) -> napi::Result<()> {
-    let RenameChannelArgs {
-        server_id,
-        channel_id,
-        name,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelRenameReq,
-        packet::Payload::ChannelRenameReq(ChannelRenameRequest { channel_id, name }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct SetChannelOverwriteArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    /// "role" | "member"
-    pub target_type: String,
-    /// Role id (decimal string); empty for a member (see `target_uid`).
-    pub target_id: String,
-    /// Member targets: the member's uid (users by uid).
-    pub target_uid: Option<i64>,
-    pub allow: i64,
-    pub deny: i64,
+    api::channels::rename_channel(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Permissions v2: set (or, with allow == deny == 0, clear) one
@@ -579,36 +102,9 @@ pub struct SetChannelOverwriteArgs {
 /// (with refreshed myPermissions) and channel_overwrites_received.
 #[napi]
 pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Result<()> {
-    let target_type = if args.target_type == "member" {
-        channel_overwrite::TargetType::Member
-    } else {
-        channel_overwrite::TargetType::Role
-    };
-    send_for_server(
-        &args.server_id,
-        packet::Type::ChannelOverwriteSetReq,
-        packet::Payload::ChannelOverwriteSetReq(ChannelOverwriteSetRequest {
-            overwrite: Some(ChannelOverwrite {
-                channel_id: args.channel_id,
-                target_type: target_type as i32,
-                target_id: args.target_id,
-                allow: args.allow.max(0) as u64,
-                deny: args.deny.max(0) as u64,
-                target_uid: args.target_uid.unwrap_or(0),
-            }),
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct SyncChannelPermissionsArgs {
-    pub server_id: String,
-    /// A channel, or a category (= sync every channel under it).
-    pub channel_id: String,
-    /// The category the user agreed to sync with; the server refuses if
-    /// the channel sits elsewhere by then (a failed / raced reorder).
-    pub category_id: Option<String>,
+    api::channels::set_channel_overwrite(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Permissions v3: drop the channel's own overwrites so it follows its
@@ -616,22 +112,9 @@ pub struct SyncChannelPermissionsArgs {
 /// "sync"; the server re-pushes the channel list and the overwrites.
 #[napi]
 pub async fn sync_channel_permissions(args: SyncChannelPermissionsArgs) -> napi::Result<()> {
-    send_for_server(
-        &args.server_id,
-        packet::Type::ChannelPermissionsSyncReq,
-        packet::Payload::ChannelPermissionsSyncReq(ChannelPermissionsSyncRequest {
-            channel_id: args.channel_id,
-            category_id: args.category_id.unwrap_or_default(),
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct SetCategorySyncArgs {
-    pub server_id: String,
-    pub channel_id: String,
-    pub enabled: bool,
+    api::channels::sync_channel_permissions(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Permissions v3: whether channels can follow this category's overwrites
@@ -639,51 +122,21 @@ pub struct SetCategorySyncArgs {
 /// channel allows. Result: channel_action_responded, action "category_sync".
 #[napi]
 pub async fn set_category_sync(args: SetCategorySyncArgs) -> napi::Result<()> {
-    send_for_server(
-        &args.server_id,
-        packet::Type::CategorySyncSetReq,
-        packet::Payload::CategorySyncSetReq(CategorySyncSetRequest {
-            channel_id: args.channel_id,
-            enabled: args.enabled,
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct ListChannelOverwritesArgs {
-    pub server_id: String,
-    pub channel_id: String,
+    api::channels::set_category_sync(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn list_channel_overwrites(args: ListChannelOverwritesArgs) -> napi::Result<()> {
-    send_for_server(
-        &args.server_id,
-        packet::Type::ChannelOverwritesReq,
-        packet::Payload::ChannelOverwritesReq(ChannelOverwritesRequest {
-            channel_id: args.channel_id,
-        }),
-    )
-    .await
-}
-
-#[napi(object)]
-pub struct DeleteChannelArgs {
-    pub server_id: String,
-    pub channel_id: String,
+    api::channels::list_channel_overwrites(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn delete_channel(args: DeleteChannelArgs) -> napi::Result<()> {
-    let DeleteChannelArgs {
-        server_id,
-        channel_id,
-    } = args;
-    send_for_server(
-        &server_id,
-        packet::Type::ChannelDeleteReq,
-        packet::Payload::ChannelDeleteReq(ChannelDeleteRequest { channel_id }),
-    )
-    .await
+    api::channels::delete_channel(args)
+        .await
+        .map_err(napi::Error::from)
 }

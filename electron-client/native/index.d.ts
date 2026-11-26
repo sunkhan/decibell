@@ -7,14 +7,6 @@ export interface LoginArgs {
   username: string
   password: string
 }
-export declare function login(args: LoginArgs): Promise<void>
-/**
- * Sign in with the saved credentials, if there are any (the renderer
- * asks at boot when `load_config` reported a `saved_username`). The
- * password stays in native. Ok(false) = nothing saved (or it doesn't
- * open on this machine any more): show the sign-in page.
- */
-export declare function autoLogin(): Promise<boolean>
 export interface RenameAccountArgs {
   newUsername: string
   password: string
@@ -22,58 +14,25 @@ export interface RenameAccountArgs {
 export interface RenameAccountResult {
   username: string
 }
-/**
- * Change our username (uid design, stage 5). Central checks the password
- * and the name, and reserves the old name for this account for 14 days.
- * On success the saved credentials follow the new name, the renderer
- * hears `user_renamed {self: true}`, and the fresh token replaces ours and
- * goes to every community session (net/token.rs), which takes the new
- * name in place: no reconnect, so voice and streams carry on (the media
- * plane identifies people by uid).
- */
-export declare function renameAccount(args: RenameAccountArgs): Promise<RenameAccountResult>
 export interface RegisterArgs {
   username: string
   email: string
   password: string
 }
-export declare function register(args: RegisterArgs): Promise<void>
-export declare function logout(): Promise<void>
 export interface UploadAvatarResult {
   success: boolean
   message: string
   /** sha256-hex of the uploaded bytes; '' on removal. */
   version: string
 }
-export interface UploadAvatarArgs {
-  jpeg: Buffer
-}
-/**
- * Upload or remove the authenticated user's avatar. Empty `jpeg`
- * argument = remove. Returns the server-computed sha256-hex version
- * on success.
- */
-export declare function uploadAvatar(args: UploadAvatarArgs): Promise<UploadAvatarResult>
-export interface FetchAvatarResult {
-  version: string
-  /** Empty Buffer when version == '' (no avatar). */
-  data: Buffer
-}
 export interface FetchAvatarArgs {
   /** The account whose avatar to fetch (users by uid). */
   uid: number
 }
-/**
- * Fetch a specific user's avatar bytes + current version. Empty
- * version + empty data means the user has no avatar (or doesn't
- * exist — same response shape).
- */
-export declare function fetchAvatar(args: FetchAvatarArgs): Promise<FetchAvatarResult>
 export interface CallConfig {
   callSignaling: boolean
   stunServers: Array<string>
 }
-export declare function getCallConfig(): Promise<CallConfig>
 export interface CallCandidateArg {
   /** "VOICE" | "MEDIA" */
   socket: string
@@ -101,7 +60,6 @@ export interface SendCallSignalArgs {
   candidates?: Array<CallCandidateArg>
   stream?: CallStreamMetaArg
 }
-export declare function sendCallSignal(args: SendCallSignalArgs): Promise<void>
 export interface CallPrepareArgs {
   callId: string
   /** The peer's name (logs only). */
@@ -114,7 +72,6 @@ export interface CallPrepareResult {
   pubKey: string
   candidates: Array<CallCandidateArg>
 }
-export declare function callPrepare(args: CallPrepareArgs): Promise<CallPrepareResult>
 export interface CallConnectArgs {
   callId: string
   /** The peer's current name (labels only). */
@@ -136,12 +93,9 @@ export interface CallConnectArgs {
   remotePubKeySig?: string
   remoteKeyId?: number
 }
-export declare function callConnect(args: CallConnectArgs): Promise<void>
-export declare function callEnd(): Promise<void>
 export interface CallWatchStreamArgs {
   watch: boolean
 }
-export declare function callWatchStream(args: CallWatchStreamArgs): Promise<void>
 export interface RequestChannelHistoryArgs {
   serverId: string
   channelId: string
@@ -153,7 +107,6 @@ export interface RequestChannelHistoryArgs {
   /** Downward pagination: fetch messages newer than this id. */
   afterId?: number
 }
-export declare function requestChannelHistory(args: RequestChannelHistoryArgs): Promise<void>
 /**
  * Message search (spec 2026-10-14). Everything but `server_id` is
  * optional; the answer arrives as `message_search_received` with `seq`.
@@ -189,21 +142,10 @@ export interface SearchMessagesArgs {
    */
   matchWithinWords?: boolean
 }
-export declare function searchMessages(args: SearchMessagesArgs): Promise<void>
 export interface WipeChannelHistoryArgs {
   serverId: string
   channelId: string
 }
-/**
- * Owner-only: nuke every message and attachment in `channel_id`.
- * Server validates ownership, applies the wipe, replies with a
- * CHANNEL_WIPE_RES (deleted counts) and broadcasts a CHANNEL_WIPED to
- * every member so their local state drops the channel's history
- * without re-fetching. The IPC returns immediately after the packet
- * is queued — the result lands later as the `channel_wipe_responded`
- * bus event.
- */
-export declare function wipeChannelHistory(args: WipeChannelHistoryArgs): Promise<void>
 export interface UpdateChannelRetentionArgs {
   serverId: string
   channelId: string
@@ -223,12 +165,6 @@ export interface UpdateChannelRetentionArgs {
   /** Text channels: the topic ("" clears it). None = leave unchanged. */
   topic?: string
 }
-/**
- * MANAGE_CHANNELS edit. All five retention values are sent as a
- * snapshot; 0 means "keep forever". Voice bitrate rides along when
- * provided.
- */
-export declare function updateChannelRetention(args: UpdateChannelRetentionArgs): Promise<void>
 export interface SendChannelMessageArgs {
   serverId: string
   channelId: string
@@ -278,19 +214,11 @@ export interface EncryptedAttachmentArg {
   chunkBytes: number
   thumbnailSizesMask: number
 }
-export declare function sendChannelMessage(args: SendChannelMessageArgs): Promise<void>
 export interface DeleteChannelMessageArgs {
   serverId: string
   channelId: string
   messageId: number
 }
-/**
- * Sends MESSAGE_DELETE_REQ over the community session for server_id.
- * The ack arrives as the `channel_message_delete_responded` event;
- * the broadcast (if successful) arrives as `channel_message_deleted`.
- * Server-side handler enforces self-or-can_delete_others.
- */
-export declare function deleteChannelMessage(args: DeleteChannelMessageArgs): Promise<void>
 export interface EditChannelMessageArgs {
   serverId: string
   channelId: string
@@ -304,12 +232,6 @@ export interface EditChannelMessageArgs {
    */
   encryptedAttachments?: Array<EncryptedAttachmentArg>
 }
-/**
- * Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
- * `channel_message_edit_responded`; on success the broadcast arrives as
- * `channel_message_edited`. Server enforces own-message-only.
- */
-export declare function editChannelMessage(args: EditChannelMessageArgs): Promise<void>
 export interface CreateChannelArgs {
   serverId: string
   name: string
@@ -329,7 +251,6 @@ export interface CreateChannelArgs {
    */
   encrypted?: boolean
 }
-export declare function createChannel(args: CreateChannelArgs): Promise<void>
 export interface ReorderChannelsArgs {
   serverId: string
   /**
@@ -339,13 +260,11 @@ export interface ReorderChannelsArgs {
    */
   channelIds: Array<string>
 }
-export declare function reorderChannels(args: ReorderChannelsArgs): Promise<void>
 export interface RenameChannelArgs {
   serverId: string
   channelId: string
   name: string
 }
-export declare function renameChannel(args: RenameChannelArgs): Promise<void>
 export interface SetChannelOverwriteArgs {
   serverId: string
   channelId: string
@@ -358,13 +277,6 @@ export interface SetChannelOverwriteArgs {
   allow: number
   deny: number
 }
-/**
- * Permissions v2: set (or, with allow == deny == 0, clear) one
- * per-channel overwrite. Result arrives as channel_action_responded with
- * action "overwrite"; the server then re-pushes channel_list_updated
- * (with refreshed myPermissions) and channel_overwrites_received.
- */
-export declare function setChannelOverwrite(args: SetChannelOverwriteArgs): Promise<void>
 export interface SyncChannelPermissionsArgs {
   serverId: string
   /** A channel, or a category (= sync every channel under it). */
@@ -375,33 +287,19 @@ export interface SyncChannelPermissionsArgs {
    */
   categoryId?: string
 }
-/**
- * Permissions v3: drop the channel's own overwrites so it follows its
- * category again. Result arrives as channel_action_responded with action
- * "sync"; the server re-pushes the channel list and the overwrites.
- */
-export declare function syncChannelPermissions(args: SyncChannelPermissionsArgs): Promise<void>
 export interface SetCategorySyncArgs {
   serverId: string
   channelId: string
   enabled: boolean
 }
-/**
- * Permissions v3: whether channels can follow this category's overwrites
- * (off = it only groups channels). Neither direction changes what any
- * channel allows. Result: channel_action_responded, action "category_sync".
- */
-export declare function setCategorySync(args: SetCategorySyncArgs): Promise<void>
 export interface ListChannelOverwritesArgs {
   serverId: string
   channelId: string
 }
-export declare function listChannelOverwrites(args: ListChannelOverwritesArgs): Promise<void>
 export interface DeleteChannelArgs {
   serverId: string
   channelId: string
 }
-export declare function deleteChannel(args: DeleteChannelArgs): Promise<void>
 export interface ListMembersArgs {
   serverId: string
   /**
@@ -419,13 +317,6 @@ export interface ListMembersArgs {
    */
   uids?: Array<number>
 }
-/**
- * Fetch one page of the roster, or look members up by uid. Live changes
- * arrive as member_upsert / member_remove; this is only for the initial
- * load, scroll paging and the members a view shows before paging reaches
- * them.
- */
-export declare function listMembers(args: ListMembersArgs): Promise<void>
 export interface SearchMembersArgs {
   serverId: string
   /** Matches usernames and nicknames; "" matches everyone. */
@@ -439,12 +330,6 @@ export interface SearchMembersArgs {
   /** Echoed on member_search_received. */
   seq?: number
 }
-/**
- * Server-settings member search across the whole membership (online or
- * not). The page arrives as member_search_received; it never touches the
- * roster.
- */
-export declare function searchMembers(args: SearchMembersArgs): Promise<void>
 export interface UpdateServerArgs {
   serverId: string
   name: string
@@ -455,12 +340,6 @@ export interface UpdateServerArgs {
    */
   publicListing?: boolean
 }
-/**
- * MANAGE_SERVER: rename / re-describe the server and/or toggle public
- * listing. Result arrives as server_update_responded; everyone gets
- * server_meta_updated.
- */
-export declare function updateServer(args: UpdateServerArgs): Promise<void>
 export interface ListAuditLogArgs {
   serverId: string
   /** 0 = newest. */
@@ -473,15 +352,9 @@ export interface ListAuditLogArgs {
   /** Echoed on audit_log_received. */
   seq?: number
 }
-export declare function listAuditLog(args: ListAuditLogArgs): Promise<void>
 export interface StorageInfoArgs {
   serverId: string
 }
-/**
- * MANAGE_SERVER: fetch host disk state + this server's footprint. Result
- * arrives as storage_info_received.
- */
-export declare function getStorageInfo(args: StorageInfoArgs): Promise<void>
 export interface SetStorageMinFreeArgs {
   serverId: string
   /**
@@ -490,11 +363,6 @@ export interface SetStorageMinFreeArgs {
    */
   minFreeBytes: number
 }
-/**
- * MANAGE_SERVER: set the upload headroom. Server replies with a fresh
- * storage_info_received reflecting the applied (clamped) value.
- */
-export declare function setStorageMinFree(args: SetStorageMinFreeArgs): Promise<void>
 export interface TimeoutMemberArgs {
   serverId: string
   /** Only labels the request; the server goes by `uid`. */
@@ -505,11 +373,6 @@ export interface TimeoutMemberArgs {
   until: number
   reason?: string
 }
-/**
- * MODERATE_MEMBERS + hierarchy. Response via mod_action_responded
- * action="timeout"; the member_upsert delta carries timedOutUntil.
- */
-export declare function timeoutMember(args: TimeoutMemberArgs): Promise<void>
 export interface VoiceModArgs {
   serverId: string
   /** Only labels the request; the server goes by `uid`. */
@@ -521,23 +384,15 @@ export interface VoiceModArgs {
   /** "move" only. */
   channelId?: string
 }
-export declare function voiceMod(args: VoiceModArgs): Promise<void>
 export interface TransferOwnershipArgs {
   serverId: string
   newOwner: string
   /** The new owner's uid (users by uid). */
   newOwnerUid: number
 }
-/**
- * Owner only. Response via mod_action_responded action="transfer";
- * everyone gets server_meta_updated + member_upsert for both users.
- */
-export declare function transferOwnership(args: TransferOwnershipArgs): Promise<void>
 export interface ListBansArgs {
   serverId: string
 }
-/** Fetch the ban list (BAN_MEMBERS). Also pushed by the server on change. */
-export declare function listBans(args: ListBansArgs): Promise<void>
 export interface KickMemberArgs {
   serverId: string
   /** Only labels the request; the server goes by `uid`. */
@@ -551,7 +406,6 @@ export interface KickMemberArgs {
    */
   reason?: string
 }
-export declare function kickMember(args: KickMemberArgs): Promise<void>
 export interface BanMemberArgs {
   serverId: string
   /** Only labels the request; the server goes by `uid`. */
@@ -565,11 +419,9 @@ export interface BanMemberArgs {
   /** Also delete the member's messages from the last N seconds (≤ 7 days). */
   deleteMessageSeconds?: number
 }
-export declare function banMember(args: BanMemberArgs): Promise<void>
 export interface LeaveServerArgs {
   serverId: string
 }
-export declare function leaveServer(args: LeaveServerArgs): Promise<void>
 export interface CreateInviteArgs {
   serverId: string
   /** Unix epoch seconds. 0 means "never expires". */
@@ -586,20 +438,16 @@ export interface CreateInviteArgs {
   /** Echoed on invite_create_responded. */
   requestId?: number
 }
-export declare function createInvite(args: CreateInviteArgs): Promise<void>
 export interface ListInvitesArgs {
   serverId: string
 }
-export declare function listInvites(args: ListInvitesArgs): Promise<void>
 export interface RevokeInviteArgs {
   serverId: string
   code: string
 }
-export declare function revokeInvite(args: RevokeInviteArgs): Promise<void>
 export interface ListRolesArgs {
   serverId: string
 }
-export declare function listRoles(args: ListRolesArgs): Promise<void>
 export interface CreateRoleArgs {
   serverId: string
   name: string
@@ -609,7 +457,6 @@ export interface CreateRoleArgs {
   /** Members whose highest role is this one may manage each other. */
   manageEachOther?: boolean
 }
-export declare function createRole(args: CreateRoleArgs): Promise<void>
 export interface UpdateRoleArgs {
   serverId: string
   roleId: number
@@ -620,12 +467,10 @@ export interface UpdateRoleArgs {
   /** Full snapshot like the rest: omitting it clears the flag. */
   manageEachOther?: boolean
 }
-export declare function updateRole(args: UpdateRoleArgs): Promise<void>
 export interface DeleteRoleArgs {
   serverId: string
   roleId: number
 }
-export declare function deleteRole(args: DeleteRoleArgs): Promise<void>
 export interface SetMemberRolesArgs {
   serverId: string
   /** Only labels the request; the server goes by `uid`. */
@@ -635,7 +480,6 @@ export interface SetMemberRolesArgs {
   /** The member's full desired role set (default role implicit). */
   roleIds: Array<number>
 }
-export declare function setMemberRoles(args: SetMemberRolesArgs): Promise<void>
 export interface UnbanMemberArgs {
   serverId: string
   /** Only labels the request; the server goes by `uid`. */
@@ -643,7 +487,6 @@ export interface UnbanMemberArgs {
   /** The target's account uid (users by uid). */
   uid: number
 }
-export declare function unbanMember(args: UnbanMemberArgs): Promise<void>
 export interface SetNicknameArgs {
   serverId: string
   /**
@@ -657,7 +500,6 @@ export interface SetNicknameArgs {
   /** Empty clears the nickname. */
   nickname: string
 }
-export declare function setNickname(args: SetNicknameArgs): Promise<void>
 export interface DeviceEntry {
   /** Central's handle for it (`sign_out_devices`). */
   id: number
@@ -676,8 +518,6 @@ export interface DeviceEntry {
   /** This device. */
   current: boolean
 }
-/** The devices signed in to the account, most recently active first. */
-export declare function listDevices(): Promise<Array<DeviceEntry>>
 export interface SignOutDevicesArgs {
   /** The devices to sign out (this device's own id is ignored). */
   ids: Array<number>
@@ -687,12 +527,6 @@ export interface SignOutDevicesArgs {
 export interface SignOutDevicesResult {
   signedOut: number
 }
-/**
- * Sign devices out: central closes their connections (they sign out and
- * forget their saved sign-in), their reconnect tokens stop working, and
- * communities drop their sessions within a minute.
- */
-export declare function signOutDevices(args: SignOutDevicesArgs): Promise<SignOutDevicesResult>
 export interface ChangePasswordArgs {
   currentPassword: string
   newPassword: string
@@ -701,13 +535,6 @@ export interface ChangePasswordResult {
   /** Other devices signed out by the change. */
   signedOut: number
 }
-/**
- * Change the account's password. Central checks the current one and signs
- * every other device out; this one stays signed in with a new reconnect
- * token, and its saved sign-in (if any) takes the new password.
- */
-export declare function changePassword(args: ChangePasswordArgs): Promise<ChangePasswordResult>
-export declare function requestDmConversations(): Promise<void>
 export interface RequestDmHistoryArgs {
   /** The peer's current name (a label). */
   peer: string
@@ -720,7 +547,6 @@ export interface RequestDmHistoryArgs {
   /** >0: page newer than this DM id (downward pagination). */
   afterId?: number
 }
-export declare function requestDmHistory(args: RequestDmHistoryArgs): Promise<void>
 export interface MarkDmReadArgs {
   /** The peer's current name (a label). */
   peer: string
@@ -728,7 +554,6 @@ export interface MarkDmReadArgs {
   peerUid: number
   upToId: number
 }
-export declare function markDmRead(args: MarkDmReadArgs): Promise<void>
 export interface DeleteDmMessageArgs {
   /** The peer's current name (a label). */
   peer: string
@@ -736,13 +561,6 @@ export interface DeleteDmMessageArgs {
   peerUid: number
   messageId: number
 }
-/**
- * Sends DM_DELETE_REQ over the JWT-authed central session. The
- * ack arrives as the `dm_message_delete_responded` event; the
- * broadcast (if successful) arrives as `dm_message_deleted`. Both
- * land in useDmEvents on the renderer side.
- */
-export declare function deleteDmMessage(args: DeleteDmMessageArgs): Promise<void>
 export interface EditDmMessageArgs {
   /** The peer's current name (a label). */
   peer: string
@@ -751,12 +569,6 @@ export interface EditDmMessageArgs {
   messageId: number
   content: string
 }
-/**
- * Sends DM_EDIT_REQ over the JWT-authed central session. The ack arrives as
- * `dm_message_edit_responded`; on success the broadcast arrives as
- * `dm_message_edited`. Central enforces own-message-only.
- */
-export declare function editDmMessage(args: EditDmMessageArgs): Promise<void>
 export interface E2EeStatus {
   supported: boolean
   /** "unavailable" | "not_set_up" | "locked" | "ready" */
@@ -764,14 +576,9 @@ export interface E2EeStatus {
   keyId: number
   fingerprint: string
 }
-export declare function e2eeGetStatus(): Promise<E2EeStatus>
 export interface PassphraseArgs {
   passphrase: string
 }
-export declare function e2eeSetup(args: PassphraseArgs): Promise<void>
-export declare function e2eeUnlock(args: PassphraseArgs): Promise<void>
-export declare function e2eeChangePassphrase(args: PassphraseArgs): Promise<void>
-export declare function e2eeReset(args: PassphraseArgs): Promise<void>
 export interface PeerInfoArgs {
   username: string
   /** The peer's uid (users by uid); looked up from the name when absent. */
@@ -792,8 +599,6 @@ export interface E2EePeerInfo {
   /** We've talked to this identity before (TOFU pin present). */
   pinned: boolean
 }
-export declare function e2eePeerInfo(args: PeerInfoArgs): Promise<E2EePeerInfo>
-export declare function requestFriendList(): Promise<void>
 export interface SendFriendActionArgs {
   /**
    * Maps to the protobuf FriendActionType enum:
@@ -807,7 +612,6 @@ export interface SendFriendActionArgs {
    */
   targetUid?: number
 }
-export declare function sendFriendAction(args: SendFriendActionArgs): Promise<void>
 export interface FriendsInCommunityArgs {
   serverId: string
 }
@@ -820,14 +624,6 @@ export interface FriendsInCommunity {
   known: boolean
   memberUids: Array<number>
 }
-/**
- * The welcome banner's "Invite friends": which of our accepted friends are
- * already members of this community. Central answers from its membership
- * table, so the friend list never reaches the community (owner rule).
- * Communities central doesn't list (a raw host:port join) answer `known:
- * false`. Times out after 5 seconds.
- */
-export declare function friendsInCommunity(args: FriendsInCommunityArgs): Promise<FriendsInCommunity>
 export interface HotkeyBindingArg {
   id: string
   /**
@@ -844,22 +640,9 @@ export interface HotkeyBindingArg {
 export interface HotkeysConfigureArgs {
   bindings: Array<HotkeyBindingArg>
 }
-/**
- * Replace the bindings and (re)start this platform's listener. Unknown
- * actions are skipped so a config from a newer build can't break it.
- * Status changes arrive as `hotkeys_status` events only — a snapshot
- * returned here could land after a newer event and roll it back.
- */
-export declare function hotkeysConfigure(args: HotkeysConfigureArgs): Promise<void>
-export declare function hotkeysGetStatus(): any
 export interface HotkeysSetPausedArgs {
   paused: boolean
 }
-/**
- * Swallow presses while the Keybinds tab records a combo, so recording
- * Ctrl+M doesn't also toggle mute.
- */
-export declare function hotkeysSetPaused(args: HotkeysSetPausedArgs): void
 export interface HotkeysInjectArgs {
   action: string
   pressed: boolean
@@ -869,22 +652,37 @@ export interface HotkeysInjectArgs {
    */
   source: string
 }
-/**
- * A press / release from outside the native listeners: the renderer's
- * focused fallback, macOS accelerators, `decibell --hotkey=…`.
- */
-export declare function hotkeysInject(args: HotkeysInjectArgs): void
-/** Open the desktop's own shortcut editor (GlobalShortcuts portal v2). */
-export declare function hotkeysOpenSystemSettings(): Promise<void>
 export interface SetInputModeArgs {
   pushToTalk: boolean
   releaseDelayMs: number
 }
 /**
- * Voice activity vs push-to-talk. Process-wide: applies to the current
- * and every later voice session / DM call.
+ * Boot-time options pushed in from Electron main. Everything platform-
+ * path-shaped (userData) is resolved Node-side via
+ * `app.getPath()` and shipped here so Rust never has to figure out
+ * platform-specific dirs itself — the Electron main process is the
+ * authority.
  */
-export declare function setInputMode(args: SetInputModeArgs): void
+export interface InitOptions {
+  userDataDir: string
+  appVersion: string
+  /**
+   * base64 of a random 32-byte key that Electron main keeps wrapped by
+   * `safeStorage` — the at-rest key for the E2EE key store. Absent when
+   * safeStorage isn't available on this machine (config.rs derivation
+   * is used instead). Named explicitly: napi's camel-casing splits on
+   * the digit (`e2EeLocalKey`), so main's `e2eeLocalKey` was never read
+   * and every store fell back to the derived key.
+   */
+  e2eeLocalKey?: string
+  /**
+   * True when that key is wrapped by a real OS keychain — false (or
+   * absent) for Linux's `basic_text` safeStorage backend, which wraps
+   * with a hard-coded password. The saved sign-in uses the key only
+   * when it is (config.rs).
+   */
+  localKeyProtected?: boolean
+}
 export interface SendPrivateMessageArgs {
   recipient: string
   /** The recipient's uid (users by uid; preferred over `recipient`). */
@@ -898,77 +696,40 @@ export interface SendPrivateMessageArgs {
    */
   nonce?: string
 }
-export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
 export interface PresenceSubscribeArgs {
   /** Every account the renderer is showing; replaces the previous set. */
   uids: Array<number>
 }
-/**
- * Presence by subscription (docs/superpowers/specs/2026-10-15-central-
- * scaling-design.md): central sends statuses and profile changes only for
- * these accounts. Kept here and re-sent after every central login.
- */
-export declare function presenceSubscribe(args: PresenceSubscribeArgs): Promise<void>
 export interface SetStatusArgs {
   /** "online" | "away" | "dnd" | "invisible" */
   status: string
 }
-export declare function setStatus(args: SetStatusArgs): Promise<void>
 export interface SetStatusMessageArgs {
   text: string
   emoji: string
   /** Seconds until central clears it; 0 = keep until changed. */
   clearAfter: number
 }
-/**
- * The custom status message (docs/superpowers/specs/2026-10-12-status-
- * messages-design.md). Central normalises and saves it, and everyone sees
- * it with our presence. Empty text and emoji clears it.
- */
-export declare function setStatusMessage(args: SetStatusMessageArgs): Promise<void>
 export interface SystemIdleArgs {
   thresholdSeconds: number
 }
-/**
- * Auto-away's idle source where Electron's powerMonitor reads nothing
- * (Linux Wayland — see system_idle.rs): "idle" | "active" | "locked", or
- * "unsupported" and the renderer asks powerMonitor instead.
- */
-export declare function systemIdleState(args: SystemIdleArgs): Promise<string>
 export interface SetIdleArgs {
   idle: boolean
 }
-/**
- * Auto-away: no input for the user's idle threshold, a locked screen or
- * sleep (renderer-detected). Central turns an ONLINE user AWAY meanwhile.
- */
-export declare function setIdle(args: SetIdleArgs): Promise<void>
-/**
- * Ask the central server for the user's server list. The response
- * arrives asynchronously as a `server_list_received` event.
- */
-export declare function requestServerList(): Promise<void>
 export interface ConnectToCommunityArgs {
   serverId: string
   host: string
   port: number
 }
-export declare function connectToCommunity(args: ConnectToCommunityArgs): Promise<void>
 export interface RedeemInviteArgs {
   serverId: string
   host: string
   port: number
   inviteCode: string
 }
-/**
- * Connect to a community server while consuming an invite code so the
- * user joins (becomes a persistent member) as part of the handshake.
- */
-export declare function redeemInvite(args: RedeemInviteArgs): Promise<void>
 export interface DisconnectFromCommunityArgs {
   serverId: string
 }
-export declare function disconnectFromCommunity(args: DisconnectFromCommunityArgs): Promise<void>
 export interface ParseInviteLinkArgs {
   url: string
 }
@@ -977,17 +738,6 @@ export interface ParsedInviteLink {
   port: number
   code: string
 }
-/**
- * Parse a `decibell://` invite URL into its components. Accepted shapes:
- *   decibell://invite/<code>                 (host "" / port 0: resolve
- *                                             the code via central)
- *   decibell://invite/<host>:<port>/<code>
- *   decibell://invite/<host>/<port>/<code>
- *   decibell:invite/<host>:<port>/<code>
- * The renderer parses links itself (features/servers/inviteLink.ts);
- * this stays for API completeness and older callers.
- */
-export declare function parseInviteLink(args: ParseInviteLinkArgs): ParsedInviteLink
 export interface ResolveInviteCodeArgs {
   code: string
 }
@@ -1005,14 +755,6 @@ export interface ResolvedInvite {
   memberCount: number
   pictureVersion: string
 }
-/**
- * Ask the central server to resolve a raw invite code to a community
- * host:port, plus the community's directory row for the pre-join
- * preview. Returns an error describing why the code couldn't be
- * resolved (unknown, expired, central not reachable). Times out after
- * 5 seconds.
- */
-export declare function resolveInviteCode(args: ResolveInviteCodeArgs): Promise<ResolvedInvite>
 export interface GetAttachmentTargetArgs {
   serverId: string
 }
@@ -1029,88 +771,19 @@ export interface AttachmentTarget {
    */
   certFingerprint: string
 }
-/**
- * Resolve the HTTPS endpoint for attachment uploads/downloads against a
- * connected community server. Returns null when the server didn't
- * advertise an attachment port (older builds, or HTTP disabled).
- * Renderer drives the actual transfer — this command just hands over
- * the host/port/jwt so `fetch()` can run with native HTTP/2 +
- * connection reuse + Chromium's TLS stack.
- */
-export declare function getAttachmentTarget(args: GetAttachmentTargetArgs): Promise<AttachmentTarget | null>
 export interface TrustCertificateArgs {
   host: string
   port: number
 }
-/**
- * User-initiated re-trust after a `CERT_MISMATCH:` failure: forget the
- * pin (and central's expectation) for host:port so the next connect
- * accepts — and pins — whatever certificate is presented. Only do this
- * when the operator confirms the server was legitimately re-keyed.
- */
-export declare function trustCertificate(args: TrustCertificateArgs): Promise<void>
 export interface DropMembershipArgs {
   serverId: string
 }
-/**
- * Auto-rejoin stale-membership cleanup: tells central to drop the
- * user's user_communities row for this server. Used when an
- * auto-rejoin auth comes back with success=false (kicked/banned while
- * offline). Authenticated via the user's JWT on the central session
- * — central's MEMBERSHIP_REVOKE_REQ handler enforces self-revoke when
- * the auth_token doesn't match the shared secret, ignoring the
- * username field on the packet.
- */
-export declare function requestDropMembership(args: DropMembershipArgs): Promise<void>
-export interface UpdateServerPictureArgs {
-  serverId: string
-  data: Buffer
-}
-/**
- * Sends UPDATE_SERVER_PICTURE_REQ over the community session for
- * server_id. The ack arrives as the `server_picture_update_responded`
- * event; on success, central then broadcasts SERVER_PICTURE_CHANGED
- * to all online members (including the requester).
- */
-export declare function updateServerPicture(args: UpdateServerPictureArgs): Promise<void>
 export interface FetchServerPictureArgs {
   serverId: number
 }
-/**
- * Sends FETCH_SERVER_PICTURE_REQ over the JWT-authed central
- * session. Response lands as the `server_picture_received` event,
- * with `data` already encoded as a data URL ready for <img src>.
- */
-export declare function fetchServerPicture(args: FetchServerPictureArgs): Promise<void>
-/**
- * Read the persisted config blob from disk. Returns
- * `{ saved_username, settings }` as a JSON value so the renderer can
- * hydrate its zustand stores without us having to re-declare the
- * whole AppSettings shape as a #[napi(object)] mirror (it has a
- * HashMap field which napi(object) doesn't support natively).
- * The saved password never leaves native: `saved_username` set means
- * "call `auto_login`".
- */
-export declare function loadConfig(): Promise<any>
-/**
- * Persist a complete AppSettings blob to disk, preserving any
- * existing credentials. Renderer is the source of truth for the
- * settings shape; native just deserializes via serde and writes.
- * Mirrors tauri-client's save_settings: settings come from the
- * renderer as an object, we round-trip through serde_json::Value
- * into AppSettings.
- */
-export declare function saveSettings(settings: any): Promise<void>
 export interface SetDmPrivacyArgs {
   friendsOnly: boolean
 }
-/**
- * Tell the central server whether to deliver DMs from non-friends.
- * Mirrors the tauri command of the same name (defined there in
- * commands/messaging.rs). Lives in settings.rs here because the DM
- * command surface hasn't ported yet — when it does, this can move.
- */
-export declare function setDmPrivacy(args: SetDmPrivacyArgs): Promise<void>
 export interface AudioDevice {
   name: string
   label: string
@@ -1119,7 +792,6 @@ export interface AudioDeviceList {
   inputs: Array<AudioDevice>
   outputs: Array<AudioDevice>
 }
-export declare function listAudioDevices(): Promise<AudioDeviceList>
 export interface ListStreamAudioAppsArgs {
   /**
    * Chromium desktopCapturer source id of the picked capture source.
@@ -1148,19 +820,12 @@ export interface StreamAudioAppList {
   supported: boolean
   apps: Array<StreamAudioAppValue>
 }
-export declare function listStreamAudioApps(args: ListStreamAudioAppsArgs): Promise<StreamAudioAppList>
 export interface SetStreamAudioFilterArgs {
   /** `selected` | `all_except` | `all`. */
   mode: string
   /** Ticked app identities (any spelling; normalised here). */
   apps: Array<string>
 }
-/**
- * Store the streamer's app filter and apply it to the running share-audio
- * capture, if any. Always succeeds: without a live engine the filter is
- * simply remembered for the next `start_screen_share`.
- */
-export declare function setStreamAudioFilter(args: SetStreamAudioFilterArgs): Promise<void>
 export interface StartScreenShareArgs {
   /**
    * Community + channel to announce in. Both absent during a DM call —
@@ -1229,13 +894,11 @@ export interface StartScreenShareResult {
   width: number
   height: number
 }
-export declare function startScreenShare(args: StartScreenShareArgs): Promise<StartScreenShareResult>
 export interface StopScreenShareArgs {
   /** Absent during a DM call (no community to notify). */
   serverId?: string
   channelId?: string
 }
-export declare function stopScreenShare(args: StopScreenShareArgs): Promise<void>
 export interface MoveStreamToChannelArgs {
   serverId: string
   channelId: string
@@ -1247,17 +910,505 @@ export interface MoveStreamToChannelArgs {
   initialCodec: number
   enforcedCodec: number
 }
+export interface SetStreamFrameSinkArgs {
+  /**
+   * Media key (the streamer's uid, decimal) whose encoded frames the
+   * renderer now (no longer) displays.
+   */
+  key: string
+  enabled: boolean
+}
+export interface WatchStreamArgs {
+  serverId: string
+  channelId: string
+  /** The streamer's uid: the media plane names streamers by uid. */
+  targetUid: number
+  /** Their name, for the server's logs only. */
+  targetUsername?: string
+}
+export interface StopWatchingArgs {
+  serverId: string
+  channelId: string
+  /** See WatchStreamArgs. */
+  targetUid: number
+  targetUsername?: string
+}
+export interface FetchStreamThumbnailArgs {
+  serverId: string
+  /** The streamer's uid. */
+  uid: number
+}
+export interface CodecCapValue {
+  /** 1=H264_HW, 2=H264_SW, 3=H265, 4=AV1. */
+  codec: number
+  maxWidth: number
+  maxHeight: number
+  maxFps: number
+}
+export interface CapsResponse {
+  encode: Array<CodecCapValue>
+  decode: Array<CodecCapValue>
+}
+export interface SetEncoderCapsArgs {
+  encoderCaps: Array<CodecCapValue>
+}
+export interface SetDecoderCapsArgs {
+  decoderCaps: Array<CodecCapValue>
+}
 /**
- * Carry an already-running stream into a new voice channel WITHOUT restarting
- * capture/encode. The caller has already joined the new voice channel, so a
- * fresh VoiceEngine with new UDP sockets exists, and a new MLS group whose
- * keys are the only ones the new channel can open; here we re-point the
- * video (and stream-audio) senders at those sockets and that key ring, and
- * re-announce the stream in the new channel. Because capture keeps running
- * there is no portal/WGC re-prompt — the whole reason this exists instead of
- * stop+start.
+ * Codec preference toggles persisted in the on-disk config. The
+ * streaming UI reads these to gray out codecs the user has opted out
+ * of. They also feed the toggle filter applied to encoder caps before
+ * they ship in JoinVoiceRequest.
  */
-export declare function moveStreamToChannel(args: MoveStreamToChannelArgs): Promise<void>
+export interface CodecSettingsValue {
+  useAv1: boolean
+  useH265: boolean
+}
+/**
+ * Native encoder capability returned by `probe_native_encoders`.
+ * Same shape the renderer's WebCodecs probe used to populate.
+ */
+export interface NativeEncoderCap {
+  /** VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1). */
+  codec: number
+  maxWidth: number
+  maxHeight: number
+  maxFps: number
+  hardware: boolean
+  /** FFmpeg encoder name that actually opens (e.g. "h264_nvenc"). */
+  encoderName: string
+}
+export interface RequestStreamKeyframeArgs {
+  /** Uid of the streamer whose next frame should be an IDR. */
+  uid: number
+}
+export interface JoinVoiceChannelArgs {
+  serverId: string
+  channelId: string
+  /**
+   * Per-channel voice bitrate from CommunityAuthResponse. `None`
+   * falls back to the default Opus bitrate.
+   */
+  voiceBitrateKbps?: number
+}
+export interface SetVoiceMuteArgs {
+  muted: boolean
+}
+export interface SetVoiceDeafenArgs {
+  deafened: boolean
+}
+export interface SetVoiceThresholdArgs {
+  thresholdDb: number
+}
+export interface SetVoiceBitrateArgs {
+  /**
+   * Channel bitrate in kbps; 0 = client default. Called by the
+   * renderer when the connected channel's bitrate changes mid-call
+   * (channel_updated broadcast) so the running encoder adapts
+   * without a rejoin.
+   */
+  bitrateKbps: number
+}
+export interface SetStreamVolumeArgs {
+  volume: number
+}
+export interface SetStreamStereoArgs {
+  enabled: boolean
+}
+export interface SetUserVolumeArgs {
+  /** The speaker's uid: the media plane names senders by uid. */
+  uid: number
+  gain: number
+}
+export interface SetAecEnabledArgs {
+  enabled: boolean
+}
+export interface SetNoiseSuppressionLevelArgs {
+  level: number
+}
+export interface SetAgcEnabledArgs {
+  enabled: boolean
+}
+export interface SetInputDeviceArgs {
+  /** `None` falls back to the system default. */
+  name?: string
+}
+export interface SetOutputDeviceArgs {
+  name?: string
+}
+export interface SetSeparateStreamOutputArgs {
+  enabled: boolean
+  device?: string
+}
+export interface SetStreamOutputDeviceArgs {
+  name?: string
+}
+export interface SetInputLevelReportingArgs {
+  enabled: boolean
+}
+export interface UploadAvatarArgs {
+  jpeg: Buffer
+}
+export interface FetchAvatarResult {
+  version: string
+  /** Empty Buffer when version == '' (no avatar). */
+  data: Buffer
+}
+export declare function login(args: LoginArgs): Promise<void>
+/**
+ * Sign in with the saved credentials, if there are any (the renderer
+ * asks at boot when `load_config` reported a `saved_username`). The
+ * password stays in native. Ok(false) = nothing saved (or it doesn't
+ * open on this machine any more): show the sign-in page.
+ */
+export declare function autoLogin(): Promise<boolean>
+/**
+ * Change our username (uid design, stage 5). Central checks the password
+ * and the name, and reserves the old name for this account for 14 days.
+ * On success the saved credentials follow the new name, the renderer
+ * hears `user_renamed {self: true}`, and the fresh token replaces ours and
+ * goes to every community session (net/token.rs), which takes the new
+ * name in place: no reconnect, so voice and streams carry on (the media
+ * plane identifies people by uid).
+ */
+export declare function renameAccount(args: RenameAccountArgs): Promise<RenameAccountResult>
+export declare function register(args: RegisterArgs): Promise<void>
+export declare function logout(): Promise<void>
+/**
+ * Upload or remove the authenticated user's avatar. Empty `jpeg`
+ * argument = remove. Returns the server-computed sha256-hex version
+ * on success.
+ */
+export declare function uploadAvatar(args: UploadAvatarArgs): Promise<UploadAvatarResult>
+/**
+ * Fetch a specific user's avatar bytes + current version. Empty
+ * version + empty data means the user has no avatar (or doesn't
+ * exist — same response shape).
+ */
+export declare function fetchAvatar(args: FetchAvatarArgs): Promise<FetchAvatarResult>
+export declare function getCallConfig(): Promise<CallConfig>
+export declare function sendCallSignal(args: SendCallSignalArgs): Promise<void>
+export declare function callPrepare(args: CallPrepareArgs): Promise<CallPrepareResult>
+export declare function callConnect(args: CallConnectArgs): Promise<void>
+export declare function callEnd(): Promise<void>
+export declare function callWatchStream(args: CallWatchStreamArgs): Promise<void>
+export declare function requestChannelHistory(args: RequestChannelHistoryArgs): Promise<void>
+export declare function searchMessages(args: SearchMessagesArgs): Promise<void>
+/**
+ * Owner-only: nuke every message and attachment in `channel_id`.
+ * Server validates ownership, applies the wipe, replies with a
+ * CHANNEL_WIPE_RES (deleted counts) and broadcasts a CHANNEL_WIPED to
+ * every member so their local state drops the channel's history
+ * without re-fetching. The IPC returns immediately after the packet
+ * is queued — the result lands later as the `channel_wipe_responded`
+ * bus event.
+ */
+export declare function wipeChannelHistory(args: WipeChannelHistoryArgs): Promise<void>
+/**
+ * MANAGE_CHANNELS edit. All five retention values are sent as a
+ * snapshot; 0 means "keep forever". Voice bitrate rides along when
+ * provided.
+ */
+export declare function updateChannelRetention(args: UpdateChannelRetentionArgs): Promise<void>
+export declare function sendChannelMessage(args: SendChannelMessageArgs): Promise<void>
+/**
+ * Sends MESSAGE_DELETE_REQ over the community session for server_id.
+ * The ack arrives as the `channel_message_delete_responded` event;
+ * the broadcast (if successful) arrives as `channel_message_deleted`.
+ * Server-side handler enforces self-or-can_delete_others.
+ */
+export declare function deleteChannelMessage(args: DeleteChannelMessageArgs): Promise<void>
+/**
+ * Sends MESSAGE_EDIT_REQ over the community session. The ack arrives as
+ * `channel_message_edit_responded`; on success the broadcast arrives as
+ * `channel_message_edited`. Server enforces own-message-only.
+ */
+export declare function editChannelMessage(args: EditChannelMessageArgs): Promise<void>
+export declare function createChannel(args: CreateChannelArgs): Promise<void>
+export declare function reorderChannels(args: ReorderChannelsArgs): Promise<void>
+export declare function renameChannel(args: RenameChannelArgs): Promise<void>
+/**
+ * Permissions v2: set (or, with allow == deny == 0, clear) one
+ * per-channel overwrite. Result arrives as channel_action_responded with
+ * action "overwrite"; the server then re-pushes channel_list_updated
+ * (with refreshed myPermissions) and channel_overwrites_received.
+ */
+export declare function setChannelOverwrite(args: SetChannelOverwriteArgs): Promise<void>
+/**
+ * Permissions v3: drop the channel's own overwrites so it follows its
+ * category again. Result arrives as channel_action_responded with action
+ * "sync"; the server re-pushes the channel list and the overwrites.
+ */
+export declare function syncChannelPermissions(args: SyncChannelPermissionsArgs): Promise<void>
+/**
+ * Permissions v3: whether channels can follow this category's overwrites
+ * (off = it only groups channels). Neither direction changes what any
+ * channel allows. Result: channel_action_responded, action "category_sync".
+ */
+export declare function setCategorySync(args: SetCategorySyncArgs): Promise<void>
+export declare function listChannelOverwrites(args: ListChannelOverwritesArgs): Promise<void>
+export declare function deleteChannel(args: DeleteChannelArgs): Promise<void>
+/**
+ * Fetch one page of the roster, or look members up by uid. Live changes
+ * arrive as member_upsert / member_remove; this is only for the initial
+ * load, scroll paging and the members a view shows before paging reaches
+ * them.
+ */
+export declare function listMembers(args: ListMembersArgs): Promise<void>
+/**
+ * Server-settings member search across the whole membership (online or
+ * not). The page arrives as member_search_received; it never touches the
+ * roster.
+ */
+export declare function searchMembers(args: SearchMembersArgs): Promise<void>
+/**
+ * MANAGE_SERVER: rename / re-describe the server and/or toggle public
+ * listing. Result arrives as server_update_responded; everyone gets
+ * server_meta_updated.
+ */
+export declare function updateServer(args: UpdateServerArgs): Promise<void>
+export declare function listAuditLog(args: ListAuditLogArgs): Promise<void>
+/**
+ * MANAGE_SERVER: fetch host disk state + this server's footprint. Result
+ * arrives as storage_info_received.
+ */
+export declare function getStorageInfo(args: StorageInfoArgs): Promise<void>
+/**
+ * MANAGE_SERVER: set the upload headroom. Server replies with a fresh
+ * storage_info_received reflecting the applied (clamped) value.
+ */
+export declare function setStorageMinFree(args: SetStorageMinFreeArgs): Promise<void>
+/**
+ * MODERATE_MEMBERS + hierarchy. Response via mod_action_responded
+ * action="timeout"; the member_upsert delta carries timedOutUntil.
+ */
+export declare function timeoutMember(args: TimeoutMemberArgs): Promise<void>
+export declare function voiceMod(args: VoiceModArgs): Promise<void>
+/**
+ * Owner only. Response via mod_action_responded action="transfer";
+ * everyone gets server_meta_updated + member_upsert for both users.
+ */
+export declare function transferOwnership(args: TransferOwnershipArgs): Promise<void>
+/** Fetch the ban list (BAN_MEMBERS). Also pushed by the server on change. */
+export declare function listBans(args: ListBansArgs): Promise<void>
+export declare function kickMember(args: KickMemberArgs): Promise<void>
+export declare function banMember(args: BanMemberArgs): Promise<void>
+export declare function leaveServer(args: LeaveServerArgs): Promise<void>
+export declare function createInvite(args: CreateInviteArgs): Promise<void>
+export declare function listInvites(args: ListInvitesArgs): Promise<void>
+export declare function revokeInvite(args: RevokeInviteArgs): Promise<void>
+export declare function listRoles(args: ListRolesArgs): Promise<void>
+export declare function createRole(args: CreateRoleArgs): Promise<void>
+export declare function updateRole(args: UpdateRoleArgs): Promise<void>
+export declare function deleteRole(args: DeleteRoleArgs): Promise<void>
+export declare function setMemberRoles(args: SetMemberRolesArgs): Promise<void>
+export declare function unbanMember(args: UnbanMemberArgs): Promise<void>
+export declare function setNickname(args: SetNicknameArgs): Promise<void>
+/** The devices signed in to the account, most recently active first. */
+export declare function listDevices(): Promise<Array<DeviceEntry>>
+/**
+ * Sign devices out: central closes their connections (they sign out and
+ * forget their saved sign-in), their reconnect tokens stop working, and
+ * communities drop their sessions within a minute.
+ */
+export declare function signOutDevices(args: SignOutDevicesArgs): Promise<SignOutDevicesResult>
+/**
+ * Change the account's password. Central checks the current one and signs
+ * every other device out; this one stays signed in with a new reconnect
+ * token, and its saved sign-in (if any) takes the new password.
+ */
+export declare function changePassword(args: ChangePasswordArgs): Promise<ChangePasswordResult>
+export declare function requestDmConversations(): Promise<void>
+export declare function requestDmHistory(args: RequestDmHistoryArgs): Promise<void>
+export declare function markDmRead(args: MarkDmReadArgs): Promise<void>
+/**
+ * Sends DM_DELETE_REQ over the JWT-authed central session. The
+ * ack arrives as the `dm_message_delete_responded` event; the
+ * broadcast (if successful) arrives as `dm_message_deleted`. Both
+ * land in useDmEvents on the renderer side.
+ */
+export declare function deleteDmMessage(args: DeleteDmMessageArgs): Promise<void>
+/**
+ * Sends DM_EDIT_REQ over the JWT-authed central session. The ack arrives as
+ * `dm_message_edit_responded`; on success the broadcast arrives as
+ * `dm_message_edited`. Central enforces own-message-only.
+ */
+export declare function editDmMessage(args: EditDmMessageArgs): Promise<void>
+export declare function e2eeGetStatus(): Promise<E2EeStatus>
+export declare function e2eeSetup(args: PassphraseArgs): Promise<void>
+export declare function e2eeUnlock(args: PassphraseArgs): Promise<void>
+export declare function e2eeChangePassphrase(args: PassphraseArgs): Promise<void>
+export declare function e2eeReset(args: PassphraseArgs): Promise<void>
+export declare function e2eePeerInfo(args: PeerInfoArgs): Promise<E2EePeerInfo>
+export declare function requestFriendList(): Promise<void>
+export declare function sendFriendAction(args: SendFriendActionArgs): Promise<void>
+/**
+ * The welcome banner's "Invite friends": which of our accepted friends are
+ * already members of this community. Central answers from its membership
+ * table, so the friend list never reaches the community (owner rule).
+ * Communities central doesn't list (a raw host:port join) answer `known:
+ * false`. Times out after 5 seconds.
+ */
+export declare function friendsInCommunity(args: FriendsInCommunityArgs): Promise<FriendsInCommunity>
+/**
+ * Replace the bindings and (re)start this platform's listener. Unknown
+ * actions are skipped so a config from a newer build can't break it.
+ * Status changes arrive as `hotkeys_status` events only — a snapshot
+ * returned here could land after a newer event and roll it back.
+ */
+export declare function hotkeysConfigure(args: HotkeysConfigureArgs): Promise<void>
+export declare function hotkeysGetStatus(): any
+/**
+ * Swallow presses while the Keybinds tab records a combo, so recording
+ * Ctrl+M doesn't also toggle mute.
+ */
+export declare function hotkeysSetPaused(args: HotkeysSetPausedArgs): void
+/**
+ * A press / release from outside the native listeners: the renderer's
+ * focused fallback, macOS accelerators, `decibell --hotkey=…`.
+ */
+export declare function hotkeysInject(args: HotkeysInjectArgs): void
+/** Open the desktop's own shortcut editor (GlobalShortcuts portal v2). */
+export declare function hotkeysOpenSystemSettings(): Promise<void>
+/**
+ * Voice activity vs push-to-talk. Process-wide: applies to the current
+ * and every later voice session / DM call.
+ */
+export declare function setInputMode(args: SetInputModeArgs): void
+export declare function sendPrivateMessage(args: SendPrivateMessageArgs): Promise<void>
+/**
+ * Presence by subscription (docs/superpowers/specs/2026-10-15-central-
+ * scaling-design.md): central sends statuses and profile changes only for
+ * these accounts. Kept here and re-sent after every central login.
+ */
+export declare function presenceSubscribe(args: PresenceSubscribeArgs): Promise<void>
+export declare function setStatus(args: SetStatusArgs): Promise<void>
+/**
+ * The custom status message (docs/superpowers/specs/2026-10-12-status-
+ * messages-design.md). Central normalises and saves it, and everyone sees
+ * it with our presence. Empty text and emoji clears it.
+ */
+export declare function setStatusMessage(args: SetStatusMessageArgs): Promise<void>
+/**
+ * Auto-away's idle source where Electron's powerMonitor reads nothing
+ * (Linux Wayland — see system_idle.rs): "idle" | "active" | "locked", or
+ * "unsupported" and the renderer asks powerMonitor instead.
+ */
+export declare function systemIdleState(args: SystemIdleArgs): Promise<string>
+/**
+ * Auto-away: no input for the user's idle threshold, a locked screen or
+ * sleep (renderer-detected). Central turns an ONLINE user AWAY meanwhile.
+ */
+export declare function setIdle(args: SetIdleArgs): Promise<void>
+export interface UpdateServerPictureArgs {
+  serverId: string
+  data: Buffer
+}
+/**
+ * Ask the central server for the user's server list. The response
+ * arrives asynchronously as a `server_list_received` event.
+ */
+export declare function requestServerList(): Promise<void>
+export declare function connectToCommunity(args: ConnectToCommunityArgs): Promise<void>
+/**
+ * Connect to a community server while consuming an invite code so the
+ * user joins (becomes a persistent member) as part of the handshake.
+ */
+export declare function redeemInvite(args: RedeemInviteArgs): Promise<void>
+export declare function disconnectFromCommunity(args: DisconnectFromCommunityArgs): Promise<void>
+/**
+ * Parse a `decibell://` invite URL into its components. Accepted shapes:
+ *   decibell://invite/<code>                 (host "" / port 0: resolve
+ *                                             the code via central)
+ *   decibell://invite/<host>:<port>/<code>
+ *   decibell://invite/<host>/<port>/<code>
+ *   decibell:invite/<host>:<port>/<code>
+ * The renderer parses links itself (features/servers/inviteLink.ts);
+ * this stays for API completeness and older callers.
+ */
+export declare function parseInviteLink(args: ParseInviteLinkArgs): ParsedInviteLink
+/**
+ * Ask the central server to resolve a raw invite code to a community
+ * host:port, plus the community's directory row for the pre-join
+ * preview. Returns an error describing why the code couldn't be
+ * resolved (unknown, expired, central not reachable). Times out after
+ * 5 seconds.
+ */
+export declare function resolveInviteCode(args: ResolveInviteCodeArgs): Promise<ResolvedInvite>
+/**
+ * Resolve the HTTPS endpoint for attachment uploads/downloads against a
+ * connected community server. Returns null when the server didn't
+ * advertise an attachment port (older builds, or HTTP disabled).
+ * Renderer drives the actual transfer — this command just hands over
+ * the host/port/jwt so `fetch()` can run with native HTTP/2 +
+ * connection reuse + Chromium's TLS stack.
+ */
+export declare function getAttachmentTarget(args: GetAttachmentTargetArgs): Promise<AttachmentTarget | null>
+/**
+ * User-initiated re-trust after a `CERT_MISMATCH:` failure: forget the
+ * pin (and central's expectation) for host:port so the next connect
+ * accepts — and pins — whatever certificate is presented. Only do this
+ * when the operator confirms the server was legitimately re-keyed.
+ */
+export declare function trustCertificate(args: TrustCertificateArgs): Promise<void>
+/**
+ * Auto-rejoin stale-membership cleanup: tells central to drop the
+ * user's user_communities row for this server. Used when an
+ * auto-rejoin auth comes back with success=false (kicked/banned while
+ * offline). Authenticated via the user's JWT on the central session
+ * — central's MEMBERSHIP_REVOKE_REQ handler enforces self-revoke when
+ * the auth_token doesn't match the shared secret, ignoring the
+ * username field on the packet.
+ */
+export declare function requestDropMembership(args: DropMembershipArgs): Promise<void>
+/**
+ * Sends UPDATE_SERVER_PICTURE_REQ over the community session for
+ * server_id. The ack arrives as the `server_picture_update_responded`
+ * event; on success, central then broadcasts SERVER_PICTURE_CHANGED
+ * to all online members (including the requester).
+ */
+export declare function updateServerPicture(args: UpdateServerPictureArgs): Promise<void>
+/**
+ * Sends FETCH_SERVER_PICTURE_REQ over the JWT-authed central
+ * session. Response lands as the `server_picture_received` event,
+ * with `data` already encoded as a data URL ready for <img src>.
+ */
+export declare function fetchServerPicture(args: FetchServerPictureArgs): Promise<void>
+/**
+ * Read the persisted config blob from disk. Returns
+ * `{ saved_username, settings }` as a JSON value so the renderer can
+ * hydrate its zustand stores without us having to re-declare the
+ * whole AppSettings shape as a #[napi(object)] mirror (it has a
+ * HashMap field which napi(object) doesn't support natively).
+ * The saved password never leaves native: `saved_username` set means
+ * "call `auto_login`".
+ */
+export declare function loadConfig(): Promise<any>
+/**
+ * Persist a complete AppSettings blob to disk, preserving any
+ * existing credentials. Renderer is the source of truth for the
+ * settings shape; native just deserializes via serde and writes.
+ * Mirrors tauri-client's save_settings: settings come from the
+ * renderer as an object, we round-trip through serde_json::Value
+ * into AppSettings.
+ */
+export declare function saveSettings(settings: any): Promise<void>
+/**
+ * Tell the central server whether to deliver DMs from non-friends.
+ * Mirrors the tauri command of the same name (defined there in
+ * commands/messaging.rs). Lives in settings.rs here because the DM
+ * command surface hasn't ported yet — when it does, this can move.
+ */
+export declare function setDmPrivacy(args: SetDmPrivacyArgs): Promise<void>
+export declare function listAudioDevices(): Promise<AudioDeviceList>
+export declare function listStreamAudioApps(args: ListStreamAudioAppsArgs): Promise<StreamAudioAppList>
+/**
+ * Store the streamer's app filter and apply it to the running share-audio
+ * capture, if any. Always succeeds: without a live engine the filter is
+ * simply remembered for the next `start_screen_share`.
+ */
+export declare function setStreamAudioFilter(args: SetStreamAudioFilterArgs): Promise<void>
 /**
  * PR8 hot path: renderer's WebCodecs.VideoEncoder produces encoded
  * chunks; we packetise + UDP. Called once per encoded frame at the
@@ -1284,15 +1435,39 @@ export interface SendVideoFrameArgs {
    */
   description?: Buffer
 }
-export declare function sendVideoFrame(args: SendVideoFrameArgs): void
-export interface SetStreamFrameSinkArgs {
+export interface FetchStreamThumbnailResult {
+  uid: number
   /**
-   * Media key (the streamer's uid, decimal) whose encoded frames the
-   * renderer now (no longer) displays.
+   * Empty Buffer when the server has no cached thumbnail yet
+   * (stream just started, or fetch arrived between frames).
    */
-  key: string
-  enabled: boolean
+  jpeg: Buffer
 }
+export interface SendStreamThumbnailArgs {
+  serverId: string
+  channelId: string
+  /**
+   * JPEG bytes. Typed as `Buffer` (not `Vec<u8>`) so napi-rs
+   * accepts a JS `Uint8Array` directly without forcing the
+   * renderer to materialise a plain Array — `Vec<u8>` would
+   * reject the typed-array shape with "not an array".
+   */
+  jpegData: Buffer
+}
+export declare function startScreenShare(args: StartScreenShareArgs): Promise<StartScreenShareResult>
+export declare function stopScreenShare(args: StopScreenShareArgs): Promise<void>
+/**
+ * Carry an already-running stream into a new voice channel WITHOUT restarting
+ * capture/encode. The caller has already joined the new voice channel, so a
+ * fresh VoiceEngine with new UDP sockets exists, and a new MLS group whose
+ * keys are the only ones the new channel can open; here we re-point the
+ * video (and stream-audio) senders at those sockets and that key ring, and
+ * re-announce the stream in the new channel. Because capture keeps running
+ * there is no portal/WGC re-prompt — the whole reason this exists instead of
+ * stop+start.
+ */
+export declare function moveStreamToChannel(args: MoveStreamToChannelArgs): Promise<void>
+export declare function sendVideoFrame(args: SendVideoFrameArgs): void
 /**
  * Renderer-side stream-frame subscriptions, mirrored natively. The preload
  * bridge calls this when the first subscriber for a media key appears
@@ -1309,36 +1484,8 @@ export declare function setStreamFrameSink(args: SetStreamFrameSinkArgs): void
  * renderer reload leaves no subscribers behind).
  */
 export declare function clearStreamFrameSinks(): void
-export interface WatchStreamArgs {
-  serverId: string
-  channelId: string
-  /** The streamer's uid: the media plane names streamers by uid. */
-  targetUid: number
-  /** Their name, for the server's logs only. */
-  targetUsername?: string
-}
 export declare function watchStream(args: WatchStreamArgs): Promise<void>
-export interface StopWatchingArgs {
-  serverId: string
-  channelId: string
-  /** See WatchStreamArgs. */
-  targetUid: number
-  targetUsername?: string
-}
 export declare function stopWatching(args: StopWatchingArgs): Promise<void>
-export interface FetchStreamThumbnailArgs {
-  serverId: string
-  /** The streamer's uid. */
-  uid: number
-}
-export interface FetchStreamThumbnailResult {
-  uid: number
-  /**
-   * Empty Buffer when the server has no cached thumbnail yet
-   * (stream just started, or fetch arrived between frames).
-   */
-  jpeg: Buffer
-}
 /**
  * On-demand fetch of the latest thumbnail for a streaming user.
  * Called by the renderer when UserProfilePopup opens for a user
@@ -1349,64 +1496,12 @@ export interface FetchStreamThumbnailResult {
  * oneshot per streamer (by uid), 5-second timeout, slot cleanup on timeout.
  */
 export declare function fetchStreamThumbnail(args: FetchStreamThumbnailArgs): Promise<FetchStreamThumbnailResult>
-export interface CodecCapValue {
-  /** 1=H264_HW, 2=H264_SW, 3=H265, 4=AV1. */
-  codec: number
-  maxWidth: number
-  maxHeight: number
-  maxFps: number
-}
-export interface CapsResponse {
-  encode: Array<CodecCapValue>
-  decode: Array<CodecCapValue>
-}
 export declare function getCaps(): Promise<CapsResponse>
-export interface SetEncoderCapsArgs {
-  encoderCaps: Array<CodecCapValue>
-}
 export declare function setEncoderCaps(args: SetEncoderCapsArgs): Promise<void>
-export interface SetDecoderCapsArgs {
-  decoderCaps: Array<CodecCapValue>
-}
 export declare function setDecoderCaps(args: SetDecoderCapsArgs): Promise<void>
-/**
- * Codec preference toggles persisted in the on-disk config. The
- * streaming UI reads these to gray out codecs the user has opted out
- * of. They also feed the toggle filter applied to encoder caps before
- * they ship in JoinVoiceRequest.
- */
-export interface CodecSettingsValue {
-  useAv1: boolean
-  useH265: boolean
-}
 export declare function getCodecSettings(): Promise<CodecSettingsValue>
 export declare function setCodecSettings(args: CodecSettingsValue): Promise<void>
-export interface SendStreamThumbnailArgs {
-  serverId: string
-  channelId: string
-  /**
-   * JPEG bytes. Typed as `Buffer` (not `Vec<u8>`) so napi-rs
-   * accepts a JS `Uint8Array` directly without forcing the
-   * renderer to materialise a plain Array — `Vec<u8>` would
-   * reject the typed-array shape with "not an array".
-   */
-  jpegData: Buffer
-}
 export declare function sendStreamThumbnail(args: SendStreamThumbnailArgs): Promise<void>
-/**
- * Native encoder capability returned by `probe_native_encoders`.
- * Same shape the renderer's WebCodecs probe used to populate.
- */
-export interface NativeEncoderCap {
-  /** VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1). */
-  codec: number
-  maxWidth: number
-  maxHeight: number
-  maxFps: number
-  hardware: boolean
-  /** FFmpeg encoder name that actually opens (e.g. "h264_nvenc"). */
-  encoderName: string
-}
 /**
  * Async + spawn_blocking for the same reason as the Windows variant: the
  * test-opens must not run on the Electron main thread.
@@ -1420,124 +1515,29 @@ export declare function probeNativeEncoders(): Promise<Array<NativeEncoderCap>>
  * `keyFrame: true` option.
  */
 export declare function forceKeyframe(): Promise<void>
-export interface RequestStreamKeyframeArgs {
-  /** Uid of the streamer whose next frame should be an IDR. */
-  uid: number
-}
 export declare function requestStreamKeyframe(args: RequestStreamKeyframeArgs): Promise<void>
-export interface JoinVoiceChannelArgs {
-  serverId: string
-  channelId: string
-  /**
-   * Per-channel voice bitrate from CommunityAuthResponse. `None`
-   * falls back to the default Opus bitrate.
-   */
-  voiceBitrateKbps?: number
-}
 export declare function joinVoiceChannel(args: JoinVoiceChannelArgs): Promise<void>
 export declare function leaveVoiceChannel(): Promise<void>
-export interface SetVoiceMuteArgs {
-  muted: boolean
-}
 export declare function setVoiceMute(args: SetVoiceMuteArgs): Promise<void>
-export interface SetVoiceDeafenArgs {
-  deafened: boolean
-}
 export declare function setVoiceDeafen(args: SetVoiceDeafenArgs): Promise<void>
-export interface SetVoiceThresholdArgs {
-  thresholdDb: number
-}
 export declare function setVoiceThreshold(args: SetVoiceThresholdArgs): Promise<void>
-export interface SetVoiceBitrateArgs {
-  /**
-   * Channel bitrate in kbps; 0 = client default. Called by the
-   * renderer when the connected channel's bitrate changes mid-call
-   * (channel_updated broadcast) so the running encoder adapts
-   * without a rejoin.
-   */
-  bitrateKbps: number
-}
 export declare function setVoiceBitrate(args: SetVoiceBitrateArgs): Promise<void>
-export interface SetStreamVolumeArgs {
-  volume: number
-}
 export declare function setStreamVolume(args: SetStreamVolumeArgs): Promise<void>
-export interface SetStreamStereoArgs {
-  enabled: boolean
-}
 export declare function setStreamStereo(args: SetStreamStereoArgs): Promise<void>
-export interface SetUserVolumeArgs {
-  /** The speaker's uid: the media plane names senders by uid. */
-  uid: number
-  gain: number
-}
 export declare function setUserVolume(args: SetUserVolumeArgs): Promise<void>
-export interface SetAecEnabledArgs {
-  enabled: boolean
-}
 export declare function setAecEnabled(args: SetAecEnabledArgs): Promise<void>
-export interface SetNoiseSuppressionLevelArgs {
-  level: number
-}
 export declare function setNoiseSuppressionLevel(args: SetNoiseSuppressionLevelArgs): Promise<void>
-export interface SetAgcEnabledArgs {
-  enabled: boolean
-}
 export declare function setAgcEnabled(args: SetAgcEnabledArgs): Promise<void>
-export interface SetInputDeviceArgs {
-  /** `None` falls back to the system default. */
-  name?: string
-}
 export declare function setInputDevice(args: SetInputDeviceArgs): Promise<void>
-export interface SetOutputDeviceArgs {
-  name?: string
-}
 export declare function setOutputDevice(args: SetOutputDeviceArgs): Promise<void>
-export interface SetSeparateStreamOutputArgs {
-  enabled: boolean
-  device?: string
-}
 export declare function setSeparateStreamOutput(args: SetSeparateStreamOutputArgs): Promise<void>
-export interface SetStreamOutputDeviceArgs {
-  name?: string
-}
 export declare function setStreamOutputDevice(args: SetStreamOutputDeviceArgs): Promise<void>
-export interface SetInputLevelReportingArgs {
-  enabled: boolean
-}
 /**
  * Gate the `voice_input_level` event (~16 Hz while in voice). Only the
  * Settings → Audio meter listens, so it switches reporting on while
  * mounted and off on unmount; default off. Sync: one atomic store.
  */
 export declare function setInputLevelReporting(args: SetInputLevelReportingArgs): void
-/**
- * Boot-time options pushed in from Electron main. Everything platform-
- * path-shaped (userData) is resolved Node-side via
- * `app.getPath()` and shipped here so Rust never has to figure out
- * platform-specific dirs itself — the Electron main process is the
- * authority.
- */
-export interface InitOptions {
-  userDataDir: string
-  appVersion: string
-  /**
-   * base64 of a random 32-byte key that Electron main keeps wrapped by
-   * `safeStorage` — the at-rest key for the E2EE key store. Absent when
-   * safeStorage isn't available on this machine (config.rs derivation
-   * is used instead). Named explicitly: napi's camel-casing splits on
-   * the digit (`e2EeLocalKey`), so main's `e2eeLocalKey` was never read
-   * and every store fell back to the derived key.
-   */
-  e2eeLocalKey?: string
-  /**
-   * True when that key is wrapped by a real OS keychain — false (or
-   * absent) for Linux's `basic_text` safeStorage backend, which wraps
-   * with a hard-coded password. The saved sign-in uses the key only
-   * when it is (config.rs).
-   */
-  localKeyProtected?: boolean
-}
 /**
  * Called once from Electron main after `app.whenReady()` and the
  * first BrowserWindow has been created. Installs the EventBus TSFN

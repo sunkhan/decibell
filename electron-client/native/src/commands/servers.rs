@@ -1,121 +1,52 @@
-//! Server discovery + community-server connection lifecycle.
-//!
-//! PR3 surface: ask central for the server list, connect to a
-//! community server (optionally redeeming an invite as part of the
-//! handshake), disconnect from a community server.
+//! `#[napi]` wrappers over `decibell_core::api::servers`, where the bodies
+//! live. Doc comments stay here: napi copies them into index.d.ts.
 
-use tokio::sync::oneshot;
-
-use crate::net::connection::build_packet;
-use crate::net::proto::{
-    packet, FetchServerPictureReq, InviteResolveRequest, InviteResolveResponse,
-    MembershipRevokeReq, ServerListRequest, UpdateServerPictureReq,
+use crate::api;
+use crate::api::servers::{
+    AttachmentTarget, ConnectToCommunityArgs, DisconnectFromCommunityArgs, DropMembershipArgs,
+    FetchServerPictureArgs, GetAttachmentTargetArgs, ParseInviteLinkArgs, ParsedInviteLink,
+    RedeemInviteArgs, ResolveInviteCodeArgs, ResolvedInvite, TrustCertificateArgs,
 };
-use crate::state;
+
+// The struct with a JS Buffer stays here (the core takes plain bytes); every
+// other argument and result struct is the core's.
+
+#[napi(object)]
+pub struct UpdateServerPictureArgs {
+    pub server_id: String,
+    pub data: napi::bindgen_prelude::Buffer,
+}
 
 /// Ask the central server for the user's server list. The response
 /// arrives asynchronously as a `server_list_received` event.
 #[napi]
 pub async fn request_server_list() -> napi::Result<()> {
-    let state_arc = state::shared();
-
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let token = s.token.clone();
-        let central = s
-            .central
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
-        let tx = central
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
-        let pkt = build_packet(
-            packet::Type::ServerListReq,
-            packet::Payload::ServerListReq(ServerListRequest {}),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct ConnectToCommunityArgs {
-    pub server_id: String,
-    pub host: String,
-    pub port: i32,
+    api::servers::request_server_list()
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn connect_to_community(args: ConnectToCommunityArgs) -> napi::Result<()> {
-    let port = u16::try_from(args.port).map_err(|_| napi::Error::from_reason("Invalid port"))?;
-    connect_with_invite(args.server_id, args.host, port, None).await
-}
-
-#[napi(object)]
-pub struct RedeemInviteArgs {
-    pub server_id: String,
-    pub host: String,
-    pub port: i32,
-    pub invite_code: String,
+    api::servers::connect_to_community(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Connect to a community server while consuming an invite code so the
 /// user joins (becomes a persistent member) as part of the handshake.
 #[napi]
 pub async fn redeem_invite(args: RedeemInviteArgs) -> napi::Result<()> {
-    let code = args.invite_code.trim().to_uppercase();
-    if code.is_empty() {
-        return Err(napi::Error::from_reason("Invite code is empty"));
-    }
-    let port = u16::try_from(args.port).map_err(|_| napi::Error::from_reason("Invalid port"))?;
-    connect_with_invite(args.server_id, args.host, port, Some(code)).await
-}
-
-#[napi(object)]
-pub struct DisconnectFromCommunityArgs {
-    pub server_id: String,
+    api::servers::redeem_invite(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 #[napi]
-pub async fn disconnect_from_community(
-    args: DisconnectFromCommunityArgs,
-) -> napi::Result<()> {
-    let state_arc = state::shared();
-
-    let removed = {
-        let mut s = state_arc.lock().await;
-        crate::e2ee::channel_keys::forget_server(&mut s, &args.server_id);
-        s.communities.remove(&args.server_id)
-    };
-
-    match removed {
-        Some(mut client) => {
-            client.disconnect();
-            Ok(())
-        }
-        None => Err(napi::Error::from_reason(format!(
-            "Not connected to community {}",
-            args.server_id
-        ))),
-    }
-}
-
-#[napi(object)]
-pub struct ParseInviteLinkArgs {
-    pub url: String,
-}
-
-#[napi(object)]
-pub struct ParsedInviteLink {
-    pub host: String,
-    pub port: u16,
-    pub code: String,
+pub async fn disconnect_from_community(args: DisconnectFromCommunityArgs) -> napi::Result<()> {
+    api::servers::disconnect_from_community(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Parse a `decibell://` invite URL into its components. Accepted shapes:
@@ -128,75 +59,7 @@ pub struct ParsedInviteLink {
 /// this stays for API completeness and older callers.
 #[napi]
 pub fn parse_invite_link(args: ParseInviteLinkArgs) -> napi::Result<ParsedInviteLink> {
-    let trimmed = args.url.trim();
-    let after_scheme = trimmed
-        .strip_prefix("decibell://")
-        .or_else(|| trimmed.strip_prefix("decibell:"))
-        .ok_or_else(|| napi::Error::from_reason("Not a decibell:// URL"))?;
-    let body = after_scheme
-        .strip_prefix("invite/")
-        .or_else(|| after_scheme.strip_prefix("/invite/"))
-        .ok_or_else(|| napi::Error::from_reason("URL is not an invite link"))?;
-
-    let body = body.trim_end_matches('/');
-    let parts: Vec<&str> = body.split('/').collect();
-    if parts.is_empty() {
-        return Err(napi::Error::from_reason("Invite link missing components"));
-    }
-
-    let code = parts.last().unwrap().to_string();
-    if code.is_empty() {
-        return Err(napi::Error::from_reason("Invite code missing"));
-    }
-
-    let (host, port) = if parts.len() == 1 {
-        (String::new(), 0u16)
-    } else if parts.len() == 2 {
-        let hp = parts[0];
-        match hp.rsplit_once(':') {
-            Some((h, p)) => (
-                percent_decode(h),
-                p.parse::<u16>()
-                    .map_err(|_| napi::Error::from_reason("Invalid port in invite link"))?,
-            ),
-            None => return Err(napi::Error::from_reason("Invite link missing port")),
-        }
-    } else {
-        let host = percent_decode(parts[0]);
-        let port = parts[1]
-            .parse::<u16>()
-            .map_err(|_| napi::Error::from_reason("Invalid port in invite link"))?;
-        (host, port)
-    };
-
-    if parts.len() > 1 && host.is_empty() {
-        return Err(napi::Error::from_reason("Host missing in invite link"));
-    }
-
-    Ok(ParsedInviteLink {
-        host,
-        port,
-        code: code.to_uppercase(),
-    })
-}
-
-#[napi(object)]
-pub struct ResolveInviteCodeArgs {
-    pub code: String,
-}
-
-#[napi(object)]
-pub struct ResolvedInvite {
-    pub host: String,
-    pub port: u16,
-    pub code: String,
-    /// Pre-join preview (invite cards in chat). 0 / empty when central
-    /// has no directory row for the community, or is an older build.
-    pub server_id: i64,
-    pub server_name: String,
-    pub server_description: String,
-    pub member_count: i32,
-    pub picture_version: String,
+    api::servers::parse_invite_link(args).map_err(napi::Error::from)
 }
 
 /// Ask the central server to resolve a raw invite code to a community
@@ -206,92 +69,9 @@ pub struct ResolvedInvite {
 /// 5 seconds.
 #[napi]
 pub async fn resolve_invite_code(args: ResolveInviteCodeArgs) -> napi::Result<ResolvedInvite> {
-    let code = args.code.trim().to_uppercase();
-    if code.is_empty() {
-        return Err(napi::Error::from_reason("Invite code is empty"));
-    }
-    let state_arc = state::shared();
-
-    // Build packet + register waiter under a single lock acquisition.
-    let (write_tx, data, rx) = {
-        let mut s = state_arc.lock().await;
-        let central = s
-            .central
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
-        let tx = central
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
-        let token = s.token.clone();
-        let data = build_packet(
-            packet::Type::InviteResolveReq,
-            packet::Payload::InviteResolveReq(InviteResolveRequest { code: code.clone() }),
-            token.as_deref(),
-        );
-        let (otx, orx) = oneshot::channel::<InviteResolveResponse>();
-        // Last-request-wins: replace any earlier waiter for this code.
-        s.pending_invite_resolves.insert(code.clone(), otx);
-        (tx, data, orx)
-    };
-
-    if tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+    api::servers::resolve_invite_code(args)
         .await
-        .is_err()
-    {
-        state_arc.lock().await.pending_invite_resolves.remove(&code);
-        return Err(napi::Error::from_reason("Failed to send resolve request"));
-    }
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(resp)) => {
-            if resp.success {
-                let port = u16::try_from(resp.port)
-                    .map_err(|_| napi::Error::from_reason("Central returned invalid port"))?;
-                Ok(ResolvedInvite {
-                    host: resp.host,
-                    port,
-                    code: resp.code,
-                    server_id: resp.server_id,
-                    server_name: resp.server_name,
-                    server_description: resp.server_description,
-                    member_count: resp.member_count,
-                    picture_version: resp.picture_version,
-                })
-            } else {
-                let msg = if resp.message.is_empty() {
-                    "Invite not found".to_string()
-                } else {
-                    resp.message
-                };
-                Err(napi::Error::from_reason(msg))
-            }
-        }
-        Ok(Err(_)) => Err(napi::Error::from_reason(
-            "Central connection closed before response",
-        )),
-        Err(_) => {
-            state_arc.lock().await.pending_invite_resolves.remove(&code);
-            Err(napi::Error::from_reason("Timed out waiting for central server"))
-        }
-    }
-}
-
-#[napi(object)]
-pub struct GetAttachmentTargetArgs {
-    pub server_id: String,
-}
-
-#[napi(object)]
-pub struct AttachmentTarget {
-    pub host: String,
-    pub port: i32,
-    pub jwt: String,
-    /// Per-file upload cap reported by the server. 0 = unlimited.
-    pub max_attachment_bytes: i64,
-    /// sha256-hex of the certificate this community presented on its chat
-    /// connection; the attachment listener uses the same certificate, so
-    /// Electron pins the HTTPS host to it.
-    pub cert_fingerprint: String,
+        .map_err(napi::Error::from)
 }
 
 /// Resolve the HTTPS endpoint for attachment uploads/downloads against a
@@ -304,27 +84,9 @@ pub struct AttachmentTarget {
 pub async fn get_attachment_target(
     args: GetAttachmentTargetArgs,
 ) -> napi::Result<Option<AttachmentTarget>> {
-    let state_arc = state::shared();
-    let s = state_arc.lock().await;
-    let client = s.communities.get(&args.server_id).ok_or_else(|| {
-        napi::Error::from_reason(format!("Not connected to community {}", args.server_id))
-    })?;
-    if client.attachment_port == 0 {
-        return Ok(None);
-    }
-    Ok(Some(AttachmentTarget {
-        host: client.host.clone(),
-        port: client.attachment_port as i32,
-        jwt: client.jwt.clone(),
-        max_attachment_bytes: client.max_attachment_bytes,
-        cert_fingerprint: client.cert_fingerprint.clone(),
-    }))
-}
-
-#[napi(object)]
-pub struct TrustCertificateArgs {
-    pub host: String,
-    pub port: u16,
+    api::servers::get_attachment_target(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// User-initiated re-trust after a `CERT_MISMATCH:` failure: forget the
@@ -333,47 +95,9 @@ pub struct TrustCertificateArgs {
 /// when the operator confirms the server was legitimately re-keyed.
 #[napi]
 pub async fn trust_certificate(args: TrustCertificateArgs) -> napi::Result<()> {
-    crate::net::pins::retrust(&args.host, args.port);
-    Ok(())
-}
-
-/// Best-effort URL-decoding for the host segment of an invite link.
-/// We don't pull in the urlencoding crate just for this — invite URLs
-/// rarely contain encoded chars, and a manual %XX scan is sufficient.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Core `api::servers::connect_with_invite` (central's router calls it too).
-async fn connect_with_invite(
-    server_id: String,
-    host: String,
-    port: u16,
-    invite_code: Option<String>,
-) -> napi::Result<()> {
-    crate::api::servers::connect_with_invite(server_id, host, port, invite_code)
+    api::servers::trust_certificate(args)
         .await
-        .map_err(napi::Error::from_reason)
-}
-
-#[napi(object)]
-pub struct DropMembershipArgs {
-    pub server_id: String,
+        .map_err(napi::Error::from)
 }
 
 /// Auto-rejoin stale-membership cleanup: tells central to drop the
@@ -385,44 +109,9 @@ pub struct DropMembershipArgs {
 /// username field on the packet.
 #[napi]
 pub async fn request_drop_membership(args: DropMembershipArgs) -> napi::Result<()> {
-    let server_id: i64 = args.server_id.parse().map_err(|_| {
-        napi::Error::from_reason(format!("Invalid server_id: {}", args.server_id))
-    })?;
-
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let token = s.token.clone();
-        let central = s
-            .central
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Not connected to central server"))?;
-        let tx = central
-            .connection_write_tx()
-            .ok_or_else(|| napi::Error::from_reason("Central connection lost"))?;
-        let pkt = build_packet(
-            packet::Type::MembershipRevokeReq,
-            packet::Payload::MembershipRevokeReq(MembershipRevokeReq {
-                username: String::new(),
-                server_id,
-                uid: 0,
-            }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct UpdateServerPictureArgs {
-    pub server_id: String,
-    pub data: napi::bindgen_prelude::Buffer,
+    api::servers::request_drop_membership(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Sends UPDATE_SERVER_PICTURE_REQ over the community session for
@@ -431,38 +120,9 @@ pub struct UpdateServerPictureArgs {
 /// to all online members (including the requester).
 #[napi]
 pub async fn update_server_picture(args: UpdateServerPictureArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let community = s.communities.get(&args.server_id).ok_or_else(|| {
-            napi::Error::from_reason(format!(
-                "Not connected to community server {}",
-                args.server_id
-            ))
-        })?;
-        let tx = community.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Community connection lost")
-        })?;
-        let pkt = build_packet(
-            packet::Type::UpdateServerPictureReq,
-            packet::Payload::UpdateServerPictureReq(UpdateServerPictureReq {
-                data: args.data.to_vec(),
-            }),
-            None,
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct FetchServerPictureArgs {
-    pub server_id: i32,
+    api::servers::update_server_picture(args.server_id, args.data)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Sends FETCH_SERVER_PICTURE_REQ over the JWT-authed central
@@ -470,29 +130,7 @@ pub struct FetchServerPictureArgs {
 /// with `data` already encoded as a data URL ready for <img src>.
 #[napi]
 pub async fn fetch_server_picture(args: FetchServerPictureArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::FetchServerPictureReq,
-            packet::Payload::FetchServerPictureReq(FetchServerPictureReq {
-                server_id: args.server_id,
-            }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
+    api::servers::fetch_server_picture(args)
+        .await
+        .map_err(napi::Error::from)
 }

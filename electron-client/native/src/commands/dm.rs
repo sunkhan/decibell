@@ -1,126 +1,28 @@
-//! Persistent DM commands. Three fire-and-emit napi calls:
-//!
-//!   - `request_dm_conversations()`: pulls conversation previews from
-//!     central; response arrives as `dm_conversations_received`.
-//!   - `request_dm_history(peer, before_id, limit)`: pulls one page
-//!     of messages; response arrives as `dm_history_received`.
-//!   - `mark_dm_read(peer, up_to_id)`: fire-and-forget read cursor
-//!     update; no response.
-//!
-//! All three send through the central server's TCP/TLS connection.
-//! Pattern mirrors the existing avatar request/response in
-//! commands/auth.rs — the difference is that the response handling
-//! is event-emit (not oneshot waiter) since the renderer is the
-//! caller of last resort, not a pending future.
+//! `#[napi]` wrappers over `decibell_core::api::dm`, where the bodies
+//! live. Doc comments stay here: napi copies them into index.d.ts.
 
-use crate::e2ee::session::{self as e2ee, Outbound, PLACEHOLDER};
-use crate::net::connection::build_packet;
-use crate::net::proto::{packet, DmDeleteReq, DmEditReq, DmHistoryReq, DmMarkReadReq};
-use crate::state;
+use crate::api;
+use crate::api::dm::{
+    DeleteDmMessageArgs, EditDmMessageArgs, MarkDmReadArgs, RequestDmHistoryArgs,
+};
 
 #[napi]
 pub async fn request_dm_conversations() -> napi::Result<()> {
-    // The newest page; the DM worker asks for the rest, and again for any
-    // page that doesn't come (e2ee/session.rs handle_conversations).
-    e2ee::request_conversations_page(&state::shared(), 0)
+    api::dm::request_dm_conversations()
         .await
-        .map_err(napi::Error::from_reason)
-}
-
-#[napi(object)]
-pub struct RequestDmHistoryArgs {
-    /// The peer's current name (a label).
-    pub peer: String,
-    /// The peer's uid (users by uid): the conversation is theirs.
-    pub peer_uid: i64,
-    pub before_id: i64,
-    pub limit: i32,
-    /// >0: fetch a context window centered on this DM id (windowed jump).
-    pub around_id: Option<i64>,
-    /// >0: page newer than this DM id (downward pagination).
-    pub after_id: Option<i64>,
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::DmHistoryReq,
-            packet::Payload::DmHistoryReq(DmHistoryReq {
-                peer: args.peer,
-                before_id: args.before_id,
-                limit: args.limit,
-                around_id: args.around_id.unwrap_or(0),
-                after_id: args.after_id.unwrap_or(0),
-                peer_uid: args.peer_uid,
-            }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data))
+    api::dm::request_dm_history(args)
         .await
-    {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct MarkDmReadArgs {
-    /// The peer's current name (a label).
-    pub peer: String,
-    /// The peer's uid (users by uid): the conversation is theirs.
-    pub peer_uid: i64,
-    pub up_to_id: i64,
+        .map_err(napi::Error::from)
 }
 
 #[napi]
 pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::DmMarkReadReq,
-            packet::Payload::DmMarkReadReq(DmMarkReadReq {
-                peer: args.peer,
-                up_to_id: args.up_to_id,
-                peer_uid: args.peer_uid,
-            }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await;
-    Ok(())
-}
-
-#[napi(object)]
-pub struct DeleteDmMessageArgs {
-    /// The peer's current name (a label).
-    pub peer: String,
-    /// The peer's uid (users by uid): the conversation is theirs.
-    pub peer_uid: i64,
-    pub message_id: i64,
+    api::dm::mark_dm_read(args).await.map_err(napi::Error::from)
 }
 
 /// Sends DM_DELETE_REQ over the JWT-authed central session. The
@@ -129,43 +31,9 @@ pub struct DeleteDmMessageArgs {
 /// land in useDmEvents on the renderer side.
 #[napi]
 pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::DmDeleteReq,
-            packet::Payload::DmDeleteReq(DmDeleteReq {
-                peer: args.peer,
-                message_id: args.message_id,
-                peer_uid: args.peer_uid,
-            }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
-}
-
-#[napi(object)]
-pub struct EditDmMessageArgs {
-    /// The peer's current name (a label).
-    pub peer: String,
-    /// The peer's uid (users by uid): the conversation is theirs.
-    pub peer_uid: i64,
-    pub message_id: i64,
-    pub content: String,
+    api::dm::delete_dm_message(args)
+        .await
+        .map_err(napi::Error::from)
 }
 
 /// Sends DM_EDIT_REQ over the JWT-authed central session. The ack arrives as
@@ -173,43 +41,7 @@ pub struct EditDmMessageArgs {
 /// `dm_message_edited`. Central enforces own-message-only.
 #[napi]
 pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
-    let state_arc = state::shared();
-    // E2EE: the new body is sealed exactly like a fresh send (same
-    // policy — encrypted when both sides have keys).
-    let (content, envelope) =
-        match e2ee::seal_outbound(&state_arc, args.peer_uid, &args.peer, &args.content)
+    api::dm::edit_dm_message(args)
         .await
-        .map_err(napi::Error::from_reason)?
-    {
-        Outbound::Plain => (args.content, Vec::new()),
-        Outbound::Sealed(wire) => (PLACEHOLDER.to_string(), wire),
-    };
-    let (write_tx, data) = {
-        let s = state_arc.lock().await;
-        let central = s.central.as_ref().ok_or_else(|| {
-            napi::Error::from_reason("Not connected to central server")
-        })?;
-        let tx = central.connection_write_tx().ok_or_else(|| {
-            napi::Error::from_reason("Central connection lost")
-        })?;
-        let token = s.token.clone();
-        let pkt = build_packet(
-            packet::Type::DmEditReq,
-            packet::Payload::DmEditReq(DmEditReq {
-                peer: args.peer,
-                message_id: args.message_id,
-                content,
-                envelope,
-                peer_uid: args.peer_uid,
-            }),
-            token.as_deref(),
-        );
-        (tx, pkt)
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(napi::Error::from_reason("Connection closed")),
-        Err(_) => Err(napi::Error::from_reason("Send timed out")),
-    }
+        .map_err(napi::Error::from)
 }
