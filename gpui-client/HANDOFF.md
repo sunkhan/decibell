@@ -64,11 +64,14 @@ screens in all seven themes beside Electron's.
 | Component kit (in `decibell-ui`) + Electron capture harness (`tools/electron-captures/`) | done `d1c99c9`: `ScrollAnimator` / `ScrollArea` (11 wheel vectors within 0.005 px), buttons, forms, `Select`, overlays, `SettingsWindow`, `SaveBar`, identity bits, 153 icons; 56 capture pairs against the real React components differ in ≤ 1.08 % of pixels; self-tests `kit-*` |
 | Text engine (`crates/decibell-text`, GPUI patches 0010 / 0011) | done `d1c99c9`: line breaks identical to Chromium on 21,389 / 21,391 fixture paragraphs (heights identical where breaks agree), letter-spacing, synthesised italics (skew 0.25), inline Twemoji (2,879 SVGs packed in 2.6 MB), rich bodies with code / math slots, selection contract, fallback fonts loaded lazily; cold layout 16.6 µs median, cached paint 0 allocations |
 | State model, both halves integrated | done `8ebaa28`: 176 unit tests, 16 stack tests; signed in with `#general` open and 100 users watched: 19.6 MB private, 0.17 wakeups/s; Windows check run 45833447742 green |
-| Text inputs (`decibell_text::input`, `TextField`, `TextArea`) + GPUI patch for physical key codes | in progress, **in the worktree `.worktrees/land` (branch `wip/land`)**: merge that branch when it reports |
-| Message list and rows (`crates/decibell-chat`) | in progress (main tree) |
+| Text inputs (`decibell_text::input`: `InputState`, `TextInput`, `TextArea`; the kit's `TextField` is a working field) + GPUI patch 0012 (physical key codes on key events) | done `5d634f1` + `b374268`: Chromium's caret / word stops and undo steps (51 of 52 recorded cases identical), atoms, IME protocol, password, byte caps; hotkeys recorder and focused fallback on physical codes, tested under xkb `tr` / `de`; self-tests `input-*`, `hotkeys-layout` |
+| Message list and rows (`crates/decibell-chat`) | done `1b192c8`: one element, exact row heights, anchored by coordinates (0 px on a history page: `chat-history`), sliced measuring, selection across rows, Chromium wheel scrolling; 185 fixture rows equal Electron's heights to 1/64 px in four themes (console themes: 4 day-opening rows off by 1/32 px); scroll at 280 Hz under load: p50 3.57 / p99 4.07 ms, 2 missed of 1,680 (Electron 14); slots for attachments, embeds, editor, composer |
+| Chat content (attachments, link / invite embeds, image viewer, Transfers panel) | in progress, worktree `.worktrees/chat-content` (`wip/chat-content`) |
+| Composer, emoji / GIF pickers, inline editor (`decibell-composer`) | in progress, worktree `.worktrees/composer` (`wip/composer`) |
+| DMs, friends, profile popup / modal, custom status, user menu (`decibell-home`) | in progress, worktree `.worktrees/home` (`wip/home`) |
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
 | Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
-| Core: voice / media plane without polling | on the branch `344068e`..`5840094` (verification running): UDP receive loops block instead of polling at 1 ms, the video receive thread exists only while a stream is watched or sent, a talking peer allocates nothing per packet (PCM sample-identical in tests), `FrameBuf` keeps FFmpeg's padding, system idle as an event on Wayland. **No audio stream or processing is paused** (owner rule). In a voice channel alone and muted: 1,380 → 766 wakeups/s; what remains is the device clock and the 5 ms audio tick |
+| Core: voice / media plane without polling | done `344068e`..`5840094` (Electron's bar passed on the merged tree: 419 core tests; Windows check run 45855500083 green): UDP receive loops block instead of polling at 1 ms, the video receive thread exists only while a stream is watched or sent, a talking peer allocates nothing per packet (PCM sample-identical in tests), `FrameBuf` keeps FFmpeg's padding, system idle as an event on Wayland. **No audio stream or processing is paused** (owner rule). In a voice channel alone and muted: 1,380 → 766 wakeups/s; what remains is the device clock and the 5 ms audio tick |
 | Encoder quality (NVENC HEVC bitrate undershoot, per-codec tuning, colour signalling) | in progress, worktree `.worktrees/core-quality` (`wip/core-quality`) |
 | Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software (**against a scratch FFmpeg prefix: the client's own `tools/build-ffmpeg.sh` and the Windows vcpkg FFmpeg don't include SVT-AV1 yet, so the software fallback is not in the client's build until the `wip/ffmpeg-sw` work lands**); VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
 | Shell (`decibell-common`, `decibell-shell`, app boot with core + model) | done `f4ac4fe`: sign-in / register pages, server bar, channel sidebar with voice rosters, user panel, member list, friends frame, pane / overlay / menu registration (CONVENTIONS "Shell"); self-tests `shell-signin`, `-navigate`, `-members`, `-idle`, `-signout`, `-no-keyring`; captures within 0.3–1.2 % of Electron's; numbers in §4 "Shell". Left: channel drag-to-reorder, panes of the other features |
@@ -101,11 +104,12 @@ linked (all git-excluded through `.git/info/exclude`).
 |---|---|
 | `.worktrees/core-quality` / `wip/core-quality` | encoder quality: HEVC undershoot, tuning, colour signalling (core) |
 | `.worktrees/ffmpeg-sw` / `wip/ffmpeg-sw` | SVT-AV1 + VAAPI filter in the client's FFmpeg build (Linux prefix rebuild; Windows vcpkg overlay + CI) |
-| `.worktrees/land` / `wip/land` | text inputs + GPUI patch 0012 (physical key codes) |
 | `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
 | `.worktrees/voice` / `wip/voice` | voice view, streams UI, calls, stream bot |
 | `.worktrees/settings` / `wip/settings` | settings window, passphrase dialog |
-| main tree (uncommitted until it reports; safety copy on local branch `wip/snapshot`) | the message list (`decibell-chat`) |
+| `.worktrees/chat-content` / `wip/chat-content` | attachments, embeds, image viewer, Transfers panel |
+| `.worktrees/composer` / `wip/composer` | composer, pickers, inline editor |
+| `.worktrees/home` / `wip/home` | DMs, friends, profiles, user menu |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
 clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
@@ -352,11 +356,11 @@ agents compiling): load average 14.5 / 8.3 / 3.3 / 9.3 at the start of startup /
 - Startup is the window with the shell booting (the core reads its configuration and signs in with the saved sign-in
   meanwhile: `decibell: signed-in` follows ~0.3 s later in the dev markers).
 
-**Windows compile status**: Windows Native Check run 45819750197 (`fc19cdf`) is green for both jobs: `check` (the
-addon and the core) and `gpui-client` (`fetch-gpui.sh` + `cargo check --locked --workspace --all-targets` of
-every client crate committed so far, and the capture build). Two things had to be fixed for the first client
-run: patches arrived with CRLF on a Windows checkout (`.gitattributes` now pins LF under `gpui-client/`), and
-the attachment tests read git-ignored `*.key` / `*.crt` files (they generate their certificate now).
+**Windows compile status**: Windows Native Check run 45855500083 (`b374268`) is green for both jobs: `check` (the
+addon and the core, with the encoders on every vendor and the reworked voice receive path) and `gpui-client`
+(`fetch-gpui.sh` with all nine patches + `cargo check --locked --workspace --all-targets` of every client crate
+on the branch: theme, harness, ui, text, model, video, common, shell, chat, app, the service and content
+crates, and the capture build). Self-tests and unit tests run on Linux only.
 
 ### Stream playback (`crates/decibell-video`, 2026-11-26)
 
