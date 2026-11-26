@@ -58,26 +58,102 @@ fn build_runtime() -> Result<tokio::runtime::Runtime> {
         .context("building the core's runtime")
 }
 
+/// A development or test build: `local-central` (the app's `dev-local`, the headless tool) or a
+/// debug build. Such a build never uses the shipped client's profile ([`default_user_data_dir`],
+/// [`check_profile`]).
+pub const DEVELOPMENT_BUILD: bool = cfg!(any(feature = "local-central", debug_assertions));
+
 /// Where this client keeps `config.json`, the E2EE key store, `cert_pins.json` and its
-/// own `ui.json`: `$DECIBELL_USER_DATA_DIR`, else `decibell` under the platform's config
-/// directory (`$XDG_CONFIG_HOME` or `~/.config` on Linux, `%APPDATA%` on Windows,
-/// `~/Library/Application Support` on macOS). Never the Electron client's
+/// own `ui.json`: `$DECIBELL_USER_DATA_DIR`, else [`shipped_profile_dir`] in a shipped build and
+/// [`development_profile_dir`] in a development one. Never the Electron client's
 /// (`decibell-electron-client`): the two keep separate device ids, pins and saved sign-ins.
 pub fn default_user_data_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("DECIBELL_USER_DATA_DIR").filter(|d| !d.is_empty()) {
+    resolve_user_data_dir(&|name| std::env::var_os(name), DEVELOPMENT_BUILD)
+}
+
+/// The shipped client's profile: `decibell` under the platform's config directory
+/// (`$XDG_CONFIG_HOME` or `~/.config` on Linux, `%APPDATA%` on Windows, `~/Library/Application
+/// Support` on macOS).
+pub fn shipped_profile_dir() -> Result<PathBuf> {
+    shipped_profile(&|name| std::env::var_os(name))
+}
+
+/// A development build's default profile, kept out of the shipped one (owner, 2026-11-26: a test
+/// run had created `~/.config/decibell`): `decibell-dev/gpui-default` under the platform's cache
+/// directory (`$XDG_CACHE_HOME` or `~/.cache` on Linux, `%LOCALAPPDATA%` on Windows,
+/// `~/Library/Caches` on macOS), beside the local stack's own `decibell-dev` files.
+pub fn development_profile_dir() -> Result<PathBuf> {
+    development_profile(&|name| std::env::var_os(name))
+}
+
+type EnvVar<'a> = &'a dyn Fn(&str) -> Option<std::ffi::OsString>;
+
+fn resolve_user_data_dir(var: EnvVar, development: bool) -> Result<PathBuf> {
+    if let Some(dir) = var("DECIBELL_USER_DATA_DIR").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if development { development_profile(var) } else { shipped_profile(var) }
+}
+
+fn env_path(var: EnvVar, name: &str) -> Option<PathBuf> {
+    var(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+fn shipped_profile(var: EnvVar) -> Result<PathBuf> {
     let base = if cfg!(target_os = "windows") {
-        var("APPDATA")
+        env_path(var, "APPDATA")
     } else if cfg!(target_os = "macos") {
-        var("HOME").map(|home| home.join("Library/Application Support"))
+        env_path(var, "HOME").map(|home| home.join("Library/Application Support"))
     } else {
-        var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")))
+        env_path(var, "XDG_CONFIG_HOME").or_else(|| env_path(var, "HOME").map(|home| home.join(".config")))
     };
     Ok(base
         .context("no home directory to keep the configuration in")?
         .join("decibell"))
+}
+
+fn development_profile(var: EnvVar) -> Result<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        env_path(var, "LOCALAPPDATA")
+    } else if cfg!(target_os = "macos") {
+        env_path(var, "HOME").map(|home| home.join("Library/Caches"))
+    } else {
+        env_path(var, "XDG_CACHE_HOME").or_else(|| env_path(var, "HOME").map(|home| home.join(".cache")))
+    };
+    Ok(base
+        .context("no home directory to keep the development profile in")?
+        .join("decibell-dev")
+        .join("gpui-default"))
+}
+
+/// Refuses a development build the shipped client's profile, even when `DECIBELL_USER_DATA_DIR`
+/// names it: whatever a test or a development run writes there (a device id, a saved sign-in to
+/// the local stack, pins) would be the installed client's next start. Shipped builds take any.
+pub fn check_profile(dir: &std::path::Path) -> Result<()> {
+    check_profile_with(dir, &|name| std::env::var_os(name), DEVELOPMENT_BUILD)
+}
+
+/// [`check_profile`] whatever the build: for tools that are never shipped (`decibell-headless`).
+pub fn refuse_shipped_profile(dir: &std::path::Path) -> Result<()> {
+    check_profile_with(dir, &|name| std::env::var_os(name), true)
+}
+
+fn check_profile_with(dir: &std::path::Path, var: EnvVar, development: bool) -> Result<()> {
+    if !development {
+        return Ok(());
+    }
+    let shipped = shipped_profile(var)?;
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    if same(dir, &shipped) {
+        bail!(
+            "a development build never uses the shipped client's profile ({}): leave DECIBELL_USER_DATA_DIR unset (the default is {}) or point it elsewhere",
+            shipped.display(),
+            development_profile(var).map(|d| d.display().to_string()).unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 /// Start the core: the user data directory, the at-rest key, the runtime, then
@@ -92,6 +168,7 @@ pub fn start(options: CoreOptions, sink: Arc<ModelSink>, cx: &mut App) -> Task<R
         .map(Ok)
         .unwrap_or_else(default_user_data_dir)
         .and_then(|dir| {
+            check_profile(&dir)?;
             std::fs::create_dir_all(&dir)
                 .with_context(|| format!("creating {}", dir.display()))?;
             Ok(dir)
@@ -190,6 +267,33 @@ pub fn shutdown(limit: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+        move |name| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.into())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn development_builds_keep_out_of_the_shipped_profile() {
+        let home = env(&[("HOME", "/home/a")]);
+        let shipped = resolve_user_data_dir(&home, false).unwrap();
+        assert_eq!(shipped, PathBuf::from("/home/a/.config/decibell"));
+        let dev = resolve_user_data_dir(&home, true).unwrap();
+        assert_eq!(dev, PathBuf::from("/home/a/.cache/decibell-dev/gpui-default"));
+        let xdg = env(&[("HOME", "/home/a"), ("XDG_CONFIG_HOME", "/c"), ("XDG_CACHE_HOME", "/k")]);
+        assert_eq!(resolve_user_data_dir(&xdg, false).unwrap(), PathBuf::from("/c/decibell"));
+        assert_eq!(resolve_user_data_dir(&xdg, true).unwrap(), PathBuf::from("/k/decibell-dev/gpui-default"));
+        // An explicit profile wins in both, and a development build refuses the shipped one.
+        let explicit = env(&[("HOME", "/home/a"), ("DECIBELL_USER_DATA_DIR", "/tmp/p")]);
+        assert_eq!(resolve_user_data_dir(&explicit, true).unwrap(), PathBuf::from("/tmp/p"));
+        assert!(check_profile_with(&shipped, &home, true).is_err());
+        assert!(check_profile_with(&shipped, &home, false).is_ok());
+        assert!(check_profile_with(&dev, &home, true).is_ok());
+        assert!(check_profile_with(std::path::Path::new("/tmp/p"), &home, true).is_ok());
+    }
+
+    // Tests run debug builds: development builds.
+    const _: () = assert!(DEVELOPMENT_BUILD);
 
     #[test]
     fn shutdown_without_a_core_is_a_no_op() {

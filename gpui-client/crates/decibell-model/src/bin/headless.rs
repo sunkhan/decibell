@@ -40,7 +40,8 @@ community stores, messages and DMs, voice / people / calls. Against the local te
 (DECIBELL_CENTRAL must be a loopback address; tools/dev/local-stack.sh).
 
 Options
-  --user-data-dir <dir>   the profile (default: $DECIBELL_USER_DATA_DIR, else the platform's)
+  --user-data-dir <dir>   the profile (default: $DECIBELL_USER_DATA_DIR, else
+                          ~/.cache/decibell-dev/gpui-default; never the shipped client's)
   --keychain              keep the E2EE at-rest key in the OS keychain (default: no key,
                           the core's machine-derived one; tests never touch the keychain)
   --timeout <seconds>     how long a `wait` may take (default 20)
@@ -645,7 +646,20 @@ fn main() -> ExitCode {
     gpui::Application::with_platform(gpui_platform::current_platform(true)).run({
         let exit = exit.clone();
         move |cx| {
-            let user_data_dir = args.user_data_dir.clone().or_else(|| core::default_user_data_dir().ok());
+            // A tool, never shipped: the development profile by default, and never the shipped
+            // client's (`~/.config/decibell`), whatever the build.
+            let user_data_dir = args.user_data_dir.clone().or_else(|| {
+                std::env::var_os("DECIBELL_USER_DATA_DIR")
+                    .filter(|d| !d.is_empty())
+                    .map(PathBuf::from)
+                    .or_else(|| core::development_profile_dir().ok())
+            });
+            if let Some(dir) = &user_data_dir
+                && let Err(e) = core::refuse_shipped_profile(dir)
+            {
+                eprintln!("decibell-headless: {e:#}");
+                std::process::exit(2);
+            }
             let model = Model::init(cx, user_data_dir.clone());
             live::install(&model, cx);
             let local_key: Box<dyn LocalKeyProvider> =

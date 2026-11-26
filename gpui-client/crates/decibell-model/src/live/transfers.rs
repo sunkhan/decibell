@@ -154,6 +154,9 @@ pub trait DownloadControl: 'static {
     fn configure(&self, dir: Option<std::path::PathBuf>, ask_each_time: bool);
     /// Show a save dialog for a plain download.
     fn ask_each_time(&self) -> bool;
+    /// Quitting: every running download is saved as paused, synchronously, so the next launch
+    /// resumes it (`pauseAllForQuit`). Called by the app's quit path.
+    fn pause_all_for_quit(&self) {}
 }
 
 /// [`DownloadControl`] over a `DownloadManager` whose async work runs on `runtime` (the
@@ -197,6 +200,9 @@ impl DownloadControl for ManagerControl {
     }
     fn ask_each_time(&self) -> bool {
         self.manager.ask_each_time()
+    }
+    fn pause_all_for_quit(&self) {
+        self.manager.pause_all_for_quit();
     }
 }
 
