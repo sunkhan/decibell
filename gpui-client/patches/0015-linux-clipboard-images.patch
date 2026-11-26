@@ -1,0 +1,597 @@
+diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index d17e722..6652c48 100644
+--- a/crates/gpui_linux/src/linux/wayland/client.rs
++++ b/crates/gpui_linux/src/linux/wayland/client.rs
+@@ -93,7 +93,7 @@ use crate::linux::{
+     keystroke_from_xkb, keystroke_underlying_dead_key, modifiers_from_xkb, new_xkb_context,
+     open_uri_internal, read_fd_with_timeout, reveal_path_internal,
+     wayland::{
+-        clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES},
++        clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES, offered_mime_types},
+         cursor::Cursor,
+         serial::{ActivationContext, Serial, SerialKind, SerialTracker},
+         to_shape,
+@@ -1488,6 +1488,8 @@ impl WaylandConnection {
+             return;
+         };
+         if state.mouse_focused_window.is_some() || state.keyboard_focused_window.is_some() {
++            // Text under the text types, each picture under its own type (`image/png`, …).
++            let offers = offered_mime_types(&item);
+             state.clipboard.set(item);
+             let Some(serial) = state.serial_tracker.selection_serial() else {
+                 log::warn!(
+@@ -1497,7 +1499,7 @@ impl WaylandConnection {
+             };
+             let data_source = data_device_manager
+                 .create_data_source(&state.globals.qh, DataSourceKind::Clipboard);
+-            for mime_type in TEXT_MIME_TYPES {
++            for mime_type in offers {
+                 data_source.offer(mime_type.to_string());
+             }
+             data_source.offer(state.clipboard.self_mime());
+@@ -2081,7 +2083,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+ 
+                 this.handle_keyboard_layout_change();
+             }
+-            wl_keyboard::Event::Enter { surface, .. } => {
++            wl_keyboard::Event::Enter {
++                serial, surface, ..
++            } => {
++                state
++                    .serial_tracker
++                    .update(SerialKind::KeyboardEnter, serial);
+                 state.keyboard_focused_window = get_window(&mut state, &surface.id());
+                 state.enter_token = Some(());
+ 
+diff --git a/crates/gpui_linux/src/linux/wayland/clipboard.rs b/crates/gpui_linux/src/linux/wayland/clipboard.rs
+index 86dc7da..ba5eda3 100644
+--- a/crates/gpui_linux/src/linux/wayland/clipboard.rs
++++ b/crates/gpui_linux/src/linux/wayland/clipboard.rs
+@@ -21,6 +21,38 @@ pub(crate) const FILE_LIST_MIME_TYPE: &str = "text/uri-list";
+ /// Text mime types that we'll accept from other programs.
+ pub(crate) const ALLOWED_TEXT_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "UTF8_STRING"];
+ 
++/// The mime types `item` is offered under: the text ones when it has text, and each picture's
++/// own type (`image/png`, …), in the order of its entries.
++pub(crate) fn offered_mime_types(item: &ClipboardItem) -> Vec<&'static str> {
++    let mut types = Vec::new();
++    if item.text().is_some() {
++        types.extend(TEXT_MIME_TYPES);
++    }
++    for entry in item.entries() {
++        if let ClipboardEntry::Image(image) = entry {
++            let mime_type = image.format.mime_type();
++            if !types.contains(&mime_type) {
++                types.push(mime_type);
++            }
++        }
++    }
++    types
++}
++
++/// What another program gets when it asks `item` for `mime_type`: the text for a text type, a
++/// picture's bytes for its own type, else nothing.
++pub(crate) fn contents_for_mime_type(item: &ClipboardItem, mime_type: &str) -> Option<Vec<u8>> {
++    if TEXT_MIME_TYPES.contains(&mime_type) {
++        return item.text().map(String::into_bytes);
++    }
++    item.entries().iter().find_map(|entry| match entry {
++        ClipboardEntry::Image(image) if image.format.mime_type() == mime_type => {
++            Some(image.bytes.clone())
++        }
++        _ => None,
++    })
++}
++
+ pub(crate) struct Clipboard {
+     connection: Connection,
+     loop_handle: LoopHandle<'static, ()>,
+@@ -174,19 +206,23 @@ impl Clipboard {
+         self.self_mime.clone()
+     }
+ 
+-    pub fn send(&self, _mime_type: String, fd: OwnedFd) {
+-        if let Some(text) = self.contents.as_ref().and_then(|contents| contents.text()) {
+-            self.send_bytes(fd, text.as_bytes().to_owned());
++    pub fn send(&self, mime_type: String, fd: OwnedFd) {
++        if let Some(bytes) = self
++            .contents
++            .as_ref()
++            .and_then(|contents| contents_for_mime_type(contents, &mime_type))
++        {
++            self.send_bytes(fd, bytes);
+         }
+     }
+ 
+-    pub fn send_primary(&self, _mime_type: String, fd: OwnedFd) {
+-        if let Some(text) = self
++    pub fn send_primary(&self, mime_type: String, fd: OwnedFd) {
++        if let Some(bytes) = self
+             .primary_contents
+             .as_ref()
+-            .and_then(|contents| contents.text())
++            .and_then(|contents| contents_for_mime_type(contents, &mime_type))
+         {
+-            self.send_bytes(fd, text.as_bytes().to_owned());
++            self.send_bytes(fd, bytes);
+         }
+     }
+ 
+@@ -227,6 +263,17 @@ impl Clipboard {
+     }
+ 
+     pub fn send_bytes(&self, fd: OwnedFd, bytes: Vec<u8>) {
++        // The pipe comes from the reader, blocking. A picture is larger than the pipe's buffer:
++        // written in place, it would block the event loop until the reader had taken all of it.
++        // Non-blocking, it goes out as the reader reads, from the loop's write readiness.
++        let raw = fd.as_raw_fd();
++        // SAFETY: `raw` is a descriptor this function owns for its whole lifetime (`fd`).
++        unsafe {
++            let flags = libc::fcntl(raw, libc::F_GETFL);
++            if flags >= 0 {
++                libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
++            }
++        }
+         let mut written = 0;
+         self.loop_handle
+             .insert_source(
+@@ -237,6 +284,9 @@ impl Clipboard {
+                 ),
+                 move |_, file, _| {
+                     let file = unsafe { file.get_mut() };
++                    if bytes.is_empty() {
++                        return Ok(PostAction::Remove);
++                    }
+                     loop {
+                         match file.write(&bytes[written..]) {
+                             Ok(n) if written + n == bytes.len() => {
+diff --git a/crates/gpui_linux/src/linux/wayland/serial.rs b/crates/gpui_linux/src/linux/wayland/serial.rs
+index 1bc4f00..00e0cd8 100644
+--- a/crates/gpui_linux/src/linux/wayland/serial.rs
++++ b/crates/gpui_linux/src/linux/wayland/serial.rs
+@@ -8,6 +8,8 @@ pub(crate) enum SerialKind {
+     MouseEnter,
+     MousePress,
+     KeyPress,
++    /// `wl_keyboard.enter`: the keyboard focus arriving on one of our surfaces.
++    KeyboardEnter,
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -87,10 +89,16 @@ impl SerialTracker {
+         self.serials.get(&kind).copied().unwrap_or(Serial(0))
+     }
+ 
++    /// The serial a selection request names: the latest key or button press, else the event that
++    /// gave us the keyboard focus (what Qt sends too). Without the fallback a window that has the
++    /// focus but has not been pressed in yet (a selection set from code right after start, a test)
++    /// could never own the clipboard.
+     pub fn selection_serial(&self) -> Option<SelectionSerial> {
+         self.latest_press
+             .as_ref()
+-            .map(|press| SelectionSerial(press.serial))
++            .map(|press| press.serial)
++            .or_else(|| self.serials.get(&SerialKind::KeyboardEnter).copied())
++            .map(SelectionSerial)
+     }
+ 
+     /// Returns the latest press if a still-alive surface had focus when it arrived.
+@@ -159,6 +167,17 @@ mod tests {
+         assert_eq!(raw_selection_serial(&serial_tracker), None);
+     }
+ 
++    #[test]
++    fn test_selection_serial_falls_back_to_the_keyboard_focus() {
++        let mut serial_tracker = SerialTracker::new();
++        serial_tracker.update(SerialKind::KeyboardEnter, 4000);
++        assert_eq!(raw_selection_serial(&serial_tracker), Some(4000));
++
++        serial_tracker.update(SerialKind::MousePress, 4100);
++        serial_tracker.update(SerialKind::KeyboardEnter, 4200);
++        assert_eq!(raw_selection_serial(&serial_tracker), Some(4100));
++    }
++
+     #[test]
+     fn test_zero_is_a_valid_selection_serial() {
+         let mut serial_tracker = SerialTracker::new();
+diff --git a/crates/gpui_linux/src/linux/x11/client.rs b/crates/gpui_linux/src/linux/x11/client.rs
+index 047ad44..ca58f48 100644
+--- a/crates/gpui_linux/src/linux/x11/client.rs
++++ b/crates/gpui_linux/src/linux/x11/client.rs
+@@ -1883,8 +1883,8 @@ impl X11Client {
+         let mut state = self.0.borrow_mut();
+         state
+             .clipboard
+-            .set_text(
+-                std::borrow::Cow::Owned(item.text().unwrap_or_default()),
++            .set_item(
++                &item,
+                 clipboard::ClipboardKind::Clipboard,
+                 clipboard::WaitConfig::None,
+             )
+diff --git a/crates/gpui_linux/src/linux/x11/clipboard.rs b/crates/gpui_linux/src/linux/x11/clipboard.rs
+index 18b25ed..e5f1b40 100644
+--- a/crates/gpui_linux/src/linux/x11/clipboard.rs
++++ b/crates/gpui_linux/src/linux/x11/clipboard.rs
+@@ -38,16 +38,16 @@ use x11rb::{
+     protocol::{
+         Event,
+         xproto::{
+-            Atom, AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, Property,
+-            PropertyNotifyEvent, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent,
+-            SelectionRequestEvent, Time, WindowClass,
++            Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux,
++            EventMask, PropMode, Property, PropertyNotifyEvent, SELECTION_NOTIFY_EVENT,
++            SelectionNotifyEvent, SelectionRequestEvent, Time, WindowClass,
+         },
+     },
+     rust_connection::RustConnection,
+     wrapper::ConnectionExt as _,
+ };
+ 
+-use gpui::{ClipboardItem, Image, ImageFormat, hash};
++use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
+ use strum::IntoEnumIterator;
+ 
+ type Result<T, E = Error> = std::result::Result<T, E>;
+@@ -104,6 +104,22 @@ thread_local! {
+ const LONG_TIMEOUT_DUR: Duration = Duration::from_millis(4000);
+ const SHORT_TIMEOUT_DUR: Duration = Duration::from_millis(10);
+ 
++/// Contents larger than this are served in pieces of this size (ICCCM 2.7.2, `INCR`): one property
++/// can hold no more than a request carries, and a picture is often larger.
++const INCR_CHUNK: usize = 1 << 20;
++/// An `INCR` transfer whose requestor stopped asking is forgotten after this long.
++const INCR_ABANDONED: Duration = Duration::from_secs(30);
++/// How long quitting waits for a clipboard manager that is still taking a large item in pieces.
++const INCR_HANDOVER_LIMIT: Duration = Duration::from_secs(2);
++
++/// One `INCR` transfer in progress: the requestor deletes the property, we write the next piece.
++struct IncrTransfer {
++    bytes: Vec<u8>,
++    target: Atom,
++    sent: usize,
++    last_activity: Instant,
++}
++
+ #[derive(Debug, PartialEq, Eq)]
+ enum ManagerHandoverState {
+     Idle,
+@@ -139,6 +155,8 @@ struct Inner {
+     handover_cv: Condvar,
+ 
+     serve_stopped: AtomicBool,
++    /// An `INCR` transfer is in progress (quitting waits for it to finish).
++    incr_active: AtomicBool,
+ }
+ 
+ impl XContext {
+@@ -227,6 +245,7 @@ impl Inner {
+             handover_state: Mutex::new(ManagerHandoverState::Idle),
+             handover_cv: Condvar::new(),
+             serve_stopped: AtomicBool::new(false),
++            incr_active: AtomicBool::new(false),
+         })
+     }
+ 
+@@ -668,18 +687,25 @@ impl Inner {
+         Ok(false)
+     }
+ 
+-    fn handle_selection_request(&self, event: SelectionRequestEvent) -> Result<()> {
++    /// Answers a request for the selection we own. Returns whether the contents asked for went out
++    /// whole (false while an `INCR` transfer of them is still under way).
++    fn handle_selection_request(
++        &self,
++        event: SelectionRequestEvent,
++        incr: &mut HashMap<(u32, Atom), IncrTransfer>,
++    ) -> Result<bool> {
+         let selection = match self.kind_of(event.selection) {
+             Some(kind) => kind,
+             None => {
+                 log::warn!(
+                     "Received a selection request to a selection other than the CLIPBOARD, PRIMARY or SECONDARY. This is unexpected."
+                 );
+-                return Ok(());
++                return Ok(false);
+             }
+         };
+ 
+         let success;
++        let mut complete = true;
+         // we are asked for a list of supported conversion targets
+         if event.target == self.atoms.TARGETS {
+             log::trace!(
+@@ -717,30 +743,63 @@ impl Inner {
+         } else {
+             log::trace!("Handling request for (probably) the clipboard contents.");
+             let data = self.selection_of(selection).data.read();
+-            if let Some(data_list) = &*data {
+-                success = match data_list.iter().find(|d| d.format == event.target) {
+-                    Some(data) => {
+-                        self.server
+-                            .conn
+-                            .change_property8(
+-                                PropMode::REPLACE,
+-                                event.requestor,
+-                                event.property,
+-                                event.target,
+-                                &data.bytes,
+-                            )
+-                            .map_err(into_unknown)?;
+-                        self.server.conn.flush().map_err(into_unknown)?;
+-                        true
+-                    }
+-                    None => false,
+-                };
+-            } else {
+-                // This must mean that we lost ownership of the data
+-                // since the other side requested the selection.
+-                // Let's respond with the property set to none.
+-                success = false;
+-            }
++            // `None` must mean that we lost ownership of the data since the other side requested
++            // the selection: answer with the property set to none.
++            let found = data
++                .as_ref()
++                .and_then(|data_list| data_list.iter().find(|d| d.format == event.target));
++            success = match found {
++                Some(data) if data.bytes.len() > INCR_CHUNK => {
++                    // Too large for one property: announce the size, then hand out a piece each
++                    // time the requestor deletes the property (its property changes reach us from
++                    // now on).
++                    self.server
++                        .conn
++                        .change_window_attributes(
++                            event.requestor,
++                            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
++                        )
++                        .map_err(into_unknown)?;
++                    self.server
++                        .conn
++                        .change_property32(
++                            PropMode::REPLACE,
++                            event.requestor,
++                            event.property,
++                            self.atoms.INCR,
++                            &[data.bytes.len() as u32],
++                        )
++                        .map_err(into_unknown)?;
++                    self.server.conn.flush().map_err(into_unknown)?;
++                    incr.insert(
++                        (event.requestor, event.property),
++                        IncrTransfer {
++                            bytes: data.bytes.clone(),
++                            target: event.target,
++                            sent: 0,
++                            last_activity: Instant::now(),
++                        },
++                    );
++                    self.incr_active.store(true, Ordering::Relaxed);
++                    complete = false;
++                    true
++                }
++                Some(data) => {
++                    self.server
++                        .conn
++                        .change_property8(
++                            PropMode::REPLACE,
++                            event.requestor,
++                            event.property,
++                            event.target,
++                            &data.bytes,
++                        )
++                        .map_err(into_unknown)?;
++                    self.server.conn.flush().map_err(into_unknown)?;
++                    true
++                }
++                None => false,
++            };
+         }
+         // on failure we notify the requester of it
+         let property = if success {
+@@ -767,7 +826,72 @@ impl Inner {
+             )
+             .map_err(into_unknown)?;
+ 
+-        self.server.conn.flush().map_err(into_unknown)
++        self.server.conn.flush().map_err(into_unknown)?;
++        Ok(success && complete)
++    }
++
++    /// The requestor of an `INCR` transfer deleted its property: write the next piece, or the
++    /// empty property that ends the transfer. Returns `Some(true)` when the transfer just ended,
++    /// `None` when the property belongs to no transfer of ours.
++    fn continue_incr(
++        &self,
++        incr: &mut HashMap<(u32, Atom), IncrTransfer>,
++        event: PropertyNotifyEvent,
++    ) -> Result<Option<bool>> {
++        let key = (event.window, event.atom);
++        let Some(transfer) = incr.get_mut(&key) else {
++            return Ok(None);
++        };
++        let end = (transfer.sent + INCR_CHUNK).min(transfer.bytes.len());
++        // A write with nothing left in it is the empty property that ends the transfer.
++        let finished = transfer.sent == transfer.bytes.len();
++        self.server
++            .conn
++            .change_property8(
++                PropMode::REPLACE,
++                event.window,
++                event.atom,
++                transfer.target,
++                &transfer.bytes[transfer.sent..end],
++            )
++            .map_err(into_unknown)?;
++        transfer.sent = end;
++        transfer.last_activity = Instant::now();
++        if finished {
++            incr.remove(&key);
++            self.end_incr_watch(incr, event.window)?;
++        }
++        self.server.conn.flush().map_err(into_unknown)?;
++        Ok(Some(finished))
++    }
++
++    /// Stops watching a requestor's properties once no transfer to it is left, and forgets
++    /// transfers whose requestor stopped asking.
++    fn end_incr_watch(&self, incr: &mut HashMap<(u32, Atom), IncrTransfer>, window: u32) -> Result<()> {
++        if !incr.keys().any(|(w, _)| *w == window) {
++            self.server
++                .conn
++                .change_window_attributes(window, &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT))
++                .map_err(into_unknown)?;
++        }
++        if incr.is_empty() {
++            self.incr_active.store(false, Ordering::Relaxed);
++        }
++        Ok(())
++    }
++
++    fn prune_incr(&self, incr: &mut HashMap<(u32, Atom), IncrTransfer>) -> Result<()> {
++        let abandoned: Vec<(u32, Atom)> = incr
++            .iter()
++            .filter(|(_, t)| t.last_activity.elapsed() > INCR_ABANDONED)
++            .map(|(key, _)| *key)
++            .collect();
++        for (window, atom) in abandoned {
++            log::warn!("Abandoned an INCR clipboard transfer its requestor stopped reading.");
++            incr.remove(&(window, atom));
++            self.end_incr_watch(incr, window)?;
++        }
++        Ok(())
+     }
+ 
+     fn ask_clipboard_manager_to_request_our_data(&self) -> Result<()> {
+@@ -814,9 +938,19 @@ impl Inner {
+ 
+         // Note that we are using a parking_lot condvar here, which doesn't wake up
+         // spuriously
+-        let result = self
++        let started = Instant::now();
++        let mut result = self
+             .handover_cv
+             .wait_for(&mut handover_state, max_handover_duration);
++        // A large item goes to the manager in pieces: wait for them, within a limit.
++        while *handover_state != ManagerHandoverState::Finished
++            && self.incr_active.load(Ordering::Relaxed)
++            && started.elapsed() < INCR_HANDOVER_LIMIT
++        {
++            result = self
++                .handover_cv
++                .wait_for(&mut handover_state, Duration::from_millis(50));
++        }
+ 
+         if *handover_state == ManagerHandoverState::Finished {
+             return Ok(());
+@@ -853,9 +987,14 @@ fn serve_requests(context: Arc<Inner>) -> Result<(), Box<dyn std::error::Error>>
+ 
+     let mut written = false;
+     let mut notified = false;
++    let mut incr: HashMap<(u32, Atom), IncrTransfer> = HashMap::new();
+ 
+     loop {
+-        match context.server.conn.wait_for_event().map_err(into_unknown)? {
++        let event = context.server.conn.wait_for_event().map_err(into_unknown)?;
++        if !incr.is_empty() {
++            context.prune_incr(&mut incr)?;
++        }
++        match event {
+             Event::DestroyNotify(_) => {
+                 // This window is being destroyed.
+                 log::trace!("Clipboard server window is being destroyed x_x");
+@@ -888,8 +1027,8 @@ fn serve_requests(context: Arc<Inner>) -> Result<(), Box<dyn std::error::Error>>
+                     context.atom_name(event.target),
+                 );
+                 // Someone is requesting the clipboard content from us.
+-                context
+-                    .handle_selection_request(event)
++                let complete = context
++                    .handle_selection_request(event, &mut incr)
+                     .map_err(into_unknown)?;
+ 
+                 // if we are in the progress of saving to the clipboard manager
+@@ -897,8 +1036,9 @@ fn serve_requests(context: Arc<Inner>) -> Result<(), Box<dyn std::error::Error>>
+                 let handover_state = context.handover_state.lock();
+                 if *handover_state == ManagerHandoverState::InProgress {
+                     // Only set written, when the actual contents were written,
+-                    // not just a response to what TARGETS we have.
+-                    if event.target != context.atoms.TARGETS {
++                    // not just a response to what TARGETS we have (an `INCR`
++                    // transfer is written when its last piece went out).
++                    if event.target != context.atoms.TARGETS && complete {
+                         log::trace!("The contents were written to the clipboard manager.");
+                         written = true;
+                         // if we have written and notified, make sure to notify that we are done
+@@ -940,6 +1080,22 @@ fn serve_requests(context: Arc<Inner>) -> Result<(), Box<dyn std::error::Error>>
+                     }
+                 }
+             }
++            Event::PropertyNotify(event) if event.state == Property::DELETE => {
++                // The requestor of an `INCR` transfer took a piece: send the next one.
++                if context
++                    .continue_incr(&mut incr, event)
++                    .map_err(into_unknown)?
++                    == Some(true)
++                {
++                    let handover_state = context.handover_state.lock();
++                    if *handover_state == ManagerHandoverState::InProgress {
++                        written = true;
++                        if notified {
++                            handover_finished(&context, handover_state);
++                        }
++                    }
++                }
++            }
+             _event => {
+                 // May be useful for debugging but nothing else really.
+                 //log::trace!("Received unwanted event: {:?}", event);
+@@ -1018,11 +1174,46 @@ impl Clipboard {
+         let format = self.image_format_atom(image.format);
+         let data = vec![ClipboardData {
+             bytes: image.bytes,
+-            format: self.inner.atoms.PNG__MIME,
++            format,
+         }];
+         self.inner.write(data, selection, wait)
+     }
+ 
++    /// Owns the selection with everything `item` holds: its text (`UTF8_STRING` and the text mime
++    /// types) and each picture under its own type (`image/png`, …).
++    pub(crate) fn set_item(
++        &self,
++        item: &ClipboardItem,
++        selection: ClipboardKind,
++        wait: WaitConfig,
++    ) -> Result<()> {
++        let mut data = Vec::new();
++        if let Some(text) = item.text() {
++            data.push(ClipboardData {
++                bytes: text.into_bytes(),
++                format: self.inner.atoms.UTF8_STRING,
++            });
++        }
++        for entry in item.entries() {
++            if let ClipboardEntry::Image(image) = entry {
++                let format = self.image_format_atom(image.format);
++                if !data.iter().any(|d| d.format == format) {
++                    data.push(ClipboardData {
++                        bytes: image.bytes.clone(),
++                        format,
++                    });
++                }
++            }
++        }
++        if data.is_empty() {
++            data.push(ClipboardData {
++                bytes: Vec::new(),
++                format: self.inner.atoms.UTF8_STRING,
++            });
++        }
++        self.inner.write(data, selection, wait)
++    }
++
+     pub(crate) fn get_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
+         let image_entries = ImageFormat::iter()
+             .map(|format| (self.image_format_atom(format), format))

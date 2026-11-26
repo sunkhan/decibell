@@ -18,6 +18,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0012-gpui-physical-key-codes.patch` | Key events carry the physical key: `KeyDownEvent::code` / `KeyUpEvent::code` (`KeyCode::Evdev(n)` on Linux, `KeyCode::Windows(scan)` on Windows, `Unknown` elsewhere and for simulated keystrokes), and `ModifiersChangedEvent::key` names the modifier key that went down or up. | Hotkey bindings name keys by position (`KeyboardEvent.code`); GPUI's `Keystroke` has only the character the layout types, so a recorder built on it saved the wrong key on every non-US keyboard (`HANDOFF.md` §5, now closed). |
 | `0013-gpui-hide-cursor-until-mouse-moves.patch` | `App::hide_cursor_until_mouse_moves()`: the public door to what the pinned GPUI already does on every platform when a key is typed (the cursor hidden until the pointer next moves). | A stream shown full screen hides the cursor once the pointer has rested, as the renderer's `cursor-none` does; GPUI has no hidden `CursorStyle`, and it does not need one. |
 | `0014-gpui-replay-nested-cached-views.patch` | A clean cached view nested in a cached view that renders is replayed from its own cache instead of rendering with it: views record which frame their replay ranges index, a replayed range moves the ranges of the views inside it, the cache key gains the rem size; counters (`gpui::CACHED_VIEWS_RENDERED` / `_REPLAYED`) and a switch back (`gpui::set_nested_view_replay`). | At the pin every notify renders every cached view under the topmost dirty one, which in this client is the whole window (the content is one cached view): a speaking ring on a 12-tile stage rendered 18 views (5 now), a typed key the message list above the field. Measured below. |
+| `0015-linux-clipboard-images.patch` | Linux clipboard writes carry pictures: Wayland offers each image entry under its own type (`image/png`, …) and text types only when there is text, and serves whichever type is asked for, writing large pieces without blocking; X11 owns the selection with every entry, under its type, and hands contents larger than 1 MiB out in `INCR` pieces (also to a clipboard manager taking them at quit); a window with the keyboard focus but no press yet may take the Wayland selection (the focus event's serial, as Qt does). | "Copy image" on Linux (owner request, 2026-11-26): GPUI only ever offered text on Wayland and X11. |
 
 ## How the patches are applied
 
@@ -557,6 +558,50 @@ client does not build them).
 
 **Upstream.** The stale-range hazard and the fix are GPUI's own; a version for upstream would drop the
 switch and keep the counters behind `test-support`.
+## 0015: Linux clipboard writes carry pictures
+
+`gpui_linux/src/linux/wayland/{clipboard.rs,client.rs,serial.rs}`, `x11/{clipboard.rs,client.rs}` (+308 / −51). A
+diff against the pin with `0001`–`0012` applied; it also applies after the `0013` / `0014` of the hide-cursor and
+nested-view work (checked with `git apply` on the merged set).
+
+**What.** At the pin GPUI read pictures from the Linux clipboards but wrote text only: Wayland offered the three text
+types and its own marker type whatever the item held and answered every request with `item.text()`; X11 called
+`set_text(item.text())` (its `set_image` was unused and offered every picture as `image/png`).
+
+- **Wayland**: `write_to_clipboard` offers the text types only when the item has text, and each image entry under its
+  own type (`ImageFormat::mime_type`: `image/png`, `image/jpeg`, …; `offered_mime_types`). `send` / `send_primary`
+  answer a request with what was asked for (`contents_for_mime_type`: the text for a text type, the picture's bytes
+  for its type, nothing otherwise). `send_bytes` makes the reader's pipe non-blocking first: a picture is larger than
+  a pipe buffer, and a blocking write would have stalled the event loop until the reader took all of it; now it goes
+  out from the loop's write readiness as the reader reads.
+- **The selection serial**: GPUI took the selection only with the serial of a key or button press in one of its
+  windows. A window that has the keyboard focus but has not been pressed in (a selection set from code right after
+  start; a self-test, which has no real input) never could. `SerialTracker::selection_serial` now falls back to the
+  serial of the `wl_keyboard.enter` that gave us the focus, as Qt does (its "last input serial" includes enter
+  events). The focus condition (`mouse_focused_window || keyboard_focused_window`) is unchanged. KWin accepts it (it
+  checks the keyboard focus, not the serial); wlroots accepts any serial it sent to the client; Mutter may refuse a
+  serial older than the current selection's, which is no worse than not asking. A unit test covers the order.
+- **X11**: `write_to_clipboard` owns the selection with every entry (`Clipboard::set_item`: `UTF8_STRING` for text,
+  each picture under its type's atom); `set_image` uses the picture's own atom. Contents larger than 1 MiB
+  (`INCR_CHUNK`) are served with ICCCM's `INCR`: the serving thread announces the size, watches the requestor's
+  property deletions (`PropertyNotify`) and writes the next piece each time, then the empty property that ends it.
+  Before, one `ChangeProperty` larger than the server's maximum request failed, and the error ended the serving thread
+  (no clipboard for the rest of the process). A transfer whose requestor stops reading is dropped after 30 s; the
+  clipboard-manager hand-over at quit counts an `INCR` transfer as written when its last piece went out and waits up to
+  2 s for one in progress (else 100 ms, as before).
+
+**Why.** "Copy image" (owner request, 2026-11-26): `decibell-chat-content`'s `actions::copy_image` puts a PNG on the
+clipboard, as the Electron client's `clipboard.writeImage` does.
+
+**Evidence.** `decibell --selftest content-copy-image` (`crates/decibell-app/src/copy_image.rs`): see `HANDOFF.md`
+§1 (the platform row) for the run.
+
+**Windows and macOS** were not changed: Windows writes the picture under its registered format ("PNG", "GIF", "JFIF")
+plus a PNG and **no `CF_DIB`**, so programs that paste only bitmaps (Paint, older Office) get nothing (the Windows batch
+in `HANDOFF.md`); macOS writes the picture's own pasteboard type (`public.png`).
+
+**Upstream.** Yes: GPUI's own `ClipboardItem::new_image` did nothing on Linux. The serial fallback is a separate
+question for upstream (their test pins the opposite).
 
 ## Considered and not patched
 
