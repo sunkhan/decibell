@@ -175,6 +175,17 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   backend for hardware nobody here has. Software is offered only when no hardware encoder works at all,
   within CPU-count limits, and needs an FFmpeg with SVT-AV1 4.0+ (`tools/ffmpeg-encoders.md`; the Electron
   addon's has none and keeps its WebCodecs fallback).
+- **Native client: dates, times and numbers follow the system's regional formats** (owner, 2026-11-26:
+  "the date system is hardcoded to the US system; it should follow the system's setting"). The UI language
+  stays English; the short-date order and separator, 12- / 24-hour time, the first day of the week and
+  digit grouping come from the OS's format settings (Linux `LC_ALL` / `LC_TIME` / `LC_NUMERIC` / `LANG`,
+  Windows' regional format), read once at startup by `decibell_model::regional`. Month and weekday names
+  stay English, placed in the system's field order ("Saturday, 7 November 2026" for a day-first system).
+  A `C` / `POSIX` time locale means "no preference" and gets the neutral forms Qt and KDE show for it
+  ("7 Nov 2026", 24-hour), not glibc's US-ordered leftover (`%m/%d/%y`). Settings → Appearance's time
+  format still overrides 12 / 24 h. Never format a date, a time of day or a count by hand in
+  `gpui-client/`. Electron formats by its UI language through `Intl` (Chromium ignores the OS's format
+  setting) and isn't changed by this.
 - **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
   `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native
   what holds sockets, speaks the wire, hooks the voice capture loop (AEC / AGC / NS) or owns files. The
