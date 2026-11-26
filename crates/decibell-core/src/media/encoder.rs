@@ -301,9 +301,15 @@ impl Encoder {
             .video()
             .map_err(|e| format!("encoder().video(): {e:?}"))?;
 
-        // GOP: keyframe every 4 seconds plus on-demand via force_keyframe
-        // (a `detail` stream: once a minute, see DETAIL_KEYFRAME_SECS).
-        let gop = fps * if detail { super::bitrate_preset::DETAIL_KEYFRAME_SECS } else { 4 };
+        // GOP: a periodic keyframe every STREAM_KEYFRAME_SECS (it was 4 s;
+        // the constant says why) plus on-demand via force_keyframe (a
+        // `detail` stream: once a minute, see DETAIL_KEYFRAME_SECS).
+        let gop = fps
+            * if detail {
+                super::bitrate_preset::DETAIL_KEYFRAME_SECS
+            } else {
+                super::bitrate_preset::STREAM_KEYFRAME_SECS
+            };
         context.set_width(width);
         context.set_height(height);
         context.set_frame_rate(Some(ff::Rational::new(fps as i32, 1)));
@@ -691,8 +697,14 @@ unsafe impl Send for SoftwarePath {}
 impl SoftwarePath {
     pub fn open(gpu: &GpuDevice, width: u32, height: u32, fps: u32, bitrate_kbps: u32, detail: bool) -> Result<Self, String> {
         let fps = fps.max(1);
-        // The GOP of the hardware path: 4 s, or a minute for a `detail` stream.
-        let gop = fps * if detail { super::bitrate_preset::DETAIL_KEYFRAME_SECS } else { 4 };
+        // The GOP of the hardware path: STREAM_KEYFRAME_SECS, or a minute
+        // for a `detail` stream.
+        let gop = fps
+            * if detail {
+                super::bitrate_preset::DETAIL_KEYFRAME_SECS
+            } else {
+                super::bitrate_preset::STREAM_KEYFRAME_SECS
+            };
         let encoder = SoftwareEncoder::open(width, height, fps, bitrate_kbps, gop, detail)?;
         let readback = Nv12Readback::new(gpu, width, height, fps)?;
         Ok(Self { encoder, readback, force_keyframe: Arc::new(AtomicBool::new(false)) })

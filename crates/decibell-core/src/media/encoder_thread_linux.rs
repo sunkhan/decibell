@@ -50,8 +50,9 @@ use super::video_pipeline::VideoSender;
 use crate::events;
 use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
 
-/// GOP length in seconds — keyframe every 2s, matching the renderer path.
-const KEYFRAME_INTERVAL_SECS: u32 = 2;
+/// Seconds between periodic keyframes (bitrate_preset::STREAM_KEYFRAME_SECS
+/// says why it is no longer 2).
+pub(super) const KEYFRAME_INTERVAL_SECS: u32 = super::bitrate_preset::STREAM_KEYFRAME_SECS;
 
 /// Consecutive frames that may fail to encode before the stream is declared
 /// dead (as on Windows): ~1 s at 60 fps. A transient failure recovers well

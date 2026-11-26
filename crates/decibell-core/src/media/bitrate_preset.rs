@@ -39,6 +39,21 @@ pub fn detail_opts(encoder_name: &str) -> &'static [(&'static str, &'static str)
     }
 }
 
+/// Seconds between a stream's periodic keyframes (5 fps `detail` streams:
+/// `DETAIL_KEYFRAME_SECS`), on both OSes. It was 2 s on Linux and 4 s on
+/// Windows. A keyframe has to fit the rate-control buffer, so on a still
+/// screen of text it comes out far coarser than the picture the frames
+/// before it had built up, and the picture needs about half a second to
+/// recover: measured on a still 720p document at 3 Mbps, 52 dB before the
+/// keyframe, 19 to 24 dB on it, 48 dB again 0.6 s later
+/// (docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md,
+/// "Quality"). Every 2 s that is a visible pulse. Nobody waits for a
+/// periodic keyframe: a viewer who joins or loses a frame asks for one and
+/// asks again every 0.5 to 1 s until it comes (video_receiver.rs), and a
+/// forced keyframe is the very next frame. This is the safety net under
+/// that path.
+pub const STREAM_KEYFRAME_SECS: u32 = 10;
+
 /// A `detail` stream's keyframe interval. Every keyframe briefly softens a
 /// still slide (it has to fit the rate-control buffer, while the frames
 /// before it had refined the picture), and the usual 2 to 4 s made that a
@@ -681,5 +696,11 @@ mod tests {
             assert_eq!(detail_opts(name), &[("quality", "quality")], "{name}");
         }
         assert!(detail_opts("libx264").is_empty());
+    }
+
+    #[test]
+    fn periodic_keyframes_are_the_safety_net() {
+        assert_eq!(STREAM_KEYFRAME_SECS, 10);
+        assert!(DETAIL_KEYFRAME_SECS >= STREAM_KEYFRAME_SECS);
     }
 }
