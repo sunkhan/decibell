@@ -62,8 +62,10 @@ client_preflight() {
   python3 -I -c 'import socket; socket.create_connection(("127.0.0.1",18080),timeout=2).close()' 2>/dev/null \
     || { echo "gpui: the local stack is down: tools/dev/local-stack.sh up" >&2; return 1; }
   mkdir -p "$GPUI_STATE" "$GPUI_PROFILE"
-  # The saved sign-in every scenario starts from: one sign-in as perf1, then quit.
-  if ! python3 -I -c 'import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if c.get("credentials") else 1)' \
+  # The saved sign-in every scenario starts from: one sign-in as perf1, then quit. A development build keeps the
+  # profile's at-rest key in <profile>/dev-local.key (never the desktop keyring): a profile that was signed in by an
+  # earlier build, under a keyring key, has credentials this build cannot read, so it signs in once more.
+  if [[ ! -f "$GPUI_PROFILE/dev-local.key" ]] || ! python3 -I -c 'import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if c.get("credentials") else 1)' \
       "$GPUI_PROFILE/config.json" 2>/dev/null; then
     echo "gpui: signing the profile in as $GPUI_ACCOUNT (saved sign-in)" >&2
     client_launch --login >/dev/null && client_ready && client_stop || return 1
