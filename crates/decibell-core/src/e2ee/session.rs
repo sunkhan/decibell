@@ -138,20 +138,7 @@ fn arr32(v: &[u8]) -> Option<[u8; KEY_LEN]> {
 }
 
 pub fn emit_status(s: &AppState) {
-    // Unit tests can't link the napi event bus (Node-only symbols), so the
-    // flows they drive emit nothing there.
-    #[cfg(not(test))]
     events::emit_e2ee_status_changed(s.e2ee.status_payload(s.uid));
-    #[cfg(test)]
-    let _ = s;
-}
-
-/// `e2ee_peer_changed`, behind the same test seam as `emit_status`.
-fn emit_peer_changed(payload: events::E2eePeerChangedPayload) {
-    #[cfg(not(test))]
-    events::emit_e2ee_peer_changed(payload);
-    #[cfg(test)]
-    let _ = payload;
 }
 
 /// Persist the store under our uid (logged, never fatal: it's a cache of
@@ -496,7 +483,7 @@ pub async fn resolve_peer_current(
     }
     drop(s);
     if changed {
-        emit_peer_changed(events::E2eePeerChangedPayload {
+        events::emit_e2ee_peer_changed(events::E2eePeerChangedPayload {
             username: bundle.username.clone(),
             uid,
             key_id: bundle.key_id,
@@ -1364,10 +1351,7 @@ async fn run_worker(mut rx: mpsc::Receiver<DmJob>, state: Arc<Mutex<AppState>>) 
                 message_id: b.message_id,
                 deleted_at: b.deleted_at,
             }),
-            DmJob::ReadSync(r) => events::send(
-                "dm_read_synced",
-                serde_json::json!({ "peerUid": r.peer_uid, "upToId": r.up_to_id }),
-            ),
+            DmJob::ReadSync(r) => events::emit_dm_read_synced(r.peer_uid, r.up_to_id),
         }
     }
 }
@@ -1689,6 +1673,7 @@ mod tests {
     //! Peer keys are cached, so nothing touches the network.
     use super::*;
     use crate::e2ee::envelope::CONTENT_TEXT;
+    use crate::events::{testing, CoreEvent};
 
     const ALICE: i64 = 10;
     const BOB: i64 = 20;
@@ -1746,6 +1731,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_always_loads_the_pins() {
         boot_tmp();
+        testing::install_recording_sink();
         const ME: i64 = 9301;
         let (mine, bob) = (identity(3), identity(7));
         let mut store = KeyStore::new(3, vec![mine]);
@@ -1762,6 +1748,15 @@ mod tests {
             assert!(s.e2ee.status_payload(ME).supported);
             assert!(s.e2ee.store.as_ref().unwrap().is_pinned(BOB));
         }
+        // The UI heard it (current-thread runtime: the emits are this test's).
+        let statuses: Vec<_> = testing::take_own_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                CoreEvent::E2eeStatusChanged(p) => Some((p.supported, p.status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses.last(), Some(&(true, "ready".to_string())), "{statuses:?}");
         // Central answers "no keys" for the pinned peer (fresh, nothing cached).
         state.lock().await.e2ee.fresh.insert(BOB);
         assert!(seal_outbound(&state, BOB, "bob", "hi").await.is_err());
@@ -1901,6 +1896,7 @@ mod tests {
     #[tokio::test]
     async fn a_key_change_first_seen_in_history_is_surfaced_and_opens() {
         boot_tmp();
+        testing::install_recording_sink();
         const ME: i64 = 9312;
         let (me, a, b) = (identity(7), identity(3), identity(5));
         let (state, mut store) = session(ME, "me", &me);
@@ -1925,6 +1921,15 @@ mod tests {
             assert!(rec.changed_at > 0, "surfaced as a key change");
             assert!(rec.knows_identity(&a.sign_public().unwrap()));
         }
+        // ... and the UI was told, once.
+        let changed: Vec<_> = testing::take_own_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                CoreEvent::E2eePeerChanged(p) => Some((p.uid, p.username, p.key_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed, vec![(ALICE, "alice".to_string(), 5)]);
         let old = envelope::seal(&priv32(&a), ALICE, 3, &my_pub, ME, 7, "old keys").unwrap();
         assert_eq!(open_inbound(&state, &from_alice, &old).await.unwrap(), "old keys");
         // Another generation signed by the retired identity passes too.

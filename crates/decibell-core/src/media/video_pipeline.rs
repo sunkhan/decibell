@@ -388,10 +388,8 @@ fn maybe_request_keyframe(shed: &mut ShedState) {
     }
     shed.last_keyframe_request = Some(now);
     // Same event a watcher's PLI raises; useVoiceEvents routes it to
-    // StreamCapture.forceKeyframe() on this (renderer-encode) path. Gated
-    // out of unit tests: the napi TSFN symbols only resolve inside Node.
-    #[cfg(not(test))]
-    crate::events::send("keyframe_requested", serde_json::Value::Null);
+    // StreamCapture.forceKeyframe() on this (renderer-encode) path.
+    crate::events::emit_keyframe_requested();
 }
 
 #[cfg(test)]
@@ -510,6 +508,29 @@ mod tests {
         );
         old_rx.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
         assert!(recv_packet(&old_rx).is_none(), "nothing more goes to the old socket");
+    }
+
+    /// A shed asks the renderer encoder for a keyframe (`keyframe_requested`),
+    /// at most once per KEYFRAME_RETRY while it waits for one.
+    #[test]
+    fn shedding_asks_for_a_keyframe_once_per_retry() {
+        use crate::events::{testing, CoreEvent};
+        testing::install_recording_sink();
+        let _ = testing::take_own_events();
+        let asked = || {
+            testing::take_own_events()
+                .iter()
+                .filter(|e| matches!(e, CoreEvent::KeyframeRequested))
+                .count()
+        };
+        let mut shed = ShedState { awaiting_keyframe: true, ..Default::default() };
+        maybe_request_keyframe(&mut shed);
+        maybe_request_keyframe(&mut shed);
+        assert_eq!(asked(), 1);
+        // The retry window passed: ask again.
+        shed.last_keyframe_request = Instant::now().checked_sub(KEYFRAME_RETRY);
+        maybe_request_keyframe(&mut shed);
+        assert_eq!(asked(), 1);
     }
 
     #[test]

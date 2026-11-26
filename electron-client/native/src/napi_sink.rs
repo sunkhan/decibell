@@ -1,7 +1,8 @@
 //! The addon's `decibell_core::events::EventSink`: three ThreadsafeFunctions
 //! installed once by `init(opts, bus, stream_bus, stream_thumbnail_bus)`.
 //!
-//! - `bus`: every named event, as the `{name, payload}` envelope the
+//! - `bus`: every named event (a typed `CoreEvent`, turned into its JSON by
+//!   `CoreEvent::to_json`), as the `{name, payload}` envelope the
 //!   renderer-side `listen(name, handler)` shim reads (Tauri's
 //!   `app.emit(name, payload)` shape).
 //! - `stream_bus`: encoded video frames as Node Buffers plus a small
@@ -14,7 +15,7 @@
 
 use std::sync::OnceLock;
 
-use decibell_core::events::{EventSink, StreamFrame, StreamThumbnail};
+use decibell_core::events::{CoreEvent, EventSink, StreamFrame, StreamThumbnail};
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{
     ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
@@ -51,7 +52,8 @@ impl EventSink for NapiSink {
     /// NonBlocking: if the renderer-side queue saturates the call is
     /// dropped silently. For the named events this is fine; encoded-video
     /// frames bypass this bus entirely.
-    fn event(&self, name: &'static str, payload: serde_json::Value) {
+    fn event(&self, event: CoreEvent) {
+        let (name, payload) = event.to_json();
         let mut envelope = serde_json::Map::new();
         envelope.insert("name".to_string(), serde_json::Value::String(name.to_string()));
         envelope.insert("payload".to_string(), payload);

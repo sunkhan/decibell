@@ -2,24 +2,32 @@
 //!
 //! The host installs an [`EventSink`] once ([`install_sink`]) and every core
 //! thread reaches the UI through it, on three channels:
-//!   - [`send`]: a named event with a JSON payload. Mirrors Tauri's
-//!     `app.emit(name, payload)` shape one-for-one: the napi sink wraps it in
-//!     the `{name, payload}` envelope the renderer-side `listen(name,
-//!     handler)` shim reads.
+//!   - [`EventSink::event`]: a named event, typed as a [`CoreEvent`] (one
+//!     variant per name constant below, carrying the payload struct). The
+//!     `emit_*` helpers build them; nothing emits an untyped event. The napi
+//!     sink turns one into Tauri's `app.emit(name, payload)` shape with
+//!     [`CoreEvent::to_json`] and wraps it in the `{name, payload}` envelope
+//!     the renderer-side `listen(name, handler)` shim reads; a native client
+//!     matches on the variant.
 //!   - [`send_stream_frame`]: encoded video frames, binary, filtered here by
 //!     who is on screen (`STREAM_FRAME_SINKS`); the sink owns the queueing and
 //!     shedding.
 //!   - [`emit_stream_thumbnail_updated`]: per-stream JPEG thumbnails, binary.
 //!
-//! Until a sink is installed (very early startup, unit tests) every emit is a
-//! no-op.
+//! Until a sink is installed (very early startup) every emit is a no-op.
+//! Unit tests install a recording sink (`events::testing`) to see them.
 //!
 //! Event name constants live alongside the helpers so call sites get
-//! one canonical string per event (compile-time typo check).
+//! one canonical string per event (compile-time typo check);
+//! `events/core_event.rs` maps each to its variant and payload, and
+//! `tests/golden/events.json` pins the JSON of every one.
 
 use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
+
+mod core_event;
+pub use core_event::CoreEvent;
 
 #[cfg(test)]
 mod golden_tests;
@@ -31,9 +39,9 @@ pub mod testing;
 /// tokio workers, network receivers, the voice / video receive threads,
 /// capture and encoder threads — and must not block.
 pub trait EventSink: Send + Sync + 'static {
-    /// A named UI event (one of the constants below). `payload` is the
-    /// serialised payload struct, `Value::Null` for the payload-less ones.
-    fn event(&self, name: &'static str, payload: serde_json::Value);
+    /// A named UI event. [`CoreEvent::to_json`] gives its wire name and
+    /// JSON payload (`Value::Null` for the payload-less ones).
+    fn event(&self, event: CoreEvent);
     /// A whole, decrypted, encoded frame of a watched stream (or our own
     /// preview) whose key a UI subscriber wants (`is_stream_frame_sink`,
     /// already checked). Called on the video receive / encoder threads. The
@@ -196,17 +204,15 @@ pub struct StreamThumbnail {
 /// Send an event. Safe to call from any thread (including std::thread
 /// workers — capture, encode, network receivers). Never blocks: the sink
 /// drops what it can't queue (the napi sink: NonBlocking). For the named
-/// events this is fine; encoded-video frames bypass it entirely.
-pub fn send<P: Serialize>(name: &'static str, payload: P) {
+/// events this is fine; encoded-video frames bypass it entirely. Callers
+/// normally go through the `emit_*` helpers below.
+pub fn emit(event: CoreEvent) {
     let Some(sink) = sink() else {
-        // No sink yet (very early startup, before init; unit tests). Drop
-        // the event silently.
+        // No sink yet (very early startup, before init). Drop the event
+        // silently.
         return;
     };
-    sink.event(
-        name,
-        serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
-    );
+    sink.event(event);
 }
 
 // ── Event name constants ──────────────────────────────────────────
@@ -219,6 +225,8 @@ pub const LOGIN_SUCCEEDED: &str = "login_succeeded";
 /// A user changed their username (uid design, stage 5): ours (`self`)
 /// after `rename_account`, anyone else's from central's USER_RENAMED.
 pub const USER_RENAMED: &str = "user_renamed";
+/// A user's picture changed: central's AVATAR_CHANGED, or our own upload.
+pub const AVATAR_CHANGED: &str = "avatar_changed";
 pub const LOGIN_FAILED: &str = "login_failed";
 pub const REGISTER_RESPONDED: &str = "register_responded";
 pub const LOGGED_OUT: &str = "logged_out";
@@ -226,6 +234,8 @@ pub const DEVICES_CHANGED: &str = "devices_changed";
 pub const SESSION_TOKEN_UPDATED: &str = "session_token_updated";
 pub const SERVER_LIST_RECEIVED: &str = "server_list_received";
 pub const MEMBERSHIPS_RECEIVED: &str = "memberships_received";
+/// Another device of the account joined a community (MEMBERSHIP_ADDED).
+pub const MEMBERSHIP_ADDED: &str = "membership_added";
 pub const COMMUNITY_AUTH_RESPONDED: &str = "community_auth_responded";
 pub const MESSAGE_RECEIVED: &str = "message_received";
 pub const CHANNEL_HISTORY_RECEIVED: &str = "channel_history_received";
@@ -276,11 +286,18 @@ pub const STREAM_PRESENCE_UPDATED: &str = "stream_presence_updated";
 pub const STREAM_CODEC_CHANGED: &str = "stream_codec_changed";
 pub const STREAM_GPU_FALLBACK: &str = "stream_gpu_fallback";
 pub const STREAM_CAPTURE_ENDED: &str = "stream_capture_ended";
+/// Our stream needs a keyframe (a watcher's PLI, or the renderer-encode
+/// send queue shed frames); the renderer encoder forces one.
+pub const KEYFRAME_REQUESTED: &str = "keyframe_requested";
+/// Our native encode loop died while streaming.
+pub const NATIVE_STREAM_FAILED: &str = "native_stream_failed";
 // stream_frame removed — encoded frames ride the sink's binary
 // channel now (see EventSink::stream_frame / send_stream_frame).
 pub const CAPS_REFRESHED: &str = "caps_refreshed";
 pub const DM_CONVERSATIONS_RECEIVED: &str = "dm_conversations_received";
 pub const DM_HISTORY_RECEIVED: &str = "dm_history_received";
+/// Another device of ours read a DM conversation (DM_READ_SYNC).
+pub const DM_READ_SYNCED: &str = "dm_read_synced";
 
 // --- Message deletion ---
 pub const DM_MESSAGE_DELETE_RESPONDED: &str = "dm_message_delete_responded";
@@ -340,7 +357,24 @@ pub struct UserRenamedPayload {
 }
 
 pub fn emit_user_renamed(payload: UserRenamedPayload) {
-    send(USER_RENAMED, payload);
+    emit(CoreEvent::UserRenamed(payload));
+}
+
+/// `avatar_changed`: the renderer's avatar cache invalidates the user's
+/// picture and refetches it lazily.
+#[derive(Debug, Clone, Serialize)]
+pub struct AvatarChangedPayload {
+    pub uid: i64,
+    pub username: String,
+    /// sha256-hex of the new picture; '' when it was removed.
+    pub version: String,
+}
+
+/// A user's picture changed: central's AVATAR_CHANGED push to watchers, or
+/// our own upload succeeding (central doesn't tell us: we don't watch
+/// ourselves).
+pub fn emit_avatar_changed(uid: i64, username: String, version: String) {
+    emit(CoreEvent::AvatarChanged(AvatarChangedPayload { uid, username, version }));
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -619,11 +653,11 @@ pub struct ChannelActionRespondedPayload {
 }
 
 pub fn emit_channel_list_updated(payload: ChannelListUpdatedPayload) {
-    send(CHANNEL_LIST_UPDATED, payload);
+    emit(CoreEvent::ChannelListUpdated(payload));
 }
 
 pub fn emit_channel_action_responded(payload: ChannelActionRespondedPayload) {
-    send(CHANNEL_ACTION_RESPONDED, payload);
+    emit(CoreEvent::ChannelActionResponded(payload));
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -674,38 +708,35 @@ pub struct CommunityAuthRespondedPayload {
 // ── Emit helpers ──────────────────────────────────────────────────
 
 pub fn emit_connection_lost(server_type: &str, server_id: Option<String>) {
-    send(
-        CONNECTION_LOST,
+    emit(CoreEvent::ConnectionLost(
         ConnectionEventPayload {
             server_type: server_type.to_string(),
             server_id,
         },
-    );
+    ));
 }
 
 pub fn emit_connection_restored(server_type: &str, server_id: Option<String>) {
-    send(
-        CONNECTION_RESTORED,
+    emit(CoreEvent::ConnectionRestored(
         ConnectionEventPayload {
             server_type: server_type.to_string(),
             server_id,
         },
-    );
+    ));
 }
 
 pub fn emit_login_succeeded(username: String, uid: i64, renames: bool, devices: bool) {
-    send(LOGIN_SUCCEEDED, LoginSucceededPayload { username, uid, renames, devices });
+    emit(CoreEvent::LoginSucceeded(LoginSucceededPayload { username, uid, renames, devices }));
 }
 
 pub fn emit_login_failed(message: String) {
-    send(LOGIN_FAILED, LoginFailedPayload { message });
+    emit(CoreEvent::LoginFailed(LoginFailedPayload { message }));
 }
 
 pub fn emit_register_responded(success: bool, message: String) {
-    send(
-        REGISTER_RESPONDED,
+    emit(CoreEvent::RegisterResponded(
         RegisterRespondedPayload { success, message },
-    );
+    ));
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -716,7 +747,7 @@ pub struct LoggedOutPayload {
 }
 
 pub fn emit_logged_out(reason: Option<&str>) {
-    send(LOGGED_OUT, LoggedOutPayload { reason: reason.map(str::to_string) });
+    emit(CoreEvent::LoggedOut(LoggedOutPayload { reason: reason.map(str::to_string) }));
 }
 
 /// One of the account's devices (docs/superpowers/specs/2026-10-19-devices-
@@ -761,50 +792,57 @@ pub struct DevicesChangedPayload {
 /// The account's device list changed on central (a sign-in by password,
 /// devices signed out): open lists reload; `new_device` is the notice.
 pub fn emit_devices_changed(new_device: Option<DevicePayload>) {
-    send(DEVICES_CHANGED, DevicesChangedPayload { new_device });
+    emit(CoreEvent::DevicesChanged(DevicesChangedPayload { new_device }));
 }
 
 /// Central renewed our token (`net::token::adopt`). No payload: Electron
 /// main re-reads each community's attachment target through
 /// `get_attachment_target`, so the token never rides an event.
 pub fn emit_session_token_updated() {
-    send(SESSION_TOKEN_UPDATED, serde_json::Value::Null);
+    emit(CoreEvent::SessionTokenUpdated);
 }
 
 pub fn emit_server_list_received(servers: Vec<ServerInfo>) {
-    send(SERVER_LIST_RECEIVED, ServerListReceivedPayload { servers });
+    emit(CoreEvent::ServerListReceived(ServerListReceivedPayload { servers }));
 }
 
 pub fn emit_memberships_received(memberships: Vec<ServerInfo>) {
-    send(MEMBERSHIPS_RECEIVED, MembershipsReceivedPayload { memberships });
+    emit(CoreEvent::MembershipsReceived(MembershipsReceivedPayload { memberships }));
+}
+
+/// Another device of this account joined a community we aren't connected to
+/// (MEMBERSHIP_ADDED): the renderer shows its tile. The payload is the
+/// community's `ServerInfo` itself.
+pub fn emit_membership_added(server: ServerInfo) {
+    emit(CoreEvent::MembershipAdded(server));
 }
 
 pub fn emit_community_auth_responded(payload: CommunityAuthRespondedPayload) {
-    send(COMMUNITY_AUTH_RESPONDED, payload);
+    emit(CoreEvent::CommunityAuthResponded(payload));
 }
 
 pub fn emit_message_received(payload: MessageReceivedPayload) {
-    send(MESSAGE_RECEIVED, payload);
+    emit(CoreEvent::MessageReceived(payload));
 }
 
 pub fn emit_channel_history_received(payload: ChannelHistoryReceivedPayload) {
-    send(CHANNEL_HISTORY_RECEIVED, payload);
+    emit(CoreEvent::ChannelHistoryReceived(payload));
 }
 
 pub fn emit_channel_pruned(payload: ChannelPrunedPayload) {
-    send(CHANNEL_PRUNED, payload);
+    emit(CoreEvent::ChannelPruned(payload));
 }
 
 pub fn emit_channel_updated(payload: ChannelUpdatedPayload) {
-    send(CHANNEL_UPDATED, payload);
+    emit(CoreEvent::ChannelUpdated(payload));
 }
 
 pub fn emit_channel_wipe_responded(payload: ChannelWipeRespondedPayload) {
-    send(CHANNEL_WIPE_RESPONDED, payload);
+    emit(CoreEvent::ChannelWipeResponded(payload));
 }
 
 pub fn emit_channel_wiped(payload: ChannelWipedPayload) {
-    send(CHANNEL_WIPED, payload);
+    emit(CoreEvent::ChannelWiped(payload));
 }
 
 // ── Friends + presence ────────────────────────────────────────────
@@ -905,26 +943,25 @@ pub fn emit_user_list_updated(
     covered: Vec<i64>,
     avatars: Vec<AvatarVersionPayload>,
 ) {
-    send(USER_LIST_UPDATED, UserListUpdatedPayload { users, covered, avatars });
+    emit(CoreEvent::UserListUpdated(UserListUpdatedPayload { users, covered, avatars }));
 }
 
 pub fn emit_presence_delta(payload: PresenceDeltaPayload) {
-    send(PRESENCE_DELTA, payload);
+    emit(CoreEvent::PresenceDelta(payload));
 }
 
 pub fn emit_own_presence(payload: OwnPresencePayload) {
-    send(OWN_PRESENCE, payload);
+    emit(CoreEvent::OwnPresence(payload));
 }
 
 pub fn emit_friend_list_received(friends: Vec<FriendInfoPayload>) {
-    send(FRIEND_LIST_RECEIVED, FriendListReceivedPayload { friends });
+    emit(CoreEvent::FriendListReceived(FriendListReceivedPayload { friends }));
 }
 
 pub fn emit_friend_action_responded(success: bool, message: String) {
-    send(
-        FRIEND_ACTION_RESPONDED,
+    emit(CoreEvent::FriendActionResponded(
         FriendActionRespondedPayload { success, message },
-    );
+    ));
 }
 
 // ── Members + moderation ──────────────────────────────────────────
@@ -1243,71 +1280,71 @@ pub struct RoleActionRespondedPayload {
 }
 
 pub fn emit_role_list_received(payload: RoleListReceivedPayload) {
-    send(ROLE_LIST_RECEIVED, payload);
+    emit(CoreEvent::RoleListReceived(payload));
 }
 
 pub fn emit_member_upsert(payload: MemberUpsertPayload) {
-    send(MEMBER_UPSERT, payload);
+    emit(CoreEvent::MemberUpsert(payload));
 }
 
 pub fn emit_member_remove(payload: MemberRemovePayload) {
-    send(MEMBER_REMOVE, payload);
+    emit(CoreEvent::MemberRemove(payload));
 }
 
 pub fn emit_ban_list_received(payload: BanListReceivedPayload) {
-    send(BAN_LIST_RECEIVED, payload);
+    emit(CoreEvent::BanListReceived(payload));
 }
 
 pub fn emit_server_meta_updated(payload: ServerMetaUpdatedPayload) {
-    send(SERVER_META_UPDATED, payload);
+    emit(CoreEvent::ServerMetaUpdated(payload));
 }
 
 pub fn emit_server_update_responded(payload: ServerUpdateRespondedPayload) {
-    send(SERVER_UPDATE_RESPONDED, payload);
+    emit(CoreEvent::ServerUpdateResponded(payload));
 }
 
 pub fn emit_audit_log_received(payload: AuditLogReceivedPayload) {
-    send(AUDIT_LOG_RECEIVED, payload);
+    emit(CoreEvent::AuditLogReceived(payload));
 }
 
 pub fn emit_member_search_received(payload: MemberSearchReceivedPayload) {
-    send(MEMBER_SEARCH_RECEIVED, payload);
+    emit(CoreEvent::MemberSearchReceived(payload));
 }
 
 pub fn emit_message_search_received(payload: MessageSearchReceivedPayload) {
-    send(MESSAGE_SEARCH_RECEIVED, payload);
+    emit(CoreEvent::MessageSearchReceived(payload));
 }
 
 pub fn emit_storage_info_received(payload: StorageInfoReceivedPayload) {
-    send(STORAGE_INFO_RECEIVED, payload);
+    emit(CoreEvent::StorageInfoReceived(payload));
 }
 
 pub fn emit_voice_force_notify(payload: VoiceForceNotifyPayload) {
-    send(VOICE_FORCE_NOTIFY, payload);
+    emit(CoreEvent::VoiceForceNotify(payload));
 }
 
 pub fn emit_channel_overwrites_received(payload: ChannelOverwritesReceivedPayload) {
-    send(CHANNEL_OVERWRITES_RECEIVED, payload);
+    emit(CoreEvent::ChannelOverwritesReceived(payload));
 }
 
 pub fn emit_role_action_responded(payload: RoleActionRespondedPayload) {
-    send(ROLE_ACTION_RESPONDED, payload);
+    emit(CoreEvent::RoleActionResponded(payload));
 }
 
 pub fn emit_member_list_received(payload: MemberListReceivedPayload) {
-    send(MEMBER_LIST_RECEIVED, payload);
+    emit(CoreEvent::MemberListReceived(payload));
 }
 
 pub fn emit_mod_action_responded(payload: ModActionRespondedPayload) {
-    send(MOD_ACTION_RESPONDED, payload);
+    emit(CoreEvent::ModActionResponded(payload));
 }
 
 pub fn emit_channel_message_rejected(payload: ChannelMessageRejectedPayload) {
-    send(CHANNEL_MESSAGE_REJECTED, payload);
+    emit(CoreEvent::ChannelMessageRejected(payload));
 }
 
 pub fn emit_membership_revoked(payload: MembershipRevokedPayload) {
-    send(MEMBERSHIP_REVOKED, payload);
+    emit(CoreEvent::MembershipRevoked(payload));
 }
 
 // ── Invites ──────────────────────────────────────────────────────
@@ -1364,15 +1401,15 @@ pub struct InviteRevokeRespondedPayload {
 }
 
 pub fn emit_invite_list_received(payload: InviteListReceivedPayload) {
-    send(INVITE_LIST_RECEIVED, payload);
+    emit(CoreEvent::InviteListReceived(payload));
 }
 
 pub fn emit_invite_create_responded(payload: InviteCreateRespondedPayload) {
-    send(INVITE_CREATE_RESPONDED, payload);
+    emit(CoreEvent::InviteCreateResponded(payload));
 }
 
 pub fn emit_invite_revoke_responded(payload: InviteRevokeRespondedPayload) {
-    send(INVITE_REVOKE_RESPONDED, payload);
+    emit(CoreEvent::InviteRevokeResponded(payload));
 }
 
 // ── Voice ─────────────────────────────────────────────────────────
@@ -1469,17 +1506,16 @@ pub struct VoiceErrorPayload {
 }
 
 pub fn emit_voice_presence_updated(payload: VoicePresenceUpdatedPayload) {
-    send(VOICE_PRESENCE_UPDATED, payload);
+    emit(CoreEvent::VoicePresenceUpdated(payload));
 }
 
 pub fn emit_voice_state_changed(is_muted: bool, is_deafened: bool) {
-    send(
-        VOICE_STATE_CHANGED,
+    emit(CoreEvent::VoiceStateChanged(
         VoiceStateChangedPayload {
             is_muted,
             is_deafened,
         },
-    );
+    ));
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1491,51 +1527,48 @@ pub struct HotkeyActionPayload {
 
 /// A global hotkey fired (hold actions also report their release).
 pub fn emit_hotkey_action(action: crate::hotkeys::Action, pressed: bool) {
-    send(HOTKEY_ACTION, HotkeyActionPayload { action, pressed });
+    emit(CoreEvent::HotkeyAction(HotkeyActionPayload { action, pressed }));
 }
 
 pub fn emit_hotkeys_status(status: &crate::hotkeys::Status) {
-    send(HOTKEYS_STATUS, status);
+    emit(CoreEvent::HotkeysStatus(status.clone()));
 }
 
 pub fn emit_voice_user_speaking(uid: i64, speaking: bool) {
-    send(
-        VOICE_USER_SPEAKING,
+    emit(CoreEvent::VoiceUserSpeaking(
         VoiceUserSpeakingPayload { uid, speaking },
-    );
+    ));
 }
 
 pub fn emit_voice_user_state_changed(uid: i64, is_muted: bool, is_deafened: bool) {
-    send(
-        VOICE_USER_STATE_CHANGED,
+    emit(CoreEvent::VoiceUserStateChanged(
         VoiceUserStateChangedPayload {
             uid,
             is_muted,
             is_deafened,
         },
-    );
+    ));
 }
 
 pub fn emit_voice_input_level(db: f32) {
-    send(VOICE_INPUT_LEVEL, VoiceInputLevelPayload { db });
+    emit(CoreEvent::VoiceInputLevel(VoiceInputLevelPayload { db }));
 }
 
 pub fn emit_voice_ping_updated(latency_ms: u32) {
-    send(VOICE_PING_UPDATED, VoicePingUpdatedPayload { latency_ms });
+    emit(CoreEvent::VoicePingUpdated(VoicePingUpdatedPayload { latency_ms }));
 }
 
 pub fn emit_voice_connection_stats(latency_ms: Option<u32>, packet_loss_pct: f32) {
-    send(
-        VOICE_CONNECTION_STATS,
+    emit(CoreEvent::VoiceConnectionStats(
         VoiceConnectionStatsPayload {
             latency_ms,
             packet_loss_pct,
         },
-    );
+    ));
 }
 
 pub fn emit_voice_error(message: String) {
-    send(VOICE_ERROR, VoiceErrorPayload { message });
+    emit(CoreEvent::VoiceError(VoiceErrorPayload { message }));
 }
 
 // ── Streaming ─────────────────────────────────────────────────────
@@ -1600,14 +1633,13 @@ pub fn emit_stream_presence_updated(
     channel_id: String,
     streams: Vec<StreamInfoPayload>,
 ) {
-    send(
-        STREAM_PRESENCE_UPDATED,
+    emit(CoreEvent::StreamPresenceUpdated(
         StreamPresenceUpdatedPayload {
             server_id,
             channel_id,
             streams,
         },
-    );
+    ));
 }
 
 /// Push a JPEG thumbnail to the UI. Bytes ride the sink's binary channel —
@@ -1625,19 +1657,41 @@ pub fn emit_stream_thumbnail_updated(owner_username: String, owner_uid: i64, thu
 }
 
 pub fn emit_stream_codec_changed(payload: StreamCodecChangedPayload) {
-    send(STREAM_CODEC_CHANGED, payload);
+    emit(CoreEvent::StreamCodecChanged(payload));
 }
 
 pub fn emit_stream_gpu_fallback(error: String) {
-    send(STREAM_GPU_FALLBACK, StreamGpuFallbackPayload { error });
+    emit(CoreEvent::StreamGpuFallback(StreamGpuFallbackPayload { error }));
 }
 
 pub fn emit_stream_capture_ended() {
-    send(STREAM_CAPTURE_ENDED, serde_json::Value::Null);
+    emit(CoreEvent::StreamCaptureEnded);
+}
+
+/// Ask our stream's renderer encoder for a keyframe (StreamCapture.
+/// forceKeyframe): a watcher's PLI reached us, or the renderer-encode send
+/// queue shed frames.
+pub fn emit_keyframe_requested() {
+    emit(CoreEvent::KeyframeRequested);
+}
+
+/// `native_stream_failed`: why our native encode loop died. The payload is
+/// the reason alone, a JSON string.
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct NativeStreamFailedPayload {
+    pub reason: String,
+}
+
+/// Our native encode loop died while streaming (encoder or capture failure,
+/// or a panic); the renderer tears the stream down and says why. Never sent
+/// for a requested stop.
+pub fn emit_native_stream_failed(reason: String) {
+    emit(CoreEvent::NativeStreamFailed(NativeStreamFailedPayload { reason }));
 }
 
 pub fn emit_caps_refreshed() {
-    send(CAPS_REFRESHED, serde_json::Value::Null);
+    emit(CoreEvent::CapsRefreshed);
 }
 
 // ── Persistent DMs ────────────────────────────────────────────────
@@ -1702,11 +1756,24 @@ pub struct DmHistoryReceivedPayload {
 }
 
 pub fn emit_dm_conversations_received(payload: DmConversationsReceivedPayload) {
-    send(DM_CONVERSATIONS_RECEIVED, payload);
+    emit(CoreEvent::DmConversationsReceived(payload));
 }
 
 pub fn emit_dm_history_received(payload: DmHistoryReceivedPayload) {
-    send(DM_HISTORY_RECEIVED, payload);
+    emit(CoreEvent::DmHistoryReceived(payload));
+}
+
+/// `dm_read_synced`: another device of ours read the conversation with
+/// `peer_uid` up to message `up_to_id` (multi-device read sync).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmReadSyncedPayload {
+    pub peer_uid: i64,
+    pub up_to_id: i64,
+}
+
+pub fn emit_dm_read_synced(peer_uid: i64, up_to_id: i64) {
+    emit(CoreEvent::DmReadSynced(DmReadSyncedPayload { peer_uid, up_to_id }));
 }
 
 // --- Message deletion ---
@@ -1752,19 +1819,19 @@ pub struct ChannelMessageDeletedPayload {
 }
 
 pub fn emit_dm_message_delete_responded(payload: DmMessageDeleteRespondedPayload) {
-    send(DM_MESSAGE_DELETE_RESPONDED, payload);
+    emit(CoreEvent::DmMessageDeleteResponded(payload));
 }
 
 pub fn emit_dm_message_deleted(payload: DmMessageDeletedPayload) {
-    send(DM_MESSAGE_DELETED, payload);
+    emit(CoreEvent::DmMessageDeleted(payload));
 }
 
 pub fn emit_channel_message_delete_responded(payload: ChannelMessageDeleteRespondedPayload) {
-    send(CHANNEL_MESSAGE_DELETE_RESPONDED, payload);
+    emit(CoreEvent::ChannelMessageDeleteResponded(payload));
 }
 
 pub fn emit_channel_message_deleted(payload: ChannelMessageDeletedPayload) {
-    send(CHANNEL_MESSAGE_DELETED, payload);
+    emit(CoreEvent::ChannelMessageDeleted(payload));
 }
 
 // --- Message editing (mirrors delete) ---
@@ -1820,11 +1887,11 @@ pub struct E2eePeerChangedPayload {
 }
 
 pub fn emit_e2ee_status_changed(payload: E2eeStatusPayload) {
-    send(E2EE_STATUS_CHANGED, payload);
+    emit(CoreEvent::E2eeStatusChanged(payload));
 }
 
 pub fn emit_e2ee_peer_changed(payload: E2eePeerChangedPayload) {
-    send(E2EE_PEER_CHANGED, payload);
+    emit(CoreEvent::E2eePeerChanged(payload));
 }
 
 /// `voice_e2ee_state`: the MLS group behind the current voice channel —
@@ -1843,7 +1910,7 @@ pub struct VoiceE2eeStatePayload {
 }
 
 pub fn emit_voice_e2ee_state(payload: VoiceE2eeStatePayload) {
-    send(VOICE_E2EE_STATE, payload);
+    emit(CoreEvent::VoiceE2eeState(payload));
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1876,19 +1943,19 @@ pub struct ChannelMessageEditedPayload {
 }
 
 pub fn emit_dm_message_edit_responded(payload: DmMessageEditRespondedPayload) {
-    send(DM_MESSAGE_EDIT_RESPONDED, payload);
+    emit(CoreEvent::DmMessageEditResponded(payload));
 }
 
 pub fn emit_dm_message_edited(payload: DmMessageEditedPayload) {
-    send(DM_MESSAGE_EDITED, payload);
+    emit(CoreEvent::DmMessageEdited(payload));
 }
 
 pub fn emit_channel_message_edit_responded(payload: ChannelMessageEditRespondedPayload) {
-    send(CHANNEL_MESSAGE_EDIT_RESPONDED, payload);
+    emit(CoreEvent::ChannelMessageEditResponded(payload));
 }
 
 pub fn emit_channel_message_edited(payload: ChannelMessageEditedPayload) {
-    send(CHANNEL_MESSAGE_EDITED, payload);
+    emit(CoreEvent::ChannelMessageEdited(payload));
 }
 
 // --- Custom server pictures ---
@@ -1920,15 +1987,15 @@ pub struct ServerPictureChangedPayload {
 }
 
 pub fn emit_server_picture_update_responded(payload: ServerPictureUpdateRespondedPayload) {
-    send(SERVER_PICTURE_UPDATE_RESPONDED, payload);
+    emit(CoreEvent::ServerPictureUpdateResponded(payload));
 }
 
 pub fn emit_server_picture_received(payload: ServerPictureReceivedPayload) {
-    send(SERVER_PICTURE_RECEIVED, payload);
+    emit(CoreEvent::ServerPictureReceived(payload));
 }
 
 pub fn emit_server_picture_changed(payload: ServerPictureChangedPayload) {
-    send(SERVER_PICTURE_CHANGED, payload);
+    emit(CoreEvent::ServerPictureChanged(payload));
 }
 
 /// Convert raw image bytes into a data URL ready for an <img src>.
@@ -2027,7 +2094,7 @@ pub struct CallDroppedPayload {
     pub reason: String,
 }
 
-pub fn emit_call_signal(p: CallSignalPayload) { send(CALL_SIGNAL, p); }
-pub fn emit_call_connected(p: CallConnectedPayload) { send(CALL_CONNECTED, p); }
-pub fn emit_call_failed(p: CallFailedPayload) { send(CALL_FAILED, p); }
-pub fn emit_call_dropped(p: CallDroppedPayload) { send(CALL_DROPPED, p); }
+pub fn emit_call_signal(p: CallSignalPayload) { emit(CoreEvent::CallSignal(p)); }
+pub fn emit_call_connected(p: CallConnectedPayload) { emit(CoreEvent::CallConnected(p)); }
+pub fn emit_call_failed(p: CallFailedPayload) { emit(CoreEvent::CallFailed(p)); }
+pub fn emit_call_dropped(p: CallDroppedPayload) { emit(CoreEvent::CallDropped(p)); }

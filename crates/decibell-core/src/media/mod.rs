@@ -439,7 +439,7 @@ impl VoiceEngine {
                         // (deleted) native encoder. StreamCapture's
                         // listener calls VideoEncoder.encode(frame, {keyFrame: true})
                         // on the next capture frame.
-                        events::send("keyframe_requested", serde_json::Value::Null);
+                        events::emit_keyframe_requested();
                     }
                     VoiceEvent::Error(msg) => {
                         events::emit_voice_error(msg);

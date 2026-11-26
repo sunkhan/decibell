@@ -724,14 +724,7 @@ impl CentralClient {
                     // Server-pushed cache-invalidation notice. Forwarded
                     // to the renderer; avatarStore's listener invalidates
                     // and refetches lazily on next display.
-                    events::send(
-                        "avatar_changed",
-                        serde_json::json!({
-                            "uid": resp.uid,
-                            "username": resp.username,
-                            "version": resp.version,
-                        }),
-                    );
+                    events::emit_avatar_changed(resp.uid, resp.username, resp.version);
                 }
                 Some(packet::Payload::DmConversationsRes(res)) => {
                     crate::e2ee::session::enqueue(
@@ -1065,18 +1058,15 @@ async fn join_added_membership(
     }
     let server_id = info.id.to_string();
     let (host, port) = (info.host_ip.clone(), info.port as u16);
-    events::send(
-        "membership_added",
-        events::ServerInfo {
-            id: info.id,
-            name: info.name,
-            description: info.description,
-            host_ip: info.host_ip,
-            port: info.port,
-            member_count: info.member_count,
-            picture_version: info.picture_version,
-        },
-    );
+    events::emit_membership_added(events::ServerInfo {
+        id: info.id,
+        name: info.name,
+        description: info.description,
+        host_ip: info.host_ip,
+        port: info.port,
+        member_count: info.member_count,
+        picture_version: info.picture_version,
+    });
     if let Err(e) = crate::api::servers::connect_with_invite(server_id, host, port, None).await {
         log::info!("[membership] connect to a community joined elsewhere failed: {e}");
     }

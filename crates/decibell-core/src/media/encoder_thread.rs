@@ -140,7 +140,7 @@ impl EncoderThread {
                         log::info!("[encoder] loop ended during stop: {reason}");
                     } else {
                         log::error!("[encoder] stream failed: {reason}");
-                        events::send("native_stream_failed", serde_json::Value::String(reason));
+                        events::emit_native_stream_failed(reason);
                     }
                 }
                 // Deliberately no drain (send_eof + receive loop): it

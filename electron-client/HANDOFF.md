@@ -648,11 +648,10 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   call and never frees it on a failed enqueue; a bounded "drop when full" TSFN leaks every dropped item.
   Cap in-flight items yourself (`native/src/napi_sink.rs` `reserve_stream_slot`).
 - **`cargo test` can't link the event bus** (`napi_call_threadsafe_function` exists only inside Node).
-  Keep emits reachable from tests behind a `#[cfg(not(test))]` wrapper with a no-op twin
-  (`hotkeys/mod.rs`, `e2ee/session.rs`), not a global change to `events.rs`. Since the core split
-  (2026-11-26) this only bites tests in `electron-client/native`: `crates/decibell-core` has no napi
-  symbols and its emits are no-ops until a sink is installed, so the existing wrappers there are
-  redundant (kept until tests get a recording sink).
+  Since the core split (2026-11-26) this only bites tests in `electron-client/native`: keep an emit
+  reachable from those tests behind a `#[cfg(not(test))]` wrapper with a no-op twin. `crates/decibell-core`
+  has no napi symbols: its tests install the recording sink (`events::testing::install_recording_sink`)
+  and read what they emitted with `take_own_events` (or `take_events` for a spawned thread's).
 - **No CPU↔GPU sync in capture loops.** A per-send staging `Map` waited out the game's GPU queue and
   held a 60 fps DXGI share at ~32 fps. Keep capture / composite fully asynchronous on the GPU
   (`cursor_gpu.rs`); readbacks only on the encoder thread at low rate. The tell is a large `send_max` in

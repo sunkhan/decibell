@@ -1,9 +1,11 @@
 //! The wire shape of every named event, pinned: each emit helper is driven
-//! with a representative payload and the `{name, payload}` pairs it puts on
-//! the wire are compared, byte for byte as pretty JSON, with
-//! `crates/decibell-core/tests/golden/events.json`. The renderer's payload
-//! types (`electron-client/src/types/index.ts` and the listeners) are
-//! hand-written against that JSON, so any drift fails here first.
+//! with a representative payload, and the `{name, payload}` pairs
+//! [`CoreEvent::to_json`] makes of what it emitted are compared, byte for byte
+//! as pretty JSON, with `crates/decibell-core/tests/golden/events.json`. The
+//! renderer's payload types (`electron-client/src/types/index.ts` and the
+//! listeners) are hand-written against that JSON, so any drift fails here
+//! first. The file was first written from the untyped `send(name, payload)`
+//! path, before events were typed, and the typed path reproduces it.
 //!
 //! The samples pin the representations that matter to a JS reader: field
 //! names (camelCase, `self`, `type`), `null` for `None`, integers above
@@ -226,11 +228,7 @@ fn emit_samples() {
     emit_connection_restored("central", None);
     emit_login_succeeded("alice".into(), 1001, true, false);
     emit_user_renamed(UserRenamedPayload { uid: 1002, username: "bobby".into(), is_self: false });
-    {
-        // net/central.rs (AvatarChanged) and the napi upload_avatar command.
-        let (uid, username, version): (i64, String, String) = (1002, "bobby".into(), "c0ffee".into());
-        send("avatar_changed", serde_json::json!({ "uid": uid, "username": username, "version": version }));
-    }
+    emit_avatar_changed(1002, "bobby".into(), "c0ffee".into());
     emit_login_failed("Invalid username or password".into());
     emit_register_responded(false, "Username taken".into());
     emit_logged_out(Some("signed_out"));
@@ -240,8 +238,7 @@ fn emit_samples() {
     emit_session_token_updated();
     emit_server_list_received(vec![server_info(7, "Daily Gaming"), server_info(8, "Rustaceans")]);
     emit_memberships_received(vec![server_info(7, "Daily Gaming")]);
-    // net/central.rs join_added_membership.
-    send("membership_added", server_info(9, "Design Lab"));
+    emit_membership_added(server_info(9, "Design Lab"));
     emit_community_auth_responded(CommunityAuthRespondedPayload {
         server_id: "7".into(),
         requested_server_id: "203.0.113.7:50052".into(),
@@ -652,10 +649,8 @@ fn emit_samples() {
     });
     emit_stream_gpu_fallback("NVENC unavailable".into());
     emit_stream_capture_ended();
-    // media/video_pipeline.rs + media/mod.rs (the voice event bridge).
-    send("keyframe_requested", serde_json::Value::Null);
-    // media/encoder_thread_linux.rs + media/encoder_thread.rs (Windows).
-    send("native_stream_failed", serde_json::Value::String("encoder panicked: boom".to_string()));
+    emit_keyframe_requested();
+    emit_native_stream_failed("encoder panicked: boom".into());
     emit_caps_refreshed();
     emit_dm_conversations_received(DmConversationsReceivedPayload {
         conversations: vec![DmConversationPreviewPayload {
@@ -694,11 +689,7 @@ fn emit_samples() {
         after_id: 0,
         before_id: 0,
     });
-    {
-        // e2ee/session.rs (DmJob::ReadSync); DmReadSync's fields are int64.
-        let (peer_uid, up_to_id): (i64, i64) = (1002, BIG_ID);
-        send("dm_read_synced", serde_json::json!({ "peerUid": peer_uid, "upToId": up_to_id }));
-    }
+    emit_dm_read_synced(1002, BIG_ID);
     emit_dm_message_delete_responded(DmMessageDeleteRespondedPayload {
         success: true,
         message: "".into(),
@@ -830,7 +821,7 @@ fn recorded_samples() -> Vec<(&'static str, serde_json::Value)> {
     testing::install_recording_sink();
     let _ = testing::take_own_events();
     emit_samples();
-    testing::take_own_events()
+    testing::take_own_events().iter().map(CoreEvent::to_json).collect()
 }
 
 #[test]
@@ -854,4 +845,74 @@ fn every_event_matches_the_golden_wire_shape() {
             got.lines().nth(at).unwrap_or("<end>"),
         );
     }
+}
+
+/// Every `CoreEvent` variant has a sample above (so the golden file pins its
+/// JSON), every name is declared once, and `to_json` names each sample
+/// as `name()` does.
+#[test]
+fn every_variant_has_a_golden_sample() {
+    use std::collections::BTreeSet;
+    let names: BTreeSet<&str> = CoreEvent::NAMES.iter().copied().collect();
+    assert_eq!(names.len(), CoreEvent::NAMES.len(), "an event name is declared twice");
+    testing::install_recording_sink();
+    let _ = testing::take_own_events();
+    emit_samples();
+    let mut sampled = BTreeSet::new();
+    for event in testing::take_own_events() {
+        assert_eq!(event.to_json().0, event.name());
+        sampled.insert(event.name());
+    }
+    let missing: Vec<_> = names.difference(&sampled).collect();
+    assert!(missing.is_empty(), "no golden sample for {missing:?}: add one to emit_samples");
+    assert_eq!(sampled, names);
+}
+
+const RENDERER_LISTENERS: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/renderer-listeners.txt");
+
+/// Events the renderer listens for that the core never emits: Electron main
+/// sends them on the same `decibell:event` channel.
+const RENDERER_ONLY: &[&str] = &[
+    "deep_link_received", // electron/main/index.ts (decibell:// links)
+    "downloads_changed",  // electron/main/downloads.ts
+    "downloads_removed",  // electron/main/downloads.ts
+    "update_status",      // electron/main/update.ts
+];
+
+/// Core events no renderer listener reads.
+const NOT_LISTENED: &[&str] = &[
+    // No emitter either: emit_caps_refreshed has no caller.
+    "caps_refreshed",
+    // Electron main reads it (electron/main/addon.ts refreshes the
+    // attachment targets); it reaches the renderer too, unheard.
+    "session_token_updated",
+];
+
+/// The renderer's listeners (the committed list) against the core's event
+/// names: a listener for a name the core doesn't emit, or an event nobody
+/// listens for, must be one of the known ones above.
+#[test]
+fn renderer_listeners_match_core_events() {
+    use std::collections::BTreeSet;
+    let text = std::fs::read_to_string(RENDERER_LISTENERS)
+        .unwrap_or_else(|e| panic!("{RENDERER_LISTENERS}: {e}"));
+    let listened: BTreeSet<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let names: BTreeSet<&str> = CoreEvent::NAMES.iter().copied().collect();
+    let renderer_only: BTreeSet<&str> = listened.difference(&names).copied().collect();
+    let not_listened: BTreeSet<&str> = names.difference(&listened).copied().collect();
+    assert_eq!(
+        renderer_only,
+        RENDERER_ONLY.iter().copied().collect(),
+        "renderer listeners with no core event"
+    );
+    assert_eq!(
+        not_listened,
+        NOT_LISTENED.iter().copied().collect(),
+        "core events with no renderer listener"
+    );
 }

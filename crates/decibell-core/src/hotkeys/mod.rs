@@ -199,18 +199,7 @@ pub fn dispatch(source: &str, action: Action, pressed: bool) {
             return;
         }
     };
-    emit_action(transition.0, transition.1);
-}
-
-// The event bus is a napi threadsafe function, which can't link into the
-// `cargo test` binary; tests only observe the hub's state.
-#[cfg(not(test))]
-fn emit_action(action: Action, pressed: bool) {
-    crate::events::emit_hotkey_action(action, pressed);
-}
-#[cfg(test)]
-fn emit_action(action: Action, pressed: bool) {
-    tests::FIRED.lock().unwrap().push((action, pressed));
+    crate::events::emit_hotkey_action(transition.0, transition.1);
 }
 
 fn fire(fired: Vec<Fired>) {
@@ -274,10 +263,7 @@ pub(crate) fn update_status(f: impl FnOnce(&mut Status)) {
         f(&mut h.status);
         h.status.clone()
     };
-    #[cfg(not(test))]
     crate::events::emit_hotkeys_status(&snapshot);
-    #[cfg(test)]
-    let _ = snapshot;
 }
 
 /// The current bindings, for listeners that (re)build their watch list.
@@ -345,9 +331,29 @@ fn apply_backend(bindings: &[Binding]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{testing, CoreEvent};
 
-    /// Every `hotkey_action` the hub would have emitted (tests only).
-    pub(super) static FIRED: Mutex<Vec<(Action, bool)>> = Mutex::new(Vec::new());
+    /// The `hotkey_action`s among `events`, as (action, pressed).
+    fn fired(events: Vec<CoreEvent>) -> Vec<(Action, bool)> {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                CoreEvent::HotkeyAction(p) => Some((p.action, p.pressed)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The hub tells the UI about a press action's press only; its release
+    /// is nobody's business.
+    #[test]
+    fn a_press_action_reaches_the_ui_once() {
+        testing::install_recording_sink();
+        let _ = testing::take_own_events();
+        dispatch("press-test", Action::ToggleDeafen, true);
+        dispatch("press-test", Action::ToggleDeafen, false);
+        assert_eq!(fired(testing::take_own_events()), vec![(Action::ToggleDeafen, true)]);
+    }
 
     /// The X11 listener end to end against a disposable X server with
     /// XTEST (e.g. `Xvfb :97`), driven by synthetic input:
@@ -375,7 +381,10 @@ mod tests {
             conn.xtest_fake_input(kind, detail, 0, root, 0, 0, 0).unwrap();
         };
         let settle = || std::thread::sleep(Duration::from_millis(150));
-        let take = || std::mem::take(&mut *FIRED.lock().unwrap());
+        // Every `hotkey_action` since the last call: the listener emits from
+        // its own thread.
+        testing::install_recording_sink();
+        let take = || fired(testing::take_events(|e| matches!(e, CoreEvent::HotkeyAction(_))));
         const CONTROL_L: u8 = 37;
         const SHIFT_L: u8 = 50;
         const KEY_M: u8 = 58;

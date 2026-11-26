@@ -617,20 +617,22 @@ re-implementing it. Mapped 2026-11-07; the split's step 1 (design `2026-11-07-qt
   `api::servers::connect_with_invite` (`Result<(), String>`), `api::auth::{signed_out_elsewhere,
   sign_out_locally}`, `api::presence::{apply_hidden, tell_communities_hidden}`,
   `api::voice::rebind_voice_group`.
-- **Events go through one trait** (`decibell_core::events`). Everything reaches the UI through
-  `send(name, payload)` (~77 named events, payload structs `Serialize` in camelCase),
-  `send_stream_frame` (whole encoded frames, dropped here unless the key is in `STREAM_FRAME_SINKS`, i.e.
-  on screen) and `emit_stream_thumbnail_updated`, into the `EventSink` the host installs once
-  (`install_sink(Arc<dyn EventSink>)`; until then every emit is a no-op):
-  `event(&self, name: &'static str, payload: serde_json::Value)`, `stream_frame(&self, StreamFrame)`,
+- **Events go through one trait** (`decibell_core::events`). Every named event is a typed `CoreEvent`
+  (85 variants, one per name constant, each carrying its payload struct, `Serialize` in camelCase;
+  `events/core_event.rs` is the catalogue) built by the `emit_*` helpers (nothing emits an untyped event);
+  encoded frames go through `send_stream_frame` (whole frames, dropped here unless the key is in
+  `STREAM_FRAME_SINKS`, i.e. on screen) and thumbnails through `emit_stream_thumbnail_updated`. All of it
+  reaches the `EventSink` the host installs once (`install_sink(Arc<dyn EventSink>)`; until then every
+  emit is a no-op): `event(&self, CoreEvent)`, `stream_frame(&self, StreamFrame)`,
   `stream_thumbnail(&self, StreamThumbnail)`, and a defaulted `stream_frame_sink_removed(&self, key)`
   so a sink can drop per-key shedding state. The addon's `NapiSink` holds the three ThreadsafeFunctions
-  `init` receives, builds the `{name, payload}` envelope, and owns the stream-frame queue (capped at 8,
-  slots reserved before the call because napi-rs 2 leaks a value on `QueueFull`, a discontinuity flag on
-  the next frame after a shed one). Input-level reporting state stays in core. Still untyped
-  (`&'static str` + JSON): the typed `CoreEvent` enum is the design's step 2. Core tests can reach emits
-  now (no napi symbols in core), but the `cfg(not(test))` wrappers (`hotkeys/mod.rs`, `e2ee/session.rs`,
-  `video_pipeline.rs`, `encoder_thread_linux.rs`) stay until tests get a recording sink.
+  `init` receives, turns an event into its `(name, payload)` JSON with `CoreEvent::to_json()`, builds the
+  `{name, payload}` envelope, and owns the stream-frame queue (capped at 8, slots reserved before the
+  call because napi-rs 2 leaks a value on `QueueFull`, a discontinuity flag on the next frame after a
+  shed one); a native client matches on the variant. Input-level reporting state stays in core.
+  `tests/golden/events.json` pins every event's JSON byte for byte (`events::golden_tests`, which also
+  checks the renderer's listener list), and core tests read emits through a recording sink
+  (`events::testing`), so emits need no `cfg(not(test))` wrappers.
 - **Commands**: 132 `#[napi]` functions in `commands/*.rs` (auth 7, call 6, channels 15, community 23,
   devices 3, dm 5, e2ee 6, friends 3, hotkeys 6, messaging 1, presence 5, servers 11, settings 4,
   stream_audio 2, streaming 18, voice 17), each taking one args struct; plus `init` / `shutdown` / `ping`

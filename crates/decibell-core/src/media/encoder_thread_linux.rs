@@ -115,22 +115,6 @@ fn report_for(exit: &LoopExit, stop_requested: bool) -> ExitReport {
     }
 }
 
-// Event emits sit behind these so the unit tests never reach the napi event
-// bus (its threadsafe-function symbols only exist inside Node).
-#[cfg(not(test))]
-fn emit_capture_ended() {
-    events::emit_stream_capture_ended();
-}
-#[cfg(test)]
-fn emit_capture_ended() {}
-
-#[cfg(not(test))]
-fn emit_stream_failed(reason: String) {
-    events::send("native_stream_failed", serde_json::Value::String(reason));
-}
-#[cfg(test)]
-fn emit_stream_failed(_reason: String) {}
-
 pub struct LinuxEncoderThreadConfig {
     pub target_codec: crate::media::caps::CodecKind,
     /// Wire codec byte (1=H264_HW, 2=H264_SW, 3=H265, 4=AV1) stamped into
@@ -214,11 +198,11 @@ impl LinuxEncoderThread {
                     }
                     ExitReport::CaptureEnded(why) => {
                         log::info!("[encoder-linux] capture source ended ({why}); ending the stream");
-                        emit_capture_ended();
+                        events::emit_stream_capture_ended();
                     }
                     ExitReport::Failed(why) => {
                         log::error!("[encoder-linux] stream failed: {why}");
-                        emit_stream_failed(why);
+                        events::emit_native_stream_failed(why);
                     }
                 }
                 // Flush only a requested stop. A stream that died is ending

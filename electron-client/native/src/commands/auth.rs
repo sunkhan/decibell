@@ -310,10 +310,7 @@ pub async fn upload_avatar(args: UploadAvatarArgs) -> napi::Result<UploadAvatarR
                     let s = state_arc.lock().await;
                     (s.uid, s.username.clone().unwrap_or_default())
                 };
-                events::send(
-                    "avatar_changed",
-                    serde_json::json!({ "uid": uid, "username": username, "version": resp.version }),
-                );
+                events::emit_avatar_changed(uid, username, resp.version.clone());
             }
             Ok(UploadAvatarResult {
                 success: resp.success,

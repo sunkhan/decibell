@@ -20,15 +20,14 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::ThreadId;
 
-use super::{EventSink, StreamFrame, StreamThumbnail};
+use super::{CoreEvent, EventSink, StreamFrame, StreamThumbnail};
 
 /// Events kept before the oldest are dropped.
 pub const LOG_CAP: usize = 10_000;
 
 struct Recorded {
     thread: ThreadId,
-    name: &'static str,
-    payload: serde_json::Value,
+    event: CoreEvent,
 }
 
 #[derive(Default)]
@@ -37,12 +36,12 @@ struct RecordingSink {
 }
 
 impl EventSink for RecordingSink {
-    fn event(&self, name: &'static str, payload: serde_json::Value) {
+    fn event(&self, event: CoreEvent) {
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         if log.len() == LOG_CAP {
             log.pop_front();
         }
-        log.push_back(Recorded { thread: std::thread::current().id(), name, payload });
+        log.push_back(Recorded { thread: std::thread::current().id(), event });
     }
     fn stream_frame(&self, _frame: StreamFrame) {}
     fn stream_thumbnail(&self, _thumb: StreamThumbnail) {}
@@ -66,13 +65,13 @@ pub fn install_recording_sink() {
     );
 }
 
-fn take_where(mut keep: impl FnMut(&Recorded) -> bool) -> Vec<(&'static str, serde_json::Value)> {
+fn take_where(mut keep: impl FnMut(&Recorded) -> bool) -> Vec<CoreEvent> {
     let mut log = recorder().log.lock().unwrap_or_else(|e| e.into_inner());
     let mut taken = Vec::new();
     let mut rest = VecDeque::with_capacity(log.len());
     for r in log.drain(..) {
         if keep(&r) {
-            taken.push((r.name, r.payload));
+            taken.push(r.event);
         } else {
             rest.push_back(r);
         }
@@ -82,15 +81,13 @@ fn take_where(mut keep: impl FnMut(&Recorded) -> bool) -> Vec<(&'static str, ser
 }
 
 /// Remove and return, in emit order, every event the calling thread emitted.
-pub fn take_own_events() -> Vec<(&'static str, serde_json::Value)> {
+pub fn take_own_events() -> Vec<CoreEvent> {
     let me = std::thread::current().id();
     take_where(|r| r.thread == me)
 }
 
 /// Remove and return, in emit order, every event (from any thread) that
 /// `pred` matches.
-pub fn take_events(
-    mut pred: impl FnMut(&'static str, &serde_json::Value) -> bool,
-) -> Vec<(&'static str, serde_json::Value)> {
-    take_where(|r| pred(r.name, &r.payload))
+pub fn take_events(mut pred: impl FnMut(&CoreEvent) -> bool) -> Vec<CoreEvent> {
+    take_where(|r| pred(&r.event))
 }
