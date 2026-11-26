@@ -149,6 +149,26 @@ themselves are never compared), the mini-player's label (the renderer prints the
 call screens' surroundings (GPUI's `call-stage` hosts the stage in a stand-in DM pane: no DM header, no friends rail), and
 the panes other crates own (chat, members, search). In a worktree, `electron-client/node_modules` and the generated
 `src/components/emoji/twemoji-data.json` are not checked out: link / copy them from the main checkout first.
+## The people pages (`home-friends-*`, `dm-*`, `profile-*`, `custom-status`, `user-menu-*`)
+
+They render the renderer's real `MainLayout` (through `_shell.tsx`) fed the GPUI people fixture
+(`crates/decibell-home/src/fixture.rs`: the shell's fixture plus friends in every state, statuses with
+custom messages, two DM conversations with their newest pages, the scene's E2EE state), then set what the
+scene needs in the renderer's stores (`pages/_home.tsx`): the E2EE markers, the `e2ee_peer_info` answers
+(`respond`), the open conversation, the Friends page's tab (a click: it is the page's own state), the
+overlay. Pages whose overlay places itself against the window (the popout, the user menu, the profile
+screen, the custom status dialog) are drawn framed (1280 × 800). `nickname-modal` and `ban-modal` have no
+page: the renderer has those dialogs only in Server Settings → Members.
+
+```sh
+cargo run -p decibell-home --features fixtures --bin decibell-home-fixture -- tools/electron-captures/pages/fixtures
+for s in home-friends-all dm-plain profile-popup …; do decibell-capture --screen $s --all-themes --out-dir <gpui>; done
+CAPTURE_GRAYSCALE_TEXT=1 tools/electron-captures/run.sh --pages home-friends-all,dm-plain,… --out <electron>
+node tools/electron-captures/pairs.mjs --gpui <gpui> --electron <electron>
+```
+
+A worktree needs the main tree's `electron-client/node_modules` and the generated
+`electron-client/src/components/emoji/twemoji-data.json` (symlinks; both are gitignored).
 
 ## Conventions
 
