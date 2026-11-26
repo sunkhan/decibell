@@ -35,7 +35,7 @@ struct Initialised;
 impl Global for Initialised {}
 
 pub use hooks::{PictureEvent, PictureRequests, SettingsHooks, UpdateHooks};
-pub use mic_test::{LevelSink, MicTest, MicTestError, UnavailableMicTest};
+pub use mic_test::{CoreMicTest, LevelSink, MicTest, MicTestError, Processing, UnavailableMicTest};
 pub use tabs::TabId;
 pub use window::SettingsOverlay;
 

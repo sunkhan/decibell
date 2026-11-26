@@ -101,10 +101,9 @@ pub fn panel_action(action: PanelAction, anchor: Bounds<Pixels>, cx: &mut App) {
         PanelAction::Latency => ui.update(cx, |u, cx| u.toggle_popover(PanelPopover::Stats(anchor), cx)),
         PanelAction::StreamAudio => ui.update(cx, |u, cx| u.toggle_popover(PanelPopover::StreamAudio(anchor), cx)),
         PanelAction::InputDevices | PanelAction::OutputDevices => {
+            // The menu holds a watch on the device lists while it is open (`menus::PanelPopovers`):
+            // they are read again as it opens and follow the devices meanwhile.
             let input = action == PanelAction::InputDevices;
-            if let Some(model) = cx.try_global::<decibell_model::Model>().cloned() {
-                model.live.voice.devices.update(cx, |d, cx| d.ensure_loaded(cx));
-            }
             ui.update(cx, |u, cx| u.toggle_popover(PanelPopover::Devices { input, anchor }, cx));
         }
     }

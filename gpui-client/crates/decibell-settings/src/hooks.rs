@@ -5,8 +5,8 @@
 //! - The updater's buttons ([`UpdateHooks`]): "Check now", "Restart", "Open release page". The
 //!   updater is a later task; without hooks the buttons do nothing (and the model's
 //!   `UpdateStore` reads "disabled", so About says so).
-//! - The out-of-voice mic test ([`crate::MicTest`]): the core has no capture outside a voice
-//!   session yet; [`crate::UnavailableMicTest`] until it does.
+//! - The out-of-voice mic test ([`crate::MicTest`]): the app installs [`crate::CoreMicTest`]
+//!   once the core runs; [`crate::UnavailableMicTest`] until then and in screens.
 //! - The picture editor's way in ([`PictureRequests`]): Account's picture and its button ask for
 //!   it; the avatar editor (another crate) subscribes and opens over Settings.
 //! - A fixed clock for screens ([`SettingsHooks::now`]): "Last active 3 h ago" must be the same

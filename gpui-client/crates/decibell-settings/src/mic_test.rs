@@ -2,21 +2,19 @@
 //! `getUserMedia` → an `AnalyserNode` → RMS dB in a `requestAnimationFrame` loop, the mic
 //! released the moment the tab or the test went).
 //!
-//! The core meters the mic only inside a voice session (`voice_input_level`); it has no capture
-//! of its own outside one yet (docs/model.md M3.7 gap 2). So the tab talks to this narrow trait,
-//! and the app installs [`UnavailableMicTest`] until the core grows the API
-//! ([`crate::SettingsHooks::set_mic_test`]). What the core needs to provide, for an
-//! implementation of [`MicTest`] over it:
+//! The tab talks to the narrow [`MicTest`] trait. [`CoreMicTest`] is the real one, over the
+//! core's `api::audio::start_mic_test` / `stop_mic_test`: the chosen input device through the
+//! voice path's own capture and processing (the user's echo cancellation, noise suppression and
+//! gain control, [`Processing`]), with no output stream, so the meter shows the signal a voice
+//! session would send, as the in-voice meter (`voice_input_level`) does. The core reports the
+//! level about 16 times a second from the test's own thread (−96 = silence, and once more when
+//! the test ends); that thread exists only while a test runs and `stop` closes the device (the
+//! OS's microphone indicator goes out). The core refuses a test while a voice session or a call
+//! holds the microphone and ends a running one when a session starts: the tab uses the
+//! session's meter then.
 //!
-//! - `start_mic_test(device: Option<String>)`: open the selected input device (`None`: the OS
-//!   default, as a voice session does) through the same capture path as voice (cpal / the
-//!   platform backend, the same AEC / NS / AGC settings so the meter matches what voice sends),
-//!   without joining anything and without the output stream;
-//! - report the level as the voice pipeline does (`voice_input_level`'s RMS dB, −96 = silence,
-//!   ~16 per second), through a callback or the existing event while the test runs;
-//! - `stop_mic_test()`: close the device (the OS's mic indicator goes out); idempotent;
-//! - refuse a test while a voice session or a call holds the mic (the session's meter is used
-//!   then), and stop the test when one starts.
+//! The app installs [`CoreMicTest`] once the core runs ([`crate::SettingsHooks::set_mic_test`]);
+//! until then, and in screens drawn from fixtures, [`UnavailableMicTest`] stands in.
 
 use std::sync::Arc;
 
@@ -40,26 +38,56 @@ impl std::fmt::Display for MicTestError {
     }
 }
 
+/// The voice processing the test meters through (Settings → Audio's own switches).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Processing {
+    pub echo_cancellation: bool,
+    /// 0 = off … 4 (`noise_suppression_level`).
+    pub noise_suppression_level: u8,
+    pub auto_gain: bool,
+}
+
 /// Opens the mic for the Audio tab's meter while no voice session does.
 pub trait MicTest: 'static {
-    /// Start capturing `device` (`None`: the OS default) and report its level to `level` until
-    /// [`MicTest::stop`].
-    fn start(&self, device: Option<&str>, level: LevelSink) -> Result<(), MicTestError>;
+    /// Start capturing `device` (`None`: the OS default) through `processing` and report its
+    /// level to `level` until [`MicTest::stop`]. A second start replaces the first.
+    fn start(&self, device: Option<&str>, processing: Processing, level: LevelSink) -> Result<(), MicTestError>;
     /// Close the device. Idempotent.
     fn stop(&self);
 }
 
-/// No mic test: the core can't capture outside voice yet. The tab then behaves as the renderer
-/// did when `getUserMedia` failed (the test shows as running, the meter stays at rest, the
-/// failure is only logged).
+/// No mic test (no core: a screen drawn from fixtures, a self-test without a test input). The
+/// tab then behaves as the renderer did when `getUserMedia` failed (the test shows as running,
+/// the meter stays at rest, the failure is only logged).
 pub struct UnavailableMicTest;
 
 impl MicTest for UnavailableMicTest {
-    fn start(&self, _: Option<&str>, _: LevelSink) -> Result<(), MicTestError> {
+    fn start(&self, _: Option<&str>, _: Processing, _: LevelSink) -> Result<(), MicTestError> {
         Err(MicTestError::Unavailable)
     }
 
     fn stop(&self) {}
+}
+
+/// The core's microphone test (see the module doc). Needs the core running.
+pub struct CoreMicTest;
+
+impl MicTest for CoreMicTest {
+    fn start(&self, device: Option<&str>, processing: Processing, level: LevelSink) -> Result<(), MicTestError> {
+        use decibell_core::api::audio;
+        let processing = audio::MicProcessing {
+            echo_cancellation: processing.echo_cancellation,
+            noise_suppression_level: processing.noise_suppression_level,
+            auto_gain: processing.auto_gain,
+        };
+        // Refused while a voice session or call holds the microphone. A device that can't be
+        // opened is not an error here: it opens on the test's thread and is only logged.
+        audio::start_mic_test(device.map(str::to_string), processing, level).map_err(|e| MicTestError::Failed(e.to_string()))
+    }
+
+    fn stop(&self) {
+        decibell_core::api::audio::stop_mic_test();
+    }
 }
 
 /// The meter's smoothing (`VoiceThresholdBar`'s rAF loop: fast attack 0.5, slow decay 0.15 per
@@ -92,7 +120,7 @@ mod tests {
     #[test]
     fn the_unavailable_test_refuses() {
         let sink: LevelSink = Arc::new(|_| {});
-        assert_eq!(UnavailableMicTest.start(None, sink), Err(MicTestError::Unavailable));
+        assert_eq!(UnavailableMicTest.start(None, Processing::default(), sink), Err(MicTestError::Unavailable));
         UnavailableMicTest.stop();
     }
 }

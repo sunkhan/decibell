@@ -9,8 +9,15 @@
 //! (`voice_input_level`, ~16 a second) only while a meter asks for it: the tab holds the model's
 //! input-level reporting (`InputLevel::retain_meter`) while the threshold bar is shown and lets go
 //! when it goes (push to talk, another tab, the window closing). Outside voice the level comes from
-//! the mic test ([`crate::MicTest`]), which runs only while the user asked for it. Each report is
-//! one smoothed step and one frame; nothing animates between reports.
+//! the mic test ([`crate::MicTest`]: the core's, through the same processing as voice), which runs
+//! only while the user asked for it and starts over when the input device or one of the processing
+//! switches changes under it. Each report is one smoothed step and one frame; nothing animates
+//! between reports.
+//!
+//! **The device lists** are the model's (`voice.devices`). The tab holds a watch on them while it
+//! is shown (`AudioDevices::watch`): the lists are read again when it opens and whenever the core
+//! reports a device appearing or going, never on a timer. A saved device that is not in the list
+//! shows as "Not connected" (derived when drawn, so it follows every refresh).
 
 use std::rc::Rc;
 
@@ -31,7 +38,7 @@ use gpui::{
 use super::TabId;
 use super::keybinds::{assigned_trigger, is_swallowed, key_chips, swallow_badge, types_text};
 use crate::hooks::SettingsHooks;
-use crate::mic_test::{LevelSink, smooth};
+use crate::mic_test::{LevelSink, Processing, smooth};
 use crate::rows::{TextLink, ToggleRow, section_label};
 use crate::window::CloseLink;
 
@@ -54,6 +61,13 @@ struct Shown {
     input_mode: InputMode,
     release_delay: u32,
     ptt_keys: Vec<(String, Vec<String>)>,
+}
+
+impl Shown {
+    /// What the mic test meters through: the switches a voice session would use.
+    fn processing(&self) -> Processing {
+        Processing { echo_cancellation: self.aec, noise_suppression_level: self.ns, auto_gain: self.agc }
+    }
 }
 
 fn shown(s: &AppSettings) -> Shown {
@@ -111,8 +125,14 @@ impl AudioTab {
             cx.observe(&model.settings, |this, settings, cx| {
                 let next = shown(settings.read(cx).get());
                 if next != this.shown {
+                    let metered = (this.shown.input_device.clone(), this.shown.processing());
                     this.shown = next;
                     this.hold_meter(cx);
+                    // A running test meters what was chosen now.
+                    if this.test.is_some() && metered != (this.shown.input_device.clone(), this.shown.processing()) {
+                        this.stop_test(cx);
+                        this.start_test(cx);
+                    }
                     cx.notify();
                 }
             }),
@@ -135,22 +155,20 @@ impl AudioTab {
                 }
             }),
             cx.on_release(|this: &mut AudioTab, cx| {
+                let model = Model::global(cx).clone();
                 if this.meter_held {
-                    let level = Model::global(cx).live.voice.input_level.clone();
-                    level.update(cx, |l, cx| l.release_meter(cx));
+                    model.live.voice.input_level.update(cx, |l, cx| l.release_meter(cx));
                 }
                 if this.test.is_some() {
                     SettingsHooks::get(cx).mic_test.clone().stop();
                 }
+                model.live.voice.devices.update(cx, |d, _| d.unwatch());
             }),
         ];
-        // The roster is fresh whenever the tab opens (a refresh in flight is reused).
-        let devices = model.live.voice.devices.clone();
-        cx.defer(move |cx| {
-            if decibell_model::core::is_running() {
-                devices.update(cx, |d, cx| d.refresh(cx));
-            }
-        });
+        // The lists are fresh whenever the tab opens and follow the devices while it shows: the
+        // first watch lists again and switches the core's device notifications on (nothing
+        // without a core: a screen draws the fixture's lists).
+        model.live.voice.devices.update(cx, |d, cx| d.watch(cx));
         let mut tab = Self {
             scroll: ScrollHandle::new(),
             close,
@@ -189,6 +207,16 @@ impl AudioTab {
         self.meter_held
     }
 
+    /// The meter's level as drawn, dB (−96 at rest).
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+
+    /// "Test mic" is pressed and a test runs.
+    pub fn test_running(&self) -> bool {
+        self.test.is_some()
+    }
+
     fn set_level(&mut self, db: f32, cx: &mut Context<Self>) {
         let next = smooth(self.level, db);
         if next != self.level {
@@ -214,7 +242,7 @@ impl AudioTab {
         let sink: LevelSink = std::sync::Arc::new(move |db| {
             let _ = tx.unbounded_send(db);
         });
-        if let Err(e) = test.start(self.shown.input_device.as_deref(), sink) {
+        if let Err(e) = test.start(self.shown.input_device.as_deref(), self.shown.processing(), sink) {
             // The renderer only logged a failed getUserMedia; the button still reads "Stop test".
             log::warn!("[AudioTab] mic test setup failed: {e}");
             return;

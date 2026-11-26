@@ -306,7 +306,11 @@ pub fn voice_moderation(server: ServerId, uid: Uid, cx: &App) -> Option<VoiceMod
 pub struct PanelPopovers {
     ui: Entity<VoiceUi>,
     apps_timer: Option<Task<()>>,
+    /// The device menu is open: the model's device lists are watched (read again as it opens,
+    /// then on every device change the core reports; nothing while it is closed).
+    devices_watched: bool,
     _watch: Watch,
+    _subscriptions: Vec<gpui::Subscription>,
 }
 
 impl PanelPopovers {
@@ -330,7 +334,26 @@ impl PanelPopovers {
                 }
                 true
             });
-        Self { ui, apps_timer: None, _watch: watch }
+        let subscriptions = vec![
+            cx.observe(&ui, |this: &mut Self, ui, cx| {
+                let open = matches!(ui.read(cx).popover, Some(PanelPopover::Devices { .. }));
+                this.watch_devices(open, cx);
+            }),
+            cx.on_release(|this: &mut Self, cx| this.watch_devices(false, cx)),
+        ];
+        let mut this = Self { ui, apps_timer: None, devices_watched: false, _watch: watch, _subscriptions: subscriptions };
+        let open = matches!(this.ui.read(cx).popover, Some(PanelPopover::Devices { .. }));
+        this.watch_devices(open, cx);
+        this
+    }
+
+    fn watch_devices(&mut self, on: bool, cx: &mut App) {
+        if on == self.devices_watched {
+            return;
+        }
+        self.devices_watched = on;
+        let devices = Model::global(cx).live.voice.devices.clone();
+        devices.update(cx, |d, cx| if on { d.watch(cx) } else { d.unwatch() });
     }
 }
 
