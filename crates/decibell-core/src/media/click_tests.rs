@@ -419,3 +419,22 @@ fn a_busy_stream_audio_lock_does_not_silence_the_voices() {
         assert_clean(&rx.heard(), 1.0, &format!("lock held at step {at}"));
     }
 }
+
+/// Audit 8: ten lost frames in a row reset the jitter buffer, by design (the
+/// audio is unintelligible by then). Not a click: the concealment fades out
+/// before the reset and playback fades back in after it.
+#[test]
+fn a_run_of_lost_frames_resets_without_a_step() {
+    for (from, lost) in [(100, 12), (101, 14), (103, 25), (102, 4)] {
+        let mut rx = Rx::new();
+        for _ in 0..180 {
+            let deliver = !(from..from + lost).contains(&rx.step);
+            rx.tick(deliver);
+        }
+        let heard = rx.heard();
+        assert!(heard[heard.len() - 9_600..].iter().any(|s| s.abs() > 0.15), "the voice is back after the loss");
+        let jb = &rx.peer().voice_jitter;
+        println!("{lost} lost from {from}: lost-frame concealments {}, expansions {}, underruns {}", jb.plc_frames, jb.expand_frames, jb.underruns);
+        assert_clean(&heard, 1.0, &format!("{lost} frames lost from step {from}"));
+    }
+}

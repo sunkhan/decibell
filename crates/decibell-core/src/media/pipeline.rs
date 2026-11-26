@@ -1483,10 +1483,18 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
         // heard as a short buzz/tick after the person stops talking.
         // A late packet that resumes playback comes back at full
         // level; Opus smooths that join itself.
+        // Each frame of the episode ramps from the level the one before it
+        // ended at down to its own: one gain per frame would step at every
+        // frame boundary (30 % of the wave's value at the first).
         if was_expand {
+            let level = |k: f32| (1.0 - k / (super::jitter::MAX_EXPAND_FRAMES as f32 + 1.0)).powi(2);
             let k = peer.voice_jitter.expand_index() as f32;
-            let g = (1.0 - k / (super::jitter::MAX_EXPAND_FRAMES as f32 + 1.0)).powi(2);
-            for s in pcm.iter_mut() { *s = (*s as f32 * g) as i16; }
+            let (from, to) = (level(k - 1.0), level(k));
+            let n = pcm.len() as f32;
+            for (i, s) in pcm.iter_mut().enumerate() {
+                let g = from + (to - from) * ((i + 1) as f32 / n);
+                *s = (*s as f32 * g) as i16;
+            }
         }
 
         let rms = {
