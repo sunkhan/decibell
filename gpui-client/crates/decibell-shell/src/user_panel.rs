@@ -132,8 +132,11 @@ fn panel_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
         .cursor_pointer()
         .tooltip(title_tooltip(title))
         .on_click(on_click)
+        // `user-panel-settings` (the gear), `user-panel-mute`, …: where the self-tests click.
+        .relative()
+        .children(crate::probes::probe(id))
         .when_some(right_click, |this, (action, bounds)| {
-            this.relative().child(bounds.probe()).on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            this.child(bounds.probe()).on_mouse_down(MouseButton::Right, move |_, window, cx| {
                 cx.stop_propagation();
                 user_panel_action(action, bounds.get(), window, cx);
             })

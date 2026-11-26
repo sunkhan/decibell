@@ -1,6 +1,7 @@
-//! Where the shell's interactive parts are, for its self-tests: they click and scroll the real
-//! window at the places these record. Off unless the process was started with
-//! `DECIBELL_TEST_PROBES=1` (the shell's self-tests set it for the app they start): then each
+//! Where interactive parts are, for the self-tests: they click and scroll the real window at the
+//! places these record (the shell's and the features' views, the kit's `Button`, `NavItem`). Off
+//! unless the process was started with `DECIBELL_TEST_PROBES=1` (the self-tests that run the app
+//! as a child set it): then each
 //! probed element carries an invisible canvas that records its bounds when laid out, and a few
 //! views record a flag when they render. Off, nothing is added to any element.
 

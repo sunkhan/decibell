@@ -20,7 +20,9 @@ mod ink;
 mod main_view;
 mod members;
 mod overlays;
-pub mod probes;
+/// Kept here for the crates that reach it as `decibell_shell::probes` (it lives in the harness,
+/// so the kit's components can carry probes too).
+pub use decibell_harness::probes;
 mod requests;
 #[cfg(feature = "fixtures")]
 mod screens;

@@ -5,12 +5,15 @@
 //! - [`SelfTest`]: a scripted check that `decibell --selftest <name>|all` runs against the real
 //!   app in its real window, driven through a [`TestCx`].
 //! - [`perf`]: process start, the first presented frame, frame counters.
+//! - [`probes`]: where interactive elements were laid out, for the self-tests that click them
+//!   (off unless `DECIBELL_TEST_PROBES=1`).
 //!
 //! A crate exposes `pub fn screens() -> Vec<Screen>` and `pub fn selftests() -> Vec<SelfTest>`;
 //! `decibell-app`'s `registry` module lists the crates. No linker tricks: a screen or test that
 //! isn't listed there doesn't exist. How to add one: `gpui-client/CONVENTIONS.md`.
 
 pub mod perf;
+pub mod probes;
 mod screens;
 mod selftest;
 
