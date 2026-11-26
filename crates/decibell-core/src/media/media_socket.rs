@@ -314,6 +314,36 @@ impl MediaSocket {
         &self.inner
     }
 
+    /// End a read blocked on this socket in another thread, for good (a
+    /// receive loop's stop; nothing reads the socket after it, sending is
+    /// untouched). A connected (relay) socket has its read side shut down,
+    /// which wakes the read on Linux and macOS (`recv` then returns 0). An
+    /// unconnected (sealed, P2P) one is sent one byte from loopback instead,
+    /// which it skips as a datagram that doesn't open: shutting it down would
+    /// make `recv_from` return no source address, which std refuses with a
+    /// panic.
+    #[cfg(unix)]
+    pub(crate) fn wake_reader(&self) {
+        use std::os::fd::AsRawFd;
+        if !self.is_sealed() {
+            // SAFETY: a valid descriptor owned by `inner`; shutdown only marks it.
+            unsafe {
+                libc::shutdown(self.inner.as_raw_fd(), libc::SHUT_RD);
+            }
+            return;
+        }
+        if let Ok(addr) = self.inner.local_addr() {
+            let ip = if addr.ip().is_unspecified() {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            } else {
+                addr.ip()
+            };
+            if let Ok(s) = UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)) {
+                let _ = s.send_to(&[0], (ip, addr.port()));
+            }
+        }
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.inner.local_addr()
     }

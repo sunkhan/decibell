@@ -4944,6 +4944,12 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   fires. The two event bridges blocked in `recv_timeout(50 ms)` (20 wakeups/s on a runtime thread); they block in
   `recv` and end when their senders are gone. Result: voice-recv 0.3/s, video-recv 0.7/s, `decibell-rt`
   24.7 → 5.2/s; the process 1,380 → 767 wakeups/s (the rest: the device clocks and `decibell-audio`).
+  Follow-up (owner, same day: audio quality outranks wakeups, so the voice hand-off must be no later than
+  before): a wait + read pair measured ~10 µs later at the median than the old single blocking read, so
+  `decibell-voice-recv` now sleeps in the read itself on Unix (its stop shuts the read side down; a sealed
+  P2P socket gets a loopback byte, since `recv_from` after a shutdown makes std panic) and only Windows waits
+  in `WSAPoll`. `handoff_is_as_prompt_as_the_1ms_poll` compares the two loops on the same socket and channel:
+  p50 72–83 µs both, p90 / p99 within run-to-run noise.
 - **The video receive thread runs only when it has a use** (`media/video_recv_host.rs`). It existed for every voice
   session though nobody streamed. Now it starts on the session's first watch (`watch_stream_add`) or when a
   `VideoEngine` streams on its media socket (it holds a `VideoRecvDemand`: watchers' keyframe requests arrive
