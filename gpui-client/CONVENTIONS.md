@@ -329,8 +329,10 @@ in short:
   only while they move and skipped under reduced motion.
 - **Slot API changes for the composer**: `ComposerBuilder` is `Fn(ServerId, ChannelId, &Entity<MessageList>, &mut
   Window, &mut App) -> ComposerParts { view, type_to_focus }` (the composer follows the list's `ListEvent::Reply`
-  and calls `start_edit`; the pane's key listener hands keys that reach it from the list, or with nothing focused,
-  to `type_to_focus`), and `EditorSlot::height(&Message, width, scale, &App)`.
+  and calls `start_edit`; the pane's key listener hands keys that reach it from the list to `type_to_focus`), and
+  `EditorSlot::height(&Message, width, scale, &App)`. With **nothing focused** GPUI dispatches a key to the
+  window's root node only, which no pane is: `decibell_composer::install_type_to_focus(cx)` (one app-level
+  keystroke interceptor, registered in `registry::init_features`) hands such keys to the composer on screen.
 
 ## Composer (`decibell-composer`)
 
@@ -358,6 +360,11 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
   (`drop_image`) when it closes; GIF previews are fetched only for tiles near the viewport and their decoded frames
   and atlas tiles are released on close. Close through `Composer::close_picker(window, cx)` (it needs the window)
   and never from inside a picker update (`Picker::close` defers it).
+- **Outside a chat pane**: `dm_composer` (the DM pane's composer, joined by the app), `status_emoji_picker` (the
+  custom status dialog's picker: `Picker::emoji_only`, no GIFs tab, a pick handed to the caller, its images
+  released when the caller drops it), `install_type_to_focus` ("type anywhere" with nothing focused: printable
+  keys and ArrowUp go to the composer mounted last while it lives; not with Ctrl / Alt / Super, a modal, or the
+  notice instead of the card).
 - **Timers**: the slowmode countdown ticks on the wait's whole-second boundaries only while a window runs; the
   timed-out notice once a second while timed out; the GIF debounce only while a query waits; the drop pulse only
   while a file drag is over the window. Nothing at rest (`composer-idle`: 0 frames blurred).
@@ -666,6 +673,9 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
     blur, and a click right after a change can reach the old frame's handlers (a window in the background
     may not draw on its own): draw what is pending first (`draw_pending` in `decibell-settings`'
     self-tests: a modifiers event that names no key) and put one between press and release.
+15. **A key with nothing focused reaches only the window's root node** (`focus_node_id_in_rendered_frame` falls back
+    to node 0, the root view): no element's `on_key_down` below it sees it. App-wide handling goes through
+    `App::intercept_keystrokes` (before key bindings; `stop_propagation` takes the key).
 
 ## Voice (`decibell-voice`)
 

@@ -39,6 +39,9 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(crate::render_cost::run(cx)),
         },
     ]
+    .into_iter()
+    .chain(crate::joins::selftests())
+    .collect()
 }
 
 async fn boot(cx: TestCx) -> Result<()> {

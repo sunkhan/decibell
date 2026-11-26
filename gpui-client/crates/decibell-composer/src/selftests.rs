@@ -58,6 +58,7 @@ tests! {
     "composer-paste-image", "X11: an image on the clipboard pasted into the box becomes a chip (the clipboard is restored)", check_paste_image;
     "emoji-picker", "open the picker (open time, frames), 0 frames at rest, search \"smile\", pick: an atom in the box, sent as the character", check_emoji_picker;
     "gif-picker", "GIFs tab: search (debounced), pick: the URL is sent (the canned provider without a key)", check_gif_picker;
+    "composer-type-to-focus", "with nothing focused (and from the list) a printable key lands in the box; not with a modal open or Ctrl held", check_type_to_focus;
     "composer-idle", "focused in the active window only the caret's blink draws; blurred: 0 frames over 5 s", check_idle;
     "composer-typing-cost", "frames per key, µs per key, and the message list draws nothing while typing", check_typing_cost;
 }
@@ -359,6 +360,39 @@ async fn check_type_send(cx: TestCx) -> Result<()> {
     ensure!(value(&cx, &composer)? == "a\n```\n", "Enter inside an open fence breaks the line: {:?}", value(&cx, &composer)?);
     set_value(&cx, &composer, "")?;
     delete(&cx, OFF_TOPIC, &[id]).await
+}
+
+/// `useTypeToFocusComposer`: the app's keystroke interceptor (nothing focused) and the pane's
+/// listener (the list focused) hand a printable key to the box; a modal or a modifier keeps it.
+async fn check_type_to_focus(cx: TestCx) -> Result<()> {
+    let composer = open(&cx, OFF_TOPIC).await?;
+    set_value(&cx, &composer, "")?;
+    let focused = |cx: &TestCx| cx.update(|window, cx| composer.read(cx).input().read(cx).focus_handle(cx).is_focused(window));
+    // Nothing focused: only the window's root sees the key (GPUI), the interceptor takes it.
+    cx.update(|window, cx| window.blur(cx))?;
+    cx.type_text("h")?;
+    ensure!(value(&cx, &composer)? == "h" && focused(&cx)?, "nothing focused: the key went to the box ({:?})", value(&cx, &composer)?);
+    // The list focused: the pane's own listener.
+    let list = list_of(&cx, &composer)?;
+    cx.update(|window, cx| list.read(cx).focus_handle().clone().focus(window, cx))?;
+    cx.type_text("i")?;
+    ensure!(value(&cx, &composer)? == "hi" && focused(&cx)?, "the list focused: the key went to the box ({:?})", value(&cx, &composer)?);
+    cx.log("a printable key with nothing focused, then with the list focused, lands in the box");
+    // Ctrl held, or a modal open: not taken.
+    cx.update(|window, cx| window.blur(cx))?;
+    cx.keystroke("ctrl-j")?;
+    ensure!(value(&cx, &composer)? == "hi" && !focused(&cx)?, "Ctrl+J was taken");
+    cx.update(|_, cx| model(cx).overlays.update(cx, |o, cx| o.open_modal(decibell_model::stores::overlays::modal::SETTINGS, cx)))?;
+    cx.settle().await?;
+    cx.update(|window, cx| window.blur(cx))?;
+    cx.type_text("x")?;
+    let held = value(&cx, &composer)?;
+    cx.update(|_, cx| model(cx).overlays.update(cx, |o, cx| o.close_modal(cx)))?;
+    ensure!(held == "hi", "a key under a modal reached the box ({held:?})");
+    cx.log("Ctrl held or a modal open: the key isn't taken");
+    set_value(&cx, &composer, "")?;
+    cx.settle().await?;
+    Ok(())
 }
 
 async fn check_draft(cx: TestCx) -> Result<()> {

@@ -436,7 +436,7 @@ impl Composer {
     // ── Keys from the pane ──────────────────────────────────────────────────────────────────
 
     /// `useTypeToFocusComposer`: a key that reached the pane with no text field focused.
-    fn key_from_pane(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn key_from_pane(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let modifiers = event.keystroke.modifiers;
         if modifiers.control || modifiers.alt || modifiers.platform {
             return false;
