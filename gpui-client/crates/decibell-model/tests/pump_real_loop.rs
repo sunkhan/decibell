@@ -43,11 +43,7 @@ fn ten_thousand_events_from_eight_threads_cost_one_wake_per_burst() {
     type AfterEachBurst = Vec<(u64, u64, u64)>;
     let outcome: Arc<std::sync::Mutex<Option<AfterEachBurst>>> = Arc::default();
     let seen_total = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    // The boot order of docs/model.md §2: on Linux GPUI's own D-Bus tasks need
-    // `core::prepare` once the core is linked in.
-    let platform = gpui_platform::current_platform(true);
-    decibell_model::core::prepare(&platform.background_executor());
-    gpui::Application::with_platform(platform).run({
+    gpui::Application::with_platform(gpui_platform::current_platform(true)).run({
         let (outcome, seen_total) = (outcome.clone(), seen_total.clone());
         move |cx| {
             let (queue, woken) = EventQueue::new();

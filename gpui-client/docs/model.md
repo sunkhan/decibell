@@ -12,7 +12,7 @@ Everything below was run on 2026-11-26 against the local stack (`tools/dev/`); �
 ```
 crates/decibell-model/
   src/lib.rs            Model: every store, as a GPUI global; reads that span stores
-  src/core.rs           the tokio runtime, starting / stopping the core, `prepare` (§2)
+  src/core.rs           the tokio runtime, starting / stopping the core (§2)
   src/local_key.rs      the E2EE at-rest key: OS keychain, or injected
   src/pump.rs           EventQueue, ModelSink (the core's EventSink), the pump task, StreamFrameSink
   src/events/           the router (one exhaustive match) and a module per event area
@@ -40,10 +40,8 @@ SharedString` (slugs, unique only within their community): always key on `(Serve
 ## 2. Starting and stopping the core
 
 ```rust
-// main(): the platform first, `prepare` between it and the Application (Linux needs it: below).
-let platform = gpui_platform::current_platform(false);
-decibell_model::core::prepare(&platform.background_executor());
-gpui::Application::with_platform(platform).with_assets(Assets).run(|cx| {
+// main():
+gpui::Application::with_platform(gpui_platform::current_platform(false)).with_assets(Assets).run(|cx| {
     // Stores + pump, synchronously: build the first window right after.
     let model = Model::init(cx, core::default_user_data_dir().ok());
     // The window can open with model.layout.read(cx).prefs().theme / text_size_px / row_scale (§7).
@@ -64,8 +62,7 @@ What `Model::start_core` does, in order (ARCHITECTURE.md §7.3 "Starting the cor
    directory (`$XDG_CONFIG_HOME` or `~/.config`; `%APPDATA%`; `~/Library/Application Support`). Never
    Electron's (`decibell-electron-client`). It holds the core's `config.json`, `cert_pins.json`, the E2EE
    key store, and this client's `ui.json`.
-2. The runtime: tokio multi-thread, **2 workers**, `enable_all`, threads named `decibell-rt` (built by
-   `prepare`, else here).
+2. The runtime: tokio multi-thread, **2 workers**, `enable_all`, threads named `decibell-rt`.
 3. The at-rest key (`LocalKeyProvider::load`, a task: the UI thread does not wait on the keychain).
 4. `lifecycle::init(InitOptions, sink, handle)`. Once per process.
 5. `settings::load_config` → `Settings::apply_loaded` (emits `SettingsEvent::Appearance`).
@@ -85,16 +82,19 @@ unavailable: sealed under the keychain key"). Tests and the headless tool inject
 and never touch the keychain. On Linux the item is labelled `zed-github-account` (GPUI hard-codes the
 label; gpui-notes §2.18).
 
-**`core::prepare` and the D-Bus clash (Linux).** The core depends on `zbus` with its `tokio` feature; GPUI's
-Linux platform uses the same `zbus` through `ashpd` and `oo7` with `async-io`. Cargo builds one `zbus` with
-both features and `zbus` then uses tokio everywhere, so every D-Bus call GPUI makes (portal settings, the
-file chooser, `open_url`, the keychain, power and sleep listeners) panics with "there is no reactor running"
-on a thread outside a tokio runtime — and the release profile aborts on a panic, at startup. `prepare`
-builds the runtime before the `Application` exists and enters its context for good on GPUI's `Worker-N`
-threads and on smol's executor thread, which is where GPUI runs that code. The main thread is deliberately
-left outside (the core runs an `api` call inline on a thread that is inside a runtime; the UI thread must
-never do the core's work). Without `prepare`, `KeychainKey` answers "no key" instead of taking the app
-down. The real fix is in the core (§12).
+**D-Bus beside GPUI (Linux).** GPUI's Linux platform talks D-Bus through `zbus` on `async-io` (`ashpd`,
+`oo7`: portal settings, the file chooser, `open_url`, the keychain, power and sleep listeners), on its
+`Worker-N` threads and smol's executor. The core's `zbus` runtime is a feature: this crate depends on it with
+`default-features = false, features = ["zbus-async-io"]` (keep exactly that). With the core's default
+(`zbus-tokio`, the Electron addon's) cargo would build one `zbus` with both runtimes, `zbus` would then run
+on tokio everywhere, and every GPUI D-Bus call outside a tokio context would panic ("there is no reactor
+running"; the release profile aborts on it). Check: `cargo tree -p decibell-model -e features -i zbus` shows
+no `tokio` feature. An earlier workaround, `core::prepare` (entering the runtime on GPUI's threads before the
+`Application` existed), is gone with it; nothing enters the runtime outside the core's own threads.
+Verified 2026-11-26 in a private `dbus-run-session` with a scratch `gnome-keyring-daemon` (own `HOME` /
+`XDG_*` dirs, never the session keyring): `decibell-headless --keychain` signed in, the key was created in
+that keyring (label `zed-github-account`, url `decibell://e2ee-local-key/<profile>`), the next start opened
+the saved sign-in sealed under it, and no panic or keychain warning was logged.
 
 **Shutdown.** `Model::init` registers an `on_app_quit` that flushes what is inside a debounce (`ui.json`, a
 pending settings save, which goes straight to the runtime). `core::shutdown(limit)` then runs
@@ -463,19 +463,13 @@ next await).
 
 ## 12. Needed from the core and the skeleton (not changed here)
 
-1. **Core: `zbus` feature.** `crates/decibell-core/Cargo.toml` has `zbus = { version = "5",
-   default-features = false, features = ["blocking-api", "tokio"] }`. In this workspace that turns GPUI's
-   own D-Bus use into panics (§2). Replacing `"tokio"` with `"async-io"` (what GPUI's `ashpd` uses) removes
-   the clash; the core's three users (`system_idle.rs`, `hotkeys/portal.rs`, `media/capture_pipewire.rs`)
-   would need Electron's bar re-run. Until then **`decibell-app` must call `core::prepare`** as in §2, or a
-   release build aborts at startup on Linux as soon as it links the core. **This already reaches the
-   app through the workspace**: cargo unifies features over everything one command builds, so
-   `cargo build --workspace` (with this crate a member) builds a `decibell` whose `zbus` has `tokio` on,
-   although the app does not depend on the core yet. `cargo build -p decibell-app` is unaffected. Checked
-   in an isolated session bus with a scratch keyring: with `prepare`, GPUI's keychain calls work (the key
-   is created, the saved sign-in is sealed under it and opens on the next start); without it they panic.
-2. **Skeleton (`decibell-app`)**: the boot sequence of §2 (`current_platform` → `prepare` →
-   `Application::with_platform`; `Model::init`; `Model::start_core`; `core::shutdown` after `run`), the
+1. **Core: `zbus` feature** — done: the core's `zbus` runtime is a feature (`zbus-tokio`, its default and the
+   addon's; `zbus-async-io` for this client), this crate takes `zbus-async-io` (§2), and `core::prepare` is
+   removed. **Every crate of this client that depends on the core must do the same** (`default-features =
+   false, features = ["zbus-async-io"]`): cargo unifies features over everything one command builds, so one
+   crate on the default would put `tokio` back for the whole workspace.
+2. **Skeleton (`decibell-app`)**: the boot sequence of §2 (`Application::with_platform`; `Model::init`;
+   `Model::start_core`; `core::shutdown` after `run`), the
    `SettingsEvent::Appearance` subscription of §7, the initial theme from `layout.prefs()`, and
    `decibell-model = { path = "crates/decibell-model" }` in `[workspace.dependencies]` (left out: an unused
    workspace dependency warns on every build). The shipped binary must not enable this crate's
@@ -487,7 +481,7 @@ next await).
 5. **Windows check job** (`.github/workflows/win-native-check.yml`, job `gpui-client`): with this crate a
    workspace member, `cargo check` of the workspace now builds `decibell-core` on Windows too, so that job
    needs what the addon's job has for the core (FFmpeg through vcpkg, protoc). This crate's Windows side is
-   written to compile (`smol` and the thread adoption are Linux-only) but was not built there.
+   written to compile but was not built there.
 6. `cargo clippy -p decibell-model` prints the core's own warnings (14; unused imports and the like in
    `media/`): a path dependency outside the workspace is not lint-capped. None are this crate's.
 
@@ -514,7 +508,7 @@ loaded, no window, then idle. `tools/perf/measure.sh --pid … --settle 20 --dur
 | main (1) | GPUI's event loop | 0 | parked in `epoll_wait`: no core event arrived, so the pump never woke it |
 | `Worker-0` … `Worker-19` (20) | GPUI's background executor, one per CPU | 0 | parked |
 | `Timer` (1) | GPUI's timer thread | 0 | holds the script's one `idle` timer |
-| `smol-1`, `async-io` (2) | smol's executor and reactor (GPUI's power listener; started by `core::prepare`) | 0 | parked |
+| `smol-1`, `async-io` (2) | smol's executor and reactor (GPUI's power listener; started by `core::prepare` at the time, since removed: §2) | 0 | parked |
 
 No hotkey or audio-device watcher runs in this state (no binding, no voice): they appear only with their
 cause. So the core + model's share of the client's memory budget (Electron's whole idle footprint here is

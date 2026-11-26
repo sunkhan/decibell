@@ -82,12 +82,6 @@ fn generate() -> Option<String> {
 
 impl LocalKeyProvider for KeychainKey {
     fn load(&self, user_data_dir: &Path, cx: &mut App) -> Task<LocalKey> {
-        // GPUI's Secret Service client can't run beside the core before
-        // `core::prepare` (see `core`'s module doc): it would take the app down.
-        if !crate::core::gpui_dbus_usable() {
-            log::warn!("[e2ee] core::prepare was not called before the Application was created: no keychain");
-            return Task::ready(LocalKey::none());
-        }
         let url = keychain_url(user_data_dir);
         let read = cx.read_credentials(&url);
         cx.spawn(async move |cx| {

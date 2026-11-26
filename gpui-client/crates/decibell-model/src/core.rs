@@ -7,18 +7,16 @@
 //! blocking pool, which tokio names the same). Everything else that runs is the core's
 //! own (voice, video, hotkeys) or GPUI's.
 //!
-//! # `prepare`, and why Linux needs it
+//! # D-Bus beside GPUI (Linux)
 //!
-//! The core depends on `zbus` with its `tokio` feature; GPUI's Linux platform uses the
-//! same `zbus` (through `ashpd` and `oo7`) with `async-io`. Cargo builds one `zbus` with
-//! both features, and `zbus` then uses tokio everywhere: every D-Bus call GPUI makes
-//! (portal settings, the file chooser, opening URLs, the keychain, power and sleep
-//! events) panics with "there is no reactor running" on a thread that is not inside a
-//! tokio runtime, and the release profile aborts on a panic. [`prepare`] is the
-//! workaround: it builds the runtime before GPUI's `Application` exists and enters its
-//! context, for good, on GPUI's background workers and on smol's executor thread, which
-//! is where GPUI runs that code. The real fix is one line in the core's `Cargo.toml`
-//! (docs/model.md §12); `prepare` then reduces to building the runtime early.
+//! The core is built with zbus on `async-io` (`default-features = false, features =
+//! ["zbus-async-io"]` in this crate's manifest), the runtime GPUI's own D-Bus users
+//! (`ashpd`, `oo7`) use. With the core's default (`zbus-tokio`, the Electron addon's) cargo
+//! would unify both features into one zbus that runs on tokio, and every D-Bus call GPUI
+//! makes (portal settings, the file chooser, opening URLs, the keychain, power and sleep
+//! events) would panic outside a tokio context. Nothing here has to enter the runtime on
+//! GPUI's threads: `cargo tree -p decibell-model -e features -i zbus` must show no `tokio`
+//! feature.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,10 +48,6 @@ struct Running {
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 static STARTED: AtomicBool = AtomicBool::new(false);
-/// Built by [`prepare`], taken by [`start`].
-static PREPARED: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
-/// [`prepare`] entered the runtime on GPUI's threads (see the module doc).
-static GPUI_THREADS_ADOPTED: AtomicBool = AtomicBool::new(false);
 
 fn build_runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
@@ -62,102 +56,6 @@ fn build_runtime() -> Result<tokio::runtime::Runtime> {
         .enable_all()
         .build()
         .context("building the core's runtime")
-}
-
-/// Build the core's runtime now and make GPUI's D-Bus code work beside the core (the
-/// module doc says why). Call it on the main thread **between creating the platform and
-/// creating the `Application`**:
-///
-/// ```ignore
-/// let platform = gpui_platform::current_platform(false);
-/// decibell_model::core::prepare(&platform.background_executor());
-/// gpui::Application::with_platform(platform).with_assets(Assets).run(|cx| { … });
-/// ```
-///
-/// It blocks for the moment GPUI's idle workers need to pick up one task each (well
-/// under a millisecond; bounded at one second). The main thread is deliberately left
-/// outside the runtime: the core runs an `api` call inline on a thread that is inside
-/// one, and the UI thread must never do the core's work.
-pub fn prepare(background: &gpui::BackgroundExecutor) {
-    let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
-    if prepared.is_some() || is_running() {
-        return;
-    }
-    let runtime = match build_runtime() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            log::error!("[core] {e:#}");
-            return;
-        }
-    };
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    adopt_gpui_threads(runtime.handle(), background);
-    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-    let _ = background;
-    *prepared = Some(runtime);
-}
-
-/// Whether GPUI's D-Bus users (the keychain among them) can run: always, except on
-/// Linux before [`prepare`].
-pub fn gpui_dbus_usable() -> bool {
-    !cfg!(any(target_os = "linux", target_os = "freebsd")) || GPUI_THREADS_ADOPTED.load(Ordering::SeqCst)
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn adopt_gpui_threads(handle: &tokio::runtime::Handle, background: &gpui::BackgroundExecutor) {
-    use std::sync::Condvar;
-
-    // GPUI's Linux dispatcher starts one `Worker-N` per CPU, at least two
-    // (gpui_linux/src/linux/dispatcher.rs). One task per worker: each enters the
-    // runtime and then waits for the others, so no worker can take two.
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().max(2));
-    #[derive(Default)]
-    struct Rendezvous {
-        entered: usize,
-        released: bool,
-    }
-    let rendezvous = Arc::new((Mutex::new(Rendezvous::default()), Condvar::new()));
-    for _ in 0..workers {
-        let (handle, rendezvous) = (handle.clone(), rendezvous.clone());
-        background
-            .spawn(async move {
-                // Entered for the life of the thread: the guard is never dropped.
-                std::mem::forget(handle.enter());
-                let (state, changed) = &*rendezvous;
-                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                state.entered += 1;
-                changed.notify_all();
-                while !state.released {
-                    state = changed.wait(state).unwrap_or_else(|e| e.into_inner());
-                }
-            })
-            .detach();
-    }
-    let (state, changed) = &*rendezvous;
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    while state.entered < workers {
-        let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else { break };
-        state = changed.wait_timeout(state, left).unwrap_or_else(|e| e.into_inner()).0;
-    }
-    if state.entered < workers {
-        log::warn!(
-            "[core] only {} of {workers} GPUI workers joined the runtime; D-Bus calls on the others will fail",
-            state.entered
-        );
-    }
-    state.released = true;
-    changed.notify_all();
-    drop(state);
-
-    // GPUI's sleep / wake and power listeners run on smol's global executor: one thread
-    // unless SMOL_THREADS says otherwise (then only the one that takes this task is
-    // covered, and the listeners may fail on another: they log and stop, nothing else).
-    let handle = handle.clone();
-    smol::block_on(smol::spawn(async move {
-        std::mem::forget(handle.enter());
-    }));
-    GPUI_THREADS_ADOPTED.store(true, Ordering::SeqCst);
 }
 
 /// Where this client keeps `config.json`, the E2EE key store, `cert_pins.json` and its
@@ -204,9 +102,7 @@ pub fn start(options: CoreOptions, sink: Arc<ModelSink>, cx: &mut App) -> Task<R
             return Task::ready(Err(e));
         }
     };
-    // The runtime first: on Linux the keychain read below needs it (`prepare`).
-    let runtime = match PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take().map(Ok).unwrap_or_else(build_runtime)
-    {
+    let runtime = match build_runtime() {
         Ok(runtime) => runtime,
         Err(e) => {
             STARTED.store(false, Ordering::SeqCst);
@@ -277,10 +173,6 @@ pub fn set_stream_frame_sink(sink: Option<Box<dyn crate::pump::StreamFrameSink>>
 /// Idempotent; returns whether the core's own shutdown finished in time.
 pub fn shutdown(limit: Duration) -> bool {
     let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-        // Prepared but never started: just stop the runtime's threads.
-        if let Some(runtime) = PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            runtime.shutdown_timeout(limit);
-        }
         return true;
     };
     running.sink.queue().close();

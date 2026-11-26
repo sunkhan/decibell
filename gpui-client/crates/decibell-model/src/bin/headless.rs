@@ -527,10 +527,8 @@ fn main() -> ExitCode {
     say(format!("CENTRAL {central}"));
 
     let exit = Arc::new(AtomicU8::new(0));
-    // The platform with no windowing; `prepare` goes between it and the Application.
-    let platform = gpui_platform::current_platform(true);
-    core::prepare(&platform.background_executor());
-    gpui::Application::with_platform(platform).run({
+    // The platform with no windowing.
+    gpui::Application::with_platform(gpui_platform::current_platform(true)).run({
         let exit = exit.clone();
         move |cx| {
             let user_data_dir = args.user_data_dir.clone().or_else(|| core::default_user_data_dir().ok());

@@ -1864,7 +1864,6 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "smol",
  "tempfile",
  "tokio",
  "tokio-rustls",
