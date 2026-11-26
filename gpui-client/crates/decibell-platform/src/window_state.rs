@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{App, AppContext as _, Bounds, Pixels, Point, Size, Subscription, Window, WindowBounds, point, px, size};
+use gpui::{App, AppContext as _, Bounds, DisplayId, Pixels, Point, Size, Subscription, Window, WindowBounds, point, px, size};
 use serde::{Deserialize, Serialize};
 
 pub const FILE: &str = "window-state.json";
@@ -77,6 +77,8 @@ fn store(profile: &Path, saved: &Saved) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Restored {
     pub origin: Option<Point<Pixels>>,
+    /// The screen the saved place is on (an index into the `displays` given to [`fit`]).
+    pub display: Option<usize>,
     pub size: Size<Pixels>,
     pub maximized: bool,
 }
@@ -93,40 +95,44 @@ pub fn fit(saved: Saved, displays: &[Bounds<Pixels>], minimum: Size<Pixels>, pla
         wanted.width = wanted.width.min(largest.size.width.max(minimum.width));
         wanted.height = wanted.height.min(largest.size.height.max(minimum.height));
     }
-    let origin = match (saved.x, saved.y) {
+    let placed = match (saved.x, saved.y) {
         (Some(x), Some(y)) if place => {
             let bounds = Bounds::new(point(px(x), px(y)), wanted);
-            on_screen(bounds, displays).then_some(bounds.origin)
+            screen_of(bounds, displays).map(|display| (bounds.origin, display))
         }
         _ => None,
     };
-    Restored { origin, size: wanted, maximized: saved.maximized }
+    Restored { origin: placed.map(|p| p.0), display: placed.map(|p| p.1), size: wanted, maximized: saved.maximized }
 }
 
 /// The bounds to open the main window with: the profile's saved state fitted to the screens, else
 /// `default` centred (both outer sizes).
-pub fn initial_bounds(profile: Option<&Path>, default: Size<Pixels>, minimum: Size<Pixels>, cx: &App) -> WindowBounds {
+/// The bounds to open the main window with and the screen to open it on: the profile's saved state
+/// fitted to the screens, else `default` centred (both outer sizes). The screen matters on Windows:
+/// GPUI places a window on the screen it is given (the primary one otherwise) and converts the
+/// bounds with that screen's DPI scale, dropping bounds whose centre is on another screen.
+pub fn initial_bounds(profile: Option<&Path>, default: Size<Pixels>, minimum: Size<Pixels>, cx: &App) -> (WindowBounds, Option<DisplayId>) {
     let Some(saved) = profile.and_then(load) else {
-        return WindowBounds::Windowed(Bounds::centered(None, default, cx));
+        return (WindowBounds::Windowed(Bounds::centered(None, default, cx)), None);
     };
-    let displays: Vec<Bounds<Pixels>> = cx.displays().iter().map(|d| d.bounds()).collect();
-    let restored = fit(saved, &displays, minimum, positions_windows());
+    let displays = cx.displays();
+    let screens: Vec<Bounds<Pixels>> = displays.iter().map(|d| d.bounds()).collect();
+    let restored = fit(saved, &screens, minimum, positions_windows());
+    let display = restored.display.and_then(|i| displays.get(i)).map(|d| d.id());
     let bounds = match restored.origin {
         Some(origin) => Bounds::new(origin, restored.size),
         None => Bounds::centered(None, restored.size, cx),
     };
-    if restored.maximized { WindowBounds::Maximized(bounds) } else { WindowBounds::Windowed(bounds) }
+    let bounds = if restored.maximized { WindowBounds::Maximized(bounds) } else { WindowBounds::Windowed(bounds) };
+    (bounds, display)
 }
 
-/// At least a 64 × 64 px piece of the window (its title bar's end, typically) is on some screen.
-fn on_screen(bounds: Bounds<Pixels>, displays: &[Bounds<Pixels>]) -> bool {
-    displays.iter().any(|display| {
-        let left = bounds.origin.x.max(display.origin.x);
-        let top = bounds.origin.y.max(display.origin.y);
-        let right = (bounds.origin.x + bounds.size.width).min(display.origin.x + display.size.width);
-        let bottom = (bounds.origin.y + bounds.size.height).min(display.origin.y + display.size.height);
-        right - left >= px(64.) && bottom - top >= px(64.)
-    })
+/// The screen the window's centre is on (each screen's bounds in its own logical pixels, as GPUI
+/// reports them; on Windows a window's saved bounds are in the logical pixels of the screen it was
+/// on), if any: a place on no screen (a monitor that is gone) is dropped.
+fn screen_of(bounds: Bounds<Pixels>, displays: &[Bounds<Pixels>]) -> Option<usize> {
+    let center = bounds.center();
+    displays.iter().position(|display| display.contains(&center))
 }
 
 /// The window's state as it is saved: Wayland reports the bounds a window opens with
@@ -287,22 +293,22 @@ mod tests {
         let screens = [display(0., 0., 2560., 1440.), display(2560., 0., 1920., 1080.)];
         let saved = Saved { width: 1000., height: 700., x: Some(2700.), y: Some(100.), maximized: false };
         let back = fit(saved, &screens, MIN, true);
-        assert_eq!(back, Restored { origin: Some(point(px(2700.), px(100.))), size: size(px(1000.), px(700.)), maximized: false });
+        assert_eq!(back, Restored { origin: Some(point(px(2700.), px(100.))), display: Some(1), size: size(px(1000.), px(700.)), maximized: false });
         // The second monitor is gone: no place, same size.
         let gone = fit(saved, &screens[..1], MIN, true);
-        assert_eq!(gone, Restored { origin: None, size: size(px(1000.), px(700.)), maximized: false });
+        assert_eq!(gone, Restored { origin: None, display: None, size: size(px(1000.), px(700.)), maximized: false });
         // Wayland: never a place.
         let gone = fit(saved, &screens, MIN, false);
-        assert_eq!(gone, Restored { origin: None, size: size(px(1000.), px(700.)), maximized: false });
+        assert_eq!(gone, Restored { origin: None, display: None, size: size(px(1000.), px(700.)), maximized: false });
     }
 
     #[test]
     fn sizes_stay_between_the_minimum_and_the_largest_screen() {
         let screens = [display(0., 0., 1920., 1080.)];
         let tiny = Saved { width: 300., height: 200., x: None, y: None, maximized: false };
-        assert_eq!(fit(tiny, &screens, MIN, true), Restored { origin: None, size: MIN, maximized: false });
+        assert_eq!(fit(tiny, &screens, MIN, true), Restored { origin: None, display: None, size: MIN, maximized: false });
         let huge = Saved { width: 5000., height: 3000., x: None, y: None, maximized: true };
-        assert_eq!(fit(huge, &screens, MIN, true), Restored { origin: None, size: size(px(1920.), px(1080.)), maximized: true });
+        assert_eq!(fit(huge, &screens, MIN, true), Restored { origin: None, display: None, size: size(px(1920.), px(1080.)), maximized: true });
     }
 
     #[test]

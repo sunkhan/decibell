@@ -29,7 +29,7 @@ pub fn open_main(
 }
 
 fn main_window_options(profile: Option<&std::path::Path>, cx: &App) -> WindowOptions {
-    let bounds = decibell_platform::window_state::initial_bounds(
+    let (bounds, display_id) = decibell_platform::window_state::initial_bounds(
         profile,
         outer_window_size(DEFAULT_SIZE),
         outer_window_size(MIN_SIZE),
@@ -37,6 +37,8 @@ fn main_window_options(profile: Option<&std::path::Path>, cx: &App) -> WindowOpt
     );
     WindowOptions {
         window_bounds: Some(bounds),
+        // The screen the saved place is on (Windows converts the bounds with its DPI scale).
+        display_id,
         window_min_size: Some(MIN_SIZE),
         // The title is what the taskbar and window switcher show. `appears_transparent` is
         // what gives Windows our title bar instead of the system caption.
