@@ -7,11 +7,11 @@
 //! - Screen lock (Linux): the session bus's `ActiveChanged(bool)` of `org.freedesktop.ScreenSaver`
 //!   (KDE, and the freedesktop name other desktops implement) and `org.gnome.ScreenSaver`. One
 //!   match rule on one connection, read by a task that waits on the socket: nothing runs until the
-//!   screen locks or unlocks. Windows: not built (`WTSRegisterSessionNotification`; the Windows
-//!   batch in `HANDOFF.md`).
+//!   screen locks or unlocks. Windows: `WM_WTSSESSION_CHANGE` (`WTSRegisterSessionNotification`)
+//!   to a message-only window on a thread that sleeps in `GetMessageW` (`win32::watch_session_lock`).
 
 use decibell_model::Model;
-use gpui::{App, AppContext as _, Subscription};
+use gpui::{App, Subscription};
 
 pub(crate) fn install(cx: &mut App) -> Vec<Subscription> {
     let Some(model) = cx.try_global::<Model>().cloned() else { return Vec::new() };
@@ -30,21 +30,26 @@ pub(crate) fn install(cx: &mut App) -> Vec<Subscription> {
             away.update(cx, |a, cx| a.set_locked(false, cx));
         })
     };
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd", windows))]
     watch_screen_lock(away, cx);
     vec![sleeping, waking]
 }
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+/// Lock / unlock from wherever the platform reports them, applied on the UI thread (one wake per
+/// change; nothing runs between).
+#[cfg(any(target_os = "linux", target_os = "freebsd", windows))]
 fn watch_screen_lock(away: gpui::Entity<decibell_model::live::presence::auto_away::AutoAway>, cx: &mut App) {
     use futures::StreamExt as _;
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<bool>();
-    cx.background_spawn(async move {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    gpui::AppContext::background_spawn(cx, async move {
         if let Err(e) = screen_lock_signals(tx).await {
             log::debug!("[session] no screen-lock signals: {e}");
         }
     })
     .detach();
+    #[cfg(windows)]
+    crate::win32::watch_session_lock(tx);
     cx.spawn(async move |cx| {
         while let Some(locked) = rx.next().await {
             crate::marker(format_args!("session {}", if locked { "locked" } else { "unlocked" }));

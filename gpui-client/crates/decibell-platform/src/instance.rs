@@ -7,9 +7,9 @@
 //! - **The hand-over**: Linux / Unix: a Unix socket in the profile (`instance.sock`, mode `0600`), or
 //!   in `$XDG_RUNTIME_DIR` named after the profile when that path is too long for a socket; the
 //!   first instance accepts only its own user (`SO_PEERCRED`).
-//!   Windows: a loopback TCP port written with a random secret into the profile directory (which
-//!   only the user can read); the second start sends the secret first and lets the first take the
-//!   foreground (`AllowSetForegroundWindow`).
+//!   Windows: a named pipe named after the profile (only its user can write to it; no remote
+//!   clients); the second start lets the first take the foreground (`AllowSetForegroundWindow` on
+//!   the pipe server's process id).
 //! - **The listener** is one named thread blocked in `accept`: it wakes only when a second start
 //!   connects, queues the request for the UI thread (one wake) and answers at once.
 //!
@@ -53,7 +53,7 @@ pub struct Instance {
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub lock: PathBuf,
-    /// Unix: the socket. Windows: the file with the port and the secret.
+    /// Unix: the socket. Windows: unused (a named pipe, `pipe_name`).
     pub endpoint: PathBuf,
 }
 
@@ -73,15 +73,15 @@ impl Paths {
                 _ => in_profile,
             }
         };
+        // Windows: the pipe has no file; a path that never exists keeps `remove_endpoint` a no-op.
         #[cfg(not(unix))]
-        let endpoint = canonical.join("instance.port");
+        let endpoint = canonical.join("instance.pipe");
         Ok(Paths { lock, endpoint })
     }
 }
 
 /// FNV-1a over the path's bytes: a name that is the same in every process (std's hasher is
 /// randomised per process).
-#[cfg_attr(not(unix), allow(dead_code))]
 fn fnv1a(path: &Path) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in path.as_os_str().as_encoded_bytes() {
@@ -265,65 +265,55 @@ fn same_user(_: &std::os::unix::net::UnixStream) -> bool {
     true
 }
 
+/// Windows: a named pipe per profile (`\\.\pipe\decibell-<hash of the profile path>`), served by the
+/// first instance (`crate::win32::Pipe`). The lock file says who is first; the pipe only carries the
+/// hand-over. Its default security lets only the creating user (and administrators, SYSTEM) open it
+/// for writing; remote clients are refused (`PIPE_REJECT_REMOTE_CLIENTS`).
 #[cfg(windows)]
 struct Endpoint {
     path: PathBuf,
-    listener: std::net::TcpListener,
-    secret: [u8; 16],
+    pipe: crate::win32::Pipe,
+}
+
+#[cfg(windows)]
+fn pipe_name(paths: &Paths) -> String {
+    let profile = paths.lock.parent().unwrap_or(&paths.lock);
+    format!(r"\\.\pipe\decibell-{:016x}", fnv1a(profile))
 }
 
 #[cfg(windows)]
 impl Endpoint {
     fn bind(paths: &Paths) -> Result<Endpoint> {
-        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).context("listening on the loopback")?;
-        let port = listener.local_addr()?.port();
-        let mut secret = [0u8; 16];
-        getrandom::getrandom(&mut secret).map_err(|e| anyhow::anyhow!("no random bytes: {e}"))?;
-        let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
-        std::fs::write(&paths.endpoint, format!("{port} {} {hex}\n", std::process::id()))
-            .with_context(|| format!("writing {}", paths.endpoint.display()))?;
-        Ok(Endpoint { path: paths.endpoint.clone(), listener, secret })
+        let pipe = crate::win32::Pipe::create(&pipe_name(paths)).context("creating the instance pipe")?;
+        Ok(Endpoint { path: paths.endpoint.clone(), pipe })
     }
 
     fn accept_loop(self, tx: UnboundedSender<Launch>) {
-        for stream in self.listener.incoming() {
-            let mut stream = match stream {
-                Ok(stream) => stream,
+        loop {
+            match self.pipe.accept() {
+                Ok(()) => {}
                 Err(e) => {
-                    log::warn!("[instance] accept failed: {e}");
-                    continue;
+                    // The handle is unusable: no more second starts reach this instance.
+                    log::warn!("[instance] the pipe stopped accepting: {e:#}");
+                    return;
                 }
-            };
-            let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-            let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-            let mut secret = [0u8; 16];
-            if stream.read_exact(&mut secret).is_err() || secret != self.secret {
-                log::warn!("[instance] refused a connection without the secret");
-                continue;
             }
+            let mut stream = self.pipe.stream();
             if let Err(e) = handle(&mut stream, &tx) {
                 log::warn!("[instance] a second start's request: {e:#}");
             }
+            self.pipe.disconnect();
         }
     }
 
     fn connect(paths: &Paths, message: &[u8]) -> Result<()> {
-        let text = std::fs::read_to_string(&paths.endpoint).with_context(|| format!("reading {}", paths.endpoint.display()))?;
-        let mut fields = text.split_whitespace();
-        let port: u16 = fields.next().context("no port")?.parse()?;
-        let pid: u32 = fields.next().context("no pid")?.parse()?;
-        let hex = fields.next().context("no secret")?;
-        let mut secret = [0u8; 16];
-        for (i, byte) in secret.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(hex.get(i * 2..i * 2 + 2).context("a short secret")?, 16)?;
+        let client = crate::win32::PipeClient::open(&pipe_name(paths))?;
+        // The running instance may take the foreground: Windows lets the process the user started
+        // (this one) hand that right to another, and GPUI's activation then succeeds there.
+        if let Some(pid) = client.server_process_id() {
+            crate::win32::allow_foreground(pid);
         }
-        // The running instance may take the foreground (Windows lets only the process the user
-        // started, this one, hand that right over).
-        crate::win32::allow_foreground(pid);
-        let mut stream = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))?;
-        stream.set_read_timeout(Some(IO_TIMEOUT))?;
-        stream.set_write_timeout(Some(IO_TIMEOUT))?;
-        stream.write_all(&secret)?;
+        let mut stream = client.stream();
         stream.write_all(message)?;
         let mut ack = [0u8; 1];
         stream.read_exact(&mut ack)?;

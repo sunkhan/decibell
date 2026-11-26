@@ -86,9 +86,9 @@ fn local_key_provider() -> Box<dyn decibell_model::local_key::LocalKeyProvider> 
 /// Start the core (once per process) the way the model expects, then what follows it.
 pub fn start_core(model: &Model, cx: &mut App) {
     let user_data_dir = decibell_model::core::default_user_data_dir().ok();
-    // Auto-away: the core's idle source (Wayland's ext-idle-notify, GNOME's IdleMonitor; it
-    // answers "unsupported" on X11, where the app is to supply its own).
-    let source = Rc::new(decibell_model::actions::presence::CoreIdleSource);
+    // Auto-away: the platform's idle source (Windows: GetLastInputInfo; elsewhere the core's:
+    // Wayland's ext-idle-notify, GNOME's IdleMonitor, "unsupported" on X11).
+    let source = decibell_platform::idle::source();
     model.live.presence.auto_away.update(cx, |a, cx| a.set_source(source, cx));
     crate::video::install(model, cx);
     Model::start_core(

@@ -2020,7 +2020,6 @@ dependencies = [
  "decibell-model",
  "decibell-ui",
  "futures",
- "getrandom 0.2.16",
  "gpui",
  "libc",
  "log",
@@ -2028,7 +2027,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "windows 0.61.3",
+ "windows 0.62.2",
  "zbus",
 ]
 
