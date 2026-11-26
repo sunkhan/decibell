@@ -205,11 +205,11 @@ through `decibell_shell`, once, from their `init(cx)` (called by `decibell-app`'
 opens):
 
 - **A pane**: `register_pane(cx, Slot::Chat, |window, cx| cx.new(|cx| ChatPanel::new(window, cx)).into())`.
-  Slots: `Home` (default: the Friends page), `Dm`, `Chat` (under the channel header, left of the right
+  Slots: `Home` (`decibell-home`'s Friends page), `Dm`, `Chat` (under the channel header, left of the right
   panel), `RightPanel` (default: `MembersList` while the members panel is on; a registered one decides
   itself, e.g. search results or `cx.new(MembersList::new)`), `HeaderSearch` (244 px at the header's end),
   `Voice`, `Browse` (the whole workspace, no sidebar), `DmList` (default: the shell's rows from `dm.list`),
-  `UnreadDms` (default: the shell's tiles). A pane is built when its place first shows, dropped when it
+  `UnreadDms` (default: the shell's tiles), `DmCallStage` (built by the DM pane: `build_pane`). A pane is built when its place first shows, dropped when it
   goes (React's mount / unmount), drawn `.cached(…)`: it must watch what it reads. Unregistered places show
   `Placeholder` (the slot's name).
 - **An overlay** (a modal, popup, menu over the main layout): `register_overlay(cx, |window, cx| …)`; it
@@ -409,6 +409,54 @@ avatar editor subscribes and opens over Settings).
   combos, where the Wayland portal would open the desktop's confirmation dialog. (Self-tests and screens
   share one namespace: the self-tests that would take a screen's name carry a suffix,
   `settings-devices-signout`, `settings-keybinds-record`, ….)
+
+## Home / DMs / people (`decibell-home`)
+
+Direct messages, the Friends page and rail, the profile popout and screen, the custom status dialog, and
+the user menu. `init(cx)` fills `Slot::Home` (`FriendsPage`) and `Slot::Dm` (`DmPane`: one `Conversation`
+per peer, the `FriendsRail` beside it while `dm_friends_panel` is on) and registers four overlays
+(`ProfilePopup` on `overlays.profile_popup`, `ProfileModal` on `modal::USER_PROFILE`, `CustomStatusModal` on
+`modal::CUSTOM_STATUS`, `UserMenu` on `overlays.context_menu`). The DM rows and unread tiles stay the
+shell's (`DmRows`, `UnreadDmTiles`).
+
+- **A conversation** (`dm::Conversation`) draws `MessageList` over `dm::DmSource` (a `ListSource` on
+  `model.dm`), opens its newest page on mount (`actions::dm::open_history`), keeps `DmList::set_displayed`,
+  follows `DmEvent::Resync`, and marks read on every change of its row count or unread count while mounted
+  (the renderer's effect: no focus or at-bottom condition). Encryption: the header chip and the notice
+  read `model.live.e2ee` and the peer's answer from `e2ee::PeerInfos` (one request per peer per (our status,
+  their change marker); views call `PeerInfos::want(uid)` from observers, never `render`).
+- **The DM composer slot**: `decibell_home::dm::set_dm_composer(cx, |peer, list: Entity<MessageList>,
+  window, cx| -> AnyView)`, once at start-up. The view is drawn under the conversation, uncached (it sizes
+  itself); it subscribes to `list`'s `ListEvent::Reply` (the conversation already calls
+  `set_reply_target`), starts edits with `list.start_edit`, sends with `actions::dm::send_dm`, and keeps the
+  draft in `chat.drafts` (`DraftKey::Dm`, `DraftsEvent::Restored` brings a refused send back). Until one is
+  registered `dm::composer::FallbackComposer` stands in: the renderer's card with a working one-line field.
+- **The call stage slot**: `decibell_shell::register_pane(cx, Slot::DmCallStage, |window, cx| view)`. The
+  conversation builds it (`decibell_shell::build_pane`) while `calls.status` is outgoing, connecting or active
+  with its peer, draws it above the list **uncached** (size it yourself: `call_stage_voice_height` /
+  `_stream_height`, or the panel in theater), and drops it when the call ends; in theater (`calls.theater`)
+  the list and composer are hidden and the header shows "Show chat".
+- **User menu sections**: `decibell_home::menu::register_user_menu(cx, UserMenuExtension { order, watch,
+  build })`. `build(&UserMenuTarget { uid, server, name, display_name, own }, window, cx) -> Vec<MenuSection>`;
+  a `MenuSection { above: Above::Rule | Inset | None, element }` (the frame draws `above` only when a section
+  precedes it). `watch(cx: &mut Context<UserMenu>) -> Vec<Subscription>`: what the sections read, held while
+  the menu is open (each callback `cx.notify()`s). Orders: `order::PROFILE` 100, `FRIENDS` 200, `VOICE` 300
+  (local mute, the volume), `VOICE_MODERATION` 400, `MODERATION` 500 (this crate's: nickname, roles, timeout,
+  kick, ban), `COPY` 600. Rows: `menu::menu_section()`, `menu_row(id, label, cx)`, `menu_row_danger`,
+  `menu_row_icon`, `menu_label("Moderation", cx)`; a row's action ends with `menu::close_user_menu(cx)`.
+  Gating comes from `menu::acts_for(server, &member, cx)` / `assignable_roles` (MembersTab's `actionsFor`).
+- **The custom status's emoji picker**: `decibell_home::status::set_emoji_picker(cx, |EmojiPickerRequest {
+  field, on_pick, on_close }, window, cx| -> AnyElement)`; until then a small chooser takes a typed emoji or
+  `:shortcode:`.
+- Opening things from elsewhere: `profile::open_profile(uid, server, ProfileTab::Privacy, cx)`,
+  `menu::request_dialog(DialogRequest::Nickname { server, uid } | Moderation { kind, server, uid }, cx)`,
+  `friends::open_conversation(uid, cx)`; the shell's `open_user_menu` / `open_profile_beside` as before.
+- Screens (`home-friends-*`, `dm-*`, `profile-*`, `custom-status`, `user-menu-*`, `nickname-modal`,
+  `ban-modal`) draw the whole window from `fixture.rs` (the shell's fixture plus friends in every state,
+  statuses, DM pages, E2EE states); `decibell-home-fixture <dir>` exports the scenes for
+  `tools/electron-captures/pages/_home.tsx`. Self-tests (`dm-*`, `friends-*`, `profile-popup`,
+  `status-custom`, `user-menu-moderation`, `home-idle`) run child apps (`--check home-…`): read-only as `alice`,
+  everything that changes state between two throwaway accounts registered once per run.
 
 ## GPUI gotchas met so far
 

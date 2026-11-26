@@ -34,9 +34,9 @@ macro_rules! ink {
 }
 
 ink! {
-    color_bg_darkest color_bg_dark color_bg_mid color_bg_light color_bg_lighter color_bg_primary
+    color_bg_darkest color_bg_dark color_bg_light color_bg_primary
     color_bg_secondary color_border color_border_divider color_accent
-    color_accent_bright color_accent_hover color_accent_soft color_accent_mid
+    color_accent_bright color_accent_soft color_accent_mid
     color_on_accent color_success color_warning color_error color_text_primary
     color_text_bright color_text_secondary color_text_muted color_surface_hover color_surface_active
     color_av_fg

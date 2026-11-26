@@ -25,7 +25,6 @@ use gpui::{
 
 use crate::channels::ChannelSidebar;
 use crate::conversations::ConversationSidebar;
-use crate::friends::FriendsPage;
 use crate::overlays::{LeaveServerOverlay, RevokedNoticeOverlay};
 use crate::server_bar::{BAR_HEIGHT, ServerBar};
 use crate::server_pane::ServerPane;
@@ -148,9 +147,7 @@ impl Render for MainView {
                     ActiveView::Voice => Slot::Voice,
                     _ => Slot::Browse,
                 };
-                let home = |_: &mut Window, cx: &mut gpui::App| -> AnyView { cx.new(FriendsPage::new).into() };
-                let fallback: Option<&crate::slots::PaneFallback> = if slot == Slot::Home { Some(&home) } else { None };
-                self.pane.view(slot, window, cx, fallback)
+                self.pane.view(slot, window, cx, None)
             }
         };
 

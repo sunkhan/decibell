@@ -2,7 +2,8 @@
 //! and its chrome — server bar, channel sidebar with the floating user panel, member list, the
 //! Home / Friends frame — and the registry feature crates fill the panes through.
 //!
-//! - [`Shell`]: the content under the title bar (sign-in page or main layout).
+//! - [`Shell`]: the content under the title bar (sign-in page or main layout). Home's Friends
+//!   page is `decibell-home`'s (it fills [`Slot::Home`]).
 //! - [`register_pane`], [`register_overlay`], [`register_channel_menu`]: how a feature plugs in.
 //! - [`ShellRequests`]: dialogs the shell asks for and a feature draws (create channel, open a
 //!   conversation).
@@ -14,7 +15,6 @@ mod conversations;
 mod dm_rows;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
-mod friends;
 mod glow;
 mod ink;
 mod main_view;
@@ -36,7 +36,6 @@ pub use auth::{AuthField, AuthMode, AuthView};
 pub use channels::{ChannelSidebar, MemberDrag};
 pub use conversations::ConversationSidebar;
 pub use dm_rows::{DmRows, UnreadDmTiles};
-pub use friends::FriendsPage;
 pub use glow::{BREATHE_FPS, BREATHE_PERIOD};
 pub use main_view::MainView;
 pub use members::{MEMBERS_WIDTH, MembersList, member_row_height};

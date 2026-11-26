@@ -102,6 +102,7 @@ impl Render for DmRows {
         let model = Model::global(cx).clone();
         let ink = crate::ink::chrome(cx);
         let (scale, text_member) = (cx.theme().scaled.list_row_avatar_scale, cx.theme().scaled.text_member);
+        let dmbar = cx.theme().chrome.color_bg_dmbar;
         let in_dm = model.nav.read(cx).active_view == ActiveView::Dm;
         let list = model.dm.list.read(cx);
         let active = list.active_peer.filter(|_| in_dm);
@@ -144,17 +145,27 @@ impl Render for DmRows {
                             this.hover(move |s| s.bg(bg).text_color(fg))
                         }
                     })
+                    .relative()
+                    .children(crate::probes::probe(format!("dm-row:{peer}")))
                     .on_click(move |_: &ClickEvent, _, cx| actions::dm::open_dm(peer, open_name.clone(), cx))
                     .child(
                         div()
                             .relative()
                             .flex_none()
                             .child(
+                                // The dot's ring is `--color-bg-dmbar` (the chrome ground), as the renderer's.
                                 UserAvatar::new(peer, name.clone(), 34. * scale)
                                     .chrome()
-                                    .dot(AvatarDot::new(status, ink.color_bg_dark, 12. * scale).ring_width(2.)),
+                                    .dot(AvatarDot::new(status, dmbar, 12. * scale).ring_width(2.)),
                             )
-                            .when(unread > 0, |this| this.child(unread_badge(unread, ink.color_bg_dark, &ink, false))),
+                            .when(unread > 0, |this| {
+                                this.child(
+                                    div()
+                                        .id(("dm-row-unread", peer as u64))
+                                        .tooltip(title_tooltip(SharedString::from(format!("{unread} unread"))))
+                                        .child(unread_badge(unread, ink.color_bg_dark, &ink, false)),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -243,6 +254,7 @@ impl Render for UnreadDmTiles {
                 div()
                     .id(("unread-dm", peer as u64))
                     .relative()
+                    .children(crate::probes::probe(format!("unread-dm:{peer}")))
                     .flex_none()
                     .cursor_pointer()
                     .tooltip(title_tooltip(title))

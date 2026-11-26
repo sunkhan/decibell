@@ -1,0 +1,42 @@
+[package]
+name = "decibell-home"
+description = "The people side: direct-message conversations (with their end-to-end encryption state), the Friends page and rail, the profile popup and profile screen, the custom status dialog, and the user menu with its moderation dialogs"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The fixtures' JSON for the Electron capture pages.
+[[bin]]
+name = "decibell-home-fixture"
+path = "src/bin/fixture.rs"
+required-features = ["fixtures"]
+
+[features]
+# The deterministic people fixture (friends in every state, DM conversations plaintext /
+# encrypted / locked / key-changed, statuses and status messages) fed through the model's router
+# on top of the shell's fixture, its JSON export for the Electron captures, and the screens.
+fixtures = ["decibell-shell/fixtures", "dep:serde_json"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-text.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-shell.workspace = true
+decibell-chat.workspace = true
+decibell-richtext = { path = "../decibell-richtext" }
+# The moderation and E2EE requests (`api::community`, `api::e2ee`) and the fixture's payload
+# types. zbus on async-io, as every crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+# Local dates (the profile's "Joined", "Keys changed", the custom status's "Today").
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
