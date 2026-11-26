@@ -10,8 +10,9 @@
 //! packet struct first). With the frame pool on (`frame_pool.rs`) that buffer
 //! comes from the pool, a sealed frame is decrypted where it lies, and the
 //! `FrameBuf` the sink gets is that buffer: a steady stream allocates nothing
-//! here. With the pool off (the Electron addon) the frame takes today's
-//! path: a fresh buffer per frame, an allocating decrypt.
+//! here. With the pool off (the Electron addon) each frame gets a fresh
+//! buffer, decrypted in place too. Either way the frame the sink gets has
+//! `FrameBuf::PADDING` zeroed bytes after it (FFmpeg's input padding).
 
 use std::time::Instant;
 
@@ -335,6 +336,8 @@ mod tests {
         let mut seen = Vec::with_capacity(FRAMES);
         let mut path = VideoRecvPath::new(ring, Instant::now(), pool);
         let mut deliver = |f: StreamFrame| {
+            let padded = f.data.with_padding().expect("padded");
+            assert!(padded[f.data.len()..].iter().all(|&x| x == 0), "padding zeroed");
             let digest: [u8; 32] = Sha256::digest(&f.data[..]).as_slice().try_into().unwrap();
             seen.push(Seen { len: f.data.len(), keyframe: f.keyframe, digest });
             events::send_stream_frame(f);
@@ -440,6 +443,7 @@ mod tests {
                 let f = got.pop().unwrap();
                 assert_eq!(f.description.as_deref(), Some(&desc[..]));
                 assert_eq!(f.data, bitstream);
+                assert!(f.data.with_padding().unwrap()[bitstream.len()..].iter().all(|&x| x == 0));
                 assert_eq!(f.data.is_pooled(), p.is_enabled());
                 let ptr = f.data.as_ptr();
                 if !p.is_enabled() {

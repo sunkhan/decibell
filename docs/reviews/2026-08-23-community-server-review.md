@@ -4971,3 +4971,11 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   tests drive them: 0 allocations over 280 steady-state steps of 3 talking peers (plain and sealed, 48 and
   44.1 kHz output); the same datagrams with loss, reordering and a late burst give sample-identical PCM through
   the old path and the new one; the jitter buffer's own tests pass unchanged, plus a recycled-vs-Vec PCM test.
+- **Frames reach a decoder padded.** FFmpeg reads up to `AV_INPUT_BUFFER_PADDING_SIZE` (64) bytes past a packet,
+  so the GPUI client's video crate copied every frame into a padded buffer. `frame_pool::take` now allocates
+  `len + FrameBuf::PADDING` and keeps those 64 bytes zero through a pooled buffer's reuse, `truncate`, `advance`
+  (an unpooled buffer moves its padding down with the frame) and the in-place decrypt, which now serves unpooled
+  buffers too (the Electron path: no allocating decrypt per sealed frame; the plaintext is the same bytes,
+  still at the front of its allocation). `FrameBuf::has_padding` / `with_padding` expose it; `From<Vec>` buffers
+  (the Linux encoder's self-preview) have none. `into_vec` still returns exactly the frame, the same allocation
+  for an unpooled buffer (Electron's napi pointer test).

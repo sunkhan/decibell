@@ -17,6 +17,14 @@
 //! section is a best-fit scan of at most `max_buffers` entries. A returned
 //! buffer whose capacity is above the retained bound, or that finds the list
 //! full, is freed (after the lock is released).
+//!
+//! **Padding**: every buffer `take` / `take_copy` hands out (pooled or not) has
+//! [`FrameBuf::PADDING`] zeroed bytes after the frame, kept zero through
+//! `truncate`, `advance` and an in-place decrypt, so a decoder can read past
+//! the end as FFmpeg's (`AV_INPUT_BUFFER_PADDING_SIZE`) does without a copy
+//! into a padded buffer of its own; [`FrameBuf::has_padding`] says so per
+//! buffer (a `FrameBuf::from(Vec)` has none). The bytes themselves, and
+//! `into_vec`'s exact-length result, are unchanged.
 
 use std::fmt;
 use std::mem::ManuallyDrop;
@@ -98,10 +106,12 @@ impl FramePool {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// A buffer of `len` bytes (contents unspecified). Off: `vec![0; len]`.
+    /// A buffer of `len` bytes (contents unspecified), padded (see the module
+    /// docs). Off: `vec![0; len + PADDING]` viewed as its first `len` bytes.
     pub fn take(&'static self, len: usize) -> FrameBuf {
+        let need = len + FrameBuf::PADDING;
         if !self.is_enabled() {
-            return FrameBuf::from(vec![0u8; len]);
+            return FrameBuf { vec: vec![0u8; need], start: 0, end: len, pool: None, padded: true };
         }
         self.takes.fetch_add(1, Ordering::Relaxed);
         let found = {
@@ -111,7 +121,7 @@ impl FramePool {
             let mut best: Option<(usize, usize)> = None;
             for (i, v) in free.iter().enumerate() {
                 let cap = v.capacity();
-                if cap >= len && best.is_none_or(|(_, c)| cap < c) {
+                if cap >= need && best.is_none_or(|(_, c)| cap < c) {
                     best = Some((i, cap));
                 }
             }
@@ -122,25 +132,24 @@ impl FramePool {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 // Pooled vectors keep the length they were filled to (their
                 // bytes stay initialised); this only zero-fills a shortfall,
-                // within capacity, never reallocating.
-                if v.len() < len {
-                    v.resize(len, 0);
+                // within capacity, never reallocating. The padding was the
+                // last frame's bytes: zeroed.
+                if v.len() < need {
+                    v.resize(need, 0);
                 }
+                v[len..need].fill(0);
                 v
             }
             None => {
                 self.misses.fetch_add(1, Ordering::Relaxed);
-                vec![0u8; len]
+                vec![0u8; need]
             }
         };
-        FrameBuf { vec, start: 0, end: len, pool: Some(self) }
+        FrameBuf { vec, start: 0, end: len, pool: Some(self), padded: true }
     }
 
-    /// A buffer holding a copy of `src`. Off: `src.to_vec()`.
+    /// A padded buffer holding a copy of `src`.
     pub fn take_copy(&'static self, src: &[u8]) -> FrameBuf {
-        if !self.is_enabled() {
-            return FrameBuf::from(src.to_vec());
-        }
         let mut buf = self.take(src.len());
         buf.copy_from_slice(src);
         buf
@@ -225,12 +234,32 @@ pub struct FrameBuf {
     start: usize,
     end: usize,
     pool: Option<&'static FramePool>,
+    /// `vec[end..end + PADDING]` exists and is zero.
+    padded: bool,
 }
 
 impl FrameBuf {
+    /// Zeroed bytes kept after a padded frame: FFmpeg's
+    /// `AV_INPUT_BUFFER_PADDING_SIZE` (its bitstream readers may read that
+    /// far past a packet's end).
+    pub const PADDING: usize = 64;
+
     /// An empty, unpooled buffer.
     pub const fn new() -> Self {
-        FrameBuf { vec: Vec::new(), start: 0, end: 0, pool: None }
+        FrameBuf { vec: Vec::new(), start: 0, end: 0, pool: None, padded: false }
+    }
+
+    /// Whether [`PADDING`](Self::PADDING) zeroed bytes follow the frame in
+    /// its allocation (every buffer from `take` / `take_copy`, and so every
+    /// frame of the receive path; not one made `From<Vec<u8>>`).
+    pub fn has_padding(&self) -> bool {
+        self.padded
+    }
+
+    /// The frame and the padding after it, for a decoder that reads past the
+    /// end. None when the buffer has no padding.
+    pub fn with_padding(&self) -> Option<&[u8]> {
+        self.padded.then(|| &self.vec[self.start..self.end + Self::PADDING])
     }
 
     pub fn len(&self) -> usize {
@@ -259,10 +288,14 @@ impl FrameBuf {
         vec
     }
 
-    /// Keep the first `len` bytes.
+    /// Keep the first `len` bytes (a padded buffer zeroes the padding after
+    /// the new end).
     pub fn truncate(&mut self, len: usize) {
         if len < self.len() {
             self.end = self.start + len;
+            if self.padded {
+                self.vec[self.end..self.end + Self::PADDING].fill(0);
+            }
         }
     }
 
@@ -272,8 +305,10 @@ impl FrameBuf {
         if self.pool.is_some() {
             self.start += n;
         } else {
-            // Unpooled buffers stay plain Vecs starting at the front.
-            self.vec.truncate(self.end);
+            // Unpooled buffers stay plain Vecs starting at the front (the
+            // padding moves down with the frame).
+            let keep = if self.padded { Self::PADDING } else { 0 };
+            self.vec.truncate(self.end + keep);
             self.vec.drain(..n);
             self.end -= n;
         }
@@ -286,10 +321,11 @@ impl Default for FrameBuf {
     }
 }
 
+/// Unpadded: the Vec as it is (`into_vec` gives back the same allocation).
 impl From<Vec<u8>> for FrameBuf {
     fn from(vec: Vec<u8>) -> Self {
         let end = vec.len();
-        FrameBuf { vec, start: 0, end, pool: None }
+        FrameBuf { vec, start: 0, end, pool: None, padded: false }
     }
 }
 
@@ -326,10 +362,15 @@ impl AsMut<[u8]> for FrameBuf {
     }
 }
 
-/// An unpooled copy.
+/// An unpooled copy, padded like the original.
 impl Clone for FrameBuf {
     fn clone(&self) -> Self {
-        FrameBuf::from(self.to_vec())
+        if !self.padded {
+            return FrameBuf::from(self.to_vec());
+        }
+        let mut vec = vec![0u8; self.len() + Self::PADDING];
+        vec[..self.len()].copy_from_slice(self);
+        FrameBuf { vec, start: 0, end: self.len(), pool: None, padded: true }
     }
 }
 
@@ -338,6 +379,7 @@ impl fmt::Debug for FrameBuf {
         f.debug_struct("FrameBuf")
             .field("len", &self.len())
             .field("pooled", &self.is_pooled())
+            .field("padded", &self.padded)
             .finish()
     }
 }
@@ -471,6 +513,50 @@ mod tests {
         assert!(c.is_empty());
         c.truncate(5);
         assert!(c.is_empty());
+    }
+
+    fn padding_is_zero(b: &FrameBuf) -> bool {
+        b.has_padding() && b.with_padding().unwrap()[b.len()..].iter().all(|&x| x == 0)
+            && b.with_padding().unwrap().len() == b.len() + FrameBuf::PADDING
+    }
+
+    /// Every taken buffer, pooled or not, has PADDING zeroed bytes after the
+    /// frame: a fresh one, a reused one whose last frame filled that space,
+    /// and after truncate / advance; `into_vec` still gives exactly the frame
+    /// (unpooled: the same allocation); `From<Vec>` has no padding.
+    #[test]
+    fn taken_buffers_are_padded_and_stay_padded() {
+        static OFF: FramePool = FramePool::disabled();
+        let p = pool(4, 1 << 20);
+        for src in [p, &OFF] {
+            // A dirty buffer back in the pool: the next, shorter frame's
+            // padding lands on old bytes.
+            let mut a = src.take(1000);
+            a.fill(0xAB);
+            drop(a);
+            let mut b = src.take(900);
+            assert_eq!(b.len(), 900);
+            assert!(padding_is_zero(&b), "fresh / reused (pooled={})", src.is_enabled());
+            b.fill(0xCD);
+            b.truncate(700);
+            assert!(padding_is_zero(&b), "after truncate");
+            b.advance(8);
+            assert_eq!(b.len(), 692);
+            assert!(padding_is_zero(&b), "after advance");
+            assert!(b.iter().all(|&x| x == 0xCD));
+            let ptr = b.as_ptr();
+            let v = b.into_vec();
+            assert_eq!(v.len(), 692);
+            assert!(v.iter().all(|&x| x == 0xCD));
+            if !src.is_enabled() {
+                assert_eq!(v.as_ptr(), ptr, "unpooled: the same allocation");
+            }
+            let c = src.take_copy(b"abc");
+            assert!(padding_is_zero(&c));
+            assert!(padding_is_zero(&c.clone()));
+        }
+        let plain = FrameBuf::from(vec![1u8, 2, 3]);
+        assert!(!plain.has_padding() && plain.with_padding().is_none());
     }
 
     #[test]

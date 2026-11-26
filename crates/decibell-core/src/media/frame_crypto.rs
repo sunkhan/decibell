@@ -383,11 +383,13 @@ pub fn open_video_frame(
 }
 
 /// Open a reassembled sealed frame from `sender` where it lies: on success
-/// `frame` holds the plaintext. A pooled buffer is decrypted in place and
-/// drops the seal header and tag without moving a byte; an unpooled one (the
-/// frame pool off, as in the Electron addon) is replaced by
-/// [`open_video_frame`]'s output, exactly as before the pool existed. False
-/// = wrong/unknown epoch or member, or tampered (drop the frame).
+/// `frame` holds the plaintext, decrypted in place, and the seal header and
+/// tag dropped (a pooled buffer moves nothing; an unpooled one, as in the
+/// Electron addon, moves the plaintext down eight bytes, so it still starts
+/// its allocation and `into_vec` stays free). A padded buffer keeps its
+/// zeroed padding after the plaintext. The plaintext is exactly
+/// [`open_video_frame`]'s. False = wrong/unknown epoch or member, or
+/// tampered (drop the frame).
 pub fn open_video_frame_buf(
     ring: &KeyRing,
     sender: &str,
@@ -396,15 +398,6 @@ pub fn open_video_frame_buf(
     codec: u8,
     frame: &mut FrameBuf,
 ) -> bool {
-    if !frame.is_pooled() {
-        return match open_video_frame(ring, sender, frame_id, is_keyframe, codec, &frame[..]) {
-            Some(plain) => {
-                *frame = FrameBuf::from(plain);
-                true
-            }
-            None => false,
-        };
-    }
     let n = frame.len();
     if n < VIDEO_SEAL_OVERHEAD {
         return false;
@@ -577,6 +570,22 @@ mod tests {
         }
         let mut short = pool.take_copy(&sealed[..VIDEO_SEAL_OVERHEAD - 1]);
         assert!(!open_video_frame_buf(&bob, "alice", 9, false, 1, &mut short));
+
+        // Taken buffers (pooled or not) keep their zeroed padding after the
+        // plaintext; an unpooled one still starts its allocation.
+        static OFF: super::super::frame_pool::FramePool = super::super::frame_pool::FramePool::disabled();
+        for src in [pool, &OFF] {
+            let mut b = src.take_copy(&sealed);
+            let base = b.as_ptr();
+            assert!(open_video_frame_buf(&bob, "alice", 9, false, 1, &mut b));
+            assert_eq!(b, frame);
+            assert!(b.has_padding());
+            assert!(b.with_padding().unwrap()[frame.len()..].iter().all(|&x| x == 0));
+            if !src.is_enabled() {
+                assert_eq!(b.as_ptr(), base);
+                assert_eq!(b.into_vec().as_ptr(), base);
+            }
+        }
     }
 
     #[test]
