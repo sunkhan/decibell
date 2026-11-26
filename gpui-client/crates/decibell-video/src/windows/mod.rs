@@ -248,22 +248,27 @@ pub(crate) fn surface_color(color: ColorInfo) -> gpui_windows::SurfaceColor {
 /// of a software slot).
 pub(crate) static LIVE_PLANES: AtomicI64 = AtomicI64::new(0);
 
-/// The DXVA decoder profile a stream of `codec` is decoded with (8-bit 4:2:0).
-fn decoder_profile(codec: Codec) -> GUID {
+/// The DXVA decoder profile a stream of `codec` is decoded with (8-bit 4:2:0). `None`: a codec
+/// this client decodes in software only (VP8 / VP9 come from attachment files, never from a
+/// stream; as on Linux they have no hardware path here yet).
+fn decoder_profile(codec: Codec) -> Option<GUID> {
     match codec {
-        Codec::H264 => D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
-        Codec::Hevc => D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
-        Codec::Av1 => D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0,
+        Codec::H264 => Some(D3D11_DECODER_PROFILE_H264_VLD_NOFGT),
+        Codec::Hevc => Some(D3D11_DECODER_PROFILE_HEVC_VLD_MAIN),
+        Codec::Av1 => Some(D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0),
+        Codec::Vp8 | Codec::Vp9 => None,
     }
 }
 
 /// Whether the driver lists a decoder for `codec` that outputs NV12. Listing is not decoding:
 /// the probe opens the decoder and decodes a frame.
 fn driver_decodes(device: &ID3D11Device, codec: Codec) -> Result<(), String> {
+    let Some(wanted) = decoder_profile(codec) else {
+        return Err(format!("{} has no hardware decoder in this client", codec.label()));
+    };
     let video: ID3D11VideoDevice = device
         .cast()
         .map_err(|error| format!("the device has no Direct3D 11 video interface: {error}"))?;
-    let wanted = decoder_profile(codec);
     // Safety: queries on the free-threaded video device; the index is below the count it gave.
     unsafe {
         let listed = (0..video.GetVideoDecoderProfileCount())
@@ -353,6 +358,7 @@ impl Backend for WindowsBackend {
                         codec,
                         description,
                         Box::new(uploader),
+                        target.reorder(),
                     )?))
                 }
                 DecodeBackend::VulkanVideo | DecodeBackend::Nvdec | DecodeBackend::Vaapi => {

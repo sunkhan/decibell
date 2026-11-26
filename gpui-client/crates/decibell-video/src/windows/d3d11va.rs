@@ -53,7 +53,7 @@ impl D3d11vaDecoder {
         description: Option<&[u8]>,
         target: &StreamTarget,
     ) -> DecodeResult<Self> {
-        let decoder = FfDecoder::open(codec, description, Some((hw_device, pick_d3d11)), 1)?;
+        let decoder = FfDecoder::open(codec, description, Some((hw_device, pick_d3d11)), 1, target.reorder())?;
         Ok(Self {
             decoder,
             slots: None,
