@@ -29,7 +29,7 @@ Live steps (voice, people, calls):
   devices                         load the account's device list
   device-sign-out <id | @file>    sign one device out (the id, or a file holding it)
   call <user> | answer | decline | hangup
-  watch <user>...                 register presence interest (as a view showing them)
+  watch <user>[,<user>...]        register presence interest (as a view showing them)
   watch-roster <community> <n>    interest in the first n held members of a community
   codecs                          probe / read the codec capabilities and ship them
   wait voice <channel> <user>     shown in that voice channel of the open community
@@ -118,12 +118,7 @@ pub fn parse(arg: &str, it: &mut Args) -> Result<Option<LiveStep>, String> {
         "answer" => LiveStep::Answer,
         "decline" => LiveStep::Decline,
         "hangup" => LiveStep::Hangup,
-        "watch" => {
-            let mut users = Vec::new();
-            // Users up to the next step name: one at least.
-            users.push(next(arg, it)?);
-            LiveStep::Watch(users)
-        }
+        "watch" => LiveStep::Watch(next(arg, it)?.split(',').map(str::to_string).collect()),
         "watch-roster" => {
             let community = next(arg, it)?;
             let n = next(arg, it)?.parse().map_err(|_| "watch-roster: count")?;
