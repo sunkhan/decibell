@@ -122,7 +122,7 @@ pub fn reply_bar(server: Option<ServerId>, parent: &Arc<Message>, on_cancel: OnC
                 .flex_none()
                 .max_w(gpui::relative(0.5))
                 .min_w_0()
-                .child(Label::new(shown).font(FontRole::Channel).size(size).line_height(line).weight(theme.palette.t_fw_emphasis as f32).color(name_color).truncate()),
+                .child(Label::new(shown).font(FontRole::Channel).size(size).line_height(line).weight(theme.palette.t_fw_emphasis).color(name_color).truncate()),
         )
         .child(
             div()

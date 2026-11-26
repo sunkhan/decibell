@@ -289,24 +289,6 @@ async fn delete(cx: &TestCx, channel: &'static str, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
-/// Waits until nothing has been drawn for 500 ms; the counters then.
-async fn settle_drawn(cx: &TestCx) -> Result<Frames> {
-    let started = Instant::now();
-    let mut last = cx.frames()?;
-    let mut quiet = Instant::now();
-    loop {
-        cx.sleep(Duration::from_millis(50)).await;
-        let now = cx.frames()?;
-        if now.drawn != last.drawn {
-            quiet = Instant::now();
-        } else if quiet.elapsed() >= Duration::from_millis(500) {
-            return Ok(now);
-        }
-        last = now;
-        ensure!(started.elapsed() < Duration::from_secs(15), "the window was still drawing after 15 s");
-    }
-}
-
 fn list_of(cx: &TestCx, composer: &Entity<Composer>) -> Result<Entity<MessageList>> {
     cx.update(|_, cx| composer.read(cx).list())?.context("the composer has no list")
 }
@@ -317,14 +299,18 @@ async fn check_type_send(cx: TestCx) -> Result<()> {
     let composer = open(&cx, OFF_TOPIC).await?;
     let tag = tag();
     focus_input(&cx, &composer)?;
-    let before = settle_drawn(&cx).await?;
+    // The first key after pointer input redraws the window once (input modality): one key first.
+    // "Settled" is a quiet spell shorter than the caret's 500 ms blink.
+    cx.type_text("*")?;
+    let before = settle_window(&cx, Duration::from_millis(300)).await?;
     let text = format!("**hello** from the composer test `{tag}`");
-    cx.type_text(&text)?;
-    let after = settle_drawn(&cx).await?;
+    cx.type_text(&text[1..])?;
+    let after = settle_window(&cx, Duration::from_millis(300)).await?;
     let typed = after.since(before);
     ensure!(value(&cx, &composer)? == text, "typed text");
     ensure!(cx.update(|_, cx| composer.read(cx).preview_shown())?, "the preview strip shows for a formatted draft");
     cx.log(format_args!("typed {} keys: {} frames drawn; the preview strip shows", text.chars().count(), typed.drawn));
+    // A blink or another window's focus change may add a frame on the shared desktop.
     ensure!(typed.drawn <= text.chars().count() as u64 + 2, "more than a frame per key ({})", typed.drawn);
 
     // Enter: the bubble at once (faded), then the echo settles it; the box empties.

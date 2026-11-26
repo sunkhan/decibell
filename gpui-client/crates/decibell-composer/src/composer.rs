@@ -216,7 +216,7 @@ impl Composer {
     }
 
     /// The pane's "type anywhere" hook for this composer (`ComposerParts::type_to_focus`).
-    pub fn type_to_focus_hook(composer: &Entity<Composer>) -> Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool> {
+    pub fn type_to_focus_hook(composer: &Entity<Composer>) -> decibell_chat::TypeToFocus {
         let weak = composer.downgrade();
         Rc::new(move |event, window, cx| weak.update(cx, |this, cx| this.key_from_pane(event, window, cx)).unwrap_or(false))
     }

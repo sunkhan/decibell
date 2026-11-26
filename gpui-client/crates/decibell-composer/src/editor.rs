@@ -80,15 +80,10 @@ pub fn current_editor(cx: &App) -> Option<Entity<InlineEditor>> {
 }
 
 /// The list's `editor` slot: one [`InlineEditor`] for the message being edited.
+#[derive(Default)]
 pub struct InlineEditorSlot {
     engine: Option<Rc<Engine>>,
     current: Current,
-}
-
-impl Default for InlineEditorSlot {
-    fn default() -> Self {
-        Self { engine: None, current: Rc::default() }
-    }
 }
 
 impl InlineEditorSlot {

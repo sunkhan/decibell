@@ -64,12 +64,15 @@ pub trait EditorSlot: 'static {
     ) -> AnyElement;
 }
 
+/// The composer's "type anywhere" hook: a key that reached the pane; `true` when it took it.
+pub type TypeToFocus = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
+
 /// What the composer slot builds for a channel: the view under the list, and its "type anywhere
 /// to compose" hook (`useTypeToFocusComposer`), which the pane calls with the keys that reach it
 /// while no text field has focus; it returns whether the composer took the key.
 pub struct ComposerParts {
     pub view: AnyView,
-    pub type_to_focus: Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>,
+    pub type_to_focus: TypeToFocus,
 }
 
 /// Builds the composer for a channel, given the list it sits under (the composer follows the

@@ -370,8 +370,7 @@ impl Picker {
         self.sections
             .list
             .iter()
-            .filter(|(_, _, t, b)| *t < band_bottom && *b > band_top)
-            .last()
+            .rfind(|(_, _, t, b)| *t < band_bottom && *b > band_top)
             .or_else(|| self.sections.list.first())
             .map(|(id, ..)| *id)
     }
@@ -715,7 +714,10 @@ fn into_columns(results: &[GifResult]) -> [Vec<usize>; 2] {
 
 /// The search box both tabs share (`h-[36px] rounded-md border bg-bg-lighter px-3 gap-2`,
 /// `focus-within:border-accent focus-within:shadow-ring`).
-fn search_box(input: &Entity<InputState>, on_clear: Option<Box<dyn Fn(&mut Window, &mut App)>>, window: &Window, cx: &mut App) -> AnyElement {
+/// The search box's clear button.
+type OnClear = Box<dyn Fn(&mut Window, &mut App)>;
+
+fn search_box(input: &Entity<InputState>, on_clear: Option<OnClear>, window: &Window, cx: &mut App) -> AnyElement {
     let style = TextField::input_style(FontRole::Sans, 13., 1.21, cx);
     let theme = cx.theme();
     let focused = input.read(cx).focus_handle(cx).is_focused(window);
@@ -831,7 +833,7 @@ impl Picker {
         let has_query = !self.search.read(cx).value().is_empty();
         let clear = has_query.then(|| {
             let search = self.search.clone();
-            Box::new(move |_: &mut Window, cx: &mut App| search.update(cx, |s, cx| s.clear(cx))) as Box<dyn Fn(&mut Window, &mut App)>
+            Box::new(move |_: &mut Window, cx: &mut App| search.update(cx, |s, cx| s.clear(cx))) as OnClear
         });
         let search = div().flex_none().px_3().pb_2().pt_2().child(search_box(&self.search, clear, window, cx));
 
@@ -945,7 +947,7 @@ impl Picker {
         let has_query = !gif.query.is_empty();
         let clear = has_query.then(|| {
             let search = gif.search.clone();
-            Box::new(move |_: &mut Window, cx: &mut App| search.update(cx, |s, cx| s.clear(cx))) as Box<dyn Fn(&mut Window, &mut App)>
+            Box::new(move |_: &mut Window, cx: &mut App| search.update(cx, |s, cx| s.clear(cx))) as OnClear
         });
         let search = div().flex_none().px_3().pb_2().pt_2().child(search_box(&gif.search, clear, window, cx));
         let theme = crate::ink::Ink::of(cx);

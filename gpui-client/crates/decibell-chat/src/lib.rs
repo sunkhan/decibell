@@ -26,7 +26,7 @@ pub mod style;
 pub(crate) mod testing;
 
 pub use list::{ListEvent, ListStats, MessageList};
-pub use media::{CancelEdit, ChatSlots, ComposerBuilder, ComposerParts, EditorSlot, RowSlot, SlotSpace, SubmitEdit, invalidate_slots, slots};
+pub use media::{CancelEdit, ChatSlots, ComposerBuilder, ComposerParts, EditorSlot, RowSlot, SlotSpace, SubmitEdit, TypeToFocus, invalidate_slots, slots};
 pub use pane::ChatPane;
 pub use source::{ChannelSource, Jump, ListSource};
 
