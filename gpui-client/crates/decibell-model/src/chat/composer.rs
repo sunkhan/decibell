@@ -369,15 +369,16 @@ fn preview_of(file: &PreparedUpload) -> Option<Arc<gpui::Image>> {
 
 // ── The app's service: decibell-attachments on the core's runtime ──────────
 
-/// Trust for the attachment host: exactly the certificate the community's chat connection
-/// presented (core's pinning verifier). When the core grows a side-effect-free
-/// `tls::exact_connector(fingerprint)`, the body becomes that one line.
+/// Trust for the attachment host: exactly the certificate whose fingerprint central gave
+/// for the community (the core's `tls::exact_connector`: the pinning verifier, TLS 1.3 and
+/// 1.2, the same `CERT_MISMATCH:` error). Side-effect free: the pins store
+/// (`cert_pins.json`) is neither read nor written, so an attachment fetch never changes what
+/// the chat connection trusts. A fingerprint that isn't 64 hex digits is an error.
 pub struct CoreTls;
 
 impl PinnedTls for CoreTls {
     fn connector(&self, host: &str, port: u16, fingerprint: &str) -> Result<tokio_rustls::TlsConnector, String> {
-        decibell_core::net::pins::set_expected(host, port, fingerprint);
-        Ok(decibell_core::net::tls::create_pinned_connector(host, port).0)
+        decibell_core::net::tls::exact_connector(host, port, fingerprint)
     }
 }
 
@@ -594,6 +595,20 @@ mod tests {
 
     use super::testing::*;
     use super::*;
+
+    /// The attachment host's connector is pinned to the fingerprint it is given, without the
+    /// core's boot state or pins store (this test never starts the core): a well-formed
+    /// fingerprint gives a connector, any case; anything else is refused.
+    #[test]
+    fn core_tls_pins_exactly_without_the_pins_store() {
+        let fp = "AB".repeat(32);
+        assert!(CoreTls.connector("127.0.0.11", 8085, &fp).is_ok());
+        assert!(CoreTls.connector("127.0.0.11", 8085, &fp.to_lowercase()).is_ok());
+        let short = CoreTls.connector("127.0.0.11", 8085, "abcd").err().unwrap();
+        assert!(short.contains("Not a sha256 certificate fingerprint"), "{short}");
+        assert!(CoreTls.connector("127.0.0.11", 8085, "").is_err(), "an unknown fingerprint pins nothing");
+        assert!(CoreTls.connector("127.0.0.11", 8085, &"zz".repeat(32)).is_err());
+    }
 
     #[gpui::test]
     fn queued_uploading_ready_or_failed_and_the_cap(cx: &mut TestAppContext) {
