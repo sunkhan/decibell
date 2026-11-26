@@ -64,6 +64,8 @@ pub trait Timing: Send + Sync + 'static {
     /// dropped and the next packet must be a keyframe, i.e. the producer seeks to where it is.
     fn keyframe_needed(&self);
     fn event(&self, event: StreamEvent);
+    /// The process is exiting ([`crate::shutdown`]): `admit` must return now and from now on.
+    fn shutdown(&self);
 }
 
 /// One packet of a file.

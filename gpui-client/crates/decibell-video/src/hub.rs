@@ -274,6 +274,10 @@ pub fn shutdown(timeout: Duration) -> bool {
         stream.removed.store(true, RELAXED);
         stream.queue.stop();
         stream.target.clear();
+        if let Some(timing) = stream.timing() {
+            // A paused file's decoder thread is waiting for its clock.
+            timing.shutdown();
+        }
     }
     let started = Instant::now();
     while hub.inner.threads.load(RELAXED) > 0 || hub.inner.probe.is_running() {

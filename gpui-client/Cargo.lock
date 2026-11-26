@@ -1973,6 +1973,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "decibell-media"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "decibell-video",
+ "ffmpeg-sys-next",
+ "log",
+ "parking_lot",
+]
+
+[[package]]
 name = "decibell-model"
 version = "0.1.0"
 dependencies = [
