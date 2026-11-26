@@ -11,6 +11,7 @@ use gpui::{
 };
 
 type Click = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type Toggle = Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
 
 /// `mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted` (the
 /// tabs' own `SectionLabel`; Appearance's has no `pl-0.5`: `inset = false`).
@@ -67,7 +68,7 @@ pub struct ToggleRow {
     description: SharedString,
     on: bool,
     disabled: bool,
-    on_toggle: Option<Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
+    on_toggle: Option<Toggle>,
     probe: Option<SharedString>,
 }
 
@@ -409,7 +410,7 @@ pub fn away_after_label(minutes: u32) -> String {
     if minutes == 0 {
         return "Never".into();
     }
-    if minutes % 60 == 0 {
+    if minutes.is_multiple_of(60) {
         return if minutes == 60 { "1 hour".into() } else { format!("{} hours", minutes / 60) };
     }
     if minutes == 1 { "1 minute".into() } else { format!("{minutes} minutes") }

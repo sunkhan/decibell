@@ -52,12 +52,12 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(perf1(cx, "settings-open", Phases::One)),
         },
         SelfTest {
-            name: "settings-appearance",
+            name: "settings-appearance-apply",
             about: "a theme switch is one frame; theme, text size and density apply live and outlive a restart",
-            run: |cx| Box::pin(perf1(cx, "settings-appearance", Phases::Restart)),
+            run: |cx| Box::pin(perf1(cx, "settings-appearance-apply", Phases::Restart)),
         },
         SelfTest {
-            name: "settings-devices",
+            name: "settings-devices-signout",
             about: "a second perf1 device appears in Devices; signing it out removes it and closes that client",
             run: |cx| Box::pin(devices(cx)),
         },
@@ -72,9 +72,9 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(throwaway(cx, "settings-rename", 1)),
         },
         SelfTest {
-            name: "settings-privacy",
+            name: "settings-privacy-dms",
             about: "friends-only DMs toggles, settles on the account's echo and outlives a restart (then put back)",
-            run: |cx| Box::pin(perf1(cx, "settings-privacy", Phases::Restart)),
+            run: |cx| Box::pin(perf1(cx, "settings-privacy-dms", Phases::Restart)),
         },
         SelfTest {
             name: "settings-e2ee",
@@ -82,19 +82,19 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(throwaway(cx, "settings-e2ee", 2)),
         },
         SelfTest {
-            name: "settings-audio",
+            name: "settings-audio-meter",
             about: "device lists load; the meter holds the input-level reporting only while shown; the input mode outlives a restart",
-            run: |cx| Box::pin(perf1(cx, "settings-audio", Phases::Restart)),
+            run: |cx| Box::pin(perf1(cx, "settings-audio-meter", Phases::Restart)),
         },
         SelfTest {
-            name: "settings-keybinds",
+            name: "settings-keybinds-record",
             about: "record a binding from injected keys (X11 listener), Escape cancels, a conflict is named, remove; saved; the core's status shows",
             run: |cx| Box::pin(keybinds(cx)),
         },
         SelfTest {
-            name: "settings-network",
+            name: "settings-network-caps",
             about: "a speed preset and a typed custom cap apply and are saved",
-            run: |cx| Box::pin(perf1(cx, "settings-network", Phases::One)),
+            run: |cx| Box::pin(perf1(cx, "settings-network-caps", Phases::One)),
         },
         SelfTest {
             name: "settings-unsaved-shake",
@@ -371,9 +371,9 @@ async fn throwaway(cx: TestCx, check: &'static str, phases: u32) -> Result<()> {
 /// Devices: perf1 here, and a second perf1 device (another child) that this one signs out.
 async fn devices(cx: TestCx) -> Result<()> {
     let stack = skip_without_stack!(cx);
-    let main_profile = Profile::new("settings-devices")?;
-    let peer_profile = Profile::new("settings-devices-peer")?;
-    let mut main = spawn("settings-devices", Some("perf1"), &stack, &main_profile.0, &[], &[])?;
+    let main_profile = Profile::new("settings-devices-signout")?;
+    let peer_profile = Profile::new("settings-devices-signout-peer")?;
+    let mut main = spawn("settings-devices-signout", Some("perf1"), &stack, &main_profile.0, &[], &[])?;
     match main.wait_mark(&cx, "ready", Duration::from_secs(60)).await {
         Ok(()) => {}
         Err(e) if main.no_dev_login() => {
@@ -415,8 +415,8 @@ async fn password(cx: TestCx) -> Result<()> {
 /// combos, released when the app exits) and no desktop shortcut dialog opens.
 async fn keybinds(cx: TestCx) -> Result<()> {
     let stack = skip_without_stack!(cx);
-    let profile = Profile::new("settings-keybinds")?;
-    let running = spawn("settings-keybinds", Some("perf1"), &stack, &profile.0, &[], &["WAYLAND_DISPLAY"])?;
+    let profile = Profile::new("settings-keybinds-record")?;
+    let running = spawn("settings-keybinds-record", Some("perf1"), &stack, &profile.0, &[], &["WAYLAND_DISPLAY"])?;
     wait_end_or_skip(&cx, running).await?;
     Ok(())
 }
@@ -426,16 +426,16 @@ async fn keybinds(cx: TestCx) -> Result<()> {
 pub fn checks() -> Vec<SelfTest> {
     vec![
         SelfTest { name: "settings-open", about: "(in the app) open, switch tabs, close", run: |cx| Box::pin(check_open(cx)) },
-        SelfTest { name: "settings-appearance", about: "(in the app) themes, text size, density", run: |cx| Box::pin(check_appearance(cx)) },
-        SelfTest { name: "settings-devices", about: "(in the app) a second device, signed out", run: |cx| Box::pin(check_devices(cx)) },
+        SelfTest { name: "settings-appearance-apply", about: "(in the app) themes, text size, density", run: |cx| Box::pin(check_appearance(cx)) },
+        SelfTest { name: "settings-devices-signout", about: "(in the app) a second device, signed out", run: |cx| Box::pin(check_devices(cx)) },
         SelfTest { name: "settings-peer", about: "(in the app) a second device of the account until signed out", run: |cx| Box::pin(check_peer(cx)) },
         SelfTest { name: "settings-password", about: "(in the app) change the password", run: |cx| Box::pin(check_password(cx)) },
         SelfTest { name: "settings-rename", about: "(in the app) rename", run: |cx| Box::pin(check_rename(cx)) },
-        SelfTest { name: "settings-privacy", about: "(in the app) friends-only DMs", run: |cx| Box::pin(check_privacy(cx)) },
+        SelfTest { name: "settings-privacy-dms", about: "(in the app) friends-only DMs", run: |cx| Box::pin(check_privacy(cx)) },
         SelfTest { name: "settings-e2ee", about: "(in the app) set up, lock, unlock", run: |cx| Box::pin(check_e2ee(cx)) },
-        SelfTest { name: "settings-audio", about: "(in the app) devices, the meter's hold, the input mode", run: |cx| Box::pin(check_audio(cx)) },
-        SelfTest { name: "settings-keybinds", about: "(in the app) the recorder", run: |cx| Box::pin(check_keybinds(cx)) },
-        SelfTest { name: "settings-network", about: "(in the app) speed caps", run: |cx| Box::pin(check_network(cx)) },
+        SelfTest { name: "settings-audio-meter", about: "(in the app) devices, the meter's hold, the input mode", run: |cx| Box::pin(check_audio(cx)) },
+        SelfTest { name: "settings-keybinds-record", about: "(in the app) the recorder", run: |cx| Box::pin(check_keybinds(cx)) },
+        SelfTest { name: "settings-network-caps", about: "(in the app) speed caps", run: |cx| Box::pin(check_network(cx)) },
         SelfTest { name: "settings-unsaved-shake", about: "(in the app) a draft holds the window", run: |cx| Box::pin(check_shake(cx)) },
         SelfTest { name: "settings-idle", about: "(in the app) every tab at rest", run: |cx| Box::pin(check_idle(cx)) },
     ]

@@ -568,7 +568,7 @@ impl Render for AudioTab {
                         IconName::SettingsUiMic,
                         &inputs,
                         s.input_device.as_deref(),
-                        |name, cx| actions::voice::set_input_device(name, cx),
+                        actions::voice::set_input_device,
                         cx,
                     ))
                     .child(device_selector(
@@ -577,7 +577,7 @@ impl Render for AudioTab {
                         IconName::SettingsUiSpeaker,
                         &outputs,
                         s.output_device.as_deref(),
-                        |name, cx| actions::voice::set_output_device(name, cx),
+                        actions::voice::set_output_device,
                         cx,
                     )),
             );
@@ -630,7 +630,7 @@ impl Render for AudioTab {
                         IconName::SettingsUiMusic,
                         &outputs,
                         s.stream_output_device.as_deref(),
-                        |name, cx| actions::voice::set_stream_output_device(name, cx),
+                        actions::voice::set_stream_output_device,
                         cx,
                     ))
                 })

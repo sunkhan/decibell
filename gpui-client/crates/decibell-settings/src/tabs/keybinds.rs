@@ -228,7 +228,7 @@ pub fn binding_problem(b: &HotkeyBindingSetting, all: &[HotkeyBindingSetting], s
             return Some("macOS global shortcuts need a key, optionally with modifiers.".into());
         }
     }
-    if status.is_some_and(|s| s.failed.iter().any(|f| *f == b.id)) {
+    if status.is_some_and(|s| s.failed.contains(&b.id)) {
         return Some("Another app already uses this shortcut.".into());
     }
     if b.keys.iter().any(|k| is_mouse(k)) && status.is_some_and(|s| !s.mouse && !s.focused_fallback) {

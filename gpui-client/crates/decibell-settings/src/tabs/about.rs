@@ -44,7 +44,7 @@ fn button(id: &'static str, label: &'static str, disabled: bool, on: fn(&dyn cra
     Button::new(id, label)
         .size(ButtonSize::Sm)
         .disabled(disabled)
-        .on_click(move |_, _, cx| hook(cx, |h, cx| on(h, cx)))
+        .on_click(move |_, _, cx| hook(cx, on))
         .into_any_element()
 }
 

@@ -327,6 +327,45 @@ overrides). The Electron client formats by its UI language instead (`docs/electr
   `Intl` takes ICU's locale from LC_ALL / LC_MESSAGES / LANG, not from `--lang`).
   Views keep what they built: pin before they build.
 - The check for leftovers in a crate (test code aside): `rg -n '\{:0?2\}|"(AM|PM)"|January|"Jan"|"Monday"|"Sunday"|chrono::Local|Local\.timestamp|localtime|\b(count|len\(\)|total|n)\.to_string\(\)' crates/<crate>/src`.
+## Settings (`decibell-settings`)
+
+The Settings window (`SettingsModal.tsx`), its nine tabs, the rename / change-password dialogs and the
+E2EE passphrase dialog. `decibell_settings::init(cx)` registers three overlays (the window, then the two
+model-driven dialogs, so they draw over it); `SettingsHooks` is what the app hands in (its version, the
+updater's buttons, the out-of-voice `MicTest`) and the seams other features fill (`PictureRequests`: the
+avatar editor subscribes and opens over Settings).
+
+- **The window** is open while `model.overlays.active_modal == modal::SETTINGS`, on the tab
+  `model.nav.settings_tab` names (unknown → Account; Devices only while `auth.devices`). Open it from
+  anywhere with `nav.set_settings_tab("devices")` + `overlays.open_modal(modal::SETTINGS)`.
+- **A tab is its own view**, built when it shows and dropped when it goes (and 300 ms after the window
+  closes: the fade-out), so what a tab holds lives exactly as long as React's mount: the Devices list load
+  (`actions::devices::watch`), the mic meter's hold on the input-level reporting (`InputLevel::retain_meter`
+  while the threshold bar shows), the keybind recorder's pause. It renders the kit's `SettingsPane` (title,
+  ✕, the scrolling body) and is drawn cached at the pane's size through `SettingsWindow::pane`: a change
+  in one tab redraws that tab only. Each lists what it reads in a `decibell_common::Watch`.
+- **Saves follow the renderer**: everything applies at once (toggles, selects, sliders, presets: the model's
+  `Settings::change` saves 250 ms later; the account's own settings through their actions). The one draft
+  is Network's typed custom speed (applied on Enter or blur): while it is unapplied the tab shows the
+  `SaveBar` and leaving (Esc, ✕, the backdrop, another tab) shakes it (`TabView::dirty` / `nudge`). A new
+  drafted field: make the tab's `dirty()` say so and give it a `SaveBar`; the window does the rest.
+- **Text fields** are drawn by `fields.rs` (`Input` + `InputBox`: the dialogs' `bg-bg-dark rounded-sm` look
+  and Network's compact box, which the kit's `TextField` doesn't have). Until `decibell-text`'s editor is
+  wired, the views hold the text and the self-tests set it (`set_fields`, `set_rename_fields`,
+  `set_custom_text`); wiring the editor changes `fields.rs` only.
+- **Screens** (`--screen settings-…`, `passphrase-*`, `rename-modal`, `password-modal`; `settings-narrow` at
+  `--size 900x800`) are the signed-in shell from the shell's fixture plus `decibell_settings::fixture`
+  (devices, E2EE states, keybinds with the portal's status, audio devices, codecs, a fixed clock).
+  `decibell-settings-fixture <dir>` exports the same state for the Electron pages
+  (`tools/electron-captures/pages/settings-*.tsx`, `_settings_window.tsx`).
+- **Self-tests** (`settings-*`) run the app as a child against the local stack, as the shell's do. The
+  account flows (password, rename, E2EE) **register a throwaway account per run** (`t<random>`) and refuse
+  unless the build honours `DECIBELL_CENTRAL` (debug, or the app's `dev-local`, which turns on this crate's
+  `dev-local`) and it is loopback; perf1's checks put back what they change and log out (forgetting their
+  device). `settings-keybinds-record` runs its child under XWayland: the X11 listener grabs exactly the bound
+  combos, where the Wayland portal would open the desktop's confirmation dialog. (Self-tests and screens
+  share one namespace: the self-tests that would take a screen's name carry a suffix,
+  `settings-devices-signout`, `settings-keybinds-record`, ….)
 
 ## GPUI gotchas met so far
 

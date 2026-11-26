@@ -30,8 +30,10 @@ pub struct Recorder {
     modifiers: Modifiers,
 }
 
+type Held = fn(&Modifiers) -> bool;
+
 /// The modifier keys GPUI's state names, as the left key of each.
-const MODIFIER_KEYS: [(&str, fn(&Modifiers) -> bool); 4] = [
+const MODIFIER_KEYS: [(&str, Held); 4] = [
     ("ControlLeft", |m| m.control),
     ("AltLeft", |m| m.alt),
     ("ShiftLeft", |m| m.shift),

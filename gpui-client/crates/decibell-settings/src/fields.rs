@@ -153,7 +153,7 @@ impl RenderOnce for InputBox {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::TestAppContext;
 
     use super::*;
 
