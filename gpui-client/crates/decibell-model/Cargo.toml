@@ -1,0 +1,46 @@
+[package]
+name = "decibell-model"
+description = "The state model of the GPUI client: the core handle, the event pump, the stores (GPUI entities) between decibell-core and the views"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "decibell_model"
+
+# Drives the core and the stores with no window, from a script on the command line
+# (docs/model.md §8): the tool for the stack tests and for measuring core + model alone.
+[[bin]]
+name = "decibell-headless"
+path = "src/bin/headless.rs"
+
+[features]
+# Lets a release build honour DECIBELL_CENTRAL (the local test stack). Test and
+# measurement builds only: the shipping app must never turn it on (HANDOFF.md §3).
+local-central = ["decibell-core/local-central"]
+
+[dependencies]
+gpui.workspace = true
+# Only the headless binary uses it (the platform with no windowing).
+gpui_platform.workspace = true
+decibell-theme.workspace = true
+# Never with core's `napi` feature.
+decibell-core = { path = "../../../crates/decibell-core" }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "sync", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+getrandom = "0.2"
+arc-swap = "1"
+
+# Only `core::prepare` (see its module doc): entering the runtime on smol's executor
+# thread, where GPUI's Linux platform runs its sleep / power listeners.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+smol = "2"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"
