@@ -14,6 +14,9 @@
 //! - TODO(audio): play `Cue::Play` / ring on `Cue::StartRing` (assets/sounds), flash on `Cue::Flash`.
 //! - TODO(hotkeys): window key events → `hotkeys.key`, blur → `window_blurred` (M3.2).
 //! - TODO(devices): audio hot-plug → `devices.hotplug`.
+//! - TODO(quit-guard): ask before closing the window while `model.live.transfers.read(cx)
+//!   .uploads_in_flight() > 0` (`window.ts`' quit guard), and pause downloads on quit
+//!   (`DownloadManager::pause_all_for_quit`); show `progress()` on the taskbar once GPUI can.
 //! - TODO(single-instance): the `decibell://` handler and the single-instance socket, forwarding
 //!   links to `actions::servers::open_invite_link` and `--hotkey=` to `actions::hotkeys::inject_cli`.
 
@@ -97,4 +100,10 @@ pub fn start_core(model: &Model, cx: &mut App) {
         },
     )
     .detach();
+    // The Transfers button in the title bar (`layouts/Titlebar.tsx` shows it on every page, the
+    // sign-in page too). The downloads manager is wired by the content crate once the core runs.
+    // Taskbar / dock progress and the quit guard read `model.live.transfers`' `progress()` and
+    // `uploads_in_flight()`: GPUI has no taskbar-progress API at the pin, and the window's
+    // close interception (`on_window_should_close`) is TODO(quit-guard) below.
+    decibell_chat_content::transfers::enable_title_bar(cx);
 }

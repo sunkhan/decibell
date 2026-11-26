@@ -1,8 +1,9 @@
 use decibell_ui::{ActiveTheme as _, FontRole, TitleBar, ToastStack, focus_navigation, window_frame};
 use gpui::{AnyView, Context, IntoElement, Render, SharedString, StyleRefinement, Window, div, prelude::*, px};
 
-/// The root view of a window: the window frame, the title bar, one content view under it (the
-/// shell, or a registered screen) and the toast stack.
+/// The root view of a window: the window frame, the title bar (with the Transfers button in its
+/// actions slot once the app enabled it), one content view under it (the shell, or a registered
+/// screen) and the toast stack.
 ///
 /// The content is drawn as a cached view: a frame caused by the title bar (a hovered button)
 /// replays the content's last paint instead of rendering it again. The root reads the
@@ -28,6 +29,8 @@ impl Render for Root {
             self.os_title = os_title;
         }
         let title = decibell_shell::titlebar_title(cx);
+        // The title bar's actions: the Transfers button, in the app (and the transfers screens).
+        let actions = decibell_chat_content::transfers::title_bar_button(cx);
         let theme = cx.theme();
         let content = focus_navigation(div())
             .size_full()
@@ -37,7 +40,10 @@ impl Render for Root {
             .font_family(theme.font(FontRole::Sans))
             .text_size(px(theme.scaled.text_body))
             .text_color(theme.color_text_primary)
-            .child(TitleBar::new(title))
+            .child(match actions {
+                Some(actions) => TitleBar::new(title).actions(actions),
+                None => TitleBar::new(title),
+            })
             .child(
                 div().flex_1().min_h_0().child(
                     self.content

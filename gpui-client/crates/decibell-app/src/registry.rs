@@ -21,6 +21,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_composer::screens());
     screens.extend(decibell_home::screens());
     screens.extend(decibell_chat_content::screens());
+    screens.extend(decibell_chat_content::transfers::screens());
     screens
 }
 
@@ -37,6 +38,7 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_composer::selftests());
     tests.extend(decibell_home::selftests());
     tests.extend(decibell_chat_content::selftests());
+    tests.extend(decibell_chat_content::transfers::selftests());
     tests
 }
 
@@ -64,6 +66,7 @@ pub fn checks() -> Vec<SelfTest> {
     checks.extend(decibell_home::checks());
     checks.extend(decibell_chat::checks());
     checks.extend(decibell_chat_content::checks());
+    checks.extend(decibell_chat_content::transfers::checks());
     checks
 }
 
