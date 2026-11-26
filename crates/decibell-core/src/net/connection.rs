@@ -18,6 +18,48 @@ pub struct Connection {
     write_task: JoinHandle<()>,
 }
 
+async fn open_tcp(host: &str, port: u16, addr: &str) -> std::io::Result<TcpStream> {
+    #[cfg(any(debug_assertions, feature = "local-central"))]
+    if let Some(tcp) = dev_loopback_connect(host, port).await {
+        return Ok(tcp);
+    }
+    #[cfg(not(any(debug_assertions, feature = "local-central")))]
+    let _ = (host, port);
+    TcpStream::connect(addr).await
+}
+
+/// Development and test builds only (never a shipped build): a connection to a loopback server
+/// (the local test stack) leaves from a loopback address of this process's own instead of
+/// 127.0.0.1, so the servers' per-address limits (central's `abuse_limits.hpp`: sign-ups, sign-in
+/// attempts, connections) see every test process as its own network, as central's own test
+/// harness does. Without it, test processes that run side by side share one sign-up bucket (10,
+/// one more every 2 minutes) and fail with "Too many sign-ups from your network".
+/// `DECIBELL_DEV_SHARED_SOURCE` turns it off. `None` (not a loopback destination, or the address
+/// can't be bound, as on macOS where only 127.0.0.1 is configured): the caller connects as usual.
+#[cfg(any(debug_assertions, feature = "local-central"))]
+async fn dev_loopback_connect(host: &str, port: u16) -> Option<TcpStream> {
+    use std::net::{Ipv4Addr, SocketAddr};
+    let destination = host.parse::<Ipv4Addr>().ok().filter(Ipv4Addr::is_loopback)?;
+    if std::env::var_os("DECIBELL_DEV_SHARED_SOURCE").is_some() {
+        return None;
+    }
+    let socket = tokio::net::TcpSocket::new_v4().ok()?;
+    socket.bind(SocketAddr::from((dev_source_address(), 0))).ok()?;
+    socket.connect(SocketAddr::from((destination, port))).await.ok()
+}
+
+/// This process's loopback source address: 127.64.0.1 – 127.127.255.254, chosen at random once.
+#[cfg(any(debug_assertions, feature = "local-central"))]
+fn dev_source_address() -> std::net::Ipv4Addr {
+    use std::hash::BuildHasher as _;
+    static SOURCE: std::sync::OnceLock<std::net::Ipv4Addr> = std::sync::OnceLock::new();
+    *SOURCE.get_or_init(|| {
+        // std's per-process random hasher keys: randomness without a dependency.
+        let h = std::collections::hash_map::RandomState::new().hash_one(std::process::id());
+        std::net::Ipv4Addr::new(127, 64 + ((h >> 16) % 64) as u8, (h >> 8) as u8, 1 + (h % 254) as u8)
+    })
+}
+
 impl Connection {
     /// Establish a TCP/TLS connection and start read/write loops.
     /// Returns the Connection and an mpsc::Receiver that yields decoded Packets.
@@ -37,7 +79,7 @@ impl Connection {
         port: u16,
     ) -> Result<(Self, mpsc::Receiver<Packet>, String), String> {
         let addr = format!("{}:{}", host, port);
-        let tcp = TcpStream::connect(&addr)
+        let tcp = open_tcp(host, port, &addr)
             .await
             .map_err(|e| format!("TCP connect to {} failed: {}", addr, e))?;
 
