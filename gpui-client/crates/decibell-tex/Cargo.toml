@@ -1,0 +1,13 @@
+[package]
+name = "decibell-tex"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "TeX math layout ported from KaTeX 0.18.4: parser, HTML builder and the CSS layout KaTeX leaves to the browser, producing a positioned display list (no GPUI, no I/O)"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
+flate2 = "1"
+serde_json = "1"

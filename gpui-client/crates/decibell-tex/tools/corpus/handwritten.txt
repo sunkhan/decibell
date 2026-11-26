@@ -1,0 +1,525 @@
+# Hand-written corpus for decibell-tex. One formula per line.
+# "## name" starts a section (it becomes part of the id), "# " lines are comments.
+# Prefix "D: " = display mode only, "B: " = both inline and display, none = inline only.
+## everyday
+x
+x+y
+a^2+b^2=c^2
+B: E=mc^2
+e^{i\pi}+1=0
+f(x)=x^2+2x+1
+y = mx + b
+x_1, x_2, \ldots, x_n
+\{x \in \mathbb{R} : x > 0\}
+B: \lim_{x\to 0} \frac{\sin x}{x} = 1
+B: \sum_{i=1}^{n} i = \frac{n(n+1)}{2}
+B: \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+\Pr[X \ge t] \le \frac{\mathbb{E}[X]}{t}
+O(n \log n)
+\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}
+\hbar \frac{\partial}{\partial t}\Psi = \hat H \Psi
+B: \det(A - \lambda I) = 0
+a \equiv b \pmod{m}
+\gcd(a, b) = 1
+p \implies q
+\neg (p \land q) \iff \neg p \lor \neg q
+\forall \epsilon > 0\ \exists \delta > 0
+x \mapsto x^2
+3.14159\ldots
+1{,}000{,}000
+50\%
+-1
++\infty
+a \cdot b \times c \div d
+\overline{z} = a - bi
+|x| \le 1
+\|v\|_2
+\langle u, v \rangle
+\lfloor x \rfloor + \lceil y \rceil
+n!
+\binom{n}{k}
+B: \binom{n}{k} = \frac{n!}{k!(n-k)!}
+\dbinom{n}{k} \tbinom{n}{k}
+## fractions
+\frac{1}{2}
+\frac12
+\frac{a}{b}
+\frac{a+b}{c+d}
+B: \frac{1}{1+\frac{1}{x}}
+\dfrac{1}{2} + \tfrac{1}{2}
+B: \cfrac{1}{1+\cfrac{1}{1+\cfrac{1}{x}}}
+\frac{\partial^2 f}{\partial x^2}
+\frac{dy}{dx}
+x^{\frac{1}{2}}
+\frac{x^2}{y_1}
+a/b
+{a \over b}
+{n \choose k}
+{a \atop b}
+\frac{}{}
+\frac{\quad}{x}
+B: \frac{\displaystyle\sum_i x_i}{n}
+## roots
+\sqrt{2}
+\sqrt{x^2+y^2}
+\sqrt[3]{8}
+\sqrt[n]{x}
+\sqrt{\frac{a}{b}}
+B: \sqrt{\frac{\frac{a}{b}}{\frac{c}{d}}}
+\sqrt{\sqrt{\sqrt{x}}}
+\sqrt{x}\sqrt{y}\sqrt{q}
+\sqrt{\rule{1em}{3em}}
+\sqrt{\rule{1em}{6em}}
+\sqrt{\rule{1em}{12em}}
+## bigops
+B: \sum_{n=1}^\infty \frac{1}{n^2}
+B: \prod_{i=1}^n x_i
+B: \int_a^b f(x)\,dx
+B: \iint_D f\,dA
+B: \iiint_V f\,dV
+B: \oint_C \mathbf{F}\cdot d\mathbf{r}
+B: \oiint_S f \quad \oiiint_V g
+B: \bigcup_{i\in I} A_i \cap \bigcap_j B_j
+B: \bigoplus_k V_k \otimes \bigotimes_k W_k
+B: \coprod_i X_i
+B: \bigvee_i p_i \wedge \bigwedge_j q_j
+B: \bigsqcup_n \biguplus_m \bigodot_k
+B: \lim_{n\to\infty} a_n
+B: \limsup_{n\to\infty} \liminf_{m} x
+B: \max_{x\in X} f(x) \min_y g
+B: \sup_{t>0} \inf_s
+B: \sum_{\substack{0<i<m\\0<j<n}} P(i,j)
+B: \int\limits_0^1 x\,dx
+B: \sum\nolimits_{i} x_i
+B: \sin x \cos y \tan z \log w \ln v \exp u
+B: \arcsin \arccos \arctan \sinh \cosh \tanh \coth \sec \csc \cot
+B: \deg \dim \hom \ker \arg \Pr
+B: \operatorname{tr}(A) \operatorname*{argmin}_x f
+## matrices
+\begin{matrix} a & b \\ c & d \end{matrix}
+B: \begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix}
+B: \begin{bmatrix} a_{11} & a_{12} & a_{13} \\ a_{21} & a_{22} & a_{23} \end{bmatrix}
+B: \begin{vmatrix} a & b \\ c & d \end{vmatrix} = ad - bc
+B: \begin{Vmatrix} x \end{Vmatrix}
+B: \begin{Bmatrix} 1 \\ 2 \\ 3 \end{Bmatrix}
+B: \begin{pmatrix} 1 & \cdots & 1 \\ \vdots & \ddots & \vdots \\ 1 & \cdots & 1 \end{pmatrix}
+B: \left(\begin{array}{cc|c} 1 & 2 & 3 \\ 4 & 5 & 6 \end{array}\right)
+B: \begin{array}{|l|c|r|} \hline a & b & c \\ \hline dd & ee & ff \\ \hline \end{array}
+B: \begin{array}{c:c} a & b \\ \hdashline c & d \end{array}
+\begin{smallmatrix} a & b \\ c & d \end{smallmatrix}
+B: \begin{pmatrix*}[r] -1 & 2 \\ 3 & -40 \end{pmatrix*}
+B: \begin{matrix} a \\[2em] b \end{matrix}
+B: \begin{pmatrix} \frac12 & \sqrt2 \\ x^2 & \int f \end{pmatrix}
+## cases
+B: f(x) = \begin{cases} 0 & x < 0 \\ 1 & x \ge 0 \end{cases}
+B: |x| = \begin{cases} x & \text{if } x \ge 0 \\ -x & \text{otherwise} \end{cases}
+B: \begin{dcases} \frac{1}{2} & a \\ b & c \end{dcases}
+B: \begin{rcases} a \\ b \end{rcases} \text{label}
+## aligned
+D: \begin{aligned} a &= b + c \\ &= d \end{aligned}
+D: \begin{align} f(x) &= (x+1)^2 \\ &= x^2 + 2x + 1 \end{align}
+D: \begin{align*} x &= 1 & y &= 2 \\ z &= 3 & w &= 4 \end{align*}
+D: \begin{gather} a = b \\ c = d \end{gather}
+D: \begin{gathered} a = b \\ c = d \end{gathered}
+D: \begin{split} a &= b \\ &= c \end{split}
+D: \begin{alignat}{2} x &= y &\quad z &= w \\ a &= b & c &= d \end{alignat}
+D: \begin{equation} E = mc^2 \end{equation}
+D: \begin{align} a &= b \tag{1} \\ c &= d \tag{A} \end{align}
+D: \begin{align} a &= b \nonumber \\ c &= d \end{align}
+D: \begin{align} a &= b \notag \\ c &= d \end{align}
+B: x = 1 \\ y = 2
+D: a \\[1em] b \\[-0.5em] c
+## tags
+D: E = mc^2 \tag{1}
+D: x + y \tag{1.2}
+D: \sum_i x_i \tag*{(star)}
+D: a=b \tag{$\alpha$}
+## accents
+\hat{a} \check{b} \tilde{c} \acute{d} \grave{e} \dot{f} \ddot{g} \breve{h} \bar{i} \vec{j}
+\mathring{A}
+\widehat{AB} \widehat{ABC} \widehat{ABCDEFG}
+\widetilde{AB} \widetilde{ABCDEF}
+\widecheck{ABC}
+\overline{AB} \underline{AB}
+\overrightarrow{AB} \overleftarrow{AB} \overleftrightarrow{AB}
+\underrightarrow{AB} \underleftarrow{AB} \underleftrightarrow{AB}
+\overgroup{AB} \undergroup{AB}
+\overlinesegment{AB} \underlinesegment{AB}
+\overleftharpoon{AB} \overrightharpoon{AB}
+\Overrightarrow{AB}
+\utilde{AB}
+\vec{x}^2 \hat{x}_1 \bar{x}^2_1
+\dot{x} \ddot{x} \dddot{x} \ddddot{x}
+\hat{\imath} \hat{\jmath} \vec{\imath}
+\text{\'e \`e \^e \"e \~n \=a \.a \u{a} \v{c} \H{o} \r{a} \c{c}}
+\text{\'{\i} \"{\i}}
+\acute{\mathrm{A}} \bar{\mathbf{x}}
+\vec{AB} \vec{A}^2
+\underbar{X}
+## text
+\text{hello world}
+x = 1 \text{ if } y > 0
+\text{a } b \text{ c}
+\textrm{roman} \textit{italic} \textbf{bold} \texttt{typewriter} \textsf{sans}
+\textbf{\textit{bold italic}}
+\textup{up} \textmd{medium} \textnormal{normal}
+\text{a -- b --- c ``q'' `s'}
+\text{\$5 \% \& \# \_ \{ \}}
+\text{\textbackslash \textasciitilde \textasciicircum}
+\text{x}^{\text{y}}
+\mbox{box} \hbox{hbox}
+\text{$x^2$ inside text}
+\text{\textdagger \textdaggerdbl \textsection \textparagraph \copyright \textregistered}
+\text{A \quad B \qquad C}
+\text{\AA \aa \ae \AE \oe \OE \o \O \ss \i \j}
+\text{ä ö ü é è ê ñ ç}
+\textsf{\textbf{bold sans}} \textsf{\textit{italic sans}}
+\texttt{\textbf{x}}
+\text{\textbf{\textsf{\textit{x}}}}
+\textbf{\text{\AA}}
+\textit{\text{\aa}}
+\text{\textbf{\checkmark}}
+## colors
+\color{red} x + y
+{\color{blue} a} + b
+\textcolor{green}{x^2} + \textcolor{#ff8800}{y}
+\colorbox{yellow}{$x$}
+\colorbox{#ccccff}{text}
+\fcolorbox{red}{white}{$\frac ab$}
+\color{#0f0} \frac{a}{b}
+\textcolor{red}{\sqrt{x}}
+\textcolor{blue}{\left(\frac ab\right)}
+\textcolor{purple}{\overrightarrow{AB}}
+\textcolor{orange}{\int_0^1}
+\color{red}{\begin{pmatrix} a \\ b \end{pmatrix}}
+\textcolor{brown}{\rule{1em}{1em}}
+\color{FF0000} x
+\textcolor{notacolor}{x}
+## sizing
+\tiny a \scriptsize b \footnotesize c \small d \normalsize e \large f \Large g \LARGE h \huge i \Huge j
+{\Huge \frac ab}
+{\tiny \sqrt{x}}
+{\large x^2_1}
+\displaystyle \sum_i \textstyle \sum_i \scriptstyle \sum_i \scriptscriptstyle \sum_i
+{\displaystyle\frac ab} {\textstyle\frac ab} {\scriptstyle\frac ab}
+\Huge{\left( x \right)}
+\large \text{text} \small \text{text}
+{\Large \color{red} x}
+## scripts
+x^2
+x_i
+x_i^2
+x^{2^{2^2}}
+x_{i_{j_k}}
+x^{a+b}_{c+d}
+{}^a_b X ^c_d
+{x^2}^3
+f'(x) f''(x) f'''(x)
+f'^2
+x^\prime
+e^{-x^2/2}
+a_{ij} b^{kl}
+\sum_{i}^{n} x^i_j
+x^{\frac12}_{\frac34}
+\mathrm{e}^{i\theta}
+A^\top A^{-1}
+x^{\!2}
+\int^1_0
+^2 x
+_1 x
+x^{\int}
+## delimiters
+\big( \Big( \bigg( \Bigg(
+\big[ \Big[ \bigg[ \Bigg[
+\big\{ \Big\{ \bigg\{ \Bigg\{
+\big| \Big| \bigg| \Bigg|
+\big\| \Big\| \bigg\| \Bigg\|
+\big\langle \Big\langle \bigg\langle \Bigg\langle
+\big/ \Big/ \bigg/ \Bigg/
+\big\backslash \Bigg\backslash
+\big\lfloor \Bigg\rceil
+\bigl( \bigr) \Bigl[ \Bigr] \biggl\{ \biggr\} \Biggl| \Biggr|
+\bigm| \Bigm| \biggm| \Biggm|
+\big\uparrow \Big\Downarrow \bigg\updownarrow \Bigg\Updownarrow
+\big\lgroup \Bigg\rgroup \bigg\lmoustache \Bigg\rmoustache
+\Bigg\ulcorner \Bigg\lrcorner
+\bigg\llbracket \bigg\rrbracket
+## leftright
+B: \left( \frac{a}{b} \right)
+B: \left[ \frac{a}{b} \right]
+B: \left\{ \frac{a}{b} \right\}
+B: \left| \frac{a}{b} \right|
+B: \left\| \frac{a}{b} \right\|
+B: \left\langle \frac{a}{b} \right\rangle
+B: \left. \frac{df}{dx} \right|_{x=0}
+B: \left( \sum_{i=1}^n x_i \right)^2
+B: \left( \int_0^1 f \right)
+B: \left( \begin{matrix} a \\ b \\ c \\ d \end{matrix} \right)
+B: \left\lfloor \frac{n}{2} \right\rfloor \left\lceil \frac n2 \right\rceil
+B: \left( a \middle| b \right)
+B: \left\{ x \,\middle|\, x > \frac12 \right\}
+B: \left/ \frac ab \right\backslash
+B: \left\uparrow \frac ab \right\downarrow
+B: \left\Uparrow \frac{a}{\frac bc} \right\Downarrow
+B: \left( \rule{1em}{2em} \right) \left( \rule{1em}{4em} \right) \left( \rule{1em}{8em} \right)
+B: \left[ \rule{1em}{2em} \right] \left[ \rule{1em}{5em} \right] \left[ \rule{1em}{10em} \right]
+B: \left\{ \rule{1em}{3em} \right\} \left\{ \rule{1em}{7em} \right\}
+B: \left| \rule{1em}{3em} \right| \left\| \rule{1em}{7em} \right\|
+B: \left\langle \rule{1em}{3em} \right\rangle \left\langle \rule{1em}{7em} \right\rangle
+B: \left\lgroup \rule{1em}{5em} \right\rgroup
+B: \left\lmoustache \rule{1em}{5em} \right\rmoustache
+B: \left\uparrow \rule{1em}{5em} \right\Updownarrow
+B: \left\lfloor \rule{1em}{6em} \right\rceil
+B: \left\vert \rule{1em}{6em} \right\Vert
+B: \left( x \right.
+B: \left( \left( \left( x \right) \right) \right)
+## operators
+a + b - c \pm d \mp e
+a < b > c \le d \ge e \ne f
+a \ll b \gg c \leq d \geq e \neq f
+a = b \approx c \sim d \simeq e \cong f \equiv g \propto h
+a \subset b \supset c \subseteq d \supseteq e \in f \notin g \ni h
+a \cup b \cap c \setminus d \oplus e \otimes f \odot g
+a \to b \gets c \leftarrow d \rightarrow e \Rightarrow f \Leftarrow g \Leftrightarrow h
+a \longrightarrow b \Longrightarrow c \longmapsto d \hookrightarrow e
+a \uparrow b \downarrow c \updownarrow d \nearrow e \searrow f
+a \circ b \bullet c \star d \ast e \dagger f \ddagger g
+a \wedge b \vee c \lnot d
+a \parallel b \perp c \mid d \nmid e
+a \vdash b \models c \dashv d
+a \prec b \succ c \preceq d \succeq e
+a \lessgtr b \gtrless c \lesssim d \gtrsim e
+a \triangleleft b \triangleright c \lhd d \rhd e
+a \coloneqq b \eqqcolon c \Coloneqq d
+a \doteq b \triangleq c \stackrel{\mathrm{def}}{=} d \overset{!}{=} e \underset{x}{=} f
+a \xrightarrow{f} b \xleftarrow[g]{h} c \xLeftrightarrow{\text{iff}} d
+a \xmapsto{x} b \xhookrightarrow{y} c \xtwoheadrightarrow{z} d
+a \xrightleftharpoons[x]{y} b \xlongequal{z} c
+-a -\frac12 +b
+a \bmod b \pmod n \mod n \pod n
+\not= \not\in \not\subset \not<
+\neq \notin \nsubseteq \nleq \ngeq \nless \ngtr
++ + a
+a + = b
+(+a)
+a,+b
+## spacing
+a\,b\:c\;d\ e\quad f\qquad g
+a\!b \negthinspace c \negmedspace d \negthickspace e
+a\thinspace b\medspace c\thickspace d\enspace e
+a\hspace{1em}b\hspace{-0.5em}c
+a\kern2em b \mkern-9mu c
+a\mskip18mu b
+a~b
+a\nobreakspace b \space c
+a\phantom{bbb}c
+a\hphantom{bbb}c\vphantom{\frac ab}
+a\mathstrut b
+a \allowbreak b \nobreak c
+a\enskip b
+x\hskip 1em plus 2em minus 1em y
+## unicode
+αβγδεζηθικλμνξοπρστυφχψω
+ΓΔΘΛΞΠΣΥΦΨΩ
+ℝ ℂ ℕ ℤ ℚ ℍ ℙ
+∀ ∃ ∄ ∅ ∇ ∂ ∞ ℵ ℏ ℓ ℘ ℜ ℑ
+→ ← ↔ ⇒ ⇐ ⇔ ↦ ↑ ↓
+≤ ≥ ≠ ≈ ≡ ∼ ≅ ∝ ⊂ ⊃ ⊆ ⊇ ∈ ∉ ∋
+± × ÷ · ∘ ∙ ⊕ ⊗ ∪ ∩ ∧ ∨ ¬
+∑ ∏ ∫ ∬ ∭ ∮
+√x ∛x
+𝐀𝐁𝐂 𝑥𝑦𝑧 𝒜ℬ𝒞 𝔄𝔅 𝔸𝔹 𝖠𝖡 𝘈𝘉 𝙰𝙱 𝟎𝟏𝟐
+x² y³ z⁴ a₁ b₂ c₃ xⁿ xᵢ
+A² + B²⁺³ + ¹²C + E₂³ + F₂₊₃
+½ ⅓ ¼
+é \text{é} ü \text{ü}
+\text{Ελληνικά Кириллица}
+\text{中文}
+\text{العربية}
+\text{हिन्दी}
+\text{😀}
+x · y
+a′ b″
+⟨x⟩ ⌊y⌋ ⌈z⌉
+… ⋯ ⋮ ⋱
+\text{ı ȷ}
+## fonts
+\mathrm{ABC} \mathit{ABC} \mathbf{ABC} \mathsf{ABC} \mathtt{ABC}
+\mathcal{ABC} \mathscr{ABC} \mathfrak{ABC} \mathbb{ABC}
+\mathbf{x}\mathbf{0}\mathbf{\alpha}
+\boldsymbol{\alpha\beta x y} \bm{x}
+\pmb{x} \pmb{\mu}
+\mathnormal{abc}
+\mathsfit{xyz}
+\mathbf{abc123} \mathrm{abc123} \mathit{abc123}
+\Bbb{R} \bold{x} \frak{g} \cal{L} \rm{d} \it{x} \bf{y} \sf{z} \tt{w}
+{\rm d}x {\bf x} {\it x} {\sf x} {\tt x} {\cal L}
+\mathbb{1} \mathbb{k}
+\mathbf{\Gamma \Delta} \mathit{\Gamma \Delta} \Gamma \varGamma
+\mathfrak{g} \mathscr{L}
+\boldsymbol{\frac{a}{b}} \boldsymbol{\sum_i}
+\mathrm{\alpha \beta}
+\mathcal{abc}
+\mathbf{\mathit{x}}
+\mathrm{x^2}
+\mathtt{0O1lI}
+\varepsilon \vartheta \varpi \varrho \varsigma \varphi \varkappa
+\digamma \backepsilon \beth \gimel \daleth
+## arrows-misc
+\uparrow \Uparrow \downarrow \Downarrow \updownarrow \Updownarrow
+\leftharpoonup \rightharpoondown \rightleftharpoons
+\curvearrowleft \circlearrowright \looparrowleft
+\leadsto \rightsquigarrow \twoheadrightarrow
+\dashrightarrow \dashleftarrow
+## boxes
+\boxed{x}
+B: \boxed{\int_0^1 f}
+\fbox{text box}
+\colorbox{red}{x}
+\cancel{x} \bcancel{y} \xcancel{z}
+\cancel{abc}
+\sout{abc}
+\overbrace{a+b+\cdots+z}^{26}
+\underbrace{1+1+\cdots+1}_{n}
+B: \overbrace{x+y}^{\text{sum}} = \underbrace{z}_{\text{result}}
+\overbracket{abc} \underbracket{def}
+\phase{-78^\circ}
+a_{\angl{n}}
+\rule{2em}{1em} \rule[-0.5em]{1em}{2em}
+\rule{0em}{2em}
+\rule{1em}{0.04em}
+\raisebox{0.5em}{x} \raisebox{-0.5em}{y}
+\smash{\frac ab} \smash[t]{\sqrt y}
+\llap{xx}a \rlap{yy}b \clap{zzz}c
+\mathllap{xx}a \mathrlap{yy}b \mathclap{zzz}c
+\vcenter{\hbox{x}}
+\hbox{a} \mbox{b}
+\mathop{\mathrm{Res}}_{z=0}
+\mathbin{\#} \mathrel{\#} \mathord{+} \mathopen{(} \mathclose{)} \mathpunct{,} \mathinner{x}
+a \mathbin{+} b
+\stackrel{?}{=}
+\overset{\frown}{AB} \underset{\smile}{CD}
+\sideset{_a^b}{_c^d}\sum
+\mathchoice{D}{T}{S}{SS} x^{\mathchoice{D}{T}{S}{SS}}
+\KaTeX \TeX \LaTeX
+\copyright \circledR \maltese \checkmark \yen \pounds \euro \degree
+## commands
+\def\RR{\mathbb{R}} \RR^n
+\newcommand{\abs}[1]{\left|#1\right|} \abs{x}
+\gdef\foo{x} \foo
+\let\bar\overline \bar{x}
+\def\a#1#2{#2#1} \a xy
+\def\delim[#1]{(#1)} \delim[x]
+\char"41 \char`b \char98
+\verb|\frac{a}{b}|
+\verb!x^2!
+\begingroup \color{red} x \endgroup y
+\relax x
+\@ifstar{a}{b}*
+\mathrm{d}\!x
+\TextOrMath{t}{m}
+\text{\TextOrMath{t}{m}}
+\operatorname{rank}(A)
+\operatorname{sgn}x
+\braket{\phi|\psi}
+\ket{0} \bra{1}
+\set{x | x>0}
+\dotsb \dotsi \dotsm \dotso \dotsc
+a + \dots + b \quad a, \dots, b \quad \dots
+\vdots \ddots \iddots
+## errors
+\frac{a
+\frac
+x^
+x^^
+x__y
+\left( x
+\right)
+\begin{matrix} a
+\begin{foo} a \end{foo}
+\begin{matrix} a \end{pmatrix}
+\undefinedcommand
+\undefinedcommand{x} + y
+a \bad b \worse c
+\href{https://example.com}{link}
+\url{https://example.com}
+\includegraphics{x.png}
+\htmlClass{x}{y}
+\htmlId{x}{y}
+\htmlStyle{color:red}{y}
+\htmlData{a=b}{y}
+}
+{
+&
+a & b
+\\\\
+\tag{1}
+\rule{1foo}{1em}
+\kern{x}
+\color{#gggggg}{x}
+\textcolor{#12345}{x}
+\sqrt[
+\left x \right)
+\big x
+\verb
+\verb|a
+\end{matrix}
+\hline
+\limits
+x\limits
+\sum\limits\limits
+\over
+a \over b \over c
+\text{a \frac{x}{y}}
+\textbf{\sum}
+\mathbf{\textrm{x}}
+\genfrac{x}{y}{z}{0}{a}{b}
+\char"FFFFFF
+\def
+\def\x
+\def\x#2{x}
+\newcommand\frac{x}
+\renewcommand\notdefined{x}
+\def\x#1{#1} \x
+\@
+\\@
+\mathchoice{a}{b}{c}
+x^1_2^3
+\TextOrMath
+\ensuremath{x}
+\text{\ensuremath{x}}
+\textcircled{a}
+\dfrac
+\operatorname
+\begin{array}{q} a \end{array}
+\begin{array}{c} a & b \end{array}
+\begin{CD} A @>a>> B \end{CD}
+\begin{CD} A @q B \end{CD}
+\begin{align} a \end{align}
+\left\alpha x \right)
+\middle| x
+\Bigg x
+\left(\middle\{ x \right)
+\mathrm{\begin{matrix}a\end{matrix}}
+\sqrt[\left(]{x}
+## adversarial
+x^{x^{x^{x^{x^{x^{x^{x^{x^{x}}}}}}}}}
+\frac{\frac{\frac{\frac{\frac{a}{b}}{c}}{d}}{e}}{f}
+\sqrt{\sqrt{\sqrt{\sqrt{\sqrt{\sqrt{\sqrt{\sqrt{x}}}}}}}}
+\rule{20em}{20em}
+\rule{16em}{16em}
+\rule{17em}{1em}
+\rule{1em}{17em}
+\rule{10cm}{1mm}
+\rule{2in}{1pt}
+\rule{100pt}{100pt}
+\kern 20em x
+\hspace{100em} x
+\raisebox{20em}{x}
+\Huge \frac{\Huge a}{\Huge b}
+\def\x{\x}\x
+\def\a{aa}\def\b{\a\a}\def\c{\b\b}\def\d{\c\c}\def\e{\d\d}\def\f{\e\e}\f
+\def\a{aa}\def\b{\a\a}\def\c{\b\b}\def\d{\c\c}\def\e{\d\d}\def\f{\e\e}\def\g{\f\f}\def\h{\g\g}\g
+\def\a{aa}\def\b{\a\a}\def\c{\b\b}\def\d{\c\c}\def\e{\d\d}\def\f{\e\e}\def\g{\f\f}\def\h{\g\g}\h
+\newcommand\a[1]{#1#1#1#1}\a{\a{\a{\a{x}}}}
+\left(\left(\left(\left(\left(\left(\left(\left(x\right)\right)\right)\right)\right)\right)\right)\right)

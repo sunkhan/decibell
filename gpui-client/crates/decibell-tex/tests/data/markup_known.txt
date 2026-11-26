@@ -1,0 +1,3 @@
+# id<TAB>reason: known, explained differences from KaTeX markup
+adv-braces-200	nesting deeper than parse_error::MAX_DEPTH (100): internal error instead of KaTeX output (bounded native stack)
+adv-braces-1000	nesting deeper than parse_error::MAX_DEPTH (100): internal error instead of KaTeX output (bounded native stack)
