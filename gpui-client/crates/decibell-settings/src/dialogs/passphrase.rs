@@ -92,6 +92,12 @@ impl Render for PassphraseOverlay {
         let open = self.flow.is_some();
         let busy = self.flow.as_ref().is_some_and(|f| f.busy);
         let error = self.flow.as_ref().and_then(|f| f.error.clone());
+        let weak = cx.weak_entity();
+        let submit: super::Handler = Rc::new(move |_: &mut Window, cx: &mut App| {
+            if let Some(v) = weak.upgrade() {
+                v.update(cx, |v, cx| v.submit(cx));
+            }
+        });
         let mut inputs = vec![
             InputBox::new("passphrase-input", &self.passphrase, InputLook::Dialog)
                 .placeholder(if m == PassphraseMode::Unlock {
@@ -101,6 +107,7 @@ impl Render for PassphraseOverlay {
                 })
                 .masked()
                 .disabled(busy)
+                .on_enter(super::enter(&submit))
                 .into_any_element(),
         ];
         if m.needs_confirm() {
@@ -109,6 +116,7 @@ impl Render for PassphraseOverlay {
                     .placeholder("Confirm passphrase")
                     .masked()
                     .disabled(busy)
+                    .on_enter(super::enter(&submit))
                     .into_any_element(),
             );
         }
@@ -131,12 +139,6 @@ impl Render for PassphraseOverlay {
                 )
                 .into_any_element()
         });
-        let weak = cx.weak_entity();
-        let submit = move |_: &mut Window, cx: &mut App| {
-            if let Some(v) = weak.upgrade() {
-                v.update(cx, |v, cx| v.submit(cx));
-            }
-        };
         let cancel = |_: &mut Window, cx: &mut App| {
             let e2ee = Model::global(cx).live.e2ee.clone();
             e2ee.update(cx, |e, cx| e.cancel(cx));
@@ -154,7 +156,7 @@ impl Render for PassphraseOverlay {
                 submit_label: if busy { "Working…".into() } else { m.confirm_label().into() },
                 danger: m.danger(),
                 on_cancel: Rc::new(cancel),
-                on_submit: Rc::new(submit),
+                on_submit: submit,
             },
             cx,
         ))

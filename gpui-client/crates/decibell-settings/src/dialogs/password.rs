@@ -82,29 +82,32 @@ impl PasswordOverlay {
 impl Render for PasswordOverlay {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
+        let weak = cx.weak_entity();
+        let submit: super::Handler = Rc::new(move |_: &mut Window, cx: &mut App| {
+            if let Some(v) = weak.upgrade() {
+                v.update(cx, |v, cx| v.submit(cx));
+            }
+        });
         let inputs = vec![
             InputBox::new("password-current", &self.current, InputLook::Dialog)
                 .placeholder("Current password")
                 .masked()
                 .disabled(busy)
+                .on_enter(super::enter(&submit))
                 .into_any_element(),
             InputBox::new("password-new", &self.new, InputLook::Dialog)
                 .placeholder(format!("New password (at least {MIN_PASSWORD_CHARS} characters)"))
                 .masked()
                 .disabled(busy)
+                .on_enter(super::enter(&submit))
                 .into_any_element(),
             InputBox::new("password-repeat", &self.repeat, InputLook::Dialog)
                 .placeholder("New password again")
                 .masked()
                 .disabled(busy)
+                .on_enter(super::enter(&submit))
                 .into_any_element(),
         ];
-        let weak = cx.weak_entity();
-        let submit = move |_: &mut Window, cx: &mut App| {
-            if let Some(v) = weak.upgrade() {
-                v.update(cx, |v, cx| v.submit(cx));
-            }
-        };
         let cancel = |_: &mut Window, cx: &mut App| {
             let devices = Model::global(cx).live.devices.clone();
             devices.update(cx, |d, cx| d.close_password(cx));
@@ -122,7 +125,7 @@ impl Render for PasswordOverlay {
                 submit_label: if busy { "Changing…".into() } else { "Change password".into() },
                 danger: false,
                 on_cancel: Rc::new(cancel),
-                on_submit: Rc::new(submit),
+                on_submit: submit,
             },
             cx,
         ))

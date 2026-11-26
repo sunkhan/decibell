@@ -27,7 +27,7 @@ pub struct Input {
 
 impl Input {
     pub fn new<V>(cx: &mut Context<V>) -> Self {
-        Input { text: String::new(), focus: cx.focus_handle(), max_chars: None, lowercase: false }
+        Input { text: String::new(), focus: cx.focus_handle().tab_stop(true), max_chars: None, lowercase: false }
     }
 
     pub fn max_chars(mut self, n: usize) -> Self {
@@ -69,6 +69,8 @@ pub enum InputLook {
     Compact,
 }
 
+type OnEnter = std::rc::Rc<dyn Fn(&mut Window, &mut App) + 'static>;
+
 #[derive(IntoElement)]
 pub struct InputBox {
     id: ElementId,
@@ -78,6 +80,7 @@ pub struct InputBox {
     look: InputLook,
     focus: FocusHandle,
     disabled: bool,
+    on_enter: Option<OnEnter>,
 }
 
 impl InputBox {
@@ -90,7 +93,15 @@ impl InputBox {
             look,
             focus: input.focus.clone(),
             disabled: false,
+            on_enter: None,
         }
+    }
+
+    /// Enter in the box (a form's implicit submission: only from its inputs, never from a
+    /// focused button, which Enter activates instead).
+    pub fn on_enter(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_enter = Some(std::rc::Rc::new(handler));
+        self
     }
 
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
@@ -147,6 +158,14 @@ impl RenderOnce for InputBox {
             .px(px(pad_x))
             .py(px(pad_y))
             .when(!self.disabled, |this| this.cursor_text())
+            .when_some(self.on_enter, |this, handler| {
+                this.on_key_down(move |event, window, cx| {
+                    if event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
+                        cx.stop_propagation();
+                        handler(window, cx);
+                    }
+                })
+            })
             .child(div().flex_1().min_w_0().h(px(line)).child(content))
     }
 }

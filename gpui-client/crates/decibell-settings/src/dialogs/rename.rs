@@ -122,15 +122,28 @@ pub fn render<V: 'static>(
         Some(name) => format!("New username (now {name})").into(),
         None => "New username".into(),
     };
+    let weak = cx.weak_entity();
+    let submit: super::Handler = {
+        let weak = weak.clone();
+        std::rc::Rc::new(move |_: &mut Window, cx: &mut App| {
+            if let Some(v) = weak.upgrade() {
+                v.update(cx, |v, cx| submit(v, get, cx));
+            }
+        })
+    };
     let inputs = vec![
-        InputBox::new("rename-name", &form.name, InputLook::Dialog).placeholder(placeholder).disabled(form.busy).into_any(),
+        InputBox::new("rename-name", &form.name, InputLook::Dialog)
+            .placeholder(placeholder)
+            .disabled(form.busy)
+            .on_enter(super::enter(&submit))
+            .into_any(),
         InputBox::new("rename-password", &form.password, InputLook::Dialog)
             .placeholder("Current password")
             .masked()
             .disabled(form.busy)
+            .on_enter(super::enter(&submit))
             .into_any(),
     ];
-    let weak = cx.weak_entity();
     let cancel = {
         let weak = weak.clone();
         move |_: &mut Window, cx: &mut App| {
@@ -140,11 +153,6 @@ pub fn render<V: 'static>(
                     cx.notify();
                 });
             }
-        }
-    };
-    let submit_handler = move |_: &mut Window, cx: &mut App| {
-        if let Some(v) = weak.upgrade() {
-            v.update(cx, |v, cx| submit(v, get, cx));
         }
     };
     dialog(
@@ -160,7 +168,7 @@ pub fn render<V: 'static>(
             submit_label: if form.busy { "Changing…".into() } else { "Change username".into() },
             danger: false,
             on_cancel: std::rc::Rc::new(cancel),
-            on_submit: std::rc::Rc::new(submit_handler),
+            on_submit: submit,
         },
         cx,
     )

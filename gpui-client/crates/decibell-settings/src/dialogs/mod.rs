@@ -14,7 +14,7 @@ use std::rc::Rc;
 use decibell_ui::{ActiveTheme as _, Button, ButtonVariant, Label, Modal, dialog_card};
 use gpui::{AnyElement, App, ElementId, IntoElement, SharedString, Window, div, prelude::*};
 
-type Handler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
+pub(crate) type Handler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// One dialog's content.
 pub struct DialogParts {
@@ -56,15 +56,6 @@ pub fn dialog(parts: DialogParts, cx: &App) -> AnyElement {
             .on_click(move |_, window, cx| on_submit(window, cx))
     };
     let card = dialog_card(440., cx)
-        .on_key_down({
-            let on_submit = on_submit.clone();
-            move |event, window, cx| {
-                if event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
-                    cx.stop_propagation();
-                    on_submit(window, cx);
-                }
-            }
-        })
         .child(Label::new(title).size(16.).weight(600.).color(theme.color_text_primary))
         .child(div().mt_2().child(Label::new(body).size(12.).line_height(12. * 1.55).color(theme.color_text_muted)))
         .child(
@@ -91,4 +82,10 @@ pub fn dialog(parts: DialogParts, cx: &App) -> AnyElement {
 /// JS's `String(err).replace(/^Error:\s*/, "")` over a core refusal: the plain message.
 pub fn plain(error: &decibell_model::UiError) -> SharedString {
     error.plain()
+}
+
+/// The submit as an input box's Enter handler.
+pub fn enter(on_submit: &Handler) -> impl Fn(&mut Window, &mut App) + 'static {
+    let on_submit = on_submit.clone();
+    move |window, cx| on_submit(window, cx)
 }

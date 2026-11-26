@@ -67,7 +67,7 @@ impl AppearanceTab {
             })
             .store_if(&model.auth, cx, |this: &mut AppearanceTab, auth, _| std::mem::replace(&mut this.me, auth.uid) != auth.uid)
             .people(cx, |this: &AppearanceTab, uid| uid == this.me);
-        let cards = ThemeId::ALL.iter().map(|_| cx.focus_handle()).collect();
+        let cards = ThemeId::ALL.iter().map(|_| cx.focus_handle().tab_stop(true)).collect();
         let me = model.auth.read(cx).uid;
         Self { scroll: ScrollHandle::new(), close, shown: shown(model.settings.read(cx)), me, cards, _watch: watch }
     }
@@ -168,13 +168,8 @@ fn theme_card(this: &AppearanceTab, id: ThemeId, window: &mut Window, cx: &mut C
         .on_hover(listener)
         .relative()
         .children(decibell_shell::probes::probe(format!("theme-card:{}", id.as_str())))
+        // Enter / Space on the focused card: GPUI turns them into this click.
         .on_click(move |_, _, cx| commit(id, cx))
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                commit(id, cx);
-            }
-        })
         .child(preview)
         .child(
             div()

@@ -224,7 +224,7 @@ impl RenderOnce for Btn {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (h, listener) = hover(window, cx, &self.id);
         let focus = window
-            .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle())
+            .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle().tab_stop(!self.disabled))
             .read(cx)
             .clone();
         let h = if self.disabled { 0. } else { h };
@@ -327,7 +327,7 @@ impl RenderOnce for TextLink {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = window.use_keyed_state((self.id.clone(), "hover"), cx, |_, _| false);
         let focus = window
-            .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle())
+            .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle().tab_stop(!self.disabled))
             .read(cx)
             .clone();
         let hovered = *state.read(cx) && !self.disabled;

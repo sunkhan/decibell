@@ -51,18 +51,31 @@ pub fn init(cx: &mut App) {
     cx.set_global(Initialised);
     hooks::ensure(cx);
     // The attachment speed caps follow the settings (loaded, or changed in Network) into the
-    // attachment service whenever it runs.
+    // attachment service. The model creates the service lazily, at the first upload or download,
+    // without them (the model applies none at creation): so they are also handed over when the
+    // composer or the transfers store first shows a transfer while a service runs that hasn't
+    // had them. Event-driven: no timer.
     if let Some(model) = cx.try_global::<decibell_model::Model>().cloned() {
-        let mut applied = (u64::MAX, u64::MAX);
-        cx.observe(&model.settings, move |settings, cx| {
-            let s = settings.read(cx).get();
-            let caps = (s.upload_limit_bps, s.download_limit_bps);
-            if caps != applied {
-                applied = caps;
-                tabs::network::apply_limits(caps.0, caps.1);
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let applied: Rc<Cell<Option<(usize, u64, u64)>>> = Rc::default();
+        let sync = {
+            let applied = applied.clone();
+            move |cx: &mut App| {
+                let Some(service) = decibell_model::chat::CoreAttachmentService::attachments() else { return };
+                let s = decibell_model::Model::global(cx).settings.read(cx).get();
+                let key = (std::sync::Arc::as_ptr(&service) as usize, s.upload_limit_bps, s.download_limit_bps);
+                if applied.get() != Some(key) {
+                    applied.set(Some(key));
+                    tabs::network::apply_limits(key.1, key.2);
+                }
             }
-        })
-        .detach();
+        };
+        let sync = Rc::new(sync);
+        let (a, b, c) = (sync.clone(), sync.clone(), sync);
+        cx.observe(&model.settings, move |_, cx| a(cx)).detach();
+        cx.observe(&model.chat.composer, move |_, cx| b(cx)).detach();
+        cx.observe(&model.live.transfers, move |_, cx| c(cx)).detach();
     }
     decibell_shell::register_overlay(cx, |window, cx| cx.new(|cx| SettingsOverlay::new(window, cx)).into());
     decibell_shell::register_overlay(cx, |window, cx| cx.new(|cx| dialogs::password::PasswordOverlay::new(window, cx)).into());
