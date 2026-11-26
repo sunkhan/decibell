@@ -438,7 +438,7 @@ impl MessageList {
             (registry.attachments.clone(), registry.inflight.clone(), registry.embeds.clone(), registry.editor.clone());
         let slot_height = |slot: &Option<Rc<dyn crate::media::RowSlot>>, cx: &App| slot.as_ref().map(|slot| slot.height(&message, server, space, cx));
         let editor_height = match (&editor, editing) {
-            (Some(editor), true) => editor.height(&message, space.width, cx),
+            (Some(editor), true) => editor.height(&message, space.width, space.scale, cx),
             (None, true) => crate::list::element::placeholder_editor_height(&style),
             _ => 0.,
         };

@@ -13,7 +13,7 @@ use decibell_model::stores::navigation::NavEvent;
 use decibell_model::{ChannelId, Model, ServerId, actions};
 use decibell_ui::{ActiveTheme as _, Button, ConfirmModal, ConfirmTone, FontRole, Icon, IconName, Label};
 use gpui::{
-    AnyView, App, AppContext as _, Context, Entity, IntoElement, Render, StyleRefinement, Subscription, Task, Window, canvas, div,
+    App, AppContext as _, Context, Entity, IntoElement, Render, StyleRefinement, Subscription, Task, Window, canvas, div,
     prelude::*, px,
 };
 
@@ -34,7 +34,7 @@ struct Shown {
     channel: ChannelId,
     slice: Entity<MessageSlice>,
     list: Entity<MessageList>,
-    composer: Option<AnyView>,
+    composer: Option<crate::media::ComposerParts>,
     /// The newest-page load got no answer: Retry shows.
     failed: bool,
     _load: Option<Task<()>>,
@@ -119,7 +119,7 @@ impl ChatPane {
             }),
             cx.subscribe_in(&list, window, |this, list, event: &ListEvent, _, cx| this.list_event(list, event, cx)),
         ];
-        let composer = slots(cx).composer.clone().map(|build| build(server, channel.clone(), window, cx));
+        let composer = slots(cx).composer.clone().map(|build| build(server, channel.clone(), &list, window, cx));
         // First visit: the newest page (shared with any other caller; `false`: no answer).
         let load = actions::chat::open_channel(server, channel.clone(), cx).map(|load| {
             cx.spawn(async move |this, cx| {
@@ -321,10 +321,22 @@ impl Render for ChatPane {
             div().flex_1().min_h_0().child(shown.list.clone().cached(StyleRefinement::default().size_full())).into_any_element()
         };
         let confirm = self.confirm_delete;
+        // "Type anywhere to compose": a key that reaches the pane from the list (or with nothing
+        // focused) goes to the composer (`useTypeToFocusComposer`).
+        let type_to_focus = shown.composer.as_ref().map(|composer| composer.type_to_focus.clone());
+        let list_focus = shown.list.read(cx).focus_handle().clone();
         root.relative()
+            .when_some(type_to_focus, |root, hook| {
+                root.on_key_down(move |event, window, cx| {
+                    let focused = window.focused(cx);
+                    if (focused.is_none() || focused.as_ref() == Some(&list_focus)) && hook(event, window, cx) {
+                        cx.stop_propagation();
+                    }
+                })
+            })
             .child(probe)
             .child(div().flex_1().min_h_0().flex().flex_col().overflow_hidden().child(body))
-            .children(shown.composer.clone())
+            .children(shown.composer.as_ref().map(|composer| composer.view.clone()))
             .child(
                 ConfirmModal::new("delete-message", confirm.is_some(), "Delete message", "Delete")
                     .message("Delete this message? This cannot be undone.\n\nTip: hold Shift when clicking delete to skip this confirmation.")

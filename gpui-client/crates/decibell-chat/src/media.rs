@@ -21,7 +21,7 @@ use std::sync::Arc;
 use decibell_attachments::AttachmentKind;
 use decibell_model::ServerId;
 use decibell_model::chat::Message;
-use gpui::{AnyElement, AnyView, App, AppContext as _, Entity, Global, Window};
+use gpui::{AnyElement, AnyView, App, AppContext as _, Entity, Global, KeyDownEvent, Window};
 
 /// What a slot is sized against.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,9 +49,9 @@ pub type CancelEdit = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// The inline editor that replaces a message's content while it is edited (`InlineEditor`).
 pub trait EditorSlot: 'static {
-    /// Height at `width` for the text being edited (the list asks again after
-    /// [`invalidate_slots`], which the editor calls when its text wraps differently).
-    fn height(&self, message: &Message, width: f32, cx: &App) -> f32;
+    /// Height at `width` (px, at the window's `scale`) for the text being edited (the list asks
+    /// again after [`invalidate_slots`], which the editor calls when its text wraps differently).
+    fn height(&self, message: &Message, width: f32, scale: f32, cx: &App) -> f32;
     /// `submit(text)` saves, `cancel()` leaves edit mode.
     fn element(
         &self,
@@ -64,8 +64,18 @@ pub trait EditorSlot: 'static {
     ) -> AnyElement;
 }
 
-/// Builds the view under the list (the composer) for a channel.
-pub type ComposerBuilder = Rc<dyn Fn(ServerId, decibell_model::ChannelId, &mut Window, &mut App) -> AnyView>;
+/// What the composer slot builds for a channel: the view under the list, and its "type anywhere
+/// to compose" hook (`useTypeToFocusComposer`), which the pane calls with the keys that reach it
+/// while no text field has focus; it returns whether the composer took the key.
+pub struct ComposerParts {
+    pub view: AnyView,
+    pub type_to_focus: Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>,
+}
+
+/// Builds the composer for a channel, given the list it sits under (the composer follows the
+/// list's [`crate::ListEvent::Reply`] and asks it to [`crate::MessageList::start_edit`]).
+pub type ComposerBuilder =
+    Rc<dyn Fn(ServerId, decibell_model::ChannelId, &Entity<crate::MessageList>, &mut Window, &mut App) -> ComposerParts>;
 
 /// The registered slots. Unset ones fall back to the list's own placeholders.
 #[derive(Default)]
