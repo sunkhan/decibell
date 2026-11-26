@@ -474,6 +474,15 @@ impl Composer {
             picker.update(cx, |picker, cx| picker.release(window, cx));
             self.input.update(cx, |input, cx| input.focus(window, cx));
             cx.notify();
+            // What the picker freed goes back to the system once its frame is gone (glibc keeps
+            // freed heap otherwise; a picker's images and elements are a few MB).
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            cx.on_next_frame(window, |_, _, _| {
+                // SAFETY: malloc_trim only walks and trims the allocator's own free lists.
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+            });
         }
     }
 

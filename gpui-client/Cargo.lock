@@ -1835,6 +1835,7 @@ dependencies = [
  "futures",
  "gpui",
  "image",
+ "libc",
  "log",
  "serde_json",
 ]

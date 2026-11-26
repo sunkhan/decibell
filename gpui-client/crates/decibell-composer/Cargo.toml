@@ -26,10 +26,15 @@ anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
 bytes = "1"
+
 # The screens' and self-tests' generated pictures (the version decibell-attachments uses).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 # The self-tests read the local stack's accounts.json.
 serde_json = { version = "1", optional = true }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+# malloc_trim after the emoji picker closes.
+libc.workspace = true
 
 [build-dependencies]
 serde_json = "1"

@@ -437,14 +437,22 @@ async fn check_slowmode(cx: TestCx) -> Result<()> {
             list.read(cx).focus_handle().clone().focus(window, cx);
         }
     })?;
-    let before = settle_window(&cx, Duration::from_millis(200)).await?;
-    cx.sleep(Duration::from_secs(4)).await;
-    let ticks = cx.frames()?.since(before);
-    cx.log(format_args!("countdown: {} frames drawn in 4 s", ticks.drawn));
-    ensure!((3..=6).contains(&ticks.drawn), "the countdown draws once a second ({} in 4 s)", ticks.drawn);
+    // Another window taking the focus redraws this one: up to three tries.
+    let mut ticks = 0;
+    for attempt in 1..=3 {
+        let before = settle_window(&cx, Duration::from_millis(200)).await?;
+        cx.sleep(Duration::from_secs(4)).await;
+        ticks = cx.frames()?.since(before).drawn;
+        cx.log(format_args!("countdown: {ticks} frames drawn in 4 s"));
+        if (3..=5).contains(&ticks) {
+            break;
+        }
+        cx.log(format_args!("try {attempt}: disturbed; again"));
+    }
+    ensure!((3..=5).contains(&ticks), "the countdown draws once a second ({ticks} in 4 s)");
     wait_for(&cx, Duration::from_secs(35), "the window to end", |cx| Composer::active(cx).is_some_and(|c| c.read(cx).slowmode_state(cx).1 == 0)).await?;
-    let (_, _, _, ticking) = cx.update(|_, cx| composer.read(cx).slowmode_state(cx))?;
-    ensure!(!ticking, "no timer once the window ended");
+    // The countdown's last wake lands on the window's end: then its timer is gone.
+    wait_for(&cx, Duration::from_secs(2), "the countdown's timer to go", |cx| Composer::active(cx).is_some_and(|c| !c.read(cx).slowmode_state(cx).3)).await?;
     focus_input(&cx, &composer)?;
     cx.keystroke("enter")?;
     let second_id = echoed(&cx, SLOW_LANE, &second).await?;
@@ -651,13 +659,20 @@ async fn check_paste_image(cx: TestCx) -> Result<()> {
     let png = dir.0.join("pasted.png");
     write_png(&png)?;
     wl("wl-copy", &["--type", "image/png"], Some(&std::fs::read(&png)?))?;
-    cx.sleep(Duration::from_millis(300)).await;
-    focus_input(&cx, &composer)?;
-    cx.keystroke("ctrl-v")?;
-    let pasted = wait_for(&cx, Duration::from_secs(10), "a chip from the pasted picture", |cx| {
-        model(cx).chat.composer.read(cx).for_channel(daily_gaming(), OFF_TOPIC).count() == 1
-    })
-    .await;
+    // KWin hands the Wayland clipboard to X11 clients a moment later: paste until it lands.
+    let mut pasted = Err(anyhow::anyhow!("not pasted"));
+    for _ in 0..5 {
+        cx.sleep(Duration::from_millis(500)).await;
+        focus_input(&cx, &composer)?;
+        cx.keystroke("ctrl-v")?;
+        pasted = wait_for(&cx, Duration::from_secs(2), "a chip from the pasted picture", |cx| {
+            model(cx).chat.composer.read(cx).for_channel(daily_gaming(), OFF_TOPIC).count() == 1
+        })
+        .await;
+        if pasted.is_ok() {
+            break;
+        }
+    }
     // The clipboard as it was, whatever happened.
     match &kept {
         Some((kind, bytes)) => {
