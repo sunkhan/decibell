@@ -41,16 +41,19 @@ screens in all seven themes beside Electron's.
 | Phase | State |
 |---|---|
 | Decision recorded (CLAUDE.md, design record, pin) | done (2026-11-26) |
-| Core split step 1 (move + event sink) | committed `76b77c3` (Linux bar passed); Windows Native Check on the branch running |
-| Core split steps 2–5 (typed events, `api`, runtime handle, pooled receive path) | not started |
+| Core split step 1 (move + event sink) | done `76b77c3`: Electron's bar on Linux (tsc 0 errors, napi build with `index.d.ts` / `index.js` byte-identical, 322 + 2 tests, smoke load) and Windows Native Check run 45797141001 green |
+| Core split step 2 (typed `CoreEvent`) | in progress, worktree `.worktrees/core-events` (branch `wip/core-events`) |
+| Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle) | in progress, worktree `.worktrees/core-api` (branch `wip/core-api`) |
+| Core split step 5 (pooled receive path) | not started (with stream playback) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
-| Linux measurement tools (`tools/perf/measure.sh`, `startup.sh`) | in progress |
+| Linux measurement tools | done `5285180`: `tools/perf/measure.sh`, `startup.sh`, `winctl.sh`, `install-size.sh` (README has the Linux section) |
 | Electron baseline on this machine (Linux) | runner being built (`tools/perf/electron-local.sh`, `scenarios.sh`); the full run needs a quiet machine |
-| GPUI survey (`docs/gpui-notes.md`) + hello-world numbers | in progress |
+| GPUI survey + hello-world numbers | done `75e9008`: `docs/gpui-notes.md`; decisions in the design record §5 |
 | Video research + prototype (`docs/video-design.md`) | in progress |
 | Theme generator + assets | done `e846392`: `crates/decibell-theme` (162 tokens × 7 themes, 12 scaled, scopes), `tools/gen-theme`, `tools/fetch-assets.mjs`, `docs/css-component-rules.md` |
 | Service crates (what Electron main did): attachments, link previews + GIFs | in progress (`crates/decibell-attachments`, `crates/decibell-unfurl`) |
-| Skeleton (workspace, window frame, design system, capture + self-test harness) | not started |
+| Skeleton (workspace, patched GPUI copy, fonts, window frame, capture + self-test harness) | in progress |
+| Text pieces without GPUI: rich-text parser (`decibell-richtext`), highlight.js-compatible highlighter (`decibell-highlight`), KaTeX-compatible layout (`decibell-tex`) | in progress |
 | Stream playback | not started |
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
@@ -78,13 +81,37 @@ _To be written with the skeleton._ The pin is `gpui-client/GPUI_PIN`; the Zed ch
   **and** `DECIBELL_CENTRAL=host:port` is set (a value without `:port` falls back silently). Check the address
   before typing a password.
 
-## 4. Measurements (this machine: i7-12700K, RTX 4080, CachyOS / KDE Plasma Wayland)
+## 4. Measurements (this machine: i7-12700K, RTX 4080, CachyOS / KDE Plasma Wayland, 2560×1440 at 280 Hz)
 
 _The Electron baseline and each phase's numbers against the targets go here._
 
+| Target | Electron 0.9.4 (Linux, this machine) | Target for this client | This client |
+|---|---|---|---|
+| Install size | 416.8 MB (`/opt/Decibell`, `install-size.sh`) | ≤ 104 MB | — |
+| Idle private memory, busy channel open | _baseline pending (quiet machine)_ | ≤ 1/3 | — |
+| Idle CPU | _pending_ | ≤ 1/10 | — |
+| Idle wakeups, own threads | _pending_ | ≤ 30 / s | — |
+| Frames at idle | _pending_ | 0 | — |
+| Startup to a visible window | _pending_ | ≤ 1/3 | — |
+| Watching 2 streams | _pending (needs the stream bot)_ | CPU ≤ 1/3, GPU ≤ Electron | — |
+| Scrolling the 10k channel | _pending_ | every frame in the refresh interval; 0 px on a history page | — |
+
+**GPUI hello-world at the pin** (one window, custom title bar, 400 wrapping chat rows; `docs/gpui-notes.md` §13):
+19.3 MB stripped binary (14.1 MB at `opt-level = "s"`); spawn → first frame 141–186 ms; Wayland idle: 0 frames,
+0 main-thread wakeups, 0 ms CPU over 30 s; private memory 75 MB by default, 62 MB when wgpu doesn't load the GL
+vendor libraries (59 MB at `opt-level = "s"`); GPU memory 56–60 MiB; under XWayland the main thread wakes 280×/s
+until patched.
+
 ## 5. Open items
 
-_None yet._
+- **Every thread the client spawns gets a name.** `measure.sh` classes threads as own / driver / unnamed; NVIDIA's
+  GL threads are unnamed, so an unnamed thread of ours would be counted with the driver's.
+- **Pre-existing Electron bug found by the split's smoke test (for `main`, not fixed here)**:
+  `electron/main/addon.ts` passes `e2eeLocalKey: loadOrCreateE2eeLocalKey()`, which is `null` when `safeStorage`
+  is unavailable; napi-derive 2 accepts only `undefined` for an `Option` field, so `init` throws `Failed to
+  convert JavaScript value Null into rust type String on InitOptions.e2eeLocalKey`. Fix: `?? undefined`.
+- Core's `Cargo.lock` must be re-seeded when core's dependencies change (recipe in `CLAUDE.md`); CI checks
+  `--locked`.
 
 ## 6. Needs owner
 
