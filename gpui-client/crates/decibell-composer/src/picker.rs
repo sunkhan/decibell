@@ -61,6 +61,8 @@ const GRID: f32 = INNER - 2. * BODY_PAD_X - BAR;
 /// row (`pt-2` + 36 + `pb-2`) above the scroller, so the target lands 84 px past the section's
 /// start (the sticky header still names it). Mirrored as the renderer does it.
 const SCROLLER_TOP_IN_PICKER: f32 = 12. + 24. + 8. + 36. + 8.;
+/// The same without the tabs (`onSendGif` absent: the search row takes `pt-3`).
+const SCROLLER_TOP_NO_TABS: f32 = 12. + 36. + 8.;
 /// Twemoji in a cell; in the category bar; in the preview bar.
 const EMOJI_PX: f32 = 22.;
 const NAV_EMOJI_PX: f32 = 18.;
@@ -180,8 +182,24 @@ struct Sections {
     list: Vec<(&'static str, Rc<[u16]>, f32, f32)>,
 }
 
+/// An emoji-only caller's pick (the emoji's characters).
+pub type OnEmoji = Rc<dyn Fn(&'static str, &mut Window, &mut App)>;
+/// An emoji-only caller's close (a press outside, Escape).
+pub type OnPickerClose = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Who the picker picks for.
+#[derive(Clone)]
+enum Host {
+    /// A composer: emoji go in at its caret (the picker stays open), GIFs are sent, closing is
+    /// its `close_picker`.
+    Composer(WeakEntity<Composer>),
+    /// An emoji-only caller (`EmojiPicker` without `onSendGif`: no tabs): a pick is handed over
+    /// (the caller closes the picker); a press outside or Escape is `on_close`.
+    Emoji { on_pick: OnEmoji, on_close: OnPickerClose },
+}
+
 pub struct Picker {
-    composer: WeakEntity<Composer>,
+    host: Host,
     anchor: Rc<Cell<Bounds<Pixels>>>,
     tab: Tab,
     /// When the picker was asked for (the open time is measured to its first frame).
@@ -207,14 +225,37 @@ pub struct Picker {
 
 impl Picker {
     pub fn new(composer: WeakEntity<Composer>, anchor: Rc<Cell<Bounds<Pixels>>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_host(Host::Composer(composer), anchor, window, cx)
+    }
+
+    /// The emoji tab alone, for a caller that isn't a composer (the custom status dialog):
+    /// `on_pick` gets the chosen emoji (the caller closes the picker), `on_close` a press outside
+    /// the picker and `anchor` (the button that toggles it) or Escape. What the picker holds is
+    /// given back when it is dropped.
+    pub fn emoji_only(
+        on_pick: OnEmoji,
+        on_close: OnPickerClose,
+        anchor: Rc<Cell<Bounds<Pixels>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_host(Host::Emoji { on_pick, on_close }, anchor, window, cx)
+    }
+
+    fn with_host(host: Host, anchor: Rc<Cell<Bounds<Pixels>>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = cx.try_global::<Model>().cloned();
+        let gifs = matches!(host, Host::Composer(_));
         let (tab, recent_ids) = match &model {
             Some(model) => {
                 let prefs = model.layout.read(cx).prefs();
-                (if prefs.picker_tab == "gifs" { Tab::Gifs } else { Tab::Emoji }, prefs.emoji_recent.clone())
+                (if gifs && prefs.picker_tab == "gifs" { Tab::Gifs } else { Tab::Emoji }, prefs.emoji_recent.clone())
             }
             None => (Tab::Emoji, Vec::new()),
         };
+        // An emoji-only picker is dropped by its caller without a window: its images go then.
+        if !gifs {
+            cx.on_release(|this: &mut Self, cx| this.images.borrow_mut().release(None, cx)).detach();
+        }
         let recent: Vec<u16> = recent_ids.iter().filter_map(|id| emoji_data::index_of(id)).collect();
         let search = cx.new(|cx| InputState::single_line(window, cx).placeholder("Search emoji..."));
         let subscriptions = vec![cx.subscribe(&search, |this, search, event: &InputEvent, cx| {
@@ -229,7 +270,7 @@ impl Picker {
             }
         })];
         let mut this = Self {
-            composer,
+            host,
             anchor,
             tab,
             opened_at: None,
@@ -377,7 +418,8 @@ impl Picker {
 
     fn scroll_to_category(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some((_, _, top, _)) = self.sections.list.iter().find(|(s, ..)| *s == id) else { return };
-        let target = (top + SCROLLER_TOP_IN_PICKER - 4.).min(f32::from(self.scroll.max_offset()));
+        let above = if self.has_tabs() { SCROLLER_TOP_IN_PICKER } else { SCROLLER_TOP_NO_TABS };
+        let target = (top + above - 4.).min(f32::from(self.scroll.max_offset()));
         let current = f32::from(self.scroll.offset());
         self.scroll.scroll_by(px(target - current), ScrollKind::Key, cx);
         cx.notify();
@@ -385,8 +427,17 @@ impl Picker {
 
     fn pick(&mut self, index: u16, window: &mut Window, cx: &mut Context<Self>) {
         let emoji = emoji_data::get(index);
-        if let Some(composer) = self.composer.upgrade() {
-            composer.update(cx, |composer, cx| composer.insert_emoji(emoji.native, window, cx));
+        match &self.host {
+            Host::Composer(composer) => {
+                if let Some(composer) = composer.upgrade() {
+                    composer.update(cx, |composer, cx| composer.insert_emoji(emoji.native, window, cx));
+                }
+            }
+            Host::Emoji { on_pick, .. } => {
+                // After this update: the caller drops the picker.
+                let (on_pick, native) = (on_pick.clone(), emoji.native);
+                window.defer(cx, move |window, cx| on_pick(native, window, cx));
+            }
         }
         // `[id, ...prev.filter(x => x !== id)].slice(0, RECENT_MAX)`.
         let had = self.recent_len;
@@ -443,10 +494,17 @@ impl Picker {
     /// Asks the composer to close the picker: after this update (closing releases what the
     /// picker holds, which updates the picker).
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let composer = self.composer.clone();
-        window.defer(cx, move |window, cx| {
-            let _ = composer.update(cx, |composer, cx| composer.close_picker(window, cx));
-        });
+        match self.host.clone() {
+            Host::Composer(composer) => window.defer(cx, move |window, cx| {
+                let _ = composer.update(cx, |composer, cx| composer.close_picker(window, cx));
+            }),
+            Host::Emoji { on_close, .. } => window.defer(cx, move |window, cx| on_close(window, cx)),
+        }
+    }
+
+    /// The GIFs tab exists (a composer's picker: `onSendGif`).
+    pub fn has_tabs(&self) -> bool {
+        matches!(self.host, Host::Composer(_))
     }
 
     // ── GIFs ────────────────────────────────────────────────────────────────────────────────
@@ -623,7 +681,7 @@ impl Picker {
 
     /// A GIF tile's click: sent by the composer, which closes the picker (after this update).
     fn send_gif(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
-        let composer = self.composer.clone();
+        let Host::Composer(composer) = self.host.clone() else { return };
         window.defer(cx, move |window, cx| {
             let _ = composer.update(cx, |composer, cx| composer.send_gif(&url, window, cx));
         });
@@ -762,6 +820,7 @@ impl Render for Picker {
         let theme = cx.theme();
         let anchor = self.anchor.clone();
         let tab = self.tab;
+        let has_tabs = self.has_tabs();
         let tabs = div().flex().flex_none().gap_1().px_3().pt_3().children([Tab::Emoji, Tab::Gifs].map(|t| {
             let active = t == tab;
             let (hover_bg, hover_fg) = (theme.color_surface_hover, theme.color_text_secondary);
@@ -817,7 +876,7 @@ impl Render for Picker {
                     this.close(window, cx);
                 }
             }))
-            .child(tabs)
+            .when(has_tabs, |this| this.child(tabs))
             .children(body)
             .with_animation(
                 ("picker-in", cx.entity_id().as_u64() as usize),
@@ -835,7 +894,8 @@ impl Picker {
             let search = self.search.clone();
             Box::new(move |_: &mut Window, cx: &mut App| search.update(cx, |s, cx| s.clear(cx))) as OnClear
         });
-        let search = div().flex_none().px_3().pb_2().pt_2().child(search_box(&self.search, clear, window, cx));
+        // `pt-2` under the tabs, `pt-3` without them.
+        let search = div().flex_none().px_3().pb_2().when(self.has_tabs(), |s| s.pt_2()).when(!self.has_tabs(), |s| s.pt_3()).child(search_box(&self.search, clear, window, cx));
 
         // The body: a windowed list over the rows.
         let rows = self.rows.clone();

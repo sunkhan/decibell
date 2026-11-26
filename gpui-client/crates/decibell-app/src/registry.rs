@@ -65,10 +65,15 @@ pub fn init_features(cx: &mut gpui::App) {
 }
 
 /// What one feature crate hands another through the app, so the crates stay independent of each
-/// other: the composer crate's composer under the DM conversation. Registrations only (no model
+/// other: the composer crate's composer under the DM conversation and its emoji picker in the
+/// custom status dialog. Registrations only (no model
 /// needed): the capture tool calls this too, so screens show the joined pieces.
 pub fn join_features(cx: &mut gpui::App) {
     decibell_home::dm::set_dm_composer(cx, decibell_composer::dm_composer);
+    // The custom status dialog's emoji picker: the composer's, emoji tab only.
+    decibell_home::status::set_emoji_picker(cx, |request, window, cx| {
+        decibell_composer::status_emoji_picker(request.on_pick, request.on_close, request.anchor, window, cx)
+    });
     join_user_menu(cx);
 }
 

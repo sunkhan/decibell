@@ -65,6 +65,24 @@ pub fn dm_composer(peer: decibell_model::Uid, list: gpui::Entity<decibell_chat::
     decibell_chat::ComposerParts { view: composer.clone().into(), type_to_focus: Composer::type_to_focus_hook(&composer) }
 }
 
+/// The status dialog's pick: the chosen emoji.
+pub type StatusPick = Rc<dyn Fn(gpui::SharedString, &mut gpui::Window, &mut App)>;
+
+/// The custom status dialog's emoji picker (`CustomStatusModal`'s `EmojiPicker` without
+/// `onSendGif`: the emoji tab alone): what the app hands `decibell_home::status::set_emoji_picker`.
+/// `anchor` is the dialog's emoji button (a press on it toggles, not closes). The dialog places
+/// the view (352 × 420) and drops it when it closes the picker; its images go with it.
+pub fn status_emoji_picker(
+    on_pick: StatusPick,
+    on_close: picker::OnPickerClose,
+    anchor: Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) -> gpui::AnyView {
+    let pick: picker::OnEmoji = Rc::new(move |native, window, cx| on_pick(native.into(), window, cx));
+    cx.new(|cx| picker::Picker::emoji_only(pick, on_close, anchor, window, cx)).into()
+}
+
 /// The composer screens (with the `fixtures` feature).
 pub fn screens() -> Vec<decibell_harness::Screen> {
     #[cfg(feature = "fixtures")]

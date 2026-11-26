@@ -569,8 +569,11 @@ shell's (`DmRows`, `UnreadDmTiles`).
   right click, one menu; the slider applies every move at once and a drag doesn't close it.
   Gating comes from `menu::acts_for(server, &member, cx)` / `assignable_roles` (MembersTab's `actionsFor`).
 - **The custom status's emoji picker**: `decibell_home::status::set_emoji_picker(cx, |EmojiPickerRequest {
-  field, on_pick, on_close }, window, cx| -> AnyElement)`; until then a small chooser takes a typed emoji or
-  `:shortcode:`.
+  anchor, on_pick, on_close }, window, cx| -> AnyView)`, joined by the app (the composer's
+  `status_emoji_picker`). The dialog builds the view when the emoji button opens it, places it as the renderer
+  does (below the field, else above, else as low as the window allows; `PICKER_SIZE` 352 × 420) and drops it when
+  it closes (a pick, Escape, a press outside, the dialog closing). With none registered a small chooser takes a
+  typed emoji or `:shortcode:`.
 - Opening things from elsewhere: `profile::open_profile(uid, server, ProfileTab::Privacy, cx)`,
   `menu::request_dialog(DialogRequest::Nickname { server, uid } | Moderation { kind, server, uid }, cx)`,
   `friends::open_conversation(uid, cx)`; the shell's `open_user_menu` / `open_profile_beside` as before.

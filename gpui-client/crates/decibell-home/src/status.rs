@@ -3,10 +3,14 @@
 //! status menu; each opening starts from the saved message. The text is cut at 128 code points as
 //! it is typed (`STATUS_TEXT_MAX`) and normalised the way central will on save.
 //!
-//! **The emoji picker** is the composer crate's: it registers with [`set_emoji_picker`] and is
-//! drawn under (or over) the field while open. Until then the emoji button opens a small chooser
-//! that takes a typed emoji or a `:shortcode:` (the same expansion the composer's input does).
+//! **The emoji picker** is the composer crate's (`EmojiPicker` without its GIFs tab): the app hands
+//! it in with [`set_emoji_picker`] (the crates don't depend on each other). The dialog builds it
+//! when the emoji button opens it, places it as the renderer does (below the field, else above
+//! it, else as low as the window allows) and drops it when it closes (a pick, Escape, a press
+//! outside, the dialog closing). With none registered the emoji button opens a small chooser that
+//! takes a typed emoji or a `:shortcode:` (the same expansion the composer's input does).
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use decibell_common::Watch;
@@ -20,8 +24,8 @@ use decibell_ui::{
     title_tooltip,
 };
 use gpui::{Focusable as _, 
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Entity, Global, IntoElement, Pixels, Render,
-    SharedString, Subscription, Window, div, prelude::*, px,
+    AnyElement, AnyView, App, AppContext as _, Bounds, ClickEvent, Context, Entity, Global, IntoElement, Pixels, Render,
+    SharedString, Subscription, Window, anchored, deferred, div, point, prelude::*, px,
 };
 
 use crate::ui::{Look, button, caps_label};
@@ -69,26 +73,32 @@ pub type OnPick = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 /// The picker closed without a choice.
 pub type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// What a registered picker is asked to draw.
+/// What a registered picker is built with, once per opening.
 pub struct EmojiPickerRequest {
-    /// The field the picker belongs to (window coordinates): below it, else above, else as low
-    /// as the window allows.
-    pub field: Bounds<Pixels>,
-    /// The chosen emoji (the dialog closes the picker).
+    /// The emoji button's box as last drawn (window coordinates): a press on it toggles the
+    /// picker, so the picker doesn't close itself for it.
+    pub anchor: Rc<Cell<Bounds<Pixels>>>,
+    /// The chosen emoji (the dialog then drops the picker).
     pub on_pick: OnPick,
     /// Escape, a press outside.
     pub on_close: OnClose,
 }
 
-pub type EmojiPickerBuilder = Rc<dyn Fn(EmojiPickerRequest, &mut Window, &mut App) -> AnyElement>;
+/// The picker view (`EMOJI_PICKER_SIZE`, 352 × 420): built when the emoji button opens it, kept
+/// while it is open, dropped when it closes.
+pub type EmojiPickerBuilder = Rc<dyn Fn(EmojiPickerRequest, &mut Window, &mut App) -> AnyView>;
+
+/// `EMOJI_PICKER_SIZE`: where the dialog places the registered picker.
+pub const PICKER_SIZE: (f32, f32) = (352., 420.);
 
 #[derive(Default)]
 struct PickerSlot(Option<EmojiPickerBuilder>);
 
 impl Global for PickerSlot {}
 
-/// Register the emoji picker the custom status dialog opens (the composer crate's).
-pub fn set_emoji_picker(cx: &mut App, build: impl Fn(EmojiPickerRequest, &mut Window, &mut App) -> AnyElement + 'static) {
+/// Register the emoji picker the custom status dialog opens (once at start-up: the app's
+/// `registry::join_features` hands in the composer crate's).
+pub fn set_emoji_picker(cx: &mut App, build: impl Fn(EmojiPickerRequest, &mut Window, &mut App) -> AnyView + 'static) {
     cx.default_global::<PickerSlot>().0 = Some(Rc::new(build));
 }
 
@@ -107,6 +117,10 @@ pub struct CustomStatusModal {
     emoji: SharedString,
     clear_after: ClearAfter,
     picker_open: bool,
+    /// The registered picker while it is open.
+    picker: Option<AnyView>,
+    /// The emoji button's box (the registered picker doesn't close itself for a press on it).
+    emoji_anchor: Rc<Cell<Bounds<Pixels>>>,
     /// The fallback chooser's field.
     chooser: Entity<InputState>,
     field_bounds: decibell_common::BoundsCell,
@@ -164,6 +178,8 @@ impl CustomStatusModal {
             emoji: SharedString::default(),
             clear_after: ClearAfter::Today,
             picker_open: false,
+            picker: None,
+            emoji_anchor: Rc::default(),
             chooser,
             field_bounds: decibell_common::BoundsCell::new(),
             _watch: watch,
@@ -186,7 +202,7 @@ impl CustomStatusModal {
         self.opening += 1;
         self.emoji = saved.as_ref().map(|m| m.emoji.clone()).unwrap_or_default();
         self.clear_after = if never { ClearAfter::Never } else { ClearAfter::Today };
-        self.picker_open = false;
+        self.close_picker();
         let text = saved.map(|m| m.text).unwrap_or_default();
         self.text.update(cx, |state, cx| {
             state.set_value(&text, cx);
@@ -219,45 +235,89 @@ impl CustomStatusModal {
         CustomStatusModal::close(cx);
     }
 
+    /// Closes the picker (the registered one is dropped: its images go with it).
+    fn close_picker(&mut self) {
+        self.picker_open = false;
+        self.picker = None;
+    }
+
+    /// The picker is open (tests).
+    pub fn picker_open(&self) -> bool {
+        self.picker_open
+    }
+
     fn pick(&mut self, emoji: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.emoji = emoji;
-        self.picker_open = false;
+        self.close_picker();
         self.text.update(cx, |state, cx| state.focus(window, cx));
         cx.notify();
     }
 
-    fn toggle_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.picker_open = !self.picker_open;
-        if self.picker_open && cx.try_global::<PickerSlot>().and_then(|s| s.0.clone()).is_none() {
-            self.chooser.update(cx, |state, cx| {
+    /// The registered picker while it is open (tests).
+    pub fn picker_view(&self) -> Option<&AnyView> {
+        self.picker.as_ref()
+    }
+
+    /// The chosen emoji (tests).
+    pub fn emoji(&self) -> &SharedString {
+        &self.emoji
+    }
+
+    /// The emoji button: opens the picker, or closes it.
+    pub fn toggle_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_open {
+            self.close_picker();
+            cx.notify();
+            return;
+        }
+        self.picker_open = true;
+        match cx.try_global::<PickerSlot>().and_then(|s| s.0.clone()) {
+            Some(build) => {
+                let this = cx.weak_entity();
+                let close = cx.weak_entity();
+                let request = EmojiPickerRequest {
+                    anchor: self.emoji_anchor.clone(),
+                    on_pick: Rc::new(move |emoji, window, cx| {
+                        let _ = this.update(cx, |this, cx| this.pick(emoji, window, cx));
+                    }),
+                    on_close: Rc::new(move |_, cx| {
+                        let _ = close.update(cx, |this, cx| {
+                            this.close_picker();
+                            cx.notify();
+                        });
+                    }),
+                };
+                self.picker = Some(build(request, window, cx));
+            }
+            None => self.chooser.update(cx, |state, cx| {
                 state.clear(cx);
                 state.focus(window, cx);
-            });
+            }),
         }
         cx.notify();
     }
 
-    /// The picker (registered), or the fallback chooser under the field.
+    /// The picker (registered: placed against the field in window coordinates), or the fallback
+    /// chooser under the field.
     fn picker(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.picker_open {
             return None;
         }
-        if let Some(build) = cx.try_global::<PickerSlot>().and_then(|s| s.0.clone()) {
-            let this = cx.weak_entity();
-            let close = cx.weak_entity();
-            let request = EmojiPickerRequest {
-                field: self.field_bounds.get(),
-                on_pick: Rc::new(move |emoji, window, cx| {
-                    let _ = this.update(cx, |this, cx| this.pick(emoji, window, cx));
-                }),
-                on_close: Rc::new(move |_, cx| {
-                    let _ = close.update(cx, |this, cx| {
-                        this.picker_open = false;
-                        cx.notify();
-                    });
-                }),
+        if let Some(view) = self.picker.clone() {
+            // `togglePicker`: below the field, else above it, else as low as the window allows
+            // (over the field), its left edge on the field's, inside the window by 8 px.
+            let field = self.field_bounds.get();
+            let area = decibell_ui::popover::visible_window_bounds(window, cx);
+            let (width, height, gap) = (px(PICKER_SIZE.0), px(PICKER_SIZE.1), px(8.));
+            let top = if area.bottom() - field.bottom() >= height + gap * 2. {
+                field.bottom() + gap
+            } else if field.top() - area.top() >= height + gap * 2. {
+                field.top() - gap - height
+            } else {
+                (area.bottom() - height - gap).max(area.top() + gap)
             };
-            return Some(build(request, window, cx));
+            let left = field.left().min(area.right() - width - gap).max(area.left() + gap);
+            return Some(deferred(anchored().position(point(left, top)).child(view)).with_priority(2).into_any_element());
         }
         let t = cx.theme();
         Some(
@@ -336,6 +396,10 @@ impl Render for CustomStatusModal {
                     .hover(move |s| s.bg(hover))
                     .tooltip(title_tooltip(if emoji.is_empty() { "Add an emoji" } else { "Change emoji" }))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_picker(window, cx)))
+                    .child({
+                        let anchor = self.emoji_anchor.clone();
+                        gpui::canvas(move |bounds, _, _| anchor.set(bounds), |_, _, _, _| {}).absolute().size_full()
+                    })
                     .child(if emoji.is_empty() {
                         Icon::new(IconName::ShellSmile).size(px(18.)).color(muted).group_hover("status-emoji", primary).into_any_element()
                     } else {
@@ -389,7 +453,7 @@ impl Render for CustomStatusModal {
             .on_close(cx.listener(|this, _: &CloseRequest, _, cx| {
                 // Esc closes, unless the emoji picker is open (it closes itself).
                 if this.picker_open {
-                    this.picker_open = false;
+                    this.close_picker();
                     cx.notify();
                     return;
                 }
