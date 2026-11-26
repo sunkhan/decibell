@@ -8,6 +8,7 @@
 //! re-render it.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use decibell_common::{BoundsCell, UserAvatar, Watch, display_name, open_profile_beside, open_user_menu};
 use decibell_core::api;
@@ -30,9 +31,9 @@ use gpui::{
 };
 
 use crate::ink::Ink;
-use crate::requests::{ShellRequests, create_channel};
+use crate::requests::{ShellRequests, SidebarMenu, create_channel};
 use crate::sidebar::{ResizeDrag, resize_handle, sidebar_frame};
-use crate::slots::{ChannelMenuTarget, channel_menu_extensions};
+use crate::slots::{ChannelMenuTarget, ChannelReorder, channel_menu_extensions, channel_reorder};
 use crate::user_panel::PanelHeight;
 
 /// A voice member being dragged onto another voice channel (`memberDrag.ts`).
@@ -72,6 +73,9 @@ pub struct ChannelSidebar {
     resize: ResizeDrag,
     /// The active community's own subscriptions (replaced when it changes).
     community: Option<(ServerId, Vec<Subscription>)>,
+    /// Drag to reorder, when a feature registered it (`slots::ChannelReorder`).
+    reorder: Option<Rc<dyn ChannelReorder>>,
+    _subscriptions: Vec<Subscription>,
     _watch: Watch,
 }
 
@@ -104,7 +108,21 @@ impl ChannelSidebar {
         let nav = model.nav.read(cx);
         let nav = (nav.active_view, nav.active_server, nav.active_channel.clone());
         let width = model.layout.read(cx).prefs().sidebar_width as f32;
-        Self {
+        let reorder = channel_reorder(cx);
+        let mut subscriptions = Vec::new();
+        if let Some(reorder) = &reorder {
+            let weak = cx.weak_entity();
+            subscriptions.push(reorder.subscribe(
+                Box::new(move |cx| {
+                    let _ = weak.update(cx, |_, cx| cx.notify());
+                }),
+                cx,
+            ));
+        }
+        // A menu asked for from outside (the screens): taken now and whenever one is asked for.
+        let requests = ShellRequests::entity(cx);
+        subscriptions.push(cx.observe(&requests, |this: &mut Self, requests, cx| this.take_menu_request(&requests, cx)));
+        let mut this = Self {
             model,
             nav,
             collapsed: HashSet::new(),
@@ -119,8 +137,24 @@ impl ChannelSidebar {
             panel,
             resize: ResizeDrag::new(width),
             community: None,
+            reorder,
+            _subscriptions: subscriptions,
             _watch: watch,
+        };
+        this.take_menu_request(&requests, cx);
+        this
+    }
+
+    fn take_menu_request(&mut self, requests: &Entity<ShellRequests>, cx: &mut Context<Self>) {
+        let Some(menu) = requests.update(cx, |r, _| r.sidebar_menu.take()) else { return };
+        match menu {
+            SidebarMenu::Server => {
+                self.server_menu = true;
+                self.context_menu = None;
+            }
+            SidebarMenu::Channel(at, target) => self.context_menu = Some((at, target)),
         }
+        cx.notify();
     }
 
     /// Follow the active community's own entities (its channels, meta, roster) while it is shown.
@@ -291,7 +325,7 @@ impl Render for DragGhost {
 }
 
 impl Render for ChannelSidebar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = self.model.clone();
         let t = crate::ink::chrome(cx);
         let (scale, text_channel, text_member, text_section, text_title, text_micro) = {
@@ -323,6 +357,17 @@ impl Render for ChannelSidebar {
         let channels: Vec<Channel> = community.as_ref().map(|c| c.channels.read(cx).list().to_vec()).unwrap_or_default();
         let context_menu = self.context_menu.clone().map(|(at, target)| channel_context_menu(at, target, &channels, cx));
         let mut wanted: Vec<(ServerId, Uid)> = Vec::new();
+        // Drag to reorder: rows are draggable for MANAGE_CHANNELS holders (`onListDragStart`).
+        let reorder = self.reorder.clone().filter(|_| self.shown.manage_channels && server.is_some());
+        if let (Some(reorder), Some(server)) = (&reorder, server) {
+            reorder.begin(server, cx);
+        }
+        let list_scroll = self.scroll.clone();
+        // A press that ended a drag is no click.
+        let swallowed = {
+            let reorder = reorder.clone();
+            Rc::new(move |cx: &App| reorder.as_ref().is_some_and(|r| r.swallow_click(cx)))
+        };
         let cxr: &Context<Self> = cx;
         let is_owner = server.is_some_and(|id| model.is_owner(id, cx));
         let manage_channels = self.shown.manage_channels;
@@ -372,9 +417,20 @@ impl Render for ChannelSidebar {
                 .when_some(bg, |this, bg| this.bg(bg))
                 .when(bg.is_none(), |this| this.hover(|s| s.bg(t.color_surface_hover)))
                 .children(crate::probes::probe(format!("voice:{}", c.id)))
+                .when_some(reorder.clone(), |this, reorder| {
+                    let (id, list) = (channel_id.clone(), list_scroll.clone());
+                    this.children(reorder.row_extras(&c.id, cx)).on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _, cx| {
+                        reorder.press(server, id.clone(), e.position, &list, cx)
+                    })
+                })
                 .on_click({
                     let id = channel_id.clone();
-                    move |_: &ClickEvent, _, cx| actions::voice::click_voice_channel(server, id.clone(), cx)
+                    let swallowed = swallowed.clone();
+                    move |_: &ClickEvent, _, cx| {
+                        if !swallowed(cx) {
+                            actions::voice::click_voice_channel(server, id.clone(), cx)
+                        }
+                    }
                 })
                 .on_mouse_down(MouseButton::Right, cx.listener({
                     let id = channel_id.clone();
@@ -530,9 +586,19 @@ impl Render for ChannelSidebar {
                 .group(group.clone())
                 .map(|this| if active { this.bg(t.color_accent_soft) } else { this.hover(|s| s.bg(t.color_surface_hover)) })
                 .children(crate::probes::probe(format!("channel:{}", c.id)))
+                .when_some(reorder.clone(), |this, reorder| {
+                    let (id, list) = (id.clone(), list_scroll.clone());
+                    this.children(reorder.row_extras(&c.id, cx)).on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _, cx| {
+                        reorder.press(server, id.clone(), e.position, &list, cx)
+                    })
+                })
                 .on_click({
                     let id = id.clone();
+                    let swallowed = swallowed.clone();
                     move |_: &ClickEvent, _, cx| {
+                        if swallowed(cx) {
+                            return;
+                        }
                         let nav = Model::global(cx).nav.clone();
                         nav.update(cx, |nav, cx| {
                             if nav.active_channel.as_ref() != Some(&id) {
@@ -583,7 +649,6 @@ impl Render for ChannelSidebar {
 
         // Flat Discord-style grouping: a channel belongs to the nearest category above it.
         let mut category: Option<(Channel, bool)> = None;
-        let mut first_block = true;
         for c in &channels {
             match c.kind {
                 ChannelKind::Category => {
@@ -592,11 +657,22 @@ impl Render for ChannelSidebar {
                     let Some(server) = server else { continue };
                     let group: SharedString = format!("category-{}", c.id).into();
                     let id = c.id.clone();
+                    // `mt-3 first:mt-0` on the block: only the list's first child has no margin
+                    // (uncategorized channels above it give the first block its margin too).
+                    let first_child = rows.is_empty();
                     rows.push(
                         div()
                             .id(gpui::ElementId::Name(c.id.clone()))
                             .group(group.clone())
-                            .when(!first_block, |this| this.mt_3())
+                            .relative()
+                            .children(crate::probes::probe(format!("category:{}", c.id)))
+                            .when_some(reorder.clone(), |this, reorder| {
+                                let (id, list) = (id.clone(), list_scroll.clone());
+                                this.children(reorder.row_extras(&c.id, cx)).on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _, cx| {
+                                    reorder.press(server, id.clone(), e.position, &list, cx)
+                                })
+                            })
+                            .when(!first_child, |this| this.mt_3())
                             .mb_0p5()
                             .flex()
                             .items_center()
@@ -606,7 +682,12 @@ impl Render for ChannelSidebar {
                             .cursor_pointer()
                             .on_click(cx.listener({
                                 let id = id.clone();
-                                move |this, _: &ClickEvent, _, cx| this.toggle_category(id.clone(), cx)
+                                let swallowed = swallowed.clone();
+                                move |this, _: &ClickEvent, _, cx| {
+                                    if !swallowed(cx) {
+                                        this.toggle_category(id.clone(), cx)
+                                    }
+                                }
                             }))
                             .on_mouse_down(MouseButton::Right, cx.listener({
                                 let id = id.clone();
@@ -675,7 +756,6 @@ impl Render for ChannelSidebar {
                             })
                             .into_any_element(),
                     );
-                    first_block = false;
                 }
                 ChannelKind::Voice | ChannelKind::Text | ChannelKind::Unknown => {
                     if category.as_ref().is_some_and(|(_, collapsed)| *collapsed) {
@@ -703,6 +783,7 @@ impl Render for ChannelSidebar {
 
         let menu_open = self.server_menu;
         crate::probes::flag("server-menu-open", menu_open && server.is_some());
+        crate::probes::flag("channel-menu-open", self.context_menu.is_some());
         let header = div()
             .relative()
             .flex()
@@ -800,6 +881,8 @@ impl Render for ChannelSidebar {
                         }
                     }))
                     .children(rows)
+                    // `dropBefore === "END"`: the line under the last row.
+                    .when_some(reorder.as_ref().and_then(|r| r.end_line(cx)), |this, line| this.child(div().relative().child(line)))
                     .when(empty, |this| {
                         this.child(div().px_2().child(Label::new("No channels").size(12.).color(t.color_text_muted)))
                     }),
@@ -845,7 +928,7 @@ impl Render for ChannelSidebar {
             .child(resize_handle("server-sidebar-resize", &t))
             .children(context_menu)
             .children(delete)
-
+            .children(reorder.and_then(|r| r.overlay(window, cx)))
     }
 }
 
@@ -882,6 +965,8 @@ fn server_menu(server: ServerId, can_invite: bool, header: BoundsCell, cx: &Cont
         div()
             .id(id)
             .group(id)
+            .relative()
+            .children(crate::probes::probe(id))
             .flex()
             .w_full()
             .items_center()

@@ -17,12 +17,23 @@ pub struct CreateChannelRequest {
     pub allow_type_choice: bool,
 }
 
+/// A menu of the channel sidebar opened from outside it (the screens show them open).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SidebarMenu {
+    /// The server-name dropdown.
+    Server,
+    /// The channel list's context menu at a point.
+    Channel(gpui::Point<gpui::Pixels>, crate::slots::ChannelMenuTarget),
+}
+
 #[derive(Default)]
 pub struct ShellRequests {
     pub create_channel: Option<CreateChannelRequest>,
     /// The community the "Leave server" confirmation is about (with its name, as the renderer
     /// keeps it while the dialog shows).
     pub leave: Option<(ServerId, SharedString)>,
+    /// A sidebar menu to open; the channel sidebar takes it when it is built or next renders.
+    pub sidebar_menu: Option<SidebarMenu>,
 }
 
 struct Handle(Entity<ShellRequests>);
@@ -49,6 +60,14 @@ impl ShellRequests {
             cx.notify();
         });
         model.overlays.update(cx, |o, cx| o.open_modal(modal::LEAVE_SERVER_CONFIRM, cx));
+    }
+
+    /// Open a sidebar menu (taken by the channel sidebar).
+    pub fn open_sidebar_menu(menu: SidebarMenu, cx: &mut App) {
+        Self::entity(cx).update(cx, |r, cx| {
+            r.sidebar_menu = Some(menu);
+            cx.notify();
+        });
     }
 
     pub fn clear_create_channel(&mut self, cx: &mut Context<Self>) {

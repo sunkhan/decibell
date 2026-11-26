@@ -111,12 +111,36 @@ pub enum PanelAction {
 /// Handles a [`PanelAction`] (registered by the voice feature).
 pub type PanelActionHandler = Rc<dyn Fn(PanelAction, gpui::Bounds<gpui::Pixels>, &mut Window, &mut App)>;
 
+/// Reordering the channel list by dragging (`ServerChannelsSidebar`'s HTML5 drag-and-drop of
+/// channels and categories): the sidebar draws the rows and hands the rest to the feature that
+/// registered this (`decibell-servers`). The sidebar only calls [`press`](Self::press) while the
+/// user holds MANAGE_CHANNELS, and adds [`row_extras`](Self::row_extras) only then.
+pub trait ChannelReorder: 'static {
+    /// `redraw` runs whenever what this draws in the sidebar changed (the drop line moved, the
+    /// dragged row followed the pointer). The sidebar keeps the subscription while it lives.
+    fn subscribe(&self, redraw: Box<dyn Fn(&mut App)>, cx: &mut App) -> gpui::Subscription;
+    /// The sidebar is about to draw `server`'s rows (forget the rows of the last render).
+    fn begin(&self, server: ServerId, cx: &mut App);
+    /// A left press on a row of `server`'s list (a channel row or a category header); `list` is
+    /// the list's scroll handle (auto-scroll near its edges, its bounds).
+    fn press(&self, server: ServerId, channel: ChannelId, position: gpui::Point<gpui::Pixels>, list: &decibell_ui::ScrollHandle, cx: &mut App);
+    /// The press ending now was a drag (or a cancelled one): the row's click must do nothing.
+    fn swallow_click(&self, cx: &App) -> bool;
+    /// What a row adds (it is `relative`): what records its bounds, the drop line at its top edge.
+    fn row_extras(&self, channel: &ChannelId, cx: &App) -> Vec<gpui::AnyElement>;
+    /// The drop line at the list's end.
+    fn end_line(&self, cx: &App) -> Option<gpui::AnyElement>;
+    /// While a press is held: the dragged row under the pointer and the drag's window listeners.
+    fn overlay(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement>;
+}
+
 #[derive(Default)]
 struct Registry {
     panes: HashMap<Slot, PaneBuilder>,
     overlays: Vec<PaneBuilder>,
     channel_menu: Vec<ChannelMenuExtension>,
     panel_action: Option<PanelActionHandler>,
+    channel_reorder: Option<Rc<dyn ChannelReorder>>,
 }
 
 impl Global for Registry {}
@@ -147,6 +171,15 @@ pub fn register_user_panel_action(
     handler: impl Fn(PanelAction, gpui::Bounds<gpui::Pixels>, &mut Window, &mut App) + 'static,
 ) {
     registry(cx).panel_action = Some(Rc::new(handler));
+}
+
+/// Let the channel list be reordered by dragging (one handler; the server-menus feature's).
+pub fn register_channel_reorder(cx: &mut App, reorder: Rc<dyn ChannelReorder>) {
+    registry(cx).channel_reorder = Some(reorder);
+}
+
+pub(crate) fn channel_reorder(cx: &App) -> Option<Rc<dyn ChannelReorder>> {
+    cx.try_global::<Registry>().and_then(|r| r.channel_reorder.clone())
 }
 
 /// Run the registered handler for `action` (nothing when no feature registered one).
