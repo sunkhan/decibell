@@ -499,8 +499,18 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
   where each video surface was drawn (`VideoHosts`); the persistent players (another crate) serve that.
 - **Dates, times of day and counts** go through the private `fmt.rs` only (owner decision 2026-11-26: they will
   follow the system's regional formats); sizes, speeds and durations keep the renderer's formatting.
-- Screens `content-attachments`, `content-embeds`, `image-viewer`, `image-viewer-zoomed`, `transfers-panel`;
-  self-tests `content-*` (local stack, `--check` children as `perf2`).
+- **Groups fade as one layer in CSS, not in GPUI**: `.opacity()` fades every primitive on its own, so whatever is
+  painted under a faded picture or label shows through it (a thumbnail over its blur, a button label over its
+  fill). Paint nothing under a faded picture once it is in, or mix the faded colours yourself (the invite card's
+  disabled Join).
+- Screens `content-attachments`, `content-embeds`, `image-viewer`, `image-viewer-zoomed`, `transfers-panel`(`-uploads`).
+  Self-tests: `content-rows` (row tops and heights of the two content channels for `tools/electron-captures/
+  chat-rows.mjs`, equal to Electron's to the 1/64 px) and `content-scroll-fixture` (240 picture rows paged in as
+  history at 3000 px/s) run on the fixture; `content-images-live`, `-scroll-images`, `-cache-bound`, `-gif`,
+  `-viewer`, `-embed`, `-invite`, `-download` sign in to the local stack as `perf2`. Each runs as a `--check` child
+  with a throwaway profile on a private empty session bus (a throwaway profile otherwise leaves an at-rest key item
+  in the desktop's keyring); nothing they post stays (the GIF is deleted, link and invite messages are routed into
+  the client only, nothing is joined).
 
 ## GPUI gotchas met so far
 
