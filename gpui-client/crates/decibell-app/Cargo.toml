@@ -26,6 +26,7 @@ capture = ["gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu", "
 # DECIBELL_CENTRAL (the local test stack) and enables `--login`, the stdout markers and the
 # perf control pipe (src/dev.rs).
 dev-local = ["decibell-model/local-central", "dep:serde_json", "decibell-settings/dev-local"]
+dev-local = ["decibell-model/local-central", "dep:serde_json", "decibell-chat-content/loopback"]
 
 [dependencies]
 gpui.workspace = true
@@ -43,6 +44,7 @@ decibell-voice = { workspace = true, features = ["fixtures"] }
 decibell-settings = { workspace = true, features = ["fixtures"] }
 decibell-composer = { workspace = true, features = ["fixtures"] }
 decibell-home = { workspace = true, features = ["fixtures"] }
+decibell-chat-content = { workspace = true, features = ["fixtures"] }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true

@@ -1738,6 +1738,7 @@ dependencies = [
  "decibell-chat",
  "decibell-composer",
  "decibell-core",
+ "decibell-chat-content",
  "decibell-harness",
  "decibell-home",
  "decibell-model",

@@ -220,6 +220,8 @@ pub struct Pictures {
     placeholders: Placeholders,
     windows: HashMap<gpui::WindowId, Subscription>,
     window_hidden: bool,
+    /// Screens: fetch (from memory) and decode within the call that asks.
+    sync: bool,
     pub stats: Stats,
 }
 
@@ -233,6 +235,11 @@ impl Pictures {
         let entity = cx.new(|_| Pictures::new(fetcher));
         cx.set_global(Holder(entity.clone()));
         entity
+    }
+
+    /// Screens: everything at once (see `sync`).
+    pub fn set_sync(&mut self, sync: bool) {
+        self.sync = sync;
     }
 
     pub fn global(cx: &App) -> Option<Entity<Pictures>> {
@@ -257,6 +264,7 @@ impl Pictures {
             placeholders: Placeholders::default(),
             windows: HashMap::new(),
             window_hidden: false,
+            sync: false,
             stats: Stats::default(),
         }
     }
@@ -290,6 +298,14 @@ impl Pictures {
             return Task::ready(Ok(bytes));
         }
         self.fetcher.fetch(source, CancellationToken::new(), cx)
+    }
+
+    /// Forgets a failure of `key` and asks again (the viewer's Retry).
+    pub fn retry(&mut self, key: &PicKey, view: Option<EntityId>, cx: &mut Context<Self>) {
+        if self.entries.get(key).is_some_and(|e| matches!(e.state, State::Failed(_))) {
+            self.entries.remove(key);
+        }
+        self.request(key, view, cx);
     }
 
     /// Hands over bytes the app holds (see [`Source::Local`]): kept in the encoded LRU like a
@@ -447,6 +463,13 @@ impl Pictures {
                 continue;
             };
             let spec = key.spec();
+            if self.sync {
+                let started = Instant::now();
+                let result = decode_any(bytes, spec);
+                self.decoding.insert(key.clone(), Task::ready(()));
+                self.decoded(key, result, started.elapsed(), cx);
+                continue;
+            }
             let decode = cx.background_spawn(async move {
                 let started = Instant::now();
                 let result = decode_any(bytes, spec);
@@ -471,6 +494,14 @@ impl Pictures {
                 .max_by_key(|(_, job)| (job.visible, std::cmp::Reverse(job.seq)))
                 .map(|(source, _)| source.clone());
             let Some(source) = next else { break };
+            if self.sync
+                && let Some(result) = self.fetcher.fetch_sync(&source)
+            {
+                let job = self.jobs.get_mut(&source).expect("queued above");
+                *self.running.entry(job.lane.clone()).or_default() += 1;
+                self.fetched(source, result, cx);
+                continue;
+            }
             let cancel = CancellationToken::new();
             let fetch = self.fetcher.fetch(&source, cancel.clone(), cx);
             let task = cx.spawn({

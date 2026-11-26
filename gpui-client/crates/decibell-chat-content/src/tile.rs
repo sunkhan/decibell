@@ -147,3 +147,10 @@ pub fn paint_contain(image: &Arc<RenderImage>, inner: (u32, u32), bounds: Bounds
     let placement = decode::Placement { x: (bw - w) / 2., y: (bh - h) / 2., width: w, height: h, crop: (0, 0, inner.0, inner.1), out: inner };
     let _ = window.paint_image(placement.bounds(bounds.origin), placement.image_bounds(bounds.origin), corners, image.clone(), 0, false);
 }
+
+/// Paints a bordered bitmap of `inner` texels stretched over `bounds` (`object-fill`).
+pub fn paint_fill(image: &Arc<RenderImage>, inner: (u32, u32), bounds: Bounds<Pixels>, corners: Corners<Pixels>, window: &mut Window) {
+    let (bw, bh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let placement = decode::Placement { x: 0., y: 0., width: bw, height: bh, crop: (0, 0, inner.0, inner.1), out: inner };
+    let _ = window.paint_image(bounds, placement.image_bounds(bounds.origin), corners, image.clone(), 0, false);
+}

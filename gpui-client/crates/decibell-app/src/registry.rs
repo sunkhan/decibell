@@ -20,6 +20,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_settings::screens());
     screens.extend(decibell_composer::screens());
     screens.extend(decibell_home::screens());
+    screens.extend(decibell_chat_content::screens());
     screens
 }
 
@@ -49,6 +50,7 @@ pub fn init_features(cx: &mut gpui::App) {
     // After the chat crate: the composer and editor slots of its pane and list.
     decibell_composer::init(cx);
     decibell_home::init(cx);
+    decibell_chat_content::init(cx);
 }
 
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the

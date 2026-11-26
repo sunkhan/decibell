@@ -11,10 +11,14 @@ pub mod actions;
 pub mod attachments;
 pub mod downloads;
 pub mod embeds;
+#[cfg(feature = "fixtures")]
+pub mod fixture;
 pub mod inflight;
 pub mod menu;
 pub mod pictures;
 pub mod player;
+#[cfg(feature = "fixtures")]
+mod screens;
 pub mod sizing;
 pub mod style;
 pub mod tile;
@@ -55,6 +59,14 @@ fn decibell_unfurl_fetcher() -> Rc<dyn Fetcher> {
     pictures::fetch::CoreFetcher::new(env!("CARGO_PKG_VERSION"))
 }
 
+/// Screens and fixtures: everything on a memory fetcher, decoded within the frame that asks.
+pub fn install_fixture(fetcher: Rc<dyn Fetcher>, cx: &mut App) {
+    install(fetcher, true, cx);
+    if let Some(pictures) = Pictures::global(cx) {
+        pictures.update(cx, |p, _| p.set_sync(true));
+    }
+}
+
 /// Installs everything with `fetcher` (screens pass a memory one). Idempotent per fetcher.
 pub fn install(fetcher: Rc<dyn Fetcher>, fixture: bool, cx: &mut App) {
     let engine = Engine::global(cx);
@@ -70,4 +82,12 @@ pub fn install(fetcher: Rc<dyn Fetcher>, fixture: bool, cx: &mut App) {
     decibell_shell::register_overlay(cx, |_, cx| cx.new(menu::MediaMenu::new).into());
     viewer::init(cx);
     transfers::init(cx);
+}
+
+/// The content screens (with the `fixtures` feature).
+pub fn screens() -> Vec<decibell_harness::Screen> {
+    #[cfg(feature = "fixtures")]
+    return screens::screens();
+    #[cfg(not(feature = "fixtures"))]
+    Vec::new()
 }

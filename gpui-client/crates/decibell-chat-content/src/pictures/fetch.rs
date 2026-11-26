@@ -24,6 +24,11 @@ pub enum Source {
 pub trait Fetcher: 'static {
     /// The bytes of `source`, or why not. Must not block the UI thread; `cancel` ends it early.
     fn fetch(&self, source: &Source, cancel: CancellationToken, cx: &mut App) -> Task<Result<Bytes, SharedString>>;
+    /// The answer now, when the fetcher has it at hand (the screens' memory one): the pipeline
+    /// then fetches and decodes within the frame that asks, so a capture shows the pictures.
+    fn fetch_sync(&self, _source: &Source) -> Option<Result<Bytes, SharedString>> {
+        None
+    }
     /// The queue `source` waits in and how many of that queue run at once: six per community
     /// (Chromium's connections per host, which bounded the renderer's `<img>` fetches through
     /// the attachment protocol), four for the public web (the unfurler's own limit).

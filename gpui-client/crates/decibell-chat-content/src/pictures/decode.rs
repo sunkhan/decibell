@@ -184,9 +184,19 @@ pub fn decode_still(bytes: &[u8], spec: Spec) -> Result<Still, String> {
 pub fn still_from(img: DynamicImage, spec: Spec) -> Still {
     let natural = (img.width(), img.height());
     let placement = place(spec, natural);
-    let rgba = img.into_rgba8();
-    let fitted = fit_pixels(&rgba, &placement);
-    drop(rgba);
+    // Crop and shrink in the file's own pixel format first: a large photo (8000 × 6000) is never
+    // converted to RGBA at full size, only its decode's own buffer exists at that size.
+    let (cx, cy, cw, ch) = placement.crop;
+    let img = if (cx, cy, cw, ch) == (0, 0, natural.0, natural.1) { img } else { img.crop_imm(cx, cy, cw, ch) };
+    let (w, h) = placement.out;
+    let img = if (img.width(), img.height()) == (w, h) {
+        img
+    } else if img.width() >= 2 * w && img.height() >= 2 * h {
+        img.thumbnail_exact(w, h)
+    } else {
+        img.resize_exact(w, h, image::imageops::FilterType::Triangle)
+    };
+    let fitted = img.into_rgba8();
     let bytes = ((fitted.width() + 2) * (fitted.height() + 2) * 4) as usize;
     Still { image: render_image(&fitted), placement, natural, bytes }
 }
