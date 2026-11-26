@@ -166,7 +166,7 @@ fn capture(args: &Args) -> anyhow::Result<()> {
     let build = screen.build;
     let window = cx.open_window(outer, move |window, cx| {
         let content = build(window, cx);
-        cx.new(|_| Root::new(content))
+        cx.new(|cx| Root::new(content, window, cx))
     })?;
     let window: AnyWindowHandle = window.into();
     cx.simulate_window_scale_factor_change(window, args.scale);
@@ -178,7 +178,12 @@ fn capture(args: &Args) -> anyhow::Result<()> {
         cx.run_until_parked();
         let image = cx.capture_screenshot(window)?;
         let path = match (&args.out, &args.out_dir) {
-            (Some(out), _) => out.clone(),
+            (Some(out), _) => {
+                if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+                }
+                out.clone()
+            }
             (None, Some(dir)) => dir.join(format!("{}-{theme}.png", screen.name)),
             (None, None) => unreachable!("checked when parsing"),
         };

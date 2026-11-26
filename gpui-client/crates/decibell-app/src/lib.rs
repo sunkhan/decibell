@@ -7,6 +7,7 @@
 //! - [`logging`]: `log` records to stderr (`DECIBELL_LOG`).
 //! - [`window`]: the main window's options.
 //! - [`root`]: the root view: window frame, title bar, content.
+//! - [`hotkeys`]: the focused hotkey fallback the root feeds, and its self-test.
 //! - [`registry`]: every screen and self-test of the workspace.
 //! - [`selftests`]: the app's own self-tests.
 //! - [`software_codecs`]: the self-test that the software encoder and decoders are in the binary.
@@ -17,6 +18,7 @@ pub mod args;
 pub mod boot;
 #[cfg(feature = "dev-local")]
 pub mod dev;
+pub mod hotkeys;
 pub mod logging;
 pub mod registry;
 pub mod root;

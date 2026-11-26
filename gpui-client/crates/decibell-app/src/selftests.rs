@@ -32,6 +32,7 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(themes(cx)),
         },
         crate::software_codecs::selftest(),
+        crate::hotkeys::selftest(),
     ]
 }
 

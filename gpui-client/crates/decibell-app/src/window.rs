@@ -17,7 +17,7 @@ pub fn open_main(
     cx.open_window(main_window_options(cx), move |window, cx| {
         perf::watch_first_frame(window);
         let content = build(window, cx);
-        cx.new(|_| Root::new(content))
+        cx.new(|cx| Root::new(content, window, cx))
     })
 }
 

@@ -1,5 +1,8 @@
 use decibell_ui::{ActiveTheme as _, FontRole, TitleBar, ToastStack, focus_navigation, window_frame};
-use gpui::{AnyView, Context, IntoElement, Render, SharedString, StyleRefinement, Window, div, prelude::*, px};
+use gpui::{
+    AnyView, Context, FocusHandle, IntoElement, Render, SharedString, StyleRefinement, Subscription, Window, div, prelude::*,
+    px,
+};
 
 /// The root view of a window: the window frame, the title bar (with the Transfers button in its
 /// actions slot once the app enabled it), one content view under it (the shell, or a registered
@@ -9,15 +12,30 @@ use gpui::{AnyView, Context, IntoElement, Render, SharedString, StyleRefinement,
 /// replays the content's last paint instead of rendering it again. The root reads the
 /// navigation and the community list for the titles, so a change there redraws it (cheap: the
 /// panes below are cached).
+///
+/// It also feeds the window's keys to the focused hotkey fallback while the listener asks for it
+/// ([`crate::hotkeys`]). For that it holds the focus whenever nothing else in the window does
+/// (the renderer's `document.body`): GPUI dispatches keys along the focused element's path, and
+/// with nothing focused only to the window's root node, above every listener.
 pub struct Root {
     content: AnyView,
     /// The OS window title last set (`useWindowTitle`).
     os_title: SharedString,
+    focus: FocusHandle,
+    _subscriptions: [Subscription; 2],
 }
 
 impl Root {
-    pub fn new(content: AnyView) -> Self {
-        Self { content, os_title: SharedString::default() }
+    pub fn new(content: AnyView, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        let subscriptions = [
+            // A focused element went away (a pane, a closed dialog that had nothing to give the
+            // focus back to): the root takes it again.
+            cx.on_focus_lost(window, |this: &mut Root, window, cx| this.focus.focus(window, cx)),
+            crate::hotkeys::release_on_blur(window, cx),
+        ];
+        Self { content, os_title: SharedString::default(), focus, _subscriptions: subscriptions }
     }
 }
 
@@ -32,7 +50,8 @@ impl Render for Root {
         // The title bar's actions: the Transfers button, in the app (and the transfers screens).
         let actions = decibell_chat_content::transfers::title_bar_button(cx);
         let theme = cx.theme();
-        let content = focus_navigation(div())
+        let content = crate::hotkeys::focused_fallback(focus_navigation(div()))
+            .track_focus(&self.focus)
             .size_full()
             .flex()
             .flex_col()
