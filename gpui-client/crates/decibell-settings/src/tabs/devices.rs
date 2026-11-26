@@ -11,16 +11,16 @@ use std::time::Duration;
 
 use decibell_common::Watch;
 use decibell_model::live::devices::{Confirming, Device, device_title, platform_label};
+use decibell_model::regional::{self, Regional};
 use decibell_model::{Model, actions};
 use decibell_ui::{
-    ActiveTheme as _, Button, ButtonVariant, ConfirmModal, FontRole, Icon, IconName, Label, ScrollHandle,
+    ActiveTheme as _, Button, ButtonSize, ButtonVariant, ConfirmModal, FontRole, Icon, IconName, Label, ScrollHandle,
 };
 use gpui::{AnyElement, App, Context, IntoElement, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
 
 use super::TabId;
 use crate::hooks::SettingsHooks;
-use crate::fmt;
-use crate::rows::{Btn, TextLink, danger_soft_look, section_label};
+use crate::rows::{TextLink, section_label};
 use crate::window::CloseLink;
 
 pub struct DevicesTab {
@@ -114,6 +114,12 @@ fn details(d: &Device) -> String {
     parts.join(" · ")
 }
 
+/// `toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })`: the
+/// medium date in the system's order ("Nov 20, 2026", "20 Nov 2026").
+fn signed_in(at: i64) -> String {
+    regional::local(at).map_or_else(String::new, |t| Regional::get().medium_date(t.date))
+}
+
 fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let id = d.id;
@@ -131,7 +137,9 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
         )
     } else {
         activity.child(
-            Label::new(SharedString::from(format!("Last active {}", fmt::ago(d.last_active_at, now)))).size(12.).color(muted),
+            Label::new(SharedString::from(format!("Last active {}", Regional::get().relative(d.last_active_at, now))))
+                .size(12.)
+                .color(muted),
         )
     };
     if !d.address.is_empty() {
@@ -139,7 +147,7 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
     }
     activity = activity
         .child(Label::new("·").size(12.).color(muted))
-        .child(Label::new(SharedString::from(format!("Signed in {}", fmt::medium_date(d.signed_in_at)))).size(12.).color(muted));
+        .child(Label::new(SharedString::from(format!("Signed in {}", signed_in(d.signed_in_at)))).size(12.).color(muted));
 
     div()
         .flex()
@@ -201,9 +209,10 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
         .when(sign_out, |this| {
             this.child(
                 // `rounded-sm border border-error/20 bg-error/10 px-3 py-1.5 text-[12px] font-medium`.
-                Btn::new(("device-sign-out", id as usize), "Sign out", danger_soft_look(cx), theme.radius_sm)
-                    .text(12., 500.)
-                    .pad(12., 6.)
+                Button::new(("device-sign-out", id as usize), "Sign out")
+                    .variant(ButtonVariant::DangerSoft)
+                    .size(ButtonSize::Sm)
+                    .rounded_sm()
                     .disabled(busy)
                     .probe(format!("device-sign-out:{id}"))
                     .on_click(move |_, _, cx| confirm(Some(Confirming::One(id)), cx)),
@@ -296,7 +305,7 @@ impl Render for DevicesTab {
                 "Sign out all",
                 format!(
                     "Every device but this one ({}) will be signed out and need your password to sign in again.",
-                    fmt::count(*count)
+                    Regional::get().group(*count as u64)
                 ),
             ),
             Some(Confirming::One(id)) => {

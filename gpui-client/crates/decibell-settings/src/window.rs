@@ -183,6 +183,7 @@ impl Render for SettingsOverlay {
         for tab in self.tabs() {
             frame = frame.item(
                 NavItem::new(("settings-tab", tab as usize), tab.icon(), tab.label())
+                    .probe(format!("settings-tab:{}", tab.id()))
                     .active(tab == shown)
                     .dot(dirty && tab == shown)
                     .on_click(cx.listener(move |this, _, _, cx| this.select(tab, cx))),

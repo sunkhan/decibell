@@ -7,10 +7,12 @@
 //! - "Your keybinds": a row per binding (the action, the keys, remove) with why a binding won't
 //!   work as recorded (another action's keys, what the portal can't bind, another app's grab),
 //!   "Add keybind", and the push-to-talk hints against the input mode.
-//! - The recorder ([`crate::recorder::Recorder`]): click a row's keys and press a combo; the core
-//!   pauses the listener meanwhile (`hotkeys_set_paused`); a new combo is saved under a fresh id
-//!   (the desktop keeps its own assignment per id). A mouse side button where the portal can't
-//!   bind one opens the remap guide instead.
+//! - The recorder (the model's `live::hotkeys::Recorder`): click a row's keys and press a combo;
+//!   keys are recorded by their physical code (GPUI patch 0012), whatever the layout types with
+//!   them, modifiers alone with their side; the core pauses the listener meanwhile
+//!   (`hotkeys_set_paused`); a new combo is saved under a fresh id (the desktop keeps its own
+//!   assignment per id). A mouse side button where the portal can't bind one opens the remap
+//!   guide instead.
 //! - Linux: the command line for window managers that bind commands.
 //!
 //! Bindings live in `Settings` (`hotkeys`); the model's hotkeys store pushes them to the core.
@@ -25,9 +27,10 @@ use decibell_model::live::hotkeys::{
     HOTKEY_ACTIONS, InputMode, combo_label, key_label, modifier_of, portal_can_bind, same_combo,
 };
 use decibell_model::{Model, actions};
+use decibell_ui::motion::Transition;
 use decibell_ui::{
-    ActiveTheme as _, Button, ButtonSize, FontRole, Icon, IconName, Label, ScrollHandle, Select, SelectOption,
-    title_tooltip,
+    ActiveTheme as _, Button, ButtonSize, ButtonVariant, FontRole, Hover, Icon, IconName, Label, ScrollHandle, Select,
+    SelectOption, title_tooltip,
 };
 use gpui::{
     AnyElement, App, Context, FocusHandle, Hsla, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*,
@@ -37,7 +40,7 @@ use gpui::{
 use super::TabId;
 use crate::hooks::SettingsHooks;
 use crate::recorder::{Recorded, Recorder};
-use crate::rows::{Btn, Look, TextLink, hover, outline_look, section_label};
+use crate::rows::{Btn, Look, TextLink, section_label};
 use crate::window::CloseLink;
 
 // ── How a keybind reads (`KeybindDisplay.tsx`) ───────────────────────────────────────────────
@@ -562,9 +565,9 @@ impl KeybindsTab {
                         )
                     })
                     .child(
-                        Btn::new("keybinds-guide-again", "Record again", outline_look(cx), theme.radius_sm)
-                            .text(12., 500.)
-                            .pad(12., 6.)
+                        Button::new("keybinds-guide-again", "Record again")
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
                             .on_click(cx.listener(move |this, _, window, cx| this.start_recording(Some(row_id.clone()), window, cx))),
                     )
                     .child(
@@ -602,7 +605,8 @@ impl KeybindsTab {
         let swallowed = problem.is_none() && is_swallowed(&b.id, &b.keys, action, status);
         let guide = self.mouse_guide.as_ref().filter(|(id, _)| *id == b.id).map(|(_, button)| button.clone());
         let record_id: gpui::ElementId = ("keybind-record", index).into();
-        let (h, listener) = hover(window, cx, &record_id);
+        let hover = Hover::new(window, cx, record_id.clone(), Some(Transition::TAILWIND));
+        let (h, listener) = (hover.progress, hover.listener());
         let theme = cx.theme();
 
         let options: Vec<SelectOption<Action>> = HOTKEY_ACTIONS
@@ -665,7 +669,8 @@ impl KeybindsTab {
             .children(decibell_shell::probes::probe(format!("keybind-record:{index}")))
             .child(content);
         let remove_id: gpui::ElementId = ("keybind-remove", index).into();
-        let (rh, remove_listener) = hover(window, cx, &remove_id);
+        let remove_hover = Hover::new(window, cx, remove_id.clone(), Some(Transition::TAILWIND));
+        let (rh, remove_listener) = (remove_hover.progress, remove_hover.listener());
         let theme = cx.theme();
         let id_for_remove = b.id.clone();
         let remove = div()
@@ -775,9 +780,9 @@ impl Render for KeybindsTab {
             if s.backend == "portal" && s.can_configure && s.state == "active" {
                 computer = computer.child(
                     div().mt_3().flex().child(
-                        Btn::new("keybinds-system-settings", "Open system shortcut settings", outline_look(cx), theme.radius_sm)
-                            .text(12., 500.)
-                            .pad(12., 6.)
+                        Button::new("keybinds-system-settings", "Open system shortcut settings")
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.configure_error = None;
                                 let weak = cx.weak_entity();
@@ -921,7 +926,7 @@ impl Render for KeybindsTab {
                     }
                     cx.stop_propagation();
                     window.prevent_default();
-                    let done = this.recorder.gpui_key_down(&event.keystroke.key, event.is_held);
+                    let done = this.recorder.on_key_down(event);
                     this.finish(done, cx);
                 }))
                 .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, window, cx| {
@@ -930,21 +935,22 @@ impl Render for KeybindsTab {
                     }
                     cx.stop_propagation();
                     window.prevent_default();
-                    let done = this.recorder.gpui_key_up(&event.keystroke.key);
+                    let done = this.recorder.on_key_up(event);
                     this.finish(done, cx);
                 }))
                 .on_modifiers_changed(cx.listener(|this, event: &gpui::ModifiersChangedEvent, _, cx| {
                     if this.recording.is_none() {
                         return;
                     }
-                    let done = this.recorder.modifiers_changed(event.modifiers);
+                    // A modifier key down or up, with its side (`ModifiersChangedEvent::key`).
+                    let done = this.recorder.on_modifiers_changed(event);
                     this.finish(done, cx);
                 }))
                 .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     if this.recording.is_none() {
                         return;
                     }
-                    if let Some(done) = this.recorder.mouse_down(event.button) {
+                    if let Some(done) = this.recorder.on_mouse_down(event.button) {
                         cx.stop_propagation();
                         window.prevent_default();
                         this.finish(Some(done), cx);

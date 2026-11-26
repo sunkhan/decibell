@@ -8,27 +8,31 @@ use std::rc::Rc;
 
 use decibell_model::live::devices::MIN_PASSWORD_CHARS;
 use decibell_model::{Model, actions};
-use gpui::{App, Context, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
+use decibell_text::input::InputState;
+use gpui::{App, AppContext as _, Context, Entity, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
 
-use super::{DialogParts, dialog};
-use crate::fields::{Input, InputBox, InputLook};
+use super::{DialogParts, dialog, field, submit_on_enter};
 
 pub struct PasswordOverlay {
     open: bool,
-    pub current: Input,
-    pub new: Input,
-    pub repeat: Input,
+    current: Entity<InputState>,
+    new: Entity<InputState>,
+    repeat: Entity<InputState>,
     /// The flow's error and busy flag as last shown (kept through the fade-out).
     error: Option<SharedString>,
     busy: bool,
-    _flow: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl PasswordOverlay {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
-        let weak = cx.weak_entity();
-        crate::handles::update(cx, |h| h.password = Some(weak));
+        let masked = |placeholder: SharedString, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| InputState::password(window, cx).placeholder(placeholder))
+        };
+        let current = masked("Current password".into(), window, cx);
+        let new = masked(format!("New password (at least {MIN_PASSWORD_CHARS} characters)").into(), window, cx);
+        let repeat = masked("New password again".into(), window, cx);
         let flow = cx.observe_in(&model.live.devices, window, |this, devices, window, cx| {
             let flow = devices.read(cx).password.clone();
             let open = flow.is_some();
@@ -36,10 +40,10 @@ impl PasswordOverlay {
             if open && !this.open {
                 // A fresh dialog (the renderer clears the fields on every open), the first field
                 // focused.
-                this.current.clear();
-                this.new.clear();
-                this.repeat.clear();
-                this.current.focus.focus(window, cx);
+                for input in [&this.current, &this.new, &this.repeat] {
+                    input.update(cx, |input, cx| input.clear(cx));
+                }
+                this.current.update(cx, |input, cx| input.focus(window, cx));
             }
             if open != this.open || error != this.error || busy != this.busy {
                 this.open = open;
@@ -48,15 +52,13 @@ impl PasswordOverlay {
                 cx.notify();
             }
         });
-        let mut this = Self {
-            open: false,
-            current: Input::new(cx),
-            new: Input::new(cx),
-            repeat: Input::new(cx),
-            error: None,
-            busy: false,
-            _flow: flow,
-        };
+        let subscriptions = vec![
+            flow,
+            submit_on_enter(&current, Self::submit, cx),
+            submit_on_enter(&new, Self::submit, cx),
+            submit_on_enter(&repeat, Self::submit, cx),
+        ];
+        let mut this = Self { open: false, current, new, repeat, error: None, busy: false, _subscriptions: subscriptions };
         if let Some(flow) = model.live.devices.read(cx).password.clone() {
             this.open = true;
             this.error = flow.error;
@@ -65,22 +67,18 @@ impl PasswordOverlay {
         this
     }
 
-    /// The fields as typing would set them (the self-tests' way in until the editor lands).
-    pub fn set_fields(&mut self, current: &str, new: &str, repeat: &str, cx: &mut Context<Self>) {
-        self.current.set(current);
-        self.new.set(new);
-        self.repeat.set(repeat);
-        cx.notify();
-    }
-
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        let (current, new, repeat) = (self.current.text().to_string(), self.new.text().to_string(), self.repeat.text().to_string());
+        if !self.open || self.busy {
+            return;
+        }
+        let value = |input: &Entity<InputState>| input.read(cx).value().to_string();
+        let (current, new, repeat) = (value(&self.current), value(&self.new), value(&self.repeat));
         actions::devices::change_password(current, new, repeat, cx);
     }
 }
 
 impl Render for PasswordOverlay {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.busy;
         let weak = cx.weak_entity();
         let submit: super::Handler = Rc::new(move |_: &mut Window, cx: &mut App| {
@@ -89,24 +87,9 @@ impl Render for PasswordOverlay {
             }
         });
         let inputs = vec![
-            InputBox::new("password-current", &self.current, InputLook::Dialog)
-                .placeholder("Current password")
-                .masked()
-                .disabled(busy)
-                .on_enter(super::enter(&submit))
-                .into_any_element(),
-            InputBox::new("password-new", &self.new, InputLook::Dialog)
-                .placeholder(format!("New password (at least {MIN_PASSWORD_CHARS} characters)"))
-                .masked()
-                .disabled(busy)
-                .on_enter(super::enter(&submit))
-                .into_any_element(),
-            InputBox::new("password-repeat", &self.repeat, InputLook::Dialog)
-                .placeholder("New password again")
-                .masked()
-                .disabled(busy)
-                .on_enter(super::enter(&submit))
-                .into_any_element(),
+            field("password-current", &self.current, busy),
+            field("password-new", &self.new, busy),
+            field("password-repeat", &self.repeat, busy),
         ];
         let cancel = |_: &mut Window, cx: &mut App| {
             let devices = Model::global(cx).live.devices.clone();
@@ -124,9 +107,11 @@ impl Render for PasswordOverlay {
                 busy,
                 submit_label: if busy { "Changing…".into() } else { "Change password".into() },
                 danger: false,
+                in_settings: true,
                 on_cancel: Rc::new(cancel),
                 on_submit: submit,
             },
+            window,
             cx,
         ))
     }

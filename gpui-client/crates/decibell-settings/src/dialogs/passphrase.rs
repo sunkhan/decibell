@@ -15,44 +15,45 @@ use std::rc::Rc;
 
 use decibell_model::live::e2ee::{MIN_PASSPHRASE_CHARS, PassphraseFlow, PassphraseMode};
 use decibell_model::{Model, actions};
+use decibell_text::input::InputState;
 use decibell_ui::ActiveTheme as _;
-use gpui::{App, Context, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
+use gpui::{App, AppContext as _, Context, Entity, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
 
-use super::{DialogParts, dialog};
-use crate::fields::{Input, InputBox, InputLook};
+use super::{DialogParts, dialog, field, submit_on_enter};
 use crate::rows::TextLink;
 
 pub struct PassphraseOverlay {
     /// The flow as last shown; the mode is kept through the fade-out (the renderer's frozen copy).
     flow: Option<PassphraseFlow>,
     mode: PassphraseMode,
-    pub passphrase: Input,
-    pub confirm: Input,
-    _flow: Subscription,
+    passphrase: Entity<InputState>,
+    confirm: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The first field's placeholder in `mode`.
+fn placeholder(mode: PassphraseMode) -> SharedString {
+    if mode == PassphraseMode::Unlock {
+        SharedString::new_static("Passphrase")
+    } else {
+        format!("New passphrase (at least {MIN_PASSPHRASE_CHARS} characters)").into()
+    }
 }
 
 impl PassphraseOverlay {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
-        let weak = cx.weak_entity();
-        crate::handles::update(cx, |h| h.passphrase = Some(weak));
+        let initial = model.live.e2ee.read(cx).passphrase.clone();
+        let mode = initial.as_ref().map_or(PassphraseMode::Setup, |f| f.mode);
+        let passphrase = cx.new(|cx| InputState::password(window, cx).placeholder(placeholder(mode)));
+        let confirm = cx.new(|cx| InputState::password(window, cx).placeholder("Confirm passphrase"));
         let flow = cx.observe_in(&model.live.e2ee, window, |this, e2ee, window, cx| {
             let flow = e2ee.read(cx).passphrase.clone();
             this.follow(flow, window, cx);
         });
-        let mut this = Self {
-            flow: None,
-            mode: PassphraseMode::Setup,
-            passphrase: Input::new(cx),
-            confirm: Input::new(cx),
-            _flow: flow,
-        };
-        let initial = model.live.e2ee.read(cx).passphrase.clone();
-        if let Some(flow) = initial {
-            this.mode = flow.mode;
-            this.flow = Some(flow);
-        }
-        this
+        let subscriptions =
+            vec![flow, submit_on_enter(&passphrase, Self::submit, cx), submit_on_enter(&confirm, Self::submit, cx)];
+        Self { flow: initial, mode, passphrase, confirm, _subscriptions: subscriptions }
     }
 
     fn follow(&mut self, flow: Option<PassphraseFlow>, window: &mut Window, cx: &mut Context<Self>) {
@@ -62,10 +63,16 @@ impl PassphraseOverlay {
         // Opened, or switched to another mode (unlock → "Forgot your passphrase?" → reset): a
         // fresh form with the passphrase focused.
         let fresh = flow.as_ref().is_some_and(|f| self.flow.as_ref().is_none_or(|old| old.mode != f.mode));
+        if let Some(f) = &flow
+            && f.mode != self.mode
+        {
+            self.passphrase.update(cx, |input, cx| input.set_placeholder(placeholder(f.mode), cx));
+        }
         if fresh {
-            self.passphrase.clear();
-            self.confirm.clear();
-            self.passphrase.focus.focus(window, cx);
+            for input in [&self.passphrase, &self.confirm] {
+                input.update(cx, |input, cx| input.clear(cx));
+            }
+            self.passphrase.update(cx, |input, cx| input.focus(window, cx));
         }
         if let Some(f) = &flow {
             self.mode = f.mode;
@@ -74,20 +81,17 @@ impl PassphraseOverlay {
         cx.notify();
     }
 
-    /// The fields as typing would set them (the self-tests' way in until the editor lands).
-    pub fn set_fields(&mut self, passphrase: &str, confirm: &str, cx: &mut Context<Self>) {
-        self.passphrase.set(passphrase);
-        self.confirm.set(confirm);
-        cx.notify();
-    }
-
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        actions::e2ee::submit_passphrase(self.passphrase.text().to_string(), self.confirm.text().to_string(), cx);
+        if self.flow.as_ref().is_none_or(|f| f.busy) {
+            return;
+        }
+        let (passphrase, confirm) = (self.passphrase.read(cx).value().to_string(), self.confirm.read(cx).value().to_string());
+        actions::e2ee::submit_passphrase(passphrase, confirm, cx);
     }
 }
 
 impl Render for PassphraseOverlay {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let m = self.mode;
         let open = self.flow.is_some();
         let busy = self.flow.as_ref().is_some_and(|f| f.busy);
@@ -98,27 +102,9 @@ impl Render for PassphraseOverlay {
                 v.update(cx, |v, cx| v.submit(cx));
             }
         });
-        let mut inputs = vec![
-            InputBox::new("passphrase-input", &self.passphrase, InputLook::Dialog)
-                .placeholder(if m == PassphraseMode::Unlock {
-                    SharedString::new_static("Passphrase")
-                } else {
-                    format!("New passphrase (at least {MIN_PASSPHRASE_CHARS} characters)").into()
-                })
-                .masked()
-                .disabled(busy)
-                .on_enter(super::enter(&submit))
-                .into_any_element(),
-        ];
+        let mut inputs = vec![field("passphrase-input", &self.passphrase, busy)];
         if m.needs_confirm() {
-            inputs.push(
-                InputBox::new("passphrase-confirm", &self.confirm, InputLook::Dialog)
-                    .placeholder("Confirm passphrase")
-                    .masked()
-                    .disabled(busy)
-                    .on_enter(super::enter(&submit))
-                    .into_any_element(),
-            );
+            inputs.push(field("passphrase-confirm", &self.confirm, busy));
         }
         let theme = cx.theme();
         let extra = (m == PassphraseMode::Unlock).then(|| {
@@ -155,9 +141,11 @@ impl Render for PassphraseOverlay {
                 busy,
                 submit_label: if busy { "Working…".into() } else { m.confirm_label().into() },
                 danger: m.danger(),
+                in_settings: false,
                 on_cancel: Rc::new(cancel),
                 on_submit: submit,
             },
+            window,
             cx,
         ))
     }

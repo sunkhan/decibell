@@ -20,8 +20,8 @@ use decibell_model::live::hotkeys::{InputMode, MAX_PTT_RELEASE_DELAY_MS, ptt_rel
 use decibell_model::live::voice::devices::AudioDevice;
 use decibell_model::{Model, actions};
 use decibell_ui::{
-    ActiveTheme as _, Badge, BadgeTone, Icon, IconName, Label, ScrollHandle, Segment, SegmentedControl, Select,
-    SelectOption, Slider,
+    ActiveTheme as _, Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Icon, IconName, Label, ScrollHandle, Segment,
+    SegmentedControl, Select, SelectOption, Slider,
 };
 use gpui::{
     AnyElement, App, Bounds, Context, DispatchPhase, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels,
@@ -32,7 +32,7 @@ use super::TabId;
 use super::keybinds::{assigned_trigger, is_swallowed, key_chips, swallow_badge, types_text};
 use crate::hooks::SettingsHooks;
 use crate::mic_test::{LevelSink, smooth};
-use crate::rows::{Btn, TextLink, ToggleRow, outline_look, section_label};
+use crate::rows::{TextLink, ToggleRow, section_label};
 use crate::window::CloseLink;
 
 const MIN_THRESHOLD_DB: f32 = -60.;
@@ -519,9 +519,9 @@ impl AudioTab {
             .child(div().flex_1())
             .when(!self.connected, |this| {
                 this.child(
-                    Btn::new("audio-test-mic", if self.test_active { "Stop test" } else { "Test mic" }, outline_look(cx), theme.radius_sm)
-                        .text(12., 500.)
-                        .pad(8., 2.)
+                    Button::new("audio-test-mic", if self.test_active { "Stop test" } else { "Test mic" })
+                        .variant(ButtonVariant::Outline)
+                        .size(ButtonSize::Xs)
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_test(cx))),
                 )
             })

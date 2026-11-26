@@ -2007,12 +2007,12 @@ name = "decibell-settings"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "decibell-common",
  "decibell-core",
  "decibell-harness",
  "decibell-model",
  "decibell-shell",
+ "decibell-text",
  "decibell-theme",
  "decibell-ui",
  "futures",

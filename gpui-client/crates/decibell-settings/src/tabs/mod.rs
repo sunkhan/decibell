@@ -161,7 +161,7 @@ impl TabView {
     /// the renderer's tabs apply everything at once).
     pub fn dirty(&self, cx: &App) -> bool {
         match self {
-            TabView::Network(v) => v.read(cx).dirty(),
+            TabView::Network(v) => v.read(cx).dirty(cx),
             _ => false,
         }
     }

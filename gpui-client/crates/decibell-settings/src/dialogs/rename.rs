@@ -5,11 +5,10 @@
 //! over the Settings window.
 
 use decibell_model::{Model, actions};
-use decibell_ui::ActiveTheme as _;
-use gpui::{AnyElement, App, Context, SharedString, WeakEntity, Window};
+use decibell_text::input::{InputEvent, InputState};
+use gpui::{AnyElement, App, AppContext as _, Context, Entity, SharedString, Subscription, WeakEntity, Window};
 
-use super::{DialogParts, dialog};
-use crate::fields::{Input, InputBox, InputLook};
+use super::{DialogParts, dialog, field, submit_on_enter};
 
 /// `NAME_RULE = /^[a-z0-9._-]{3,32}$/`.
 pub fn name_ok(name: &str) -> bool {
@@ -33,31 +32,57 @@ pub fn validate(name: &str, current: Option<&str>, password: &str) -> Result<(),
 
 pub struct RenameForm {
     pub open: bool,
-    pub name: Input,
-    pub password: Input,
+    name: Entity<InputState>,
+    password: Entity<InputState>,
     pub error: Option<SharedString>,
     pub busy: bool,
+    _subscriptions: [Subscription; 3],
+}
+
+/// The name field's placeholder.
+fn placeholder(current: Option<&str>) -> SharedString {
+    match current {
+        Some(name) => format!("New username (now {name})").into(),
+        None => "New username".into(),
+    }
 }
 
 impl RenameForm {
-    pub fn new<V>(cx: &mut Context<V>) -> Self {
-        RenameForm {
-            open: false,
-            name: Input::new(cx).max_chars(32).lowercase(),
-            password: Input::new(cx),
-            error: None,
-            busy: false,
-        }
+    /// The form of view `V`, which finds it again with `get` (Enter in either field submits).
+    pub fn new<V: 'static>(get: fn(&mut V) -> &mut RenameForm, window: &mut Window, cx: &mut Context<V>) -> Self {
+        let current = Model::global(cx).auth.read(cx).username.clone();
+        // `maxLength={32}`.
+        let name = cx.new(|cx| InputState::single_line(window, cx).max_length(32).placeholder(placeholder(current.as_deref())));
+        let password = cx.new(|cx| InputState::password(window, cx).placeholder("Current password"));
+        let subscriptions = [
+            // `onChange={(e) => setName(e.target.value.toLowerCase())}`.
+            cx.subscribe(&name, |_, name, event: &InputEvent, cx| {
+                if *event == InputEvent::Change {
+                    let value = name.read(cx).value();
+                    let lower = value.to_lowercase();
+                    if lower != value {
+                        name.update(cx, |name, cx| name.set_value(&lower, cx));
+                    }
+                }
+            }),
+            submit_on_enter(&name, move |view: &mut V, cx| submit(view, get, cx), cx),
+            submit_on_enter(&password, move |view: &mut V, cx| submit(view, get, cx), cx),
+        ];
+        RenameForm { open: false, name, password, error: None, busy: false, _subscriptions: subscriptions }
     }
 
     /// Opening clears the form (the renderer resets it on every open) and focuses the name.
     pub fn open(&mut self, window: &mut Window, cx: &mut App) {
         self.open = true;
-        self.name.clear();
-        self.password.clear();
+        let current = Model::global(cx).auth.read(cx).username.clone();
+        self.name.update(cx, |name, cx| {
+            name.clear(cx);
+            name.set_placeholder(placeholder(current.as_deref()), cx);
+        });
+        self.password.update(cx, |password, cx| password.clear(cx));
         self.error = None;
         self.busy = false;
-        self.name.focus.focus(window, cx);
+        self.name.update(cx, |name, cx| name.focus(window, cx));
     }
 
     pub fn cancel(&mut self) {
@@ -78,15 +103,15 @@ pub fn submit<V: 'static>(
     if !f.open || f.busy {
         return;
     }
-    let next = f.name.text().trim().to_string();
-    if let Err(error) = validate(&next, current.as_deref(), f.password.text()) {
+    let next = f.name.read(cx).value().trim().to_string();
+    let password = f.password.read(cx).value().to_string();
+    if let Err(error) = validate(&next, current.as_deref(), &password) {
         f.error = Some(SharedString::new_static(error));
         cx.notify();
         return;
     }
     f.busy = true;
     f.error = None;
-    let password = f.password.text().to_string();
     cx.notify();
     let this: WeakEntity<V> = cx.weak_entity();
     actions::auth::rename_account(next, password, cx, move |result, cx| {
@@ -111,17 +136,7 @@ pub fn submit<V: 'static>(
 }
 
 /// The dialog.
-pub fn render<V: 'static>(
-    form: &RenameForm,
-    current: Option<SharedString>,
-    get: fn(&mut V) -> &mut RenameForm,
-    cx: &mut Context<V>,
-) -> AnyElement {
-    let _ = cx.theme();
-    let placeholder: SharedString = match &current {
-        Some(name) => format!("New username (now {name})").into(),
-        None => "New username".into(),
-    };
+pub fn render<V: 'static>(form: &RenameForm, get: fn(&mut V) -> &mut RenameForm, window: &mut Window, cx: &mut Context<V>) -> AnyElement {
     let weak = cx.weak_entity();
     let submit: super::Handler = {
         let weak = weak.clone();
@@ -131,19 +146,7 @@ pub fn render<V: 'static>(
             }
         })
     };
-    let inputs = vec![
-        InputBox::new("rename-name", &form.name, InputLook::Dialog)
-            .placeholder(placeholder)
-            .disabled(form.busy)
-            .on_enter(super::enter(&submit))
-            .into_any(),
-        InputBox::new("rename-password", &form.password, InputLook::Dialog)
-            .placeholder("Current password")
-            .masked()
-            .disabled(form.busy)
-            .on_enter(super::enter(&submit))
-            .into_any(),
-    ];
+    let inputs = vec![field("rename-name", &form.name, form.busy), field("rename-password", &form.password, form.busy)];
     let cancel = {
         let weak = weak.clone();
         move |_: &mut Window, cx: &mut App| {
@@ -167,21 +170,13 @@ pub fn render<V: 'static>(
             busy: form.busy,
             submit_label: if form.busy { "Changing…".into() } else { "Change username".into() },
             danger: false,
+            in_settings: true,
             on_cancel: std::rc::Rc::new(cancel),
             on_submit: submit,
         },
+        window,
         cx,
     )
-}
-
-trait IntoAny {
-    fn into_any(self) -> AnyElement;
-}
-
-impl IntoAny for InputBox {
-    fn into_any(self) -> AnyElement {
-        gpui::IntoElement::into_any_element(self)
-    }
 }
 
 #[cfg(test)]

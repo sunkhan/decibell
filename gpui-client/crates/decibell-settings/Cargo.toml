@@ -23,6 +23,8 @@ gpui.workspace = true
 decibell-theme.workspace = true
 decibell-harness.workspace = true
 decibell-ui.workspace = true
+# The text fields' editor (`InputState`, in the kit's `TextField`).
+decibell-text.workspace = true
 decibell-model.workspace = true
 decibell-common.workspace = true
 decibell-shell.workspace = true
@@ -32,9 +34,7 @@ decibell-core = { path = "../../../crates/decibell-core", default-features = fal
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
-# Local dates ("Signed in Nov 20, 2026"); already in the tree through the model.
 serde_json = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

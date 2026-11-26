@@ -4,8 +4,8 @@
 
 use std::rc::Rc;
 
-use decibell_ui::motion::{self, Transition, mix};
-use decibell_ui::{ActiveTheme as _, Label, Switch};
+use decibell_ui::motion::{Transition, mix};
+use decibell_ui::{ActiveTheme as _, Hover, Label, Switch};
 use gpui::{
     App, ClickEvent, ElementId, Hsla, IntoElement, Pixels, RenderOnce, SharedString, Window, div, prelude::*, px,
 };
@@ -37,23 +37,6 @@ pub fn card(cx: &App) -> gpui::Div {
         .border_1()
         .border_color(theme.color_border_divider)
         .bg(theme.color_bg_light)
-}
-
-/// The hover state behind a `transition-colors` (the kit's own is private): 0 → 1 while the
-/// pointer is over `id`, over Tailwind's 150 ms. Frames only while it moves.
-pub fn hover(window: &mut Window, cx: &mut App, id: &ElementId) -> (f32, impl Fn(&bool, &mut Window, &mut App) + 'static) {
-    let state = window.use_keyed_state((id.clone(), "hover"), cx, |_, _| false);
-    let hovered = *state.read(cx);
-    let progress = motion::transition_flag(window, cx, (id.clone(), "hover-t"), hovered, Transition::TAILWIND);
-    let listener = move |on: &bool, _: &mut Window, cx: &mut App| {
-        state.update(cx, |state, cx| {
-            if *state != *on {
-                *state = *on;
-                cx.notify();
-            }
-        })
-    };
-    (progress, listener)
 }
 
 /// The settings toggle row (`ToggleRow` / `ToggleSwitch` in Privacy, Audio, Codecs,
@@ -96,7 +79,8 @@ impl ToggleRow {
 
 impl RenderOnce for ToggleRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (h, listener) = hover(window, cx, &self.id);
+        let hover = Hover::new(window, cx, self.id.clone(), Some(Transition::TAILWIND));
+        let (h, listener) = (hover.progress, hover.listener());
         let theme = cx.theme();
         let bg = mix(theme.color_bg_light, theme.color_bg_lighter, h);
         let title = if self.disabled { theme.color_text_muted } else { theme.color_text_primary };
@@ -222,7 +206,8 @@ impl Btn {
 
 impl RenderOnce for Btn {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (h, listener) = hover(window, cx, &self.id);
+        let hover = Hover::new(window, cx, self.id.clone(), Some(Transition::TAILWIND));
+        let (h, listener) = (hover.progress, hover.listener());
         let focus = window
             .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle().tab_stop(!self.disabled))
             .read(cx)
@@ -364,46 +349,6 @@ impl RenderOnce for TextLink {
     }
 }
 
-
-/// The "outline" small button of Audio and Keybinds: `rounded-sm border border-border px-3
-/// py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:border-accent/40
-/// hover:text-text-primary` (`px-2 py-0.5` for Test mic).
-pub fn outline_look(cx: &App) -> Look {
-    let theme = cx.theme();
-    Look {
-        bg: Hsla::transparent_black(),
-        bg_hover: Hsla::transparent_black(),
-        text: theme.color_text_secondary,
-        text_hover: theme.color_text_primary,
-        border: Some((theme.color_border, theme.color_accent.opacity(0.4))),
-    }
-}
-
-/// `border border-error/20 bg-error/10 text-error hover:bg-error/20` (Log Out, a device's Sign
-/// out).
-pub fn danger_soft_look(cx: &App) -> Look {
-    let theme = cx.theme();
-    Look {
-        bg: theme.color_error.opacity(0.1),
-        bg_hover: theme.color_error.opacity(0.2),
-        text: theme.color_error,
-        text_hover: theme.color_error,
-        border: Some((theme.color_error.opacity(0.2), theme.color_error.opacity(0.2))),
-    }
-}
-
-/// E2eeSection's `SecondaryButton`: `rounded-sm border border-border px-4 py-2 text-[13px]
-/// font-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary`.
-pub fn quiet_outline_look(cx: &App) -> Look {
-    let theme = cx.theme();
-    Look {
-        bg: Hsla::transparent_black(),
-        bg_hover: theme.color_surface_hover,
-        text: theme.color_text_secondary,
-        text_hover: theme.color_text_primary,
-        border: Some((theme.color_border, theme.color_border)),
-    }
-}
 
 /// `"1 minute"`, `"5 minutes"`, `"1 hour"` (`StatusMenu.tsx` `awayAfterLabel`).
 pub fn away_after_label(minutes: u32) -> String {

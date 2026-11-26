@@ -12,13 +12,15 @@
 use decibell_common::Watch;
 use decibell_model::live::e2ee::{E2eeStatus, PassphraseMode};
 use decibell_model::{Model, actions};
+use decibell_ui::motion::Transition;
 use decibell_ui::{
-    ActiveTheme as _, Button, FontRole, Icon, IconName, Label, ScrollHandle, Select, SelectOption, SelectSize,
+    ActiveTheme as _, Button, ButtonVariant, FontRole, Hover, Icon, IconName, Label, ScrollHandle, Select, SelectOption,
+    SelectSize,
 };
 use gpui::{AnyElement, App, Context, IntoElement, Render, SharedString, Window, div, prelude::*, px};
 
 use super::TabId;
-use crate::rows::{Btn, ToggleRow, away_after_label, card, hover, quiet_outline_look};
+use crate::rows::{ToggleRow, away_after_label, card};
 use crate::window::CloseLink;
 
 /// Auto-away thresholds, minutes (0 = never).
@@ -131,7 +133,8 @@ impl Render for PrivacyTab {
 /// "Show me as Away": the toggle row's look with a small select (`w-36`) instead of the switch.
 fn away_row(minutes: u32, window: &mut Window, cx: &mut App) -> AnyElement {
     let id: gpui::ElementId = "privacy-away".into();
-    let (h, listener) = hover(window, cx, &id);
+    let hover = Hover::new(window, cx, id.clone(), Some(Transition::TAILWIND));
+    let (h, listener) = (hover.progress, hover.listener());
     let theme = cx.theme();
     let options: Vec<SelectOption<u32>> = AWAY_AFTER_OPTIONS
         .iter()
@@ -196,8 +199,10 @@ fn e2ee_section(_: &mut Window, cx: &mut App) -> AnyElement {
             .child(Button::new(id, label).on_click(move |_, _, cx| open_passphrase(mode, cx)))
             .into_any_element()
     };
-    let secondary = |id: &'static str, label: &'static str, mode: PassphraseMode, cx: &App| {
-        Btn::new(id, label, quiet_outline_look(cx), cx.theme().radius_sm)
+    // E2eeSection's `SecondaryButton`.
+    let secondary = |id: &'static str, label: &'static str, mode: PassphraseMode, _: &App| {
+        Button::new(id, label)
+            .variant(ButtonVariant::QuietOutline)
             .on_click(move |_, _, cx| open_passphrase(mode, cx))
             .into_any_element()
     };

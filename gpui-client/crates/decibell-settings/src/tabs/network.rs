@@ -3,21 +3,22 @@
 //! the attachment speed caps: presets, a custom MB/s value, Unlimited.
 //!
 //! A preset applies at once, as in the renderer. The custom box applies on Enter or when it loses
-//! focus (`onBlur`); until then what was typed is a draft: the tab shows the save bar and leaving
-//! (Esc, ✕, the backdrop, another tab) shakes it instead of dropping the value (the renderer lost
-//! it). The caps reach the attachment service at once (`Attachments::limits`), mid-transfer too;
-//! they are saved in `config.json` (`upload_limit_bps`, `download_limit_bps`).
+//! focus (`onBlur`; a press anywhere else, Tab, the window going to the background); until then
+//! what was typed is a draft: the tab shows the save bar, and Esc (the one way to leave while the
+//! box still has the focus) shakes it instead of dropping the value (the renderer lost it). The
+//! caps reach the attachment service through the model (`CoreAttachmentService::set_limits` on
+//! every settings change), mid-transfer too; they are saved in `config.json`
+//! (`upload_limit_bps`, `download_limit_bps`).
 
 use std::path::PathBuf;
 
 use decibell_common::Watch;
-use decibell_model::chat::CoreAttachmentService;
 use decibell_model::{Model, actions};
-use decibell_ui::{ActiveTheme as _, Button, FontRole, Label, SaveBar, ScrollHandle};
-use gpui::{AnyElement, Context, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
+use decibell_text::input::{InputEvent, InputState, numeric};
+use decibell_ui::{ActiveTheme as _, Button, FontRole, Label, SaveBar, ScrollHandle, TextField, TextFieldVariant};
+use gpui::{AnyElement, App, AppContext as _, Context, Entity, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
 
 use super::TabId;
-use crate::fields::{Input, InputBox, InputLook};
 use crate::rows::{Btn, Look, ToggleRow, card};
 use crate::window::CloseLink;
 
@@ -99,15 +100,25 @@ pub enum Direction {
     Download,
 }
 
-/// One cap's custom box: the text, and the text it showed when last committed or synced.
+/// One cap's custom box (`type="number"`: what Chromium lets into one), and the text it showed
+/// when last committed or synced.
 struct Custom {
-    input: Input,
+    input: Entity<InputState>,
     committed: String,
 }
 
 impl Custom {
-    fn dirty(&self) -> bool {
-        self.input.text() != self.committed
+    fn new(committed: String, window: &mut Window, cx: &mut Context<NetworkTab>) -> Custom {
+        let input = cx.new(|cx| InputState::single_line(window, cx).accept(numeric).placeholder("e.g. 7.5").with_value(&committed));
+        Custom { input, committed }
+    }
+
+    fn dirty(&self, cx: &App) -> bool {
+        self.input.read(cx).value() != self.committed
+    }
+
+    fn show(&self, text: &str, cx: &mut App) {
+        self.input.update(cx, |input, cx| input.set_value(text, cx));
     }
 }
 
@@ -143,20 +154,14 @@ pub fn shorten_middle(p: &str, max: usize) -> String {
     format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>())
 }
 
-/// Hand the caps to the attachment service (when it runs: it reads them per chunk).
-pub fn apply_limits(upload: u64, download: u64) {
-    if let Some(service) = CoreAttachmentService::attachments() {
-        service.limits().set_upload(upload);
-        service.limits().set_download(download);
-    }
-}
-
 pub struct NetworkTab {
     scroll: ScrollHandle,
     close: CloseLink,
     shown: Shown,
     upload: Custom,
     download: Custom,
+    /// Whether a box held a draft at the last render (the bar shows while one does).
+    drafted: bool,
     nudge: u32,
     default_dir: String,
     _subscriptions: Vec<Subscription>,
@@ -168,36 +173,40 @@ impl NetworkTab {
         let model = Model::global(cx).clone();
         let s = shown(model.settings.read(cx).get());
         let custom_text = |bps: u64| if preset_for(bps).is_none() { format_mbps(bps_to_mbps(bps)) } else { String::new() };
-        let mut upload = Custom { input: Input::new(cx), committed: custom_text(s.upload) };
-        upload.input.set(&upload.committed.clone());
-        let mut download = Custom { input: Input::new(cx), committed: custom_text(s.download) };
-        download.input.set(&download.committed.clone());
+        let upload = Custom::new(custom_text(s.upload), window, cx);
+        let download = Custom::new(custom_text(s.download), window, cx);
         let watch = Watch::new();
-        let subscriptions = vec![
-            cx.observe(&model.settings, |this, settings, cx| {
-                let next = shown(settings.read(cx).get());
-                if next != this.shown {
-                    // A custom value shows in its box (`useEffect` on isCustom / mbps); a typed
-                    // draft is left alone.
-                    for (custom, bps) in [(&mut this.upload, next.upload), (&mut this.download, next.download)] {
-                        if !custom.dirty() && preset_for(bps).is_none() {
-                            custom.committed = format_mbps(bps_to_mbps(bps));
-                            custom.input.set(&custom.committed.clone());
-                        }
+        let mut subscriptions = vec![cx.observe(&model.settings, |this, settings, cx| {
+            let next = shown(settings.read(cx).get());
+            if next != this.shown {
+                // A custom value shows in its box (`useEffect` on isCustom / mbps); a typed
+                // draft is left alone.
+                for (custom, bps) in [(&mut this.upload, next.upload), (&mut this.download, next.download)] {
+                    if !custom.dirty(cx) && preset_for(bps).is_none() {
+                        custom.committed = format_mbps(bps_to_mbps(bps));
+                        custom.show(&custom.committed, cx);
                     }
-                    this.shown = next;
-                    cx.notify();
                 }
-            }),
-            cx.on_focus_out(&upload.input.focus, window, |this, _, _, cx| this.commit(Direction::Upload, cx)),
-            cx.on_focus_out(&download.input.focus, window, |this, _, _, cx| this.commit(Direction::Download, cx)),
-        ];
+                this.shown = next;
+                cx.notify();
+            }
+        })];
+        for (direction, input) in [(Direction::Upload, &upload.input), (Direction::Download, &download.input)] {
+            subscriptions.push(cx.subscribe(input, move |this, _, event: &InputEvent, cx| match event {
+                // Enter and `onBlur` apply it.
+                InputEvent::Submit | InputEvent::Blur => this.commit(direction, cx),
+                // Typing redraws the box only; the tab when the save bar comes or goes.
+                InputEvent::Change if this.dirty(cx) != this.drafted => cx.notify(),
+                _ => {}
+            }));
+        }
         Self {
             scroll: ScrollHandle::new(),
             close,
             shown: s,
             upload,
             download,
+            drafted: false,
             nudge: 0,
             default_dir: crate::hooks::SettingsHooks::get(cx)
                 .staged
@@ -209,8 +218,8 @@ impl NetworkTab {
         }
     }
 
-    pub fn dirty(&self) -> bool {
-        self.upload.dirty() || self.download.dirty()
+    pub fn dirty(&self, cx: &App) -> bool {
+        self.upload.dirty(cx) || self.download.dirty(cx)
     }
 
     pub fn nudge(&mut self, cx: &mut Context<Self>) {
@@ -220,12 +229,6 @@ impl NetworkTab {
 
     pub fn nudges(&self) -> u32 {
         self.nudge
-    }
-
-    /// What typing in a custom box does (the self-tests' way in until the editor lands).
-    pub fn set_custom_text(&mut self, direction: Direction, text: &str, cx: &mut Context<Self>) {
-        self.custom(direction).input.set(text);
-        cx.notify();
     }
 
     fn custom(&mut self, direction: Direction) -> &mut Custom {
@@ -241,7 +244,6 @@ impl NetworkTab {
             Direction::Upload => (bps, self.shown.download),
             Direction::Download => (self.shown.upload, bps),
         };
-        apply_limits(upload, download);
         let settings = Model::global(cx).settings.clone();
         settings.update(cx, |s, cx| {
             s.change(
@@ -256,8 +258,8 @@ impl NetworkTab {
 
     fn pick_preset(&mut self, direction: Direction, mbps: f64, cx: &mut Context<Self>) {
         let c = self.custom(direction);
-        c.input.clear();
         c.committed.clear();
+        c.show("", cx);
         self.apply(direction, mbps_to_bps(mbps), cx);
         cx.notify();
     }
@@ -265,26 +267,26 @@ impl NetworkTab {
     /// The custom box's `onBlur` (also Enter, and the save bar's Save).
     pub fn commit(&mut self, direction: Direction, cx: &mut Context<Self>) {
         let c = self.custom(direction);
-        if !c.dirty() {
+        if !c.dirty(cx) {
             return;
         }
-        match commit_custom(c.input.text()) {
+        let text = c.input.read(cx).value().to_string();
+        match commit_custom(&text) {
             Some((bps, shown)) => {
-                c.input.set(&shown);
                 c.committed = shown;
+                c.show(&c.committed.clone(), cx);
                 self.apply(direction, bps, cx);
             }
             // Not a number: nothing applies (the renderer kept the text in the box).
-            None => c.committed = c.input.text().to_string(),
+            None => c.committed = text,
         }
         cx.notify();
     }
 
     /// The save bar's Reset: the boxes show what applies again.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
-        for c in [&mut self.upload, &mut self.download] {
-            let committed = c.committed.clone();
-            c.input.set(&committed);
+        for c in [&self.upload, &self.download] {
+            c.show(&c.committed, cx);
         }
         self.nudge = 0;
         cx.notify();
@@ -365,12 +367,9 @@ impl NetworkTab {
                     .child(Label::new("Custom:").size(12.).color(theme.color_text_muted))
                     .child(
                         div()
-                            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                if event.keystroke.key == "enter" {
-                                    this.commit(direction, cx);
-                                }
-                            }))
-                            .child(InputBox::new(box_id, &custom.input, InputLook::Compact).placeholder("e.g. 7.5")),
+                            .relative()
+                            .children(decibell_shell::probes::probe(box_id))
+                            .child(TextField::new(box_id).variant(TextFieldVariant::Compact).editor(&custom.input)),
                     )
                     .child(Label::new("MB/s").size(12.).color(theme.color_text_muted)),
             )
@@ -472,7 +471,8 @@ impl Render for NetworkTab {
                     .color(theme.color_text_muted),
                 ),
             );
-        let dirty = self.dirty();
+        let dirty = self.dirty(cx);
+        self.drafted = dirty;
         let body = div()
             .flex()
             .flex_col()

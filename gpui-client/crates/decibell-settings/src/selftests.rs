@@ -12,10 +12,10 @@
 //! flows, which must never touch the stack's seeded accounts. A check that registers refuses
 //! unless this build's core honours `DECIBELL_CENTRAL` (a debug build, or `dev-local`).
 //!
-//! The checks click the real window where the views' probes say (`decibell_shell::probes`), the
-//! user panel's gear and the sidebar's tabs where the layout puts them (the shell and the kit draw
-//! those, without probes), and set the forms' fields through the views until the text editor
-//! lands.
+//! The checks click the real window where the probes say (`decibell_harness::probes`: the views',
+//! the user panel's gear, the sidebar's tabs) and type into the forms' fields as key presses
+//! (`TestCx::type_text`: key listeners, then the focused field's input handler), Tab between
+//! them and Enter to submit, as a person would.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher as _, Hasher as _};
@@ -34,9 +34,7 @@ use decibell_model::{Model, actions};
 use decibell_shell::probes;
 use decibell_theme::ThemeId;
 use decibell_ui::{ActiveTheme as _, visible_window_bounds};
-use gpui::{
-    App, Bounds, Keystroke, Modifiers, ModifiersChangedEvent, Pixels, PlatformInput, Point, point, px,
-};
+use gpui::{App, Bounds, KeyCode, Keystroke, Modifiers, MouseButton, Pixels, PlatformInput, point, px};
 
 use crate::tabs::{TabId, TabView};
 
@@ -88,7 +86,7 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         SelfTest {
             name: "settings-keybinds-record",
-            about: "record a binding from injected keys (X11 listener), Escape cancels, a conflict is named, remove; saved; the core's status shows",
+            about: "record bindings from physical key codes (X11 listener): under German and Turkish layouts the physical key, modifiers alone with their side, a mouse button; Escape cancels, a conflict is named, remove; saved",
             run: |cx| Box::pin(keybinds(cx)),
         },
         SelfTest {
@@ -98,7 +96,7 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         SelfTest {
             name: "settings-unsaved-shake",
-            about: "a drafted custom speed holds the window: Esc and a tab switch shake the save bar; Reset lets it close",
+            about: "a typed custom speed holds the window: Esc shakes the save bar, Reset lets it close; a press elsewhere applies it (onBlur)",
             run: |cx| Box::pin(perf1(cx, "settings-unsaved-shake", Phases::One)),
         },
         SelfTest {
@@ -508,7 +506,7 @@ async fn throwaway_sign_in(cx: &TestCx, register: bool, password: &str) -> Resul
 
 /// Forget this device at central (Log out) so test devices don't pile up in the account's list.
 async fn log_out(cx: &TestCx) -> Result<()> {
-    cx.update(|_, cx| crate::tabs::account::log_out(cx))?;
+    cx.update(|_, cx| actions::auth::log_out(cx))?;
     wait_for(cx, Duration::from_secs(15), "the sign-out", |cx| !model(cx).auth.read(cx).is_authenticated).await?;
     Ok(())
 }
@@ -516,32 +514,6 @@ async fn log_out(cx: &TestCx) -> Result<()> {
 /// The window's visible area (inside the client-side margin).
 fn visible(cx: &TestCx) -> Result<Bounds<Pixels>> {
     cx.update(|window, cx| visible_window_bounds(window, cx))
-}
-
-/// The user panel's gear: the rightmost of its buttons (`size-8`, 12 px from the panel's right
-/// edge), the panel 8 px inside the sidebar, 8 px above the workspace's bottom, one row of 34 px
-/// out of voice. The shell draws it without a probe.
-fn gear(cx: &TestCx) -> Result<Point<Pixels>> {
-    let v = visible(cx)?;
-    let sidebar = cx.update(|_, cx| model(cx).layout.read(cx).prefs().sidebar_width as f32)?;
-    Ok(point(v.left() + px(sidebar - 28.), v.bottom() - px(45.)))
-}
-
-/// The settings frame's sidebar tab `index` (the kit's geometry: the backdrop's padding, the
-/// frame centred, `py-6`, the "SETTINGS" label, 39 px tabs 2 px apart; on the rail 40 px tabs).
-fn nav_tab(cx: &TestCx, index: usize) -> Result<Point<Pixels>> {
-    let v = visible(cx)?;
-    let (w, h) = (f32::from(v.size.width), f32::from(v.size.height));
-    let rail = w < decibell_ui::settings::RAIL_BREAKPOINT;
-    let (pad_x, pad_y) = if rail { (16., 16.) } else { (56f32.max(w * 0.05), 48f32.max(h * 0.06)) };
-    let (fw, fh) = ((w - 2. * pad_x).min(1600.), (h - 2. * pad_y).min(1120.));
-    let (left, top) = (f32::from(v.left()) + (w - fw) / 2., f32::from(v.top()) + (h - fh) / 2.);
-    let (x, y) = if rail {
-        (left + 1. + 32., top + 1. + 24. + index as f32 * 42. + 20.)
-    } else {
-        (left + 1. + 120., top + 1. + 24. + 24.5 + 2. + index as f32 * 41. + 19.5)
-    };
-    Ok(point(px(x), px(y)))
 }
 
 async fn wait_probe(cx: &TestCx, key: &str) -> Result<Bounds<Pixels>> {
@@ -589,6 +561,12 @@ async fn click_probe(cx: &TestCx, key: &str) -> Result<()> {
     park(cx)
 }
 
+
+/// Replace what the focused field holds: select all, then type.
+fn retype(cx: &TestCx, text: &str) -> Result<()> {
+    cx.keystroke("ctrl-a")?;
+    cx.type_text(text)
+}
 
 fn shown_tab(cx: &App) -> Option<TabId> {
     crate::handles::settings(cx)?.read(cx).view().map(TabView::tab)
@@ -654,19 +632,12 @@ async fn check_open(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     // The main layout and the user panel are drawn.
     settle_drawn(&cx).await?;
-    let gear = gear(&cx)?;
-    step(&cx, "the user panel's gear", async |cx| {
-        cx.click(gear)?;
-        park(cx)
-    }, |cx| settings_open(cx))
-    .await?;
-    for (index, tab) in [(2usize, TabId::Appearance), (4, TabId::Audio), (8, TabId::About), (0, TabId::Account)] {
-        // The sidebar lists Devices only when central serves the list (it does on the stack).
-        let at = nav_tab(&cx, index)?;
-        step(&cx, &format!("the {} tab", tab.label()), async |cx| {
-            cx.click(at)?;
-            park(cx)
-        }, move |cx| shown_tab(cx) == Some(tab) && model(cx).nav.read(cx).settings_tab.as_ref() == tab.id())
+    step(&cx, "the user panel's gear", async |cx| click_probe(cx, "user-panel-settings").await, |cx| settings_open(cx)).await?;
+    for tab in [TabId::Appearance, TabId::Audio, TabId::About, TabId::Account] {
+        let key = format!("settings-tab:{}", tab.id());
+        step(&cx, &format!("the {} tab", tab.label()), async |cx| click_probe(cx, &key).await, move |cx| {
+            shown_tab(cx) == Some(tab) && model(cx).nav.read(cx).settings_tab.as_ref() == tab.id()
+        })
         .await?;
     }
     step(&cx, "Esc", async |cx| cx.keystroke("escape").map(|_| ()), |cx| !settings_open(cx)).await?;
@@ -769,11 +740,8 @@ async fn check_devices(cx: TestCx) -> Result<()> {
     cx.log(format_args!("the new device appeared (id {new}): signing it out"));
     click_probe(&cx, &format!("device-sign-out:{new}")).await?;
     wait_for(&cx, Duration::from_secs(5), "the confirmation", |cx| model(cx).live.devices.read(cx).confirming.is_some()).await?;
-    // The kit's ConfirmModal focuses its layer and takes Enter on its card: Tab into the card
-    // (Cancel, then the confirm button) and press it.
+    // Enter confirms as the dialog opens (the renderer's document listener; nothing in it focused).
     cx.settle().await?;
-    cx.keystroke("tab")?;
-    cx.keystroke("tab")?;
     cx.keystroke("enter")?;
     wait_for(&cx, Duration::from_secs(15), "the device to leave the list", move |cx| {
         device_ids(cx).is_some_and(|l| !l.iter().any(|d| d.0 == new))
@@ -797,22 +765,23 @@ async fn check_password(cx: TestCx) -> Result<()> {
     open_on(&cx, TabId::Account).await?;
     click_probe(&cx, "account-password").await?;
     wait_for(&cx, Duration::from_secs(5), "the password dialog", |cx| model(cx).live.devices.read(cx).password.is_some()).await?;
-    // A wrong current password is refused inline (and counts as a failed sign-in at central).
-    let set = |current: String, new: String, repeat: String| {
-        move |_: &mut gpui::Window, cx: &mut App| {
-            if let Some(d) = crate::handles::password(cx) {
-                d.update(cx, |d, cx| {
-                    d.set_fields(&current, &new, &repeat, cx);
-                    d.submit(cx);
-                });
-            }
-        }
-    };
-    cx.update(set(old.clone(), "short".into(), "short".into()))?;
-    let error = cx.update(|_, cx| model(cx).live.devices.read(cx).password.clone().and_then(|p| p.error))?;
-    cx.log(format_args!("too short: {error:?}"));
-    ensure!(error.as_deref() == Some("Your new password must be at least 8 characters."), "the length check");
-    cx.update(set(old.clone(), new.clone(), new.clone()))?;
+    // The current password has the focus (the renderer's autoFocus): type, Tab, type, Enter.
+    let error = |cx: &App| model(cx).live.devices.read(cx).password.clone().and_then(|p| p.error);
+    cx.type_text(&old)?;
+    cx.keystroke("tab")?;
+    cx.type_text("short")?;
+    cx.keystroke("tab")?;
+    cx.type_text("short")?;
+    cx.keystroke("enter")?;
+    wait_for(&cx, Duration::from_secs(5), "the length check", move |cx| error(cx).is_some()).await?;
+    let refused = cx.update(move |_, cx| error(cx))?;
+    cx.log(format_args!("too short, typed and submitted with Enter: {refused:?}"));
+    ensure!(refused.as_deref() == Some("Your new password must be at least 8 characters."), "the length check");
+    cx.keystroke("shift-tab")?;
+    retype(&cx, &new)?;
+    cx.keystroke("tab")?;
+    retype(&cx, &new)?;
+    cx.keystroke("enter")?;
     wait_for(&cx, Duration::from_secs(20), "the change to finish", |cx| model(cx).live.devices.read(cx).password.is_none()).await?;
     cx.log("password changed; the dialog closed");
     open_on(&cx, TabId::Devices).await?;
@@ -841,21 +810,19 @@ async fn check_rename(cx: TestCx) -> Result<()> {
         None => None,
     };
     wait_for(&cx, Duration::from_secs(5), "the rename dialog", move |cx| account(cx).is_some_and(|a| a.read(cx).rename.open)).await?;
-    // The rules first: the same name is refused before anything is sent.
-    let submit = |name: String, password: String| {
-        move |_: &mut gpui::Window, cx: &mut App| {
-            if let Some(a) = account(cx) {
-                a.update(cx, |a, cx| {
-                    a.set_rename_fields(&name, &password, cx);
-                    a.submit_rename(cx);
-                });
-            }
-        }
-    };
-    cx.update(submit(old.clone(), password.clone()))?;
-    let error = cx.update(move |_, cx| account(cx).and_then(|a| a.read(cx).rename.error.clone()))?;
-    ensure!(error.as_deref() == Some("That's already your username."), "the same-name check: {error:?}");
-    cx.update(submit(next.clone(), password))?;
+    // The rules first: the same name is refused before anything is sent. The name has the focus.
+    cx.type_text(&old)?;
+    cx.keystroke("tab")?;
+    cx.type_text(&password)?;
+    cx.keystroke("enter")?;
+    let error = move |cx: &App| account(cx).and_then(|a| a.read(cx).rename.error.clone());
+    wait_for(&cx, Duration::from_secs(5), "the same-name check", move |cx| error(cx).is_some()).await?;
+    let refused = cx.update(move |_, cx| error(cx))?;
+    ensure!(refused.as_deref() == Some("That's already your username."), "the same-name check: {refused:?}");
+    // Typed in capitals: the field lower-cases as typed (`onChange`), else the rules refuse it.
+    cx.keystroke("shift-tab")?;
+    retype(&cx, &next.to_uppercase())?;
+    cx.keystroke("enter")?;
     let uid = cx.update(|_, cx| model(cx).auth.read(cx).uid)?;
     let expected = next.clone();
     wait_for(&cx, Duration::from_secs(20), "the rename to land", move |cx| {
@@ -907,27 +874,23 @@ async fn check_e2ee(cx: TestCx) -> Result<()> {
     let passphrase = env("DECIBELL_TEST_PASSPHRASE")?;
     let status = |cx: &App| model(cx).live.e2ee.read(cx).status;
     let flow = |cx: &App| model(cx).live.e2ee.read(cx).passphrase.clone();
-    let submit = |p: String, c: String| {
-        move |_: &mut gpui::Window, cx: &mut App| {
-            if let Some(d) = crate::handles::passphrase(cx) {
-                d.update(cx, |d, cx| {
-                    d.set_fields(&p, &c, cx);
-                    d.submit(cx);
-                });
-            }
-        }
-    };
     if phase() == 1 {
         throwaway_sign_in(&cx, true, &password).await?;
         wait_for(&cx, Duration::from_secs(20), "the E2EE status (not set up)", move |cx| status(cx) == E2eeStatus::NotSetUp).await?;
         open_on(&cx, TabId::Privacy).await?;
         click_probe(&cx, "e2ee-setup").await?;
         wait_for(&cx, Duration::from_secs(5), "the set-up dialog", move |cx| flow(cx).is_some()).await?;
-        cx.update(submit(passphrase.clone(), "a different one!".into()))?;
+        // The passphrase has the focus: type it, Tab, a different confirmation, Enter.
+        cx.type_text(&passphrase)?;
+        cx.keystroke("tab")?;
+        cx.type_text("a different one!")?;
+        cx.keystroke("enter")?;
+        wait_for(&cx, Duration::from_secs(5), "the confirmation check", move |cx| flow(cx).is_some_and(|f| f.error.is_some())).await?;
         let mismatch = cx.update(move |_, cx| flow(cx).and_then(|f| f.error))?;
         ensure!(mismatch.as_deref() == Some("The passphrases don't match."), "the confirmation check: {mismatch:?}");
         let started = Instant::now();
-        cx.update(submit(passphrase.clone(), passphrase.clone()))?;
+        retype(&cx, &passphrase)?;
+        cx.keystroke("enter")?;
         ensure!(cx.update(move |_, cx| flow(cx).is_some_and(|f| f.busy))?, "the dialog isn't busy while the core works");
         wait_for(&cx, Duration::from_secs(60), "encryption to be ready", move |cx| status(cx) == E2eeStatus::Ready && flow(cx).is_none()).await?;
         let fingerprint = cx.update(|_, cx| model(cx).live.e2ee.read(cx).fingerprint.clone())?;
@@ -942,7 +905,9 @@ async fn check_e2ee(cx: TestCx) -> Result<()> {
         flow(cx).is_some_and(|f| f.mode == decibell_model::live::e2ee::PassphraseMode::Unlock)
     })
     .await?;
-    cx.update(submit("not-the-passphrase-at-all".into(), String::new()))?;
+    // The prompt focuses its field as it opens.
+    cx.type_text("not-the-passphrase-at-all")?;
+    cx.keystroke("enter")?;
     wait_for(&cx, Duration::from_secs(60), "the wrong passphrase's refusal", move |cx| {
         flow(cx).is_some_and(|f| !f.busy && f.error.is_some())
     })
@@ -950,7 +915,8 @@ async fn check_e2ee(cx: TestCx) -> Result<()> {
     let refusal = cx.update(move |_, cx| flow(cx).and_then(|f| f.error))?;
     cx.log(format_args!("a wrong passphrase: {refusal:?}"));
     ensure!(cx.update(move |_, cx| status(cx))? == E2eeStatus::Locked, "a wrong passphrase changed the status");
-    cx.update(submit(passphrase.clone(), String::new()))?;
+    retype(&cx, &passphrase)?;
+    cx.keystroke("enter")?;
     wait_for(&cx, Duration::from_secs(60), "the unlock", move |cx| status(cx) == E2eeStatus::Ready && flow(cx).is_none()).await?;
     cx.log("unlocked with the passphrase: ready");
     log_out(&cx).await
@@ -993,21 +959,42 @@ async fn check_audio(cx: TestCx) -> Result<()> {
     Ok(())
 }
 
-fn key_event(key: &'static str, modifiers: Modifiers) -> Result<PlatformInput> {
-    let mut keystroke = Keystroke::parse(key)?;
-    keystroke.modifiers = modifiers;
-    Ok(PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke, code: gpui::KeyCode::Unknown, is_held: false, prefer_character_input: false }))
+// ── Keys as GPUI's Linux layer reports them (patch 0012) ─────────────────────────────────────
+//
+// Each event carries what the layout makes of the key (`Keystroke`) and which physical key it is
+// (`KeyCode::Evdev`): the recorder must keep the second. The layouts are the desktop's business,
+// never touched here: the events are built as xkb's German and Turkish keymaps produce them
+// (the `hotkeys-layout` self-test checks the platform delivers them so).
+
+const CONTROL_L: u16 = 29;
+const SHIFT_L: u16 = 42;
+const SHIFT_R: u16 = 54;
+const ESCAPE: u16 = 1;
+const F9: u16 = 67;
+
+fn ctrl_shift() -> Modifiers {
+    Modifiers { control: true, shift: true, ..Default::default() }
 }
 
-fn key_up(key: &'static str, modifiers: Modifiers) -> Result<PlatformInput> {
-    let mut keystroke = Keystroke::parse(key)?;
-    keystroke.modifiers = modifiers;
-    Ok(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke, code: gpui::KeyCode::Unknown }))
+/// A key pressed and released: `key` / `typed` what the layout makes of it, `evdev` which key.
+fn press(cx: &TestCx, key: &str, typed: Option<&str>, evdev: u16, modifiers: Modifiers) -> Result<()> {
+    let keystroke = Keystroke { modifiers, key: key.into(), key_char: typed.map(str::to_string) };
+    cx.key_event(keystroke.clone(), KeyCode::Evdev(evdev), true)?;
+    cx.key_event(keystroke, KeyCode::Evdev(evdev), false)
 }
 
-fn input(cx: &TestCx, event: PlatformInput) -> Result<()> {
+/// A modifier key going down or up, with the modifiers as they are after it.
+fn modifier(cx: &TestCx, evdev: u16, pressed: bool, after: Modifiers) -> Result<()> {
+    cx.modifier_key(KeyCode::Evdev(evdev), pressed, after)
+}
+
+fn mouse(cx: &TestCx, button: MouseButton, at: gpui::Point<Pixels>, modifiers: Modifiers) -> Result<()> {
     cx.update(move |window, cx| {
-        window.dispatch_event(event, cx);
+        window.dispatch_event(
+            PlatformInput::MouseDown(gpui::MouseDownEvent { button, position: at, modifiers, click_count: 1, first_mouse: false }),
+            cx,
+        );
+        window.dispatch_event(PlatformInput::MouseUp(gpui::MouseUpEvent { button, position: at, modifiers, click_count: 1 }), cx);
     })
 }
 
@@ -1015,6 +1002,7 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     let hotkeys = |cx: &App| model(cx).settings.read(cx).get().hotkeys.clone();
     let recording = |cx: &App| model(cx).live.hotkeys.read(cx).recording;
+    let keys_of = move |cx: &App, row: usize| hotkeys(cx).get(row).map(|b| b.keys.clone()).unwrap_or_default();
     ensure!(cx.update(move |_, cx| hotkeys(cx))?.is_empty(), "a fresh profile has keybinds");
     open_on(&cx, TabId::Keybinds).await?;
     let status = cx.update(|_, cx| model(cx).live.hotkeys.read(cx).status.clone())?;
@@ -1023,14 +1011,16 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     // Add: a new row records at once; the core's listener is paused meanwhile.
     click_probe(&cx, "keybind-add").await?;
     wait_for(&cx, Duration::from_secs(3), "the new row to record", move |cx| recording(cx) && hotkeys(cx).len() == 1).await?;
-    let ctrl_shift = Modifiers { control: true, shift: true, ..Default::default() };
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers { control: true, ..Default::default() }, capslock: Default::default(), key: None }))?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: ctrl_shift, capslock: Default::default(), key: None }))?;
-    input(&cx, key_event("f9", ctrl_shift)?)?;
-    input(&cx, key_up("f9", ctrl_shift)?)?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default(), key: None }))?;
+    let paused = cx.update(|_, cx| model(cx).live.hotkeys.read(cx).recording)?;
+    ensure!(paused, "the listener isn't paused while recording");
+    let ctrl = Modifiers::control();
+    modifier(&cx, CONTROL_L, true, ctrl)?;
+    modifier(&cx, SHIFT_L, true, ctrl_shift())?;
+    press(&cx, "f9", None, F9, ctrl_shift())?;
+    modifier(&cx, SHIFT_L, false, ctrl)?;
+    modifier(&cx, CONTROL_L, false, Modifiers::default())?;
     wait_for(&cx, Duration::from_secs(3), "the combo to be recorded", move |cx| {
-        !recording(cx) && hotkeys(cx).first().is_some_and(|b| b.keys == ["Control", "Shift", "F9"])
+        !recording(cx) && keys_of(cx, 0) == ["Control", "Shift", "F9"]
     })
     .await?;
     let first = cx.update(move |_, cx| hotkeys(cx))?;
@@ -1038,26 +1028,81 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     // Escape alone cancels: the new row goes.
     click_probe(&cx, "keybind-add").await?;
     wait_for(&cx, Duration::from_secs(3), "the second row to record", move |cx| recording(cx) && hotkeys(cx).len() == 2).await?;
-    input(&cx, key_event("escape", Modifiers::default())?)?;
+    press(&cx, "escape", None, ESCAPE, Modifiers::default())?;
     wait_for(&cx, Duration::from_secs(3), "Escape to cancel and drop the empty row", move |cx| !recording(cx) && hotkeys(cx).len() == 1).await?;
     ensure!(cx.update(|_, cx| settings_open(cx))?, "Escape while recording closed Settings");
     // The same combo on a second action is named as a conflict.
     click_probe(&cx, "keybind-add").await?;
     wait_for(&cx, Duration::from_secs(3), "the third row to record", move |cx| recording(cx) && hotkeys(cx).len() == 2).await?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: ctrl_shift, capslock: Default::default(), key: None }))?;
-    input(&cx, key_event("f9", ctrl_shift)?)?;
-    input(&cx, PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default(), key: None }))?;
+    modifier(&cx, CONTROL_L, true, ctrl)?;
+    modifier(&cx, SHIFT_L, true, ctrl_shift())?;
+    press(&cx, "f9", None, F9, ctrl_shift())?;
+    modifier(&cx, SHIFT_L, false, ctrl)?;
+    modifier(&cx, CONTROL_L, false, Modifiers::default())?;
     wait_for(&cx, Duration::from_secs(3), "the second combo", move |cx| !recording(cx) && hotkeys(cx).iter().all(|b| !b.keys.is_empty())).await?;
     let all = cx.update(move |_, cx| hotkeys(cx))?;
     let problem = crate::tabs::keybinds::binding_problem(&all[1], &all, Some(&status));
     cx.log(format_args!("the twin: {problem:?}"));
     ensure!(problem.as_deref().is_some_and(|p| p.starts_with("Same keys as")), "no conflict named");
+
+    // Record the second row again, as other keyboards send their keys: the physical key is
+    // stored, whatever the layout types with it.
+    // (layout, what, the keys (key, what it types, evdev code), what is recorded)
+    type Case<'a> = (&'a str, &'a str, &'a [(&'a str, Option<&'a str>, u16)], &'a [&'a str]);
+    let cases: [Case; 4] = [
+        ("de", "Ctrl + the key labelled Z", &[("z", Some("z"), 21)], &["Control", "KeyY"]),
+        ("de", "the key labelled Ö", &[("ö", Some("ö"), 39)], &["Semicolon"]),
+        ("tr", "the key labelled Ş", &[("ş", Some("ş"), 39)], &["Semicolon"]),
+        ("tr", "the key labelled i (dotted)", &[("i", Some("i"), 40)], &["Quote"]),
+    ];
+    for (layout, what, keys, expected) in cases {
+        click_probe(&cx, "keybind-record:1").await?;
+        wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
+        let with_ctrl = expected.first() == Some(&"Control");
+        if with_ctrl {
+            modifier(&cx, CONTROL_L, true, ctrl)?;
+        }
+        for (key, typed, evdev) in keys {
+            press(&cx, key, *typed, *evdev, if with_ctrl { ctrl } else { Modifiers::default() })?;
+        }
+        if with_ctrl {
+            modifier(&cx, CONTROL_L, false, Modifiers::default())?;
+        }
+        let want: Vec<String> = expected.iter().map(|k| k.to_string()).collect();
+        let want_now = want.clone();
+        wait_for(&cx, Duration::from_secs(3), &format!("{layout}: {what}"), move |cx| !recording(cx) && keys_of(cx, 1) == want_now).await?;
+        cx.log(format_args!("{layout}: {what} → {want:?}"));
+    }
+    // Modifiers alone: complete as the last one is released, sides kept.
+    click_probe(&cx, "keybind-record:1").await?;
+    wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
+    let shift = Modifiers::shift();
+    modifier(&cx, SHIFT_R, true, shift)?;
+    modifier(&cx, CONTROL_L, true, ctrl_shift())?;
+    modifier(&cx, SHIFT_R, false, ctrl)?;
+    modifier(&cx, CONTROL_L, false, Modifiers::default())?;
+    wait_for(&cx, Duration::from_secs(3), "right Shift + left Ctrl alone", move |cx| {
+        !recording(cx) && keys_of(cx, 1) == ["ControlLeft", "ShiftRight"]
+    })
+    .await?;
+    cx.log("right Shift + left Ctrl, released: [\"ControlLeft\", \"ShiftRight\"]");
+    // A mouse side button with a modifier held.
+    click_probe(&cx, "keybind-record:1").await?;
+    wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
+    let at = wait_probe(&cx, "keybind-record:1").await?.center();
+    modifier(&cx, SHIFT_L, true, shift)?;
+    mouse(&cx, MouseButton::Navigate(gpui::NavigationDirection::Back), at, shift)?;
+    modifier(&cx, SHIFT_L, false, Modifiers::default())?;
+    wait_for(&cx, Duration::from_secs(3), "Shift + the back button", move |cx| !recording(cx) && keys_of(cx, 1) == ["Shift", "Mouse4"]).await?;
+    cx.log("Shift + the back button: [\"Shift\", \"Mouse4\"]");
+    park(&cx)?;
+
     // Remove both.
     click_probe(&cx, "keybind-remove:1").await?;
     click_probe(&cx, "keybind-remove:0").await?;
     wait_for(&cx, Duration::from_secs(3), "the rows to go", move |cx| hotkeys(cx).is_empty()).await?;
     // Saved: config.json has what the tab shows (after the save's debounce).
-    let (a, b) = (all[0].id.clone(), all[1].id.clone());
+    let a = all[0].id.clone();
     cx.update(move |_, cx| {
         let s = model(cx).settings.clone();
         s.update(cx, |s, cx| {
@@ -1073,7 +1118,6 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
             )
         })
     })?;
-    let _ = b;
     cx.sleep(Duration::from_millis(600)).await;
     let config = decibell_core::api::settings::load_config().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let saved = config["settings"]["hotkeys"].as_array().map_or(0, Vec::len);
@@ -1082,6 +1126,10 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     cx.update(|_, cx| actions::hotkeys::set_bindings(Vec::new(), cx))?;
     cx.sleep(Duration::from_millis(600)).await;
     log_out(&cx).await
+}
+
+fn network(cx: &App) -> Option<gpui::Entity<crate::tabs::network::NetworkTab>> {
+    crate::handles::settings(cx)?.read(cx).view()?.view().downcast::<crate::tabs::network::NetworkTab>().ok()
 }
 
 async fn check_network(cx: TestCx) -> Result<()> {
@@ -1093,26 +1141,21 @@ async fn check_network(cx: TestCx) -> Result<()> {
     open_on(&cx, TabId::Network).await?;
     click_probe(&cx, "rate-up:10 MB/s").await?;
     wait_for(&cx, Duration::from_secs(3), "the upload preset", move |cx| caps(cx).0 == 10 * 1024 * 1024).await?;
-    let network = |cx: &App| match crate::handles::settings(cx).and_then(|o| o.read(cx).view().map(|v| v.view())) {
-        Some(view) => view.downcast::<crate::tabs::network::NetworkTab>().ok(),
-        None => None,
-    };
-    cx.update(move |_, cx| {
-        if let Some(n) = network(cx) {
-            n.update(cx, |n, cx| {
-                n.set_custom_text(crate::tabs::network::Direction::Download, "3.5", cx);
-                n.commit(crate::tabs::network::Direction::Download, cx);
-            });
-        }
-    })?;
+    // The custom box: a click, typed, Enter.
+    click_probe(&cx, "rate-down-custom").await?;
+    retype(&cx, "3.5")?;
+    ensure!(cx.update(|_, cx| network(cx).is_some_and(|n| n.read(cx).dirty(cx)))?, "the typed value isn't a draft");
+    cx.keystroke("enter")?;
     wait_for(&cx, Duration::from_secs(3), "the custom download cap", move |cx| caps(cx).1 == (3.5 * 1024. * 1024.) as u64).await?;
     cx.sleep(Duration::from_millis(600)).await;
     let config = decibell_core::api::settings::load_config().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let saved = (config["settings"]["upload_limit_bps"].as_u64(), config["settings"]["download_limit_bps"].as_u64());
-    cx.log(format_args!("saved: {saved:?}"));
+    cx.log(format_args!("typed 3.5 and Enter: saved {saved:?}"));
     ensure!(saved == (Some(10 * 1024 * 1024), Some((3.5 * 1024. * 1024.) as u64)), "config.json doesn't hold the caps");
-    if decibell_model::chat::CoreAttachmentService::attachments().is_some() {
-        cx.log("the attachment service runs: it has the caps");
+    if let Some(service) = decibell_model::chat::CoreAttachmentService::attachments() {
+        let (up, down) = (service.limits().upload_rate(), service.limits().download_rate());
+        cx.log(format_args!("the attachment service runs: its caps are {up} / {down} B/s"));
+        ensure!((up, down) == (10 * 1024 * 1024, (3.5 * 1024. * 1024.) as u64), "the service didn't get the caps");
     }
     click_probe(&cx, "rate-up:Unlimited").await?;
     click_probe(&cx, "rate-down:Unlimited").await?;
@@ -1123,35 +1166,44 @@ async fn check_network(cx: TestCx) -> Result<()> {
 
 async fn check_shake(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
-    open_on(&cx, TabId::Network).await?;
-    let network = |cx: &App| match crate::handles::settings(cx).and_then(|o| o.read(cx).view().map(|v| v.view())) {
-        Some(view) => view.downcast::<crate::tabs::network::NetworkTab>().ok(),
-        None => None,
-    };
+    let upload = |cx: &App| model(cx).settings.read(cx).get().upload_limit_bps;
     let nudges = move |cx: &App| network(cx).map_or(0, |n| n.read(cx).nudges());
-    // Typed, not applied: a draft.
-    cx.update(move |_, cx| {
-        if let Some(n) = network(cx) {
-            n.update(cx, |n, cx| n.set_custom_text(crate::tabs::network::Direction::Upload, "12.5", cx));
-        }
-    })?;
-    ensure!(cx.update(move |_, cx| network(cx).is_some_and(|n| n.read(cx).dirty()))?, "the typed value isn't a draft");
+    let draft = |cx: &App| network(cx).is_some_and(|n| n.read(cx).dirty(cx));
+    open_on(&cx, TabId::Network).await?;
+    // Typed, not applied: a draft (the box keeps the focus).
+    click_probe(&cx, "rate-up-custom").await?;
+    retype(&cx, "12.5")?;
+    ensure!(cx.update(move |_, cx| draft(cx))?, "the typed value isn't a draft");
     step(&cx, "Esc with a draft", async |cx| cx.keystroke("escape").map(|_| ()), move |cx| nudges(cx) == 1).await?;
     ensure!(cx.update(|_, cx| settings_open(cx))?, "Esc closed the window over a draft");
-    let account = nav_tab(&cx, 0)?;
-    step(&cx, "another tab with a draft", async |cx| {
-        cx.click(account)?;
-        park(cx)
-    }, move |cx| nudges(cx) == 2)
-    .await?;
-    ensure!(cx.update(|_, cx| shown_tab(cx))? == Some(TabId::Network), "the tab switched over a draft");
-    cx.log("Esc and a tab switch shook the save bar; the window and the tab stayed");
+    ensure!(cx.update(move |_, cx| upload(cx))? == 0, "Esc applied the draft");
+    cx.log("Esc with a typed value shook the save bar; the window stayed, nothing applied");
+    // The save bar's Reset drops it: Esc closes.
     cx.update(move |_, cx| {
         if let Some(n) = network(cx) {
             n.update(cx, |n, cx| n.reset(cx));
         }
     })?;
     step(&cx, "Esc after Reset", async |cx| cx.keystroke("escape").map(|_| ()), |cx| !settings_open(cx)).await?;
+    // A press anywhere else takes the focus from the box, which applies what it holds
+    // (`onBlur`): another tab opens, with the cap applied.
+    open_on(&cx, TabId::Network).await?;
+    click_probe(&cx, "rate-up-custom").await?;
+    retype(&cx, "12.5")?;
+    step(&cx, "another tab with a typed value", async |cx| click_probe(cx, "settings-tab:account").await, move |cx| {
+        shown_tab(cx) == Some(TabId::Account)
+    })
+    .await?;
+    let applied = cx.update(move |_, cx| upload(cx))?;
+    cx.log(format_args!("a press on another tab applied the typed value first ({applied} B/s), then the tab opened"));
+    ensure!(applied == (12.5 * 1024. * 1024.) as u64, "the press elsewhere didn't apply the typed value");
+    // Put perf1's cap back.
+    cx.update(|_, cx| {
+        let s = model(cx).settings.clone();
+        s.update(cx, |s, cx| s.change(|v| v.upload_limit_bps = 0, cx));
+    })?;
+    cx.sleep(Duration::from_millis(600)).await;
+    cx.keystroke("escape")?;
     log_out(&cx).await
 }
 

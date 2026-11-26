@@ -7,15 +7,17 @@
 //!   avatar store follows `avatar_changed`.
 //! - Change username: the rename dialog ([`crate::dialogs::rename`]), drawn here. Change password:
 //!   the model's flow (`live.devices.open_password`), its own overlay.
-//! - Log Out: hang up first (the renderer's `endCall(null)`), then the core forgets this device at
-//!   central and drops every connection; `logged_out` clears the stores and closes Settings.
+//! - Log Out (`actions::auth::log_out`): hang up first (the renderer's `endCall(null)`), then the
+//!   core forgets this device at central and drops every connection; `logged_out` clears the
+//!   stores and closes Settings.
 
 use decibell_common::{UserAvatar, Watch};
 use decibell_model::live::presence::avatars::AvatarsChanged;
 use decibell_model::stores::users::NamesChanged;
 use decibell_model::{Model, Uid, actions};
 use decibell_ui::identity::{avatar_color, person_slot};
-use decibell_ui::{ActiveTheme as _, Button, ButtonVariant, FontRole, Icon, IconName, Label, ScrollHandle};
+use decibell_ui::motion::Transition;
+use decibell_ui::{ActiveTheme as _, Button, ButtonSize, ButtonVariant, FontRole, Hover, Icon, IconName, Label, ScrollHandle};
 use gpui::{
     AnyElement, App, Context, Hsla, IntoElement, Render, SharedString, Window, div, linear_color_stop, linear_gradient,
     prelude::*, px,
@@ -24,7 +26,7 @@ use gpui::{
 use super::TabId;
 use crate::dialogs::rename::{self, RenameForm};
 use crate::hooks::{PictureEvent, SettingsHooks};
-use crate::rows::{Btn, TextLink, danger_soft_look, hover};
+use crate::rows::TextLink;
 use crate::window::CloseLink;
 
 #[derive(Clone, PartialEq)]
@@ -45,7 +47,7 @@ pub struct AccountTab {
 }
 
 impl AccountTab {
-    pub fn new(close: CloseLink, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(close: CloseLink, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
         let shown_of = |a: &decibell_model::stores::auth::AuthStore| Shown {
             uid: a.uid,
@@ -63,7 +65,7 @@ impl AccountTab {
             .event(&model.users, cx, |this: &mut AccountTab, e: &NamesChanged| e.0.contains(&this.shown.uid))
             .event(&model.live.presence.avatars, cx, |this: &mut AccountTab, e: &AvatarsChanged| e.0.contains(&this.shown.uid));
         let shown = shown_of(model.auth.read(cx));
-        let mut rename = RenameForm::new(cx);
+        let mut rename = RenameForm::new(|t: &mut AccountTab| &mut t.rename, window, cx);
         rename.open = SettingsHooks::get(cx).staged.open_rename;
         Self { scroll: ScrollHandle::new(), close, shown, removing: false, rename, _watch: watch }
     }
@@ -71,17 +73,6 @@ impl AccountTab {
     pub fn open_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rename.open(window, cx);
         cx.notify();
-    }
-
-    /// The rename form's fields as typing would set them (the self-tests' way in).
-    pub fn set_rename_fields(&mut self, name: &str, password: &str, cx: &mut Context<Self>) {
-        self.rename.name.set(name);
-        self.rename.password.set(password);
-        cx.notify();
-    }
-
-    pub fn submit_rename(&mut self, cx: &mut Context<Self>) {
-        rename::submit(self, |t| &mut t.rename, cx);
     }
 
     fn remove_picture(&mut self, cx: &mut Context<Self>) {
@@ -115,12 +106,6 @@ fn request_picture(cx: &mut App) {
     pictures.update(cx, |p, cx| p.request(PictureEvent::ChangeAvatar, cx));
 }
 
-/// `log out`: hang up (and tell the peer) before the central session goes away, then sign out.
-pub fn log_out(cx: &mut App) {
-    actions::calls::end_call(None, true, cx);
-    actions::auth::sign_out(cx);
-}
-
 /// `userGradient`: `linear-gradient(135deg, av-N, color-mix(av-N 72%, #000))`.
 fn banner(base: Hsla) -> gpui::Background {
     let mut dark: gpui::Rgba = base.into();
@@ -134,7 +119,8 @@ fn banner(base: Hsla) -> gpui::Background {
 /// camera, and the pencil badge at the corner.
 fn picture_button(uid: Uid, name: SharedString, window: &mut Window, cx: &mut App) -> AnyElement {
     let id: gpui::ElementId = "account-picture".into();
-    let (h, listener) = hover(window, cx, &id);
+    let hover = Hover::new(window, cx, id.clone(), Some(Transition::TAILWIND));
+    let (h, listener) = (hover.progress, hover.listener());
     let theme = cx.theme();
     let radius = theme.avatar_radius(px(80.));
     let ring = theme.shadow_ring.clone();
@@ -293,12 +279,13 @@ impl Render for AccountTab {
 
         // `mt-5 rounded-md border border-error/20 bg-error/10 px-5 py-2.5 text-[13px] font-medium`.
         let log_out_button = div().mt_5().flex().child(
-            Btn::new("account-log-out", "Log Out", danger_soft_look(cx), cx.theme().radius_md)
-                .pad(20., 10.)
-                .on_click(|_, _, cx| log_out(cx)),
+            Button::new("account-log-out", "Log Out")
+                .variant(ButtonVariant::DangerSoft)
+                .size(ButtonSize::Lg)
+                .on_click(|_, _, cx| actions::auth::log_out(cx)),
         );
 
-        let dialog = rename::render(&self.rename, username, |t: &mut AccountTab| &mut t.rename, cx);
+        let dialog = rename::render(&self.rename, |t: &mut AccountTab| &mut t.rename, window, cx);
         super::pane(TabId::Account, &self.scroll, &self.close)
             .child(div().child(card).child(log_out_button))
             .child(dialog)

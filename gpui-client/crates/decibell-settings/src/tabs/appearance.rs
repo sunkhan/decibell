@@ -26,8 +26,7 @@ use gpui::{
 };
 
 use super::TabId;
-use crate::fmt;
-use crate::rows::{Btn, Look, hover, section_label};
+use crate::rows::{Btn, Look, section_label};
 use crate::window::CloseLink;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -106,7 +105,8 @@ fn card_tick(accent: gpui::Hsla, content: gpui::Hsla) -> impl IntoElement {
 
 fn theme_card(this: &AppearanceTab, id: ThemeId, window: &mut Window, cx: &mut Context<AppearanceTab>) -> AnyElement {
     let element_id: gpui::ElementId = ("theme-card", id.index()).into();
-    let (h, listener) = hover(window, cx, &element_id);
+    let hover = decibell_ui::Hover::new(window, cx, element_id.clone(), Some(decibell_ui::motion::Transition::TAILWIND));
+    let (h, listener) = (hover.progress, hover.listener());
     let selected = id == this.shown.theme;
     let focus = this.cards[id.index()].clone();
     let theme = cx.theme();
@@ -268,6 +268,13 @@ fn scale_slider(
 }
 
 /// `${Math.round(px * 10) / 10}px`.
+/// Appearance's sample time (`SAMPLE_TIME = new Date(2026, 0, 1, 14, 32)`, an afternoon so the
+/// 12- and 24-hour samples differ) in the chosen clock, the system's regional format for
+/// Automatic (`formatClock`).
+fn sample_time(format: TimeFormat) -> String {
+    decibell_model::regional::Regional::get().time(14, 32, format)
+}
+
 fn px_readout(value: f32) -> String {
     let rounded = (value * 10.).round() / 10.;
     if rounded.fract() == 0. { format!("{}px", rounded as i64) } else { format!("{rounded}px") }
@@ -302,7 +309,7 @@ impl Render for AppearanceTab {
 
         // Text size: a real message row (the sample scales as the chat will).
         let name_color = decibell_ui::identity::name_color(theme, person_slot(me, username.as_deref().unwrap_or("?")));
-        let time_label = format!("Today at {}", fmt::clock(fmt::sample_time(), s.time_format));
+        let time_label = format!("Today at {}", sample_time(s.time_format));
         let scaled = theme.scaled;
         let avatar: AnyElement = match &username {
             Some(name) => UserAvatar::new(me, name.clone(), 38.).into_any_element(),
@@ -435,13 +442,12 @@ impl Render for AppearanceTab {
         );
 
         let theme = cx.theme();
-        let sample = fmt::sample_time();
         // The renderer said "Follows your system language": here Automatic is the system's
-        // regional format (owner, 2026-11-26), and the text says so.
+        // regional format (owner, 2026-11-26), and the text says so with its real time.
         let note = if s.time_format == TimeFormat::Auto {
-            format!("Follows your system's regional format: {}.", fmt::clock(sample, TimeFormat::Auto))
+            format!("Follows your system's regional format: {}.", sample_time(TimeFormat::Auto))
         } else {
-            format!("Times show as {}.", fmt::clock(sample, s.time_format))
+            format!("Times show as {}.", sample_time(s.time_format))
         };
         let time = div()
             .mt_6()
