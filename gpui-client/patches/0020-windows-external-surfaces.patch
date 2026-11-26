@@ -1,0 +1,834 @@
+diff --git a/crates/gpui_windows/build.rs b/crates/gpui_windows/build.rs
+index 4b5c3d6..ffc3bd6 100644
+--- a/crates/gpui_windows/build.rs
++++ b/crates/gpui_windows/build.rs
+@@ -40,6 +40,7 @@ mod shader_compilation {
+             "monochrome_sprite",
+             "subpixel_sprite",
+             "polychrome_sprite",
++            "surface",
+         ];
+ 
+         let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);
+diff --git a/crates/gpui_windows/src/directx_devices.rs b/crates/gpui_windows/src/directx_devices.rs
+index 8e65e6e..940bcb3 100644
+--- a/crates/gpui_windows/src/directx_devices.rs
++++ b/crates/gpui_windows/src/directx_devices.rs
+@@ -12,6 +12,7 @@ use windows::Win32::{
+             D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG,
+             D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS, D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS,
+             D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
++            ID3D11Multithread,
+         },
+         Dxgi::{
+             CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
+@@ -63,12 +64,33 @@ impl DirectXDevices {
+             _ => unreachable!(),
+         }
+ 
+-        Ok(Self {
++        // The immediate context may be used from threads other than the one that draws
++        // (hardware video decode on this device: `directx_surface.rs`). With multithread
++        // protection every context call takes the context's critical section; set here, before
++        // anything else can use the context, so that no call is ever made without it.
++        match device_context.cast::<ID3D11Multithread>() {
++            Ok(multithread) => {
++                // Safety: a method of the context's own multithread interface.
++                let _ = unsafe { multithread.SetMultithreadProtected(true) };
++            }
++            Err(error) => log::warn!(
++                "The Direct3D context has no multithread protection ({error}); \
++                 hardware video decode on it is unsafe"
++            ),
++        }
++
++        let devices = Self {
+             adapter,
+             dxgi_factory,
+             device,
+             device_context,
+-        })
++        };
++        crate::set_shared_devices(Some(crate::D3d11Devices {
++            adapter: devices.adapter.clone(),
++            device: devices.device.clone(),
++            context: devices.device_context.clone(),
++        }));
++        Ok(devices)
+     }
+ }
+ 
+diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
+index ad733bd..917d84b 100644
+--- a/crates/gpui_windows/src/directx_renderer.rs
++++ b/crates/gpui_windows/src/directx_renderer.rs
+@@ -90,6 +90,7 @@ struct DirectXRenderPipelines {
+     mono_sprites: PipelineState<MonochromeSprite>,
+     subpixel_sprites: PipelineState<SubpixelSprite>,
+     poly_sprites: PipelineState<PolychromeSprite>,
++    surfaces: SurfacePipeline,
+ }
+ 
+ struct DirectXGlobalElements {
+@@ -357,6 +358,12 @@ impl DirectXRenderer {
+             // and so likely do not have the textures anymore that are required for drawing
+             return Ok(());
+         }
++        // The frame's calls are not interleaved with another thread's use of the immediate
++        // context (hardware video decode on this device: see `directx_surface.rs`).
++        let _context = self
++            .devices
++            .as_ref()
++            .and_then(|devices| D3d11ContextGuard::enter(&devices.device_context));
+         self.render(scene, background_appearance)?;
+         self.present()
+     }
+@@ -478,6 +485,10 @@ impl DirectXRenderer {
+             !self.skip_draws,
+             "render_to_image unavailable while recovering from a lost device"
+         );
++        let _context = self
++            .devices
++            .as_ref()
++            .and_then(|devices| D3d11ContextGuard::enter(&devices.device_context));
+         self.render(scene, background_appearance)?;
+ 
+         let devices = self.devices.as_ref().context("devices missing")?;
+@@ -842,10 +853,35 @@ impl DirectXRenderer {
+         )
+     }
+ 
++    /// One draw per surface: each samples its own plane textures, resolved here to the picture
++    /// its source holds right now (not when the element painted).
+     fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
+         if surfaces.is_empty() {
+             return Ok(());
+         }
++        let devices = self.devices.as_ref().context("devices missing")?;
++        let mut drew = false;
++        for surface in surfaces {
++            let (source, fit) = match surface.source.0.downcast_ref::<D3d11SurfaceView>() {
++                Some(view) => (Some(&*view.surface), view.fit),
++                None => (
++                    surface.source.0.downcast_ref::<D3d11Surface>(),
++                    SurfaceFit::Fill,
++                ),
++            };
++            let Some(frame) = source.and_then(|source| source.acquire(&devices.device)) else {
++                continue;
++            };
++            self.pipelines
++                .surfaces
++                .draw(&devices.device_context, surface, &frame, fit)?;
++            drew = true;
++            // `frame` is released here: the draw is issued, and anything written to its planes
++            // from now on is executed after it.
++        }
++        if drew {
++            self.pipelines.surfaces.unbind(&devices.device_context);
++        }
+         Ok(())
+     }
+ 
+@@ -1018,6 +1054,7 @@ impl DirectXRenderPipelines {
+             create_blend_state(device)?,
+         )?;
+         let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
++        let surfaces = SurfacePipeline::new(device)?;
+ 
+         Ok(Self {
+             shadow_pipeline,
+@@ -1030,6 +1067,7 @@ impl DirectXRenderPipelines {
+             mono_sprites,
+             subpixel_sprites,
+             poly_sprites,
++            surfaces,
+         })
+     }
+ }
+@@ -1329,6 +1367,219 @@ impl OpaqueQuadPipeline {
+     }
+ }
+ 
++/// What `surface_vertex` / `surface_fragment` read from constant buffer 2. Field for field the
++/// `SurfaceParams` of `shaders.hlsl` (HLSL packs these `float4`-sized members without padding).
++#[derive(Clone, Copy, Debug, Default)]
++#[repr(C)]
++struct SurfaceParams {
++    /// Where the picture goes: the painted bounds, fitted.
++    bounds: [f32; 4],
++    content_mask: [f32; 4],
++    /// What the corner radii round: the bounds the element painted.
++    clip_bounds: [f32; 4],
++    corner_radii: [f32; 4],
++    /// Rows of the matrix taking (Y', Cb, Cr, 1) to gamma-encoded R'G'B'.
++    ycbcr_to_rgb: [[f32; 4]; 3],
++    /// The part of the texture shown in `bounds`: origin and size in texture coordinates.
++    uv_rect: [f32; 4],
++    /// Offset of the chroma samples, in texture coordinates.
++    chroma_offset: [f32; 2],
++    /// The luma texture's size in texels.
++    texture_size: [f32; 2],
++}
++
++/// Where a picture of `picture` pixels goes in `bounds` (origin and size in device pixels) and
++/// which part of it is shown (origin and size, as fractions of the picture): the fitted bounds,
++/// snapped to whole pixels, and the picture rectangle.
++fn fit_surface(bounds: [f32; 4], picture: [f32; 2], fit: SurfaceFit) -> ([f32; 4], [f32; 4]) {
++    let [x, y, width, height] = bounds;
++    if width <= 0.0 || height <= 0.0 {
++        return (bounds, [0.0, 0.0, 1.0, 1.0]);
++    }
++    let scale = [width / picture[0], height / picture[1]];
++    match fit {
++        SurfaceFit::Fill => (bounds, [0.0, 0.0, 1.0, 1.0]),
++        SurfaceFit::Contain => {
++            let scale = scale[0].min(scale[1]);
++            let size = [
++                (picture[0] * scale).round().clamp(1.0, width),
++                (picture[1] * scale).round().clamp(1.0, height),
++            ];
++            (
++                [
++                    x + ((width - size[0]) / 2.0).round(),
++                    y + ((height - size[1]) / 2.0).round(),
++                    size[0],
++                    size[1],
++                ],
++                [0.0, 0.0, 1.0, 1.0],
++            )
++        }
++        SurfaceFit::Cover => {
++            let scale = scale[0].max(scale[1]);
++            let shown = [
++                (width / (picture[0] * scale)).min(1.0),
++                (height / (picture[1] * scale)).min(1.0),
++            ];
++            (
++                bounds,
++                [
++                    (1.0 - shown[0]) / 2.0,
++                    (1.0 - shown[1]) / 2.0,
++                    shown[0],
++                    shown[1],
++                ],
++            )
++        }
++    }
++}
++
++/// Draws application-owned pictures (`directx_surface.rs`): two plane textures per picture,
++/// Y'CbCr to R'G'B' in the fragment shader.
++struct SurfacePipeline {
++    vertex: ID3D11VertexShader,
++    fragment: ID3D11PixelShader,
++    blend_state: ID3D11BlendState,
++    depth_stencil_state: ID3D11DepthStencilState,
++    params_buffer: Option<ID3D11Buffer>,
++    /// Linear, clamped at the picture's edge (the sprite sampler wraps).
++    sampler: Option<ID3D11SamplerState>,
++}
++
++impl SurfacePipeline {
++    /// The constant buffer slot of `SurfaceParams`, and the first of the two texture slots
++    /// (luma, then chroma) and the sampler slot the surface shaders read. Slots no other
++    /// pipeline of this renderer uses, so that nothing else has to be bound again afterwards.
++    const PARAMS_SLOT: u32 = 2;
++    const TEXTURE_SLOT: u32 = 4;
++    const SAMPLER_SLOT: u32 = 1;
++
++    fn new(device: &ID3D11Device) -> Result<Self> {
++        let vertex = {
++            let raw_shader = RawShaderBytes::new(ShaderModule::Surface, ShaderTarget::Vertex)?;
++            create_vertex_shader(device, raw_shader.as_bytes())?
++        };
++        let fragment = {
++            let raw_shader = RawShaderBytes::new(ShaderModule::Surface, ShaderTarget::Fragment)?;
++            create_fragment_shader(device, raw_shader.as_bytes())?
++        };
++        let sampler = unsafe {
++            let desc = D3D11_SAMPLER_DESC {
++                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
++                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
++                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
++                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
++                MipLODBias: 0.0,
++                MaxAnisotropy: 1,
++                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
++                BorderColor: [0.0; 4],
++                MinLOD: 0.0,
++                MaxLOD: D3D11_FLOAT32_MAX,
++            };
++            let mut output = None;
++            device.CreateSamplerState(&desc, Some(&mut output))?;
++            output
++        };
++        Ok(Self {
++            vertex,
++            fragment,
++            blend_state: create_blend_state(device)?,
++            depth_stencil_state: create_depth_stencil_state(device, D3D11_DEPTH_WRITE_MASK_ZERO)?,
++            params_buffer: create_constant_buffer::<SurfaceParams>(device)?,
++            sampler,
++        })
++    }
++
++    fn draw(
++        &self,
++        device_context: &ID3D11DeviceContext,
++        surface: &PaintSurface,
++        frame: &D3d11SurfaceFrame,
++        fit: SurfaceFit,
++    ) -> Result<()> {
++        let planes = &frame.planes;
++        let picture = [planes.size.0.max(1) as f32, planes.size.1.max(1) as f32];
++        let texture = [
++            planes.texture_size.0.max(planes.size.0).max(1) as f32,
++            planes.texture_size.1.max(planes.size.1).max(1) as f32,
++        ];
++        let painted = [
++            surface.bounds.origin.x.0,
++            surface.bounds.origin.y.0,
++            surface.bounds.size.width.0,
++            surface.bounds.size.height.0,
++        ];
++        let (bounds, shown) = fit_surface(painted, picture, fit);
++        // From fractions of the picture to texture coordinates (the picture is the texture's
++        // top-left part).
++        let picture_in_texture = [picture[0] / texture[0], picture[1] / texture[1]];
++        let mask = &surface.content_mask.bounds;
++        let radii = &surface.corner_radii;
++        // The chroma plane has half the luma plane's texels.
++        let chroma_texels = [(texture[0] / 2.0).max(1.0), (texture[1] / 2.0).max(1.0)];
++        let params = SurfaceParams {
++            bounds,
++            content_mask: [
++                mask.origin.x.0,
++                mask.origin.y.0,
++                mask.size.width.0,
++                mask.size.height.0,
++            ],
++            clip_bounds: painted,
++            corner_radii: [
++                radii.top_left.0,
++                radii.top_right.0,
++                radii.bottom_right.0,
++                radii.bottom_left.0,
++            ],
++            ycbcr_to_rgb: frame.color.ycbcr_to_rgb_rows(),
++            uv_rect: [
++                shown[0] * picture_in_texture[0],
++                shown[1] * picture_in_texture[1],
++                shown[2] * picture_in_texture[0],
++                shown[3] * picture_in_texture[1],
++            ],
++            chroma_offset: [
++                frame.color.chroma_offset[0] / chroma_texels[0],
++                frame.color.chroma_offset[1] / chroma_texels[1],
++            ],
++            texture_size: texture,
++        };
++        let params_buffer = self
++            .params_buffer
++            .as_ref()
++            .context("surface params buffer missing")?;
++        update_buffer(device_context, params_buffer, &[params])?;
++        let textures = [Some(planes.luma.clone()), Some(planes.chroma.clone())];
++        unsafe {
++            device_context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
++            device_context.VSSetShader(&self.vertex, None);
++            device_context.PSSetShader(&self.fragment, None);
++            device_context.OMSetBlendState(&self.blend_state, None, 0xFFFFFFFF);
++            device_context.OMSetDepthStencilState(&self.depth_stencil_state, 0);
++            device_context.VSSetConstantBuffers(
++                Self::PARAMS_SLOT,
++                Some(slice::from_ref(&self.params_buffer)),
++            );
++            device_context.PSSetConstantBuffers(
++                Self::PARAMS_SLOT,
++                Some(slice::from_ref(&self.params_buffer)),
++            );
++            device_context
++                .PSSetSamplers(Self::SAMPLER_SLOT, Some(slice::from_ref(&self.sampler)));
++            device_context.PSSetShaderResources(Self::TEXTURE_SLOT, Some(&textures));
++            device_context.Draw(4, 0);
++        }
++        Ok(())
++    }
++
++    /// Lets go of the pictures: a view bound to the context keeps its texture alive.
++    fn unbind(&self, device_context: &ID3D11DeviceContext) {
++        let none: [Option<ID3D11ShaderResourceView>; 2] = [None, None];
++        unsafe { device_context.PSSetShaderResources(Self::TEXTURE_SLOT, Some(&none)) };
++    }
++}
++
+ impl Drop for DirectXRenderer {
+     fn drop(&mut self) {
+         #[cfg(debug_assertions)]
+@@ -1745,6 +1996,7 @@ pub(crate) mod shader_resources {
+         MonochromeSprite,
+         SubpixelSprite,
+         PolychromeSprite,
++        Surface,
+     }
+ 
+     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+@@ -1818,6 +2070,10 @@ pub(crate) mod shader_resources {
+                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
+                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                 },
++                ShaderModule::Surface => match target {
++                    ShaderTarget::Vertex => SURFACE_VERTEX_BYTES,
++                    ShaderTarget::Fragment => SURFACE_FRAGMENT_BYTES,
++                },
+             };
+             Self { inner: bytes }
+         }
+@@ -1898,6 +2154,7 @@ pub(crate) mod shader_resources {
+                 ShaderModule::MonochromeSprite => "monochrome_sprite",
+                 ShaderModule::SubpixelSprite => "subpixel_sprite",
+                 ShaderModule::PolychromeSprite => "polychrome_sprite",
++                ShaderModule::Surface => "surface",
+             }
+         }
+     }
+diff --git a/crates/gpui_windows/src/directx_surface.rs b/crates/gpui_windows/src/directx_surface.rs
+new file mode 100644
+index 0000000..c990326
+--- /dev/null
++++ b/crates/gpui_windows/src/directx_surface.rs
+@@ -0,0 +1,303 @@
++//! Images the application owns on the GPU, drawn by the Direct3D 11 renderer as scene surfaces:
++//! the Direct3D twin of `gpui_wgpu`'s `wgpu_surface.rs`, with the same shape.
++//!
++//! An element paints a [`D3d11Surface`] (wrapped in a `gpui::ExternalSurface`) with
++//! `Window::paint_external_surface`. The application hands the surface new pictures from any
++//! thread with [`D3d11Surface::set_frame`]; the renderer takes the newest one each time it
++//! draws the scene, so a new picture costs a present of the retained scene
++//! (`Window::request_present`) and no layout or paint.
++//!
++//! The pictures live on the renderer's own device ([`shared_devices`]). That device is created
++//! with multithread protection on, so its immediate context may be used from other threads;
++//! [`D3d11ContextGuard`] holds the context across a sequence of calls.
++
++use parking_lot::Mutex;
++use std::any::Any;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use windows::Win32::Graphics::{
++    Direct3D11::{
++        ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11ShaderResourceView,
++    },
++    Dxgi::IDXGIAdapter1,
++};
++use windows::core::Interface;
++
++/// The device every window of this process renders with, and its immediate context.
++#[derive(Clone)]
++pub struct D3d11Devices {
++    pub adapter: IDXGIAdapter1,
++    pub device: ID3D11Device,
++    /// The immediate context. Multithread-protected: a single call is safe from any thread, a
++    /// sequence that must not be interleaved with the renderer's frame (or that leaves state
++    /// behind, such as a `Map`) is made under a [`D3d11ContextGuard`].
++    pub context: ID3D11DeviceContext,
++}
++
++impl D3d11Devices {
++    /// Whether Direct3D has removed the device (driver update, GPU reset, adapter unplugged).
++    /// The renderer notices at its next frame and creates another; [`shared_devices`] then
++    /// returns that one.
++    pub fn removed(&self) -> bool {
++        // Safety: a method of the free-threaded device object.
++        unsafe { self.device.GetDeviceRemovedReason() }.is_err()
++    }
++
++    /// Holds the immediate context until the guard is dropped (recursive on one thread).
++    /// `None`: the device has no multithread interface (not seen on Windows 10 or later).
++    pub fn lock_context(&self) -> Option<D3d11ContextGuard> {
++        D3d11ContextGuard::enter(&self.context)
++    }
++}
++
++/// The immediate context's own critical section, entered. The renderer holds it around each
++/// frame it draws; FFmpeg's D3D11VA decoders hold it around each decode submission when the
++/// application points their lock callbacks at `ID3D11Multithread::Enter` / `Leave`.
++pub struct D3d11ContextGuard(ID3D11Multithread);
++
++impl D3d11ContextGuard {
++    pub(crate) fn enter(context: &ID3D11DeviceContext) -> Option<Self> {
++        let multithread: ID3D11Multithread = context.cast().ok()?;
++        // Safety: paired with `Leave` in `Drop`, on the same thread (the guard is not `Send`:
++        // it holds no `Send` bound of its own, see the marker below).
++        unsafe { multithread.Enter() };
++        Some(Self(multithread))
++    }
++}
++
++impl Drop for D3d11ContextGuard {
++    fn drop(&mut self) {
++        // Safety: this thread entered the critical section in `enter`.
++        unsafe { self.0.Leave() };
++    }
++}
++
++static SHARED_DEVICES: Mutex<Option<D3d11Devices>> = Mutex::new(None);
++static SIMULATED_DEVICE_LOSS: AtomicBool = AtomicBool::new(false);
++
++/// The Direct3D 11 device every window of this process renders with: the device to create
++/// textures on for content handed to the renderer as a [`D3d11Surface`]. `None` until the
++/// platform has started windowed. A device removal replaces it (compare `device`).
++pub fn shared_devices() -> Option<D3d11Devices> {
++    SHARED_DEVICES.lock().clone()
++}
++
++pub(crate) fn set_shared_devices(devices: Option<D3d11Devices>) {
++    *SHARED_DEVICES.lock() = devices;
++}
++
++/// Makes the platform abandon its device and create another at the next vertical blank,
++/// exactly as after a real device removal. For testing what an application built on the
++/// device does when it is replaced. The caller then asks a window for a frame
++/// (`Window::request_present`) so that the vsync thread runs.
++pub fn simulate_device_loss() {
++    log::warn!("Direct3D device marked lost on request");
++    SIMULATED_DEVICE_LOSS.store(true, Ordering::Release);
++}
++
++pub(crate) fn take_simulated_device_loss() -> bool {
++    SIMULATED_DEVICE_LOSS.swap(false, Ordering::AcqRel)
++}
++
++/// The two plane views of a 4:2:0 picture, on the renderer's device: luma (one channel) and
++/// interleaved chroma (two channels, half size). Views of an `NV12` texture's planes
++/// (`R8_UNORM` and `R8G8_UNORM` views of it) or of ordinary `R8` / `R8G8` textures.
++///
++/// Long-lived: a decoder cycles through a small fixed set of these.
++pub struct D3d11SurfacePlanes {
++    pub luma: ID3D11ShaderResourceView,
++    pub chroma: ID3D11ShaderResourceView,
++    /// The picture's size in pixels.
++    pub size: (u32, u32),
++    /// The luma texture's size: the picture is its top-left part (an `NV12` texture has even
++    /// dimensions, a picture need not).
++    pub texture_size: (u32, u32),
++}
++
++/// How a picture's Y'CbCr samples become R'G'B'.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SurfaceMatrix {
++    Bt601,
++    Bt709,
++    Bt2020,
++}
++
++/// A picture's colour description.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct SurfaceColor {
++    pub matrix: SurfaceMatrix,
++    /// Full range (0..255) rather than limited (16..235 / 16..240).
++    pub full_range: bool,
++    /// Added to the chroma sampling position, in chroma texels. [0.0, 0.0] is right for chroma
++    /// sited at the centre of each 2x2 luma block (what sampling both planes at the same
++    /// coordinate assumes); "left" siting, the H.264 / HEVC / AV1 default, is [0.25, 0.0].
++    pub chroma_offset: [f32; 2],
++}
++
++impl Default for SurfaceColor {
++    fn default() -> Self {
++        Self {
++            matrix: SurfaceMatrix::Bt709,
++            full_range: false,
++            chroma_offset: [0.0, 0.0],
++        }
++    }
++}
++
++impl SurfaceColor {
++    /// Rows of the matrix taking (Y', Cb, Cr, 1) as sampled (0..1) to gamma-encoded R'G'B'.
++    /// GPUI's targets hold gamma-encoded colour, so the result is written as is.
++    pub fn ycbcr_to_rgb_rows(&self) -> [[f32; 4]; 3] {
++        let (kr, kb) = match self.matrix {
++            SurfaceMatrix::Bt601 => (0.299, 0.114),
++            SurfaceMatrix::Bt709 => (0.2126, 0.0722),
++            SurfaceMatrix::Bt2020 => (0.2627, 0.0593),
++        };
++        let kg = 1.0 - kr - kb;
++        // Scale and offset from the stored code values to Y' in 0..1 and Cb / Cr in -0.5..0.5.
++        let (y_scale, y_offset, c_scale) = if self.full_range {
++            (1.0f32, 0.0f32, 1.0f32)
++        } else {
++            (255.0 / 219.0, 16.0 / 255.0, 255.0 / 224.0)
++        };
++        let c_offset = 128.0 / 255.0;
++        let r_cr = 2.0 * (1.0 - kr);
++        let b_cb = 2.0 * (1.0 - kb);
++        let g_cb = -b_cb * kb / kg;
++        let g_cr = -r_cr * kr / kg;
++        let row = |cb: f32, cr: f32| {
++            let cb = cb * c_scale;
++            let cr = cr * c_scale;
++            [
++                y_scale,
++                cb,
++                cr,
++                -y_scale * y_offset - (cb + cr) * c_offset,
++            ]
++        };
++        [row(0.0, r_cr), row(g_cb, g_cr), row(b_cb, 0.0)]
++    }
++}
++
++/// One picture, ready to be sampled: every write to its planes was issued on the immediate
++/// context before the frame was handed to [`D3d11Surface::set_frame`] (Direct3D 11 executes a
++/// context's commands in the order they were issued, so a draw issued later samples the
++/// finished picture).
++///
++/// A decoder that cycles through a fixed set of planes keeps one `Arc<D3d11SurfaceFrame>` per
++/// set and publishes it again and again: the set is free to be written when the decoder holds
++/// the only reference (`Arc::strong_count == 1`). The renderer holds its reference only while
++/// it issues the draws of a frame; a write issued after that is executed after them.
++pub struct D3d11SurfaceFrame {
++    pub planes: Arc<D3d11SurfacePlanes>,
++    pub color: SurfaceColor,
++    /// The device the planes live on. A renderer on another device (the one created after a
++    /// device removal) draws nothing for this picture.
++    pub device: ID3D11Device,
++    /// Dropped with the frame. For owners that make a frame per picture.
++    pub in_use: Option<Box<dyn Any + Send + Sync>>,
++}
++
++/// How a picture is placed in the bounds an element painted (CSS `object-fit`). The renderer
++/// applies it when it draws, from the size of the picture it draws: a stream that changes
++/// resolution keeps its fit without the element being painted again.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum SurfaceFit {
++    /// Stretch to the bounds.
++    #[default]
++    Fill,
++    /// The whole picture, centred, bars left over (the element paints what is behind them).
++    Contain,
++    /// Fill the bounds, cropping the picture's overflow equally on both sides.
++    Cover,
++}
++
++/// A [`D3d11Surface`] with a fit: what an element wraps in a `gpui::ExternalSurface` when it
++/// wants something other than [`SurfaceFit::Fill`]. Corner radii round the painted bounds (the
++/// element's box), not the fitted picture.
++pub struct D3d11SurfaceView {
++    pub surface: Arc<D3d11Surface>,
++    pub fit: SurfaceFit,
++}
++
++/// A place in the scene that shows the newest picture it was given.
++#[derive(Default)]
++pub struct D3d11Surface {
++    /// The newest picture, its sequence number (1-based count of pictures set) and the tag it
++    /// was set with.
++    latest: Mutex<(u64, u64, Option<Arc<D3d11SurfaceFrame>>)>,
++    last_drawn: AtomicU64,
++    pictures_drawn: AtomicU64,
++    draws: AtomicU64,
++    /// Called with a picture's tag the first time a rendered frame draws it.
++    observer: std::sync::OnceLock<Box<dyn Fn(u64) + Send + Sync>>,
++}
++
++impl D3d11Surface {
++    pub fn new() -> Arc<Self> {
++        Arc::new(Self::default())
++    }
++
++    /// Replaces the picture. Callable from any thread; the caller then asks the window that
++    /// shows the surface for a present (`Window::request_present`, on the main thread).
++    /// `tag` is the caller's own number for the picture, handed to the draw observer.
++    pub fn set_frame(&self, frame: Arc<D3d11SurfaceFrame>, tag: u64) {
++        let previous = {
++            let mut latest = self.latest.lock();
++            latest.0 += 1;
++            latest.1 = tag;
++            latest.2.replace(frame)
++        };
++        // Released outside the lock: the last reference frees GPU objects.
++        drop(previous);
++    }
++
++    /// Stops showing a picture (the surface draws nothing).
++    pub fn clear(&self) {
++        let previous = self.latest.lock().2.take();
++        drop(previous);
++    }
++
++    /// Installs the function called (on the render thread, with the picture's tag) the first
++    /// time a rendered frame draws each picture: the "presented" timestamp of a video frame.
++    /// It must be cheap and must not block. Once per surface; a second call returns false.
++    pub fn set_draw_observer(&self, observer: Box<dyn Fn(u64) + Send + Sync>) -> bool {
++        self.observer.set(observer).is_ok()
++    }
++
++    /// The size in pixels of the newest picture.
++    pub fn picture_size(&self) -> Option<(u32, u32)> {
++        let latest = self.latest.lock();
++        Some(latest.2.as_ref()?.planes.size)
++    }
++
++    /// How many distinct pictures reached a rendered frame.
++    pub fn pictures_drawn(&self) -> u64 {
++        self.pictures_drawn.load(Ordering::Relaxed)
++    }
++
++    /// How many rendered frames drew this surface (a picture drawn again counts again).
++    pub fn draws(&self) -> u64 {
++        self.draws.load(Ordering::Relaxed)
++    }
++
++    /// The picture to draw now. Called by the renderer once per surface per frame.
++    /// `None` when there is no picture or it lives on another device than `device`.
++    pub(crate) fn acquire(&self, device: &ID3D11Device) -> Option<Arc<D3d11SurfaceFrame>> {
++        let (sequence, tag, frame) = {
++            let latest = self.latest.lock();
++            (latest.0, latest.1, latest.2.clone()?)
++        };
++        if frame.device != *device {
++            return None;
++        }
++        self.draws.fetch_add(1, Ordering::Relaxed);
++        if self.last_drawn.swap(sequence, Ordering::Relaxed) != sequence {
++            self.pictures_drawn.fetch_add(1, Ordering::Relaxed);
++            if let Some(observer) = self.observer.get() {
++                observer(tag);
++            }
++        }
++        Some(frame)
++    }
++}
+diff --git a/crates/gpui_windows/src/gpui_windows.rs b/crates/gpui_windows/src/gpui_windows.rs
+index e7a45a0..726bcf6 100644
+--- a/crates/gpui_windows/src/gpui_windows.rs
++++ b/crates/gpui_windows/src/gpui_windows.rs
+@@ -8,6 +8,7 @@ mod direct_write;
+ mod directx_atlas;
+ mod directx_devices;
+ mod directx_renderer;
++mod directx_surface;
+ mod dispatcher;
+ mod display;
+ mod events;
+@@ -38,6 +39,10 @@ pub(crate) use vsync::*;
+ pub(crate) use window::*;
+ pub(crate) use wrapper::*;
+ 
++pub use directx_surface::*;
+ pub use platform::WindowsPlatform;
++/// The `windows` crate this backend is built on: an application that shares the renderer's
++/// Direct3D device ([`shared_devices`]) must use the same one.
++pub use windows;
+ 
+ pub(crate) use windows::Win32::Foundation::HWND;
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index 8145ae9..bcd4b69 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -427,6 +427,7 @@ impl WindowsPlatform {
+             stop.store(true, Ordering::Release);
+         }
+         self.inner.state.directx_devices.borrow_mut().take();
++        crate::set_shared_devices(None);
+     }
+ 
+     fn begin_vsync_thread(&self) {
+@@ -453,6 +454,7 @@ impl WindowsPlatform {
+                     }
+                     if check_device_lost(&directx_device.device)
+                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
++                        || crate::take_simulated_device_loss()
+                     {
+                         if let Err(err) = handle_gpu_device_lost(
+                             &mut directx_device,
+diff --git a/crates/gpui_windows/src/shaders.hlsl b/crates/gpui_windows/src/shaders.hlsl
+index e849773..4fb4c74 100644
+--- a/crates/gpui_windows/src/shaders.hlsl
++++ b/crates/gpui_windows/src/shaders.hlsl
+@@ -1370,3 +1370,82 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
+     color.a *= input.opacity * saturate(0.5 - distance);
+     return color;
+ }
++
++/*
++**
++**              Surfaces: pictures the application owns (video), two plane textures each
++**
++*/
++
++// One surface per draw. Field for field `SurfaceParams` in directx_renderer.rs.
++cbuffer SurfaceParams: register(b2) {
++    // Where the picture goes: the painted bounds, fitted.
++    Bounds surface_bounds;
++    Bounds surface_content_mask;
++    // What the corner radii round: the bounds the element painted.
++    Bounds surface_clip_bounds;
++    Corners surface_corner_radii;
++    // Rows of the matrix taking (Y', Cb, Cr, 1) to gamma-encoded R'G'B'.
++    float4 surface_ycbcr_to_r;
++    float4 surface_ycbcr_to_g;
++    float4 surface_ycbcr_to_b;
++    // The part of the texture shown in the bounds: origin and size in texture coordinates.
++    float4 surface_uv_rect;
++    // Offset of the chroma samples, in texture coordinates.
++    float2 surface_chroma_offset;
++    // The luma texture's size in texels.
++    float2 surface_texture_size;
++};
++
++Texture2D<float4> t_surface_y: register(t4);
++Texture2D<float4> t_surface_cb_cr: register(t5);
++SamplerState s_surface: register(s1);
++
++struct SurfaceFragmentInput {
++    float4 position: SV_Position;
++    float2 texture_position: TEXCOORD0;
++};
++
++SurfaceFragmentInput surface_vertex(uint vertex_id: SV_VertexID) {
++    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
++    ClippedVertex vertex = clip_to_mask(unit_vertex, surface_bounds, surface_content_mask);
++
++    SurfaceFragmentInput output;
++    output.position = to_device_position_impl(vertex.position);
++    // `surface_uv_rect` of the texture is shown in the unclipped bounds.
++    output.texture_position = surface_uv_rect.xy + vertex.unit_vertex * surface_uv_rect.zw;
++    return output;
++}
++
++float4 surface_fragment(SurfaceFragmentInput input): SV_Target {
++    // One output pixel covers `footprint` of the texture. Bilinear sampling is right up to two
++    // texels per pixel; a picture drawn smaller than that (a 1440p stream in a 320 px tile)
++    // would alias, so the footprint is averaged over a grid of up to 4x4 bilinear taps (8x8
++    // texels). At full size and above this is one tap.
++    float2 footprint = surface_uv_rect.zw / max(surface_bounds.size, float2(1.0, 1.0));
++    float2 texels = footprint * surface_texture_size;
++    int2 taps = int2(clamp(ceil(texels * 0.5), float2(1.0, 1.0), float2(4.0, 4.0)));
++    // The picture is the texture's top-left part: never sample past its last texel centre.
++    float2 uv_min = surface_uv_rect.xy + 0.5 / surface_texture_size;
++    float2 uv_max = surface_uv_rect.xy + surface_uv_rect.zw - 0.5 / surface_texture_size;
++    float3 sum = float3(0.0, 0.0, 0.0);
++    for (int j = 0; j < 4; j++) {
++        for (int i = 0; i < 4; i++) {
++            if (i < taps.x && j < taps.y) {
++                float2 offset = (float2(float(i), float(j)) + 0.5) / float2(taps) - 0.5;
++                float2 position = clamp(input.texture_position + offset * footprint, uv_min, uv_max);
++                sum += float3(
++                    t_surface_y.SampleLevel(s_surface, position, 0.0).r,
++                    t_surface_cb_cr.SampleLevel(s_surface, position + surface_chroma_offset, 0.0).rg);
++            }
++        }
++    }
++    float4 y_cb_cr = float4(sum / float(taps.x * taps.y), 1.0);
++    // The targets hold gamma-encoded colour, and so does video: no transfer function here.
++    float3 rgb = saturate(float3(
++        dot(surface_ycbcr_to_r, y_cb_cr),
++        dot(surface_ycbcr_to_g, y_cb_cr),
++        dot(surface_ycbcr_to_b, y_cb_cr)));
++    float distance = quad_sdf(input.position.xy, surface_clip_bounds, surface_corner_radii);
++    return float4(rgb, saturate(0.5 - distance));
++}
