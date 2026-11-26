@@ -22,7 +22,7 @@ use super::packet::{
     UdpAudioPacket, AUDIO_HEADER_SIZE, PACKET_TYPE_AUDIO, PACKET_TYPE_PING,
     PACKET_TYPE_STREAM_AUDIO,
 };
-use super::udp_recv::{is_oversized, RecvErrors, RECV_BUF_SIZE};
+use super::udp_recv::{self, is_oversized, Ready, RecvErrors, Waker, READ_GUARD, RECV_BUF_SIZE};
 use super::speaking::SpeakingDetector;
 use super::voice_gate::Gate as VoiceGate;
 
@@ -443,17 +443,29 @@ pub fn run_audio_pipeline(
     // on a separate media socket handled by the video recv thread in mod.rs.
     //
     // The thread is joined on `'main loop` exit (Shutdown) below — we
-    // signal it via voice_recv_stop, drop our channel-receiver end so
-    // its next try_send sees Disconnected, and then join. Without the
-    // stop flag the thread can sit indefinitely in socket.recv() when
-    // no packets are flowing (silent channel, no peers).
+    // set voice_recv_stop and wake it out of its wait (it sleeps in
+    // `udp_recv::wait` until a datagram or that wake), drop our
+    // channel-receiver end so its next try_send sees Disconnected, and
+    // then join.
     let (audio_pkt_tx, audio_pkt_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
     let recv_drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let voice_recv_stop = Arc::new(AtomicBool::new(false));
+    let voice_recv_waker = match Waker::new() {
+        Ok(w) => Arc::new(w),
+        Err(e) => {
+            log::error!("[voice-recv] waker: {}", e);
+            let _ = event_tx.send(VoiceEvent::Error(format!(
+                "Voice receive couldn't start ({}) — reconnect to hear others",
+                e
+            )));
+            return;
+        }
+    };
     let recv_socket = Arc::clone(&socket);
     let recv_event_tx = event_tx.clone();
     let recv_drops_clone = Arc::clone(&recv_drops);
     let voice_recv_stop_thread = Arc::clone(&voice_recv_stop);
+    let voice_recv_waker_thread = Arc::clone(&voice_recv_waker);
     let voice_recv_handle = std::thread::Builder::new()
         .name("decibell-voice-recv".to_string())
         .spawn(move || {
@@ -467,6 +479,7 @@ pub fn run_audio_pipeline(
                     recv_event_tx,
                     recv_drops_clone,
                     voice_recv_stop_thread,
+                    voice_recv_waker_thread,
                 );
             }));
             if let Err(e) = outcome {
@@ -484,9 +497,9 @@ pub fn run_audio_pipeline(
         })
         .expect("spawn voice recv thread");
     // Stops the recv thread however this function ends. The normal exit
-    // below sets the flag and joins; a panic unwinding the pipeline would
-    // otherwise leave the thread polling a silent socket forever.
-    let _stop_recv_on_exit = SetOnDrop(Arc::clone(&voice_recv_stop));
+    // below sets the flag, wakes it and joins; a panic unwinding the
+    // pipeline would otherwise leave the thread waiting on the socket forever.
+    let _stop_recv_on_exit = StopOnDrop(Arc::clone(&voice_recv_stop), Arc::clone(&voice_recv_waker));
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     'main: loop {
@@ -1637,13 +1650,12 @@ pub fn run_audio_pipeline(
 
     // Streams are dropped here, which stops CPAL.
     // Signal the voice recv thread to exit and join it before letting
-    // the audio thread return. Without an explicit stop flag the recv
-    // loop could sit in socket.recv() for many seconds waiting for the
-    // mpsc try_send Disconnected to surface (only happens on the NEXT
-    // packet — silent channels never get one), and `.join()` upstream
-    // would block the whole shutdown. Now bounded by the 1ms socket
-    // read timeout — exits within one poll iteration.
+    // the audio thread return. Without the stop flag and the wake the recv
+    // loop would sit in its wait until the next packet (silent channels
+    // never get one), and `.join()` upstream would block the whole
+    // shutdown; the wake ends its wait at once.
     voice_recv_stop.store(true, Ordering::Relaxed);
+    voice_recv_waker.wake();
     drop(audio_pkt_rx);
     let _ = voice_recv_handle.join();
     drop(stream_output);    // Option<cpal::Stream> — separate stream output
@@ -1663,12 +1675,14 @@ pub fn run_audio_pipeline(
 // connected. It ends on the stop flag, or when the audio thread has dropped
 // its receiver (that thread's own shutdown or crash, which it reports).
 
-/// Sets the flag when dropped, including while a panic unwinds.
-struct SetOnDrop(Arc<AtomicBool>);
+/// Stops the receive loop when dropped, including while a panic unwinds:
+/// sets its flag and wakes it out of its wait.
+struct StopOnDrop(Arc<AtomicBool>, Arc<Waker>);
 
-impl Drop for SetOnDrop {
+impl Drop for StopOnDrop {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
+        self.1.wake();
     }
 }
 
@@ -1678,10 +1692,11 @@ fn voice_recv_thread(
     event_tx: std::sync::mpsc::Sender<VoiceEvent>,
     drops: Arc<std::sync::atomic::AtomicU64>,
     stop: Arc<AtomicBool>,
+    waker: Arc<Waker>,
 ) {
-    // Without the timeout the loop would block in recv and never see its
-    // stop flag, so it doesn't run without one.
-    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
+    // The loop reads only once `wait` says a datagram is there; the read
+    // timeout is a guard that never fires in normal operation (READ_GUARD).
+    if let Err(e) = socket.set_read_timeout(Some(READ_GUARD)) {
         log::error!("[voice-recv] set_read_timeout: {}", e);
         let _ = event_tx.send(VoiceEvent::Error(format!(
             "Voice receive couldn't start ({}) — reconnect to hear others",
@@ -1699,12 +1714,22 @@ fn voice_recv_thread(
         if stop.load(Ordering::Relaxed) {
             break;
         }
+        // Sleep until a datagram (or the stop's wake): nothing else is
+        // timed here.
+        match udp_recv::wait(&socket, &waker, None) {
+            Ok(Ready::Socket) => {}
+            Ok(Ready::Woken | Ready::Timeout) => continue,
+            Err(e) => {
+                recv_errors.handle(&e);
+                continue;
+            }
+        }
         // The relay's bind challenges (review S11) are answered inside
-        // MediaSocket::recv, which hands this loop an empty read for them.
-        match socket.recv(&mut buf) {
+        // MediaSocket, which hands this loop an empty read for them.
+        match socket.recv_ready(&mut buf) {
             // Cut short to fit the buffer: bigger than anything we send.
-            Ok(n) if is_oversized(n) => recv_errors.ok(),
-            Ok(n) if n >= 1 => {
+            Ok(inner) if is_oversized(inner.end) => recv_errors.ok(),
+            Ok(inner) if !inner.is_empty() => {
                 recv_errors.ok();
                 recv_count += 1;
                 if recv_log_time.elapsed() >= Duration::from_secs(5) {
@@ -1715,7 +1740,7 @@ fn voice_recv_thread(
 
                 // Forward all packets on the voice socket to the audio thread.
                 // No type classification needed — only voice packets arrive here.
-                match audio_tx.try_send(buf[..n].to_vec()) {
+                match audio_tx.try_send(buf[inner].to_vec()) {
                     Ok(()) => {}
                     Err(std::sync::mpsc::TrySendError::Full(_)) => {
                         // Audio thread is behind — drop this packet.
@@ -1759,10 +1784,11 @@ mod recv_tests {
         let (audio_tx, audio_rx) = sync_channel(16);
         let (event_tx, event_rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new(Waker::new().unwrap());
         let handle = {
-            let (socket, stop) = (socket.clone(), stop.clone());
+            let (socket, stop, waker) = (socket.clone(), stop.clone(), waker.clone());
             std::thread::spawn(move || {
-                voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop)
+                voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop, waker)
             })
         };
 
@@ -1787,7 +1813,7 @@ mod recv_tests {
         let got = audio_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(got, b"\x00next");
 
-        stop.store(true, Ordering::Relaxed);
+        drop(StopOnDrop(stop, waker));
         handle.join().unwrap();
         assert!(event_rx.try_recv().is_err(), "no error event for transient errors");
     }
@@ -1800,20 +1826,24 @@ mod recv_tests {
         let client_addr = client.local_addr().unwrap();
         let socket = Arc::new(MediaSocket::plain(client, "7"));
 
-        // The stop flag, on a silent socket.
+        // The stop flag and its wake, on a silent socket: the loop sleeps in
+        // its wait (no read timeout polls the socket) and ends at once.
         let (audio_tx, _audio_rx) = sync_channel(16);
         let (event_tx, _event_rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new(Waker::new().unwrap());
         let handle = {
-            let (socket, stop) = (socket.clone(), stop.clone());
+            let (socket, stop, waker) = (socket.clone(), stop.clone(), waker.clone());
             std::thread::spawn(move || {
-                voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop)
+                voice_recv_thread(socket, audio_tx, event_tx, Arc::new(Default::default()), stop, waker)
             })
         };
         std::thread::sleep(Duration::from_millis(20));
-        let guard = SetOnDrop(stop);
+        let guard = StopOnDrop(stop, waker);
+        let t0 = Instant::now();
         drop(guard); // what an unwinding audio pipeline does
         handle.join().unwrap();
+        assert!(t0.elapsed() < Duration::from_millis(250), "stop took {:?}", t0.elapsed());
 
         // The audio thread's receiver dropped: the next datagram ends it.
         let (audio_tx, audio_rx) = sync_channel(16);
@@ -1828,6 +1858,7 @@ mod recv_tests {
                     event_tx,
                     Arc::new(Default::default()),
                     Arc::new(AtomicBool::new(false)),
+                    Arc::new(Waker::new().unwrap()),
                 )
             })
         };
@@ -1837,5 +1868,49 @@ mod recv_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(handle.is_finished());
+    }
+
+    /// A sealed (P2P) socket: a datagram the loop doesn't surface (a peer's
+    /// PING, reflected inside MediaSocket) must not leave the loop sitting in
+    /// `recv_from` with nothing queued: it goes back to its wait, so a stop
+    /// ends it at once rather than after the read guard. The next real
+    /// datagram still arrives.
+    #[test]
+    fn sealed_loop_returns_to_its_wait_after_a_reflected_ping() {
+        use crate::media::media_socket::SocketKeys;
+        use crate::media::packet::UdpAudioPacket;
+        let ka = SocketKeys { tx_key: [1; 32], rx_key: [2; 32], tx_salt: [1; 4], rx_salt: [2; 4] };
+        let kb = SocketKeys { tx_key: [2; 32], rx_key: [1; 32], tx_salt: [2; 4], rx_salt: [1; 4] };
+        let a = MediaSocket::sealed(UdpSocket::bind("127.0.0.1:0").unwrap(), ka, "1");
+        let b = Arc::new(MediaSocket::sealed(UdpSocket::bind("127.0.0.1:0").unwrap(), kb, "2"));
+        a.set_peer(b.local_addr().unwrap());
+        b.set_peer(a.local_addr().unwrap());
+
+        let (audio_tx, audio_rx) = sync_channel(16);
+        let (event_tx, _event_rx) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new(Waker::new().unwrap());
+        let handle = {
+            let (b, stop, waker) = (b.clone(), stop.clone(), waker.clone());
+            std::thread::spawn(move || {
+                voice_recv_thread(b, audio_tx, event_tx, Arc::new(Default::default()), stop, waker)
+            })
+        };
+        a.send(&UdpAudioPacket::new_ping("1", 5).to_bytes()).unwrap();
+        let audio = UdpAudioPacket::new_audio("1", 1, b"after the ping").unwrap().to_bytes();
+        std::thread::sleep(Duration::from_millis(30));
+        a.send(&audio).unwrap();
+        assert_eq!(audio_rx.recv_timeout(Duration::from_secs(2)).unwrap(), audio);
+        // The ping came back to a, reflected.
+        a.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut buf = [0u8; RECV_BUF_SIZE];
+        assert!(a.recv(&mut buf).unwrap() > 0);
+
+        a.send(&UdpAudioPacket::new_ping("1", 6).to_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let t0 = Instant::now();
+        drop(StopOnDrop(stop, waker));
+        handle.join().unwrap();
+        assert!(t0.elapsed() < Duration::from_millis(200), "stop took {:?}", t0.elapsed());
     }
 }

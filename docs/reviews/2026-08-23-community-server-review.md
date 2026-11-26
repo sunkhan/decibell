@@ -4926,3 +4926,21 @@ the development prefix (`tools/build-ffmpeg-encoders.sh`: SVT-AV1 + decoders), b
 Intel, Quick Sync, AMF under the new probe, software on Windows, and all `cfg(windows)` code (compiled only by
 the Windows Native Check workflow): one command per backend in `crates/decibell-core/tools/verify-encoders.md`.
 A live Go Live through NVENC after the change is still to be done by hand.
+### Change: the voice / media plane wakes only for work (2026-11-26, branch `wip/core-voice`)
+
+Measured with the headless GPUI client (`decibell-headless`, release, `tools/perf/measure.sh`, 20 s settle, 60 s):
+alone and muted in a voice channel the core woke **1,380 times a second** at 2.7 % of a core. Owner rule for the
+native client: no polling timers. Per item (scenario A = alone and muted, on the system's default devices):
+
+- **UDP receive loops sleep until a datagram.** `decibell-voice-recv` read with a 1 ms timeout (435 wakeups/s),
+  `decibell-video-recv` with 5 ms (159/s), only to see their stop flags. Both now block in `udp_recv::wait`
+  (`poll` on Linux / macOS, `WSAPoll` on Windows) over the socket and a loopback UDP **waker** socket that the
+  stop sends one byte to (a socket so `WSAPoll` can take it; one code path on all three). The video loop's
+  timeout is its next real job: the media PING (500 ms until answered, then 3 s), the 25 ms NACK / keyframe
+  maintenance only while `VideoReceiver::has_pending` (a frame in reassembly, a held frame, a keyframe request
+  waiting out its throttle), and one pass when a quiet streamer is due to be forgotten. Reads happen only after
+  readiness (`MediaSocket::recv_ready`: a sealed socket that skipped a datagram, e.g. a reflected peer PING,
+  returns to the wait instead of blocking in `recv_from`); a 500 ms read timeout stays as a guard that never
+  fires. The two event bridges blocked in `recv_timeout(50 ms)` (20 wakeups/s on a runtime thread); they block in
+  `recv` and end when their senders are gone. Result: voice-recv 0.3/s, video-recv 0.7/s, `decibell-rt`
+  24.7 → 5.2/s; the process 1,380 → 767 wakeups/s (the rest: the device clocks and `decibell-audio`).

@@ -569,7 +569,10 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
   RNNoise noise suppression, AGC2 → voice gate (activity threshold or push-to-talk, `voice_gate.rs`) →
   Opus → UDP. Receive: per-peer adaptive jitter buffer (`jitter.rs`, concealment only for real loss) →
   Opus decode → per-peer gain → soft-clip mixer → cpal output paced by the device clock. "Default" devices
-  follow the OS default (`default_device_watch.rs`).
+  follow the OS default (`default_device_watch.rs`). The UDP receive threads (`decibell-voice-recv`,
+  `decibell-video-recv`) sleep in `udp_recv::wait` (`poll` / `WSAPoll` over the socket and a loopback
+  waker socket) until a datagram, a stop or their next timed job (the media PING, NACK / keyframe
+  maintenance while a frame is in flight); no read timeout polls a silent socket.
 - **Screen capture + encode** (sender). Sources are listed by Electron's `desktopCapturer` (Chromium
   ids `screen:N:0` / `window:HWND:0`, parsed natively by `source_id.rs`).
   - **Encoder backends** (`media/encoder_backend.rs`, `encoder_probe.rs`; design

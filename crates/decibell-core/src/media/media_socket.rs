@@ -309,6 +309,11 @@ impl MediaSocket {
         self.inner.set_read_timeout(d)
     }
 
+    /// The OS socket, for the receive loops' readiness wait (`udp_recv::wait`).
+    pub(crate) fn raw_socket(&self) -> &UdpSocket {
+        &self.inner
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.inner.local_addr()
     }
@@ -411,6 +416,21 @@ impl MediaSocket {
     /// the sealed one. An empty range is a read with nothing for the caller,
     /// as `recv`'s `Ok(0)`.
     pub fn recv_in_place(&self, buf: &mut [u8]) -> io::Result<Range<usize>> {
+        self.recv_in_place_inner(buf, false)
+    }
+
+    /// [`recv_in_place`](Self::recv_in_place) for a loop that waited for
+    /// readiness (`udp_recv::wait`): it reads the datagram that made the
+    /// socket readable and never blocks after it. A sealed socket that
+    /// skipped that one (it didn't open, or was a peer PING it reflected)
+    /// reads on only while more is queued, else hands back an empty read, so
+    /// the loop goes back to its wait (stop flag, timers) instead of sitting
+    /// in `recv_from`.
+    pub fn recv_ready(&self, buf: &mut [u8]) -> io::Result<Range<usize>> {
+        self.recv_in_place_inner(buf, true)
+    }
+
+    fn recv_in_place_inner(&self, buf: &mut [u8], only_ready: bool) -> io::Result<Range<usize>> {
         let st = match &self.mode {
             Mode::Plain => {
                 let n = self.inner.recv(buf)?;
@@ -427,7 +447,10 @@ impl MediaSocket {
             }
             Mode::Sealed(st) => st,
         };
-        for _ in 0..MAX_SKIPPED_PER_RECV {
+        for i in 0..MAX_SKIPPED_PER_RECV {
+            if only_ready && i > 0 && !super::udp_recv::readable_now(&self.inner) {
+                return Ok(0..0);
+            }
             let (n, src) = self.inner.recv_from(buf)?;
             let Some(len) = st.open(&mut buf[..n]) else {
                 continue;

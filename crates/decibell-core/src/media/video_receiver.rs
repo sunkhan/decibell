@@ -797,6 +797,25 @@ impl VideoReceiver {
         (nacks, plis)
     }
 
+    /// Whether the periodic maintenance (`check_missing`, `cleanup_stale`)
+    /// has anything to act on: a frame still being reassembled (NACKs, stale
+    /// drop), a completed frame held for its predecessor (delivery hold), or
+    /// a keyframe request waiting for its throttle. With none of these, a
+    /// maintenance pass changes nothing until the next fragment arrives, so
+    /// the receive loop needn't wake for it.
+    pub fn has_pending(&self) -> bool {
+        self.senders.values().any(|s| {
+            !s.frames_in_progress.is_empty() || !s.pending_delivery.is_empty() || s.want_pli
+        })
+    }
+
+    /// When `cleanup_stale` next forgets a quiet sender (its last activity +
+    /// SENDER_IDLE_TIMEOUT), if any sender is known: the one maintenance pass
+    /// an idle receiver still owes.
+    pub fn idle_cleanup_at(&self) -> Option<Instant> {
+        self.senders.values().map(|s| s.last_activity + SENDER_IDLE_TIMEOUT).min()
+    }
+
     /// Drop incomplete assemblies that got no fragment for
     /// STALE_FRAME_TIMEOUT (or are MAX_FRAME_AGE old) and forget senders
     /// that have gone quiet.

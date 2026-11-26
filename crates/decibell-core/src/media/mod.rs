@@ -206,13 +206,14 @@ pub struct VoiceEngine {
     video_recv_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<ControlMessage>,
-    /// Stop flag for the video receive thread. The audio thread is
-    /// driven by mpsc ControlMessage::Shutdown (already in place), but
-    /// the video recv loop reads from a UDP socket with a 5ms timeout
-    /// and has no exit condition — it would loop forever and `.join()`
-    /// on stop would block indefinitely, leaving Electron's process
-    /// hanging in the background after window close.
+    /// Stop flag for the video receive thread, and the waker that ends its
+    /// wait (it sleeps until a datagram or its next timed job). The audio
+    /// thread is driven by mpsc ControlMessage::Shutdown, but the video recv
+    /// loop has no exit condition but these — without them `.join()` on stop
+    /// would block indefinitely, leaving Electron's process hanging in the
+    /// background after window close.
     video_recv_stop: Arc<AtomicBool>,
+    video_recv_waker: Arc<udp_recv::Waker>,
     voice_socket: Arc<MediaSocket>,
     media_socket: Arc<MediaSocket>,
     sender_id: String,
@@ -365,6 +366,10 @@ impl VoiceEngine {
         let video_ts_epoch = std::time::Instant::now();
         let video_recv_stop = Arc::new(AtomicBool::new(false));
         let video_recv_stop_thread = video_recv_stop.clone();
+        let video_recv_waker = Arc::new(
+            udp_recv::Waker::new().map_err(|e| format!("Video receive waker: {}", e))?,
+        );
+        let video_recv_waker_thread = video_recv_waker.clone();
         let media_socket_for_video_recv = media_socket.clone();
         let sender_id_for_video = sender_id.clone();
         let video_recv_thread = thread::Builder::new()
@@ -383,6 +388,7 @@ impl VoiceEngine {
                         sender_id_for_video,
                         event_tx_video,
                         video_recv_stop_thread,
+                        video_recv_waker_thread,
                         ring_video,
                         video_ts_epoch,
                     );
@@ -407,8 +413,11 @@ impl VoiceEngine {
         // never holds a worker thread (a previous `tokio::spawn` +
         // `block_in_place` pattern in tauri-client permanently stole
         // runtime workers).
+        // It blocks in `recv` (no timeout to poll): it ends when every
+        // sender is gone, i.e. once the audio, voice-receive and video-receive
+        // threads have all exited.
         let event_bridge = crate::rt::spawn_blocking(move || loop {
-            match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            match event_rx.recv() {
                 Ok(event) => match event {
                     VoiceEvent::SpeakingChanged(key, speaking) => {
                         if let Some(uid) = media_uid(&key) {
@@ -443,8 +452,7 @@ impl VoiceEngine {
                         events::emit_voice_error(msg);
                     }
                 },
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvError) => break,
             }
         });
 
@@ -454,6 +462,7 @@ impl VoiceEngine {
             event_bridge: Some(event_bridge),
             control_tx,
             video_recv_stop,
+            video_recv_waker,
             voice_socket,
             media_socket,
             sender_id,
@@ -475,10 +484,11 @@ impl VoiceEngine {
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
         }
-        // Signal the video recv thread to exit its UDP poll loop.
+        // Signal the video recv thread to exit and wake it out of its wait.
         // Without this the join below would block indefinitely: receive
         // errors never end the loop (review A2), only this flag does.
         self.video_recv_stop.store(true, Ordering::Relaxed);
+        self.video_recv_waker.wake();
         if let Some(handle) = self.video_recv_thread.take() {
             let _ = handle.join();
         }
@@ -606,15 +616,23 @@ fn run_video_recv_thread(
     sender_id: String,
     event_tx: mpsc::Sender<pipeline::VoiceEvent>,
     stop: Arc<AtomicBool>,
+    waker: Arc<udp_recv::Waker>,
     ring: Option<frame_crypto::SharedKeyRing>,
     ts_epoch: std::time::Instant,
 ) {
     use std::time::{Duration, Instant};
+    use udp_recv::Ready;
     use video_packet::{UdpKeyframeRequest, UdpNackPacket};
 
     let mut path = video_recv::VideoRecvPath::new(ring, ts_epoch, frame_pool::global());
     let mut deliver = events::send_stream_frame;
     let mut last_maintenance = Instant::now();
+    // 25ms cadence (was 100ms): with a 50ms NACK timeout, a 100ms poll put
+    // retransmit requests 100–150ms behind the loss; 25ms reacts within
+    // ~75ms. Only while the receiver has something to act on
+    // (`VideoReceiver::has_pending`): a frame in reassembly, a held frame,
+    // a keyframe request waiting out its throttle.
+    const MAINTENANCE_EVERY: Duration = Duration::from_millis(25);
 
     // Periodic media-socket PING — binds + keeps this client's media UDP
     // endpoint on the server. Without this, pure watchers (who never send
@@ -629,9 +647,9 @@ fn run_video_recv_thread(
     let media_ping_interval = Duration::from_secs(3);
     const MEDIA_PING_INTERVAL_UNANSWERED: Duration = Duration::from_millis(500);
 
-    // Without the timeout the loop would block in recv and never see its
-    // stop flag, so it doesn't run without one.
-    if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(5))) {
+    // The loop reads only once `wait` says a datagram is there; the read
+    // timeout is a guard that never fires in normal operation (READ_GUARD).
+    if let Err(e) = socket.set_read_timeout(Some(udp_recv::READ_GUARD)) {
         log::error!("[video-recv] set_read_timeout: {}", e);
         let _ = event_tx.send(pipeline::VoiceEvent::Error(format!(
             "Video receive couldn't start ({}) — screen share playback is unavailable",
@@ -641,7 +659,7 @@ fn run_video_recv_thread(
     }
     // Every receive error is transient; only the stop flag ends this loop
     // (review A2, udp_recv.rs). Datagrams are read in place: on the P2P path
-    // they are opened where they landed (`MediaSocket::recv_in_place`).
+    // they are opened where they landed (`MediaSocket::recv_ready`).
     let mut recv_buf = [0u8; udp_recv::RECV_BUF_SIZE];
     let mut recv_errors = udp_recv::RecvErrors::new("video-recv");
 
@@ -649,7 +667,64 @@ fn run_video_recv_thread(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match socket.recv_in_place(&mut recv_buf) {
+
+        let ping_every = if media_ping_answered {
+            media_ping_interval
+        } else {
+            MEDIA_PING_INTERVAL_UNANSWERED
+        };
+        let media_ping_due = match last_media_ping {
+            None => true,
+            Some(t) => t.elapsed() >= ping_every,
+        };
+        if media_ping_due {
+            let ts_ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let ping = packet::UdpAudioPacket::new_ping(&sender_id, ts_ns);
+            let _ = socket.send(&ping.to_bytes());
+            last_media_ping = Some(Instant::now());
+        }
+
+        if last_maintenance.elapsed() >= MAINTENANCE_EVERY {
+            let (nacks, pli_targets) = path.receiver().check_missing();
+            for nack in &nacks {
+                let nack_pkt =
+                    UdpNackPacket::new(&sender_id, &nack.target, nack.frame_id, &nack.missing);
+                let _ = socket.send(&nack_pkt.to_bytes());
+            }
+            // PLI throttling is per sender inside check_missing; every
+            // name returned is due a keyframe request now.
+            for target in &pli_targets {
+                log::info!("[video-recv] Sending keyframe request (PLI) to '{}'", target);
+                let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
+                let _ = socket.send(&pli_pkt.to_bytes());
+            }
+            path.receiver().cleanup_stale();
+            last_maintenance = Instant::now();
+        }
+
+        // Sleep until a datagram, the stop's wake, or the next timed job:
+        // the next PING, the next maintenance pass while one has work, the
+        // pass that forgets a quiet streamer.
+        let now = Instant::now();
+        let mut next = last_media_ping.map_or(now, |t| t + ping_every);
+        if path.receiver().has_pending() {
+            next = next.min(last_maintenance + MAINTENANCE_EVERY);
+        }
+        if let Some(at) = path.receiver().idle_cleanup_at() {
+            next = next.min(at.max(last_maintenance + MAINTENANCE_EVERY));
+        }
+        match udp_recv::wait(&socket, &waker, Some(next.saturating_duration_since(now))) {
+            Ok(Ready::Socket) => {}
+            Ok(Ready::Woken | Ready::Timeout) => continue,
+            Err(e) => {
+                recv_errors.handle(&e);
+                continue;
+            }
+        }
+        match socket.recv_ready(&mut recv_buf) {
             // Cut short to fit the buffer: bigger than anything we send.
             Ok(inner) if udp_recv::is_oversized(inner.len()) => recv_errors.ok(),
             Ok(inner) if !inner.is_empty() => {
@@ -669,49 +744,6 @@ fn run_video_recv_thread(
             }
             Ok(_) => recv_errors.ok(),
             Err(e) => recv_errors.handle(&e),
-        }
-
-        let media_ping_due = match last_media_ping {
-            None => true,
-            Some(t) => {
-                let every = if media_ping_answered {
-                    media_ping_interval
-                } else {
-                    MEDIA_PING_INTERVAL_UNANSWERED
-                };
-                t.elapsed() >= every
-            }
-        };
-        if media_ping_due {
-            let ts_ns = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            let ping = packet::UdpAudioPacket::new_ping(&sender_id, ts_ns);
-            let _ = socket.send(&ping.to_bytes());
-            last_media_ping = Some(Instant::now());
-        }
-
-        // 25ms cadence (was 100ms): with a 50ms NACK timeout, a 100ms
-        // poll put retransmit requests 100–150ms behind the loss; 25ms
-        // reacts within ~75ms at negligible cost (the loop already
-        // wakes every 5ms on the socket read timeout).
-        if last_maintenance.elapsed() > Duration::from_millis(25) {
-            let (nacks, pli_targets) = path.receiver().check_missing();
-            for nack in &nacks {
-                let nack_pkt =
-                    UdpNackPacket::new(&sender_id, &nack.target, nack.frame_id, &nack.missing);
-                let _ = socket.send(&nack_pkt.to_bytes());
-            }
-            // PLI throttling is per sender inside check_missing; every
-            // name returned is due a keyframe request now.
-            for target in &pli_targets {
-                log::info!("[video-recv] Sending keyframe request (PLI) to '{}'", target);
-                let pli_pkt = UdpKeyframeRequest::new(&sender_id, target);
-                let _ = socket.send(&pli_pkt.to_bytes());
-            }
-            path.receiver().cleanup_stale();
-            last_maintenance = Instant::now();
         }
     }
 }
@@ -1336,14 +1368,15 @@ impl AudioStreamEngine {
             })
             .expect("spawn audio stream pipeline thread");
 
+        // Blocks in `recv`; ends when the pipeline thread (the only sender)
+        // exits.
         let event_bridge = crate::rt::spawn_blocking(move || loop {
-            match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            match event_rx.recv() {
                 Ok(audio_stream_pipeline::AudioStreamEvent::Error(msg)) => {
                     events::emit_voice_error(format!("Stream audio: {}", msg));
                 }
                 Ok(_) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvError) => break,
             }
         });
 
@@ -1523,9 +1556,10 @@ mod video_recv_tests {
         let socket = Arc::new(MediaSocket::plain(client, "7"));
         let (event_tx, event_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new(udp_recv::Waker::new().unwrap());
         let handle = {
-            let (socket, stop) = (socket.clone(), stop.clone());
-            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, None, Instant::now()))
+            let (socket, stop, waker) = (socket.clone(), stop.clone(), waker.clone());
+            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, waker, None, Instant::now()))
         };
         for _ in 0..20 {
             let _ = socket.send(b"\x05ping");
@@ -1548,6 +1582,7 @@ mod video_recv_tests {
         assert!(asked, "datagram after the errors never reached the loop");
 
         stop.store(true, Ordering::Relaxed);
+        waker.wake();
         handle.join().unwrap();
     }
 }
