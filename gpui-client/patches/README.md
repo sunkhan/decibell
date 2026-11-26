@@ -16,6 +16,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0010-gpui-text-engine.patch` | What `decibell-text` needs from GPUI's text system: shaping without GPUI's per-window cache (`TextSystem::shape_line_uncached`), a glyph's unkerned advance, a font's metrics and its glyph for a character; and on Linux, synthesised styles (an italic request on a family without an italic face is slanted by 0.25, a weight of 600 or more on a family lighter than 600 is emboldened by 1/24 em, each as a `FontId` of its own) and families the application added that have no letters (KaTeX's symbol faces) resolving by name. | The client lays text out itself (`crates/decibell-text/README.md`). Chromium synthesises exactly these styles for the renderer, which loads no italic face. |
 | `0011-linux-deferred-system-fonts.patch` | On Linux the text system starts with an empty font database (`CosmicTextSystem::new_with_deferred_system_fonts`) and indexes the installed fonts only if a family is requested that no added font provides. | Indexing 1,095 installed faces and walking that index for every new (family, weight, style) cost about 85 ms of the time to the first frame; the client names only its bundled families, and `decibell-text` adds a fallback font when a character needs one. |
 | `0012-gpui-physical-key-codes.patch` | Key events carry the physical key: `KeyDownEvent::code` / `KeyUpEvent::code` (`KeyCode::Evdev(n)` on Linux, `KeyCode::Windows(scan)` on Windows, `Unknown` elsewhere and for simulated keystrokes), and `ModifiersChangedEvent::key` names the modifier key that went down or up. | Hotkey bindings name keys by position (`KeyboardEvent.code`); GPUI's `Keystroke` has only the character the layout types, so a recorder built on it saved the wrong key on every non-US keyboard (`HANDOFF.md` §5, now closed). |
+| `0013-gpui-hide-cursor-until-mouse-moves.patch` | `App::hide_cursor_until_mouse_moves()`: the public door to what the pinned GPUI already does on every platform when a key is typed (the cursor hidden until the pointer next moves). | A stream shown full screen hides the cursor once the pointer has rested, as the renderer's `cursor-none` does; GPUI has no hidden `CursorStyle`, and it does not need one. |
 
 ## How the patches are applied
 
@@ -407,6 +408,42 @@ the client's build.
 **Upstream.** A physical key code on key events is something GPUI lacks for every application with
 rebindable shortcuts; the shape here (a raw platform number) is the smallest one. A version for upstream
 would fill macOS and the web and probably name the keys.
+
+## 0013: hiding the cursor until the pointer moves
+
+**What.** One public method, `App::hide_cursor_until_mouse_moves()`, calling the platform method of the
+same name.
+
+**Why not a hidden `CursorStyle`.** The brief for it assumed the pin had no way to hide the cursor. It has:
+since Zed hides the cursor while typing (`CursorHideMode`, `App::set_cursor_hide_mode`), every platform
+implements `Platform::hide_cursor_until_mouse_moves` and shows the cursor again on the next pointer motion:
+
+| Platform | Hides with | Shows again |
+|---|---|---|
+| Wayland | `wl_pointer.set_cursor(serial, None, 0, 0)` on the window under the pointer (`gpui_linux/src/linux/wayland/client.rs`, `hide_cursor_until_mouse_moves`) | on `wl_pointer.motion` / `enter` / a button: the kept style is set again (`restore_cursor_after_hide`); a style set meanwhile is kept and not shown |
+| X11 | an invisible cursor (made once) as the window's cursor attribute | on motion, enter or a button: the window's kept style |
+| Windows | `SetCursor(None)` if the pointer is over one of our windows, a flag otherwise | `WM_SETCURSOR` / mouse move sets the kept cursor; leaving the window clears the flag |
+| macOS | `NSCursor.setHiddenUntilMouseMoves(true)` | AppKit |
+
+Only the trigger was private (two call sites in `window.rs`, both for keyboard input). A `CursorStyle::None`
+would have needed a new arm in each platform's style table and would still have had to solve what the
+existing code already solves (a style request arriving while hidden, the pointer leaving and entering).
+So the patch is the door, nine lines.
+
+**How the client uses it.** `decibell_voice::focus::rest_cursor`: when the overlays' one-shot timer fires
+(2.5 s after the last pointer movement over the video, `OVERLAY_HIDE`) and the stream fills the window
+(`watching.fullscreen`), the cursor is hidden. The pointer moving shows it (the platform) and the overlays
+(the view's `on_mouse_move`), and re-arms the timer. No timer of its own, nothing while not fullscreen.
+
+**Evidence.** `decibell --selftest voice-stall` (part 2): not hidden outside fullscreen; in fullscreen hidden
+2.5 s after the pointer rested; not while it keeps moving; hidden again after the next rest. The test moves
+GPUI's pointer, not the real one, so it asserts the call and logs what the platform reports
+(`App::is_cursor_visible`: hidden when the real pointer is over the test window). **By eye**: with a real
+pointer under Wayland and XWayland the owner should see the cursor go and come back
+(`docs/video-owner-checks.md`). Windows and macOS: upstream's code, compiled by the Windows check, not run
+here.
+
+**Upstream.** Trivially: a public method for something public behaviour already depends on.
 
 ## Considered and not patched
 

@@ -1,0 +1,20 @@
+diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
+index e017195..c10b23a 100644
+--- a/crates/gpui/src/app.rs
++++ b/crates/gpui/src/app.rs
+@@ -1422,6 +1422,15 @@ impl App {
+         self.cursor_hide_mode = mode;
+     }
+ 
++    /// Hides the mouse cursor until the mouse next moves, as typing does under
++    /// [`App::set_cursor_hide_mode`]: for an application that hides the cursor by
++    /// a rule of its own (a video shown full screen, once the pointer has rested).
++    /// The platform shows it again on the next pointer motion; nothing is hidden
++    /// while the pointer is over none of the application's windows.
++    pub fn hide_cursor_until_mouse_moves(&self) {
++        self.platform.hide_cursor_until_mouse_moves();
++    }
++
+     /// Returns whether the cursor is currently visible according to the
+     /// platform. This will report `false` after a keyboard input has hidden
+     /// the cursor and the user has not yet moved the mouse to restore it.
