@@ -446,6 +446,9 @@ pub struct Hotkeys {
     /// The focused fallback: armed bindings (none = off) and the matcher.
     fallback: Option<Vec<Binding>>,
     matcher: Matcher,
+    /// The keys the matcher holds (fed down and not yet up), mirrored so [`Hotkeys::would_take`]
+    /// can answer without feeding it.
+    held: std::collections::HashSet<&'static str>,
 }
 
 impl Hotkeys {
@@ -460,6 +463,7 @@ impl Hotkeys {
             mode_pushed: None,
             fallback: None,
             matcher: Matcher::default(),
+            held: Default::default(),
         }
     }
 
@@ -539,6 +543,7 @@ impl Hotkeys {
             return;
         }
         let released = self.matcher.set_bindings(next.as_deref().unwrap_or(&[]));
+        self.held.clear();
         self.fallback = next;
         self.inject(released);
     }
@@ -556,8 +561,26 @@ impl Hotkeys {
             return;
         }
         let Some(key) = keys::intern(code) else { return };
+        if down {
+            self.held.insert(key);
+        } else {
+            self.held.remove(key);
+        }
         let fired = self.matcher.key(key, down);
         self.inject(fired);
+    }
+
+    /// Would the focused fallback take this key down (`KeyDownEvent::code` / `keystroke`), with
+    /// what it holds now? True when the key, together with the keys held, completes an armed
+    /// binding it is part of: every key of a hold binding held (extra keys are fine, as in the
+    /// matcher), or a press binding whose keys are held with exactly its modifiers. An
+    /// auto-repeat of such a key answers the same. Nothing is fed or changed: "type anywhere to
+    /// compose" asks this so that a key the fallback presses (a bare-key push to talk) isn't
+    /// typed too (`docs/electron-quirks.md` #17). False while the fallback is off.
+    pub fn would_take(&self, code: gpui::KeyCode, keystroke: &gpui::Keystroke) -> bool {
+        let Some(bindings) = self.fallback.as_deref() else { return false };
+        let Some(key) = event_code(code, keystroke).and_then(|name| keys::intern(&name)) else { return false };
+        would_complete(bindings, &self.held, key)
     }
 
     /// The focused fallback fed from GPUI's events: a key of our own window went down or
@@ -580,10 +603,45 @@ impl Hotkeys {
     /// Our window lost focus: keys released meanwhile never reach us.
     pub fn window_blurred(&mut self) {
         if self.fallback.is_some() {
+            self.held.clear();
             let fired = self.matcher.release_all();
             self.inject(fired);
         }
     }
+}
+
+/// Whether `key` going down while `held` is held completes one of `bindings` that it is part
+/// of, by the core matcher's rules (`hotkeys/matcher.rs`): a generic modifier (`Control`)
+/// matches either side; a hold binding wants all its keys held, extra keys allowed; a press
+/// binding also wants exactly its modifiers held.
+fn would_complete(bindings: &[Binding], held: &std::collections::HashSet<&'static str>, key: &'static str) -> bool {
+    let is_held = |k: &str| k == key || held.contains(k);
+    let mut held_mods = keys::Mods::default();
+    for k in held.iter().copied().chain([key]) {
+        if let Some(m) = keys::sided_modifier(k) {
+            held_mods.insert(m);
+        }
+    }
+    bindings.iter().any(|binding| {
+        let mut part_of = false;
+        let mut mods = keys::Mods::default();
+        let mut complete = !binding.keys.is_empty();
+        for k in &binding.keys {
+            let Some(k) = keys::intern(k) else { return false };
+            if let Some(m) = keys::generic_modifier(k) {
+                mods.insert(m);
+                part_of |= keys::sided_modifier(key) == Some(m);
+                complete &= keys::sided_modifier(key) == Some(m) || held.iter().any(|h| keys::sided_modifier(h) == Some(m));
+            } else {
+                if let Some(m) = keys::sided_modifier(k) {
+                    mods.insert(m);
+                }
+                part_of |= k == key;
+                complete &= is_held(k);
+            }
+        }
+        part_of && complete && (binding.action.is_hold() || held_mods == mods)
+    })
 }
 
 #[cfg(test)]
@@ -713,6 +771,59 @@ mod tests {
             calls.borrow().injected,
             vec![(Action::PushToTalk, true, "p".into()), (Action::PushToTalk, false, "p".into())]
         );
+    }
+
+    /// "Would the fallback take this key" answers as the matcher would fire, without feeding
+    /// it: a bare-key push to talk, its auto-repeat, a press combo only with exactly its
+    /// modifiers, a two-key hold only with the other key held; nothing while not armed.
+    #[gpui::test]
+    fn would_take_answers_without_feeding(cx: &mut TestAppContext) {
+        let calls: Rc<RefCell<Calls>> = Rc::default();
+        let executor = cx.executor();
+        let h = cx.new(|_| Hotkeys::new(backend(calls.clone(), executor)));
+        let s = AppSettings {
+            hotkeys: vec![
+                binding("p", "push_to_talk", &["KeyV"]),
+                binding("m", "toggle_mute", &["Shift", "KeyM"]),
+                binding("d", "toggle_deafen", &["Control", "Semicolon"]),
+                binding("q", "push_to_mute", &["KeyQ", "KeyW"]),
+            ],
+            ..AppSettings::default()
+        };
+        fn key(name: &'static str) -> gpui::Keystroke {
+            gpui::Keystroke::parse(name).unwrap()
+        }
+        let ev = |code: u16| gpui::KeyCode::Evdev(code);
+        h.update(cx, |h, cx| h.sync(&s, cx));
+        assert!(!h.read_with(cx, |h, _| h.would_take(ev(47), &key("v"))), "not armed");
+        h.update(cx, |h, cx| h.set_status(status(true), &s, cx));
+        let (v, a, m, semi, q) = h.read_with(cx, |h, _| {
+            (
+                h.would_take(ev(47), &key("v")),
+                h.would_take(ev(30), &key("a")),
+                h.would_take(ev(50), &key("m")),
+                h.would_take(ev(39), &key(";")),
+                h.would_take(ev(16), &key("q")),
+            )
+        });
+        assert!(v && !a && !m && !semi && !q, "bare: v {v} a {a} m {m} ; {semi} q {q}");
+        // Shift held: Shift+M is a press combo with exactly its modifiers; V still talks.
+        h.update(cx, |h, _| h.key("ShiftLeft", true));
+        let (m, v) = h.read_with(cx, |h, _| (h.would_take(ev(50), &key("shift-m")), h.would_take(ev(47), &key("shift-v"))));
+        assert!(m && v, "with Shift: m {m} v {v}");
+        h.update(cx, |h, _| h.key("ShiftLeft", false));
+        // W held: Q completes the two-key hold. V held: its repeat is still the fallback's.
+        h.update(cx, |h, _| {
+            h.key("KeyW", true);
+            h.key("KeyV", true);
+        });
+        let (q, v) = h.read_with(cx, |h, _| (h.would_take(ev(16), &key("q")), h.would_take(ev(47), &key("v"))));
+        assert!(q && v, "W held: q {q}; V held: v {v}");
+        let injected = calls.borrow().injected.len();
+        h.update(cx, |h, _| h.window_blurred());
+        assert!(!h.read_with(cx, |h, _| h.would_take(ev(16), &key("q"))), "released on blur");
+        // Asking fed nothing: only the real presses (V) and the blur's release were injected.
+        assert_eq!(injected, 1);
     }
 
     /// The names here are the core's: every one is in its table, the numbers round-trip,

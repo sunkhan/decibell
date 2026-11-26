@@ -20,6 +20,11 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "a DM conversation hosts the composer crate's composer (DM variant) with its type-to-focus hook",
             run: |cx| Box::pin(dm_composer(cx)),
         },
+        SelfTest {
+            name: "join-type-to-focus-hotkeys",
+            about: "push to talk on a bare V with the focused fallback armed: V with no text field focused presses push to talk and types nothing; \"a\" focuses the composer and types \"a\"; in the DM call's theater no key reaches the hidden composer",
+            run: |cx| Box::pin(type_to_focus_hotkeys(cx)),
+        },
     ]
 }
 
@@ -117,9 +122,12 @@ async fn dm_composer_in(w: &TestCx) -> Result<()> {
     ensure!(variant == Variant::Dm && peer_list, "a DM composer under the conversation's list");
     // Type anywhere: with nothing focused a printable key lands in the box. (A modal an earlier
     // screen of this process left open in the fixture's model would keep the key, as it should.)
+    // And an empty box: a draft an earlier test of this process left in the fixture's model
+    // would be loaded into it.
     w.update(|_, cx| {
         let overlays = decibell_model::Model::global(cx).overlays.clone();
         overlays.update(cx, |o, cx| o.close_modal(cx));
+        composer.read(cx).input().clone().update(cx, |i, cx| i.clear(cx));
     })?;
     w.settle().await?;
     w.update(|window, cx| window.blur(cx))?;
@@ -134,4 +142,165 @@ async fn dm_composer_in(w: &TestCx) -> Result<()> {
     ensure!(value == "h" && focused, "type-to-focus with nothing focused");
     w.update(|_, cx| composer.read(cx).input().clone().update(cx, |i, cx| i.clear(cx)))?;
     Ok(())
+}
+
+async fn type_to_focus_hotkeys(cx: TestCx) -> Result<()> {
+    use decibell_core::config::AppSettings;
+    use decibell_model::Model;
+
+    let w = open_screen(&cx, "dm-plain")?;
+    let model = w.update(|_, cx| Model::global(cx).clone())?;
+    let injected: crate::hotkeys::Injected = Default::default();
+    let bindings = AppSettings { hotkeys: vec![crate::hotkeys::binding("ptt", "push_to_talk", &["KeyV"])], ..AppSettings::default() };
+    // A recording backend stands in for the core; XWayland's status arms the fallback.
+    let (previous_backend, previous_status) = w.update(|_, cx| {
+        model.live.hotkeys.update(cx, |h, cx| {
+            let backend = h.swap_backend(crate::hotkeys::recording_backend(&injected));
+            let status = h.status.clone();
+            h.sync(&bindings, cx);
+            h.set_status(crate::hotkeys::status("xwayland", true), &bindings, cx);
+            (backend, status)
+        })
+    })?;
+    let result = type_to_focus_hotkeys_in(&w, &model, &injected).await;
+    close(&w);
+    let result = match result {
+        Ok(()) => theater_hides_composer(&cx).await,
+        error => error,
+    };
+    let restore = cx.update(|_, cx| {
+        let settings = model.settings.read(cx).get().clone();
+        model.live.hotkeys.update(cx, |h, cx| {
+            h.status = previous_status;
+            h.sync(&settings, cx);
+            h.swap_backend(previous_backend);
+        })
+    });
+    result.and(restore)
+}
+
+async fn type_to_focus_hotkeys_in(w: &TestCx, model: &decibell_model::Model, injected: &crate::hotkeys::Injected) -> Result<()> {
+    use decibell_composer::Composer;
+    use decibell_core::hotkeys::Action;
+    use decibell_home::dm::Conversation;
+    use gpui::{KeyCode, Keystroke, Modifiers};
+
+    w.settle().await?;
+    ensure!(w.update(|_, cx| model.live.hotkeys.read(cx).fallback_armed())?, "the fallback didn't arm");
+    let conversation = w.update(|_, cx| decibell_home::hooks::shown::<Conversation>(cx))?.context("the conversation")?;
+    let composer = w
+        .update(|_, cx| conversation.read(cx).composer().cloned().and_then(|view| view.downcast::<Composer>().ok()))?
+        .context("the composer under the conversation")?;
+    let input = w.update(|_, cx| composer.read(cx).input().clone())?;
+    let state = |w: &TestCx| -> Result<(String, bool)> {
+        let input = input.clone();
+        w.update(move |window, cx| (input.read(cx).value().to_string(), input.read(cx).focus_handle(cx).is_focused(window)))
+    };
+    // A key pressed and released as the platform reports it (no text inserted by the harness: only
+    // a listener that takes it can type it).
+    let press = |key: &str, evdev: u16| -> Result<()> {
+        let keystroke = Keystroke { modifiers: Modifiers::default(), key: key.into(), key_char: Some(key.into()) };
+        w.key_event(keystroke.clone(), KeyCode::Evdev(evdev), true)?;
+        w.key_event(keystroke, KeyCode::Evdev(evdev), false)
+    };
+    w.update(|_, cx| model.overlays.update(cx, |o, cx| o.close_modal(cx)))?;
+    w.update(|_, cx| input.update(cx, |i, cx| i.clear(cx)))?;
+    w.update(|window, cx| window.blur(cx))?;
+    w.settle().await?;
+    injected.borrow_mut().clear();
+
+    // V: the fallback's (push to talk held, then released), not typed.
+    press("v", 47)?;
+    w.sleep(std::time::Duration::from_millis(30)).await;
+    let fired = std::mem::take(&mut *injected.borrow_mut());
+    let (value, focused) = state(w)?;
+    w.log(format_args!("V with no text field focused: injected {fired:?}; the box holds {value:?}, focused {focused}"));
+    ensure!(
+        fired == [(Action::PushToTalk, true, "ptt".to_string()), (Action::PushToTalk, false, "ptt".to_string())],
+        "V didn't press and release push to talk: {fired:?}"
+    );
+    ensure!(value.is_empty() && !focused, "V was typed into the composer ({value:?}, focused {focused})");
+
+    // a: no binding has it: the composer takes the focus and the character.
+    press("a", 30)?;
+    w.sleep(std::time::Duration::from_millis(30)).await;
+    let fired = std::mem::take(&mut *injected.borrow_mut());
+    let (value, focused) = state(w)?;
+    w.log(format_args!("\"a\": injected {fired:?}; the box holds {value:?}, focused {focused}"));
+    ensure!(fired.is_empty() && value == "a" && focused, "\"a\" didn't land in the composer ({value:?}, focused {focused}, injected {fired:?})");
+
+    // In the box, V is the field's (`docs/electron-quirks.md` #13): typed, nothing pressed.
+    w.type_text("v")?;
+    let fired = std::mem::take(&mut *injected.borrow_mut());
+    let (value, _) = state(w)?;
+    ensure!(fired.is_empty() && value == "av", "V typed in the focused box: {value:?}, injected {fired:?}");
+    w.log("in the focused box V types and presses nothing");
+    // The fixture's model outlives this window: leave no draft for the next test's composer.
+    w.update(|_, cx| input.update(cx, |i, cx| i.clear(cx)))?;
+
+    Ok(())
+}
+
+/// The call stage screen (a call with the conversation's peer, connected): with the theater on the
+/// conversation hides its composer, and a key typed with no text field focused reaches nobody;
+/// with the theater off the same key lands in the box.
+async fn theater_hides_composer(cx: &TestCx) -> Result<()> {
+    use decibell_composer::Composer;
+    use decibell_home::dm::Conversation;
+    use gpui::{KeyCode, Keystroke, Modifiers};
+
+    let w = open_screen(cx, "call-stage")?;
+    let result = async {
+        w.settle().await?;
+        let model = w.update(|_, cx| decibell_model::Model::global(cx).clone())?;
+        let conversation = w.update(|_, cx| decibell_home::hooks::shown::<Conversation>(cx))?.context("the conversation")?;
+        let composer = w
+            .update(|_, cx| conversation.read(cx).composer().cloned().and_then(|view| view.downcast::<Composer>().ok()))?
+            .context("the composer under the conversation")?;
+        let input = w.update(|_, cx| composer.read(cx).input().clone())?;
+        let press = |key: &str, evdev: u16| -> Result<()> {
+            let keystroke = Keystroke { modifiers: Modifiers::default(), key: key.into(), key_char: Some(key.into()) };
+            w.key_event(keystroke.clone(), KeyCode::Evdev(evdev), true)?;
+            w.key_event(keystroke, KeyCode::Evdev(evdev), false)
+        };
+        let state = |w: &TestCx| -> Result<(String, bool)> {
+            let input = input.clone();
+            w.update(move |window, cx| (input.read(cx).value().to_string(), input.read(cx).focus_handle(cx).is_focused(window)))
+        };
+        let calls = model.live.calls.clone();
+        w.update(|_, cx| model.overlays.update(cx, |o, cx| o.close_modal(cx)))?;
+        for theater in [true, false] {
+            w.update(|_, cx| {
+                input.update(cx, |i, cx| i.clear(cx));
+                calls.update(cx, |c, cx| c.set_theater(theater, 0, cx));
+            })?;
+            w.update(|window, cx| window.blur(cx))?;
+            w.settle().await?;
+            press("b", 48)?;
+            w.sleep(std::time::Duration::from_millis(30)).await;
+            let (value, focused) = state(&w)?;
+            w.log(format_args!("theater {theater}: a key with no text field focused; the box holds {value:?}, focused {focused}"));
+            if theater {
+                ensure!(value.is_empty() && !focused, "a key reached the composer the theater hides ({value:?})");
+            } else {
+                ensure!(value == "b" && focused, "with the theater off the key didn't land in the box ({value:?})");
+            }
+        }
+        w.update(|_, cx| input.update(cx, |i, cx| i.clear(cx)))?;
+        // The screen's fixture accepted a call (its transport never answers): leave no call behind
+        // for the screens later tests of this process open.
+        w.update(|_, cx| {
+            calls.update(cx, |c, cx| {
+                c.status = decibell_model::live::calls::CallStatus::Idle;
+                c.peer = None;
+                c.call_id = None;
+                c.started_at = None;
+                cx.notify();
+            })
+        })?;
+        anyhow::Ok(())
+    }
+    .await;
+    close(&w);
+    result
 }

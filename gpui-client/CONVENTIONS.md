@@ -335,9 +335,9 @@ in short:
 - **Slot API changes for the composer**: `ComposerBuilder` is `Fn(ServerId, ChannelId, &Entity<MessageList>, &mut
   Window, &mut App) -> ComposerParts { view, type_to_focus }` (the composer follows the list's `ListEvent::Reply`
   and calls `start_edit`; the pane's key listener hands keys that reach it from the list to `type_to_focus`), and
-  `EditorSlot::height(&Message, width, scale, &App)`. With **nothing focused** GPUI dispatches a key to the
-  window's root node only, which no pane is: `decibell_composer::install_type_to_focus(cx)` (one app-level
-  keystroke interceptor, registered in `registry::init_features`) hands such keys to the composer on screen.
+  `EditorSlot::height(&Message, width, scale, &App)`. Keys that reach no pane (the app's `Root` holds the
+  focus when nothing else does) go to the composer on screen through the root's own bubble-phase listener
+  (`decibell_composer::type_to_focus`, called from `decibell-app/src/root.rs`).
 
 ## Composer (`decibell-composer`)
 
@@ -367,9 +367,14 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
   and never from inside a picker update (`Picker::close` defers it).
 - **Outside a chat pane**: `dm_composer` (the DM pane's composer, joined by the app), `status_emoji_picker` (the
   custom status dialog's picker: `Picker::emoji_only`, no GIFs tab, a pick handed to the caller, its images
-  released when the caller drops it), `install_type_to_focus` ("type anywhere" with nothing focused: printable
-  keys and ArrowUp go to the composer mounted last while it lives; not with Ctrl / Alt / Super, a modal, or the
-  notice instead of the card).
+  released when the caller drops it), `type_to_focus` ("type anywhere", the renderer's rule: with no text
+  field focused (`decibell_text::input::text_field_focused`), printable keys and ArrowUp go to the composer
+  mounted last while it lives and its host draws it (`ComposerTarget::hidden`: the DM call's theater); not with
+  Ctrl / Alt / Super, a modal, or the notice instead of the card; called by the app's root view in the bubble
+  phase, after every element on the focused path). **A key the focused hotkey fallback takes is the
+  hotkey's** (`Hotkeys::would_take`: it completes an armed binding it is part of, e.g. a bare-key push to talk)
+  and is not typed; every other printable key goes to the composer (`docs/electron-quirks.md` #17; self-test
+  `join-type-to-focus-hotkeys`).
 - **Timers**: the slowmode countdown ticks on the wait's whole-second boundaries only while a window runs; the
   timed-out notice once a second while timed out; the GIF debounce only while a query waits; the drop pulse only
   while a file drag is over the window. Nothing at rest (`composer-idle`: 0 frames blurred).
@@ -797,8 +802,11 @@ What a released build does on its own and how it is packed: `PACKAGING.md`.
     may not draw on its own): draw what is pending first (`draw_pending` in `decibell-settings`'
     self-tests: a modifiers event that names no key) and put one between press and release.
 15. **A key with nothing focused reaches only the window's root node** (`focus_node_id_in_rendered_frame` falls back
-    to node 0, the root view): no element's `on_key_down` below it sees it. App-wide handling goes through
-    `App::intercept_keystrokes` (before key bindings; `stop_propagation` takes the key).
+    to node 0, the root view): no element's `on_key_down` below it sees it. The app's `Root` holds the focus
+    whenever nothing else does (13), so its listeners see every key; `App::intercept_keystrokes` runs before
+    everything (key bindings, the focused element) and its `KeystrokeEvent` carries no physical key code, so
+    app-wide handling that must defer to the focused element or read the physical key (type-to-focus, the
+    hotkey fallback) belongs on the root's element instead.
 14. **KaTeX's font files mark every face Regular** (OS/2 `fsSelection` 0x0040); fontconfig (Chromium) takes the
     slant from the style name, fontdb (GPUI) from `fsSelection`: upright `KaTeX_Main` resolved to the italic face
     and italic `KaTeX_Math` got a synthetic slant on top. `decibell-text` marks the five italic faces before it

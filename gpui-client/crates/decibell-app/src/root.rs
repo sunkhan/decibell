@@ -14,9 +14,12 @@ use gpui::{
 /// panes below are cached).
 ///
 /// It also feeds the window's keys to the focused hotkey fallback while the listener asks for it
-/// ([`crate::hotkeys`]). For that it holds the focus whenever nothing else in the window does
-/// (the renderer's `document.body`): GPUI dispatches keys along the focused element's path, and
-/// with nothing focused only to the window's root node, above every listener.
+/// ([`crate::hotkeys`], capture phase) and hands printable keys that no text field took to the
+/// composer on screen ("type anywhere", bubble phase: `decibell_composer::type_to_focus`; a key
+/// the fallback takes is the hotkey's and isn't typed). For that it holds the focus whenever
+/// nothing else in the window does (the renderer's `document.body`): GPUI dispatches keys along
+/// the focused element's path, and with nothing focused only to the window's root node, above
+/// every listener.
 pub struct Root {
     content: AnyView,
     /// The OS window title last set (`useWindowTitle`).
@@ -58,6 +61,13 @@ impl Render for Root {
         let actions = decibell_chat_content::transfers::title_bar_button(cx);
         let theme = cx.theme();
         let content = crate::hotkeys::focused_fallback(focus_navigation(div()))
+            // "Type anywhere to compose", in the bubble phase: after every element on the focused
+            // path (the renderer's `keydown` on `window`), after the fallback's capture listener.
+            .on_key_down(|event, window, cx| {
+                if decibell_composer::type_to_focus(event, window, cx) {
+                    cx.stop_propagation();
+                }
+            })
             .track_focus(&self.focus)
             .size_full()
             .flex()

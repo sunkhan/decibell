@@ -122,9 +122,9 @@ impl Render for Fixture {
     }
 }
 
-type Injected = Rc<RefCell<Vec<(Action, bool, String)>>>;
+pub(crate) type Injected = Rc<RefCell<Vec<(Action, bool, String)>>>;
 
-fn recording_backend(injected: &Injected) -> HotkeyBackend {
+pub(crate) fn recording_backend(injected: &Injected) -> HotkeyBackend {
     let injected = injected.clone();
     HotkeyBackend {
         configure: Rc::new(|_| Box::pin(async { Ok(()) })),
@@ -134,11 +134,11 @@ fn recording_backend(injected: &Injected) -> HotkeyBackend {
     }
 }
 
-fn binding(id: &str, action: &str, keys: &[&str]) -> HotkeyBindingSetting {
+pub(crate) fn binding(id: &str, action: &str, keys: &[&str]) -> HotkeyBindingSetting {
     HotkeyBindingSetting { id: id.into(), action: action.into(), keys: keys.iter().map(|k| k.to_string()).collect() }
 }
 
-fn status(backend: &'static str, fallback: bool) -> decibell_core::hotkeys::Status {
+pub(crate) fn status(backend: &'static str, fallback: bool) -> decibell_core::hotkeys::Status {
     let mut status = decibell_core::hotkeys::status();
     status.backend = backend;
     status.state = "active";

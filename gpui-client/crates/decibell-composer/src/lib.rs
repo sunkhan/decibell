@@ -65,27 +65,23 @@ pub fn dm_composer(peer: decibell_model::Uid, list: gpui::Entity<decibell_chat::
     decibell_chat::ComposerParts { view: composer.clone().into(), type_to_focus: Composer::type_to_focus_hook(&composer) }
 }
 
-/// "Type anywhere to compose" with **nothing focused** (`useTypeToFocusComposer`). With no element
-/// focused GPUI dispatches a key to the window's root node only, so no pane's key listener sees it:
-/// this registers one app-level keystroke interceptor (GPUI's `intercept_keystrokes`, before the
-/// key bindings) that hands such a key to the composer on screen (the one mounted last, while it
-/// lives: its pane is on screen). It takes a printable character (its input takes the focus and
-/// the character) or ArrowUp (edit our newest message); not with Ctrl, Alt or Super held, a modal
-/// open, or the composer replaced by a notice (no permission, timed out); a taken key goes no
-/// further. Keys that reach a chat pane from its list keep going through the pane's own listener
-/// (the same hook). Call once at start-up (`registry::init_features`).
-pub fn install_type_to_focus(cx: &mut App) {
-    cx.intercept_keystrokes(|event, window, cx| {
-        if window.focused(cx).is_some() {
-            return;
-        }
-        let Some(composer) = Composer::active(cx) else { return };
-        let key = gpui::KeyDownEvent { keystroke: event.keystroke.clone(), is_held: false, prefer_character_input: false, code: gpui::KeyCode::Unknown };
-        if composer.update(cx, |composer, cx| composer.key_from_pane(&key, window, cx)) {
-            cx.stop_propagation();
-        }
-    })
-    .detach();
+/// "Type anywhere to compose" (`useTypeToFocusComposer`), for the window's root view: call it from
+/// the root element's key-down listener in the bubble phase (the renderer's `keydown` listener on
+/// `window`, which runs after every element on the focused path: one that handles the key and
+/// stops it keeps it). It hands the key to the composer on screen (the one mounted last, while it
+/// lives and its host draws it) when no text field has the focus (`text_field_focused`: the
+/// renderer's `INPUT` / `TEXTAREA` / contentEditable): a printable character (its input takes the
+/// focus and the character) or ArrowUp (edit our newest message). Not with Ctrl, Alt or Super
+/// held, a modal open, the composer replaced by a notice or hidden (the DM call's theater), nor
+/// for a key the focused hotkey fallback takes (`Hotkeys::would_take`: that key is the hotkey's,
+/// `docs/electron-quirks.md` #17). Returns whether it took the key (then stop the event).
+///
+/// The app's root holds the focus whenever nothing else does (`decibell-app`'s `Root`), so every
+/// key reaches its listeners; keys that reach a chat pane from its list go through the pane's
+/// own listener first (the same rule, `Composer::type_to_focus_hook`).
+pub fn type_to_focus(event: &gpui::KeyDownEvent, window: &mut gpui::Window, cx: &mut App) -> bool {
+    let Some(composer) = Composer::active(cx) else { return false };
+    composer.update(cx, |composer, cx| composer.key_from_pane(event, window, cx))
 }
 
 /// The status dialog's pick: the chosen emoji.

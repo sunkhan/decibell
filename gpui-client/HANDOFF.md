@@ -1103,8 +1103,8 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   `ErrorCard` row. Central now refuses with the sender's nonce and the model withdraws the bubble with a toast, so
   only a refusal whose bubble was already gone (sent from another device, or after the echo watchdog) lands as a
   row. Needs a row kind in `decibell-chat`'s `row.rs` (left alone while `wip/chat-content` edits it).
-- **Type-to-focus with the DM call's theater on** reaches the conversation's composer, which theater hides (the
-  renderer's `editorRef` is unmounted then): the composer doesn't know it isn't drawn.
+- **Done (integrate-d): type-to-focus with the DM call's theater on** no longer reaches the hidden composer
+  (`ComposerTarget::hidden`; self-test `join-type-to-focus-hotkeys`).
 - **`message_stamp` costs ~117 ns** a call, of which ~58 ns is formatting and the rest `chrono::Local`'s
   zone conversion (it re-checks `TZ` / `/etc/localtime` at most once a second per thread). Rows cache
   their labels, so it is not on the scroll path; cache the local time per message if a profile ever shows it.

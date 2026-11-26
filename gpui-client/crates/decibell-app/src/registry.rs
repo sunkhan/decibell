@@ -74,8 +74,7 @@ pub fn init_features(cx: &mut gpui::App) {
     decibell_search::init(cx);
     decibell_servers::init(cx);
     join_features(cx);
-    // "Type anywhere to compose" with nothing focused (an app-level keystroke interceptor).
-    decibell_composer::install_type_to_focus(cx);
+    // "Type anywhere to compose" is the root view's (`root.rs`: `decibell_composer::type_to_focus`).
 }
 
 /// What one feature crate hands another through the app, so the crates stay independent of each

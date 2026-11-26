@@ -18,6 +18,7 @@ use std::sync::Arc;
 use decibell_attachments::upload::UploadSource;
 use decibell_model::actions::chat::SendOutcome;
 use decibell_model::chat::{DraftKey, Message, MessageSlice, SliceKey};
+use decibell_model::live::calls::CallStatus;
 use decibell_model::stores::permissions::perm;
 use decibell_model::{ChannelId, Model, ServerId, Uid, actions};
 use gpui::{App, Context, Entity, SharedString, Subscription};
@@ -76,6 +77,11 @@ pub trait ComposerTarget: 'static {
     }
     /// A send's call is in flight: the send button is disabled meanwhile (DMs: `sending`).
     fn sending(&self, _cx: &App) -> bool {
+        false
+    }
+    /// The composer is alive but not drawn: its host hides it (the DM call's theater hides the
+    /// list and the composer; the renderer unmounts them, so "type anywhere" finds no editor).
+    fn hidden(&self, _cx: &App) -> bool {
         false
     }
     /// The stores [`gate`](Self::gate) / [`send_error`](Self::send_error) /
@@ -232,6 +238,15 @@ impl ComposerTarget for DmTarget {
 
     fn sending(&self, cx: &App) -> bool {
         model(cx).is_some_and(|m| m.dm.list.read(cx).sending(self.peer))
+    }
+
+    /// The conversation's theater: the call stage fills the panel while a call with this peer
+    /// is active and `calls.theater` is on (`decibell_home::dm::Conversation::theater`).
+    fn hidden(&self, cx: &App) -> bool {
+        model(cx).is_some_and(|m| {
+            let calls = m.live.calls.read(cx);
+            calls.theater && calls.status == CallStatus::Active && calls.peer == Some(self.peer)
+        })
     }
 
     fn watch(&self, cx: &mut Context<Composer>) -> Vec<Subscription> {

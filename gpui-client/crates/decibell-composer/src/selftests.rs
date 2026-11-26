@@ -368,7 +368,7 @@ async fn check_type_to_focus(cx: TestCx) -> Result<()> {
     let composer = open(&cx, OFF_TOPIC).await?;
     set_value(&cx, &composer, "")?;
     let focused = |cx: &TestCx| cx.update(|window, cx| composer.read(cx).input().read(cx).focus_handle(cx).is_focused(window));
-    // Nothing focused: only the window's root sees the key (GPUI), the interceptor takes it.
+    // Nothing focused: the root takes the focus back and its listener hands the key over.
     cx.update(|window, cx| window.blur(cx))?;
     cx.type_text("h")?;
     ensure!(value(&cx, &composer)? == "h" && focused(&cx)?, "nothing focused: the key went to the box ({:?})", value(&cx, &composer)?);

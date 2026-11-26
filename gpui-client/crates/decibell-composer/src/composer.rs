@@ -435,17 +435,28 @@ impl Composer {
 
     // ── Keys from the pane ──────────────────────────────────────────────────────────────────
 
-    /// `useTypeToFocusComposer`: a key that reached the pane with no text field focused.
+    /// `useTypeToFocusComposer`: a key that reached the pane or the window's root with no text
+    /// field focused. Not with Ctrl / Alt / Super held, a modal up, the composer hidden by its
+    /// host or replaced by a notice, nor for a key the focused hotkey fallback takes (a bare-key
+    /// push to talk: the renderer would press it *and* type it, `docs/electron-quirks.md` #17).
     pub(crate) fn key_from_pane(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let modifiers = event.keystroke.modifiers;
         if modifiers.control || modifiers.alt || modifiers.platform {
             return false;
         }
-        // A modal owns the keyboard while it is up.
-        if model(cx).is_some_and(|m| m.overlays.read(cx).active_modal.is_some()) {
+        if decibell_text::input::text_field_focused(window) {
             return false;
         }
-        if self.gate_blocks() {
+        if let Some(model) = model(cx) {
+            // A modal owns the keyboard while it is up.
+            if model.overlays.read(cx).active_modal.is_some() {
+                return false;
+            }
+            if model.live.hotkeys.read(cx).would_take(event.code, &event.keystroke) {
+                return false;
+            }
+        }
+        if self.gate_blocks() || self.target.hidden(cx) {
             return false;
         }
         if event.keystroke.key == "up" {
