@@ -151,6 +151,29 @@ and once more with `DECIBELL_VIDEO_DECODER=vaapi` in front. Look for:
   is a present of the frame the renderer kept).
 - **Leave it for a minute**, then `dmesg | tail`: no GPU reset, no `amdgpu` / `i915` / `xe` errors.
 
+## 4a. In the app: what the probe found, a stall, the cursor
+
+These need the local stack (or any server) and a second account streaming; on the development machine
+`decibell --selftest voice-stall` runs them against the stack. By eye, on any machine:
+
+- **Settings → Codecs** after the app has been open for a second: under "Detected decoders" one line per codec
+  ending in the decoder that is really in use (`· Vulkan Video`, `· VA-API`, `· NVDEC`, `· Software (dav1d)` /
+  `· Software (FFmpeg)`), and under them one muted line for every decoder that was tried and is not used, with the
+  driver's reason. **On AMD / Intel, copy these lines into the report**: they are the probe's whole answer.
+  "Refresh codec capabilities" decodes the test frames again (the button says "Refreshing…" for a moment) and the
+  list must come back the same. The answer is kept in `<user data>/video-decoders.txt`.
+- **The stats overlay** of a watched stream (the chart button over the video): the `Path` row says hardware or
+  software, and it must agree with what Settings lists for the stream's codec.
+- **A stream that stops**: while watching a friend's stream, have them pull their network cable (or suspend their
+  machine) for ten seconds: after 3 s "Reconnecting…" appears over the last picture, in the stage tile, the focused
+  view and the mini-player alike; when they are back the picture resumes within a second and the indicator goes.
+- **A busy machine**: watch a 120 fps stream while a game or a build takes every core. The stream may stutter but
+  must not freeze for seconds at a time (a decoder thread held back for up to 100 ms no longer loses the stream
+  to the next keyframe); the overlay's `Queue` may read up to 12 for a moment and `Dropped` should stay where it is.
+- **The cursor in fullscreen**: watch a stream fullscreen and rest the pointer on the video: after 2.5 s the
+  controls fade and the cursor disappears; the slightest movement brings both back. Outside fullscreen the cursor
+  never hides. Under both Wayland and XWayland (`WAYLAND_DISPLAY= decibell`).
+
 ## 5. Numbers, if there is time
 
 One measured run per decoder (CPU, memory, wakeups, the hub's counters; `HANDOFF.md` §4 has NVIDIA's):

@@ -531,7 +531,12 @@ frame; 2026-11-26, load average 6.0 falling to 3.7):
 | A speaking ring on a 12-tile voice stage (server bar, channel list with rosters, user panel around it) | 18.2 | 5.0 / 13.0 | 2,653 → 2,087 (−21 %) |
 | A speaking ring in the channel list's voice roster, a text channel open with its member list | 9.5 | 3.0 / 3.0 | 2,624 → 1,662 (−37 %) |
 | A key typed in a field under the 10,000-message channel's list (the chat pane's shape; the composer is not in this tree) | 3.0 | 2.0 / 1.0 | 941 → 873 (−7 %) |
-| A message arriving in that list | 3.0 | 2.0 / 1.0 | 1,021 → 977 (−4 %) |
+| A message arriving in that list | 3.0 | 2.0 / 1.0 | 1,021 → 977 (within the noise: see below) |
+
+A second run on the final build at load 1.9: 18.0 → 5.7 views and 2,554 → 1,958 µs; 9.0 → 3.1 and 2,325 →
+1,497 µs; 3.0 → 2.0 and 911 → 874 µs; 3.0 → 2.0 and 1,002 → 1,073 µs. So: a fifth to a third less main-thread
+time where the clean neighbours are many, a few percent for a key typed over this fixture's cheap list, and
+nothing measurable for a message arriving (the list that renders is the cost).
 
 What renders now is the path from the window's content to the view that changed (content, main layout, pane,
 stage, tile: 5; content, list host, field: 2); what is replayed are the path's clean children, and the views

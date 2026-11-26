@@ -651,27 +651,39 @@ panel's popovers, the incoming call) and the user panel's voice controls (`regis
   or their measured size moves, push each tile its data (a tile notifies only when its data changed) and notify
   themselves only when their own layout moved. A tile subscribes to its own keyed events (speaking for its uid, its
   person, its stream's poster and first picture).
-- **GPUI re-renders nested cached views with their parent** (`prepaint_view` sets `window.refreshing` while a dirty
-  cached view renders): a tile's notify marks the stage dirty, and the stage's render re-renders every tile. Frames are
-  still one per change; keep the stage's and the tiles' `render` cheap (no layout maths, no allocation beyond the
-  elements).
+- **A change renders the views on its path, not their clean neighbours** (GPUI patch `0014`; at the pin every cached
+  view under a dirty one rendered with it): a tile's notify marks its ancestors dirty (the stage, the pane, the main
+  layout, the window's content), those render, and every other tile and panel is replayed from its cache
+  (`decibell --selftest render-cost` has the numbers). So keep `render` cheap on the path (no layout maths, no
+  allocation beyond the elements), and keep a view that changes often small and low in the tree. A cached view is
+  replayed only while its bounds, content mask, inherited text style, opacity and rem size are what they were: a
+  parent that moves or restyles a child renders it.
 - **Video**: a view that shows a stream holds a `decibell_video::Viewer` (`players::viewer(uid, cx)`) and paints
   `VideoView`; the hub decodes a stream while any viewer of it exists (one decoder for any number of views) and the
   core delivers its frames only then (the app's `HubCallbacks::interest`). `players::Players` holds the loaded stream's
   viewer (`watching.pip`, the renderer's persistent player) so moving between the stage, the focused view and the
   mini-player never restarts the decoder; create the new viewer before dropping the old one. The spinner shows until
-  `video_events::StreamStates` has the stream's first picture.
-- **Timers with a live reason only**: the focused view's overlay hide (2.5 s, while shown), the stats overlay's 500 ms
+  `video_events::StreamStates` has the stream's first picture; once it had one, `StreamState::stalled` (no picture
+  for 3 s: the hub's `Stalled` / `Resumed`, no timer) draws `scrim::reconnecting` over it: every place that paints a
+  `VideoView` draws both.
+- **Timers with a live reason only**: the focused view's overlay hide (2.5 s, while shown; in fullscreen the same
+  timer hides the mouse cursor until it moves, `focus::rest_cursor`, GPUI patch `0013`), the stats overlay's 500 ms
   refresh (while open), the stream-audio picker's 2 s app list (while shown, the renderer's poll), the hidden-speaker
   swap (while a hidden speaker waits), the call's 1 s duration (while live and shown), the incoming card's "answered
   elsewhere" 3 s. The ringing outline breathes by re-presenting a retained sprite (`TimedTransformation`, ≤ 30 fps),
   never by re-rendering; the mini-player's drag, spring and entrance request frames only while they move.
-- **The native encoder probe never runs at start**: `codecs::ensure_caps` (Go Live's first open, the first voice
-  session) runs the model's `init_codec_caps` and reads the core's cached probe (`cached_native_encoders`: backend, label,
-  a software encoder's pixel-rate ceiling) into `codecs::Encoders`; presets past that ceiling are greyed.
+- **Codec capabilities are the model's, loaded by its one action**: `actions::voice::init_codec_caps` (never at start:
+  the encoder probe opens encoder sessions; any number of callers, one load). `codecs::ensure_caps` calls it at Go
+  Live's first open and the first voice session, Settings → Codecs when it opens. `voice.codecs.encoders` has each
+  encoder's backend, label and limits (a software encoder's pixel-rate ceiling: presets past it are greyed);
+  `codecs::Encoders` mirrors it for the Go Live views (tests pin a fake answer there). Decode capabilities come from
+  the video crate's probe, which the app runs after its first frame (`crates/decibell-app/src/video.rs`). Never call
+  the core's probe functions from a view.
 - **Self-tests** (`selftests.rs`) run the app as `perf3` and a `decibell-headless` peer as `perf4` (both have E2EE keys;
-  passphrase `decibell-m3-test-passphrase`), everyone muted and deafened before joining. The headless `stream-file`
-  step and `tools/perf/streambot.sh` stream `.dbv` recordings into a channel through the real path.
+  passphrase `decibell-m3-test-passphrase`; `perf5` is a second streamer for measurements, `tools/dev/local-stack.sh
+  top-up`), everyone muted and deafened before joining. The headless `stream-file` step (with `stream-pause` /
+  `stream-resume`: a streamer whose frames stop arriving) and `tools/perf/streambot.sh` stream `.dbv` recordings into
+  a channel through the real path.
   `DECIBELL_VOICE_TRACE=1` logs every render of the voice views (which view drew a frame).
 
 ## Search and channel header (`decibell-search`)

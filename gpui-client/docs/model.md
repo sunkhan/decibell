@@ -339,8 +339,8 @@ nothing is pending; flushed on quit.
 | `decibell.layout.dmFriendsPanel` | `ui.json` `dm_friends_panel` (default on) |
 | `decibell.emoji.recent` | `ui.json` `emoji_recent` (`Layout::set_emoji_recent`; M2's picker) |
 | `decibell.picker.tab` | `ui.json` `picker_tab` (`"emoji"` / `"gifs"`) |
-| `decibell.decoder_caps.v6` | `ui.json` `extra["decoder_caps"]` if the video crate wants a cache (`Layout::extra` / `set_extra`; M3) |
-| `decibell.native_encoder_caps.v2` | `ui.json` `extra["native_encoder_caps"]` (M3) |
+| `decibell.decoder_caps.v6` | none in `ui.json`: the video crate keeps its probe's answer per GPU and driver in `<user data>/video-decoders.txt` (`extra["decoder_caps.v6"]` from earlier builds is removed when met) |
+| `decibell.native_encoder_caps.v2` | `ui.json` `extra["native_encoder_caps.v3"]`: each encoder with its backend, label and pixel-rate ceiling (`EncoderCap`); a `v2` entry is removed when met |
 | `decibell.encoder_caps.v6` | none: the WebCodecs encoder probe's cache; there is no WebCodecs here |
 | `decibell.linux_native_encode` | none: an opt-out to WebCodecs encode; native encode is the only path here |
 | `decibell.win_native_encode` | none, same |
@@ -376,7 +376,7 @@ every dump that applies in the current state (the account stores, the open commu
 the open channel's permissions and messages, the open DM, search, every live store), one line each, a dump that
 can't be made carrying `{"error": …}`. The last line is `DONE` or `FAILED …`. **`dump codecs`** needs no sign-in:
 it runs the core's encoder probe and prints, per codec, the backend, encoder and limits in use (plus the model's
-codec caps); `DECIBELL_ENCODER=software` shows what a machine without a hardware encoder gets. Steps of every group mix freely in
+codec caps, which carry the backend and label too once the `codecs` step loaded them: `voice.codecs.encoders`); `DECIBELL_ENCODER=software` shows what a machine without a hardware encoder gets. Steps of every group mix freely in
 one script (one process, one core): the usage's example, also `tests/stack.rs`' combined test.
 
 It only talks to the local stack: it exits 2 unless `DECIBELL_CENTRAL` is a loopback address **and** the
@@ -857,8 +857,8 @@ creating / dropping hundreds of entities with their observers.
 | What | Where | Notes |
 |---|---|---|
 | Sounds and attention | subscribe to `model.live.cues` | `Cue::Play(Sound)` (`Sound::asset()` → `assets/sounds/*.wav`), `StartRing` / `StopRing` (loop `call_ring.wav`), `Flash` (taskbar flash / dock bounce without focus). The model plays nothing. |
-| Decode capabilities | `codecs.update(|c, _| c.set_decoder_probe(Rc<dyn DecoderProbe>))` | The video crate's probe; the model adds the H.264 fallback, caches in `ui.json` `extra["decoder_caps.v6"]`. Without one (headless) only H.264 is advertised. |
-| Codec caps at boot | `actions::voice::init_codec_caps(false, cx)` once after `start_core` | As `main.tsx` did: decode probe, the core's `probe_native_encoders` (cached `extra["native_encoder_caps.v2"]`, one re-probe 15 s after a cached boot), shipped to the core (its caps are in memory: every start). Before it, a voice join advertises no caps. |
+| Decode capabilities | `codecs.update(|c, _| c.set_decoder_probe(Rc<dyn DecoderProbe>))`, then `actions::voice::load_decode_caps(cx)` once the first frame is up, after the core booted, and whenever the answer may have changed | `DecoderProbe::probe(force) -> DecodeReport`: what to advertise, the decoder each codec's streams get (`DecoderInfo`: "Vulkan Video", …), what was tried and given up (`SkippedDecoder`). The video crate's real probe, kept by it per GPU and driver; the model adds the H.264 fallback, keeps the report in `voice.codecs` (`decode`, `decoders`, `skipped_decoders`, `decode_probed`), ships `decode` to the core and re-derives the advertised encoders. Without a probe (headless) only H.264 is advertised. |
+| Codec caps (encode + decode) | `actions::voice::init_codec_caps(force, cx)` when first needed: the first voice session, Go Live, Settings → Codecs; `force` for "Refresh" | **The one loader, never at start** (the encoder probe opens encoder sessions): the decode probe, then the encoders (`ui.json` `extra["native_encoder_caps.v3"]`, else the core's `probe_native_encoders`; one re-probe 15 s after a cached load, for the next session), kept whole in `voice.codecs.encoders` (`EncoderCap`: backend, label, limits, a software encoder's pixel rate) with `encode` the ones we also decode, both shipped to the core. One load at a time: callers while one runs share it (`CodecCaps::begin_load`), a forced one asked for meanwhile runs after it, a plain one is a no-op once `loaded`. |
 | Idle source | `auto_away.update(|a, cx| a.set_source(Rc::new(CoreIdleSource), cx))` or the platform's own `IdleSource` | The core's answers Wayland + GNOME, "unsupported" on X11 / Windows / macOS (Electron used `powerMonitor`): the app supplies `XScreenSaver` / `GetLastInputInfo` / `CGEventSource` sources there, ideally with `idle_for`. Also `set_locked(bool)` on lock / sleep, `poke()` on resume pushes and on input in our window. |
 | Device hot-plug | `devices.update(|d, cx| d.hotplug(cx))` | Electron had `devicechange`; GPUI has none (PipeWire / WASAPI notifications are the app's). 400 ms debounce, timer only while pending. Pickers call `ensure_loaded`. |
 | Downloads | `transfers.update(|t, cx| t.attach_downloads(Rc<dyn DownloadControl>, cx))` → `DownloadEvents`; give `move |e| events.push(e)` to `DownloadManager::new` | `ManagerControl { manager, runtime }` implements the trait. Then `actions::transfers::configure_downloads`. A view starts one with `start_download(actions::chat::download_request(server, attachment_id, Some(&attachment), save_to, cx), cx)`. |
@@ -884,7 +884,7 @@ creating / dropping hundreds of entities with their observers.
 The self-move expiry (only while a move is pending), the 45 s ring (only while ringing), our message's
 clear-after (only while a deadline is set), the watch set's 600 ms flush (only while a change waits), the
 friend list's 10 s reply timeout (only while waiting), the friends error's 5 s (only while shown), the device
-hot-plug 400 ms (only while pending), the revocation notice's 8 s, the codec re-probe 15 s after a cached boot
+hot-plug 400 ms (only while pending), the revocation notice's 8 s, the encoder re-probe 15 s after a cached load
 (once), and **auto-away's one timer**: active with a known idle time → `threshold − idle_for`; unknown (the
 core's Wayland flag) → one threshold (Away may then show up to one threshold late: core gap 1); speaking holds
 it off; Away on a source that can't push resumes → 1 s re-reads (the renderer's rate) for that sole reason.

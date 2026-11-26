@@ -33,7 +33,7 @@ of streams, on every GPU vendor: Vulkan Video on the renderer's device (§1), th
 | `Stream`, `Viewer` | `hub.rs` | A stream handle (stats, picture size) and "this stream is on screen" (RAII). |
 | `VideoView` | `view.rs` | The element: backdrop + one scene surface, `Fit::{Contain, Cover, Fill}`, rounded corners. |
 | `Packet`, `PacketBytes` | `packet.rs` | An encoded frame's buffer, owned, handed to FFmpeg without a copy. |
-| `FrameQueue` | `queue.rs` | The 3-frame hand-over with the keyframe gate (64 frames while a new decoder catches up). |
+| `FrameQueue` | `queue.rs` | The hand-over with the keyframe gate: 100 ms of frames deep, never fewer than 3 (64 while a new decoder catches up, which is also its fixed capacity). |
 | `StreamStats`, `StatsSampler` | `stats.rs` | Lock-free counters, histograms, the per-frame trace. |
 | `FfDecoder`, `SoftwareDecoder` | `decode.rs` | FFmpeg plumbing shared by both paths; the software decoder (every platform). |
 | `GpuDevice`, `SlotRing`, `VulkanDecoder`, `VulkanUploader`, `WgpuUploader` | `linux/` | Vulkan Video on the renderer's device; the slots; software pictures into slots. |
@@ -54,8 +54,11 @@ hub.push(&frame.key, EncodedFrame { codec, keyframe, timestamp, data: Packet::fr
 let viewer = hub.stream(&key).viewer();                       // held by the view that shows it
 VideoView::new(&viewer).fit(Fit::Cover).rounded(theme.radius_md).backdrop(theme.color_bg_darkest)
 hub.remove(&key);                                             // the stream ended
+hub.set_capabilities_cache(dir.join("video-decoders.txt"));    // the probe's answer, kept per GPU and driver
 hub.probe_capabilities(|support| …)                           // [CodecSupport; 3] from a real probe, off the UI thread
+hub.reprobe_capabilities(|support| …)                         // the same from nothing (Settings → Codecs' refresh)
 hub.capabilities()                                            // the same, as far as known now; never blocks
+hub.skipped_decoders()                                        // what was tried and given up, with the reason
 ```
 
 ### 0.2 What exists when
@@ -66,7 +69,7 @@ hub.capabilities()                                            // the same, as fa
 | Stream known, nobody displays it (`hub.stream(key)`) | nothing | none | none | no (`interest(key, false)`) |
 | A `Viewer` exists, no frame yet | nothing | none | none | yes; a keyframe was requested |
 | Displayed and receiving | one `AVCodecContext`; with hardware decode the process's `AVHWDeviceContext` | `decibell-video-<n>` | 5 slots (10 plane textures) | yes |
-| No frame for 2 s (stall, or ended without `remove`) | freed | exited | the last picture's slot stays on screen, the other 4 freed | yes |
+| No picture for 3 s (`STALLED_AFTER`: a stall, or ended without `remove`) | freed | exited | the last picture's slot stays on screen, the other 4 freed; `StreamEvent::Stalled` once, a keyframe asked for; `Resumed` with the next picture (§0.4a) | yes |
 | Last viewer dropped, or `hub.remove(key)` | freed | exited | all freed (§0.6) | no |
 
 The decision for a stream with no visible view: **it is not decoded.** A frame pushed for it is counted
@@ -86,7 +89,7 @@ frame or picture data.
 |---|---|---|---|---|---|
 | 1 | receive | `Packet::from(frame.data)`: the buffer moves into a recycled carrier. FFmpeg needs 64 zeroed bytes after a packet: a buffer that has them (`PacketBytes::zero_padding`) is carried as it is; one that does not is copied once into a recycled padded buffer of ours and returned to its owner at once | carrier free list (pop) | 0 | 0 with a padded buffer; **1 `memcpy` of the encoded frame today** (`packet_copies()`), because the core's `FrameBuf` has no padding yet (§0.10) |
 | 2 | receive | `hub.push`: stream looked up by key (its `Arc` cloned, the map unlocked again), viewer count checked, `received` counted | streams map (read, for the lookup) | 0 | 0 |
-| 3 | receive | `FrameQueue::push`: stored in one of three inline slots; the decoder thread is woken if it waits. Full queue: the frame is shed, the gate closes until a keyframe, `request_keyframe(key)` (at most one per 500 ms) | queue mutex (a few moves; nothing is dropped or freed under it) | 0 | 0 |
+| 3 | receive | `FrameQueue::push`: stored in one of the queue's 64 inline slots; the decoder thread is woken if it waits. Full queue (the oldest frame waiting has waited 100 ms and at least three wait, §0.4): the frame is shed, the gate closes until a keyframe, `request_keyframe(key)` (at most one per 500 ms) | queue mutex (a few moves; nothing is dropped or freed under it) | 0 | 0 |
 | 4 | decoder | `FrameQueue::pop` | queue mutex | 0 | 0 |
 | 5 | decoder | `av_buffer_create` around the carrier (free callback = drop the owner, which returns a pooled buffer to its pool), `avcodec_send_packet` | FFmpeg takes `device_queue_lock` around its decode submission | FFmpeg: 2 (`AVBuffer` + `AVBufferRef`) plus its own reference | 0 (the hwaccel uploads the slice data to the GPU bitstream buffer: FFmpeg's, one pass) |
 | 6 | decoder | `avcodec_receive_frame`: an `AVVkFrame` (the decode is submitted, not finished) | | FFmpeg's | 0 |
@@ -144,12 +147,52 @@ with `tools/streamgen/malloc-count.c` (§0.8).
 
 ### 0.4 Queue, gate and keyframes
 
-The queue holds three frames. A decoder that was just opened gets room to catch up: opening one (FFmpeg's
+**The steady-state depth is time, not a count: 100 ms of frames, never fewer than three** (`queue.rs`
+`DEPTH`, `MIN_DEPTH`). A frame is queued while the oldest frame waiting has waited less than 100 ms, or
+fewer than three wait; the slots are inline (64, the catch-up allowance below), so no depth allocates. In
+frames that is 12 at 120 fps, 6 at 60, and the three-frame floor below 30 fps; the queue measures the
+stream's rate by what arrives, with no estimate to go wrong.
+
+This is a deliberate difference from the renderer, decided by the architect for video quality (the owner's
+"video quality outranks resource savings in the media path"; `docs/electron-quirks.md` #14). The renderer
+sheds at `decodeQueueSize > 3`, and so did this crate: three frames are 25 ms at 120 fps, and a decoder
+thread the scheduler holds back for that long (the viewer's CPU is busy: a game) overflowed, broke the
+reference chain and froze the picture until the streamer's keyframe arrived, which also costs a keyframe's
+worth of bitrate. Now:
+
+- **A short starvation is ridden out.** The frames wait; when the thread runs again it decodes the backlog
+  at its own speed (1–3 ms a frame against 8.3 ms between arrivals), every picture is published and the
+  renderer draws only the newest (`replaced` in the stats), and the queue is empty again a few frames
+  later: the stream is back at its one-frame latency, with nothing shed and no keyframe asked for.
+  `video-starve` holds a 1440p120 HEVC decoder thread (Vulkan Video, 1.06 ms a frame) for 60 ms three
+  times: the queue reaches 7 frames, 0 dropped, 0 keyframe requests, 4 pictures overtaken, and the queue is
+  empty again 14.6–15.3 ms and 2 frames after the gap (load average 9).
+- **A long one sheds as before.** At 100 ms the frame that does not fit is shed, the gate closes, a
+  keyframe is asked for (`video-starve`, 400 ms: the queue overflows at 13 frames, 60 frames are shed, two
+  keyframe requests because the streamer's first answer arrives while the thread is still held and overflows in
+  turn, then the stream plays on, on the same decoder).
+- **A decoder that is slower than the stream for good** (software AV1 at 1440p120 decodes about 74 of 120
+  frames a second, §11.4) fills the queue until it is 100 ms behind and then sheds to the next keyframe,
+  exactly as it did at three frames. What changes: its latency saw-tooths up to 100 ms (plus one decode)
+  instead of 25 ms, never beyond, and each cycle shows more of the stream. The request throttle makes a
+  cycle at least 500 ms long either way; with three frames the queue overflowed after about 65 ms of it and
+  the rest was a frozen picture waiting for the next keyframe, with 100 ms it overflows after about 260 ms.
+  So the bound holds (latency ≤ the depth) and the behaviour is no worse than before: fewer frozen
+  stretches and at most as many keyframe requests, at up to 75 ms more latency on a machine that cannot
+  decode the stream in real time anyway.
+- **A burst that arrives at once** (the network held frames back and delivered them together) is not a slow
+  decoder: its frames are as old as each other, so all of it is queued, up to the 64 slots.
+
+Every other rule is unchanged and the renderer's: the keyframe gate, a keyframe replacing a full queue,
+`discontinuity`, the request throttle, the catch-up allowance. The allocation tests still count 0 Rust
+allocations per steady-state frame (`tests/alloc.rs`).
+
+A decoder that was just opened gets room to catch up: opening one (FFmpeg's
 device context, the frames pool, five slots) takes 10–40 ms with Vulkan Video and much longer with the vendor
 decoders (NVDEC: a CUDA context, 65–270 ms measured; the NVDEC-backed VA driver: 220–670 ms to initialise on a busy
 machine), many
 frame intervals at 120 fps, so until it has published a picture and found the queue empty the queue holds up to
-64 frames (it was 16 before the vendor decoders existed: enough for Vulkan Video, where 7 of 30 application
+64 frames whatever their age (it was 16 before the vendor decoders existed: enough for Vulkan Video, where 7 of 30 application
 starts shed frames in the first 40 ms without it, and too few for a 160 ms open at 120 fps). The backlog is then
 decoded at the decoder's own speed, a millisecond or two per frame, and of such a burst only the newest picture
 reaches the screen (`replaced` in the stats: 3–28 pictures at the start of a stream on NVDEC / VA-API in the
@@ -165,6 +208,28 @@ reconfigure); parameter sets that change in the bitstream are FFmpeg's business 
 decoder: `video-switch`). HEVC as the streamer sends it (length-prefixed NAL units, parameter sets only in the
 keyframe's hvcC) is decoded by giving FFmpeg the description as extradata; tested on both paths with
 `dbv::write_hvcc_recording`.
+
+### 0.4a A stream that stops: stalled, resumed
+
+The renderer shows "Reconnecting…" over a stream whose picture has not changed for 3 s (`STALL_MS`), from a
+1 s interval timer per player. Here it costs no timer: the decoder thread's wait for its next frame is a
+timed wait (`FrameQueue::pop(STALLED_AFTER)`, 3 s), which costs nothing while frames arrive and wakes once
+when they stop. Then, if the stream had a picture and is still displayed: `StreamEvent::Stalled` (once),
+one keyframe request (the renderer's "ping": a live streamer answers at once), and the thread exits and
+frees its decoder as it always did for an idle stream (at 2 s before; the two are one constant now). The
+last picture stays up. Frames that arrive later are deltas without a decoder: refused, each asking for a
+keyframe (throttled); the keyframe starts a new decoder thread and its first picture sends
+`StreamEvent::Resumed`. Frames that arrive and give no picture for 3 s (a decoder that produces nothing)
+are a stall too, checked after each frame from the time of the last picture, no timer either.
+
+The voice views keep it in `video_events::StreamState::stalled` and draw `scrim::reconnecting` (the
+renderer's indicator: `bg-black/40`, the pill with a 16 px warning spinner and "Reconnecting…") over the
+stage tile, the focused view, the mini-player and the call stage, only once the stream had a picture (a
+stream that never had one shows its spinner). Not mirrored: the renderer's re-ask every second while
+stalled or before the first picture (a timer), and its decoder reset after 6 s (the decoder is already
+gone at 3 s). Tests: `hub.rs` (stalls once after 3 s, asks once, the decoder thread is gone, deltas change
+nothing, resumed with the next keyframe; a stream nobody displays does not stall), `video-stall` (the same
+in a window, and 0 frames drawn while stalled), `voice-stall` (the real path: the streamer bot paused).
 
 ### 0.5 Choosing and changing the decode path
 
@@ -210,10 +275,43 @@ it with the known test picture. The first decoder that returns it is the answer 
 probed: true, max_size }`); one that fails is given up for the session exactly as if a stream had failed on it,
 so streams never try what the probe found broken. The result is kept per GPU and driver version
 (the adapter's vendor and device id, backend, driver name and driver version: `LinuxBackend::device_key`) in the process and, when the app names a file
-(`set_capabilities_cache`), across runs; a decoder failing later invalidates it. `capabilities()` never
+(`set_capabilities_cache`), across runs, together with what it gave up and why (so a run that reads the
+file neither tries those decoders nor forgets the reasons); a decoder failing later invalidates it.
+`reprobe_capabilities` discards all of it and probes from nothing. `capabilities()` never
 blocks: the kept answer when there is one, else what the driver and the FFmpeg build list. Cost here:
 64–120 ms for the three codecs when Vulkan Video works (nothing else is opened then); 465 ms with only NVDEC (three CUDA
 contexts created and released).
+
+**The probe in the app** (`crates/decibell-app/src/video.rs`). The probe is the model's `DecoderProbe`, and
+its answer is what the client advertises, uses and shows:
+
+- *When.* Once the main window's first frame is on screen (a next-frame callback after the first present),
+  on the probe's own thread: never on the way to the first frame, where it would compete for the GPU queue.
+  Startup before / after (first frame, medians of 6 warm starts, two alternating passes while the machine's
+  load moved between 5 and 18): 311 and 251 ms before, 342 and 218 ms after, single runs between 183 and
+  507 ms either way: no difference beyond the machine's noise, and none by construction. The probe itself
+  took 104 ms on its thread here (Vulkan Video for the three codecs). Until then (and only then) the model has the listed answer, so a
+  voice join in the first moments still advertises something.
+- *Where it is kept.* `<user data>/video-decoders.txt`, keyed by GPU and driver: a later start reads it on
+  the probe thread and opens nothing. The model keeps no cache of its own for decode any more (`ui.json`'s
+  `decoder_caps.v6`, which was not keyed by GPU, is removed when met).
+- *What is advertised.* A codec that any decoder of the order decodes, software included, at the
+  renderer's ceiling (3840 × 2160 at 120 fps, a hardware decoder's own size limit lowering it), with
+  `hardware` saying which: what `decoderProbe.ts` advertises for a codec only software decodes. A codec
+  nothing decodes is not advertised, except H.264, which the model always adds (the renderer's §3.3
+  fallback). The model ships the list to the core (`set_decoder_caps`) whenever it changes and after the
+  core has booted.
+- *When it runs again.* Settings → Codecs' "Refresh codec capabilities" (`reprobe_capabilities`); the first
+  decoder opened after a lost GPU device (the new device may be another GPU, or the OpenGL fallback: its
+  key differs and the probe runs on it; the same device answers from the kept result); a decoder given up
+  mid-stream (`BackendFailed`: the hub has invalidated what the probe said, so the next request decodes
+  again and the client stops advertising what no longer works). A device lost while no stream is decoded
+  is not seen by the hub and is picked up at the next of these.
+- *What is shown.* Settings → Codecs lists, per codec, the decoder in use ("Vulkan Video", "NVDEC",
+  "VA-API", "Software (dav1d)", "Software (FFmpeg)": `DecodeBackend::display_name`) after the renderer's
+  "AV1 — up to 3840×2160 @ 120fps (HW)", and under the list every decoder that was tried and is not used,
+  with the reason (`skipped_decoders()`). The stats overlay's Path row and `StreamStats` say what a stream
+  is on. `voice-stall` checks that a watched stream is decoded by the decoder the probe named.
 
 | Failure | Detected by | What happens |
 |---|---|---|
@@ -1182,24 +1280,20 @@ with `tools/streamgen/malloc-count.c` on the UI thread over 3.05 s of a 1440p120
     buffer.
 16. **The probe opens real decoders**: on a machine where Vulkan Video works it costs 64–120 ms once per GPU and
     driver version; where it does not, the vendor decoder's start-up per codec (a CUDA context each: 465 ms for
-    three). It runs when the app asks, off the UI thread; the app does not ask yet (nothing advertises
-    capabilities on this branch).
-17. **A starved decoder thread sheds, and the test streams make that expensive.** The queue holds three
-    frames (§0.4): a decoder thread that does not run for three frame intervals (50 ms at 60 fps, 25 ms at
-    120 fps) overflows it, the chain is broken, and everything up to the next keyframe is refused. In 54 measured
-    hardware runs (§11.4) that happened once (2 × 1440p120 H.264 on Vulkan Video, load average 5 at the start
-    of the run: 160 frames of one stream; no error, no device loss, the other stream of the run and the same
-    row at load 11 lost nothing). It happened repeatably later the same day with the machine at load average
-    20–50 on its 20 hardware threads (other agents' builds): `video-hw`, `video-switch`, `video-sw` and the
-    software reference runs of `video-nvdec` / `video-vaapi` each failed some runs with "N frames dropped",
-    on every decoder; the same tests pass at load average below 10, and passed when run again one at a time
-    as the load fell. So the cause is scheduling, not a decoder; the single
-    measured case most likely was the same (two 1440p120 H.264 streams are also the heaviest load the one
-    decode queue sees here, `dec` 37–52 %, and the decoder thread waits for each picture's copy inline: risk 9).
-    Two things make it look worse here than in the client: the test files have a keyframe every 4 s where a
-    streamer answers the request at once, and the self-tests allow no drop at all. What it would take to
-    ride out such gaps (a deeper steady-state queue, at the price of latency after every hiccup) is a decision
-    for the stream view, mirrored from the Electron player today.
+    three). It runs once the app's first frame is on screen, off the UI thread, and its answer is kept in the
+    user data directory (§0.5 "The probe in the app").
+17. **A starved decoder thread: ridden out up to 100 ms (was: sheds at three frames).** When the queue held
+    three frames, a decoder thread that did not run for three frame intervals (50 ms at 60 fps, 25 ms at
+    120 fps) overflowed it, the chain was broken and everything up to the next keyframe was refused. In 54
+    measured hardware runs (§11.4) that happened once (2 × 1440p120 H.264 on Vulkan Video: 160 frames of one
+    stream) and repeatably with the machine at load average 20–50 (other agents' builds), on every decoder:
+    scheduling, not a decoder. The queue's depth is 100 ms of frames now (§0.4, a deliberate difference from
+    the Electron player decided for video quality): gaps up to that are ridden out and the latency returns to
+    one frame within a few frames (`video-starve`); longer ones shed as before. What remains: a gap longer
+    than 100 ms still costs a keyframe (a viewer whose machine stalls that long sees a freeze until the
+    streamer answers), the self-tests that allow no drop at all still fail when the machine is so loaded that
+    the decoder thread is held for longer, and the test files have a keyframe only every 4 s where a streamer
+    answers the request at once. A decoder persistently slower than the stream: §0.4.
 
 ## 13. Building and running
 

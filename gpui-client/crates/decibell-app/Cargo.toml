@@ -36,8 +36,6 @@ decibell-ui.workspace = true
 # The focused hotkey fallback asks whether a text field has the focus.
 decibell-text.workspace = true
 decibell-text-gallery = { path = "../decibell-text/gallery" }
-# The `render-cost` self-test's text field.
-decibell-text.workspace = true
 # `core`: the core's frames into the hub (`push_frame`, the frame pool).
 decibell-video = { workspace = true, features = ["core"] }
 decibell-model.workspace = true

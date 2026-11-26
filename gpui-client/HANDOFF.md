@@ -86,7 +86,8 @@ screens in all seven themes beside Electron's.
 | Attachments (`crates/decibell-attachments`), link previews + GIF search (`crates/decibell-unfurl`) | done `08412dc`, `d835d32` (vectors from the real TS; stack tests) |
 | Wheel / key scrolling spec | done `0777f91`: `docs/wheel-scroll.md` (120 px per notch, ease-in-out bezier, cc's duration + retarget rules, 11 vectors) |
 | Stream playback: design + prototype | done `8c990eb`: `docs/video-design.md`, `patches/0001-gpui-external-surfaces.patch`; the real crate (`decibell-video`) not started |
-| Stream playback (`crates/decibell-video`) | built, tested and measured on Linux (2026-11-26): Vulkan Video on GPUI's device, software fallback, `VideoHub` / `VideoView`, device-loss recovery, patches `0005` + `0006`, `tools/build-ffmpeg.sh`, `tools/streamgen/`; six self-tests (`video-*`); numbers in §4. Not wired to the model yet (the app calls `VideoDevice::install()` at boot; the frame sink is `VideoHub::push_frame`, feature `core`). Windows: compiles in principle, draws nothing until `gpui_windows` draws surfaces (`docs/video-design.md` §8) |
+| Stream playback (`crates/decibell-video`) | built, tested and measured on Linux (2026-11-26): Vulkan Video on GPUI's device, software fallback, `VideoHub` / `VideoView`, device-loss recovery, patches `0005` + `0006`, `tools/build-ffmpeg.sh`, `tools/streamgen/`; six self-tests (`video-*`); numbers in §4. Wired to the model and the voice view since (the row "Stream playback, joined to the voice view" below). Windows: compiles in principle, draws nothing until `gpui_windows` draws surfaces (`docs/video-design.md` §8) |
+| Stream playback, joined to the voice view (`wip/integrate-b`) | done on Linux / NVIDIA (2026-11-26): the capability probe runs after the first frame and is what the client advertises, uses and shows (Settings → Codecs names each codec's decoder and what was given up); encoder caps with backend, label and limits in the model, one loader; the decoder queue holds 100 ms of frames (a deliberate difference from Electron: `docs/electron-quirks.md` #14); "Reconnecting…" over a stalled stream without a timer; the cursor hidden in fullscreen (GPUI patch `0013`); clean cached views nested in a dirty one are replayed (GPUI patch `0014`); decoder threads stopped before the process exits; `perf5` on the local stack for two-stream measurements. Self-tests `video-starve`, `video-stall`, `voice-stall`, `render-cost`; numbers in §4 "Stream playback in the app". AMD / Intel and Windows unrun (§6) |
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
@@ -597,6 +598,72 @@ Series 1 (load average 3.4–8.7), the same code:
   `DECIBELL_VIDEO_UPLOAD=wgpu`; `video-fastpath` under `crates/decibell-video/tools/alloc-count.c` (137
   allocations per present on the UI thread, budget 170).
 
+### Stream playback in the app (`wip/integrate-b`, 2026-11-26)
+
+The whole path: `tools/perf/streambot.sh` streamers (headless `perf4`, and `perf5` for the second stream:
+`tools/dev/local-stack.sh top-up`) send `.dbv` recordings through the community's relay, MLS-sealed; the client
+(perf3, release + `dev-local`, in Lounge muted and deafened) receives, reassembles, opens and decodes them with
+the decoder the probe found (Vulkan Video for all three codecs here) and presents them large, visible, the desktop
+focused. `tools/perf/scenarios.sh gpui watch-1 | watch-2 --quick [--streamers perf4,perf5] --dbv …` (15 s
+settle, 30 samples at 1 s). Wakeups per second by thread group: **video** = the `decibell-video-*` threads (the
+hub's decoder thread per stream and the core's video receive thread), **UI** = the main thread and GPUI's
+helpers, **voice** = the audio threads of the voice session the watcher is in (device clocks and the 5 ms tick,
+kept by the owner's rule), driver threads 142–180 / s on top. The machine was never quiet (other agents'
+builds: 1–8 `rustc` at 100 %, `kswapd` busy): the load average at the start of each row is its last column.
+
+| Scenario | Stream(s) | CPU % of a core, mean / p95 | Wakeups / s: video; UI; voice | GPU decode % | Private MB mean (swapped out) | Received / decoded / presented per s, per stream | Dropped | Load |
+|---|---|---|---|---|---|---|---|---|
+| watch-1 | 1080p60 H.264 | 5.6 / 6.2 | 715; 177; 760 | 4.6 | 181.9 (0) | 60.0 / 60.0 / 59.9 | 0 | 7.5 |
+| watch-1 | 1080p60 HEVC | 5.2 / 6.5 | 604; 180; 760 | 1.2 | 130.9 (0) | 60.0 / 60.0 / 60.0 | 0 | 6.3 |
+| watch-1 | 1080p60 AV1 | 7.3 / 7.6 | 690; 181; 760 | 3.4 | 84.1 (10.5) | 60.0 / 60.0 / 60.0 | 0 | 3.2 |
+| watch-1 | 1440p120 H.264 | 7.2 / 8.2 | 1,296; 356; 760 | 19.7 | 111.7 (0) | 120.0 / 120.0 / 118.2 | 0 | 8.0 |
+| watch-1 | 1440p120 HEVC | 8.9 / 9.5 | 1,446; 356; 760 | 9.6 | 146.0 (0) | 120.0 / 120.0 / 120.0 | 0 | 9.6 |
+| watch-1 | 1440p120 AV1 | 8.2 / 8.5 | 1,465; 356; 760 | 13.2 | 111.6 (0) | 120.0 / 120.0 / 120.0 | 0 | 5.2 |
+| watch-2 | 2 × 1080p60 H.264 | 10.8 / 12.7 | 1,397; 358; 760 | 10.9 | 141.3 (0) | 60.0 / 60.0 / 60.0, twice | 0 | 6.1 |
+| watch-2 | 2 × 1080p60 HEVC | 7.2 / 7.5 | 1,239; 359; 760 | 8.0 | 148.5 (0) | 60.0 / 60.0 / 60.0, twice | 0 | 3.6 |
+| watch-2 | 2 × 1080p60 AV1 | 11.2 / 12.3 | 1,803; 355; 760 | 8.3 | 126.6 (9.9) | 60.0 / 60.0 / 60.0 and 59.7 | 0 | 6.6 |
+| watch-2 | 2 × 1440p120 H.264 | 14.8 / 15.6 | 3,401; 710; 760 | 41.6 | 87.3 (38.0) | 120.0 / 120.0 / 119.8 and 119.9 | 0 | 13.1 |
+| watch-2 | 2 × 1440p120 HEVC | 14.1 / 15.8 | 3,019; 713; 760 | 17.8 | 166.3 (0) | 120.0 / 120.0 / 119.9 and 119.8 | 0 | 6.5 |
+| watch-2 | 2 × 1440p120 AV1 | 12.6 / 18.4 | 3,044; 716; 760 | 23.9 | 135.4 (0) | 120.0 / 120.0 / 119.6 and 119.5 | 0 | 4.5 |
+
+- **Every frame of every row was decoded and none shed**, two 1440p120 streams of each codec included, with
+  the machine at load 3–13; presented is within 0.5 frames a second of received (a picture overtaken before
+  the compositor's frame is not drawn).
+- **CPU**: one 1080p60 stream 5–7 % of a core, one 1440p120 7–9 %, two 1440p120 13–15 %, of which the voice
+  session's audio threads are 1.8–2.6 % in every row. Rows at load 8–13 read high; none was repeated on a quiet
+  machine because there was none.
+- **Wakeups** per frame: about 3 on the UI threads (356 / s for one 120 fps stream, 713 for two) and 10–12 on
+  the video threads (the decoder's wait for each picture's copy, the receive thread's per packet), as in the
+  crate's own measurements above.
+- **Memory** moved between 84 and 182 MB private from row to row with the same build, and three rows had
+  part of the process swapped out: the machine was short of memory (`kswapd` at 44 % of a core in two rows).
+  These are not numbers to judge the RAM target by: that target is the idle one, and the driver's share
+  (about 60 MB of any Vulkan process on NVIDIA, CLAUDE.md's rule) is in every figure. Take them again on a
+  quiet machine with `scenarios.sh gpui watch-1` (without `--quick`).
+- **Against Electron**: its watch baseline was not taken (the target row "Watching 2 streams" above is
+  still pending on `scenarios.sh electron watch-2 --streamers perf4,perf5`, which the new account makes possible).
+
+**The decoder queue under starvation** (`decibell --selftest video-starve`, 1440p120 HEVC on Vulkan Video, load
+9–19): the decoder thread held for 60 ms, three times: the queue reaches 7 frames, 0 shed, 0 keyframe requests,
+4 pictures overtaken, the queue empty again 14.6–15.3 ms and 2 frames after the gap. Held for 400 ms: overflow
+at 13 frames (100 ms), 60 shed, two keyframe requests, playing on on the same decoder. With the queue at three
+frames the whole `video-*` suite failed some runs at load averages above 15 ("N frames dropped"); two full
+passes of this work at load 10–25 passed every one of them (and a third at load 8–12).
+
+**A stall** (`video-stall`, `voice-stall`): "stalled" 3.01–3.03 s after the last frame; while stalled 0 frames
+drawn, 0 presented, 0 decoder threads; a picture again 40 ms (fed directly) to 100 ms (through the relay)
+after the streamer resumes.
+
+**The probe at start-up**: 60–132 ms on its own thread after the first frame (Vulkan Video, three codecs);
+first frame before / after the wiring: medians of 6 warm starts 311 and 251 ms before, 342 and 218 ms after
+(two alternating passes, load 5–18, single runs 183–507 ms): no difference outside the noise.
+
+**Views rendered per change** (`render-cost`, GPUI patch `0014`, load 6 → 4): a speaking ring on a 12-tile
+stage 18.2 → 5.0 views and 2,653 → 2,087 µs of main thread; the same ring in the channel list with a text
+channel and its member list open 9.5 → 3.0 and 2,624 → 1,662 µs; a key typed under the message list 3.0 → 2.0
+and 941 → 873 µs; a message arriving 3.0 → 2.0 views and no time difference outside the noise (1,021 → 977 and, in a second run,
+1,002 → 1,073 µs) (`patches/README.md` §0014).
+
 ## 5. Open items
 
 - **Every thread the client spawns gets a name.** `measure.sh` classes threads as own / driver / unnamed; NVIDIA's
@@ -650,7 +717,23 @@ Series 1 (load average 3.4–8.7), the same code:
 - `media::watch_stream_add` and `events::set_stream_frame_sink` update their sets by load-clone-store: two
   concurrent writers can lose an update (found by the core follow-up's tests; production code unchanged).
 - **A cached view goes stale unless it observes what it reads** (`docs/model.md` §4): GPUI re-renders a cached
-  view only when that view itself is notified.
+  view only when that view itself is notified. (And, since GPUI patch `0014`, no longer whenever a cached
+  ancestor renders: a view that relied on that by accident now shows it. None was found: every self-test passes
+  with it; `voice-join`, `voice-watch`, `shell-navigate` and `idle-frames` were also run with
+  `DECIBELL_VIEW_REPLAY=0`, the pin's behaviour.)
+- **Stream playback, left open** (`docs/video-design.md` §0.4, §0.4a, §0.5):
+  - a GPU device lost while no stream is decoded is not seen by the video hub, so the decode capabilities are
+    probed again only at the next stream, Settings refresh or start (GPUI has no "device replaced" hook);
+  - a stream that never got its first picture is not asked for a keyframe again on a timer (the renderer
+    re-asks every second); frames that arrive gated do ask, throttled;
+  - `video-vaapi` under XWayland failed once in three runs at load average 15 ("H.264 with vaapi: the picture
+    differs from software decode's (13.17 of 255)", every frame decoded and presented in both runs: the two
+    captures were of different frames); not reproduced alone, before or after this work. The capture, not the
+    decoder, is the suspect;
+  - the voice self-tests share `perf3` / `perf4` on the stack: two agents running them at once disturb each
+    other;
+  - `settle` in the harness waits for presents as well as draws, so it never returns while a speaking ring
+    breathes (`render-cost` has its own).
 - **Community server bug (for `main`, not changed here)**: the first page of the member list returns the
   requester's own `role_ids` doubled when their row is already in the page (`src/community/main.cpp`); this
   client de-duplicates on arrival.
@@ -683,6 +766,15 @@ Things only the owner can do; nothing here blocks the rest.
 - **Then listen for the pre-existing click sources** listed in §5 ("Where audio can click or gap today"),
   especially: switch output device while someone talks; undeafen mid-sentence; drag a user's volume while they
   talk; switch wired → Bluetooth mid-talk.
+- **Stream playback on AMD and Intel, and by eye** (`docs/video-owner-checks.md`; §4a there is new): the decoder
+  list in Settings → Codecs on those machines (it is the probe's whole answer: copy it), "Reconnecting…" with a
+  real network drop, a 120 fps stream on a machine whose CPU is busy (it should stutter at worst, not freeze),
+  and the cursor hiding in fullscreen under Wayland and XWayland (the self-test cannot move the real pointer).
+  Windows: the cursor hide is upstream GPUI's own code path and the rest of this work has no Windows-only code;
+  nothing of it was run there.
+- **Decide: the 100 ms decoder queue** (`docs/electron-quirks.md` #14, decided by the architect for video
+  quality). It costs up to 100 ms of extra latency during a hiccup and on a machine that cannot decode the
+  stream in real time; say if the Electron client should get the same rule.
 - **Run the encoder checks on AMD and Intel hardware** (`crates/decibell-core/tools/verify-encoders.md`: one
   command per backend on Linux and Windows) and a real Go Live through each.
 - **Decide the active-tile glow's behaviour.** In Electron it breathes forever (2.4 s opacity cycle) and costs
