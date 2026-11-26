@@ -74,8 +74,12 @@ pub trait ComposerTarget: 'static {
     fn send_error(&self, _cx: &App) -> Option<SharedString> {
         None
     }
-    /// The stores [`gate`](Self::gate) / [`send_error`](Self::send_error) read: the composer
-    /// re-reads them when one of these notifies.
+    /// A send's call is in flight: the send button is disabled meanwhile (DMs: `sending`).
+    fn sending(&self, _cx: &App) -> bool {
+        false
+    }
+    /// The stores [`gate`](Self::gate) / [`send_error`](Self::send_error) /
+    /// [`sending`](Self::sending) read: the composer re-reads them when one of these notifies.
     fn watch(&self, cx: &mut Context<Composer>) -> Vec<Subscription>;
 }
 
@@ -224,6 +228,10 @@ impl ComposerTarget for DmTarget {
         let model = model(cx)?;
         let list = model.dm.list.read(cx);
         list.send_error.as_ref().filter(|(peer, _)| *peer == self.peer).map(|(_, error)| error.clone())
+    }
+
+    fn sending(&self, cx: &App) -> bool {
+        model(cx).is_some_and(|m| m.dm.list.read(cx).sending(self.peer))
     }
 
     fn watch(&self, cx: &mut Context<Composer>) -> Vec<Subscription> {

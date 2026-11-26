@@ -30,7 +30,9 @@ Message steps (the open community):
                                   this client knows: a conversation's peer, the users store)
   dm-send <user> <text>           send a DM
   dm-delete <user> <id|last|prefix:<text>>  delete our DM(s)
-  dm-read <user>                  read it up to its newest message (mark read)
+  dm-read <user>                  read it up to its newest message (mark read); an open
+                                  conversation (`dm-open`) counts as being read: a DM arriving
+                                  for it isn't unread
   search <query>                  one server-side search (one argument: quote it); waits
   wait-history <channel>          its newest page is in
   wait-message <channel> <text>   a row with that text arrived (another client's message)
@@ -316,7 +318,14 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
             {
                 return Err(format!("dm-open {user}: no answer"));
             }
-            cx.update(|cx| model.dm.list.update(cx, |l, _| l.set_displayed(Some(peer))));
+            // A client with no window reads what it opens: the conversation is "being read"
+            // (the app's view adds the focus and the list's position to that).
+            cx.update(|cx| {
+                model.dm.list.update(cx, |l, _| {
+                    l.set_displayed(Some(peer));
+                    l.set_reading(peer, true);
+                })
+            });
         }
         ChatStep::DmSend { user, text } => {
             let peer = cx.update(|cx| user_uid(model, user, cx))?;

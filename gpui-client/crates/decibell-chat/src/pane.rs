@@ -163,7 +163,7 @@ impl ChatPane {
             }
             ListEvent::OpenLink(url) => cx.open_url(url),
             // The image viewer is the attachments crate's.
-            ListEvent::OpenMedia(_) => {}
+            ListEvent::OpenMedia(_) | ListEvent::AtBottom(_) => {}
         }
     }
 

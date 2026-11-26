@@ -61,6 +61,14 @@ pub fn init_features(cx: &mut gpui::App) {
     decibell_chat_content::init(cx);
     decibell_server_settings::init(cx);
     decibell_search::init(cx);
+    join_features(cx);
+}
+
+/// What one feature crate hands another through the app, so the crates stay independent of each
+/// other: the composer crate's composer under the DM conversation. Registrations only (no model
+/// needed): the capture tool calls this too, so screens show the joined pieces.
+pub fn join_features(cx: &mut gpui::App) {
+    decibell_home::dm::set_dm_composer(cx, decibell_composer::dm_composer);
 }
 
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the

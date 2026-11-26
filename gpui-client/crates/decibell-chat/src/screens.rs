@@ -53,6 +53,7 @@ impl FixturePane {
             }
             ListEvent::OpenLink(url) => log::info!("[chat fixture] open {url}"),
             ListEvent::OpenMedia(id) => log::info!("[chat fixture] open the media of {id}"),
+            ListEvent::AtBottom(_) => {}
         });
         (list, subscription)
     }

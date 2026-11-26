@@ -12,7 +12,9 @@
 //! - [`panel`]: the code block and math panels (`RichComposer.tsx`).
 //! - [`editor`]: the inline editor the message list shows in place of an edited message.
 //!
-//! [`init`] registers the chat crate's `composer` and `editor` slots.
+//! [`init`] registers the chat crate's `composer` and `editor` slots; [`dm_composer`] is what the
+//! app hands the DM pane (`decibell_home::dm::set_dm_composer`: the crates don't depend on each
+//! other).
 
 pub mod drop;
 pub mod editor;
@@ -52,6 +54,15 @@ pub fn init(cx: &mut App) {
     let slot = Rc::new(editor::InlineEditorSlot::new(engine));
     cx.set_global(editor::EditorRegistry(slot.clone()));
     decibell_chat::slots(cx).editor = Some(slot);
+}
+
+/// The DM conversation's composer (`DmChatPanel`'s input bar): a [`Composer`] on a [`DmTarget`]
+/// under the conversation's list, and its "type anywhere" hook. The DM pane draws the view
+/// uncached (the card sizes itself).
+pub fn dm_composer(peer: decibell_model::Uid, list: gpui::Entity<decibell_chat::MessageList>, window: &mut gpui::Window, cx: &mut App) -> decibell_chat::ComposerParts {
+    let target: Rc<dyn ComposerTarget> = Rc::new(DmTarget { peer });
+    let composer = cx.new(|cx| Composer::new(target, Some(list), window, cx));
+    decibell_chat::ComposerParts { view: composer.clone().into(), type_to_focus: Composer::type_to_focus_hook(&composer) }
 }
 
 /// The composer screens (with the `fixtures` feature).

@@ -2,34 +2,33 @@
 //! peer, as the renderer mounts a fresh panel per `activeDmUser`) and the Friends rail beside it
 //! while `Layout::prefs().dm_friends_panel` is on (`MainLayout.tsx`' `dm` branch).
 //!
-//! **The composer slot.** The composer is another crate's; it registers once with
-//! [`set_dm_composer`] and is built per conversation with the peer and the conversation's
-//! [`MessageList`] (it subscribes to the list's `ListEvent::Reply`, shows the rail with
-//! `set_reply_target`, starts an edit with `start_edit`). Until one registers, the pane draws
-//! [`composer::FallbackComposer`]: the renderer's card with a working one-line field (Enter sends
-//! through `actions::dm::send_dm`), no emoji picker, no reply bar.
+//! **The composer slot.** The composer is another crate's; the app registers it once with
+//! [`set_dm_composer`] (the crates stay independent of each other) and it is built per
+//! conversation with the peer and the conversation's [`MessageList`] (it subscribes to the
+//! list's `ListEvent::Reply`, shows the rail with `set_reply_target`, starts an edit with
+//! `start_edit`, draws the inline send error above its card). Its "type anywhere" hook takes the
+//! keys that reach the conversation from the list. With none registered (a capture of this crate
+//! alone) nothing is drawn under the list.
 //!
 //! **The call stage slot.** [`decibell_shell::Slot::DmCallStage`]: the voice crate registers the
 //! stage; the conversation builds it while a call with its peer is outgoing, connecting or active
 //! (`CallStage.tsx`' own condition) and draws it above the list, uncached (it sizes itself).
 
 mod banner;
-pub mod composer;
 mod conversation;
 mod header;
 mod source;
 
 use std::rc::Rc;
 
-use decibell_chat::MessageList;
+use decibell_chat::{ComposerParts, MessageList};
 use decibell_common::Watch;
 use decibell_model::dm::DmEvent;
 use decibell_model::stores::layout::LayoutEvent;
 use decibell_model::{Model, Uid};
 use decibell_ui::{ActiveTheme as _, Label};
 use gpui::{
-    AnyView, App, AppContext as _, Context, Entity, Global, IntoElement, Render, StyleRefinement, Window, div,
-    prelude::*, px,
+    App, AppContext as _, Context, Entity, Global, IntoElement, Render, StyleRefinement, Window, div, prelude::*, px,
 };
 
 pub use banner::{Notice, notice};
@@ -39,8 +38,9 @@ pub use source::DmSource;
 use crate::friends::FriendsRail;
 use crate::friends::RAIL_WIDTH;
 
-/// Builds the DM composer for a conversation: the peer and the conversation's message list.
-pub type DmComposerBuilder = Rc<dyn Fn(Uid, Entity<MessageList>, &mut Window, &mut App) -> AnyView>;
+/// Builds the DM composer for a conversation: the peer and the conversation's message list; the
+/// view under the list and its "type anywhere to compose" hook.
+pub type DmComposerBuilder = Rc<dyn Fn(Uid, Entity<MessageList>, &mut Window, &mut App) -> ComposerParts>;
 
 #[derive(Default)]
 struct DmSlots {
@@ -49,8 +49,9 @@ struct DmSlots {
 
 impl Global for DmSlots {}
 
-/// Register the DM composer (once at start-up, from the composer crate's `init`).
-pub fn set_dm_composer(cx: &mut App, build: impl Fn(Uid, Entity<MessageList>, &mut Window, &mut App) -> AnyView + 'static) {
+/// Register the DM composer (once at start-up: the app's `registry::join_features` hands in the
+/// composer crate's).
+pub fn set_dm_composer(cx: &mut App, build: impl Fn(Uid, Entity<MessageList>, &mut Window, &mut App) -> ComposerParts + 'static) {
     cx.default_global::<DmSlots>().composer = Some(Rc::new(build));
 }
 

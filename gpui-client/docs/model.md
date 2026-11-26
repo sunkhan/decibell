@@ -631,7 +631,7 @@ src/bin/headless/chat.rs   the headless message steps; tests/stack_chat.rs
 | `chat.link_previews: LinkPreviewMemo` | 400 unfurls by URL (loading / done) over `decibell-unfurl` | `linkPreviewStore.ts` | `PreviewChanged(url)` |
 | `chat.search: SearchStore` | the one search: query, sort, seq, results, paging, per-community box drafts | `features/search/searchStore.ts` | search state |
 | `chat.viewer`, `media_menu`, `audio`, `video`, `video_versions`, `drag` | image viewer, image / video context menu, playing audio (+ mirrored playback state), playing video, per-attachment video cache version (`VideoCacheBumped(id)`), file drag state | `imageViewerStore`, `imageContextMenuStore`, `activeAudioStore`, `activeVideoStore`, `videoCacheVersionStore`, `uiStore.dragActive/dragHoveredKey` | their own change |
-| `dm.list: DmList` | per peer a `Conversation` (its `MessageSlice` entity, last message, its time, unread, read cursor); the open peer; the displayed peer; the DM send chain; the composer's inline send error | `dmStore.ts`, `features/dm/readSync.ts` | a conversation's sidebar facts (`DmEvent::Changed(peer)`), `ActiveChanged`, `Resync` |
+| `dm.list: DmList` | per peer a `Conversation` (its `MessageSlice` entity, last message, its time, unread, read cursor); the open peer; the displayed peer; the conversation **being read** (`reading`: open, the window focused, its list at the live bottom; set by the view); the DM send chain; text sends in flight per peer (`sending`); the composer's inline send error | `dmStore.ts`, `features/dm/readSync.ts`, `DmChatPanel`'s `sending` | a conversation's sidebar facts (`DmEvent::Changed(peer)`), `ActiveChanged`, `Resync`; `sending` starting / ending |
 
 A message notifies its own slice only. The registry notifies when a slice is created or dropped (a
 list of channels never redraws for a message). The DM list notifies when the sidebar's facts of one
@@ -700,8 +700,10 @@ reconnect. `send_gif`, `edit_message` (paced, not optimistic), `delete_message` 
 watchdog), `latest_own_editable` (ArrowUp), `attach_file` / `set_draft` complete the composer. DMs:
 `actions::dm::{open_dm, open_history, load_older, load_newer, jump_to_present, jump_to_message,
 resync_displayed, send_dm, send_gif, edit_dm, delete_dm, mark_read, set_draft}`; DM sends are not paced
-but leave one after another; `mark_read` reads up to the newest loaded row and tells central 250 ms
-later.
+but leave one after another (a text send holds `DmList::sending(peer)` until its call returns); `mark_read`
+reads up to the newest loaded row and tells central 250 ms later. The view calls it only while the
+conversation is being read (`DmList::set_reading`; owner, 2026-11-26), and a DM arriving for the conversation
+being read isn't counted unread (`events::dm::message_received`).
 
 Timers, each with its reason and dropped with it: the pacer's wait for the next token (only while
 sends are queued); a history request's 10 s reply wait (only while it waits); a newest-page load's
@@ -749,6 +751,9 @@ DM echo check waits for central's next sign-in event-driven (`DmList::wait_for_r
 channel one does. (7) Search's `fold` drops combining marks and maps precomposed Latin letters to their
 base without NFD (no Unicode-normalization crate in the tree); other scripts pass lower-cased.
 (8) `TimeFormat::Auto` is decided from `LC_ALL` / `LC_TIME` / `LANG` (12-hour regions), not Intl.
+(9) **A DM is unread unless its conversation is being read** (owner, 2026-11-26): open in the DM view, the
+window focused and its list at the live bottom (`DmList::reading`); the renderer took "open in the DM view"
+alone (`docs/electron-quirks.md` #16). `decibell-headless` reads what it `dm-open`s.
 
 ### 15.6 Lines added to shared files
 

@@ -324,7 +324,11 @@ fn send(peer: Uid, content: &str, reply_to: i64, gif: bool, cx: &mut App) -> Sen
     model.dm.list.update(cx, |l, _| l.send_chain = Some(rx.map(|_| ()).boxed_local().shared()));
     let n = nonce.clone();
     if !gif {
-        model.dm.list.update(cx, |l, cx| l.set_send_error(None, cx));
+        // `setSending(true)` until the call returns (`finally`); GIFs don't hold the button.
+        model.dm.list.update(cx, |l, cx| {
+            l.set_send_error(None, cx);
+            l.send_started(peer, cx);
+        });
     }
     cx.spawn(async move |cx| {
         if let Some(previous) = previous {
@@ -336,6 +340,9 @@ fn send(peer: Uid, content: &str, reply_to: i64, gif: bool, cx: &mut App) -> Sen
             Err(crate::error::UiError::not_running())
         };
         let _ = tx.send(());
+        if !gif {
+            cx.update(|cx| model.dm.list.update(cx, |l, cx| l.send_ended(peer, cx)));
+        }
         cx.update(|cx| match result {
             Ok(()) => watch_echo(peer, n, cx),
             Err(e) => {

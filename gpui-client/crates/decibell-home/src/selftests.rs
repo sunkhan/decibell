@@ -12,9 +12,13 @@
 //! - Anything that changes state (DMs, friend requests, encryption, statuses) runs between two
 //!   **throwaway accounts** registered once per run through the core's `register` (two sign-ups),
 //!   each process signing in by password. The second participant is a second app process, not
-//!   `decibell-headless`: the headless tool's `login` takes only the stack's `accounts.json` accounts.
-//!   The children meet through cue files (`<dir>/<name>` written by one, waited for by the other).
-//!   Every child signs out at its end (central forgets the device).
+//!   `decibell-headless` (written before its `register` / `login-as` steps existed). The children
+//!   meet through cue files (`<dir>/<name>` written by one, waited for by the other). Every child
+//!   signs out at its end (central forgets the device), and holds its window "active"
+//!   (`decibell_harness::focus`): a DM is read only in a focused window, and other windows share
+//!   this desktop.
+//! - `dm-read-rules` (`selftests/read_rules.rs`): the app as the reader, its account's second
+//!   device and the sender as `decibell-headless` clients of two accounts the headless registers.
 
 use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
@@ -40,6 +44,9 @@ use crate::menu::UserMenu;
 use crate::profile::ProfilePopup;
 use crate::status::{ClearAfter, CustomStatusModal};
 
+#[path = "selftests/read_rules.rs"]
+mod read_rules;
+
 const ALICE: &str = "alice";
 const BOB_UID: Uid = 2;
 const CAROL_UID: Uid = 3;
@@ -56,6 +63,7 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "dm-open-history", about: "as alice: bob's conversation, its newest page, three older pages with 0 px anchor movement", run: |cx| Box::pin(alice(cx, "home-dm-open-history")) },
         SelfTest { name: "dm-send-receive", about: "two throwaway accounts: quick DM + composer send, the reply arrives, unread badge and tile, cleared on open", run: |cx| Box::pin(parties(cx, "dm-send-receive", &["a", "b"])) },
         SelfTest { name: "dm-read-sync", about: "two devices of a throwaway account: reading on one clears the unread count on the other", run: |cx| Box::pin(parties(cx, "dm-read-sync", &["a", "a2", "b"])) },
+        SelfTest { name: "dm-read-rules", about: "a DM is read only while open, focused and at the bottom: unfocused / scrolled up / minimised it stays unread here and on a second device until that holds", run: |cx| Box::pin(read_rules::parent(cx)) },
         SelfTest { name: "dm-e2ee", about: "two throwaway accounts set up encryption: the chip reads Encrypted, a message arrives decrypted; a fresh profile is locked until unlocked", run: |cx| Box::pin(e2ee(cx)) },
         SelfTest { name: "friends-flow", about: "throwaway accounts: request by name, accept, both lists, remove; block / unblock", run: |cx| Box::pin(parties(cx, "friends-flow", &["a", "b"])) },
         SelfTest { name: "friends-page", about: "as alice: the tabs show the seeded state (bob, carol friends; dave pending; erin blocked)", run: |cx| Box::pin(alice(cx, "home-friends-page")) },
@@ -323,6 +331,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "home-user-menu-moderation", about: "(in the app) the moderation entries", run: |cx| Box::pin(check_user_menu(cx)) },
         SelfTest { name: "home-idle", about: "(in the app) idle frames", run: |cx| Box::pin(check_idle(cx)) },
         SelfTest { name: "home-actor", about: "(in the app) one participant of a two-account test", run: |cx| Box::pin(actor(cx)) },
+        SelfTest { name: "home-dm-read-rules", about: "(in the app) the reader of dm-read-rules", run: |cx| Box::pin(read_rules::check(cx)) },
     ]
 }
 
@@ -591,6 +600,8 @@ fn menu_sections() -> Vec<String> {
 }
 
 async fn check_user_menu(cx: TestCx) -> Result<()> {
+    // The menu closes when its window loses the focus; other windows share this desktop.
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(Some(true), cx))?;
     signed_in(&cx).await?;
     open_daily_gaming(&cx).await?;
     let server = daily_gaming();
@@ -768,6 +779,8 @@ fn has_echo(peer: Uid, text: &str, cx: &App) -> bool {
 async fn actor(cx: TestCx) -> Result<()> {
     let actor = Actor::from_env()?;
     wait_for(&cx, Duration::from_secs(30), "the app to boot", |cx| model(cx).auth.read(cx).booted).await?;
+    // A conversation is read only in a focused window: these flows open one and expect it read.
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(Some(true), cx))?;
     if actor.script == "register" {
         let (name, email, password) = (actor.me.clone(), format!("{}@example.test", actor.me), actor.password.clone());
         cx.update(move |_, cx| actions::auth::register(name, email, password, cx))?;
@@ -834,6 +847,7 @@ async fn send_receive(cx: &TestCx, actor: &Actor, me: Uid) -> Result<()> {
             })
             .await?;
             cx.log("the reply arrived and is drawn in the open conversation");
+            dm_composer(cx, peer, &reply, &a_name).await?;
             cx.update(|_, cx| actions::servers::go_home(cx))?;
             actor.cue("a-home", 1)?;
             actor.wait_cue(cx, "b-sent2").await?;
@@ -878,6 +892,97 @@ async fn send_receive(cx: &TestCx, actor: &Actor, me: Uid) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The composer under the conversation (the composer crate's, joined by the app): a reply to
+/// their message, ArrowUp in the empty box edits ours inline, a draft per conversation, the
+/// inline send error above the card.
+async fn dm_composer(cx: &TestCx, peer: Uid, their: &str, a_name: &str) -> Result<()> {
+    let list = |cx: &App| crate::hooks::shown::<Conversation>(cx).map(|c| c.read(cx).list().clone());
+    // A reply: the list's reply arrow (the composer follows `ListEvent::Reply`), typed, Enter.
+    let parent = {
+        let their = their.to_string();
+        cx.update(move |_, cx| conversation_rows(peer, cx).iter().find(|m| *m.content == their).map(|m| m.id))?.context("their row")?
+    };
+    cx.update(move |_, cx| {
+        if let Some(list) = list(cx) {
+            list.update(cx, |_, cx| cx.emit(decibell_chat::ListEvent::Reply(parent)));
+        }
+    })?;
+    quiet(cx).await?;
+    let answer = format!("a reply to that, from {a_name}");
+    cx.type_text(&answer)?;
+    cx.keystroke("enter")?;
+    {
+        let answer = answer.clone();
+        wait_for(cx, Duration::from_secs(10), "the reply's echo", move |cx| {
+            conversation_rows(peer, cx).iter().any(|m| m.id > 0 && *m.content == answer && m.reply_to() == parent)
+        })
+        .await?;
+    }
+    cx.log("reply: the arrow put the bar up, Enter sent it answering their message");
+    // ArrowUp in the empty box: our newest message in the inline editor; Enter saves.
+    let own = cx.update(move |_, cx| conversation_rows(peer, cx).iter().rev().find(|m| m.id > 0 && m.sender_uid == own_uid(cx)).map(|m| m.id))?.context("our row")?;
+    cx.keystroke("up")?;
+    wait_for(cx, Duration::from_secs(5), "the inline editor", move |cx| list(cx).is_some_and(|l| l.read(cx).editing() == Some(own))).await?;
+    quiet(cx).await?;
+    let edited = format!("a reply to that, edited by {a_name}");
+    cx.keystroke("ctrl-a")?;
+    cx.type_text(&edited)?;
+    cx.keystroke("enter")?;
+    {
+        let edited = edited.clone();
+        wait_for(cx, Duration::from_secs(10), "the edit's echo", move |cx| {
+            conversation_rows(peer, cx).iter().any(|m| m.id == own && *m.content == edited && m.edited_at > 0)
+        })
+        .await?;
+    }
+    cx.log("ArrowUp: our last message edited inline, Enter saved it (edited)");
+    // A draft per conversation: kept in the model, back in the box when the conversation is again.
+    let key = decibell_model::chat::DraftKey::Dm(peer);
+    let draft = |key: decibell_model::chat::DraftKey, cx: &App| model(cx).chat.drafts.read(cx).get(&key).to_string();
+    click_probe(cx, "dm-composer").await?;
+    cx.type_text("half a thought")?;
+    let other: Uid = BOB_UID;
+    cx.update(move |_, cx| actions::dm::open_dm(other, "bob".into(), cx))?;
+    wait_for(cx, Duration::from_secs(5), "another conversation", move |cx| crate::hooks::shown::<Conversation>(cx).is_some_and(|c| c.read(cx).peer() == other)).await?;
+    click_probe(cx, "dm-composer").await?;
+    cx.type_text("something else")?;
+    {
+        let name = actor_peer_name(peer, cx)?;
+        cx.update(move |_, cx| actions::dm::open_dm(peer, name.into(), cx))?;
+    }
+    wait_for(cx, Duration::from_secs(5), "back in the conversation", move |cx| crate::hooks::shown::<Conversation>(cx).is_some_and(|c| c.read(cx).peer() == peer)).await?;
+    click_probe(cx, "dm-composer").await?;
+    cx.keystroke("end")?;
+    cx.type_text("!")?;
+    let (here, there) = {
+        let key = key.clone();
+        cx.update(move |_, cx| (draft(key.clone(), cx), draft(decibell_model::chat::DraftKey::Dm(other), cx)))?
+    };
+    cx.log(format_args!("drafts per conversation: {here:?} here, {there:?} with bob"));
+    ensure!(here == "half a thought!" && there == "something else", "drafts: {here:?} / {there:?}");
+    cx.keystroke("ctrl-a")?;
+    cx.keystroke("backspace")?;
+    cx.update(move |_, cx| actions::dm::set_draft(other, Default::default(), cx))?;
+    // The inline send error above the card (`sendError`); the next send clears it.
+    cx.update(move |_, cx| model(cx).dm.list.update(cx, |l, cx| l.set_send_error(Some((peer, "Error: selftest".into())), cx)))?;
+    wait_for(cx, Duration::from_secs(5), "the inline error", |_| probes::text_of("composer-send-error").is_some_and(|t| &*t == "Error: selftest")).await?;
+    let after = format!("after the error, from {a_name}");
+    cx.type_text(&after)?;
+    cx.keystroke("enter")?;
+    {
+        let after = after.clone();
+        wait_for(cx, Duration::from_secs(10), "the next send's echo", move |cx| has_echo(peer, &after, cx)).await?;
+    }
+    wait_for(cx, Duration::from_secs(5), "the error to clear", |_| probes::text_of("composer-send-error").is_some_and(|t| t.is_empty())).await?;
+    cx.log("the inline send error showed above the card; the next send cleared it");
+    Ok(())
+}
+
+/// The other side's name as this client knows it.
+fn actor_peer_name(peer: Uid, cx: &TestCx) -> Result<String> {
+    cx.update(move |_, cx| model(cx).dm.list.read(cx).get(peer).map(|c| c.username.to_string()).unwrap_or_default())
 }
 
 async fn read_sync(cx: &TestCx, actor: &Actor, me: Uid) -> Result<()> {

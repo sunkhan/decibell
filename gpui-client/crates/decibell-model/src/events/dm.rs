@@ -46,8 +46,13 @@ pub fn message_received(model: &Model, p: MessageReceivedPayload, cx: &mut App) 
         }
     }
     let message = Arc::new(Message::from_received(p));
-    // "Actively viewing" needs both: this conversation open and the DM view on screen.
-    let viewing = model.nav.read(cx).active_view == ActiveView::Dm && model.dm.list.read(cx).active_peer == Some(other);
+    // Being read: this conversation open in the DM view on screen, the window focused and its
+    // list at the live bottom (the view keeps `DmList::reading`; owner, 2026-11-26). The
+    // renderer took the first two alone.
+    let viewing = {
+        let list = model.dm.list.read(cx);
+        model.nav.read(cx).active_view == ActiveView::Dm && list.active_peer == Some(other) && list.reading() == Some(other)
+    };
     model.dm.list.update(cx, |l, cx| l.add_message(other, message, from_self, other_name, viewing, cx));
 }
 

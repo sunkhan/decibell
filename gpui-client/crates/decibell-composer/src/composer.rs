@@ -68,6 +68,8 @@ pub struct Composer {
     list: Option<WeakEntity<MessageList>>,
     gate: Gate,
     send_error: Option<SharedString>,
+    /// A send's call is in flight (DMs): the send button is disabled.
+    sending: bool,
     /// The message being replied to, as it was picked (the bar follows its edits while loaded).
     reply: Option<Arc<Message>>,
     reply_watch: Option<Subscription>,
@@ -177,6 +179,7 @@ impl Composer {
         cx.set_global(ActiveComposer(cx.weak_entity()));
         let target_watch = target.watch(cx);
         let send_error = target.send_error(cx);
+        let sending = target.sending(cx);
         let mut this = Self {
             variant: target.variant(),
             key,
@@ -187,6 +190,7 @@ impl Composer {
             list: list.map(|list| list.downgrade()),
             gate,
             send_error,
+            sending,
             reply: None,
             reply_watch: None,
             has_text: false,
@@ -223,6 +227,16 @@ impl Composer {
 
     pub fn input(&self) -> &Entity<InputState> {
         &self.input
+    }
+
+    /// The inline send error shown above the card (DMs).
+    pub fn send_error(&self) -> Option<&SharedString> {
+        self.send_error.as_ref()
+    }
+
+    /// A send's call is in flight: the send button is disabled (DMs).
+    pub fn sending(&self) -> bool {
+        self.sending
     }
 
     /// The composer on screen (the one mounted last), if it is still alive.
@@ -303,10 +317,15 @@ impl Composer {
     }
 
     /// The stores the gate reads changed (permissions, timeout, slowmode interval, the DM's
-    /// send error): draw again only when the answer did.
+    /// send error and send in flight): draw again only when the answer did.
     pub(crate) fn refresh_gate(&mut self, cx: &mut Context<Self>) {
         let gate = self.target.gate(cx);
         let send_error = self.target.send_error(cx);
+        let sending = self.target.sending(cx);
+        if sending != self.sending {
+            self.sending = sending;
+            cx.notify();
+        }
         if gate != self.gate || send_error != self.send_error {
             let placeholder = self.target.placeholder(&gate, cx);
             self.input.update(cx, |input, cx| input.set_placeholder(placeholder, cx));
@@ -885,7 +904,8 @@ impl Render for Composer {
             )
             .child(track_bounds(self.emoji_anchor.clone()))
             .children(picker);
-        let sendable = if dm { self.has_text } else { self.has_text || live_pendings };
+        // DmSendButton: `disabled={sending || !hasDraft}`.
+        let sendable = if dm { self.has_text && !self.sending } else { self.has_text || live_pendings };
         // Disabled without anything to send; in a slowmode wait it looks off but still takes the
         // click, which holds the send and shakes the pill.
         let send = chrome::send_button(sendable, remaining > 0, dm, cx).on_click(cx.listener(move |this, _, window, cx| {
@@ -970,6 +990,9 @@ impl Render for Composer {
             .when_some(self.panel.clone().filter(|_| self.snippet == Snippet::Panel), |card, panel| card.child(crate::panel::panel_layer(panel)));
 
         let send_error = self.send_error.clone().filter(|_| dm);
+        if dm {
+            decibell_shell::probes::text("composer-send-error", send_error.as_ref().unwrap_or(&SharedString::default()));
+        }
         let theme = cx.theme();
         div()
             .w_full()

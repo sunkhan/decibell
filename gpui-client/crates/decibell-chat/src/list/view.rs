@@ -90,6 +90,14 @@ pub enum ListEvent {
     OpenLink(String),
     /// A media placeholder was clicked (the viewer's, once attachments are drawn).
     OpenMedia(i64),
+    /// Whether the list now rests **at the live bottom**: scrolled to the end of its rows
+    /// (within `AT_BOTTOM_PX`) with nothing newer outside the loaded window (not windowed).
+    /// Emitted after a drawn frame, only when the answer changed (the first frame always
+    /// says), so it doesn't flap: measuring and pages keep a view at the bottom there (the
+    /// anchor rule), a page above changes nothing, and a scroll animation says `true` once it
+    /// arrives. A list that isn't drawn (hidden, not built yet) says nothing. The DM pane reads
+    /// it for "being read" (CONVENTIONS, Home).
+    AtBottom(bool),
 }
 
 /// One end of the selection: a row and a caret in it.
@@ -142,8 +150,11 @@ pub struct MessageList {
     pub(super) core: ListCore,
     pub(super) style: Option<Rc<ChatStyle>>,
     style_stamp: (usize, u32, u32, u32),
-    /// The width rows are laid out for (the bounds less the scrollbar).
+    /// The width rows are laid out for (the bounds less the scrollbar and the right padding).
     pub(super) width: f32,
+    /// Padding inside the scroll box on the right, between the rows and the scrollbar (the DM
+    /// list's `className="pr-4"`; 0 for a channel).
+    pad_right: f32,
     pub(super) bounds: Bounds<Pixels>,
     /// The pane's size (the renderer's `chatViewSize`); zero: the list's own bounds.
     view_size: Rc<Cell<(f32, f32)>>,
@@ -171,6 +182,8 @@ pub struct MessageList {
     jump_task: Option<Task<()>>,
     slide: Option<(Instant, f32)>,
     pill: bool,
+    /// The last [`ListEvent::AtBottom`] emitted (`None` before the first drawn frame).
+    told_bottom: Option<bool>,
     asked_older: i64,
     asked_newer: i64,
     retry: Option<Task<()>>,
@@ -279,6 +292,7 @@ impl MessageList {
             style: None,
             style_stamp: (usize::MAX, 0, 0, 0),
             width: 0.,
+            pad_right: 0.,
             bounds: Bounds::default(),
             view_size: Rc::new(Cell::new((0., 0.))),
             placement,
@@ -302,6 +316,7 @@ impl MessageList {
             jump_task: None,
             slide: None,
             pill: false,
+            told_bottom: None,
             asked_older: 0,
             asked_newer: 0,
             retry: None,
@@ -322,6 +337,13 @@ impl MessageList {
             list_id: cx.entity_id(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Padding on the right of the rows, inside the scroll box (the scrollbar stays at the
+    /// edge): the DM list's `pr-4` is 16.
+    pub fn with_right_padding(mut self, px: f32) -> Self {
+        self.pad_right = px.max(0.);
+        self
     }
 
     /// The cell the pane writes its size into (the renderer's `chatViewSize`: media is scaled
@@ -663,7 +685,7 @@ impl MessageList {
         let height = f32::from(bounds.size.height) as f64;
         let full = f32::from(bounds.size.width);
         let overflowing = self.core.content_height() > height + 0.5;
-        let width = (full - if overflowing { BAR } else { 0. }).max(1.);
+        let width = (full - if overflowing { BAR } else { 0. } - self.pad_right).max(1.);
         if width != self.width {
             self.width = width;
             self.invalidate_where(|_| true);
@@ -677,9 +699,9 @@ impl MessageList {
             window.request_animation_frame();
         }
         self.measure_visible(now, cx);
-        if self.core.content_height() > height + 0.5 && !overflowing && self.width == full {
+        if self.core.content_height() > height + 0.5 && !overflowing && self.width == (full - self.pad_right).max(1.) {
             // Measuring made it overflow: the rows get the narrower width in this same frame.
-            self.width = (full - BAR).max(1.);
+            self.width = (full - BAR - self.pad_right).max(1.);
             self.invalidate_where(|_| true);
             self.measure_visible(now, cx);
         }
@@ -727,6 +749,11 @@ impl MessageList {
         // there is something to do: a plain scroll frame defers nothing.
         let windowed = !pinned;
         let pill = windowed || (!self.core.at_bottom && self.core.len().saturating_sub(1).saturating_sub(range.end.saturating_sub(1)) > JUMP_PILL_ROWS);
+        let live_bottom = self.core.at_bottom && !windowed;
+        if self.told_bottom != Some(live_bottom) {
+            self.told_bottom = Some(live_bottom);
+            cx.emit(ListEvent::AtBottom(live_bottom));
+        }
         let slice = self.slice.read(cx);
         let want_older = edges.near_top && slice.fetched && slice.has_more_before && slice.oldest_stored_id() != self.asked_older && slice.oldest_stored_id() != 0;
         let want_newer = edges.near_bottom && slice.has_more_after && !slice.resyncing && slice.newest_stored_id() != self.asked_newer && slice.newest_stored_id() != 0;
@@ -1124,6 +1151,17 @@ impl MessageList {
 
     pub fn at_bottom(&self) -> bool {
         self.core.at_bottom
+    }
+
+    /// The last [`ListEvent::AtBottom`] this list emitted (`None` before its first frame).
+    pub fn at_live_bottom(&self) -> Option<bool> {
+        self.told_bottom
+    }
+
+    /// The owner hid the list (it isn't drawn): the next drawn frame says again where it rests
+    /// ([`ListEvent::AtBottom`]), changed or not.
+    pub fn retell_bottom(&mut self) {
+        self.told_bottom = None;
     }
 
     /// Bytes the list keeps for its rows beyond the text engine's caches, and how many rows
@@ -1800,3 +1838,4 @@ impl Render for MessageList {
             .children(tip)
     }
 }
+

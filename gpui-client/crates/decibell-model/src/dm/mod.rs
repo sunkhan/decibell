@@ -95,6 +95,14 @@ pub struct DmList {
     pub active_peer: Option<Uid>,
     /// The conversation whose panel is mounted (`displayedDmPeer`).
     displayed: Option<Uid>,
+    /// The conversation **being read** (owner, 2026-11-26: the native client marks a DM read
+    /// only then): it is the open view, the window is focused and its list rests at the live
+    /// bottom. Set by the conversation's view as those change; a DM arriving for it is not
+    /// unread. The renderer counted the open conversation as read whatever the focus or scroll.
+    reading: Option<Uid>,
+    /// Per conversation, its text sends whose call hasn't returned (DmChatPanel's `sending`:
+    /// the send button is disabled meanwhile).
+    sending: HashMap<Uid, u32>,
     resync_epoch: u64,
     own_uid: Uid,
     /// The sidebar's order, rebuilt on first use after a change.
@@ -166,6 +174,44 @@ impl DmList {
         self.displayed = peer;
     }
 
+    /// The conversation being read (open, the window focused, its list at the live bottom).
+    pub fn reading(&self) -> Option<Uid> {
+        self.reading
+    }
+
+    /// The conversation's view says whether it is being read now (`peer` stops being read
+    /// only if it was the one). No notify: nothing draws it; a DM arriving reads it.
+    pub fn set_reading(&mut self, peer: Uid, reading: bool) {
+        if reading {
+            self.reading = Some(peer);
+        } else if self.reading == Some(peer) {
+            self.reading = None;
+        }
+    }
+
+    /// A text send to `peer` is in flight (the composer disables its send button).
+    pub fn sending(&self, peer: Uid) -> bool {
+        self.sending.get(&peer).is_some_and(|n| *n > 0)
+    }
+
+    pub(crate) fn send_started(&mut self, peer: Uid, cx: &mut Context<Self>) {
+        let n = self.sending.entry(peer).or_insert(0);
+        *n += 1;
+        if *n == 1 {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn send_ended(&mut self, peer: Uid, cx: &mut Context<Self>) {
+        if let Some(n) = self.sending.get_mut(&peer) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.sending.remove(&peer);
+                cx.notify();
+            }
+        }
+    }
+
     pub fn set_own_uid(&mut self, uid: Uid) {
         self.own_uid = uid;
     }
@@ -207,8 +253,9 @@ impl DmList {
         self.conversations.get_mut(&peer).expect("just inserted")
     }
 
-    /// A live DM (`addDmMessage`). `viewing`: the DM view is on screen with this
-    /// conversation open (then it isn't unread).
+    /// A live DM (`addDmMessage`). `viewing`: the conversation is being read (open in the DM
+    /// view, the window focused, its list at the live bottom: [`Self::reading`]); then it
+    /// isn't unread.
     pub fn add_message(&mut self, peer: Uid, message: Row, from_self: bool, other_name: SharedString, viewing: bool, cx: &mut Context<Self>) -> DmAdd {
         let existed = self.conversations.contains_key(&peer);
         let conv = self.ensure(peer, other_name, cx);
@@ -474,6 +521,8 @@ impl DmList {
         self.conversations.clear();
         self.active_peer = None;
         self.displayed = None;
+        self.reading = None;
+        self.sending.clear();
         self.resync_epoch = 0;
         self.own_uid = 0;
         *self.sorted.borrow_mut() = None;

@@ -157,7 +157,11 @@ fn capture(args: &Args) -> anyhow::Result<()> {
     });
     cx.update(|cx| {
         cx.set_global(decibell_ui::AssumeClientDecorations);
-        decibell_ui::init(cx, args.themes[0])
+        decibell_ui::init(cx, args.themes[0])?;
+        // What the crates hand each other through the app (the DM composer, …): the screens
+        // build the rest themselves (the capture skips the app's boot).
+        registry::join_features(cx);
+        anyhow::Ok(())
     })?;
 
     // The app's window is client-decorated: its surface holds a margin around the visible

@@ -1,19 +1,27 @@
 //! One conversation (`DmChatPanel.tsx`): the header, the encryption notice, the call stage, the
 //! message list on the peer's slice (or what stands in for it: loading, retry, the beginning of
-//! the conversation), the inline send error, the composer, the delete confirmation.
+//! the conversation), the composer (with its inline send error), the delete confirmation.
 //!
 //! It observes exactly what it draws: its slice's flags (the body), the conversation's sidebar
 //! facts and the send error (`dm.list`, compared), the re-sync event, the E2EE store and the
 //! peer's encryption answer, the call store, the peer's name / status / message, the rail toggle.
 //!
-//! **Mark read** (the renderer's effect on `[activeDmUser, messages.length, unreadCount]`): while
-//! the conversation is mounted, every change of its row count or unread count reads it up to its
-//! newest loaded row (`actions::dm::mark_read`: the count clears at once, central hears 250 ms
-//! later). As in the renderer this needs neither the window's focus nor the list at its bottom.
+//! **Mark read** (owner, 2026-11-26; the renderer differs: CONVENTIONS "Home",
+//! `docs/electron-quirks.md` #16). The conversation is **being read** while all three hold: it is
+//! the open view (this view is mounted, its list drawn: not loading, not hidden by the call's
+//! theater), the window is focused (`decibell_harness::focus`: active and not minimised) and the
+//! list rests at its live bottom (`ListEvent::AtBottom`). Only then is it read up to its newest
+//! loaded row (`actions::dm::mark_read`: the count clears at once, central hears 250 ms later and
+//! tells the account's other devices). A DM arriving otherwise stays unread (the row's badge, the
+//! server bar's tile, the other devices) until the three hold again — the window regains the
+//! focus, the list is scrolled (or jumped) to the bottom, the conversation is opened — and is
+//! marked then. The model knows which conversation is being read (`DmList::set_reading`), so a DM
+//! arriving for it is never counted. Events only: the window's activation and visibility, the
+//! list's at-bottom changes, the slice, the call store.
 
 use std::time::Duration;
 
-use decibell_chat::{ListEvent, MessageList};
+use decibell_chat::{ComposerParts, ListEvent, MessageList};
 use decibell_common::{UserAvatar, Watch, person_name_color, presence_of, status_message_of};
 use decibell_model::chat::MessageSlice;
 use decibell_model::dm::DmEvent;
@@ -29,7 +37,7 @@ use gpui::{
 
 use super::header::{HeaderFacts, header};
 use super::source::DmSource;
-use super::{banner, composer::FallbackComposer, dm_composer};
+use super::{banner, dm_composer};
 use crate::e2ee::{PeerInfoChanged, PeerInfos, current_key};
 use crate::ui::{Look, button};
 
@@ -49,7 +57,8 @@ pub struct Conversation {
     peer: Uid,
     slice: Entity<MessageSlice>,
     list: Entity<MessageList>,
-    composer: AnyView,
+    /// The composer crate's, when the app registered it (`set_dm_composer`).
+    composer: Option<ComposerParts>,
     stage: Option<AnyView>,
     failed: bool,
     load: Option<Task<()>>,
@@ -57,7 +66,14 @@ pub struct Conversation {
     body: Body,
     /// What the mark-read effect last saw: (rows, unread).
     seen: (usize, i64),
-    send_error: Option<SharedString>,
+    /// The window is focused (`decibell_harness::focus::window_focused`).
+    focused: bool,
+    /// The list said it rests at its live bottom (`ListEvent::AtBottom`), since it was last shown.
+    list_bottom: bool,
+    /// The list is drawn (the body is the list, the theater doesn't hide it).
+    list_shown: bool,
+    /// Being read: the three above (and `DmList::reading` says so).
+    reading: bool,
     _watch: Watch,
     _subscriptions: Vec<Subscription>,
 }
@@ -67,17 +83,11 @@ impl Conversation {
         let model = Model::global(cx).clone();
         let source = std::rc::Rc::new(DmSource { peer });
         let slice = decibell_chat::ListSource::slice(&*source, cx);
-        let list = cx.new(|cx| MessageList::new(source, cx));
+        // `className="pr-4"`: the rows keep 16 px from the scrollbar.
+        let list = cx.new(|cx| MessageList::new(source, cx).with_right_padding(16.));
         // Re-sync handover: `markHistoriesStale` leaves the conversation on screen to us.
         model.dm.list.update(cx, |l, _| l.set_displayed(Some(peer)));
-        let composer: AnyView = match dm_composer(cx) {
-            Some(build) => build(peer, list.clone(), window, cx),
-            None => {
-                let name = conversation_name(peer, cx);
-                let list = list.clone();
-                cx.new(|cx| FallbackComposer::new(peer, name, list, window, cx)).into()
-            }
-        };
+        let composer = dm_composer(cx).map(|build| build(peer, list.clone(), window, cx));
         let mut watch = Watch::new();
         watch
             .store(&model.live.calls, cx)
@@ -86,20 +96,15 @@ impl Conversation {
         let peer_infos = PeerInfos::entity(cx);
         let subscriptions = vec![
             cx.observe(&slice, |this, _, cx| this.slice_changed(cx)),
-            // The conversation's unread count (mark read) and the composer's send error.
+            // The conversation's unread count: central's count for it (a sign-in's previews) is
+            // read again while it is being read (the renderer's effect on `unreadCount`).
             cx.observe(&model.dm.list, move |this, list, cx| {
-                let (error, unread) = {
-                    let list = list.read(cx);
-                    let error = list.send_error.as_ref().filter(|(p, _)| *p == peer).map(|(_, e)| e.clone());
-                    (error, list.get(peer).map_or(0, |c| c.unread))
-                };
+                let unread = list.read(cx).get(peer).map_or(0, |c| c.unread);
                 if unread != this.seen.1 {
                     this.seen.1 = unread;
-                    cx.defer(move |cx| actions::dm::mark_read(peer, cx));
-                }
-                if error != this.send_error {
-                    this.send_error = error;
-                    cx.notify();
+                    if this.reading {
+                        cx.defer(move |cx| actions::dm::mark_read(peer, cx));
+                    }
                 }
             }),
             cx.observe(&model.live.e2ee, move |_, _, cx| {
@@ -112,6 +117,8 @@ impl Conversation {
                 }
             }),
             cx.subscribe(&list, |this, list, event: &ListEvent, cx| this.list_event(list, event, cx)),
+            // The theater hides the list (and shows it again).
+            cx.observe(&model.live.calls, |this, _, cx| this.update_reading(cx)),
             // The re-sync after central signed us in again (`DmEvent::Resync`).
             cx.subscribe(&model.dm.list, move |this, _, event: &DmEvent, cx| {
                 if let DmEvent::Resync = event {
@@ -122,11 +129,23 @@ impl Conversation {
         ];
         cx.on_release(move |_, cx| {
             let model = Model::global(cx).clone();
-            if model.dm.list.read(cx).displayed() == Some(peer) {
-                model.dm.list.update(cx, |l, _| l.set_displayed(None));
-            }
+            model.dm.list.update(cx, |l, _| {
+                if l.displayed() == Some(peer) {
+                    l.set_displayed(None);
+                }
+                l.set_reading(peer, false);
+            });
         })
         .detach();
+        let mut subscriptions = subscriptions;
+        subscriptions.extend(decibell_harness::focus::observe_window_focus(window, cx, |this: &mut Self, window, cx| {
+            let focused = decibell_harness::focus::window_focused(window, cx);
+            if focused != this.focused {
+                this.focused = focused;
+                this.update_reading(cx);
+            }
+        }));
+        let focused = decibell_harness::focus::window_focused(window, cx);
         let entity = cx.entity();
         crate::hooks::remember(&entity, cx);
         let mut this = Self {
@@ -140,7 +159,10 @@ impl Conversation {
             confirm_delete: None,
             body: Body::Loading,
             seen: (0, model.dm.list.read(cx).get(peer).map_or(0, |c| c.unread)),
-            send_error: None,
+            focused,
+            list_bottom: false,
+            list_shown: false,
+            reading: false,
             _watch: watch,
             _subscriptions: subscriptions,
         };
@@ -151,8 +173,39 @@ impl Conversation {
         PeerInfos::want(peer, cx);
         this.body = this.body_now(cx);
         this.seen.0 = this.slice.read(cx).rows().len();
-        cx.defer(move |cx| actions::dm::mark_read(peer, cx));
+        // Read once the list says it landed at the bottom of a focused window (its first frame).
+        this.update_reading(cx);
         this
+    }
+
+    /// Whether the conversation is being read now (tests).
+    pub fn reading(&self) -> bool {
+        self.reading
+    }
+
+    /// The three conditions of "being read" may have changed: tell the model, and read the
+    /// conversation when they start to hold.
+    fn update_reading(&mut self, cx: &mut Context<Self>) {
+        let shown = self.body == Body::List && self.theater(cx).is_none();
+        if shown != self.list_shown {
+            self.list_shown = shown;
+            if !shown {
+                // Hidden: its last word on the bottom goes stale; drawn again, it says anew.
+                self.list_bottom = false;
+                self.list.update(cx, |list, _| list.retell_bottom());
+            }
+        }
+        let reading = self.focused && self.list_shown && self.list_bottom;
+        if reading == self.reading {
+            return;
+        }
+        self.reading = reading;
+        let peer = self.peer;
+        let list = Model::global(cx).dm.list.clone();
+        list.update(cx, |l, _| l.set_reading(peer, reading));
+        if reading {
+            cx.defer(move |cx| actions::dm::mark_read(peer, cx));
+        }
     }
 
     pub fn peer(&self) -> Uid {
@@ -167,8 +220,9 @@ impl Conversation {
         self.body
     }
 
-    pub fn composer(&self) -> &AnyView {
-        &self.composer
+    /// The composer under the list (none until the app registers one).
+    pub fn composer(&self) -> Option<&AnyView> {
+        self.composer.as_ref().map(|c| &c.view)
     }
 
     fn await_load(&mut self, load: decibell_model::chat::history::LatestLoad, cx: &mut Context<Self>) -> Task<()> {
@@ -208,13 +262,17 @@ impl Conversation {
         let body = self.body_now(cx);
         if body != self.body {
             self.body = body;
+            self.update_reading(cx);
             cx.notify();
         }
         let rows = self.slice.read(cx).rows().len();
         if rows != self.seen.0 {
             self.seen.0 = rows;
             let peer = self.peer;
-            cx.defer(move |cx| actions::dm::mark_read(peer, cx));
+            // New rows while being read are read (a DM arriving for it wasn't counted).
+            if self.reading {
+                cx.defer(move |cx| actions::dm::mark_read(peer, cx));
+            }
             // The theater badge counts messages.
             if self.theater(cx).is_some() {
                 cx.notify();
@@ -231,6 +289,10 @@ impl Conversation {
                 cx.notify();
             }
             ListEvent::OpenLink(url) => cx.open_url(url),
+            ListEvent::AtBottom(at) => {
+                self.list_bottom = *at;
+                self.update_reading(cx);
+            }
             ListEvent::OpenMedia(_) => {}
         }
     }
@@ -304,14 +366,8 @@ impl Render for Conversation {
         let head = header(&facts, cx);
 
         let theme = cx.theme();
-        let (bg_mid, muted, border, bright, secondary, error) = (
-            theme.color_bg_mid,
-            theme.color_text_muted,
-            theme.color_border,
-            theme.color_text_bright,
-            theme.color_text_secondary,
-            theme.color_error,
-        );
+        let (bg_mid, muted, border, bright, secondary) =
+            (theme.color_bg_mid, theme.color_text_muted, theme.color_border, theme.color_text_bright, theme.color_text_secondary);
         let centered = || div().flex_1().flex().flex_col().items_center().justify_center();
         let body = match self.body {
             // Keyed per conversation: each conversation's wait starts blank.
@@ -365,6 +421,10 @@ impl Render for Conversation {
             Body::List => div().flex_1().min_h_0().child(self.list.clone().cached(StyleRefinement::default().size_full())).into_any_element(),
         };
         let confirm = self.confirm_delete;
+        // "Type anywhere to compose": a key that reaches the conversation from the list (or with
+        // nothing focused) goes to the composer (`useTypeToFocusComposer`), as in the chat pane.
+        let type_to_focus = self.composer.as_ref().map(|c| c.type_to_focus.clone());
+        let list_focus = self.list.read(cx).focus_handle().clone();
         div()
             .relative()
             .size_full()
@@ -372,13 +432,22 @@ impl Render for Conversation {
             .flex()
             .flex_col()
             .bg(bg_mid)
+            .when_some(type_to_focus, |root, hook| {
+                root.on_key_down(move |event, window, cx| {
+                    let focused = window.focused(cx);
+                    if (focused.is_none() || focused.as_ref() == Some(&list_focus)) && hook(event, window, cx) {
+                        cx.stop_propagation();
+                    }
+                })
+            })
             .child(head)
             .children(notice)
             .children(self.stage.clone().map(|stage| stage.into_any_element()))
             .when(theater.is_none(), |this| {
-                this.child(div().relative().flex().flex_col().flex_1().min_h_0().overflow_hidden().child(body))
-                    .when_some(self.send_error.clone(), |this, e| this.child(div().px_4().child(Label::new(e).size(12.).color(error))))
-                    .child(div().relative().children(decibell_shell::probes::probe("dm-composer")).child(self.composer.clone().into_any_element()))
+                // The composer draws the inline send error above its card (`sendError`).
+                this.child(div().relative().flex().flex_col().flex_1().min_h_0().overflow_hidden().child(body)).children(
+                    self.composer.as_ref().map(|c| div().relative().children(decibell_shell::probes::probe("dm-composer")).child(c.view.clone())),
+                )
             })
             .child(
                 ConfirmModal::new("delete-dm", confirm.is_some(), "Delete message", "Delete")

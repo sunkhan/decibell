@@ -366,6 +366,29 @@ fn deletes_edits_and_their_answers(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
+/// `DmChatPanel`'s `sending`: set while a text send's call runs (the button is disabled), not
+/// for a GIF; a failed call (here the core isn't running) ends it with the inline error.
+#[gpui::test]
+fn a_dm_text_send_holds_the_send_button_until_its_call_returns(cx: &mut TestAppContext) {
+    let model = signed_in(cx, vec![]);
+    deliver(&model, cx, [dm(1, 3, ME, "hi", "")]);
+    cx.update(|cx| {
+        crate::actions::dm::send_dm(3, "hello", 0, cx);
+    });
+    cx.read(|cx| assert!(model.dm.list.read(cx).sending(3)));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let list = model.dm.list.read(cx);
+        assert!(!list.sending(3));
+        assert!(list.send_error.as_ref().is_some_and(|(peer, _)| *peer == 3), "the failure shows inline");
+    });
+    cx.update(|cx| {
+        crate::actions::dm::send_gif(3, "https://example.test/a.gif", 0, cx);
+    });
+    cx.read(|cx| assert!(!model.dm.list.read(cx).sending(3), "a GIF doesn't hold the button"));
+    cx.run_until_parked();
+}
+
 #[gpui::test]
 fn dms_route_by_the_other_side_and_read_sync(cx: &mut TestAppContext) {
     let model = signed_in(cx, vec![]);
@@ -379,13 +402,25 @@ fn dms_route_by_the_other_side_and_read_sync(cx: &mut TestAppContext) {
     // Another device of ours read it.
     deliver(&model, cx, [CoreEvent::DmReadSynced(DmReadSyncedPayload { peer_uid: 3, up_to_id: 3 })]);
     cx.read(|cx| assert_eq!(model.dm.list.read(cx).get(3).unwrap().unread, 0));
-    // Viewing the conversation: new ones aren't unread.
+    // Open on screen but not being read (the window unfocused, or the list scrolled up: the
+    // view says): unread, the native client's rule (owner, 2026-11-26).
     model.dm.list.update(cx, |l, cx| l.set_active(Some(3), cx));
     model.nav.update(cx, |n, cx| n.set_active_view(ActiveView::Dm, cx));
-    deliver(&model, cx, [dm(4, 3, ME, "seen", "")]);
+    deliver(&model, cx, [dm(4, 3, ME, "unseen", "")]);
+    cx.read(|cx| assert_eq!(model.dm.list.read(cx).get(3).unwrap().unread, 1));
+    model.dm.list.update(cx, |l, cx| l.mark_read(3, 4, cx));
+    // Being read: new ones aren't unread.
+    model.dm.list.update(cx, |l, _| l.set_reading(3, true));
+    deliver(&model, cx, [dm(5, 3, ME, "seen", "")]);
     cx.read(|cx| assert_eq!(model.dm.list.read(cx).get(3).unwrap().unread, 0));
+    // Another conversation stops nothing; this one's view stopping does.
+    model.dm.list.update(cx, |l, _| l.set_reading(7, false));
+    cx.read(|cx| assert_eq!(model.dm.list.read(cx).reading(), Some(3)));
+    model.dm.list.update(cx, |l, _| l.set_reading(3, false));
+    deliver(&model, cx, [dm(6, 3, ME, "later", "")]);
+    cx.read(|cx| assert_eq!(model.dm.list.read(cx).get(3).unwrap().unread, 1));
     // Central's error reply to a send of ours withdraws its bubble with the reason.
-    let bubble = std::sync::Arc::new(crate::chat::message::Message::optimistic("perf2".into(), ME, "nope".into(), 0, "nz".into(), 0, 4));
+    let bubble = std::sync::Arc::new(crate::chat::message::Message::optimistic("perf2".into(), ME, "nope".into(), 0, "nz".into(), 0, 6));
     model.dm.list.update(cx, |l, cx| l.add_message(3, bubble, true, "u3".into(), true, cx));
     deliver(&model, cx, [dm(0, ME, 3, "They only accept DMs from friends.", "nz")]);
     cx.read(|cx| assert!(model.dm.list.read(cx).slice(3).unwrap().read(cx).bubble("nz").is_none()));

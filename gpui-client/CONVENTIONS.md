@@ -298,6 +298,11 @@ in short:
     shows the rail with `MessageList::set_reply_target`.
   - `ListEvent::OpenMedia(message id)` is the click on a media placeholder (the image viewer's), `OpenLink(url)`
     a link (`ChatPane` hands it to `cx.open_url`; invite links open the join confirmation themselves).
+  - `ListEvent::AtBottom(bool)`: the list rests at its **live bottom** (within `AT_BOTTOM_PX` of the end, not
+    windowed), emitted after a drawn frame only when it changed (the first frame always says; a list hidden by
+    its owner is asked to say again with `retell_bottom`). The DM pane's "being read" rule reads it.
+- **Options**: `MessageList::new(source, cx).with_right_padding(16.)` keeps the rows 16 px from the scrollbar
+  (the DM list's `className="pr-4"`; the scrollbar stays at the edge).
 - **CSS that the row layout reproduces by hand** (found by comparing every row's `offsetTop` with the Electron
   client, `tools/electron-captures/chat-rows.mjs`): a block (code, display math) first in a body collapses its
   top margin with the body's `mt-0.5`; two blocks in a row share one margin; a block last in a body collapses
@@ -334,8 +339,9 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
 
 - **One `Composer` view per chat pane**, generic over where it sends: `Composer::new(Rc<dyn ComposerTarget>,
   Some(list), window, cx)`. `ChannelTarget { server, channel }` is the channel pane's (registered by `init`);
-  **the DM pane** builds `DmTarget { peer }` itself and hosts the same view under its list (drawn uncached: the
-  card sizes itself), with `Composer::type_to_focus_hook(&composer)` in its key listener. `ComposerTarget` is the
+  **the DM pane** hosts the same view on a `DmTarget { peer }` under its list (drawn uncached: the card sizes
+  itself): `decibell_composer::dm_composer`, which the app joins into `decibell_home::dm::set_dm_composer`,
+  returns it with `Composer::type_to_focus_hook(&composer)` for the pane's key listener. `ComposerTarget` is the
   seam (send / send_gif / set_draft / latest_own_editable / attach / gate / send_error / what to observe); the
   `Variant` picks the renderer's differences (the DM card has no attach button and no slowmode, `rounded-sm`
   buttons, the inline send error above the card).
@@ -518,17 +524,33 @@ per peer, the `FriendsRail` beside it while `dm_friends_panel` is on) and regist
 shell's (`DmRows`, `UnreadDmTiles`).
 
 - **A conversation** (`dm::Conversation`) draws `MessageList` over `dm::DmSource` (a `ListSource` on
-  `model.dm`), opens its newest page on mount (`actions::dm::open_history`), keeps `DmList::set_displayed`,
-  follows `DmEvent::Resync`, and marks read on every change of its row count or unread count while mounted
-  (the renderer's effect: no focus or at-bottom condition). Encryption: the header chip and the notice
+  `model.dm`; the list with `with_right_padding(16.)`, the renderer's `pr-4`), opens its newest page on mount
+  (`actions::dm::open_history`), keeps `DmList::set_displayed` and follows `DmEvent::Resync`.
+- **A DM is marked read only while it is being read** (owner, 2026-11-26; Electron differs:
+  `docs/electron-quirks.md` #16): the conversation is the open view with its list drawn (not loading, not
+  hidden by the call's theater), the window is focused (`decibell_harness::focus::window_focused`: active and
+  visible, so never while minimised) **and** the list rests at its live bottom (`ListEvent::AtBottom(true)`:
+  within 4 px of the end with nothing newer outside the loaded window; emitted after a drawn frame only when
+  it changes, so measuring, pages and trims don't flap it; a scroll animation says `true` once it arrives; a
+  list hidden and shown again is asked to say anew, `retell_bottom`). While all three hold the view keeps
+  `DmList::set_reading(peer, true)` (a DM arriving for it isn't counted) and reads every new row
+  (`actions::dm::mark_read`); otherwise a DM stays unread here and, through read sync, on the account's other
+  devices until the three hold again (focus back, scrolled or jumped to the bottom, the conversation opened),
+  and is marked then. Our own messages are never unread (any device of ours: `from_self`); sending neither
+  waits for nor triggers a mark. Events only (activation, visibility, the list's event), no timer. Self-tests
+  hold the window "active" with `decibell_harness::focus::hold_window_focus` (other windows share the desktop;
+  visibility stays real). `decibell-headless` reads what it `dm-open`s (no window).
+- Encryption: the header chip and the notice
   read `model.live.e2ee` and the peer's answer from `e2ee::PeerInfos` (one request per peer per (our status,
   their change marker); views call `PeerInfos::want(uid)` from observers, never `render`).
 - **The DM composer slot**: `decibell_home::dm::set_dm_composer(cx, |peer, list: Entity<MessageList>,
-  window, cx| -> AnyView)`, once at start-up. The view is drawn under the conversation, uncached (it sizes
-  itself); it subscribes to `list`'s `ListEvent::Reply` (the conversation already calls
-  `set_reply_target`), starts edits with `list.start_edit`, sends with `actions::dm::send_dm`, and keeps the
-  draft in `chat.drafts` (`DraftKey::Dm`, `DraftsEvent::Restored` brings a refused send back). Until one is
-  registered `dm::composer::FallbackComposer` stands in: the renderer's card with a working one-line field.
+  window, cx| -> ComposerParts)`, once at start-up: the app's `registry::join_features` hands in
+  `decibell_composer::dm_composer` (the crates don't depend on each other; the capture tool calls
+  `join_features` too). The view is drawn under the conversation, uncached (it sizes itself), with the inline
+  send error above its card; it follows `list`'s `ListEvent::Reply`, starts edits with `list.start_edit`,
+  sends with `actions::dm::send_dm` (its send button disabled while `DmList::sending(peer)`), keeps the draft
+  in `chat.drafts` (`DraftKey::Dm`), and the conversation's key listener hands it the keys that reach it from
+  the list (`type_to_focus`). With none registered nothing is drawn under the list.
 - **The call stage slot**: `decibell_shell::register_pane(cx, Slot::DmCallStage, |window, cx| view)`. The
   conversation builds it (`decibell_shell::build_slot`) while `calls.status` is outgoing, connecting or active
   with its peer, draws it above the list **uncached** (size it yourself: `call_stage_voice_height` /
@@ -552,7 +574,7 @@ shell's (`DmRows`, `UnreadDmTiles`).
 - Screens (`home-friends-*`, `dm-*`, `profile-*`, `custom-status`, `user-menu-*`, `nickname-modal`,
   `ban-modal`) draw the whole window from `fixture.rs` (the shell's fixture plus friends in every state,
   statuses, DM pages, E2EE states); `decibell-home-fixture <dir>` exports the scenes for
-  `tools/electron-captures/pages/_home.tsx`. Self-tests (`dm-*`, `friends-*`, `profile-popup`,
+  `tools/electron-captures/pages/_home.tsx`. Self-tests (`dm-*` incl. `dm-read-rules`, `friends-*`, `profile-popup`,
   `status-custom`, `user-menu-moderation`, `home-idle`) run child apps (`--check home-…`): read-only as `alice`,
   everything that changes state between two throwaway accounts registered once per run.
 
