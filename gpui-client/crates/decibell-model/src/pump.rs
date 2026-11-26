@@ -335,7 +335,7 @@ mod tests {
             codec: 1,
             keyframe: true,
             timestamp: 0,
-            data: vec![0; 16],
+            data: vec![0; 16].into(),
             description: None,
             discontinuity: false,
         };
