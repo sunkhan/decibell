@@ -119,6 +119,37 @@ node tools/electron-captures/chat-rows.mjs <gpui> <electron> <theme>            
 The composer in the Electron capture is the real one; the GPUI screens draw an empty card of its resting
 size (the composer is another crate's), so the list has the same 696 px in both.
 
+## The voice pages (`voice-*`, `go-live*`, `call-*`)
+
+They render the renderer's real `MainLayout` (VoicePanel, StreamViewPanel, MiniStreamPlayer, IncomingCallModal,
+CallStage inside DmChatPanel) on the GPUI voice fixtures (`crates/decibell-voice/src/fixture.rs`): the shell's events
+and the scene's (Lounge's roster, the live streams, the MLS state, a ping, alice talking) through the event hooks, then
+what the GPUI fixture does as the user (`pages/_voice.tsx`: posters, watches, focus, the loaded stream, the view, the Go
+Live dialog — the real `CaptureSourcePicker`, opened by the page because it is VoicePanel's component state — and a call
+in `callStore`). Drawn as the whole window (`Framed`, 1280 × 800): the dialog, the incoming card and the mini-player
+place themselves against it. Go Live takes the native-encoder path (a canned `probe_native_encoders` answer), as the GPUI
+client only has that one, so "Share sound" is offered.
+
+```sh
+cargo run -p decibell-voice --features fixtures --bin decibell-voice-fixture -- tools/electron-captures/pages/fixtures
+cargo build -p decibell-app --features capture --bin decibell-capture
+for s in voice-stage-1 voice-stage-4 voice-stage-9 voice-stage-25 voice-stage-live voice-stage-stream voice-stage-streams \
+         voice-focus voice-mini go-live go-live-sharp go-live-slides go-live-saver go-live-advanced go-live-software \
+         call-incoming call-stage; do
+  target/debug/decibell-capture --screen $s --all-themes --out-dir target/captures-voice
+done
+CAPTURE_GRAYSCALE_TEXT=1 tools/electron-captures/run.sh --pages voice-stage-1,voice-stage-4,voice-stage-9,voice-stage-25,\
+voice-stage-live,voice-stage-stream,voice-stage-streams,voice-focus,voice-mini,go-live,go-live-sharp,go-live-slides,\
+go-live-saver,go-live-advanced,go-live-software,call-incoming,call-stage --out <electron dir>
+node tools/electron-captures/pairs.mjs --gpui target/captures-voice --electron <electron dir> --out target/electron-captures/pairs-voice
+```
+
+Known differences that are not bugs: video (both draw the player's first state, a spinner on black; the pictures
+themselves are never compared), the mini-player's label (the renderer prints the streamer's uid; GPUI their name), the
+call screens' surroundings (GPUI's `call-stage` hosts the stage in a stand-in DM pane: no DM header, no friends rail), and
+the panes other crates own (chat, members, search). In a worktree, `electron-client/node_modules` and the generated
+`src/components/emoji/twemoji-data.json` are not checked out: link / copy them from the main checkout first.
+
 ## Conventions
 
 - **Viewport** 1280 × 768 CSS px at DPR 1 = the GPUI window's content area. `export const size` overrides
