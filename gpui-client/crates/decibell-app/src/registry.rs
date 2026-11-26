@@ -22,6 +22,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_home::screens());
     screens.extend(decibell_chat_content::screens());
     screens.extend(decibell_chat_content::transfers::screens());
+    screens.extend(decibell_picture_editor::screens());
     screens
 }
 

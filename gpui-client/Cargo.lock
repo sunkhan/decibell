@@ -1742,6 +1742,7 @@ dependencies = [
  "decibell-harness",
  "decibell-home",
  "decibell-model",
+ "decibell-picture-editor",
  "decibell-settings",
  "decibell-shell",
  "decibell-text",
@@ -1992,6 +1993,19 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "xkbcommon",
+]
+
+[[package]]
+name = "decibell-picture-editor"
+version = "0.1.0"
+dependencies = [
+ "decibell-harness",
+ "decibell-theme",
+ "decibell-ui",
+ "gpui",
+ "image",
+ "log",
+ "smallvec",
 ]
 
 [[package]]
