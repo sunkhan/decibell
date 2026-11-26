@@ -1,0 +1,30 @@
+diff --git a/crates/gpui_linux/src/linux/wayland/window.rs b/crates/gpui_linux/src/linux/wayland/window.rs
+index df2476d..ad910b5 100644
+--- a/crates/gpui_linux/src/linux/wayland/window.rs
++++ b/crates/gpui_linux/src/linux/wayland/window.rs
+@@ -1912,7 +1912,24 @@ impl PlatformWindow for WaylandWindow {
+         }
+     }
+ 
+-    fn request_attention(&self) {}
++    /// An activation request with a token that names no input: the compositor never grants focus
++    /// for it and marks the window as demanding attention instead (KWin and Mutter flash its
++    /// taskbar entry until it is activated). Nothing while the window is active.
++    fn request_attention(&self) {
++        let state = self.borrow();
++        if state.active {
++            return;
++        }
++        if let (Some(activation), Some(app_id)) = (&state.globals.activation, state.app_id.clone())
++        {
++            let token = activation.get_activation_token(
++                &state.globals.qh,
++                PendingActivation::Window(state.surface.id()),
++            );
++            token.set_app_id(app_id);
++            token.commit();
++        }
++    }
+ 
+     fn is_active(&self) -> bool {
+         self.borrow().active

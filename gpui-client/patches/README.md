@@ -20,6 +20,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0014-gpui-replay-nested-cached-views.patch` | A clean cached view nested in a cached view that renders is replayed from its own cache instead of rendering with it: views record which frame their replay ranges index, a replayed range moves the ranges of the views inside it, the cache key gains the rem size; counters (`gpui::CACHED_VIEWS_RENDERED` / `_REPLAYED`) and a switch back (`gpui::set_nested_view_replay`). | At the pin every notify renders every cached view under the topmost dirty one, which in this client is the whole window (the content is one cached view): a speaking ring on a 12-tile stage rendered 18 views (5 now), a typed key the message list above the field. Measured below. |
 | `0015-linux-clipboard-images.patch` | Linux clipboard writes carry pictures: Wayland offers each image entry under its own type (`image/png`, …) and text types only when there is text, and serves whichever type is asked for, writing large pieces without blocking; X11 owns the selection with every entry, under its type, and hands contents larger than 1 MiB out in `INCR` pieces (also to a clipboard manager taking them at quit); a window with the keyboard focus but no press yet may take the Wayland selection (the focus event's serial, as Qt does). | "Copy image" on Linux (owner request, 2026-11-26): GPUI only ever offered text on Wayland and X11. |
 | `0016-keyring-label.patch` | Credentials are stored, read and deleted under the label `Decibell` (Secret Service, Linux) and the target `Decibell:url=…` (Credential Manager, Windows) instead of Zed's `zed-github-account` / `zed:url=…`. | A shipped client's at-rest key would have shown up in the user's keyring manager under Zed's name. |
+| `0017-wayland-request-attention.patch` | `Window::request_attention` on Wayland: an xdg-activation token that names no input, used at once; the compositor marks the window as demanding attention (it never grants focus for such a token). Nothing while the window is active. | The taskbar flash on an incoming call (`FEATURES.md` §9): Wayland's `request_attention` did nothing. |
 
 ## How the patches are applied
 
@@ -612,6 +613,15 @@ match the label). Windows: the Credential Manager target is `Decibell:url=<url>`
 (`decibell_model::local_key::KeychainKey`) is the only user; no client with the old names ever shipped, so nothing is
 migrated (development builds keep their key in a file: `FileKey`). Evidence: see `HANDOFF.md` §1 (a throwaway
 gnome-keyring on a private bus). Upstream: as an application-provided label (`set_app_identity`'s name) it could go.
+
+## 0017: attention on Wayland
+
+`gpui_linux/src/linux/wayland/window.rs` (+18 / −1). `request_attention` was empty on Wayland. Now, unless the window is
+active, it asks for an xdg-activation token carrying only the app id (no serial, no surface) and activates the window
+with it: a compositor never grants focus for such a token and marks the window as demanding attention instead (KWin's
+`XdgActivationV1Integration` refuses it and calls `demandAttention`; Mutter shows "… is ready"). KWin clears the state
+when the window is activated. X11 already set the urgency hint and Windows `FlashWindowEx`. Evidence: the `attention`
+self-test reads KWin's `demandsAttention` for the ringing window (`HANDOFF.md` §1). Upstream: yes.
 
 ## Considered and not patched
 
