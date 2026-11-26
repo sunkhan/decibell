@@ -62,6 +62,14 @@ pub fn software_context(
     context.set_format(ff::format::Pixel::YUV420P);
     context.set_colorspace(ff::color::Space::BT709);
     context.set_color_range(ff::color::Range::MPEG);
+    // Primaries and transfer too, so the sequence header's colour
+    // description is complete and no decoder has to guess (the values are
+    // the ones every HD decoder assumes anyway).
+    unsafe {
+        let p = context.as_mut_ptr();
+        (*p).color_primaries = ff::sys::AVColorPrimaries::AVCOL_PRI_BT709;
+        (*p).color_trc = ff::sys::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+    }
     unsafe {
         (*context.as_mut_ptr()).rc_buffer_size = software_vbv_bits(bitrate_kbps, fps);
     }

@@ -722,11 +722,27 @@ impl H264Encoder {
                 context.set_format(sw_format);
             }
 
-            // Signal BT.709 colorspace in SPS VUI so the decoder uses the correct
-            // YUV→RGB matrix. Without this, decoders may assume BT.601 and produce
-            // a green tint on HD content.
+            // The colour description, complete: matrix, range, primaries
+            // and transfer. For NVENC the matrix is not ours to choose:
+            // with BGRA input the driver converts with BT.601, and FFmpeg
+            // writes BT.470BG into the VUI / AV1 colour config whatever is
+            // asked for here (nvenc.c, nvenc_setup_h264_config and its HEVC
+            // / AV1 twins). A decoder may honour a description only when
+            // all of it is there (Chromium's VideoColorSpace::IsSpecified
+            // wants matrix, primaries and transfer) and otherwise assume
+            // BT.709 for HD; a BT.601 picture taken for BT.709 shows pure
+            // green a sixth too dark and red tinted orange. So primaries
+            // and transfer are set too (BT.709's: an sRGB screen, what
+            // every HD decoder assumes), and a test decodes a colour grid
+            // through each backend (encoder_bench.rs, colours_round_trip).
+            // VAAPI and software convert with BT.709 and say so.
             context.set_colorspace(ffmpeg_next::color::Space::BT709);
             context.set_color_range(ffmpeg_next::color::Range::MPEG);
+            unsafe {
+                let p = context.as_mut_ptr();
+                (*p).color_primaries = ffmpeg_next::sys::AVColorPrimaries::AVCOL_PRI_BT709;
+                (*p).color_trc = ffmpeg_next::sys::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+            }
 
             let mut opts = ffmpeg_next::Dictionary::new();
             match backend {
