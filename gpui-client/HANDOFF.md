@@ -115,7 +115,6 @@ linked (all git-excluded through `.git/info/exclude`).
 |---|---|
 | `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
 | `.worktrees/windows` / `wip/windows` | the Windows batch: D3D11 external surfaces (GPUI patches from 0020), D3D11VA decode, Go Live's source list, idle on Windows, the gap table, `docs/windows-owner-checks.md`; works in rounds: I merge + push each checkpoint and send back the CI log |
-| `.worktrees/platform` / `wip/platform` | GPUI patches 0015+ (clipboard image write, keyring label), single instance, links, attention, progress, window state |
 | `.worktrees/media` / `wip/media` | attachment video / audio playback; extends the shared FFmpeg prefix (every target dir then needs `cargo clean -p ffmpeg-sys-next`) |
 | `.worktrees/core-audio` / `wip/core-audio` | interface sounds, mic test, device events, click fixes (touches `crates/decibell-core`: Electron's bar + Windows check after merging) |
 | `.worktrees/land` / `wip/land` | the architect's landing tree (see below): empty of unmerged work when this was written |
@@ -127,7 +126,7 @@ clean worktree, then move the branch with `git update-ref refs/heads/gpui-client
 ## 1b. What Electron's main process did, and who has it here
 
 Every job of `electron-client/electron/main/*.ts` and the preload, with where this client has it (2026-11-26, the
-platform work; "this work" = `crates/decibell-platform`, the GPUI patches `0015`–`0018`, the hooks listed in
+platform work; "this work" = `crates/decibell-platform`, the GPUI patches `0015`–`0019`, the hooks listed in
 CONVENTIONS "Platform").
 
 | Main process (file) | What it did | Here | State / owner |
