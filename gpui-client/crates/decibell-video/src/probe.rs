@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use parking_lot::Mutex;
 
-use crate::codec::{Codec, CodecSupport, DecodeBackend};
+use crate::codec::{Codec, CodecSupport, DecodeBackend, SkippedBackend};
 use crate::decode::{CaptureCell, Failure, FrameCx};
 use crate::hub::{HubInner, StreamTarget};
 use crate::packet::Packet;
@@ -71,6 +71,20 @@ impl ProbeState {
     /// file stays: it is the machine's own order's answer.
     pub fn forget(&self) {
         *self.result.lock() = None;
+    }
+
+    /// Nothing that was found out holds any more (the user asked for a new probe): the next
+    /// request decodes again, whatever the file says.
+    pub fn discard(&self) {
+        *self.result.lock() = None;
+        if let Some(path) = &*self.cache_file.lock() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// The probe thread is decoding.
+    pub fn is_running(&self) -> bool {
+        self.waiting.lock().is_some()
     }
 
     pub fn set_cache_file(&self, path: PathBuf) {
@@ -146,11 +160,20 @@ fn run(hub: &HubInner, key: &str) -> [CodecSupport; 3] {
     let cacheable = !hub.order_is_forced();
     let cache_file = hub.probe.cache_file.lock().clone().filter(|_| cacheable);
     if let Some(path) = &cache_file
-        && let Some(result) = std::fs::read_to_string(path)
+        && let Some((result, skipped)) = std::fs::read_to_string(path)
             .ok()
             .and_then(|text| parse_cache(&text, key))
     {
-        log::info!("video: decode capabilities from {}: {result:?}", path.display());
+        log::info!(
+            "video: decode capabilities from {}: {}",
+            path.display(),
+            describe(&result)
+        );
+        // What that probe found broken is not tried by streams of this run either, and
+        // Settings → Codecs says why.
+        for skip in skipped {
+            hub.selector.skip(skip.codec, skip.backend, &skip.reason);
+        }
         *hub.probe.result.lock() = Some((key.to_owned(), result));
         return result;
     }
@@ -171,7 +194,8 @@ fn run(hub: &HubInner, key: &str) -> [CodecSupport; 3] {
     if complete {
         *hub.probe.result.lock() = Some((key.to_owned(), result));
         if let Some(path) = &cache_file
-            && let Err(error) = std::fs::write(path, format_cache(key, &result))
+            && let Err(error) =
+                std::fs::write(path, format_cache(key, &result, &hub.selector.report()))
         {
             log::warn!("video: writing {}: {error}", path.display());
         }
@@ -276,8 +300,9 @@ fn try_backend(hub: &HubInner, backend: DecodeBackend, codec: Codec) -> Result<(
 }
 
 /// The cache file: the device key on the first line, then `<codec index> <decoder or -> <max
-/// width> <max height>` per codec.
-fn format_cache(key: &str, result: &[CodecSupport; 3]) -> String {
+/// width> <max height>` per codec, then `skip <codec index> <decoder> <reason>` for each
+/// decoder the probe gave up (so the next run does not try it and can say why).
+fn format_cache(key: &str, result: &[CodecSupport; 3], skipped: &[SkippedBackend]) -> String {
     let mut text = format!("{key}\n");
     for support in result {
         let (width, height) = support.max_size.unwrap_or((0, 0));
@@ -287,10 +312,18 @@ fn format_cache(key: &str, result: &[CodecSupport; 3]) -> String {
             support.backend.map_or("-", DecodeBackend::label)
         );
     }
+    for skip in skipped {
+        text += &format!(
+            "skip {} {} {}\n",
+            skip.codec.index(),
+            skip.backend.label(),
+            skip.reason.replace(['\n', '\r'], " ")
+        );
+    }
     text
 }
 
-fn parse_cache(text: &str, key: &str) -> Option<[CodecSupport; 3]> {
+fn parse_cache(text: &str, key: &str) -> Option<([CodecSupport; 3], Vec<SkippedBackend>)> {
     let mut lines = text.lines();
     if lines.next()? != key {
         return None;
@@ -315,7 +348,19 @@ fn parse_cache(text: &str, key: &str) -> Option<[CodecSupport; 3]> {
             max_size: (width > 0).then_some((width, height)),
         };
     }
-    Some(result)
+    let mut skipped = Vec::new();
+    for line in lines {
+        let mut fields = line.splitn(4, ' ');
+        if fields.next()? != "skip" {
+            return None;
+        }
+        skipped.push(SkippedBackend {
+            codec: Codec::from_index(fields.next()?.parse().ok()?)?,
+            backend: DecodeBackend::from_label(fields.next()?)?,
+            reason: fields.next().unwrap_or("").into(),
+        });
+    }
+    Some((result, skipped))
 }
 
 #[cfg(test)]
@@ -344,9 +389,30 @@ mod tests {
                 ..CodecSupport::none(Codec::Av1)
             },
         ];
-        let text = format_cache("10de:2704 driver 620.73", &result);
-        assert_eq!(parse_cache(&text, "10de:2704 driver 620.73"), Some(result));
+        let skipped = vec![
+            SkippedBackend {
+                codec: Codec::Hevc,
+                backend: DecodeBackend::VulkanVideo,
+                reason: "no video decode queue (VK_KHR_video_decode_h265)".into(),
+            },
+            SkippedBackend {
+                codec: Codec::Av1,
+                backend: DecodeBackend::Software,
+                reason: "".into(),
+            },
+        ];
+        let text = format_cache("10de:2704 driver 620.73", &result, &skipped);
+        assert_eq!(
+            parse_cache(&text, "10de:2704 driver 620.73"),
+            Some((result, skipped))
+        );
         assert_eq!(parse_cache(&text, "10de:2704 driver 621.0"), None);
+        // A file from before the skips were kept still reads.
+        let old = format_cache("10de:2704 driver 620.73", &result, &[]);
+        assert_eq!(
+            parse_cache(&old, "10de:2704 driver 620.73"),
+            Some((result, Vec::new()))
+        );
         assert_eq!(parse_cache("10de:2704 driver 620.73\n0 vdpau 0 0\n", "10de:2704 driver 620.73"), None);
     }
 

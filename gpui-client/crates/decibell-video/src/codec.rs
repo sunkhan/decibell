@@ -107,6 +107,18 @@ impl DecodeBackend {
         }
     }
 
+    /// What the client shows for this decoder of `codec` (Settings → Codecs, the stats
+    /// overlay): "Vulkan Video", "NVDEC", "VA-API", "Software (dav1d)" / "Software (FFmpeg)".
+    pub fn display_name(self, codec: Codec) -> &'static str {
+        match (self, codec) {
+            (DecodeBackend::VulkanVideo, _) => "Vulkan Video",
+            (DecodeBackend::Nvdec, _) => "NVDEC",
+            (DecodeBackend::Vaapi, _) => "VA-API",
+            (DecodeBackend::Software, Codec::Av1) => "Software (dav1d)",
+            (DecodeBackend::Software, _) => "Software (FFmpeg)",
+        }
+    }
+
     pub fn from_label(label: &str) -> Option<DecodeBackend> {
         DecodeBackend::ALL
             .into_iter()

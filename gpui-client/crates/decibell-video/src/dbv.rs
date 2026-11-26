@@ -126,6 +126,13 @@ impl StreamFile {
     pub fn read(&mut self, into: &mut [u8]) -> Result<()> {
         Ok(self.file.read_exact(into)?)
     }
+
+    /// Back to the first frame (a keyframe): the next header says `wrapped`.
+    pub fn rewind(&mut self) -> Result<()> {
+        // Past the end: `next_frame` wraps, as at the end of the file.
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
 }
 
 /// A frame buffer that goes back to the feeder when FFmpeg is done with it: the feeder's
@@ -169,6 +176,8 @@ pub struct Feeder {
     stop: Arc<AtomicBool>,
     pushed: Arc<AtomicU64>,
     done: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    rewind: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     /// From the file's header (0 for a recording).
     pub width: u32,
@@ -185,6 +194,8 @@ impl Feeder {
         let stop = Arc::new(AtomicBool::new(false));
         let pushed = Arc::new(AtomicU64::new(0));
         let done = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
+        let rewind = Arc::new(AtomicBool::new(false));
         let (width, height, fps, codec) = (file.width, file.height, file.fps, file.codec);
         let key = key.to_owned();
         let thread = std::thread::Builder::new()
@@ -194,9 +205,10 @@ impl Feeder {
             ))
             .spawn({
                 let (stop, pushed, done) = (stop.clone(), pushed.clone(), done.clone());
+                let (paused, rewind) = (paused.clone(), rewind.clone());
                 move || {
                     let buffers: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
-                    let start = Instant::now();
+                    let mut start = Instant::now();
                     let mut index = 0u64;
                     let mut first_at_us = None;
                     let mut loop_base_us = 0u64;
@@ -204,6 +216,19 @@ impl Feeder {
                     while !stop.load(Ordering::Relaxed)
                         && options.frames.is_none_or(|frames| index < frames)
                     {
+                        if paused.load(Ordering::Acquire) {
+                            // A streamer that stopped sending: parked until told otherwise,
+                            // and the stream's clock does not run meanwhile.
+                            let since = Instant::now();
+                            while paused.load(Ordering::Acquire) && !stop.load(Ordering::Relaxed) {
+                                std::thread::park();
+                            }
+                            start += since.elapsed();
+                            continue;
+                        }
+                        if rewind.swap(false, Ordering::AcqRel) && file.rewind().is_err() {
+                            break;
+                        }
                         let Ok(header) = file.next_frame() else { break };
                         let due_us = match header.at_us {
                             // A recording: its own arrival times, looped end to start.
@@ -258,6 +283,8 @@ impl Feeder {
             stop,
             pushed,
             done,
+            paused,
+            rewind,
             thread: Some(thread),
             width,
             height,
@@ -276,10 +303,28 @@ impl Feeder {
         self.done.load(Ordering::Acquire)
     }
 
+    /// Stops sending (`true`: a streamer whose frames no longer arrive) or goes on where it
+    /// stopped, with the stream's clock where it was.
+    pub fn pause(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
+    }
+
+    /// What a streamer does with a keyframe request, as a callback for
+    /// [`crate::HubCallbacks::request_keyframe`]: the next frame sent is a keyframe (the
+    /// file's first frame; the frames after it follow).
+    pub fn keyframe_answer(&self) -> impl Fn() + Send + Sync + 'static {
+        let rewind = self.rewind.clone();
+        move || rewind.store(true, Ordering::Release)
+    }
+
     /// Stops and waits for the thread (at most one frame interval).
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
             let _ = thread.join();
         }
     }

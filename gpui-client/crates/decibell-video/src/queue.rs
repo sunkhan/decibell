@@ -1,9 +1,22 @@
-//! The hand-over from the receive thread to a stream's decoder thread: three frames deep.
+//! The hand-over from the receive thread to a stream's decoder thread: about 100 ms of frames
+//! deep, never fewer than three.
 //!
 //! A full queue means the decoder is not keeping up. The frame that does not fit is shed, and
 //! with it the reference chain: everything up to the next keyframe is refused at the door and
 //! the caller is told to ask the streamer for one (the renderer's discontinuity handling:
 //! `StreamVideoPlayer.tsx`, "gate deltas on the next keyframe and ask for one now").
+//!
+//! "Full" is a matter of time, not of a count (a deliberate difference from the renderer, which
+//! sheds at `decodeQueueSize > 3`): a frame is queued while the oldest frame waiting has waited
+//! less than [`DEPTH`], or fewer than [`MIN_DEPTH`] wait. Three frames are 25 ms at 120 fps: a
+//! decoder thread the scheduler holds back for that long (the viewer's CPU is busy with a game)
+//! would lose everything up to the next keyframe, which is a visible freeze and a keyframe's
+//! worth of bitrate. With 100 ms the frames wait instead, the decoder works the backlog off at
+//! its own speed (a millisecond or two per frame; only the newest picture of the burst reaches
+//! the screen) and the stream is back at its one-frame latency a few frames later. A decoder
+//! that is slower than the stream for good still overflows, 100 ms behind at the most, and
+//! sheds exactly as before. The queue measures the stream's rate by what it is: 100 ms of
+//! frames are 12 at 120 fps, 6 at 60, and the three-frame floor for anything under 30.
 //!
 //! A decoder that has just been opened is given room to catch up: opening one (FFmpeg's device
 //! context, the frames pool, five slots) can take tens of milliseconds with Vulkan Video and a
@@ -23,9 +36,13 @@ use parking_lot::{Condvar, Mutex};
 use crate::codec::Codec;
 use crate::packet::Packet;
 
-/// Frames queued in the steady state.
-pub(crate) const CAPACITY: usize = 3;
-/// Frames queued while a new decoder catches up.
+/// Frames that are always queued in the steady state, however long the oldest has waited.
+pub(crate) const MIN_DEPTH: usize = 3;
+/// In the steady state a frame is queued while the oldest one waiting has waited less than
+/// this: the scheduling gap of the decoder thread that is ridden out instead of shed.
+pub(crate) const DEPTH: Duration = Duration::from_millis(100);
+/// Frames queued while a new decoder catches up, and the queue's fixed capacity (its slots are
+/// inline: nothing is allocated whatever the depth).
 pub(crate) const CATCH_UP: usize = 64;
 
 /// One encoded frame waiting for the decoder.
@@ -51,6 +68,21 @@ struct State {
     consumer_waiting: bool,
     /// The consumer must leave; frames are refused.
     stopped: bool,
+}
+
+impl State {
+    /// Whether a frame arriving at `now` does not fit: see the module docs.
+    fn is_full(&self, now: Instant) -> bool {
+        if self.len >= CATCH_UP {
+            return true;
+        }
+        if self.catching_up || self.len < MIN_DEPTH {
+            return false;
+        }
+        self.items[self.head]
+            .as_ref()
+            .is_none_or(|oldest| now.saturating_duration_since(oldest.arrived) >= DEPTH)
+    }
 }
 
 pub(crate) struct FrameQueue {
@@ -117,15 +149,11 @@ impl FrameQueue {
                     state.need_key = true;
                     pushed.request_keyframe = true;
                 }
-                let limit = if state.catching_up {
-                    CATCH_UP
-                } else {
-                    CAPACITY
-                };
+                let full = state.is_full(item.arrived);
                 if item.keyframe {
                     // A keyframe starts a new chain: if it would not fit, what is queued is
                     // not worth decoding before it.
-                    if state.len >= limit {
+                    if full {
                         for slot in 0..CATCH_UP {
                             dropped[slot] = state.items[slot].take();
                         }
@@ -140,7 +168,7 @@ impl FrameQueue {
                     drop(state);
                     drop(dropped);
                     return pushed;
-                } else if state.len >= limit {
+                } else if full {
                     state.need_key = true;
                     // A decoder that fell this far behind is not catching up.
                     state.catching_up = false;
@@ -200,7 +228,7 @@ impl FrameQueue {
     }
 
     /// Called by the decoder thread after a new decoder's pictures: once it finds the queue
-    /// empty the decoder keeps up, and the queue is three frames deep from then on. Returns
+    /// empty the decoder keeps up, and the queue is [`DEPTH`] deep from then on. Returns
     /// whether that is now the case.
     pub fn caught_up(&self) -> bool {
         let mut state = self.state.lock();
@@ -269,14 +297,23 @@ mod tests {
     use super::*;
 
     fn item(keyframe: bool, tag: u8) -> Item {
+        item_at(keyframe, tag, Instant::now())
+    }
+
+    fn item_at(keyframe: bool, tag: u8, arrived: Instant) -> Item {
         Item {
             packet: Packet::from(vec![tag]),
             codec: Codec::H264,
             keyframe,
             timestamp: tag as i64,
             description: None,
-            arrived: Instant::now(),
+            arrived,
         }
+    }
+
+    /// Frames of a stream at `fps`, the `n`th arriving `n` frame intervals after `start`.
+    fn frame(start: Instant, fps: u32, n: u32, keyframe: bool) -> Item {
+        item_at(keyframe, n as u8, start + Duration::from_secs(1) * n / fps)
     }
 
     fn pop_tag(queue: &FrameQueue) -> Option<u8> {
@@ -326,14 +363,84 @@ mod tests {
             assert_eq!(pop_tag(&queue), Some(tag));
         }
         assert!(queue.caught_up());
-        // Three from now on.
-        for tag in 0..4u8 {
+        // A hundred milliseconds from now on: of frames a second apart, three.
+        let start = Instant::now();
+        for n in 0..4 {
             assert_eq!(
-                queue.push(item(tag == 0, tag), false).queued,
-                tag < 3,
-                "{tag}"
+                queue.push(frame(start, 1, n, n == 0), false).queued,
+                n < 3,
+                "{n}"
             );
         }
+    }
+
+    /// The steady state holds 100 ms of frames at whatever rate they arrive, and three of a
+    /// slower stream: the frames a decoder thread held back for `gap` finds waiting.
+    #[test]
+    fn the_steady_depth_is_a_hundred_milliseconds_of_frames() {
+        for (fps, fits) in [(240u32, 24u32), (120, 12), (60, 6), (30, 3), (5, 3)] {
+            let queue = steady();
+            let start = Instant::now();
+            let mut queued = 0;
+            for n in 0..40 {
+                let pushed = queue.push(frame(start, fps, n, false), false);
+                if !pushed.queued {
+                    assert_eq!((pushed.shed, pushed.request_keyframe), (1, true), "{fps} fps");
+                    break;
+                }
+                queued += 1;
+            }
+            // The frame that arrives exactly 100 ms after the oldest is the first refused.
+            assert_eq!(queued, fits, "{fps} fps");
+        }
+    }
+
+    /// A decoder held back for 60 ms at 120 fps (seven frames) loses nothing; one that takes a
+    /// frame now and then (slower than the stream) is shed when it is 100 ms behind.
+    #[test]
+    fn a_short_gap_is_ridden_out_and_a_long_one_sheds() {
+        let queue = steady();
+        let start = Instant::now();
+        for n in 0..8 {
+            let pushed = queue.push(frame(start, 120, n, false), false);
+            assert_eq!((pushed.queued, pushed.shed, pushed.request_keyframe), (true, 0, false), "{n}");
+        }
+        // The decoder is back: it takes them in order, and the queue goes on as before.
+        for n in 0..8 {
+            assert_eq!(pop_tag(&queue), Some(n));
+        }
+        assert_eq!(queue.len(), 0);
+        // A decoder that takes one frame of every two: the oldest waiting frame ages.
+        let mut shed_at = None;
+        for n in 8..200 {
+            let pushed = queue.push(frame(start, 120, n, false), false);
+            if !pushed.queued {
+                shed_at = Some((n, queue.len()));
+                assert!(pushed.request_keyframe);
+                break;
+            }
+            if n % 2 == 0 {
+                assert!(pop_tag(&queue).is_some());
+            }
+        }
+        // 100 ms of frames behind (12 at 120 fps), not before and not later.
+        let (n, len) = shed_at.expect("a decoder slower than the stream is shed");
+        assert_eq!(len, 12, "shed at frame {n}");
+        // Gated: what is queued is still decoded, deltas are refused until a keyframe.
+        assert!(!queue.push(frame(start, 120, n + 1, false), false).queued);
+    }
+
+    /// A burst that arrives at once (the network held frames back and delivered them together)
+    /// is not a slow decoder: it is queued, up to the queue's capacity.
+    #[test]
+    fn a_burst_arriving_at_once_is_queued() {
+        let queue = steady();
+        let now = Instant::now();
+        for tag in 0..CATCH_UP as u8 {
+            assert!(queue.push(item_at(false, tag, now), false).queued, "{tag}");
+        }
+        let overflow = queue.push(item_at(false, 99, now), false);
+        assert_eq!((overflow.queued, overflow.request_keyframe), (false, true));
     }
 
     #[test]
@@ -351,10 +458,12 @@ mod tests {
     #[test]
     fn overflow_sheds_to_the_next_keyframe_and_asks_for_one_once() {
         let queue = steady();
-        assert!(!queue.push(item(true, 0), false).start_consumer);
-        assert!(!queue.push(item(false, 1), false).start_consumer);
-        queue.push(item(false, 2), false);
-        let overflow = queue.push(item(false, 3), false);
+        let start = Instant::now();
+        let late = start + DEPTH;
+        assert!(!queue.push(item_at(true, 0, start), false).start_consumer);
+        assert!(!queue.push(item_at(false, 1, start), false).start_consumer);
+        queue.push(item_at(false, 2, start), false);
+        let overflow = queue.push(item_at(false, 3, late), false);
         assert_eq!(
             (overflow.queued, overflow.shed, overflow.request_keyframe),
             (false, 1, true)
@@ -372,10 +481,11 @@ mod tests {
     #[test]
     fn a_keyframe_that_does_not_fit_replaces_the_queue() {
         let queue = steady();
+        let start = Instant::now();
         for tag in 0..3 {
-            queue.push(item(tag == 0, tag), false);
+            queue.push(item_at(tag == 0, tag, start), false);
         }
-        let key = queue.push(item(true, 9), false);
+        let key = queue.push(item_at(true, 9, start + DEPTH), false);
         assert_eq!((key.queued, key.shed), (true, 3));
         assert_eq!(pop_tag(&queue), Some(9));
         assert_eq!(pop_tag(&queue), None);

@@ -1,5 +1,6 @@
 //! What the video hub says about a stream, brought to the UI thread: the first picture (the
-//! spinner goes), a size change, a fallback to software, a decoder error. The hub calls
+//! spinner goes), a size change, a fallback to software, a decoder error, a stall ("Reconnecting…"
+//! over the last picture until the next one). The hub calls
 //! [`video_event`] from its decoder threads (the app installs it as `HubCallbacks::event`); the
 //! events cross over one channel drained by one foreground task, and [`StreamStates`] emits a
 //! keyed event per stream so only the views showing it redraw.
@@ -27,6 +28,8 @@ pub fn video_event(key: &str, event: StreamEvent) {
             log::info!("[video] {key}: {} decoder ({}, {})", codec.label(), backend.label(), path.label())
         }
         StreamEvent::BackendFailed { backend, reason } => log::warn!("[video] {key}: {} gave up, trying the next decoder: {reason}", backend.label()),
+        StreamEvent::Stalled => log::warn!("[video] {key}: no picture for {} s, reconnecting", decibell_video::STALLED_AFTER.as_secs()),
+        StreamEvent::Resumed => log::info!("[video] {key}: pictures again"),
         StreamEvent::Picture { .. } => {}
     }
     if let Some(tx) = TX.get().and_then(|m| m.lock().ok()).and_then(|g| g.clone()) {
@@ -40,6 +43,9 @@ pub struct StreamState {
     /// The newest picture's size, once one is up (the spinner goes).
     pub picture: Option<(u32, u32)>,
     pub path: Option<DecodePath>,
+    /// The stream had a picture and has had no new one for `decibell_video::STALLED_AFTER`
+    /// (`StreamVideoPlayer`'s `stalled`): the views draw [`crate::scrim::reconnecting`] over it.
+    pub stalled: bool,
 }
 
 #[derive(Default)]
@@ -77,6 +83,8 @@ impl StreamStates {
             StreamEvent::Picture { width, height } => state.picture = Some((*width, *height)),
             StreamEvent::DecoderOpened { path, .. } => state.path = Some(*path),
             StreamEvent::FellBackToSoftware { .. } => state.path = Some(DecodePath::Software),
+            StreamEvent::Stalled => state.stalled = true,
+            StreamEvent::Resumed => state.stalled = false,
             // A new decoder waits for a keyframe: the last picture stays on screen meanwhile.
             // (A decoder given up for the next in the order is the same: `DecoderOpened` follows.)
             StreamEvent::DecoderError { .. } | StreamEvent::BackendFailed { .. } | StreamEvent::DeviceLost => {}

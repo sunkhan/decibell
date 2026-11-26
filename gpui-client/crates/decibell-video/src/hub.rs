@@ -34,9 +34,13 @@ use crate::stats::{Counters, StreamStats};
 
 const RELAXED: Ordering = Ordering::Relaxed;
 
-/// A decoder thread without a frame for this long exits and frees its decoder (the stream
-/// stalled or ended without being removed). The next frame starts a new one on a keyframe.
-const IDLE_EXIT: Duration = Duration::from_secs(2);
+/// A displayed stream that had a picture and gets no new one for this long has stalled
+/// (`StreamVideoPlayer.tsx`'s `STALL_MS`: the "Reconnecting…" indicator): the views are told
+/// ([`StreamEvent::Stalled`]), the streamer is asked for a keyframe, and the decoder thread exits
+/// and frees its decoder; the next keyframe starts a new one ([`StreamEvent::Resumed`] with its
+/// first picture). No timer watches for this: it is the decoder thread's wait for its next
+/// frame, which costs nothing while frames arrive and wakes once when they stop.
+pub const STALLED_AFTER: Duration = Duration::from_secs(3);
 /// At most one keyframe request per stream in this time (the core throttles the same way).
 const KEYFRAME_REQUEST_INTERVAL_MS: u64 = 500;
 
@@ -80,6 +84,12 @@ pub enum StreamEvent {
     /// The first picture of a decoder is up, or the stream's picture size changed: what a view
     /// waits for to take its spinner down, and the aspect ratio for its layout.
     Picture { width: u32, height: u32 },
+    /// The stream had a picture and no new one came for [`STALLED_AFTER`] (the streamer's
+    /// connection, ours, or a decoder that produces nothing): the last picture stays up and the
+    /// views say "Reconnecting…". Sent once per stall.
+    Stalled,
+    /// A picture again after [`StreamEvent::Stalled`].
+    Resumed,
 }
 
 /// How the hub reaches the rest of the client. Called from decoder threads and from the thread
@@ -160,8 +170,13 @@ pub(crate) struct StreamShared {
     /// The decoders that failed for this stream (bit `DecodeBackend::index`): not tried for it
     /// again.
     denied: AtomicU8,
-    /// 0 none, 1 decode error, 2 device loss.
+    /// 0 none, 1 decode error, 2 device loss, 3 hold the decoder thread for `hold_ms`.
     fault: AtomicU8,
+    hold_ms: AtomicU32,
+    /// A picture of this stream was published since its first viewer came.
+    has_picture: AtomicBool,
+    /// [`StreamEvent::Stalled`] was sent and no picture came since.
+    stalled: AtomicBool,
     capture: CaptureCell,
     removed: AtomicBool,
 }
@@ -213,6 +228,39 @@ pub struct VideoHub {
 struct GlobalHub(VideoHub);
 impl gpui::Global for GlobalHub {}
 
+/// The app's hub, for [`shutdown`]: reachable after GPUI's app is gone.
+static PROCESS_HUB: std::sync::OnceLock<VideoHub> = std::sync::OnceLock::new();
+
+/// Ends stream playback before the process exits: every stream is stopped and the decoder
+/// threads (and a running capability probe) are waited for, up to `timeout`. Call it after
+/// the event loop has ended and before `main` returns. A decoder thread frees its decoder
+/// with calls into the GPU driver, and a driver that is already running its exit handlers on
+/// the main thread crashes under them (seen: a segfault inside NVIDIA's driver when the app
+/// quit with a 1440p120 stream playing). Returns whether everything had stopped in time.
+pub fn shutdown(timeout: Duration) -> bool {
+    let Some(hub) = PROCESS_HUB.get() else {
+        return true;
+    };
+    let streams: Vec<Arc<StreamShared>> = hub.inner.streams.write().drain().map(|(_, s)| s).collect();
+    for stream in &streams {
+        stream.removed.store(true, RELAXED);
+        stream.queue.stop();
+        stream.target.clear();
+    }
+    let started = Instant::now();
+    while hub.inner.threads.load(RELAXED) > 0 || hub.inner.probe.is_running() {
+        if started.elapsed() >= timeout {
+            log::warn!(
+                "video: {} decoder threads still running at exit",
+                hub.inner.threads.load(RELAXED)
+            );
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    true
+}
+
 impl VideoHub {
     /// The app's hub, created on first use. No FFmpeg context, thread or texture exists until a
     /// displayed stream receives its first frame.
@@ -223,6 +271,7 @@ impl VideoHub {
         let hub = VideoHub::with_backend(crate::platform::backend());
         hub.attach(cx);
         cx.set_global(GlobalHub(hub.clone()));
+        let _ = PROCESS_HUB.set(hub.clone());
         hub
     }
 
@@ -369,6 +418,9 @@ impl VideoHub {
                     last_keyframe_request_ms: AtomicU64::new(0),
                     denied: AtomicU8::new(0),
                     fault: AtomicU8::new(0),
+                    hold_ms: AtomicU32::new(0),
+                    has_picture: AtomicBool::new(false),
+                    stalled: AtomicBool::new(false),
                     capture: CaptureCell::default(),
                     removed: AtomicBool::new(false),
                 })
@@ -498,6 +550,15 @@ impl VideoHub {
     /// across runs); `done` is called from that thread, or at once when the answer is known.
     /// Call it once a window exists.
     pub fn probe_capabilities(&self, done: impl FnOnce([CodecSupport; 3]) + Send + 'static) {
+        crate::probe::start(&self.inner, Box::new(done));
+    }
+
+    /// The probe again, from nothing (Settings → Codecs' "Refresh codec capabilities", after
+    /// a driver or GPU change the key did not catch): what was given up this session is
+    /// forgotten, the kept answer and its file are discarded, every decoder is tried again.
+    pub fn reprobe_capabilities(&self, done: impl FnOnce([CodecSupport; 3]) + Send + 'static) {
+        self.inner.selector.forget();
+        self.inner.probe.discard();
         crate::probe::start(&self.inner, Box::new(done));
     }
 
@@ -641,6 +702,9 @@ struct Decoding {
     pictures: u64,
     /// The last hardware decoder's failure, until a decoder opens after it.
     hardware_failure: Option<String>,
+    /// When this thread last published a picture (or started): frames that arrive and give
+    /// no picture for [`STALLED_AFTER`] are a stall too.
+    last_picture: Instant,
 }
 
 fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
@@ -654,11 +718,21 @@ fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
         catching_up: true,
         pictures: 0,
         hardware_failure: None,
+        last_picture: Instant::now(),
     };
     let stopped = loop {
-        match stream.queue.pop(IDLE_EXIT) {
-            Popped::Item(item) => decode_one(&hub, &stream, &mut decoding, item),
-            Popped::Idle => break false,
+        match stream.queue.pop(STALLED_AFTER) {
+            Popped::Item(item) => {
+                decode_one(&hub, &stream, &mut decoding, item);
+                if decoding.last_picture.elapsed() >= STALLED_AFTER {
+                    // Frames arrive and none becomes a picture.
+                    stalled(&hub, &stream);
+                }
+            }
+            Popped::Idle => {
+                stalled(&hub, &stream);
+                break false;
+            }
             Popped::Stopped => break true,
         }
     };
@@ -672,6 +746,21 @@ fn decoder_thread(hub: Arc<HubInner>, stream: Arc<StreamShared>) {
     }
     counters.dump_trace(&stream.key);
     hub.threads.fetch_sub(1, RELAXED);
+}
+
+/// No picture for [`STALLED_AFTER`]: say so once (only a stream that had a picture stalls;
+/// one that never had one shows its spinner) and ask the streamer for a keyframe, which a live
+/// streamer answers at once (the renderer's "ping", its liveness probe).
+fn stalled(hub: &HubInner, stream: &StreamShared) {
+    if stream.has_picture.load(RELAXED)
+        && stream.viewer_count.load(RELAXED) > 0
+        && !stream.removed.load(RELAXED)
+        && !stream.stalled.swap(true, Ordering::AcqRel)
+    {
+        hub.event(stream, StreamEvent::Stalled);
+        stream.last_keyframe_request_ms.store(0, RELAXED);
+        hub.request_keyframe(stream);
+    }
 }
 
 fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, item: Item) {
@@ -688,6 +777,10 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
     let fault = stream.fault.swap(0, RELAXED);
     if fault == 2 {
         hub.backend.simulate_device_loss();
+    }
+    if fault == 3 {
+        // The test hook: this thread does not run for a while, with a frame in hand.
+        std::thread::sleep(Duration::from_millis(stream.hold_ms.load(RELAXED) as u64));
     }
 
     // A new codec, or a keyframe with a new configuration record, needs a new decoder (the
@@ -772,9 +865,15 @@ fn decode_one(hub: &HubInner, stream: &StreamShared, decoding: &mut Decoding, it
         Ok(0) => {}
         Ok(_) => {
             decoding.pictures += 1;
-            counters.frame_published(serial, arrived, handed);
+            decoding.last_picture = counters.frame_published(serial, arrived, handed);
             stream.dirty.store(true, Ordering::Release);
             hub.signal.notify();
+            if !stream.has_picture.load(RELAXED) {
+                stream.has_picture.store(true, RELAXED);
+            }
+            if stream.stalled.load(RELAXED) && stream.stalled.swap(false, Ordering::AcqRel) {
+                hub.event(stream, StreamEvent::Resumed);
+            }
             if decoding.catching_up && stream.queue.caught_up() {
                 decoding.catching_up = false;
             }
@@ -943,6 +1042,9 @@ impl Stream {
             viewers.len() == 1
         };
         if first && !self.shared.removed.load(RELAXED) {
+            // A stream that comes back on screen waits for its own first picture.
+            self.shared.has_picture.store(false, RELAXED);
+            self.shared.stalled.store(false, RELAXED);
             self.shared.queue.start();
             let callbacks = self.hub.callbacks.read().clone();
             (callbacks.interest)(&self.shared.key, true);
@@ -989,6 +1091,21 @@ impl Stream {
         self.shared
             .denied
             .store(if software { hardware } else { 0 }, RELAXED);
+    }
+
+    /// Whether the stream had a picture and has had no new one for [`STALLED_AFTER`].
+    pub fn is_stalled(&self) -> bool {
+        self.shared.stalled.load(RELAXED)
+    }
+
+    /// Makes the stream's decoder thread sleep for `gap` with its next frame in hand, as a
+    /// thread the scheduler holds back does (tests of the queue's depth).
+    #[doc(hidden)]
+    pub fn hold_decoder(&self, gap: Duration) {
+        self.shared
+            .hold_ms
+            .store(gap.as_millis() as u32, RELAXED);
+        self.shared.fault.store(3, RELAXED);
     }
 
     /// Makes the stream's decoder fail once (tests of the recovery paths).
@@ -1682,6 +1799,119 @@ mod tests {
             assert_eq!(stream.stats().fallbacks, 0);
             assert_eq!(backend.opens(DecodeBackend::VulkanVideo), 3);
         }
+    }
+
+    /// The decoder thread held back for less than the queue's depth loses nothing and asks for
+    /// nothing; held back for longer it sheds and asks for a keyframe, as it always did.
+    #[test]
+    fn a_short_starvation_is_ridden_out_and_a_long_one_sheds() {
+        use crate::dbv::{FeedOptions, Feeder};
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let hub = VideoHub::headless();
+        let stream = hub.stream("starved");
+        let _viewer = stream.viewer();
+        let mut feeder = Feeder::start(
+            hub.clone(),
+            "starved",
+            &path,
+            FeedOptions {
+                frames: None,
+                unpaced: false,
+            },
+        )
+        .unwrap();
+        hub.set_callbacks(HubCallbacks {
+            request_keyframe: Box::new({
+                let answer = feeder.keyframe_answer();
+                move |_| answer()
+            }),
+            ..Default::default()
+        });
+        wait_for("the stream to play", || stream.stats().published >= 60);
+        let before = stream.stats();
+        assert_eq!(before.dropped, 0, "the machine is too busy for a paced test");
+        // 80 ms at 60 fps: five frames arrive meanwhile, two more than the queue used to hold.
+        stream.hold_decoder(Duration::from_millis(80));
+        wait_for("the backlog to be worked off", || {
+            let stats = stream.stats();
+            stats.published >= before.published + 30 && stats.queue == 0
+        });
+        let after = stream.stats();
+        assert_eq!(
+            (after.dropped, after.keyframe_requests, after.errors),
+            (0, before.keyframe_requests, 0),
+            "a gap shorter than the queue's depth costs nothing"
+        );
+        assert_eq!(after.decoded, after.received - after.queue as u64);
+
+        // 400 ms: the queue overflows at 100 ms, the chain is broken, a keyframe is asked for
+        // and the stream goes on with it, on the same decoder. (The streamer's answer arrives
+        // while the thread is still held and overflows in turn: a second request, sent when
+        // the 500 ms between requests have passed, as with the three-frame queue.)
+        stream.hold_decoder(Duration::from_millis(400));
+        wait_for("the overflow", || stream.stats().dropped > 0);
+        wait_for("the stream to go on", || {
+            let stats = stream.stats();
+            stats.published >= after.published + 60 && stats.queue == 0
+        });
+        let end = stream.stats();
+        let asked = end.keyframe_requests - after.keyframe_requests;
+        assert!((1..=2).contains(&asked), "{asked} keyframe requests");
+        assert_eq!((end.errors, end.decoder_opens), (0, 1));
+        feeder.stop();
+    }
+
+    /// A stream that had a picture and gets no frames says so once after `STALLED_AFTER`, asks
+    /// for a keyframe, frees its decoder, and says when its next picture is up.
+    #[test]
+    fn a_stream_that_stops_stalls_once_and_resumes_with_its_next_picture() {
+        let Some(path) = stream_file("1080p60_h264.dbv") else {
+            return;
+        };
+        let hub = VideoHub::headless();
+        let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::default();
+        hub.set_callbacks(HubCallbacks {
+            event: Box::new({
+                let events = events.clone();
+                move |_, event| events.lock().push(event)
+            }),
+            ..Default::default()
+        });
+        let count = |wanted: StreamEvent| events.lock().iter().filter(|e| **e == wanted).count();
+        let stream = hub.stream("stalls");
+        let _viewer = stream.viewer();
+        let mut file = StreamFile::open(&path).unwrap();
+        push_frames(&hub, &stream, &mut file, 30);
+        wait_for("30 pictures", || stream.stats().published == 30);
+        let sent = Instant::now();
+        let requests = stream.stats().keyframe_requests;
+        assert!(!stream.is_stalled());
+        wait_for("the stall", || stream.is_stalled());
+        let waited = sent.elapsed();
+        assert!(
+            waited >= STALLED_AFTER - Duration::from_millis(50) && waited < STALLED_AFTER + Duration::from_secs(2),
+            "stalled after {waited:?}"
+        );
+        wait_for("the decoder thread to exit", || hub.decoder_threads() == 0);
+        assert_eq!(stream.stats().keyframe_requests, requests + 1);
+        // Deltas that arrive now are refused (the decoder is gone) and change nothing.
+        push_frames(&hub, &stream, &mut file, 5);
+        assert!(stream.is_stalled());
+        assert_eq!((count(StreamEvent::Stalled), count(StreamEvent::Resumed)), (1, 0));
+        // The streamer's keyframe: a new decoder, a picture, the stall is over.
+        let mut file = StreamFile::open(&path).unwrap();
+        push_frames(&hub, &stream, &mut file, 10);
+        wait_for("pictures again", || stream.stats().published == 40);
+        assert!(!stream.is_stalled());
+        assert_eq!((count(StreamEvent::Stalled), count(StreamEvent::Resumed)), (1, 1));
+        assert_eq!(stream.stats().decoder_opens, 2);
+
+        // A stream nobody displays any more does not stall.
+        drop(_viewer);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(count(StreamEvent::Stalled), 1);
     }
 
     #[test]

@@ -84,8 +84,8 @@ pub use codec::{Codec, CodecSupport, DecodeBackend, DecodePath, SkippedBackend};
 pub use core_glue::{POOL_BUFFER_BYTES, POOL_BUFFERS, POOLED_STREAMS, enable_frame_pool};
 pub use decode::{LumaRow, barcode};
 pub use hub::{
-    EncodedFrame, EventCallback, Fault, HubCallbacks, InterestCallback, KeyframeCallback, Stream,
-    StreamEvent, VideoHub, Viewer,
+    EncodedFrame, EventCallback, Fault, HubCallbacks, InterestCallback, KeyframeCallback,
+    STALLED_AFTER, Stream, StreamEvent, VideoHub, Viewer, shutdown,
 };
 pub use packet::{
     PADDING, Packet, PacketBytes, PaddedVec, copies as packet_copies, regrows as packet_regrows,

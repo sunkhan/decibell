@@ -16,7 +16,7 @@ use gpui::{
 
 use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
 use crate::dbv::{FeedOptions, Feeder};
-use crate::hub::{Fault, Stream, VideoHub};
+use crate::hub::{Fault, HubCallbacks, STALLED_AFTER, Stream, StreamEvent, VideoHub};
 use crate::screens::{Playback, Tile, file_label, stats_line};
 use crate::stats::StreamStats;
 use crate::view::Fit;
@@ -67,6 +67,16 @@ pub fn selftests() -> Vec<SelfTest> {
             name: "video-order",
             about: "each decoder failing in turn walks the order down to software, reasons recorded",
             run: |cx| Box::pin(order(cx)),
+        },
+        SelfTest {
+            name: "video-starve",
+            about: "a decoder thread held back for 60 ms at 120 fps loses nothing and is back at one frame of latency; held for 400 ms it sheds and asks for a keyframe",
+            run: |cx| Box::pin(starve(cx)),
+        },
+        SelfTest {
+            name: "video-stall",
+            about: "a stream that stops sending says so after 3 s without a timer or a frame, and resumes with its next picture",
+            run: |cx| Box::pin(stall(cx)),
         },
         SelfTest {
             name: "video-fastpath",
@@ -1336,6 +1346,321 @@ async fn switch(cx: TestCx) -> Result<()> {
         );
         Ok(())
     })();
+    stage.close()?;
+    result
+}
+
+/// What the queue did around one gap of the decoder thread, sampled every half millisecond
+/// from a thread of its own (the UI thread's sleeps are too coarse for it).
+struct Gap {
+    /// The deepest the queue got.
+    max_queue: usize,
+    /// Frames that arrived between the end of the gap and the first moment the queue was
+    /// empty again (the stream back at its one-frame latency). `None`: it never was.
+    frames_to_baseline: Option<u64>,
+    /// And how long that took.
+    back_after: Duration,
+}
+
+fn watch_gap(stream: &Stream, gap: Duration, watch: Duration) -> std::thread::JoinHandle<Gap> {
+    let stream = stream.clone();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut result = Gap {
+            max_queue: 0,
+            frames_to_baseline: None,
+            back_after: Duration::ZERO,
+        };
+        let mut received_at_end = None;
+        while started.elapsed() < watch {
+            let stats = stream.stats();
+            result.max_queue = result.max_queue.max(stats.queue);
+            if started.elapsed() >= gap {
+                let at_end = *received_at_end.get_or_insert(stats.received);
+                if stats.queue == 0 && result.frames_to_baseline.is_none() {
+                    result.frames_to_baseline = Some(stats.received - at_end);
+                    result.back_after = started.elapsed() - gap;
+                }
+            }
+            std::thread::sleep(Duration::from_micros(500));
+        }
+        result
+    })
+}
+
+/// The queue's depth in time (docs/video-design.md §0.4): the decoder thread of a 1440p120
+/// stream is held back as a busy machine holds it back. 60 ms (seven frames, more than twice
+/// the three the queue used to hold): nothing is shed, no keyframe is asked for, the backlog
+/// is decoded at the decoder's speed and the stream is back at its one-frame latency within a
+/// few frames. 400 ms: the queue overflows at 100 ms, sheds and asks for a keyframe as it
+/// always did, and the stream goes on with the streamer's answer.
+async fn starve(cx: TestCx) -> Result<()> {
+    let Some(files) = streams(&cx, &["1440p120_hevc.dbv"]) else {
+        return Ok(());
+    };
+    let stage = Stage::open(&cx, &["selftest-starve".into()], &files, false)?;
+    let stream = stage.streams[0].clone();
+    let result = async {
+        cx.settle().await?;
+        let mut feeder = feed(&stage, 0, &files[0], None)?;
+        // The streamer: a keyframe request is answered with a keyframe.
+        stage.hub.set_callbacks(HubCallbacks {
+            request_keyframe: Box::new({
+                let answer = feeder.keyframe_answer();
+                move |_| answer()
+            }),
+            ..Default::default()
+        });
+        stage
+            .wait("the stream to play", Duration::from_secs(20), || {
+                let stats = stream.stats();
+                stats.published >= 360 && stats.queue == 0
+            })
+            .await?;
+        let start = stream.stats();
+        ensure!(
+            start.dropped == 0,
+            "{} frames dropped before the test began: the machine is too busy for it",
+            start.dropped
+        );
+        cx.log(format_args!(
+            "1440p120 HEVC on {}: decode p50 {:.2} ms, arrival to picture p50 {:.2} ms",
+            start.backend.map_or("?", DecodeBackend::label),
+            start.decode_ms_p50,
+            start.latency_ms_p50
+        ));
+
+        // Short gaps: ridden out.
+        const SHORT: Duration = Duration::from_millis(60);
+        // Back at an empty queue within this many frames after the gap (100 ms of them).
+        const BASELINE_WITHIN: u64 = 12;
+        for round in 1..=3 {
+            let before = stream.stats();
+            let watching = watch_gap(&stream, SHORT, Duration::from_millis(400));
+            stream.hold_decoder(SHORT);
+            cx.sleep(Duration::from_millis(500)).await;
+            let gap = watching
+                .join()
+                .map_err(|_| anyhow::anyhow!("the sampling thread panicked"))?;
+            let after = stream.stats();
+            cx.log(format_args!(
+                "60 ms gap {round}: queue up to {}, {} dropped, {} keyframe requests, {} pictures overtaken; queue empty again {:.1} ms and {} frames after the gap",
+                gap.max_queue,
+                after.dropped - before.dropped,
+                after.keyframe_requests - before.keyframe_requests,
+                after.replaced - before.replaced,
+                gap.back_after.as_secs_f64() * 1000.0,
+                gap.frames_to_baseline.map_or("?".into(), |n| n.to_string()),
+            ));
+            ensure!(
+                gap.max_queue >= 5,
+                "the queue only got {} deep: the decoder thread was not held",
+                gap.max_queue
+            );
+            ensure!(
+                after.dropped == before.dropped,
+                "a 60 ms gap shed {} frames",
+                after.dropped - before.dropped
+            );
+            ensure!(
+                after.keyframe_requests == before.keyframe_requests,
+                "a 60 ms gap asked for a keyframe"
+            );
+            ensure!(after.errors == 0, "{} decoder errors", after.errors);
+            let Some(frames) = gap.frames_to_baseline else {
+                bail!("the queue was never empty again in the 340 ms after the gap");
+            };
+            ensure!(
+                frames <= BASELINE_WITHIN,
+                "back at one frame of latency only {frames} frames after the gap (at most {BASELINE_WITHIN})"
+            );
+            ensure!(
+                after.decoded - before.decoded == after.received - before.received - after.queue as u64 + before.queue as u64,
+                "frames went missing: {} received, {} decoded",
+                after.received - before.received,
+                after.decoded - before.decoded
+            );
+        }
+
+        // A long gap: shed at the queue's depth, a keyframe asked for, the stream goes on.
+        let before = stream.stats();
+        let watching = watch_gap(&stream, Duration::from_millis(400), Duration::from_millis(1500));
+        stream.hold_decoder(Duration::from_millis(400));
+        cx.sleep(Duration::from_millis(1600)).await;
+        let gap = watching
+            .join()
+            .map_err(|_| anyhow::anyhow!("the sampling thread panicked"))?;
+        stage
+            .wait("the stream to go on after the long gap", Duration::from_secs(10), || {
+                let stats = stream.stats();
+                stats.published >= before.published + 240 && stats.queue == 0
+            })
+            .await?;
+        let after = stream.stats();
+        let asked = after.keyframe_requests - before.keyframe_requests;
+        cx.log(format_args!(
+            "400 ms gap: queue up to {} (100 ms of frames), {} frames shed, {asked} keyframe requests; playing again on the same decoder ({} opens)",
+            gap.max_queue,
+            after.dropped - before.dropped,
+            after.decoder_opens,
+        ));
+        ensure!(
+            after.dropped > before.dropped,
+            "a 400 ms gap shed nothing"
+        );
+        // 100 ms at 120 fps is 12 frames; a frame more or less with the arrival jitter.
+        ensure!(
+            (10..=14).contains(&gap.max_queue),
+            "the queue held {} frames when it overflowed (100 ms at 120 fps is 12)",
+            gap.max_queue
+        );
+        ensure!(
+            (1..=2).contains(&asked),
+            "{asked} keyframe requests for one long gap"
+        );
+        ensure!(
+            (after.errors, after.decoder_opens) == (0, before.decoder_opens),
+            "the decoder did not survive: {} errors, {} opens",
+            after.errors,
+            after.decoder_opens
+        );
+        feeder.stop();
+        Ok(())
+    }
+    .await;
+    stage.hub.set_callbacks(HubCallbacks::default());
+    stage.close()?;
+    result
+}
+
+/// A stream whose frames stop arriving: after `STALLED_AFTER` the hub says so (once), asks for
+/// a keyframe and frees the decoder; nothing is drawn and no thread runs while it waits; the
+/// streamer's next keyframe brings the picture back and the hub says that too.
+async fn stall(cx: TestCx) -> Result<()> {
+    let Some(files) = streams(&cx, &["1080p60_h264.dbv"]) else {
+        return Ok(());
+    };
+    let stage = Stage::open(&cx, &["selftest-stall".into()], &files, false)?;
+    let stream = stage.streams[0].clone();
+    let events: std::sync::Arc<parking_lot::Mutex<Vec<StreamEvent>>> = Default::default();
+    let result = async {
+        cx.settle().await?;
+        let mut feeder = feed(&stage, 0, &files[0], None)?;
+        stage.hub.set_callbacks(HubCallbacks {
+            request_keyframe: Box::new({
+                let answer = feeder.keyframe_answer();
+                move |_| answer()
+            }),
+            event: Box::new({
+                let events = events.clone();
+                move |_, event| events.lock().push(event)
+            }),
+            ..Default::default()
+        });
+        let count = |wanted: &StreamEvent| events.lock().iter().filter(|e| *e == wanted).count();
+        stage
+            .wait("the stream to play", Duration::from_secs(20), || {
+                stream.stats().presented >= 120
+            })
+            .await?;
+        ensure!(!stream.is_stalled(), "stalled while playing");
+
+        // The streamer stops sending.
+        feeder.pause(true);
+        let paused = Instant::now();
+        let requests = stream.stats().keyframe_requests;
+        stage
+            .wait("the stall", STALLED_AFTER + Duration::from_secs(3), || {
+                stream.is_stalled()
+            })
+            .await?;
+        let after = paused.elapsed();
+        cx.log(format_args!(
+            "no frames: stalled after {:.2} s (the threshold is {} s), {} keyframe request",
+            after.as_secs_f64(),
+            STALLED_AFTER.as_secs(),
+            stream.stats().keyframe_requests - requests
+        ));
+        ensure!(
+            after >= STALLED_AFTER - Duration::from_millis(100),
+            "stalled after only {after:?}"
+        );
+        ensure!(
+            count(&StreamEvent::Stalled) == 1,
+            "{} Stalled events",
+            count(&StreamEvent::Stalled)
+        );
+        ensure!(
+            stream.stats().keyframe_requests == requests + 1,
+            "the stall did not ask for a keyframe"
+        );
+        stage
+            .wait("the decoder thread to exit", Duration::from_secs(2), || {
+                stage.hub.decoder_threads() == 0
+            })
+            .await?;
+        ensure!(
+            stream.picture_size() == Some((1920, 1080)),
+            "the last picture is gone"
+        );
+        // Stalled costs nothing: no frame, no decoder thread, for as long as it lasts.
+        let mut quiet = None;
+        for _ in 0..3 {
+            let before = stage.frames()?;
+            cx.sleep(Duration::from_secs(2)).await;
+            let frames = stage.frames()?.since(before);
+            quiet = Some(frames);
+            if frames.drawn == 0 && frames.presented == 0 {
+                break;
+            }
+        }
+        let quiet = quiet.context("no measurement")?;
+        cx.log(format_args!(
+            "stalled for 2 s: {} frames drawn, {} presented, {} decoder threads, {} Stalled events in all",
+            quiet.drawn,
+            quiet.presented,
+            stage.hub.decoder_threads(),
+            count(&StreamEvent::Stalled)
+        ));
+        ensure!(
+            quiet.drawn == 0 && quiet.presented == 0,
+            "the stalled stream's window drew {} and presented {} frames in 2 s",
+            quiet.drawn,
+            quiet.presented
+        );
+        ensure!(count(&StreamEvent::Stalled) == 1, "the stall was reported again");
+
+        // The streamer is back: its frames are refused until the keyframe that is asked for.
+        let published = stream.stats().published;
+        feeder.pause(false);
+        let resumed = Instant::now();
+        stage
+            .wait("pictures again", Duration::from_secs(5), || !stream.is_stalled())
+            .await?;
+        cx.log(format_args!(
+            "frames again: a picture {:.0} ms later, {} decoder opens in all",
+            resumed.elapsed().as_secs_f64() * 1000.0,
+            stream.stats().decoder_opens
+        ));
+        ensure!(
+            count(&StreamEvent::Resumed) == 1,
+            "{} Resumed events",
+            count(&StreamEvent::Resumed)
+        );
+        stage
+            .wait("the stream to play again", Duration::from_secs(5), || {
+                stream.stats().published >= published + 60
+            })
+            .await?;
+        ensure!(
+            count(&StreamEvent::Stalled) == 1 && !stream.is_stalled(),
+            "stalled again while playing"
+        );
+        feeder.stop();
+        Ok(())
+    }
+    .await;
+    stage.hub.set_callbacks(HubCallbacks::default());
     stage.close()?;
     result
 }

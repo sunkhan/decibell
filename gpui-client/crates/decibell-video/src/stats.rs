@@ -244,7 +244,8 @@ impl Counters {
         }
     }
 
-    pub fn frame_published(&self, serial: u64, arrived: Instant, handed: Instant) {
+    /// Returns the time of publication.
+    pub fn frame_published(&self, serial: u64, arrived: Instant, handed: Instant) -> Instant {
         self.published.fetch_add(1, RELAXED);
         let now = Instant::now();
         self.decode
@@ -255,6 +256,7 @@ impl Counters {
         if entry.serial.load(RELAXED) == serial {
             entry.published.store(self.ns_of(now), RELAXED);
         }
+        now
     }
 
     /// Called on the render thread the first time a rendered frame draws picture `serial`.
