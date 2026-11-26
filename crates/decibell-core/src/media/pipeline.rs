@@ -1569,6 +1569,20 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
     }
 }
 
+/// Start `pcm` (interleaved) as a 10 ms crossfade out of `cut`, the frame
+/// that was dropped before it: `cut` continues the last played frame, so the
+/// wave stays whole across the dropped audio.
+pub(crate) fn crossfade_in(cut: &[i16], pcm: &mut [i16], channels: usize) {
+    const XFADE: usize = 480; // 10 ms at 48 kHz
+    for i in 0..XFADE {
+        let w = (i + 1) as f32 / XFADE as f32;
+        for c in 0..channels {
+            let k = i * channels + c;
+            pcm[k] = (cut[k] as f32 * (1.0 - w) + pcm[k] as f32 * w) as i16;
+        }
+    }
+}
+
 /// The stream-audio playback resampler (48 kHz stereo → the device that
 /// plays stream audio) with its buffers.
 pub(crate) struct StreamOut {
@@ -1579,11 +1593,14 @@ pub(crate) struct StreamOut {
     // Reusable resampler input chunks (see peer.rs resamp_scratch).
     scratch_l: Vec<f64>,
     scratch_r: Vec<f64>,
+    /// The stream ring was emptied (a device switch): the next frame played
+    /// starts playback again and fades in.
+    restart: bool,
 }
 
 impl StreamOut {
     pub fn new(rate: u32) -> Self {
-        let mut s = StreamOut { resampler: None, accum_l: Vec::new(), accum_r: Vec::new(), scratch_l: Vec::new(), scratch_r: Vec::new() };
+        let mut s = StreamOut { resampler: None, accum_l: Vec::new(), accum_r: Vec::new(), scratch_l: Vec::new(), scratch_r: Vec::new(), restart: false };
         if rate != SAMPLE_RATE {
             log::info!("[pipeline] Playback stream resampler: {}Hz → {}Hz (stereo)", SAMPLE_RATE, rate);
         }
@@ -1596,9 +1613,12 @@ impl StreamOut {
         self.resampler = if rate == SAMPLE_RATE { None } else { Some(make_sinc_resampler(SAMPLE_RATE, rate, 480, 2)) };
     }
 
+    /// The stream ring was emptied with what is buffered here: playback
+    /// starts over.
     pub fn clear_accum(&mut self) {
         self.accum_l.clear();
         self.accum_r.clear();
+        self.restart = true;
     }
 }
 
@@ -1641,6 +1661,8 @@ pub(crate) fn drain_peer_stream(peer: &mut PeerAudio, cx: &mut StreamDrain<'_>) 
 
             let frame = peer.stream_jitter.drain();
             if frame == Frame::Idle {
+                // Nothing to play: what comes next starts from silence.
+                peer.stream_onset_pending = true;
                 if !stream_ring_paced { peer.stream_drain_time = drain_now; }
                 break;
             }
@@ -1651,19 +1673,61 @@ pub(crate) fn drain_peer_stream(peer: &mut PeerAudio, cx: &mut StreamDrain<'_>) 
                 Frame::Lost | Frame::Expand => decoder.decode(&[], &mut pcm).is_ok(), // PLC
                 Frame::Idle => unreachable!(),
             };
+            let was_expand = frame == Frame::Expand;
             if let Frame::Packet(data) = frame {
                 peer.stream_jitter.recycle(data);
             }
             if !decode_ok { continue; }
+            // The stream's packets stopped (a stall, or the stream ended
+            // without a word): the concealment fades to silence across the
+            // episode, as voice's does, instead of repeating at level until
+            // it is cut off.
+            if was_expand {
+                let level = |k: f32| (1.0 - k / (super::jitter::MAX_EXPAND_FRAMES as f32 + 1.0)).powi(2);
+                let k = peer.stream_jitter.expand_index() as f32;
+                let (from, to) = (level(k - 1.0), level(k));
+                let n = STEREO_FRAME_SIZE as f32;
+                for (i, lr) in pcm.chunks_exact_mut(2).enumerate() {
+                    let g = from + (to - from) * ((i + 1) as f32 / n);
+                    lr[0] = (lr[0] as f32 * g) as i16;
+                    lr[1] = (lr[1] as f32 * g) as i16;
+                }
+            }
             let quiet = {
                 let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
                 let rms = (sum_sq / pcm.len() as f64).sqrt() as f32;
                 rms < 32768.0 * 0.0056 // ≈ -45 dBFS
             };
             if peer.stream_jitter.should_drop_excess(quiet) {
+                // Cut to catch up. Kept (the first of a run: it is what the
+                // last played frame runs into) so the next played frame can
+                // start as a crossfade out of it; butting that frame against
+                // the last played one is a step in the wave.
+                if !peer.stream_cut_held {
+                    peer.stream_cut = pcm;
+                    peer.stream_cut_held = true;
+                }
                 if !stream_ring_paced { peer.stream_drain_time -= frame_dur; }
                 continue;
             }
+            let ring_empty = stream_prod.lock().map(|p| p.occupied_len() == 0).unwrap_or(false);
+            if (peer.stream_onset_pending && ring_empty) || cx.out.restart {
+                // Playback starts (the stream's first audio, after a pause,
+                // on a new device): the whole first frame fades in, as a
+                // talkspurt's does. A stream's audio starts wherever its
+                // wave happens to be.
+                let n = STEREO_FRAME_SIZE as f32;
+                for (i, lr) in pcm.chunks_exact_mut(2).enumerate() {
+                    let g = i as f32 / n;
+                    lr[0] = (lr[0] as f32 * g) as i16;
+                    lr[1] = (lr[1] as f32 * g) as i16;
+                }
+            } else if peer.stream_cut_held {
+                crossfade_in(&peer.stream_cut, &mut pcm, 2);
+            }
+            peer.stream_cut_held = false;
+            peer.stream_onset_pending = false;
+            cx.out.restart = false;
             if cx.out.resampler.is_none() {
                 // Output device is 48kHz — push directly
                 if let Ok(mut prod) = stream_prod.lock() {

@@ -157,9 +157,10 @@ pub(crate) struct Rx {
     pub user_volumes: HashMap<String, f32>,
     pub deafened: bool,
     enc: OpusEncoder,
+    sent: Vec<Vec<u8>>,
     pub step: usize,
     t0: Instant,
-    event_tx: mpsc::Sender<super::pipeline::VoiceEvent>,
+    pub event_tx: mpsc::Sender<super::pipeline::VoiceEvent>,
     _event_rx: mpsc::Receiver<super::pipeline::VoiceEvent>,
     /// What every device so far played, in order, with 10 ms of silence
     /// where one closed and the next opened.
@@ -186,6 +187,7 @@ impl Rx {
             user_volumes: HashMap::new(),
             deafened: false,
             enc: OpusEncoder::new(64_000).unwrap(),
+            sent: Vec::new(),
             step: 0,
             t0: Instant::now(),
             event_tx,
@@ -206,7 +208,8 @@ impl Rx {
     }
 
     /// The peer's packet for this step: 20 ms of the tone, continuous across
-    /// steps.
+    /// steps. Encoded every step (the encoder's state runs on whether or not
+    /// the packet arrives) and kept, so a test can deliver one late.
     fn packet(&mut self) -> Vec<u8> {
         let mut frame = [0i16; FRAME_SIZE];
         for (i, s) in frame.iter_mut().enumerate() {
@@ -217,7 +220,17 @@ impl Rx {
         let n = self.enc.encode(&frame, &mut opus).unwrap();
         let mut flagged = vec![0u8];
         flagged.extend_from_slice(&opus[..n]);
-        UdpAudioPacket::new_audio(PEER, self.step as u16, &flagged).unwrap().to_bytes()
+        let pkt = UdpAudioPacket::new_audio(PEER, self.step as u16, &flagged).unwrap().to_bytes();
+        self.sent.push(pkt.clone());
+        pkt
+    }
+
+    /// The packet of an earlier step arrives now.
+    pub(crate) fn late(&mut self, step: usize) {
+        let now = self.now();
+        let mut pkt = self.sent[step].clone();
+        let rx = VoiceRx { ring: None, self_key: &peer_key("9"), output_rate: 48_000, event_tx: &self.event_tx };
+        on_voice_datagram(&mut pkt, &rx, &mut self.peers, &move || now);
     }
 
     /// One 20 ms step of the pipeline's loop and the device's clock.
@@ -438,3 +451,109 @@ fn a_run_of_lost_frames_resets_without_a_step() {
         assert_clean(&heard, 1.0, &format!("{lost} frames lost from step {from}"));
     }
 }
+
+// ── Stream audio ─────────────────────────────────────────────────────────────
+
+/// A watched stream's audio received as the pipeline receives it (stereo
+/// Opus into the stream jitter buffer, `drain_peer_stream` into the stream
+/// ring) and played by a device with stream audio in its mix.
+struct StreamRx {
+    rx: Rx,
+    enc: super::codec::StereoOpusEncoder,
+    out: super::pipeline::StreamOut,
+    render_fifo: std::collections::VecDeque<[f32; FRAME_SIZE]>,
+    /// Packets held back by the network, delivered together later.
+    held: Vec<Vec<u8>>,
+}
+
+const STREAMER: &str = "4712";
+
+impl StreamRx {
+    fn new() -> Self {
+        super::watch_stream_add(STREAMER);
+        StreamRx {
+            rx: Rx::new(),
+            enc: super::codec::StereoOpusEncoder::new(128_000).unwrap(),
+            out: super::pipeline::StreamOut::new(48_000),
+            render_fifo: Default::default(),
+            held: Vec::new(),
+        }
+    }
+
+    /// One 20 ms step. `hold`: this step's packet is kept back; `release`:
+    /// everything kept back arrives now, before this step's own.
+    fn tick(&mut self, hold: bool, release: bool) {
+        let rx = &mut self.rx;
+        let now = rx.now();
+        let mut pcm = [0i16; 2 * FRAME_SIZE];
+        for i in 0..FRAME_SIZE {
+            let s = talker((rx.step * FRAME_SIZE + i) as f64 / 48_000.0);
+            pcm[2 * i] = s;
+            pcm[2 * i + 1] = s;
+        }
+        let mut opus = [0u8; MAX_OPUS_FRAME_SIZE];
+        let n = self.enc.encode(&pcm, &mut opus).unwrap();
+        let pkt = UdpAudioPacket::new_stream_audio(STREAMER, rx.step as u16, &opus[..n]).unwrap().to_bytes();
+        let mut arriving = Vec::new();
+        if release {
+            arriving.append(&mut self.held);
+        }
+        if hold {
+            self.held.push(pkt);
+        } else {
+            arriving.push(pkt);
+        }
+        for mut pkt in arriving {
+            let vrx = VoiceRx { ring: None, self_key: &peer_key("9"), output_rate: 48_000, event_tx: &rx.event_tx };
+            on_voice_datagram(&mut pkt, &vrx, &mut rx.peers, &move || now);
+        }
+        let low_water = 480 + 480;
+        for peer in rx.peers.values_mut() {
+            super::pipeline::drain_peer_stream(peer, &mut super::pipeline::StreamDrain {
+                now,
+                ring_paced: true,
+                low_water,
+                prime: low_water.div_ceil(FRAME_SIZE) + 1,
+                stereo: false,
+                volume: 1.0,
+                aec_enabled: false,
+                prod: &rx.stream_prod,
+                out: &mut self.out,
+                render_fifo: &mut self.render_fifo,
+            });
+        }
+        rx.device.callback();
+        rx.device.callback();
+        rx.step += 1;
+    }
+}
+
+/// Audit 9: stream audio. Its start (and its restart after the stream's
+/// packets stopped for a while) fades in; a network stall ends in a faded
+/// concealment; and when the burst that follows a stall leaves the buffer
+/// more than 60 ms over its target, the frames cut to catch up are
+/// crossfaded into what follows instead of spliced wave-to-wave.
+#[test]
+fn stream_audio_starts_stalls_and_catches_up_without_a_step() {
+    let _one = STREAM_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    // (the stall's first step, its length, whether its packets arrive late
+    // in a burst or never)
+    for (from, len, burst) in [(60, 10, true), (61, 12, true), (63, 14, true), (60, 10, false), (62, 30, false)] {
+        let mut s = StreamRx::new();
+        for _ in 0..160 {
+            let step = s.rx.step;
+            let stalled = (from..from + len).contains(&step);
+            s.tick(stalled, burst && step == from + len);
+        }
+        let heard = s.rx.heard();
+        let dropped = s.rx.peers[&peer_key(STREAMER)].stream_jitter.dropped_frames;
+        println!("stall of {len} from step {from}, burst {burst}: {dropped} frames cut to catch up");
+        assert!(!burst || dropped > 0, "the burst was cut down to the target");
+        assert!(heard[heard.len() - 9_600..].iter().any(|v| v.abs() > 0.15), "the stream's audio plays again");
+        assert_clean(&heard, 1.0, &format!("stream stall of {len} from step {from} (burst {burst})"));
+    }
+    super::watch_stream_remove(STREAMER);
+}
+
+/// The watch set is process-wide.
+static STREAM_TESTS: Mutex<()> = Mutex::new(());

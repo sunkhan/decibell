@@ -14,7 +14,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb, traits::{Observer, Split}};
 use rubato::{Resampler, SincFixedOut};
 
 use super::audio_device::{make_sinc_resampler, soft_clip};
-use super::codec::{OpusDecoder, StereoOpusDecoder, FRAME_SIZE, SAMPLE_RATE};
+use super::codec::{OpusDecoder, StereoOpusDecoder, FRAME_SIZE, SAMPLE_RATE, STEREO_FRAME_SAMPLES};
 use super::jitter::JitterBuffer;
 use super::speaking::SpeakingDetector;
 
@@ -73,6 +73,13 @@ pub struct PeerAudio {
     pub stream_audio_decoder: Option<StereoOpusDecoder>,
     pub stream_jitter: JitterBuffer,
     pub stream_drain_time: Instant,
+    /// The stream's audio is not playing (not started, or its jitter buffer
+    /// went idle): the next frame into an empty ring fades in.
+    pub stream_onset_pending: bool,
+    /// A frame cut to catch up with the stream (the first of a run), for the
+    /// crossfade into the next played one; valid while `stream_cut_held`.
+    pub stream_cut: [i16; STEREO_FRAME_SAMPLES],
+    pub stream_cut_held: bool,
 
     /// Producer into this peer's voice ring. Consumed by output callback.
     prod: HeapProd<i16>,
@@ -118,6 +125,9 @@ impl PeerAudio {
             stream_audio_decoder: None,
             stream_jitter: JitterBuffer::new(),
             stream_drain_time: now,
+            stream_onset_pending: true,
+            stream_cut: [0; STEREO_FRAME_SAMPLES],
+            stream_cut_held: false,
             prod,
             cons,
             resampler,
