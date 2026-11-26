@@ -2,7 +2,9 @@
 //! encoder (`libsvtav1`, the screen share of a machine with no working hardware encoder) and
 //! the software decoders (`h264`, `hevc`, `libdav1d` for AV1: the stream of a machine with no
 //! working hardware decoder). The client has no Chromium to fall back to (CLAUDE.md, "Video
-//! codecs"), so a build that lacks them is missing a feature, not slower.
+//! codecs"), so a build that lacks them is missing a feature, not slower. The same for what
+//! plays video and audio attachments (`decibell-media`; its codec matrix is
+//! `docs/media-design.md` §2): the demuxers, VP8 / VP9 and the audio decoders.
 //!
 //! - Linux: the static prefix pkg-config names (`gpui-client/vendor/ffmpeg`, built by
 //!   `tools/build-ffmpeg.sh`): the archive index of its `libavcodec.a` must define the four
@@ -25,6 +27,29 @@ const REQUIRED: [(&str, &str); 4] = [
     ("ff_libdav1d_decoder", "the AV1 software decoder (libdav1d)"),
     ("ff_h264_decoder", "the H.264 software decoder (h264)"),
     ("ff_hevc_decoder", "the HEVC software decoder (hevc)"),
+];
+
+/// What attachment playback opens, in libavcodec.
+const MEDIA_CODECS: [(&str, &str); 8] = [
+    ("ff_vp8_decoder", "the VP8 decoder"),
+    ("ff_vp9_decoder", "the VP9 decoder"),
+    ("ff_aac_decoder", "the AAC decoder"),
+    ("ff_mp3float_decoder", "the MP3 decoder"),
+    ("ff_opus_decoder", "the Opus decoder"),
+    ("ff_vorbis_decoder", "the Vorbis decoder"),
+    ("ff_flac_decoder", "the FLAC decoder"),
+    ("ff_pcm_s16le_decoder", "the PCM decoders"),
+];
+
+/// And in libavformat.
+const MEDIA_DEMUXERS: [(&str, &str); 7] = [
+    ("ff_mov_demuxer", "the MP4 / MOV demuxer"),
+    ("ff_matroska_demuxer", "the Matroska / WebM demuxer"),
+    ("ff_ogg_demuxer", "the Ogg demuxer"),
+    ("ff_mp3_demuxer", "the MP3 demuxer"),
+    ("ff_wav_demuxer", "the WAV demuxer"),
+    ("ff_flac_demuxer", "the FLAC demuxer"),
+    ("ff_aac_demuxer", "the ADTS AAC demuxer"),
 ];
 
 fn main() {
@@ -71,16 +96,34 @@ fn linux() {
         Ok(symbols) => symbols,
         Err(e) => fail(format!("{}: {e}", archive.display())),
     };
-    let missing: Vec<&str> = REQUIRED
+    let mut missing: Vec<&str> = REQUIRED
         .iter()
+        .chain(MEDIA_CODECS.iter())
         .filter(|(symbol, _)| !symbols.iter().any(|s| s == symbol))
         .map(|(_, what)| *what)
         .collect();
+    // Attachment playback: the demuxers, and the resampler beside them.
+    let lib = archive.parent().unwrap_or(Path::new("."));
+    let avformat = lib.join("libavformat.a");
+    println!("cargo::rerun-if-changed={}", avformat.display());
+    match archive_symbols(&avformat) {
+        Ok(symbols) => missing.extend(
+            MEDIA_DEMUXERS
+                .iter()
+                .filter(|(symbol, _)| !symbols.iter().any(|s| s == symbol))
+                .map(|(_, what)| *what),
+        ),
+        Err(e) => fail(format!("{}: {e}", avformat.display())),
+    }
+    if !lib.join("libswresample.a").is_file() {
+        missing.push("libswresample");
+    }
     if !missing.is_empty() {
         fail(format!(
             "the FFmpeg in {} lacks {}: rebuild it with gpui-client/tools/build-ffmpeg.sh \
              (a machine without a working hardware encoder / decoder would have no screen share / \
-             no picture)",
+             no picture, and attachments of the missing formats would not play; then \
+             `cargo clean -p ffmpeg-sys-next` in this target directory)",
             archive
                 .parent()
                 .and_then(Path::parent)
@@ -168,7 +211,9 @@ fn windows() {
             database.display()
         )),
     };
-    let missing: Vec<&str> = ["svt-av1", "dav1d"]
+    // `avformat` and `swresample` are attachment playback's (vcpkg's FFmpeg is not built
+    // with --disable-everything: with them it has every demuxer and decoder of the matrix).
+    let missing: Vec<&str> = ["svt-av1", "dav1d", "avformat", "swresample"]
         .into_iter()
         .filter(|f| !features.iter().any(|have| have == f))
         .collect();

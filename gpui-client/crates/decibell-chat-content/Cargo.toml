@@ -29,6 +29,8 @@ decibell-model.workspace = true
 decibell-common.workspace = true
 decibell-shell.workspace = true
 decibell-chat.workspace = true
+decibell-video.workspace = true
+decibell-media.workspace = true
 decibell-attachments = { path = "../decibell-attachments" }
 decibell-unfurl = { path = "../decibell-unfurl" }
 decibell-richtext = { path = "../decibell-richtext" }

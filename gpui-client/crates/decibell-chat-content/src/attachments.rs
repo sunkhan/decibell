@@ -290,6 +290,11 @@ impl AttachmentSlot {
             let (a, v) = (redraw(media_lists.clone()), redraw(media_lists.clone()));
             subscriptions.push(cx.observe(&model.chat.audio, move |_, cx| a(cx)));
             subscriptions.push(cx.observe(&model.chat.video, move |_, cx| v(cx)));
+            if let Some(playback) = crate::playback::Playback::global(cx) {
+                // The playing video's controls and time, its status, the "Paused at" labels.
+                let p = redraw(media_lists.clone());
+                subscriptions.push(cx.observe(&playback, move |_, cx| p(cx)));
+            }
             let s = redraw(media_lists.clone());
             let mut was = { let v = model.settings.read(cx).get(); (v.media_audio_volume, v.media_audio_muted) };
             subscriptions.push(cx.observe(&model.settings, move |settings, cx| {
@@ -387,6 +392,18 @@ impl RowSlot for AttachmentSlot {
             self.media_lists.borrow_mut().insert(list);
         } else {
             self.media_lists.borrow_mut().remove(&list);
+        }
+        if let Some(playback) = crate::playback::Playback::global(cx) {
+            // A playing attachment whose row this list does not draw now shows nothing: its
+            // player decodes on without pictures, and its time is not mirrored.
+            let (video, audio) = playback.read(cx).active_ids();
+            let drawn = |id: Option<i64>| {
+                id.map(|id| near.iter().enumerate().any(|(i, m)| visible.contains(&i) && m.attachments.iter().any(|a| a.id == id)))
+            };
+            let (video, audio) = (drawn(video), drawn(audio));
+            if video.is_some() || audio.is_some() {
+                playback.update(cx, |playback, cx| playback.set_visible(video, audio, cx));
+            }
         }
         let mut wants = Vec::new();
         let mut keys = Vec::new();
@@ -661,7 +678,8 @@ fn video_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
     let inner = cx.theme().radius_lg - px(1.);
     let surface = video_surface(message, server, a, w - 2., poster, false, Corners { top_left: inner, top_right: inner, ..Corners::default() }, space, style, cx);
     let theme = cx.theme();
-    let bar_meta = format_file_size(a.size_bytes);
+    // `metaRight`: where it was left, else its size.
+    let bar_meta = crate::playback::paused_label(&message.channel, a.id, cx).unwrap_or_else(|| format_file_size(a.size_bytes));
     div()
         .absolute()
         .left(px(0.))
@@ -717,6 +735,10 @@ fn video_surface(
     style: &Rc<ContentStyle>,
     cx: &mut App,
 ) -> AnyElement {
+    // Playing: the picture and its controls take the box (`PersistentVideoLayer`).
+    if let Some(stage) = crate::playback::video_stage(a.id, server.map(|server| (server, a.clone())), corners, false, style, cx) {
+        return stage;
+    }
     let theme = cx.theme();
     let black = gpui::black();
     let key = server
@@ -929,7 +951,9 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                         .flex()
                         .items_center()
                         .child(div().absolute().left_0().right_0().h(px(4.)).rounded_full().bg(theme.color_bg_lighter))
-                        .child(div().absolute().left_0().h(px(4.)).w(gpui::relative(progress)).rounded_full().bg(theme.color_accent)),
+                        .child(div().absolute().left_0().h(px(4.)).w(gpui::relative(progress)).rounded_full().bg(theme.color_accent))
+                        // `onScrubDown`: the active attachment's, once its duration is known.
+                        .children(crate::playback::audio_scrub(a.id, cx)),
                 )
                 .child(div().flex_none().child(label(format!("{} / {}", fmt(time), fmt(shown)), &style.meta_10, decibell_text::Wrapping::NOWRAP)))
                 .child(
@@ -966,7 +990,9 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                         .flex()
                         .items_center()
                         .child(div().absolute().left_0().right_0().h(px(3.)).rounded_full().bg(theme.color_bg_lighter))
-                        .child(div().absolute().left_0().h(px(3.)).w(gpui::relative(shown_volume)).rounded_full().bg(theme.color_accent)),
+                        .child(div().absolute().left_0().h(px(3.)).w(gpui::relative(shown_volume)).rounded_full().bg(theme.color_accent))
+                        // `onVolumeMouseDown` and the wheel: a setting, so before anything plays too.
+                        .children(crate::playback::audio_volume_track(cx)),
                 ),
         )
         .into_any_element()

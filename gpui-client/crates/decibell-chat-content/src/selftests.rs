@@ -10,6 +10,7 @@
 use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
@@ -69,6 +70,26 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "every row's top and height on the content fixture channels (written to $DECIBELL_CHAT_ROWS_DIR for the Electron comparison)",
             run: |cx| Box::pin(fixture_parent(cx, "content-rows")),
         },
+        SelfTest {
+            name: "media-idle",
+            about: "video and audio cards on screen, nothing playing: 0 frames in 5 s, no player, decoder or sink thread",
+            run: |cx| Box::pin(fixture_parent(cx, "media-idle")),
+        },
+        SelfTest {
+            name: "media-video-play",
+            about: "a click on a video card (fixture, null audio sink): first picture, pictures at the file's rate with no list frames, pause = nothing runs, resume, seek, the end; which decoder; memory before / during / after",
+            run: |cx| Box::pin(fixture_parent(cx, "media-video-play")),
+        },
+        SelfTest {
+            name: "media-audio-play",
+            about: "an audio attachment (fixture, null sink): plays, the mirrored time advances, pause, seek, the end; the device stream closes when silent",
+            run: |cx| Box::pin(fixture_parent(cx, "media-audio-play")),
+        },
+        SelfTest {
+            name: "media-persist",
+            about: "a playing video's row scrolled away: the file plays on, no picture is presented; scrolled back: pictures again; another channel: stopped (the renderer's clearChannel); a second video replaces the first, audio plays beside video",
+            run: |cx| Box::pin(fixture_parent(cx, "media-persist")),
+        },
     ]
 }
 
@@ -83,6 +104,10 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "content-invite", about: "(in the app)", run: |cx| Box::pin(check_invite(cx)) },
         SelfTest { name: "content-rows", about: "(in the app)", run: |cx| Box::pin(check_rows(cx)) },
         SelfTest { name: "content-scroll-fixture", about: "(in the app)", run: |cx| Box::pin(check_scroll_fixture(cx)) },
+        SelfTest { name: "media-idle", about: "(in the app)", run: |cx| Box::pin(check_media_idle(cx)) },
+        SelfTest { name: "media-video-play", about: "(in the app)", run: |cx| Box::pin(check_media_video(cx)) },
+        SelfTest { name: "media-audio-play", about: "(in the app)", run: |cx| Box::pin(check_media_audio(cx)) },
+        SelfTest { name: "media-persist", about: "(in the app)", run: |cx| Box::pin(check_media_persist(cx)) },
     ]
 }
 
@@ -232,6 +257,8 @@ async fn fixture_parent(cx: TestCx, check: &'static str) -> Result<()> {
         .env("DECIBELL_USER_DATA_DIR", profile.0.join("profile"))
         .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
         .env("DECIBELL_CENTRAL", "127.0.0.1:9")
+        // Nothing a self-test plays is audible: the players render into a sink that discards.
+        .env("DECIBELL_MEDIA_OUTPUT", "null")
         .env_remove("DECIBELL_PERF")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -967,4 +994,416 @@ async fn check_invite(cx: TestCx) -> Result<()> {
 #[allow(dead_code)]
 fn frames_since(f: Frames) -> u64 {
     f.drawn
+}
+
+// ── Media playback (fixture channel, memory sources, the null audio sink) ────────────────────
+
+/// The clip the fixture's video attachments play: `DECIBELL_MEDIA_CLIP` (a file, for
+/// measurements with a real 1080p clip), else the media crate's 60 s test file.
+fn media_clip() -> std::sync::Arc<Vec<u8>> {
+    let bytes = std::env::var_os("DECIBELL_MEDIA_CLIP")
+        .and_then(|path| std::fs::read(path).ok())
+        .unwrap_or_else(|| include_bytes!("../../decibell-media/tests/assets/sync60.mp4").to_vec());
+    std::sync::Arc::new(bytes)
+}
+
+fn media_setup(w: &TestCx) -> Result<Entity<crate::playback::Playback>> {
+    ensure!(
+        std::env::var("DECIBELL_MEDIA_OUTPUT").is_ok_and(|v| v == "null"),
+        "media self-tests run with DECIBELL_MEDIA_OUTPUT=null (nothing audible)"
+    );
+    w.update(|_, cx| {
+        let playback = crate::playback::Playback::global(cx).context("no playback")?;
+        let clip = media_clip();
+        playback.update(cx, |p, _| {
+            p.set_source_provider(Rc::new(move |_, _, _| Some(Box::new(std::io::Cursor::new(clip.to_vec())) as Box<dyn decibell_media::Source>)))
+        });
+        Ok(playback)
+    })?
+}
+
+/// Names of this process's threads that belong to playback.
+fn media_threads() -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+        for task in tasks.flatten() {
+            if let Ok(name) = std::fs::read_to_string(task.path().join("comm")) {
+                let name = name.trim().to_string();
+                if name.starts_with("decibell-media") || name.starts_with("decibell-video") || name.starts_with("decibell-msink") {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// The first video surface the list drew (attachment id, the centre of its box).
+fn video_host(cx: &App) -> Option<(i64, gpui::Point<gpui::Pixels>, f32)> {
+    let hosts = cx.try_global::<crate::player::VideoHosts>()?;
+    let hosts = hosts.bounds.borrow();
+    let (id, bounds) = hosts.iter().filter(|(_, b)| b.size.height > px(60.)).min_by_key(|(id, _)| **id)?;
+    Some((*id, bounds.center(), f32::from(bounds.top())))
+}
+
+/// Scrolls the fixture channel until a video card's surface is drawn well inside the window
+/// and nothing on screen animates; its attachment id and the centre of its box.
+async fn find_video(w: &TestCx, list: &Entity<decibell_chat::MessageList>) -> Result<(i64, gpui::Point<gpui::Pixels>)> {
+    for step in 0..60 {
+        // Only what the next frame draws counts.
+        w.update(|_, cx| {
+            if let Some(hosts) = cx.try_global::<crate::player::VideoHosts>() {
+                hosts.bounds.borrow_mut().clear();
+            }
+            let delta = if step == 0 { 1. } else { -240. };
+            scroll_by(list, delta, cx);
+        })?;
+        w.sleep(Duration::from_millis(500)).await;
+        let Some((id, at, top)) = w.update(|_, cx| video_host(cx))? else { continue };
+        if top <= 90. || f32::from(at.y) >= 560. {
+            continue;
+        }
+        // Nothing else on screen may be drawing (the channel has animated pictures too).
+        let before = w.frames()?;
+        w.sleep(Duration::from_millis(2500)).await;
+        if w.frames()?.since(before).drawn == 0 {
+            return Ok((id, at));
+        }
+    }
+    bail!("no video card at rest in the fixture channel")
+}
+
+fn active_video(cx: &App) -> Option<i64> {
+    model(cx).chat.video.read(cx).active.as_ref().map(|a| a.attachment_id)
+}
+
+/// Frames in a window of `seconds` in which nothing should draw. Another window taking or
+/// giving the focus redraws ours once (GPUI; the desktop is shared with other tests): a
+/// disturbed window is measured again, up to three times, and the quietest one counts.
+async fn frames_at_rest(w: &TestCx, seconds: u64) -> Result<Frames> {
+    let mut best: Option<Frames> = None;
+    for _ in 0..3 {
+        let before = w.frames()?;
+        w.sleep(Duration::from_secs(seconds)).await;
+        let frames = w.frames()?.since(before);
+        if best.is_none_or(|b| frames.drawn + frames.presented < b.drawn + b.presented) {
+            best = Some(frames);
+        }
+        if frames.drawn == 0 && frames.presented == 0 {
+            break;
+        }
+    }
+    best.context("no measurement")
+}
+
+async fn check_media_idle(cx: TestCx) -> Result<()> {
+    let (w, pane) = fixture_window(&cx, crate::fixture::ATTACHMENTS)?;
+    let result = async {
+        media_setup(&w)?;
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        find_video(&w, &list).await?;
+        w.mouse_move(point(px(4.), px(4.)))?;
+        w.sleep(Duration::from_millis(1500)).await;
+        w.settle().await?;
+        let frames = frames_at_rest(&w, 5).await?;
+        let threads = media_threads();
+        let decoders = w.update(|_, cx| decibell_video::VideoHub::global(cx).decoder_threads())?;
+        cx.log(format_args!(
+            "video and audio cards at rest for 5 s: {} frames drawn, {} presented; playback threads {threads:?}; decoder threads {decoders}",
+            frames.drawn, frames.presented
+        ));
+        ensure!(frames.drawn == 0 && frames.presented == 0, "{} frames drawn, {} presented with nothing playing", frames.drawn, frames.presented);
+        ensure!(threads.is_empty() && decoders == 0, "threads with nothing playing: {threads:?}");
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+async fn check_media_video(cx: TestCx) -> Result<()> {
+    let (w, pane) = fixture_window(&cx, crate::fixture::ATTACHMENTS)?;
+    let result = async {
+        let playback = media_setup(&w)?;
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        let (id, at) = find_video(&w, &list).await?;
+        w.settle().await?;
+        let memory_before = private_mb();
+        let hub = w.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+        let stream = hub.stream(&format!("media:{}:{id}", daily_gaming().wire()));
+        let clicked = Instant::now();
+        w.click(at)?;
+        wait_for(&w, Duration::from_secs(2), "the card to become the playing one", move |cx| active_video(cx) == Some(id)).await?;
+        let s = stream.clone();
+        wait_for(&w, Duration::from_secs(10), "the first picture", move |_| s.stats().presented > 0).await?;
+        let first = clicked.elapsed();
+        let stats = stream.stats();
+        cx.log(format_args!(
+            "click to first picture on screen: {} ms; {}x{} {} decoded with {}",
+            first.as_millis(),
+            stats.width,
+            stats.height,
+            stats.codec.map_or("?", |c| c.label()),
+            stats.backend.map_or("no decoder", |b| b.label())
+        ));
+        // The pointer leaves the video: the controls go (3 s after the last move while it is on
+        // it), and from then on a picture is a present, not a frame of the list.
+        w.mouse_move(point(px(4.), px(4.)))?;
+        w.sleep(Duration::from_millis(600)).await;
+        let (frames_before, stats_before, at_before, threads_before) = (w.frames()?, stream.stats(), Instant::now(), thread_table());
+        w.sleep(Duration::from_secs(4)).await;
+        let (frames, stats, seconds) = (w.frames()?.since(frames_before), stream.stats(), at_before.elapsed().as_secs_f64());
+        cx.log(format_args!("threads while playing: {}", thread_delta(&threads_before, seconds)));
+        let presented = stats.presented - stats_before.presented;
+        let published = stats.published - stats_before.published;
+        cx.log(format_args!(
+            "playing, controls hidden, {seconds:.2} s: {published} pictures published ({:.2} per s), {presented} presented, {} overtaken, {} dropped; the window drew {} frames and presented {}; playback threads {:?}",
+            published as f64 / seconds,
+            stats.replaced - stats_before.replaced,
+            stats.dropped - stats_before.dropped,
+            frames.drawn,
+            frames.presented,
+            media_threads()
+        ));
+        ensure!(published > 0 && stats.dropped == stats_before.dropped, "pictures were shed");
+        ensure!(frames.drawn <= 2, "the list drew {} frames while a video played with its controls hidden", frames.drawn);
+        let memory_playing = private_mb();
+        // Pause: a click on the picture (220 ms later, unless a second click follows).
+        w.click(at)?;
+        w.sleep(Duration::from_millis(900)).await;
+        w.mouse_move(point(px(4.), px(4.)))?;
+        w.settle().await?;
+        let stats_before = stream.stats();
+        let cpu_before = thread_cpu_ms();
+        let frames = frames_at_rest(&w, 3).await?;
+        let stats = stream.stats();
+        let cpu = thread_cpu_ms() - cpu_before;
+        cx.log(format_args!(
+            "paused 3 s: {} pictures published, {} frames drawn, {} presented; playback threads {:?} used {cpu} ms of CPU",
+            stats.published - stats_before.published,
+            frames.drawn,
+            frames.presented,
+            media_threads()
+        ));
+        ensure!(stats.published == stats_before.published, "pictures while paused");
+        ensure!(frames.drawn == 0 && frames.presented == 0, "{} frames drawn, {} presented while paused", frames.drawn, frames.presented);
+        ensure!(!media_threads().iter().any(|t| t.starts_with("decibell-msink")), "the audio sink is still open 3 s after a pause");
+        ensure!(cpu <= 2, "the paused player's threads used {cpu} ms of CPU in 3 s");
+        // Resume, seek, the end.
+        w.click(at)?;
+        let (s, n) = (stream.clone(), stats.published);
+        wait_for(&w, Duration::from_secs(5), "pictures after the resume", move |_| s.stats().published > n + 5).await?;
+        let duration = w.update(|_, cx| playback.read(cx).video_times().1)?;
+        let target = (duration - 2_000_000).max(0);
+        let sought = Instant::now();
+        let n = stream.stats().published;
+        w.update(|_, cx| playback.update(cx, |p, cx| p.seek_video_to(target, cx)))?;
+        let s = stream.clone();
+        wait_for(&w, Duration::from_secs(10), "the picture of the seek", move |_| s.stats().published > n).await?;
+        let position = w.update(|_, cx| playback.read(cx).video_times().0)?;
+        cx.log(format_args!(
+            "seek to {:.2} s of {:.2} s: picture after {} ms, position {:.2} s",
+            target as f64 / 1e6,
+            duration as f64 / 1e6,
+            sought.elapsed().as_millis(),
+            position as f64 / 1e6
+        ));
+        ensure!((position - target).abs() < 500_000, "the position after the seek is {position}");
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(15), "the end", move |cx| p.read(cx).video_phase() == Some(decibell_media::Phase::Ended)).await?;
+        // Gone: another channel's worth of nothing.
+        w.update(|_, cx| model(cx).chat.video.update(cx, |v, cx| v.set_active(None, cx)))?;
+        wait_for(&w, Duration::from_secs(10), "the player's threads to end", |_| media_threads().is_empty()).await?;
+        w.sleep(Duration::from_millis(800)).await;
+        let memory_after = private_mb();
+        cx.log(format_args!(
+            "private memory: {memory_before:.1} MB before, {memory_playing:.1} MB playing, {memory_after:.1} MB after ({:+.1} MB)",
+            memory_after - memory_before
+        ));
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+/// Per thread name: CPU milliseconds and voluntary context switches (wakeups) so far.
+fn thread_table() -> std::collections::BTreeMap<String, (u64, u64)> {
+    let mut table = std::collections::BTreeMap::new();
+    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+        for task in tasks.flatten() {
+            let name = std::fs::read_to_string(task.path().join("comm")).unwrap_or_default().trim().to_string();
+            let stat = std::fs::read_to_string(task.path().join("stat")).unwrap_or_default();
+            let fields: Vec<&str> = stat.rsplit(") ").next().unwrap_or("").split_whitespace().collect();
+            let cpu = (fields.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + fields.get(12).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)) * 10;
+            let status = std::fs::read_to_string(task.path().join("status")).unwrap_or_default();
+            let wakes = status.lines().find(|l| l.starts_with("voluntary_ctxt_switches")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let entry = table.entry(name).or_insert((0, 0));
+            entry.0 += cpu;
+            entry.1 += wakes;
+        }
+    }
+    table
+}
+
+/// What each thread name did between two tables, busiest first: "name cpu ms / wakeups".
+fn thread_delta(before: &std::collections::BTreeMap<String, (u64, u64)>, seconds: f64) -> String {
+    let now = thread_table();
+    let mut rows: Vec<(String, u64, u64)> = now
+        .iter()
+        .map(|(name, (cpu, wakes))| {
+            let was = before.get(name).copied().unwrap_or((0, 0));
+            (name.clone(), cpu.saturating_sub(was.0), wakes.saturating_sub(was.1))
+        })
+        .filter(|(_, cpu, wakes)| *cpu > 0 || *wakes as f64 / seconds >= 1.)
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+    let total: u64 = rows.iter().map(|r| r.1).sum();
+    let list: Vec<String> = rows.iter().take(10).map(|(name, cpu, wakes)| format!("{name} {:.1} % / {:.0} wakes per s", *cpu as f64 / seconds / 10., *wakes as f64 / seconds)).collect();
+    format!("{:.1} % of a core in all; {}", total as f64 / seconds / 10., list.join("; "))
+}
+
+/// CPU time (user + system) of this process's playback threads, in milliseconds.
+fn thread_cpu_ms() -> u64 {
+    let mut ticks = 0u64;
+    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+        for task in tasks.flatten() {
+            let name = std::fs::read_to_string(task.path().join("comm")).unwrap_or_default();
+            if !(name.starts_with("decibell-media") || name.starts_with("decibell-video") || name.starts_with("decibell-msink")) {
+                continue;
+            }
+            if let Ok(stat) = std::fs::read_to_string(task.path().join("stat"))
+                && let Some(rest) = stat.rsplit(") ").next()
+            {
+                let fields: Vec<&str> = rest.split_whitespace().collect();
+                ticks += fields.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + fields.get(12).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            }
+        }
+    }
+    ticks * 10
+}
+
+fn fixture_media(id: i64) -> decibell_model::chat::viewers::ActiveMedia {
+    decibell_model::chat::viewers::ActiveMedia {
+        attachment_id: id,
+        server: daily_gaming(),
+        channel: ChannelId::from("media-test"),
+        filename: "clip".into(),
+        width: 0,
+        height: 0,
+    }
+}
+
+async fn check_media_audio(cx: TestCx) -> Result<()> {
+    let (w, pane) = fixture_window(&cx, crate::fixture::ATTACHMENTS)?;
+    let result = async {
+        media_setup(&w)?;
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        rest(&w, &list).await?;
+        let audio = w.update(|_, cx| model(cx).chat.audio.clone())?;
+        w.update(|_, cx| audio.update(cx, |a, cx| a.set_active(Some(fixture_media(990_001)), cx)))?;
+        let a = audio.clone();
+        let t = wait_for(&w, Duration::from_secs(10), "the sound to start", move |cx| a.read(cx).playing && a.read(cx).time_secs > 0.3).await?;
+        let (time, duration) = w.update(|_, cx| (audio.read(cx).time_secs, audio.read(cx).duration_secs))?;
+        cx.log(format_args!("audio: playing {} ms after it became the active one, at {time:.2} s of {duration:.2} s; threads {:?}", t.as_millis(), media_threads()));
+        ensure!(duration > 59. && duration < 61., "duration {duration}");
+        ensure!(media_threads().iter().any(|t| t.starts_with("decibell-msink")), "no sink stream while playing");
+        ensure!(!media_threads().iter().any(|t| t.starts_with("decibell-video")), "a video decoder for an audio attachment");
+        // The card's button: the mirrored state flips, the player follows.
+        w.update(|_, cx| audio.update(cx, |a, cx| a.set_playback(Some(false), None, None, cx)))?;
+        w.sleep(Duration::from_millis(900)).await;
+        let paused_at = w.update(|_, cx| audio.read(cx).time_secs)?;
+        w.settle().await?;
+        let frames = frames_at_rest(&w, 2).await?;
+        let now = w.update(|_, cx| audio.read(cx).time_secs)?;
+        cx.log(format_args!("audio paused at {paused_at:.2} s: {} frames in 2 s, threads {:?}", frames.drawn, media_threads()));
+        ensure!((now - paused_at).abs() < 0.01, "the time moved while paused");
+        ensure!(frames.drawn == 0, "{} frames while paused", frames.drawn);
+        ensure!(!media_threads().iter().any(|t| t.starts_with("decibell-msink")), "the sink is open while paused");
+        w.update(|_, cx| {
+            if let Some(p) = crate::playback::Playback::global(cx) {
+                p.update(cx, |p, cx| p.seek_audio(58. / 60., cx));
+            }
+            audio.update(cx, |a, cx| a.set_playback(Some(true), None, None, cx));
+        })?;
+        let a = audio.clone();
+        wait_for(&w, Duration::from_secs(5), "the seek", move |cx| a.read(cx).time_secs > 57.9).await?;
+        let a = audio.clone();
+        wait_for(&w, Duration::from_secs(10), "the end", move |cx| !a.read(cx).playing).await?;
+        let end = w.update(|_, cx| audio.read(cx).time_secs)?;
+        cx.log(format_args!("audio: sought to 58 s, ended at {end:.2} s"));
+        w.update(|_, cx| audio.update(cx, |a, cx| a.set_active(None, cx)))?;
+        wait_for(&w, Duration::from_secs(10), "the player's thread to end", |_| media_threads().is_empty()).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+async fn check_media_persist(cx: TestCx) -> Result<()> {
+    let (w, pane) = fixture_window(&cx, crate::fixture::ATTACHMENTS)?;
+    let result = async {
+        let playback = media_setup(&w)?;
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        let (id, at) = find_video(&w, &list).await?;
+        w.settle().await?;
+        let hub = w.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+        let stream = hub.stream(&format!("media:{}:{id}", daily_gaming().wire()));
+        w.click(at)?;
+        let s = stream.clone();
+        wait_for(&w, Duration::from_secs(10), "the first picture", move |_| s.stats().presented > 0).await?;
+        // Scroll its row away.
+        let (low, high) = w.update(|_, cx| list.read(cx).scroll_range())?;
+        let here = w.update(|_, cx| list.update(cx, |l, cx| l.scroll_position(cx)))?;
+        let away = if here - low > high - here { low - here } else { high - here };
+        ensure!(away.abs() > 600., "the fixture channel is too short to scroll the video away ({low}..{high}, at {here})");
+        w.update(|_, cx| scroll_by(&list, away, cx))?;
+        rest(&w, &list).await?;
+        w.sleep(Duration::from_millis(400)).await;
+        let (before, position_before) = (stream.stats(), w.update(|_, cx| playback.read(cx).video_times().0)?);
+        w.sleep(Duration::from_secs(2)).await;
+        let (after, position_after) = (stream.stats(), w.update(|_, cx| playback.read(cx).video_times().0)?);
+        cx.log(format_args!(
+            "row scrolled away for 2 s: the position went {:.2} → {:.2} s, {} pictures published, threads {:?}",
+            position_before as f64 / 1e6,
+            position_after as f64 / 1e6,
+            after.published - before.published,
+            media_threads()
+        ));
+        ensure!(position_after - position_before > 1_500_000, "playback did not go on while the row was away");
+        ensure!(after.published == before.published, "pictures were published for a video nothing shows");
+        ensure!(w.update(|_, cx| active_video(cx))? == Some(id), "still the active video");
+        // Back: pictures again.
+        w.update(|_, cx| scroll_by(&list, -away, cx))?;
+        let (s, n) = (stream.clone(), after.published);
+        wait_for(&w, Duration::from_secs(5), "pictures after scrolling back", move |_| s.stats().published > n + 5).await?;
+        cx.log("scrolled back: pictures again");
+        // A second video replaces the first; an audio attachment plays beside it.
+        w.update(|_, cx| {
+            let m = model(cx);
+            m.chat.video.update(cx, |v, cx| v.set_active(Some(fixture_media(990_002)), cx));
+            m.chat.audio.update(cx, |a, cx| a.set_active(Some(fixture_media(990_003)), cx));
+        })?;
+        let a = w.update(|_, cx| model(cx).chat.audio.clone())?;
+        wait_for(&w, Duration::from_secs(10), "the audio beside the video", move |cx| a.read(cx).time_secs > 0.3).await?;
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(10), "the second video", move |cx| p.read(cx).video_times().0 > 300_000).await?;
+        let threads = media_threads();
+        let controls = threads.iter().filter(|t| t.as_str() == "decibell-media").count();
+        cx.log(format_args!("a second video and an audio attachment: threads {threads:?}"));
+        ensure!(controls == 2, "{controls} players for one video and one audio");
+        ensure!(w.update(|_, cx| playback.read(cx).active_ids())? == (Some(990_002), Some(990_003)), "the active attachments");
+        // Leaving the channel stops both (`clearChannel`).
+        w.update(|_, cx| model(cx).nav.update(cx, |nav, cx| nav.set_active_channel(Some(ChannelId::from("elsewhere")), cx)))?;
+        w.sleep(Duration::from_millis(200)).await;
+        ensure!(w.update(|_, cx| playback.read(cx).active_ids())? == (None, None), "playback survived the channel change");
+        wait_for(&w, Duration::from_secs(10), "the players' threads to end", |_| media_threads().is_empty()).await?;
+        cx.log("another channel: both stopped, no thread left");
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    result
 }

@@ -17,6 +17,7 @@ pub mod fixture;
 pub mod inflight;
 pub mod menu;
 pub mod pictures;
+pub mod playback;
 pub mod player;
 pub mod probes;
 #[cfg(feature = "fixtures")]
@@ -76,6 +77,7 @@ pub fn install(fetcher: Rc<dyn Fetcher>, fixture: bool, cx: &mut App) {
     let engine = Engine::global(cx);
     cx.set_global(Shared { engine, fixture });
     Pictures::install(fetcher, cx);
+    playback::Playback::init(cx);
     let attachments = attachments::AttachmentSlot::new(cx).shared();
     let inflight = Rc::new(inflight::InflightSlot::new(cx));
     let embeds = Rc::new(embeds::EmbedsSlot::new(cx));
@@ -85,6 +87,7 @@ pub fn install(fetcher: Rc<dyn Fetcher>, fixture: bool, cx: &mut App) {
     slots.embeds = Some(embeds.clone());
     slots.text_hidden = Some(Rc::new(move |message, _, cx| embeds.text_hidden(message, cx)));
     decibell_shell::register_overlay(cx, |_, cx| cx.new(menu::MediaMenu::new).into());
+    decibell_shell::register_overlay(cx, |_, cx| cx.new(playback::FullscreenLayer::new).into());
     viewer::init(cx);
     transfers::init(cx);
 }
