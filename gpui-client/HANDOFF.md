@@ -93,7 +93,7 @@ screens in all seven themes beside Electron's.
 | Attachments (`crates/decibell-attachments`), link previews + GIF search (`crates/decibell-unfurl`) | done `08412dc`, `d835d32` (vectors from the real TS; stack tests) |
 | Wheel / key scrolling spec | done `0777f91`: `docs/wheel-scroll.md` (120 px per notch, ease-in-out bezier, cc's duration + retarget rules, 11 vectors) |
 | Stream playback: design + prototype | done `8c990eb`: `docs/video-design.md`, `patches/0001-gpui-external-surfaces.patch`; the real crate (`decibell-video`) not started |
-| Stream playback (`crates/decibell-video`) | built, tested and measured on Linux (2026-11-26): Vulkan Video on GPUI's device, software fallback, `VideoHub` / `VideoView`, device-loss recovery, patches `0005` + `0006`, `tools/build-ffmpeg.sh`, `tools/streamgen/`; six self-tests (`video-*`); numbers in §4. Wired to the model and the voice view since (the row "Stream playback, joined to the voice view" below). Windows: compiles in principle, draws nothing until `gpui_windows` draws surfaces (`docs/video-design.md` §8) |
+| Stream playback (`crates/decibell-video`) | built, tested and measured on Linux (2026-11-26): Vulkan Video on GPUI's device, software fallback, `VideoHub` / `VideoView`, device-loss recovery, patches `0005` + `0006`, `tools/build-ffmpeg.sh`, `tools/streamgen/`; six self-tests (`video-*`); numbers in §4. Wired to the model and the voice view since (the row "Stream playback, joined to the voice view" below). Windows: D3D11VA + software backend and GPUI patch `0020` written, not run on a GPU (§1c, `docs/video-design.md` §8) |
 | Stream playback, joined to the voice view (`wip/integrate-b`) | done on Linux / NVIDIA (2026-11-26): the capability probe runs after the first frame and is what the client advertises, uses and shows (Settings → Codecs names each codec's decoder and what was given up); encoder caps with backend, label and limits in the model, one loader; the decoder queue holds 100 ms of frames (a deliberate difference from Electron: `docs/electron-quirks.md` #14); "Reconnecting…" over a stalled stream without a timer; the cursor hidden in fullscreen (GPUI patch `0013`); clean cached views nested in a dirty one are replayed (GPUI patch `0014`); decoder threads stopped before the process exits; `perf5` on the local stack for two-stream measurements. Self-tests `video-starve`, `video-stall`, `voice-stall`, `render-cost`; numbers in §4 "Stream playback in the app". AMD / Intel and Windows unrun (§6) |
 | Attachment playback (`crates/decibell-media`, `decibell-chat-content/src/playback.rs`; `wip/media`) | built and tested on Linux / NVIDIA (2026-11-26), **not heard by anyone** (§6): video and audio attachments play in their cards; the engine demuxes through a custom AVIO over `MediaReader`, decodes video on `decibell-video`'s decoders as a timed stream (Vulkan Video here; VP8 / VP9 in software) and audio into its own output stream on the default device, synced to the audio clock, every transition a 10 ms ramp. `tools/build-ffmpeg.sh` gained the demuxers and decoders of the codec matrix (**`vendor/ffmpeg` was rebuilt and swapped; the old prefix is `vendor/ffmpeg.old`; every target directory needs `cargo clean -p ffmpeg-sys-next`**). Tests: 21 matrix files, sync, seek, pops, allocations, sealed reader; self-tests `media-idle`, `media-video-play`, `media-audio-play`, `media-persist` (fixture, memory sources) and `media-live` (a clip uploaded to the local stack's `#off-topic` as `perf2`, played from the attachment service's range reader, deleted again). Design, the renderer's rules and the list of what is missing: `docs/media-design.md`; numbers in §4 "Attachment playback". Not run: a sealed attachment against the stack, the Electron comparison, captures, AMD / Intel, Windows (§5) |
 | Chat (list, rich text, selection, composer, wheel) | not started |
@@ -171,6 +171,40 @@ CONVENTIONS "Platform").
 | Chromium's spellchecker (squiggles in the composer; the renderer has no suggestion menu) | spelling | **not built, not small**: a checker (Hunspell / Nuspell dictionaries per language, shipped or the system's: there is no OS spelling service on Linux), the editor's wavy underline per misspelt range, re-checked as typed off the UI thread; suggestions would need a context menu the renderer never had | listed |
 | Chromium's page zoom (the default menu's Ctrl + = / − / 0, if it reaches a frameless window: unverified) | zoom the whole UI | **not built, not small**: the theme already scales text and rows (`Theme::set_scale`, Settings → Appearance); a zoom would scale every token, icon, image box and the chat list's measured heights (`ChatStyle`), with the key bindings and a saved factor | listed |
 | tray, autostart, power-save blocker, notifications | — | — | Electron had none (`FEATURES.md` §10) |
+## 1c. Windows (the Windows batch, 2026-11-26)
+
+The Windows half is written on Linux, where none of it can run. Three levels of evidence, in rising order; say
+which one a claim rests on:
+
+1. **Type-checked on Linux for `x86_64-pc-windows-msvc`**: `tools/win-check.sh` (the whole workspace with tests,
+   `crates/decibell-core` and the patched `gpui_windows`, against the real `windows` crate; `--shaders` also
+   compiles GPUI's HLSL with Wine's compiler). Run it before every push that touches `cfg(windows)` code: it
+   answers in a minute what the workflow answers in half an hour.
+2. **Compiled and partly run by the Windows Native Check** (`gpui-client` job, log branch
+   `ci/win-gpui-check-log`): `cargo-check.log`; `shaders.log` (fxc, through a release check of gpui_windows);
+   `unit-tests.log` (the crates without the core); `selftests.log` (the self-tests that need no server and no
+   hardware codec, in a real window on the runner's WARP device); `idle.log` (`tools/perf/windows/row.ps1`
+   against the built client). The run steps never fail the job.
+3. **Run by the owner on real hardware**: `docs/windows-owner-checks.md`, in order. Nothing is at this level yet.
+
+| Piece | Written | Level |
+|---|---|---|
+| Stream video: GPUI patch `0020` (surfaces in the Direct3D 11 renderer), `crates/decibell-video/src/windows/` (D3D11VA → software, slots, probe, device removal) | yes (`docs/video-design.md` §8) | 1; 2 pending the first run (`video-probe` on WARP covers software decode, upload, read-back and the surface draw; **hardware decode needs a GPU: owner**) |
+| Idle: GPUI patch `0021` (the vsync thread parks; it and the main thread woke at the refresh rate at rest) | yes (`patches/README.md` §0021) | 1; 2 pending (`idle.log`'s thread table); the touchpad-gesture exception is the owner's to feel |
+| Title bar: the client's caption buttons are the system's on Windows (snap layouts, restore) | yes (`decibell-ui/src/titlebar.rs`) | 1; owner |
+| Measuring: `tools/perf/windows/row.ps1`, `install-size.ps1`, `-ProcessId` for `measure.ps1` / `threads.ps1`, the perf event (`--perf` on Windows) | yes (`tools/perf/README.md`) | 2 pending |
+| Go Live: the screen / window grid with thumbnails; the stream-audio app list | **not yet** (`windows_source_grid` returns `None`: Go Live cannot start on Windows) | — |
+| Auto-away (the core's idle source answers "unsupported" on Windows), lock / sleep | **not yet** | — |
+| Console window in release builds, no icon resource, no AUMID | not yet (packaging; partly `decibell-platform`'s) | — |
+
+Rules that came out of it:
+- `decibell-video` names the renderer's surface types through `crate::surface` and splits on `cfg(vk)` (Linux),
+  `cfg(d3d)` (Windows), `cfg(gpu)` (either), all set by its `build.rs`. A new decoder is a `DecodeBackend`
+  variant with `built_here()`.
+- A client crate that needs the Direct3D device or any type shared with GPUI uses `gpui_windows::windows`
+  (the re-export), never its own `windows` version.
+- gpui_windows' immediate context is shared between threads: hold `D3d11Devices::lock_context()` around any
+  sequence of context calls made off the main thread.
 
 ## 2. Building and running
 
