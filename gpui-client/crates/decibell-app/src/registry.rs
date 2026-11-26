@@ -61,6 +61,7 @@ pub fn checks() -> Vec<SelfTest> {
     checks.extend(decibell_settings::checks());
     checks.extend(decibell_composer::checks());
     checks.extend(decibell_home::checks());
+    checks.extend(decibell_chat::checks());
     checks
 }
 

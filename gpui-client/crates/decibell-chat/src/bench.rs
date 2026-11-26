@@ -172,7 +172,7 @@ pub fn summarize(recording: &Recording, speed: f64, seconds: f64, refresh_hz: Op
 /// perf scenario opened: `tools/perf/scenarios.sh gpui scroll`): scrolls into history at
 /// `speed` px/s for `seconds` and returns the summary. `None`: no chat pane is shown.
 pub async fn run_live(app: gpui::AsyncApp, seconds: f64, speed: f64, refresh_hz: Option<f64>) -> Option<serde_json::Value> {
-    let list = app.update(|cx| cx.try_global::<crate::pane::ShownList>().and_then(|shown| shown.0.upgrade()))?;
+    let list = app.update(|cx| crate::shown_list(cx))?;
     app.update(|cx| list.update(cx, |list, cx| list.begin_bench(speed, cx)));
     app.background_executor().timer(Duration::from_secs_f64(seconds)).await;
     let recording = app.update(|cx| list.update(cx, |list, _| list.end_bench()))?;

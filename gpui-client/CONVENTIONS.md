@@ -293,7 +293,21 @@ in short:
 - Screens `chat-fixture` / `chat-features`, self-tests `chat-*`, the benchmark `decibell --bench-scroll <s>`
   (and `cargo run --release -p decibell-chat --features fixtures --example chat_bench`, which also counts
   allocations per frame), the fixtures in `fixture.rs` (the 10,000-message channel of `tools/dev/fixture.py`,
-  generated bit for bit, and a hand-written one).
+  generated bit for bit, and a hand-written one). Against the local stack: the self-test `chat-live` (runs
+  `decibell --check chat-live --login perf2`: `#general` paged back 2,000 messages by scrolling, 0 px per page,
+  a jump, the present), the check `chat-copy` (`DECIBELL_COPY=<channel>:<from>[@offset]:<to>[@offset]`, compared
+  with `DECIBELL_COPY_EXPECT`, a file of the Electron client's clipboard for the same selection) and the
+  `scroll` verb of the dev control pipe (`tools/perf/scenarios.sh gpui scroll`).
+- **Copy** is what the Electron client's clipboard holds for the same selection (`RowLayout::copy_text`,
+  `CopyText`, `decibell_richtext::plain::as_copied_range`; pinned by unit tests to strings read back from its
+  clipboard): `user-select: none` parts (avatar, quoted reply, day divider, a grouped row's hover time) copy
+  nothing; "(edited)" does (the renderer's `.select-text *` rule wins); Twemoji emoji copy nothing (inline SVG);
+  a code block copies its label as written in the DOM; attachments copy their `alt` / card text. A slot that
+  draws text (link previews, invite cards) adds nothing yet: the slot API has no copy hook.
+- **No message menu**: a right click opens the sender's user menu on the name or avatar, nothing elsewhere (the
+  renderer's only menu on a message). The hover actions and the code block's copy button show their `title=` as
+  a GPUI tooltip after 500 ms; the last row fades up (`isLast`, 300 ms) and the jump pill fades in, both drawn
+  only while they move and skipped under reduced motion.
 - **Slot API changes for the composer**: `ComposerBuilder` is `Fn(ServerId, ChannelId, &Entity<MessageList>, &mut
   Window, &mut App) -> ComposerParts { view, type_to_focus }` (the composer follows the list's `ListEvent::Reply`
   and calls `start_edit`; the pane's key listener hands keys that reach it from the list, or with nothing focused,

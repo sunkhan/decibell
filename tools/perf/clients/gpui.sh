@@ -7,8 +7,9 @@
 # Same rules as the Electron baseline: DECIBELL_CENTRAL=127.0.0.1:18080, its own profile directory, never the live central.
 # The profile signs in once as perf1 (--login, the stack's password) and keeps the saved sign-in, as Electron's does.
 #
-# The chat pane is still a placeholder in this client (the chat agent's): #general shows no messages yet, so the idle-channel
-# rows measure the shell (server bar, channel list, member list, user panel) beside an empty pane, and `scroll` can't run.
+# `scroll` runs the client's own benchmark on the open channel (`scroll` on the control pipe: decibell_chat::bench::run_live),
+# which drives the list at constant speed from its own frames and records every frame, as electron-scroll.mjs does from
+# requestAnimationFrame; its JSON line has the same keys (interval_ms, missed_vsyncs, frames, refresh_hz).
 
 GPUI_DIR="$(cd "$PERF/../../gpui-client" && pwd)"
 GPUI_BIN="${GPUI_BIN:-$GPUI_DIR/target/release/decibell}"
@@ -132,7 +133,19 @@ client_startup_prepare() {
 
 client_install_paths() { printf 'gpui release (dev-local, stripped)\t%s\n' "$GPUI_BIN"; }
 
-client_scroll() { echo '{"error":"the chat pane is not built yet in the GPUI client"}'; return 1; }
+# client_scroll SECS PX_S HZ: one JSON line, from `decibell: scroll-result <json>` in the app's log.
+client_scroll() {
+  local before; before="$(grep -c '^decibell: scroll-result ' "$GPUI_STATE/app.log" 2>/dev/null || true)"
+  _gpui_control "scroll $1 $2 $3" || { echo '{"error":"scroll refused (no channel open?)"}'; return 1; }
+  local i limit; limit="$(python3 -c 'import sys; print(int((float(sys.argv[1]) + 30) * 10))' "$1")"
+  for ((i = 0; i < limit; i++)); do
+    (( $(grep -c '^decibell: scroll-result ' "$GPUI_STATE/app.log") > before )) && break
+    sleep 0.1
+  done
+  local line; line="$(grep '^decibell: scroll-result ' "$GPUI_STATE/app.log" | tail -1)"
+  (( $(grep -c '^decibell: scroll-result ' "$GPUI_STATE/app.log") > before )) || { echo '{"error":"no scroll result"}'; return 1; }
+  echo "${line#decibell: scroll-result }"
+}
 
 client_facts() { python3 -B "$PERF/linux/scenario_util.py" display-server --pid "$1"; }
 

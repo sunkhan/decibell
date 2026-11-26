@@ -13,6 +13,7 @@ pub mod bench;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 pub mod list;
+mod live;
 pub mod media;
 mod pane;
 pub mod row;
@@ -45,6 +46,17 @@ pub fn screens() -> Vec<decibell_harness::Screen> {
     return screens::screens();
     #[cfg(not(feature = "fixtures"))]
     Vec::new()
+}
+
+/// The list of the chat pane shown last (in the signed-in app: the open channel's), for the
+/// checks and benchmarks that drive the live list.
+pub fn shown_list(cx: &gpui::App) -> Option<gpui::Entity<MessageList>> {
+    cx.try_global::<pane::ShownList>().and_then(|shown| shown.0.upgrade())
+}
+
+/// The checks `decibell --check <name>` runs inside the signed-in app (`chat-live`, `chat-copy`).
+pub fn checks() -> Vec<decibell_harness::SelfTest> {
+    live::checks()
 }
 
 /// The chat self-tests (with the `fixtures` feature).

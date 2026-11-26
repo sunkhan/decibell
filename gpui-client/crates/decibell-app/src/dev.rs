@@ -7,10 +7,12 @@
 //! - Markers on stdout for scripts (`tools/perf/clients/gpui.sh`): `decibell: signed-in <name>`,
 //!   `decibell: connected <community>`, `decibell: control <command> ok`.
 //! - `DECIBELL_DEV_CONTROL=<fifo>`: one command per line — `home`, `channel <community>\t<channel>`,
-//!   `minimize`, `quit`, and for the voice measurements (`tools/perf` watch scenarios): `unlock
-//!   <passphrase>` (the E2EE keys, as the passphrase dialog would), `voice <community>\t<channel>`
-//!   (muted and deafened first, then the sidebar's join), `watch <uid>` (focus a stream: watch it
-//!   large), `leave` — read by a thread blocked on the pipe (no wakeups while nothing comes).
+//!   `scroll <seconds> <px/s> [<refresh Hz>]`, `minimize`, `quit`, and for the voice measurements
+//!   (`tools/perf` watch scenarios): `unlock <passphrase>` (the E2EE keys, as the passphrase dialog
+//!   would), `voice <community>\t<channel>` (muted and deafened first, then the sidebar's join),
+//!   `watch <uid>` (focus a stream: watch it large), `leave` — read by a thread blocked on the pipe
+//!   (no wakeups while nothing comes). `scroll` runs the scroll benchmark on the open channel
+//!   (`decibell_chat::bench::run_live`) and prints `decibell: scroll-result <json>` when it ends.
 
 use std::collections::HashSet;
 use std::io::BufRead as _;
@@ -160,6 +162,18 @@ fn run_command(command: &str, window: AnyWindowHandle, cx: &mut App) -> bool {
                 nav.set_active_channel(Some(channel), cx);
                 nav.set_active_view(ActiveView::Server, cx);
             });
+            true
+        }
+        "scroll" => {
+            let mut args = rest.split_whitespace().map(str::parse::<f64>);
+            let (Some(Ok(seconds)), Some(Ok(speed))) = (args.next(), args.next()) else { return false };
+            let refresh_hz = args.next().and_then(Result::ok).filter(|hz| *hz > 0.);
+            cx.spawn(async move |cx| {
+                let result = decibell_chat::bench::run_live(cx.clone(), seconds, speed, refresh_hz).await;
+                let line = result.unwrap_or_else(|| serde_json::json!({ "error": "no chat pane is shown" }));
+                println!("decibell: scroll-result {line}");
+            })
+            .detach();
             true
         }
         "minimize" => window.update(cx, |_, window, _| window.minimize_window()).is_ok(),

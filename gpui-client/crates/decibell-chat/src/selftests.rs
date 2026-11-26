@@ -39,6 +39,7 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "(the regional test's child; --screen main-server) prints a header time, a day divider and the member list's count as drawn",
             run: |cx| Box::pin(regional_read(cx)),
         },
+        crate::live::selftest(),
     ]
 }
 
