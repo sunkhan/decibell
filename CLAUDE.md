@@ -150,6 +150,17 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   Protocol, media and crypto stay in `crates/decibell-core`, shared with the Electron addon; anything
   touching it must pass Electron's whole bar too. The client is tested against the local stack
   (`tools/dev/local-stack.sh`) with test accounts, never the owner's account or the live servers.
+- **Video codecs: hardware on every vendor, software only as the last resort** (owner, 2026-11-26). Screen
+  share encode and stream decode use the GPU's codec on **NVIDIA, AMD and Intel, on Linux and Windows**,
+  integrated GPUs with a working hardware codec included (Intel Quick Sync, AMD APUs); only a machine with
+  no usable hardware encoder / decoder falls back to software. Encode lives in the shared core: NVENC
+  (both OSes), AMF and Quick Sync (Windows), VAAPI for AMD / Intel (Linux), then a software encoder
+  (SVT-AV1: royalty-free, real-time; no software H.264 encoder unless the owner asks, OpenH264 brings
+  patent-licence strings). Decode in the native client: Vulkan Video on GPUI's device first (all three
+  vendors on Linux), NVDEC and VAAPI as hardware fallbacks, D3D11VA on Windows, then dav1d / FFmpeg in
+  software. The native client has no Chromium fallback, so a vendor path that silently fails is a
+  missing feature there: probe, fall through in that order, and report which path is in use. Only
+  NVIDIA hardware is on hand; AMD / Intel paths are compile- and unit-tested and listed for the owner.
 - **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
   `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native
   what holds sockets, speaks the wire, hooks the voice capture loop (AEC / AGC / NS) or owns files. The

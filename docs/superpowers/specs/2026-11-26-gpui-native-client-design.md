@@ -226,6 +226,21 @@ completed picture when it draws; a new picture asks for exactly one redraw; noth
 arrives. One decoder per stream, however many places show it (grid tile, focus, mini-player); self-preview
 decodes our own encoded frames like any other stream. Software decode only as a fallback.
 
+### 7.0 Vendors (owner, 2026-11-26)
+
+Hardware codecs on **NVIDIA, AMD and Intel, on Linux and Windows** (integrated GPUs with a working hardware
+codec included); software only when no hardware encoder / decoder is usable. This client has no Chromium to
+fall back on, so each row below is a path the client must have, probe and fall through in order:
+
+| | Linux | Windows |
+|---|---|---|
+| Decode | Vulkan Video on GPUI's device (NVIDIA, RADV, ANV) → NVDEC (NVIDIA) / VAAPI (AMD, Intel) → software | D3D11VA on GPUI's D3D11 device (every vendor) → software |
+| Encode (shared core) | NVENC → VAAPI (AMD, Intel) → software | NVENC / AMF / Quick Sync by adapter → software |
+| Software | dav1d (AV1), FFmpeg H.264 / HEVC decoders; SVT-AV1 encoder | the same |
+
+Only NVIDIA hardware is on hand: the AMD / Intel rows are built, compile-checked and unit-tested here and run
+by the owner (`gpui-client/HANDOFF.md` "Needs owner").
+
 ### 7.1 Decided, from the prototype (`gpui-client/docs/video-design.md`)
 
 - **Linux: FFmpeg's Vulkan Video hwaccel on GPUI's own `VkDevice`** (H.264, HEVC, AV1). GPUI's wgpu device is
