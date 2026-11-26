@@ -1,0 +1,7 @@
+# The native client and the core's golden files are byte-exact inputs (patches applied with
+# `git apply`, generated files compared by hash, test vectors): keep LF on every platform.
+# A Windows checkout with core.autocrlf=true otherwise turns them into CRLF and the GPUI
+# patches stop applying.
+gpui-client/** text=auto eol=lf
+gpui-client/patches/*.patch -text
+crates/decibell-core/tests/golden/** -text
