@@ -97,6 +97,12 @@ pub struct Shared {
     notes: AtomicU32,
     wants_room: AtomicBool,
     quiet: AtomicBool,
+    // A pending resynchronisation (`sync_to`): "media time `sync_pts` is due at `sync_at`".
+    /// The output device is being changed: the envelope goes to zero and stays there.
+    moving: AtomicBool,
+    sync_on: AtomicBool,
+    sync_pts: AtomicI64,
+    sync_at: AtomicI64,
     wake: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -136,6 +142,10 @@ impl Shared {
             notes: AtomicU32::new(0),
             wants_room: AtomicBool::new(false),
             quiet: AtomicBool::new(true),
+            moving: AtomicBool::new(false),
+            sync_on: AtomicBool::new(false),
+            sync_pts: AtomicI64::new(0),
+            sync_at: AtomicI64::new(0),
             wake,
         })
     }
@@ -155,6 +165,38 @@ impl Shared {
     /// Shut: the sound waits (at zero) for the picture a seek is decoding towards.
     pub fn set_gate(&self, open: bool) {
         self.gate.store(open, RELAXED);
+    }
+
+    /// The sound went on without us for a while (the output device was changed: the player
+    /// ran on the wall clock meanwhile): when the renderer next starts from silence, it starts
+    /// on the sample that is due then, given that media time `pts` (microseconds) was due at
+    /// `at`, and leaves the samples before it unplayed. It waits in silence for as long as that
+    /// sample is not in the ring (not yet decoded) or already behind what was played. Skipping
+    /// happens at envelope zero only: what is handed to the device stays one continuous curve.
+    pub fn sync_to(&self, pts: i64, at: Instant) {
+        self.sync_pts.store(pts, RELAXED);
+        self.sync_at.store(self.ns(at), RELAXED);
+        self.sync_on.store(true, Ordering::Release);
+    }
+
+    /// Whether a [`Self::sync_to`] has not taken effect yet.
+    pub fn sync_pending(&self) -> bool {
+        self.sync_on.load(Ordering::Acquire)
+    }
+
+    /// Forgets a pending [`Self::sync_to`] (a seek: the new position starts as any other).
+    pub fn cancel_sync(&self) {
+        self.sync_on.store(false, Ordering::Release);
+    }
+
+    /// True while the player moves to another output device: the sound fades to zero (the
+    /// next 10 ms of the file, as a pause) and the renderer reports quiet once the old device
+    /// has played that out. False again: it starts from silence on whatever calls it next.
+    pub fn set_moving(&self, moving: bool) {
+        self.moving.store(moving, RELAXED);
+        if !moving {
+            self.quiet.store(false, RELAXED);
+        }
     }
 
     /// Linear gain, 0.0 to 1.0 (what `HTMLMediaElement.volume` is; muted is 0).
@@ -343,7 +385,7 @@ impl Renderer {
         let (epoch, start, pts) = shared.segment();
         let write = shared.write.load(Ordering::Acquire);
         let mut read = shared.read.load(RELAXED);
-        let wanted = shared.playing.load(RELAXED) && shared.gate.load(RELAXED);
+        let wanted = shared.playing.load(RELAXED) && shared.gate.load(RELAXED) && !shared.moving.load(RELAXED);
         let target_volume = f32::from_bits(shared.volume.load(RELAXED));
         let mut flushing = epoch != self.epoch;
         let mut notes = 0;
@@ -355,6 +397,25 @@ impl Renderer {
         }
         let step = 1.0 / self.ramp;
         let mut consumed = false;
+        // A pending resynchronisation: from silence, move to the sample due when this block
+        // is heard, or stay silent for this block when it cannot be reached yet.
+        let mut hold = false;
+        if wanted && !flushing && self.envelope == 0.0 && self.epoch != 0 && shared.sync_on.load(Ordering::Acquire) {
+            let due = shared.sync_pts.load(RELAXED) + (shared.ns(plays_at) - shared.sync_at.load(RELAXED)) / 1000;
+            let frame = self.start as i128 + (due - self.pts) as i128 * shared.rate as i128 / 1_000_000;
+            if frame < read as i128 {
+                // What is due was played already (the clock is behind the ring): wait for it.
+                hold = true;
+            } else if frame as u64 + if end == NO_END { self.rebuffer } else { 0 } > limit {
+                // Not decoded yet: what is buffered before it will never be played, and leaving
+                // it makes room for the producer to reach the sample that is due.
+                read = read.max((frame as u64).min(limit));
+                hold = true;
+            } else {
+                read = frame as u64;
+                shared.sync_on.store(false, Ordering::Release);
+            }
+        }
 
         for frame in out.as_chunks_mut::<CHANNELS>().0 {
             if flushing && self.envelope == 0.0 {
@@ -376,7 +437,7 @@ impl Renderer {
             // From silence it starts only with enough buffered to be worth starting (or the
             // end of the file in sight).
             let starved = self.envelope == 0.0 && remaining < self.rebuffer && end == NO_END;
-            let target = if !wanted || flushing || tail || self.epoch == 0 || starved { 0.0 } else { 1.0 };
+            let target = if !wanted || flushing || tail || self.epoch == 0 || starved || hold { 0.0 } else { 1.0 };
             if target > self.envelope {
                 self.envelope = (self.envelope + step).min(1.0);
             } else if target < self.envelope {
@@ -697,6 +758,55 @@ mod tests {
         rig.run(20, Some(24_000));
         assert_eq!(*rig.out.last().unwrap(), 1.0);
         assert_smooth(&rig, "device change");
+    }
+
+    /// Frame `n` of the file is `n / 2^20`: every sample says where in the file it is.
+    fn index(n: u64) -> f32 {
+        n as f32 / 1_048_576.0
+    }
+
+    /// The output device is changed while playing: the old device is handed the fade to zero
+    /// and silence, the new one starts from zero **on the sample that is due then** (the file
+    /// went on by the wall clock meanwhile: nothing is played late), and no two samples in a
+    /// row differ by more than the ramp allows.
+    #[test]
+    fn a_move_to_another_device_resumes_on_the_sample_that_is_due() {
+        let mut rig = Rig::new(index);
+        let shared = rig.shared();
+        shared.set_playing(true);
+        rig.run(30, Some(24_000));
+        // The move begins: where the file is now, by the clock the pictures follow from here.
+        let (at, i0) = (rig.clock, rig.out.len());
+        let (pts, running, _) = shared.now(at).unwrap();
+        assert!(running);
+        let f0 = (pts as i128 * RATE as i128 / 1_000_000) as u64;
+        shared.sync_to(pts, at);
+        shared.set_moving(true);
+        rig.run(40, Some(24_000));
+        assert!(rig.renderer.is_silent() && shared.is_quiet(), "the old device ends in silence");
+        let closed = rig.out.len();
+        assert!(rig.out[i0 + 480..closed].iter().all(|&x| x == 0.0), "silence after the 10 ms fade");
+        // The new device's stream: opened 70 ms later (nothing calls the renderer meanwhile).
+        rig.clock += Duration::from_millis(70);
+        let gap = 70 * RATE as usize / 1000;
+        rig.renderer.restart();
+        shared.set_moving(false);
+        rig.run(30, Some(24_000));
+        assert!(!shared.sync_pending());
+        // Past the ramp, every sample is the one that would have played had nothing happened.
+        let opened = closed;
+        for i in opened + 960..rig.out.len() {
+            let frame = f0 + (i - i0) as u64 + gap as u64;
+            assert_eq!(rig.out[i], index(frame), "output sample {i} is frame {frame} of the file");
+        }
+        // And the way there is the ramp: the index source moves by 1e-6 a sample by itself.
+        let step = rig.out[..].windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
+        let largest = *rig.out.iter().max_by(|a, b| a.total_cmp(b)).unwrap();
+        assert!(step <= MAX_STEP * largest + 2e-6, "a jump of {step} (the signal's level is {largest})");
+        // The clock is the sound's again, and agrees with the wall clock it took over from.
+        let (now, running, _) = shared.now(rig.clock).unwrap();
+        let wall = pts + (rig.clock - at).as_micros() as i64;
+        assert!(running && (now - wall).abs() <= 25, "the audio clock is {now}, the wall clock {wall}");
     }
 
     #[test]

@@ -53,6 +53,13 @@ impl D3d11vaDecoder {
         description: Option<&[u8]>,
         target: &StreamTarget,
     ) -> DecodeResult<Self> {
+        if target.deep() {
+            // A 10-bit file decodes to P010; the slots here are NV12. Software decodes it (its
+            // 8 most significant bits are uploaded), until the P010 slots are written.
+            return Err(DecodeError::decoder(
+                "10-bit pictures are not handed over by D3D11VA yet (software decodes them)",
+            ));
+        }
         let decoder = FfDecoder::open(codec, description, Some((hw_device, pick_d3d11)), 1, target.reorder())?;
         Ok(Self {
             decoder,

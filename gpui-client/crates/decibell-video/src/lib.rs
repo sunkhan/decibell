@@ -74,6 +74,7 @@ mod decode;
 mod hub;
 #[cfg(vk)]
 mod linux;
+mod orient;
 mod packet;
 mod probe;
 mod queue;
@@ -91,13 +92,13 @@ mod windows;
 #[cfg(vk)]
 pub(crate) mod surface {
     pub(crate) use gpui_wgpu::{
-        SurfaceFit, WgpuSurface as Surface, WgpuSurfaceView as SurfaceView,
+        SurfaceFit, SurfaceOrientation, WgpuSurface as Surface, WgpuSurfaceView as SurfaceView,
     };
 }
 #[cfg(d3d)]
 pub(crate) mod surface {
     pub(crate) use gpui_windows::{
-        D3d11Surface as Surface, D3d11SurfaceView as SurfaceView, SurfaceFit,
+        D3d11Surface as Surface, D3d11SurfaceView as SurfaceView, SurfaceFit, SurfaceOrientation,
     };
 }
 
@@ -109,6 +110,7 @@ pub use hub::{
     EncodedFrame, EventCallback, Fault, HubCallbacks, InterestCallback, KeyframeCallback,
     STALLED_AFTER, Stream, StreamEvent, VideoHub, Viewer, shutdown,
 };
+pub use orient::Orientation;
 pub use packet::{
     PADDING, Packet, PacketBytes, PaddedVec, copies as packet_copies, regrows as packet_regrows,
 };
@@ -116,7 +118,7 @@ pub use screens::screens;
 pub use selftests::selftests;
 pub use stats::{StatsSampler, StreamRates, StreamStats};
 pub use timed::{Admit, TIMED_DEPTH, TimedFrame, TimedPush, Timing};
-pub use view::{Fit, VideoView};
+pub use view::{Fit, Still, StillView, VideoView};
 
 mod platform {
     use std::sync::Arc;

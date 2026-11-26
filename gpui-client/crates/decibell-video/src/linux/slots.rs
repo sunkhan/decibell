@@ -1,6 +1,7 @@
 //! The textures a stream's pictures are handed to the renderer in.
 //!
-//! A slot is a luma image (`R8`, picture size) and a chroma image (`RG8`, half size) made with
+//! A slot is a luma image (`R8`, picture size) and a chroma image (`RG8`, half size), or `R16` /
+//! `RG16` for a 10 / 12-bit picture (files only; needs the device's 16-bit normalised formats), made with
 //! raw Vulkan (so the aux queue can write them) and wrapped as ordinary wgpu textures (so the
 //! renderer samples them like any other). wgpu only ever samples them and so never records a
 //! barrier for them; our writes leave them in the layout wgpu assumes.
@@ -274,6 +275,8 @@ pub(crate) struct Slot {
 pub(crate) struct SlotRing {
     slots: Vec<Slot>,
     pub size: (u32, u32),
+    /// 16-bit planes (a 10 / 12-bit picture).
+    pub deep: bool,
 }
 
 impl SlotRing {
@@ -286,8 +289,25 @@ impl SlotRing {
         height: u32,
         color: SurfaceColor,
         exportable: bool,
+        deep: bool,
     ) -> DecodeResult<Self> {
         let device = &work.device;
+        // 8-bit planes, or 16-bit ones for a 10 / 12-bit picture (its code in the high bits).
+        let (luma_format, chroma_format, luma_wgpu, chroma_wgpu) = if deep {
+            (
+                vk::Format::R16_UNORM,
+                vk::Format::R16G16_UNORM,
+                wgpu::TextureFormat::R16Unorm,
+                wgpu::TextureFormat::Rg16Unorm,
+            )
+        } else {
+            (
+                vk::Format::R8_UNORM,
+                vk::Format::R8G8_UNORM,
+                wgpu::TextureFormat::R8Unorm,
+                wgpu::TextureFormat::Rg8Unorm,
+            )
+        };
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
         let mut images: Vec<[(vk::Image, vk::DeviceMemory, u64); 2]> =
             Vec::with_capacity(SLOT_COUNT);
@@ -297,10 +317,10 @@ impl SlotRing {
             let created = (|| -> DecodeResult<()> {
                 for _ in 0..SLOT_COUNT {
                     let luma =
-                        create_plane_image(device, vk::Format::R8_UNORM, width, height, exportable)?;
+                        create_plane_image(device, luma_format, width, height, exportable)?;
                     let chroma = match create_plane_image(
                         device,
-                        vk::Format::R8G8_UNORM,
+                        chroma_format,
                         chroma_width,
                         chroma_height,
                         exportable,
@@ -346,7 +366,7 @@ impl SlotRing {
                         device,
                         luma,
                         luma_memory,
-                        wgpu::TextureFormat::R8Unorm,
+                        luma_wgpu,
                         width,
                         height,
                     );
@@ -354,7 +374,7 @@ impl SlotRing {
                         device,
                         chroma,
                         chroma_memory,
-                        wgpu::TextureFormat::Rg8Unorm,
+                        chroma_wgpu,
                         chroma_width,
                         chroma_height,
                     );
@@ -377,6 +397,7 @@ impl SlotRing {
             Ok(Self {
                 slots,
                 size: (width, height),
+                deep,
             })
         }
     }
@@ -573,8 +594,9 @@ pub(crate) fn read_luma_row(
     height: u32,
     row: u32,
     serial: u64,
+    deep: bool,
 ) -> DecodeResult<LumaRow> {
-    let mut buffer = HostBuffer::new(work.device.clone(), width as usize)?;
+    let mut buffer = HostBuffer::new(work.device.clone(), width as usize * if deep { 2 } else { 1 })?;
     // Safety: a copy out of an image we own, between two layout changes, waited for.
     unsafe {
         work.begin()?;
@@ -617,6 +639,11 @@ pub(crate) fn read_luma_row(
         width,
         height,
         row,
-        bytes: buffer.bytes().to_vec(),
+        // A 16-bit plane's row as its 8 most significant bits: what the tests compare.
+        bytes: if deep {
+            buffer.bytes().as_chunks::<2>().0.iter().map(|sample| (u16::from_ne_bytes(*sample) >> 8) as u8).collect()
+        } else {
+            buffer.bytes().to_vec()
+        },
     })
 }

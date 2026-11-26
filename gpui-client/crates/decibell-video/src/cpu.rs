@@ -32,10 +32,21 @@ impl Uploader for CountingUploader {
                 width: picture.width,
                 height: picture.height,
                 row,
-                bytes: picture
-                    .luma
-                    .row(row as usize, picture.width as usize)
-                    .to_vec(),
+                // A 10 / 12-bit picture's row as its 8 most significant bits.
+                bytes: if picture.sample_bytes() == 2 {
+                    let mut narrow = vec![0; picture.width as usize];
+                    crate::decode::narrow_row(
+                        &mut narrow,
+                        picture.luma.row(row as usize, picture.width as usize * 2),
+                        picture.narrow_shift(),
+                    );
+                    narrow
+                } else {
+                    picture
+                        .luma
+                        .row(row as usize, picture.width as usize)
+                        .to_vec()
+                },
             });
         }
         Ok(true)

@@ -52,5 +52,9 @@ image-webp = "0.2"
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 serde_json = { version = "1", optional = true }
 
+# The engine's self-tests read the window's frame back from the wgpu renderer.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_wgpu.workspace = true
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

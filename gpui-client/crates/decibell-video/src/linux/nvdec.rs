@@ -195,7 +195,7 @@ impl CudaSlots {
         let export = device.external_memory_fd().ok_or_else(|| {
             DecodeError::decoder("NVDEC: the GPU device has no VK_KHR_external_memory_fd")
         })?;
-        let ring = SlotRing::new(work, width, height, color, true)?;
+        let ring = SlotRing::new(work, width, height, color, true, false)?;
         let mut slots = Self {
             planes: Vec::with_capacity(ring.slots().len()),
             ring,
@@ -467,7 +467,7 @@ impl NvdecDecoder {
         }
         if let Some((row, sender)) = cx.capture.take(height) {
             let _ = sender.send(read_luma_row(
-                &self.work, slot.luma, width, height, row, cx.serial,
+                &self.work, slot.luma, width, height, row, cx.serial, false,
             )?);
         }
         self.surface.set_frame(slot.frame.clone(), cx.serial);

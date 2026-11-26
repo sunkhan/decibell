@@ -42,9 +42,10 @@ pub mod render;
 pub mod source;
 
 pub use demux::OpenError;
-pub use output::{AudioOutput, DefaultDevice, Recording, TestOutput, system_output};
+pub use output::{AudioOutput, DefaultDevice, Device, Recording, TestOutput, device_output, system_output};
 pub use player::{Open, Phase, PlayStats, Player, Status, VideoInfo};
 pub use source::Source;
+pub use decibell_video::Orientation;
 
 /// What a file is, read from its header without decoding anything: for a card that wants a
 /// duration or a picture size the upload did not record.
@@ -52,7 +53,10 @@ pub use source::Source;
 pub struct Probe {
     /// Microseconds; 0 when the container does not say.
     pub duration: i64,
+    /// The codec and the picture's size as drawn (turned by `orientation`).
     pub video: Option<(decibell_video::Codec, u32, u32)>,
+    /// How the stored picture is turned when drawn (the track's display matrix).
+    pub orientation: decibell_video::Orientation,
     pub audio: Option<String>,
     pub container: String,
 }
@@ -66,6 +70,7 @@ pub fn probe(source: Box<dyn Source>) -> Result<Probe, OpenError> {
             .video
             .as_ref()
             .map(|video| (video.codec, video.width, video.height)),
+        orientation: demuxer.video.as_ref().map(|video| video.orientation).unwrap_or_default(),
         audio: demuxer.audio.as_ref().map(|audio| audio.codec.clone()),
         container: demuxer.container.clone(),
     })

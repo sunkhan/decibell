@@ -19,6 +19,7 @@ pub(crate) struct D3d11Uploader {
     chroma_scratch: Vec<u8>,
     surface: Arc<D3d11Surface>,
     device: Arc<GpuDevice>,
+    narrow: crate::decode::Narrow,
 }
 
 impl D3d11Uploader {
@@ -28,10 +29,27 @@ impl D3d11Uploader {
             chroma_scratch: Vec::new(),
             surface,
             device,
+            narrow: Default::default(),
         }
     }
 
     fn upload_inner(&mut self, picture: &SwPicture<'_>, cx: &FrameCx<'_>) -> DecodeResult<bool> {
+        // A 10 / 12-bit picture (a file): its 8 most significant bits, the slots here being
+        // 8-bit.
+        let mut narrow = std::mem::take(&mut self.narrow);
+        let narrowed;
+        let picture = if picture.sample_bytes() == 2 {
+            narrowed = narrow.picture(picture);
+            &narrowed
+        } else {
+            picture
+        };
+        let uploaded = self.upload_eight_bit(picture, cx);
+        self.narrow = narrow;
+        uploaded
+    }
+
+    fn upload_eight_bit(&mut self, picture: &SwPicture<'_>, cx: &FrameCx<'_>) -> DecodeResult<bool> {
         let (width, height) = (picture.width, picture.height);
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
         let color = surface_color(picture.color);

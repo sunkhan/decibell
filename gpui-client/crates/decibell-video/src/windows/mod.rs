@@ -52,7 +52,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use ffmpeg_sys_next as ff;
 use gpui_windows::windows::Win32::Graphics::Direct3D11::{
     D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
-    D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
+    D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, D3D11_DECODER_PROFILE_VP9_VLD_PROFILE0, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
     ID3D11VideoDevice,
 };
 use gpui_windows::windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_NV12;
@@ -65,6 +65,7 @@ use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
 use crate::decode::{
     Backend, ColorInfo, DecodeError, DecodeResult, Matrix, PictureDecoder, SoftwareDecoder,
     av_error, software_support,
+ Transfer,
 };
 use crate::hub::StreamTarget;
 use crate::select::Order;
@@ -241,6 +242,13 @@ pub(crate) fn surface_color(color: ColorInfo) -> gpui_windows::SurfaceColor {
         } else {
             [0.25, 0.0]
         },
+        depth: color.depth,
+        transfer: match color.transfer {
+            Transfer::Sdr => gpui_windows::SurfaceTransfer::Sdr,
+            Transfer::Pq => gpui_windows::SurfaceTransfer::Pq,
+            Transfer::Hlg => gpui_windows::SurfaceTransfer::Hlg,
+            Transfer::Bt2020Sdr => gpui_windows::SurfaceTransfer::Bt2020Sdr,
+        },
     }
 }
 
@@ -248,15 +256,15 @@ pub(crate) fn surface_color(color: ColorInfo) -> gpui_windows::SurfaceColor {
 /// of a software slot).
 pub(crate) static LIVE_PLANES: AtomicI64 = AtomicI64::new(0);
 
-/// The DXVA decoder profile a stream of `codec` is decoded with (8-bit 4:2:0). `None`: a codec
-/// this client decodes in software only (VP8 / VP9 come from attachment files, never from a
-/// stream; as on Linux they have no hardware path here yet).
+/// The DXVA decoder profile `codec` is decoded with (8-bit 4:2:0). `None`: a codec this client
+/// decodes in software only (VP8). VP9 comes from attachment files, never from a stream.
 fn decoder_profile(codec: Codec) -> Option<GUID> {
     match codec {
         Codec::H264 => Some(D3D11_DECODER_PROFILE_H264_VLD_NOFGT),
         Codec::Hevc => Some(D3D11_DECODER_PROFILE_HEVC_VLD_MAIN),
         Codec::Av1 => Some(D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0),
-        Codec::Vp8 | Codec::Vp9 => None,
+        Codec::Vp9 => Some(D3D11_DECODER_PROFILE_VP9_VLD_PROFILE0),
+        Codec::Vp8 => None,
     }
 }
 

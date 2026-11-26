@@ -84,24 +84,37 @@ impl VulkanDecoder {
                 info.format
             )));
         }
-        if info.sw_format != ff::AVPixelFormat::AV_PIX_FMT_NV12 as c_int {
-            // 10-bit streams decode to P010: the same path with R16 / RG16 planes. The streamer
-            // sends 8-bit; anything else goes to the software decoder, which says so too.
+        // 8-bit pictures are NV12; a 10-bit file's are P010, the same two planes with 16-bit
+        // samples (the code in the high bits), handed over in 16-bit slots.
+        let deep = info.sw_format == ff::AVPixelFormat::AV_PIX_FMT_P010LE as c_int;
+        if !deep && info.sw_format != ff::AVPixelFormat::AV_PIX_FMT_NV12 as c_int {
             return Err(DecodeError::decoder(format!(
-                "unsupported picture format {} (only 8-bit 4:2:0)",
+                "unsupported picture format {} (only 4:2:0, 8 or 10 bits)",
                 info.sw_format
             )));
         }
+        if deep && !self.work.device.deep_planes() {
+            return Err(DecodeError::decoder(
+                "the GPU has no 16-bit normalised textures for 10-bit pictures",
+            ));
+        }
+        let expected = if deep {
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+        } else {
+            vk::Format::G8_B8R8_2PLANE_420_UNORM
+        };
         let (width, height) = (info.width, info.height);
-        let color = surface_color(info.color);
+        let mut described = info.color;
+        described.depth = if deep { 10 } else { 8 };
+        let color = surface_color(described);
         if self
             .slots
             .as_ref()
-            .is_none_or(|slots| slots.size != (width, height))
+            .is_none_or(|slots| slots.size != (width, height) || slots.deep != deep)
         {
             // Slots of the old size live on until the renderer lets go of them.
             self.slots = None;
-            self.slots = Some(SlotRing::new(&self.work, width, height, color, false)?);
+            self.slots = Some(SlotRing::new(&self.work, width, height, color, false, deep)?);
             cx.counters.set_size(width, height);
         }
         let Some(slot) = self.slots.as_mut().and_then(|slots| slots.free(color)) else {
@@ -122,7 +135,7 @@ impl VulkanDecoder {
             let mut source = DbvVkFrame::default();
             dbv_vkframe_lock(frame, &mut source);
             let recorded = (|| -> DecodeResult<()> {
-                if source.nb_images != 1 || source.format != vk::Format::G8_B8R8_2PLANE_420_UNORM {
+                if source.nb_images != 1 || source.format != expected {
                     return Err(DecodeError::decoder(format!(
                         "unexpected decoded image: {} images, {:?}",
                         source.nb_images, source.format
@@ -239,7 +252,7 @@ impl VulkanDecoder {
 
         if let Some((row, sender)) = cx.capture.take(height) {
             let _ = sender.send(read_luma_row(
-                work, slot.luma, width, height, row, cx.serial,
+                work, slot.luma, width, height, row, cx.serial, deep,
             )?);
         }
         self.surface.set_frame(slot.frame.clone(), cx.serial);

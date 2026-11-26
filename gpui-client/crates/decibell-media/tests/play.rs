@@ -41,6 +41,14 @@ fn every_file_of_the_matrix_plays_to_its_end() {
         ("av1_opus.webm", Some(Codec::Av1), true),
         ("h264_aac.mkv", Some(Codec::H264), true),
         ("h264_only.mp4", Some(Codec::H264), false),
+        // 10-bit 4:2:0 and the HDR signallings (320 x 240): decoded here in software, their 8
+        // most significant bits counted by the headless sink.
+        ("vp9_hw.webm", Some(Codec::Vp9), false),
+        ("hevc10.mp4", Some(Codec::Hevc), false),
+        ("av1_10.mp4", Some(Codec::Av1), false),
+        ("vp9_p2.webm", Some(Codec::Vp9), false),
+        ("hevc10_pq.mp4", Some(Codec::Hevc), false),
+        ("hevc10_hlg.mp4", Some(Codec::Hevc), false),
         ("cbr.mp3", None, true),
         ("vbr_noxing.mp3", None, true),
         ("vorbis.ogg", None, true),
@@ -66,7 +74,8 @@ fn every_file_of_the_matrix_plays_to_its_end() {
                 assert_eq!(status.video.map(|video| video.codec), codec, "{name}");
                 assert_eq!(status.has_audio, sound, "{name}");
                 if let Some(video) = status.video {
-                    assert_eq!((video.width, video.height), (128, 72), "{name}");
+                    let size = if name.contains("10") || name.contains("p2") || name.contains("hw") { (320, 240) } else { (128, 72) };
+                    assert_eq!((video.width, video.height), size, "{name}");
                 }
                 assert!((1_600_000..=2_200_000).contains(&status.duration), "{name}: duration {}", status.duration);
                 player.play();
@@ -501,4 +510,87 @@ fn a_paused_video_holds_its_picture_and_resumes_on_the_next_one() {
     assert!(presented[count..].windows(2).all(|pair| pair[1].0 == pair[0].0 + 40_000), "none skipped or repeated");
     assert!((position - last).abs() <= 60_000, "paused at {position}, the last picture was {last}");
     assert_eq!(player.stats().seeks, 0, "a resume needs no seek");
+}
+
+#[test]
+fn a_file_with_a_display_matrix_is_drawn_turned() {
+    use decibell_media::Orientation;
+    // Stored 128 x 72; a phone's "held upright" matrix turns it a quarter clockwise.
+    for (name, orientation, size) in [
+        ("rot90.mp4", Orientation::ROTATE_90, (72, 128)),
+        ("rot180.mp4", Orientation::ROTATE_180, (128, 72)),
+        ("rot270.mkv", Orientation::ROTATE_270, (72, 128)),
+        ("h264_only.mp4", Orientation::IDENTITY, (128, 72)),
+    ] {
+        let probe = decibell_media::probe(Box::new(Cursor::new(asset(name)))).unwrap();
+        assert_eq!(probe.orientation, orientation, "{name}");
+        assert_eq!(probe.video, Some((Codec::H264, size.0, size.1)), "{name}");
+        let hub = VideoHub::headless();
+        let (output, _) = TestOutput::recording(RATE, 20);
+        let player = open_bytes(asset(name), Some(&hub), name, output, true);
+        wait_for("the first picture", LIMIT, || player.status().has_picture);
+        let video = player.status().video.unwrap();
+        // The decoder reports the stored size; the status stays the drawn one.
+        assert_eq!((video.width, video.height, video.orientation), (size.0, size.1, orientation), "{name}");
+        assert_eq!(hub.stream(name).orientation(), orientation, "{name}: the surface is told");
+        wait_phase(&player, Phase::Ended, LIMIT);
+        let video = player.status().video.unwrap();
+        assert_eq!((video.width, video.height), size, "{name} at the end");
+    }
+}
+
+/// The output device is changed while a file plays (`Player::set_output`): the old device is
+/// handed a fade to zero and then nothing, the new one starts at zero, and the sound comes back
+/// on the sample that is due then: the file went on by the wall clock in between.
+#[test]
+fn a_change_of_output_device_moves_the_sound_without_a_step_or_a_delay() {
+    // Every sample says where it is in the file (16 samples a step: smooth, so that every
+    // jump in what the devices are handed is the envelope's).
+    let samples: Vec<i16> = (0..RATE as usize * 8).map(|n| (n / 16) as i16).collect();
+    let (first, first_recording) = TestOutput::recording(RATE, 10);
+    let (second, second_recording) = TestOutput::recording(RATE, 10);
+    let player = open_bytes(wav(&samples), None, "move", first.clone(), true);
+    wait_for("sound on the first device", LIMIT, || first_recording.lock().samples.len() > RATE as usize * 6 / 10);
+    let before = player.position();
+    let moved = Instant::now();
+    player.set_output(second.clone());
+    wait_for("sound on the second device", LIMIT, || second_recording.lock().samples.iter().filter(|&&x| x != 0.0).count() > RATE as usize / 2);
+    let after = player.position();
+    let elapsed = moved.elapsed().as_micros() as i64;
+    player.pause();
+    std::thread::sleep(Duration::from_millis(150));
+
+    let (a, b) = (first_recording.lock(), second_recording.lock());
+    assert_eq!(first.live.load(Ordering::Relaxed), 0, "the first device's stream is closed");
+    assert_eq!((a.streams.len(), b.streams.len()), (1, 1), "one stream on each device");
+    // The largest level the file reaches here is 24000 / 32768; the ramp's steepest step at it.
+    let allowed = std::f32::consts::FRAC_PI_2 / 480.0 * (24_000.0 / 32_768.0) * 1.02 + 2.0 / 32_768.0;
+    for (name, recording) in [("first", &a), ("second", &b)] {
+        let step = recording.samples.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
+        assert!(step <= allowed, "the {name} device was handed a jump of {step} (allowed {allowed})");
+    }
+    assert_eq!(*a.samples.last().unwrap(), 0.0, "the first device ends in silence");
+    assert!(b.samples[0].abs() < 1e-4, "the second device starts from silence ({})", b.samples[0]);
+    // A sample well before the move and one past the second device's ramp: the file's frames
+    // they are, and when each was played. The difference is the same on both clocks.
+    let frame = |value: f32| (value * 32_768.0).round() as i64 * 16;
+    let early = RATE as usize * 3 / 10;
+    let late = b.samples.iter().position(|&x| x != 0.0).expect("sound on the second device") + 960;
+    let (early_frame, late_frame) = (frame(a.samples[early]), frame(b.samples[late]));
+    let wall = b.played_at(late, RATE).unwrap().duration_since(a.played_at(early, RATE).unwrap()).as_micros() as i64;
+    let file = (late_frame - early_frame) * 1_000_000 / RATE as i64;
+    println!(
+        "device change: {:.1} ms without sound on either device; the file advanced {:.1} ms in {:.1} ms of wall clock between a sample on the old device and one on the new ({:+.2} ms); position before {:.3} s, {:.0} ms later {:.3} s",
+        b.played_at(b.samples.iter().position(|&x| x != 0.0).unwrap(), RATE).unwrap().duration_since(a.played_at(a.samples.iter().rposition(|&x| x != 0.0).unwrap(), RATE).unwrap()).as_secs_f64() * 1e3,
+        file as f64 / 1e3,
+        wall as f64 / 1e3,
+        (file - wall) as f64 / 1e3,
+        before as f64 / 1e6,
+        elapsed as f64 / 1e3,
+        after as f64 / 1e6,
+    );
+    // 16 samples a step is a third of a millisecond; the sinks' 10 ms blocks are stamped exactly.
+    assert!((file - wall).abs() <= 2_000, "the sound is {} us off the wall clock after the move", file - wall);
+    // The position the UI shows went on through the move.
+    assert!(((after - before) - elapsed).abs() <= 40_000, "the position advanced {} us in {elapsed} us", after - before);
 }

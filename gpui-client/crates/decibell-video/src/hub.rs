@@ -135,6 +135,8 @@ pub(crate) struct StreamTarget {
     pub counters: Arc<Counters>,
     /// A timed stream (`timed.rs`): its decoders give pictures out in presentation order.
     reorder: AtomicBool,
+    /// A file whose pictures are 10 / 12-bit (`Stream::set_deep`).
+    deep: AtomicBool,
 }
 
 impl StreamTarget {
@@ -145,12 +147,18 @@ impl StreamTarget {
             surface: crate::surface::Surface::new(),
             counters: Arc::new(Counters::new()),
             reorder: AtomicBool::new(false),
+            deep: AtomicBool::new(false),
         }
     }
 
     /// Whether a decoder opened for this target reorders (a file) or is low-delay (a stream).
     pub(crate) fn reorder(&self) -> bool {
         self.reorder.load(RELAXED)
+    }
+
+    /// Whether the stream's pictures are deeper than 8 bits (a file; said by its demuxer).
+    pub(crate) fn deep(&self) -> bool {
+        self.deep.load(RELAXED)
     }
 
     pub(crate) fn set_reorder(&self, reorder: bool) {
@@ -193,6 +201,8 @@ pub(crate) struct StreamShared {
     stalled: AtomicBool,
     capture: CaptureCell,
     removed: AtomicBool,
+    /// [`crate::Orientation`]'s bits: how the stream's pictures are turned when drawn.
+    orientation: AtomicU8,
 }
 
 /// Wakes the presenter task: at most once per turn it has not handled yet, however many
@@ -439,6 +449,7 @@ impl VideoHub {
                     },
                     counters,
                     reorder: AtomicBool::new(false),
+                    deep: AtomicBool::new(false),
                 };
                 Arc::new(StreamShared {
                     key: key.into(),
@@ -457,6 +468,7 @@ impl VideoHub {
                     stalled: AtomicBool::new(false),
                     capture: CaptureCell::default(),
                     removed: AtomicBool::new(false),
+                    orientation: AtomicU8::new(0),
                 })
             })
             .clone();
@@ -559,6 +571,21 @@ impl VideoHub {
     /// (a failed open, or a failure in its first pictures).
     pub fn skipped_decoders(&self) -> Vec<SkippedBackend> {
         self.inner.selector.report()
+    }
+
+    /// Whether 10 / 12-bit pictures are handed to the renderer in 16-bit planes here (else their
+    /// 8 most significant bits are).
+    pub fn deep_planes(&self) -> bool {
+        self.inner.backend.deep_planes()
+    }
+
+    /// Why `backend` is not tried for `codec` any more this session, if it was given up (any
+    /// codec, those only files use included).
+    pub fn skip_reason(&self, codec: Codec, backend: DecodeBackend) -> Option<String> {
+        self.inner
+            .selector
+            .skipped(codec, backend)
+            .map(|reason| reason.to_string())
     }
 
     /// Forgets which decoders failed (tests).
@@ -1004,6 +1031,21 @@ fn open_decoder(
             last_reason = Some(format!("{}: {reason}", backend.label()));
             continue;
         }
+        if backend.path() == DecodePath::Hardware && !codec.is_stream_codec() {
+            // A codec only files use is not in the start-up probe: its test frame is decoded on
+            // this decoder the first time a file needs it.
+            match crate::probe::file_codec_works(hub, backend, codec) {
+                Some(true) => {}
+                Some(false) => {
+                    last_reason = hub
+                        .selector
+                        .skipped(codec, backend)
+                        .map(|reason| format!("{}: {reason}", backend.label()));
+                    continue;
+                }
+                None => return Err(DecodeError::device_lost("the renderer's GPU device was lost")),
+            }
+        }
         let started = Instant::now();
         match hub.backend.open(backend, codec, description, &stream.target) {
             Ok(decoder) => {
@@ -1018,7 +1060,8 @@ fn open_decoder(
             }
             Err(error) if error.failure == Failure::DeviceLost => return Err(error),
             Err(error) => {
-                if hub.selector.skip(codec, backend, &error.message) {
+                // A 10-bit file's failure says nothing about the codec's 8-bit streams.
+                if !stream.target.deep() && hub.selector.skip(codec, backend, &error.message) {
                     hub.probed_answer_is_stale();
                 }
                 counters.errors.fetch_add(1, RELAXED);
@@ -1085,6 +1128,7 @@ fn failed(
         (Failure::Decoder, Some(backend)) if backend.path() == DecodePath::Hardware => {
             stream.denied.fetch_or(1 << backend.index(), RELAXED);
             if pictures < FIRST_FRAMES
+                && !stream.target.deep()
                 && let Some(codec) = codec
                 && hub.selector.skip(codec, backend, &error.message)
             {
@@ -1160,12 +1204,55 @@ impl Stream {
             .snapshot(self.shared.queue.len())
     }
 
-    /// The newest picture's size, when there is one.
+    /// The newest picture's size as it is drawn (turned by [`Self::set_orientation`]), when
+    /// there is one.
     pub fn picture_size(&self) -> Option<(u32, u32)> {
         #[cfg(gpu)]
-        return self.shared.target.surface.picture_size();
+        return self.shared.target.surface.display_size();
         #[cfg(not(gpu))]
         None
+    }
+
+    /// Turns the stream's pictures when they are drawn (a file's display matrix,
+    /// `orient.rs`): in the renderer's draw of the surface, from its next draw on. A live
+    /// stream is never turned.
+    pub fn set_orientation(&self, orientation: crate::Orientation) {
+        self.shared.orientation.store(orientation.bits(), RELAXED);
+        #[cfg(gpu)]
+        self.shared
+            .target
+            .surface
+            .set_orientation(crate::surface::SurfaceOrientation(orientation.bits()));
+    }
+
+    /// The picture the stream shows now, kept: a [`crate::Still`] goes on showing it after the
+    /// stream is removed (a played file's last picture as its card's poster). No pixel is read
+    /// back or copied: the still holds the slot the picture is in (its two plane textures stay
+    /// alive with it, a 1080p picture's 3 MB of GPU memory) and draws it like the stream did,
+    /// turned the same way. `None`: there is no picture.
+    pub fn still(&self) -> Option<crate::Still> {
+        #[cfg(gpu)]
+        {
+            let frame = self.shared.target.surface.latest_frame()?;
+            let size = self.picture_size()?;
+            let surface = crate::surface::Surface::new();
+            surface.set_orientation(crate::surface::SurfaceOrientation(self.orientation().bits()));
+            surface.set_frame(frame, 0);
+            Some(crate::Still { surface, size })
+        }
+        #[cfg(not(gpu))]
+        None
+    }
+
+    /// Says that the stream's pictures are 10 / 12-bit (a file; before its first packet). The
+    /// hardware decoders are then asked for the codec's 10-bit profile, and one that fails is
+    /// given up for this stream only: it may well decode the codec's 8-bit streams.
+    pub fn set_deep(&self, deep: bool) {
+        self.shared.target.deep.store(deep, RELAXED);
+    }
+
+    pub fn orientation(&self) -> crate::Orientation {
+        crate::Orientation::from_bits(self.shared.orientation.load(RELAXED))
     }
 
     /// Whether the stream has a decoder thread right now.

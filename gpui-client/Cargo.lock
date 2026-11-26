@@ -1839,6 +1839,7 @@ dependencies = [
  "futures",
  "gif",
  "gpui",
+ "gpui_wgpu",
  "image",
  "image-webp",
  "log",

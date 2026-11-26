@@ -92,3 +92,76 @@ impl RenderOnce for VideoView {
         .size_full()
     }
 }
+
+/// A stream's picture, kept after the stream ([`crate::Stream::still`]). Cheap to clone.
+#[derive(Clone)]
+pub struct Still {
+    #[cfg(gpu)]
+    pub(crate) surface: std::sync::Arc<crate::surface::Surface>,
+    pub(crate) size: (u32, u32),
+}
+
+impl Still {
+    /// The picture's size as it is drawn.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+}
+
+/// Shows a [`Still`], filling its parent: [`VideoView`] for a picture that no longer changes.
+#[derive(IntoElement)]
+pub struct StillView {
+    still: Still,
+    fit: Fit,
+    corner_radii: Corners<Pixels>,
+}
+
+impl StillView {
+    pub fn new(still: &Still) -> Self {
+        Self {
+            still: still.clone(),
+            fit: Fit::Contain,
+            corner_radii: Corners::default(),
+        }
+    }
+
+    pub fn fit(mut self, fit: Fit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    pub fn corner_radii(mut self, radii: Corners<Pixels>) -> Self {
+        self.corner_radii = radii;
+        self
+    }
+}
+
+impl RenderOnce for StillView {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                #[cfg(gpu)]
+                {
+                    use crate::surface::SurfaceFit;
+                    let view = crate::surface::SurfaceView {
+                        surface: self.still.surface.clone(),
+                        fit: match self.fit {
+                            Fit::Contain => SurfaceFit::Contain,
+                            Fit::Cover => SurfaceFit::Cover,
+                            Fit::Fill => SurfaceFit::Fill,
+                        },
+                    };
+                    window.paint_external_surface(
+                        bounds,
+                        self.corner_radii,
+                        gpui::ExternalSurface::new(std::sync::Arc::new(view)),
+                    );
+                }
+                #[cfg(not(gpu))]
+                let _ = (bounds, window, &self);
+            },
+        )
+        .size_full()
+    }
+}

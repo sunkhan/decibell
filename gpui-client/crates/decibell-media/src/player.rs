@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use decibell_video::{
-    Admit, Codec, DecodeBackend, Packet, Stream, StreamEvent, TimedFrame, TimedPush, Timing, VideoHub, Viewer,
+    Admit, Codec, DecodeBackend, Orientation, Packet, Stream, StreamEvent, TimedFrame, TimedPush, Timing, VideoHub, Viewer,
 };
 use parking_lot::{Condvar, Mutex};
 
@@ -64,8 +64,11 @@ pub enum Phase {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VideoInfo {
     pub codec: Codec,
+    /// The picture's size as drawn (the stored size turned by `orientation`).
     pub width: u32,
     pub height: u32,
+    /// How the stored picture is turned when drawn (the file's display matrix).
+    pub orientation: Orientation,
     pub frame_rate: f64,
     /// The decoder in use, once one opened.
     pub backend: Option<DecodeBackend>,
@@ -145,6 +148,8 @@ struct State {
     muted: bool,
     looping: bool,
     resync: bool,
+    /// The output to move to (`Player::set_output`), until the control thread took it.
+    new_output: Option<Arc<dyn AudioOutput>>,
     // The clock and the epoch.
     epoch: u32,
     target: i64,
@@ -308,7 +313,9 @@ impl Timing for Inner {
                     _ => false,
                 },
                 StreamEvent::Picture { width, height } => match &mut state.status.video {
-                    Some(video) if (video.width, video.height) != (width, height) => {
+                    // The decoder says the stored size; the status is the drawn one.
+                    Some(video) if (video.width, video.height) != video.orientation.apply((width, height)) => {
+                        let (width, height) = video.orientation.apply((width, height));
                         video.width = width;
                         video.height = height;
                         true
@@ -359,6 +366,7 @@ impl Player {
                 muted: open.muted,
                 looping: false,
                 resync: false,
+                new_output: None,
                 epoch: 1,
                 target: open.start_at.max(0),
                 first_shown: false,
@@ -427,6 +435,12 @@ impl Player {
         self.viewer.as_ref()
     }
 
+    /// The picture on screen now, kept (`decibell_video::Stream::still`): what a card shows as
+    /// its poster once this player is gone. Take it before dropping the player.
+    pub fn still(&self) -> Option<decibell_video::Still> {
+        self.viewer.as_ref()?.stream().still()
+    }
+
     /// Where playback is, in microseconds.
     pub fn position(&self) -> i64 {
         let state = self.inner.state.lock();
@@ -484,6 +498,18 @@ impl Player {
     /// decode) and no picture is copied or presented.
     pub fn set_visible(&self, visible: bool) {
         self.command(|state| state.visible = visible);
+    }
+
+    /// Moves the sound to another output (the device chosen in Settings changed). While
+    /// playing: the sound fades to zero on the old device (10 ms), the old stream is closed once
+    /// that was played out, the new one opens on silence and the sound comes back on the sample
+    /// that is due then. The picture does not wait: from the fade to the first sample on the
+    /// new device the player's clock is the wall clock, started at the audio clock's last
+    /// value; the sound takes the clock back when it flows again. A device at another sample
+    /// rate needs the sound decoded again at that rate: that one case is a seek to where the
+    /// file is. Paused or silent, the next stream simply opens on the new output.
+    pub fn set_output(&self, output: Arc<dyn AudioOutput>) {
+        self.command(|state| state.new_output = Some(output));
     }
 
     pub fn set_looping(&self, looping: bool) {
@@ -551,6 +577,10 @@ struct Control {
     /// When the monotonic clock took over from a sound track that ended before the picture.
     last_video_pts: i64,
     duration: i64,
+    /// The sound is leaving its device for another (`change_output`): closed when quiet.
+    moving: bool,
+    /// The wall clock runs the file until the sound flows again after a move.
+    wall_until_sound: bool,
 }
 
 struct Sound {
@@ -621,6 +651,11 @@ impl Control {
             }
         }
         let video = demuxer.video.clone();
+        if let (Some(stream), Some(video)) = (&stream, &video) {
+            // Before the first packet: the first picture is drawn the right way up.
+            stream.set_orientation(video.orientation);
+            stream.set_deep(video.deep);
+        }
         let (duration, target) = {
             let mut state = inner.state.lock();
             state.status.duration = demuxer.duration;
@@ -629,6 +664,7 @@ impl Control {
                 codec: video.codec,
                 width: video.width,
                 height: video.height,
+                orientation: video.orientation,
                 frame_rate: video.frame_rate,
                 backend: None,
             });
@@ -664,6 +700,8 @@ impl Control {
             playing: false,
             last_video_pts: 0,
             duration,
+            moving: false,
+            wall_until_sound: false,
         };
         // The first position is a seek like any other (epoch 1).
         if let Err(error) = control.go_to(target, 1) {
@@ -679,12 +717,15 @@ impl Control {
     fn work(&mut self) -> Result<(), String> {
         loop {
             // Commands.
-            let (seek, resync, want_play, closing) = {
+            let (seek, resync, want_play, closing, new_output) = {
                 let mut state = self.inner.state.lock();
-                (state.seek.take(), std::mem::take(&mut state.resync), state.want_play, state.closing)
+                (state.seek.take(), std::mem::take(&mut state.resync), state.want_play, state.closing, state.new_output.take())
             };
             if closing {
                 return Ok(());
+            }
+            if let Some(output) = new_output {
+                self.change_output(output)?;
             }
             if let Some(target) = seek {
                 self.seek_to(target)?;
@@ -832,13 +873,102 @@ impl Control {
             }
         }
         if let Some(audio) = &self.audio {
-            audio.feed.shared().set_playing(playing);
+            let shared = audio.feed.shared();
+            if playing && self.wall_until_sound && shared.sync_pending() {
+                // Paused in the middle of a move: the sample due is counted from now.
+                let state = self.inner.state.lock();
+                shared.sync_to(state.mono.pts, state.mono.at);
+            }
+            shared.set_playing(playing);
         }
-        if playing {
+        if playing && !self.moving {
             self.ensure_device();
         }
         self.inner.due.notify_all();
         Ok(())
+    }
+
+    /// The sound moves to `output` (see [`Player::set_output`]).
+    fn change_output(&mut self, output: Arc<dyn AudioOutput>) -> Result<(), String> {
+        self.output = output;
+        let Some(audio) = &mut self.audio else { return Ok(()) };
+        let shared = audio.feed.shared().clone();
+        if self.output.rate().is_ok_and(|rate| rate != shared.rate()) {
+            return self.change_rate();
+        }
+        if audio.device.is_none() || shared.is_quiet() {
+            // Nothing is sounding: the next stream opens on the new output.
+            audio.device = None;
+            return Ok(());
+        }
+        // The picture goes on by the wall clock from where the sound is; the sound leaves the
+        // old device at zero and comes back on the sample due when the new one starts.
+        let now = Instant::now();
+        {
+            let mut state = self.inner.state.lock();
+            let (pts, running) = self.inner.clock(&state, now);
+            if state.audio_clock {
+                state.audio_clock = false;
+                state.mono = Mono { pts, at: now, running };
+            }
+            shared.sync_to(pts, now);
+        }
+        shared.set_moving(true);
+        self.moving = true;
+        self.wall_until_sound = true;
+        self.inner.due.notify_all();
+        Ok(())
+    }
+
+    /// The new output has another sample rate: the sound is decoded again at that rate, from
+    /// where the file is (a seek to the current position).
+    fn change_rate(&mut self) -> Result<(), String> {
+        let position = {
+            let state = self.inner.state.lock();
+            self.inner.clock(&state, Instant::now()).0
+        };
+        if let Some(mut audio) = self.audio.take() {
+            let shared = audio.feed.shared().clone();
+            shared.set_playing(false);
+            if audio.device.is_some() {
+                let started = Instant::now();
+                while !shared.is_quiet() && started.elapsed() < Duration::from_millis(600) {
+                    std::thread::park_timeout(Duration::from_millis(50));
+                }
+            }
+            audio.device = None;
+        }
+        self.moving = false;
+        self.wall_until_sound = false;
+        let opened = self.demuxer.audio_parameters().and_then(|(parameters, time_base, start)| {
+            let rate = self.output.rate().ok()?;
+            let decoder = AudioDecoder::open(parameters, time_base, start, rate).ok()?;
+            let waker = self.inner.clone();
+            let shared = Shared::new(rate, Box::new(move || waker.wake()));
+            Some(Sound {
+                decoder,
+                cell: Arc::new(Mutex::new(Renderer::new(shared.clone()))),
+                feed: Feed::new(shared),
+                device: None,
+                backlog: Vec::new(),
+                backlog_at: 0,
+                next_pts: 0,
+                finished: false,
+                drained: false,
+                flushing: false,
+            })
+        });
+        {
+            let mut state = self.inner.state.lock();
+            state.audio = opened.as_ref().map(|sound| {
+                let shared = sound.feed.shared().clone();
+                shared.set_volume(if state.muted { 0.0 } else { state.volume });
+                shared.set_playing(self.playing);
+                shared
+            });
+        }
+        self.audio = opened;
+        self.seek_to(position)
     }
 
     /// Opens the device stream when the renderer has something to do.
@@ -895,6 +1025,34 @@ impl Control {
             audio.drained = true;
         }
         let failed = audio.device.as_ref().is_some_and(|device| device.failed());
+        if self.moving {
+            if !(shared.is_quiet() || failed || audio.device.is_none()) {
+                // The old device is still playing the fade out.
+                return;
+            }
+            // Silent and played out: the old stream goes, the new output's opens on silence.
+            audio.device = None;
+            self.moving = false;
+            shared.set_moving(false);
+            if self.playing && !audio.drained {
+                shared.set_playing(true);
+                self.ensure_device();
+            }
+            return;
+        }
+        if self.wall_until_sound
+            && !shared.sync_pending()
+            && shared.now(Instant::now()).is_some_and(|(_, running, _)| running)
+        {
+            // The sound flows again, on the sample the wall clock was at: it is the clock again.
+            self.wall_until_sound = false;
+            let mut state = self.inner.state.lock();
+            if state.audio.is_some() {
+                state.audio_clock = true;
+            }
+            drop(state);
+            self.inner.due.notify_all();
+        }
         let wanted = self.playing && !audio.drained;
         if shared.is_quiet() && !failed {
             if wanted {
@@ -967,6 +1125,9 @@ impl Control {
             audio.drained = false;
             audio.flushing = false;
             audio.next_pts = target;
+            // A move in progress finishes by itself; the new position starts as any other.
+            audio.feed.shared().cancel_sync();
+            self.wall_until_sound = false;
             audio.feed.begin(epoch, target);
         }
         self.demuxer.seek(target)?;

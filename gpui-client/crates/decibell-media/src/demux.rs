@@ -4,7 +4,7 @@ use std::ffi::c_int;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use decibell_video::{Codec, PADDING, Packet, PacketBytes};
+use decibell_video::{Codec, Orientation, PADDING, Packet, PacketBytes};
 use ffmpeg_sys_next as ff;
 use parking_lot::Mutex;
 
@@ -18,7 +18,7 @@ pub enum OpenError {
     Read(String),
     /// Not a container this client plays, or damaged.
     Format(String),
-    /// A container we read with a codec we do not decode ("mpeg4", "ac3", 10-bit …).
+    /// A container we read with a codec we do not decode ("mpeg4", "ac3", 4:4:4 …).
     Codec(String),
 }
 
@@ -36,8 +36,13 @@ impl std::fmt::Display for OpenError {
 #[derive(Clone, Debug)]
 pub struct VideoTrack {
     pub codec: Codec,
+    /// The picture's size as it is drawn: the stored size, turned by `orientation`.
     pub width: u32,
     pub height: u32,
+    /// The track's display matrix (a phone's portrait video is stored on its side).
+    pub orientation: Orientation,
+    /// The pictures are 10 or 12-bit.
+    pub deep: bool,
     /// Frames per second as the container says (0.0: unknown).
     pub frame_rate: f64,
     /// The codec's configuration record (avcC, hvcC, av1C), if the container has one.
@@ -138,6 +143,27 @@ fn video_codec(id: ff::AVCodecID) -> Option<Codec> {
     })
 }
 
+/// The track's display matrix (MP4 / MOV `tkhd`, Matroska's projection), as an orientation.
+///
+/// # Safety
+/// `parameters` is a stream's codec parameters.
+unsafe fn display_orientation(parameters: *const ff::AVCodecParameters) -> Orientation {
+    // Safety: the caller's contract; the side data is nine 32-bit numbers when it is there.
+    unsafe {
+        let side = ff::av_packet_side_data_get(
+            (*parameters).coded_side_data,
+            (*parameters).nb_coded_side_data,
+            ff::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+        );
+        if side.is_null() || (*side).data.is_null() || (*side).size < 36 {
+            return Orientation::IDENTITY;
+        }
+        let mut matrix = [0i32; 9];
+        std::ptr::copy_nonoverlapping((*side).data, matrix.as_mut_ptr().cast::<u8>(), 36);
+        Orientation::from_display_matrix(&matrix)
+    }
+}
+
 impl Demuxer {
     /// Opens the file and finds its tracks. Reads the container's header (and, for formats
     /// without one, up to two seconds of packets).
@@ -208,16 +234,21 @@ impl Demuxer {
                         unsupported.get_or_insert_with(|| codec_name(id));
                         continue;
                     };
+                    // 4:2:0 at 8, 10 or 12 bits: what Chromium plays (H.264 High 10 it does
+                    // not, and neither do the GPUs; FFmpeg's decoder gives it to us all the same).
                     let format = (*parameters).format;
-                    let eight_bit = format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as c_int
-                        || format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int
-                        || format == ff::AVPixelFormat::AV_PIX_FMT_NV12 as c_int
-                        || format == ff::AVPixelFormat::AV_PIX_FMT_NONE as c_int;
-                    if !eight_bit {
-                        // The client's slots are 8-bit 4:2:0 (docs/video-design.md §5.2).
-                        unsupported.get_or_insert_with(|| {
-                            format!("{}, not 8-bit 4:2:0", codec_name(id))
-                        });
+                    let is = |wanted: ff::AVPixelFormat| format == wanted as c_int;
+                    let deep = is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P10LE)
+                        || is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P12LE)
+                        || is(ff::AVPixelFormat::AV_PIX_FMT_P010LE);
+                    let playable = deep
+                        || is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P)
+                        || is(ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P)
+                        || is(ff::AVPixelFormat::AV_PIX_FMT_NV12)
+                        || is(ff::AVPixelFormat::AV_PIX_FMT_NONE);
+                    if !playable {
+                        // 4:2:2 and 4:4:4: the client's slots are 4:2:0 (docs/video-design.md §5.2).
+                        unsupported.get_or_insert_with(|| format!("{}, not 4:2:0", codec_name(id)));
                         continue;
                     }
                     let rate = if (*stream).avg_frame_rate.den != 0 && (*stream).avg_frame_rate.num != 0 {
@@ -234,10 +265,17 @@ impl Demuxer {
                         )))
                     };
                     (*stream).discard = ff::AVDiscard::AVDISCARD_DEFAULT;
+                    let orientation = display_orientation(parameters);
+                    let (width, height) = orientation.apply((
+                        (*parameters).width.max(0) as u32,
+                        (*parameters).height.max(0) as u32,
+                    ));
                     this.video = Some(VideoTrack {
                         codec,
-                        width: (*parameters).width.max(0) as u32,
-                        height: (*parameters).height.max(0) as u32,
+                        width,
+                        height,
+                        orientation,
+                        deep,
                         frame_rate: if rate.den != 0 { rate.num as f64 / rate.den as f64 } else { 0.0 },
                         description: extradata,
                         index: index as c_int,

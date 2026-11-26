@@ -1,6 +1,10 @@
-//! Where the player's sound goes: the system's default output device through cpal, as the
-//! Electron client's `<audio>` / `<video>` elements play on Chromium's default sink (the
-//! renderer never calls `setSinkId`: Settings → Audio's output device is the voice path's).
+//! Where the player's sound goes: an output device through cpal, the one Settings → Audio
+//! says (owner, 2026-11-26: attachments are routed like other people's stream audio: the
+//! separate stream-output device when that option is on, else the voice output device; no
+//! name means the system's default). The Electron client's `<audio>` / `<video>` elements
+//! play on Chromium's default sink whatever Settings say; this client differs on purpose
+//! (`docs/electron-quirks.md` row 19). The caller picks the name; [`Device`] resolves it the
+//! way the core's voice path resolves a saved device (`resolve_playback_device`).
 //! Nothing here touches the voice path: this is a stream of its own, opened when a player has
 //! sound to make and dropped when it has been silent for a quarter of a second.
 
@@ -40,8 +44,77 @@ pub trait OutputStream {
     }
 }
 
+/// An output device by its saved name (`None`: the system's default). Resolved at every open,
+/// as the core does for the voice path: on Linux the name is a PulseAudio / PipeWire sink,
+/// reached through ALSA's `pulse` (else `default`) PCM with `PULSE_SINK` naming it, and a sink
+/// that is not there leaves the stream on the server's default; elsewhere it is cpal's device
+/// name, and a device that is not connected falls back to the default one.
+pub struct Device {
+    name: Option<String>,
+}
+
 /// The system's default output device.
-pub struct DefaultDevice;
+#[allow(non_upper_case_globals)]
+pub const DefaultDevice: Device = Device { name: None };
+
+impl Device {
+    pub fn named(name: Option<String>) -> Device {
+        Device { name: name.filter(|name| !name.is_empty()) }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn config(&self) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+        let host = cpal::default_host();
+        let device = match &self.name {
+            None => {
+                // As the core: no name, no routing left over from a named device.
+                #[cfg(target_os = "linux")]
+                // Safety: the same process-wide variable the core's voice path sets and clears
+                // from its pipeline thread; a stream opened in the same instant by the other
+                // may land on this one's sink (the core documents the same edge).
+                unsafe {
+                    std::env::remove_var("PULSE_SINK")
+                };
+                host.default_output_device()
+            }
+            Some(name) => named_device(&host, name),
+        }
+        .ok_or_else(|| "No audio output device".to_string())?;
+        let config = device
+            .default_output_config()
+            .map_err(|error| format!("The audio output device can't be used ({error})"))?;
+        Ok((device, config))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn named_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
+    // Safety: see `Device::config`.
+    unsafe { std::env::set_var("PULSE_SINK", name) };
+    let mut fallback = None;
+    for device in host.output_devices().ok()? {
+        match device.name().ok().as_deref() {
+            Some("pulse") => return Some(device),
+            Some("default") if fallback.is_none() => fallback = Some(device),
+            _ => {}
+        }
+    }
+    fallback.or_else(|| host.default_output_device())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn named_device(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
+    host.output_devices()
+        .ok()?
+        .find(|device| device.name().is_ok_and(|found| found == name))
+        .or_else(|| {
+            log::info!("media: output device {name:?} is not connected: the default one");
+            host.default_output_device()
+        })
+}
 
 struct CpalStream {
     _stream: cpal::Stream,
@@ -52,16 +125,6 @@ impl OutputStream for CpalStream {
     fn failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
     }
-}
-
-fn default_config() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or_else(|| "No audio output device".to_string())?;
-    let config = device
-        .default_output_config()
-        .map_err(|error| format!("The audio output device can't be used ({error})"))?;
-    Ok((device, config))
 }
 
 /// Renders stereo into `scratch` and spreads it over the device's channels.
@@ -108,9 +171,9 @@ fn plays_at(info: &cpal::OutputCallbackInfo) -> Instant {
     Instant::now() + ahead.min(Duration::from_millis(500))
 }
 
-impl AudioOutput for DefaultDevice {
+impl AudioOutput for Device {
     fn rate(&self) -> Result<u32, String> {
-        Ok(default_config()?.1.sample_rate().0)
+        Ok(self.config()?.1.sample_rate().0)
     }
 
     fn open(
@@ -119,7 +182,7 @@ impl AudioOutput for DefaultDevice {
         rate: u32,
         on_failure: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Box<dyn OutputStream>, String> {
-        let (device, supported) = default_config()?;
+        let (device, supported) = self.config()?;
         if supported.sample_rate().0 != rate {
             return Err(format!(
                 "the output device's rate changed ({} Hz, was {rate})",
@@ -337,11 +400,17 @@ impl AudioOutput for TestOutput {
     }
 }
 
-/// The output the process's players use: the default device, or the null sink when
-/// `DECIBELL_MEDIA_OUTPUT=null` (self-tests and measurements: nothing is audible).
-pub fn system_output() -> Arc<dyn AudioOutput> {
+/// The output the process's players use: the device saved under `name` (`None`: the system's
+/// default), or the null sink when `DECIBELL_MEDIA_OUTPUT=null` (self-tests and measurements:
+/// nothing is audible).
+pub fn device_output(name: Option<String>) -> Arc<dyn AudioOutput> {
     if std::env::var("DECIBELL_MEDIA_OUTPUT").is_ok_and(|value| value == "null") {
         return TestOutput::null(48_000);
     }
-    Arc::new(DefaultDevice)
+    Arc::new(Device::named(name))
+}
+
+/// [`device_output`] on the system's default device.
+pub fn system_output() -> Arc<dyn AudioOutput> {
+    device_output(None)
 }

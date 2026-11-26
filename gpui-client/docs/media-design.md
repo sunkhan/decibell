@@ -23,7 +23,7 @@ Read from `PersistentVideoLayer.tsx`, `PersistentAudioLayer.tsx`, `videoPlayback
 | Single click toggles play after 220 ms; a double click toggles fullscreen instead. Keys on the focused player: Space, ← / → (5 s; repeats at most every 80 ms), F, Esc leaves fullscreen. | The same (the repeat throttle is not needed: seeks replace each other in the player). |
 | Fullscreen: the wrapper becomes `fixed inset-0` and the window goes fullscreen; the cursor is hidden while playing, hovered and idle; a download button top right. | Window fullscreen + a shell overlay with the same stage; the cursor rests with the controls (`hide_cursor_until_mouse_moves`, GPUI patch 0013). No download button there yet (§8). |
 | Volume and mute are settings (`mediaVideoVolume` / `mediaVideoMuted`, `mediaAudioVolume` / `mediaAudioMuted`), separate for video and audio, persisted, adjustable before anything plays (audio card). Dragging to 0 mutes; any other value unmutes. | The same settings (`media_*` in the core's config, through `model.settings`). |
-| Sound goes to Chromium's default output: the renderer never calls `setSinkId`, so Settings → Audio's output device (and the separate stream output) do not apply to attachments. | The system's default output device, on a stream of our own (`output.rs`). |
+| Sound goes to Chromium's default output: the renderer never calls `setSinkId`, so Settings → Audio's output device (and the separate stream output) do not apply to attachments. | **Differs** (owner, 2026-11-26): attachments are routed like other people's stream audio. The separate stream-output device when that option is on, else the voice output device; no name saved means the system's default. A stream of the player's own on that device (`output.rs`, §3 "The output device"). |
 | At the end the element pauses on its last frame; play starts again from 0. Nothing loops. | The same (`Phase::Ended`). `Player::set_looping` exists and is tested; nothing turns it on. |
 | Audio card: play / pause, scrub (only once the element reported a duration), `m:ss / m:ss` seeded from the upload's `durationMs`, mute, volume with wheel; Space on the focused card toggles. An MP3's `Infinity` duration is guarded to 0. | The same, except Space on the audio card (§8). Durations are always finite here: the container's, else FFmpeg's estimate from the bitrate, else 0. |
 | A media error: the video element is reloaded and resumed where it was; the audio card logs. | A file that cannot be opened or decoded shows why on the video's box ("Unsupported format (…)", the server's or reader's error) and a click tries again; the audio card stops (§8: no message line yet). A decoder that fails mid-file is replaced by the next (`decibell-video`'s order) from the keyframe before the current position, at most four times without a picture in between. |
@@ -52,8 +52,9 @@ one of its rows.
 | ADTS (`aac`) | | AAC | yes | yes |
 | AVI | | | no (no demuxer) | no: "This file can't be played" |
 
-Not played, on purpose or for now: **10-bit and 4:2:2 / 4:4:4 video** (the client's picture slots are 8-bit
-4:2:0, `video-design.md` §5.2; Chromium plays 10-bit HEVC / VP9 / AV1, so this is a gap, §8), AC-3 / E-AC-3 / DTS /
+10-bit 4:2:0 plays (HEVC Main 10, AV1 Main at 10 bits, VP9 profile 2; §2a). Not played, on purpose: **4:2:2 /
+4:4:4 video** (the client's picture slots are 4:2:0, `video-design.md` §5.2; Chromium plays 4:4:4 in software,
+rare in what people share), AC-3 / E-AC-3 / DTS /
 ALAC / Theora / MPEG-4 Part 2 (Chromium does not play them either). A file with a picture we cannot decode is
 refused whole ("Unsupported format (codec)") rather than played as sound.
 
@@ -63,13 +64,69 @@ streams, `video-design.md` §0.5):
 | Codec | First choice here | Fallbacks |
 |---|---|---|
 | H.264, HEVC, AV1 | Vulkan Video on the renderer's device | NVDEC, then software (FFmpeg's h264 / hevc, dav1d) |
-| VP8, VP9 | **software** (FFmpeg's `vp8` / `vp9`) | — |
+| VP9 | Vulkan Video (`VK_KHR_video_decode_vp9`) | NVDEC, then software (FFmpeg's `vp9`) |
+| VP8 | **software** (FFmpeg's `vp8`) | — |
+| 10-bit HEVC / AV1 / VP9 | Vulkan Video, the codec's 10-bit profile, into 16-bit planes | software (NVDEC and VA-API do not hand 10-bit pictures over yet) |
 
-VP8 / VP9 are software although the pinned FFmpeg has hardware paths for VP9 (Vulkan Video since 8.0, NVDEC,
-VA-API) and VP8 (NVDEC, VA-API): the client's hardware decoders, their probe frames and their slot formats are
-wired for the three stream codecs only (`Codec::has_hardware_path`). Adding VP9 means a hwaccel line in the
-FFmpeg build, a probe keyframe and the `Codec` arms in `linux/mod.rs`: an open item (§8), not done blind.
+**VP9 on the GPU** (the commonest WebM codec; software 1080p60 VP9 costs a core): FFmpeg's `vp9_vulkan`,
+`vp9_nvdec` and `vp9_vaapi` hwaccels are in the prefix, the Vulkan device is created with
+`VK_KHR_video_decode_vp9` and its feature bit where the driver has them (the extension is newer than the pinned
+`ash`: its three structs are declared in `linux/mod.rs`), and D3D11VA has the `VP9_VLD_PROFILE0` profile. VP9
+is a codec only files use: `Codec::ALL`, the start-up probe and what the client advertises stay the three
+stream codecs. Its probe is lazy instead (`probe::file_codec_works`): the first time a file needs a hardware
+decoder for VP9, the same 320 × 240 test picture (a 156-byte VP9 keyframe in the binary) is decoded on it, read
+back and compared; a decoder that fails is given up for VP9 for the session with its reason and the file goes on
+to the next of the order. Once per decoder per session, on the file's decoder thread. VP8 stays software.
 AMD / Intel: the same order with VA-API in NVDEC's place, exactly as for streams; unverified here as there.
+
+### 2a. 10-bit, and HDR on an SDR target
+
+**The decision: 16-bit plane textures, the same shader.** A 10-bit picture is handed to the renderer in `R16` /
+`RG16` slots with its code in the high bits (P010's layout), and the surface's matrix is scaled for the depth
+(GPUI patch `0031`). That is the path with the least cost on the hardware side: Vulkan Video decodes Main 10 /
+AV1 10-bit / VP9 profile 2 into a `G10X6_B10X6R10X6` image whose planes are copied into the slot by the same
+two `vkCmdCopyImage` regions as an 8-bit picture's, with no conversion pass and nothing on the CPU. Converting
+to 8 bits instead would have needed a render or compute pass per picture (a multi-planar image cannot be
+blitted) and thrown the depth away. Software pictures (`yuv420p10` / `yuv420p12` / P010) are shifted into the
+same layout in the one staging copy that an 8-bit picture also gets. A device without 16-bit normalised textures
+(wgpu's `TEXTURE_FORMAT_16BIT_NORM`), the OpenGL fallback and Direct3D's software slots get the 8 most
+significant bits (`decode::Narrow`) and say so (`VideoHub::deep_planes`).
+
+| | 8-bit | 10-bit |
+|---|---|---|
+| Vulkan Video | as before | the driver is asked for the codec's 10-bit profile at open (`hardware_support_at`); P010 into 16-bit slots |
+| NVDEC, VA-API, D3D11VA | as before | refused at open with a reason; the file goes on to software. Open item (§8) |
+| Software | as before | FFmpeg's hevc / vp9 and dav1d decode 10 and 12 bits; one shifted copy into 16-bit slots |
+
+The demuxer tells the stream that its pictures are deep (`Stream::set_deep`) before the first packet. A hardware
+decoder that fails on a deep file is given up **for that file only**: a GPU without Main 10 still decodes the
+codec's 8-bit streams, so the session-wide "this decoder does not work for this codec" rule is not applied.
+Live streams stay 8-bit.
+
+**HDR.** Chromium on an SDR desktop tone-maps PQ and HLG video to the screen: it undoes the transfer function,
+converts BT.2020 to the display's primaries and compresses highlights with `x (1 + x / peak²) / (1 + x)`, with
+the peak from the file's mastering metadata. This client does the same in the surface's fragment shader
+(`surface_to_sdr`, both renderers), per picture, from the frame's own colour description (`color_trc`,
+`color_primaries`): PQ's EOTF, or HLG's inverse OETF with the 1000-nit OOTF (gamma 1.2); linear light with
+1.0 = 203 nits; BT.2020 → BT.709; that highlight curve on the largest channel; sRGB encoding. **The
+approximation**: the peak is always taken as 1000 nits (mastering and content light level metadata are not
+read), there is no per-scene analysis, and out-of-gamut colours are clipped after the matrix. Gamma-encoded
+BT.2020 without an HDR transfer gets the primaries' conversion alone. Without this an HDR file drawn through
+the SDR matrix is washed out (PQ) or flat (HLG); with it a mid grey comes out where the formula puts it
+(`media-10bit` checks the drawn value against the formula; whether it *looks* right is for the owner's eye,
+HANDOFF §6). An HDR output (a Wayland HDR surface, Windows' HDR) is not used: the window is SDR.
+
+### 2b. Rotation
+
+A phone's portrait video is stored on its side with a display matrix in the container. `Demuxer` reads it
+(`AV_PKT_DATA_DISPLAYMATRIX` of the track) into `decibell_video::Orientation` (the four rotations and the
+mirrors; anything else is drawn as stored, as Chromium does with a matrix it does not recognise), reports the
+**turned** size everywhere (`VideoTrack`, `Probe`, `Status::video`, `Stream::picture_size`), and tells the
+stream (`Stream::set_orientation`) before the first packet. The renderer turns the texture coordinates when it
+draws the surface (GPUI patch `0030`, both renderers): no pixel is copied, the slots and the decoders know
+nothing about it, the fit (`Contain` in the card and in fullscreen) works on the turned size, and the kept
+last picture (`Still`) is turned the same way. The card's box and poster are the upload's (Electron uploads
+record the turned size and a turned thumbnail).
 
 ### The FFmpeg cost
 
@@ -122,6 +179,18 @@ decibell-media (control thread, one per player)            decibell-video-<n> (t
   device at instant *i*" (cpal's playback timestamp), and `Shared::now` reads that without a lock. It stands
   still whenever the envelope is at zero. A file without sound, a machine without a device, and the tail of a
   video whose sound ends first run on a monotonic clock started with the first picture.
+- **The output device** (`output::Device`, chosen by `playback.rs` from Settings → Audio): the saved name is
+  resolved at every open the way the core resolves a saved voice device (Linux: ALSA's `pulse` PCM with
+  `PULSE_SINK` naming the sink, so a sink that is not there leaves the stream on the server's default;
+  elsewhere cpal's device name, the default device when it is not connected). **Changing it while a file plays**
+  (`Player::set_output`): the sound fades to zero on the old device (the next 10 ms of the file), the old stream
+  is closed once it reported 250 ms of rendered silence, the new one opens on silence, and the renderer starts
+  from zero **on the sample that is due at that moment** (`Shared::sync_to`: samples in between are left
+  unplayed, at envelope zero). The picture does not stall: from the fade to the first sample on the new device
+  the player's clock is the wall clock, started from the audio clock's last value; the sound takes the clock
+  back when it flows again, and the two agree because the renderer aligned itself to the same anchor. A device
+  with another sample rate is the one case that costs a seek (the sound is decoded again at that rate from
+  where the file is). Paused, the next stream simply opens on the new device.
 - **A seek** is a new epoch: the picture queue is dropped; the demuxer goes to the keyframe at or before the
   target; pictures before the target are decoded and skipped; the first at or after it is shown at once,
   playing or not; the sound is faded out, decoded from the same keyframe, **trimmed to the target's sample**,

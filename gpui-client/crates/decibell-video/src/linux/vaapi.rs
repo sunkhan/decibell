@@ -442,7 +442,7 @@ impl VaapiDecoder {
             .is_none_or(|slots| slots.size != (width, height))
         {
             self.slots = None;
-            self.slots = Some(SlotRing::new(&self.work, width, height, color, false)?);
+            self.slots = Some(SlotRing::new(&self.work, width, height, color, false, false)?);
             cx.counters.set_size(width, height);
         }
         let Some(slot) = self.slots.as_mut().and_then(|slots| slots.free(color)) else {
@@ -551,7 +551,7 @@ impl VaapiDecoder {
         }
         if let Some((row, sender)) = cx.capture.take(height) {
             let _ = sender.send(read_luma_row(
-                work, slot.luma, width, height, row, cx.serial,
+                work, slot.luma, width, height, row, cx.serial, false,
             )?);
         }
         self.surface.set_frame(slot.frame.clone(), cx.serial);

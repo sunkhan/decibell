@@ -10,7 +10,8 @@ pub enum Codec {
     /// Files only (attachment playback, [`crate::Timing`]): never a stream's codec, never
     /// advertised, decoded in software.
     Vp8,
-    /// Files only, as [`Codec::Vp8`].
+    /// Files only, never advertised; decoded on the GPU where a hardware decoder has it
+    /// (Vulkan Video, NVDEC, VA-API, D3D11VA), else in software.
     Vp9,
 }
 
@@ -21,10 +22,17 @@ impl Codec {
     pub(crate) const EVERY: [Codec; 5] =
         [Codec::H264, Codec::Hevc, Codec::Av1, Codec::Vp8, Codec::Vp9];
 
-    /// Whether the hardware decoders are wired for this codec (the stream codecs). The others
-    /// go straight to software.
+    /// Whether the hardware decoders are wired for this codec: the stream codecs, and VP9 (the
+    /// commonest WebM codec; files only). VP8 goes straight to software.
     pub fn has_hardware_path(self) -> bool {
-        matches!(self, Codec::H264 | Codec::Hevc | Codec::Av1)
+        matches!(self, Codec::H264 | Codec::Hevc | Codec::Av1 | Codec::Vp9)
+    }
+
+    /// A codec streams use: probed at start-up and advertised ([`Codec::ALL`]). The others are
+    /// files' only, and a hardware decoder is tried on their test frame the first time a file
+    /// needs it (`probe::file_codec_works`).
+    pub fn is_stream_codec(self) -> bool {
+        Codec::ALL.contains(&self)
     }
 
     /// From the wire's `VideoCodec` byte (`StreamFrame::codec`): 1 and 2 H.264, 3 H.265, 4 AV1.

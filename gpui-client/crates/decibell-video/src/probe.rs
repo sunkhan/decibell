@@ -29,11 +29,54 @@ const KEYFRAMES: [&[u8]; 3] = [
     include_bytes!("probe/keyframe.hevc"),
     include_bytes!("probe/keyframe.av1"),
 ];
+/// The same picture as a VP9 keyframe (libvpx, 156 bytes): VP9 is a codec only files use, so
+/// it is not part of the start-up probe; see [`file_codec_works`].
+const KEYFRAME_VP9: &[u8] = include_bytes!("probe/keyframe.vp9");
 const KEYFRAME_SIZE: (u32, u32) = (320, 240);
 
-/// The test frame of `codec`: frame 0 of a `tools/streamgen` stream.
+/// The test frame of `codec`: frame 0 of a `tools/streamgen` stream. Empty: there is none.
 pub(crate) fn keyframe(codec: Codec) -> &'static [u8] {
-    KEYFRAMES[codec.index()]
+    match codec {
+        Codec::Vp9 => KEYFRAME_VP9,
+        Codec::Vp8 => &[],
+        _ => KEYFRAMES[codec.index()],
+    }
+}
+
+/// The probe of a codec only files use (VP9), run when a file first needs `backend` for it:
+/// the same test as the start-up probe's (the test frame decoded, read back and compared), on
+/// the decoder thread of the file that asks, once per decoder and codec in a session. A
+/// decoder that fails it is given up for the codec with the reason, and the file goes on to
+/// the next of the order (software at the end). `None`: the GPU device went away meanwhile.
+pub(crate) fn file_codec_works(hub: &HubInner, backend: DecodeBackend, codec: Codec) -> Option<bool> {
+    let slot = (codec.index(), backend.index());
+    if hub.probe.files.lock()[slot.0][slot.1] {
+        return Some(true);
+    }
+    if hub.selector.skipped(codec, backend).is_some() {
+        return Some(false);
+    }
+    if keyframe(codec).is_empty() {
+        return Some(true);
+    }
+    let started = Instant::now();
+    match try_backend(hub, backend, codec) {
+        Ok(()) => {
+            log::info!(
+                "video: {} decode with {} probed in {:.0} ms: works",
+                codec.label(),
+                backend.label(),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            hub.probe.files.lock()[slot.0][slot.1] = true;
+            Some(true)
+        }
+        Err(None) => None,
+        Err(Some(reason)) => {
+            hub.selector.skip(codec, backend, &reason);
+            Some(false)
+        }
+    }
 }
 
 /// Whether `row` is luma row 180 of the test frame: streamgen's gradient with its bars
@@ -53,6 +96,8 @@ pub(crate) struct ProbeState {
     result: Mutex<Option<(String, [CodecSupport; 3])>>,
     /// `Some` while the probe thread runs: who waits for it.
     waiting: Mutex<Option<Vec<Callback>>>,
+    /// `[codec][decoder]`: a file codec's test frame decoded right on that decoder this session.
+    files: Mutex<[[bool; DecodeBackend::ALL.len()]; Codec::EVERY.len()]>,
     cache_file: Mutex<Option<PathBuf>>,
 }
 
@@ -76,6 +121,7 @@ impl ProbeState {
     /// Nothing that was found out holds any more (the user asked for a new probe): the next
     /// request decodes again, whatever the file says.
     pub fn discard(&self) {
+        *self.files.lock() = Default::default();
         *self.result.lock() = None;
         if let Some(path) = &*self.cache_file.lock() {
             let _ = std::fs::remove_file(path);

@@ -20,7 +20,9 @@ use gpui_wgpu::{
 
 use super::slots::{COLOR_LAYER, HostBuffer, SLOT_COUNT, SlotRing, Work, barrier, read_luma_row};
 use super::{GpuDevice, LIVE_PLANES, classify, surface_color};
-use crate::decode::{Chroma, DecodeError, DecodeResult, FrameCx, LumaRow, SwPicture, Uploader};
+use crate::decode::{
+    Chroma, DecodeError, DecodeResult, FrameCx, LumaRow, SwPicture, Uploader, narrow_row, widen_row,
+};
 
 pub(crate) struct VulkanUploader {
     slots: Option<SlotRing>,
@@ -42,20 +44,30 @@ impl VulkanUploader {
     fn upload_inner(&mut self, picture: &SwPicture<'_>, cx: &FrameCx<'_>) -> DecodeResult<bool> {
         let (width, height) = (picture.width, picture.height);
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-        let color = surface_color(picture.color);
+        // A 10 / 12-bit picture goes into 16-bit planes where the device has them; else its 8
+        // most significant bits into the ordinary ones.
+        let source_sample = picture.sample_bytes();
+        let deep = source_sample == 2 && self.work.device.deep_planes();
+        let sample = if deep { 2 } else { 1 };
+        let mut described = picture.color;
+        if !deep {
+            described.depth = 8;
+        }
+        let color = surface_color(described);
         // Luma rows packed, then chroma rows of interleaved pairs, at an offset every queue
         // family accepts for a buffer-to-image copy.
-        let luma_bytes = width as usize * height as usize;
+        let luma_row = width as usize * sample;
+        let luma_bytes = luma_row * height as usize;
         let chroma_offset = luma_bytes.next_multiple_of(4);
-        let chroma_row = chroma_width as usize * 2;
+        let chroma_row = chroma_width as usize * 2 * sample;
         let needed = chroma_offset + chroma_row * chroma_height as usize;
         if self
             .slots
             .as_ref()
-            .is_none_or(|slots| slots.size != (width, height))
+            .is_none_or(|slots| slots.size != (width, height) || slots.deep != deep)
         {
             self.slots = None;
-            self.slots = Some(SlotRing::new(&self.work, width, height, color, false)?);
+            self.slots = Some(SlotRing::new(&self.work, width, height, color, false, deep)?);
         }
         if self
             .staging
@@ -76,27 +88,66 @@ impl VulkanUploader {
         // The one copy of the picture on the CPU.
         let staged = staging.bytes();
         let (luma, chroma) = staged.split_at_mut(chroma_offset);
-        let row = width as usize;
-        if picture.luma.stride == row {
-            luma[..luma_bytes].copy_from_slice(&picture.luma.bytes[..luma_bytes]);
+        let source_row = width as usize * source_sample;
+        if source_sample == 1 {
+            if picture.luma.stride == luma_row {
+                luma[..luma_bytes].copy_from_slice(&picture.luma.bytes[..luma_bytes]);
+            } else {
+                for (y, out) in luma[..luma_bytes].chunks_exact_mut(luma_row).enumerate() {
+                    out.copy_from_slice(picture.luma.row(y, luma_row));
+                }
+            }
+        } else if deep {
+            let shift = picture.widen_shift();
+            for (y, out) in luma[..luma_bytes].chunks_exact_mut(luma_row).enumerate() {
+                widen_row(out, picture.luma.row(y, source_row), shift);
+            }
         } else {
-            for (y, out) in luma[..luma_bytes].chunks_exact_mut(row).enumerate() {
-                out.copy_from_slice(picture.luma.row(y, row));
+            let shift = picture.narrow_shift();
+            for (y, out) in luma[..luma_bytes].chunks_exact_mut(luma_row).enumerate() {
+                narrow_row(out, picture.luma.row(y, source_row), shift);
             }
         }
+        let half = chroma_width as usize;
         match &picture.chroma {
-            Chroma::Interleaved(plane) => {
+            Chroma::Interleaved(plane) if source_sample == 1 => {
                 for (y, out) in chroma.chunks_exact_mut(chroma_row).enumerate() {
                     out.copy_from_slice(plane.row(y, chroma_row));
                 }
             }
-            Chroma::Planar(u, v) => {
-                let half = chroma_width as usize;
+            Chroma::Interleaved(plane) => {
+                for (y, out) in chroma.chunks_exact_mut(chroma_row).enumerate() {
+                    let row = plane.row(y, half * 4);
+                    if deep {
+                        widen_row(out, row, picture.widen_shift());
+                    } else {
+                        narrow_row(out, row, picture.narrow_shift());
+                    }
+                }
+            }
+            Chroma::Planar(u, v) if source_sample == 1 => {
                 for (y, out) in chroma.chunks_exact_mut(chroma_row).enumerate() {
                     let (u, v) = (u.row(y, half), v.row(y, half));
                     for ((pair, u), v) in out.as_chunks_mut::<2>().0.iter_mut().zip(u).zip(v) {
                         pair[0] = *u;
                         pair[1] = *v;
+                    }
+                }
+            }
+            Chroma::Planar(u, v) => {
+                let (widen, narrow) = (picture.widen_shift(), picture.narrow_shift());
+                for (y, out) in chroma.chunks_exact_mut(chroma_row).enumerate() {
+                    let (u, v) = (u.row(y, half * 2).as_chunks::<2>().0, v.row(y, half * 2).as_chunks::<2>().0);
+                    if deep {
+                        for ((pair, u), v) in out.as_chunks_mut::<4>().0.iter_mut().zip(u).zip(v) {
+                            pair[..2].copy_from_slice(&(u16::from_ne_bytes(*u) << widen).to_ne_bytes());
+                            pair[2..].copy_from_slice(&(u16::from_ne_bytes(*v) << widen).to_ne_bytes());
+                        }
+                    } else {
+                        for ((pair, u), v) in out.as_chunks_mut::<2>().0.iter_mut().zip(u).zip(v) {
+                            pair[0] = (u16::from_ne_bytes(*u) >> narrow) as u8;
+                            pair[1] = (u16::from_ne_bytes(*v) >> narrow) as u8;
+                        }
                     }
                 }
             }
@@ -167,7 +218,7 @@ impl VulkanUploader {
         }
         if let Some((row, sender)) = cx.capture.take(height) {
             let _ = sender.send(read_luma_row(
-                work, slot.luma, width, height, row, cx.serial,
+                work, slot.luma, width, height, row, cx.serial, deep,
             )?);
         }
         self.surface.set_frame(slot.frame.clone(), cx.serial);
@@ -216,6 +267,8 @@ pub(crate) struct WgpuUploader {
     slot_size: (u32, u32),
     /// Planar chroma interleaved before the upload; reused.
     chroma_scratch: Vec<u8>,
+    /// A 10 / 12-bit picture's 8-bit copy (this path has 8-bit textures only).
+    narrow: crate::decode::Narrow,
     surface: Arc<WgpuSurface>,
 }
 
@@ -226,6 +279,7 @@ impl WgpuUploader {
             slots: Vec::new(),
             slot_size: (0, 0),
             chroma_scratch: Vec::new(),
+            narrow: Default::default(),
             surface,
         }
     }
@@ -282,6 +336,22 @@ impl Uploader for WgpuUploader {
                 "the renderer's GPU device was lost",
             ));
         }
+        let mut narrow = std::mem::take(&mut self.narrow);
+        let narrowed;
+        let picture = if picture.sample_bytes() == 2 {
+            narrowed = narrow.picture(picture);
+            &narrowed
+        } else {
+            picture
+        };
+        let uploaded = self.upload_eight_bit(picture, cx);
+        self.narrow = narrow;
+        uploaded
+    }
+}
+
+impl WgpuUploader {
+    fn upload_eight_bit(&mut self, picture: &SwPicture<'_>, cx: &FrameCx<'_>) -> DecodeResult<bool> {
         let (width, height) = (picture.width, picture.height);
         let color = surface_color(picture.color);
         if self.slot_size != (width, height) {

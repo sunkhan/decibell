@@ -33,7 +33,7 @@ use parking_lot::Mutex;
 
 use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
 use crate::decode::{
-    Backend, ColorInfo, DecodeError, DecodeResult, Matrix, PictureDecoder, SoftwareDecoder,
+    Backend, ColorInfo, DecodeError, DecodeResult, Matrix, PictureDecoder, SoftwareDecoder, Transfer,
     av_error, software_support,
 };
 use crate::hub::StreamTarget;
@@ -71,10 +71,12 @@ static QUEUES: Mutex<Option<VideoQueues>> = Mutex::new(None);
 
 const VIDEO_QUEUE: &CStr = c"VK_KHR_video_queue";
 const VIDEO_DECODE_QUEUE: &CStr = c"VK_KHR_video_decode_queue";
-const OPTIONAL_EXTENSIONS: [&CStr; 5] = [
+const VIDEO_DECODE_VP9: &CStr = c"VK_KHR_video_decode_vp9";
+const OPTIONAL_EXTENSIONS: [&CStr; 6] = [
     c"VK_KHR_video_decode_h264",
     c"VK_KHR_video_decode_h265",
     c"VK_KHR_video_decode_av1",
+    VIDEO_DECODE_VP9,
     c"VK_KHR_video_maintenance1",
     // Vulkan 1.3 core; named for devices that only reach 1.2.
     c"VK_KHR_synchronization2",
@@ -106,8 +108,9 @@ fn decode_extension(codec: Codec) -> &'static CStr {
         Codec::H264 => c"VK_KHR_video_decode_h264",
         Codec::Hevc => c"VK_KHR_video_decode_h265",
         Codec::Av1 => c"VK_KHR_video_decode_av1",
+        Codec::Vp9 => VIDEO_DECODE_VP9,
         // Files only, software only (`Codec::has_hardware_path`): an extension no driver has.
-        Codec::Vp8 | Codec::Vp9 => c"",
+        Codec::Vp8 => c"",
     }
 }
 
@@ -204,7 +207,18 @@ fn device_hook(
             vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true),
         ));
     let create_info = std::mem::take(args.create_info);
-    *args.create_info = create_info.push_next(synchronization2);
+    let mut create_info = create_info.push_next(synchronization2);
+    if has(VIDEO_DECODE_VP9) {
+        // VP9 decode is the one codec extension with a feature bit of its own. Leaked like the
+        // struct above.
+        let vp9: &'static mut DecodeVp9Features = Box::leak(Box::new(DecodeVp9Features {
+            s_type: vk::StructureType::from_raw(1_000_514_000),
+            p_next: std::ptr::null_mut(),
+            video_decode_vp9: vk::TRUE,
+        }));
+        create_info = create_info.push_next(vp9);
+    }
+    *args.create_info = create_info;
 
     *QUEUES.lock() = Some(VideoQueues {
         aux_family,
@@ -212,6 +226,51 @@ fn device_hook(
         decode_family: decode_family as u32,
     });
 }
+
+// VK_KHR_video_decode_vp9 (Vulkan 1.4.317) is newer than the pinned `ash`: its three structs
+// and two constants, from vulkan_core.h.
+
+/// `VkPhysicalDeviceVideoDecodeVP9FeaturesKHR`.
+#[repr(C)]
+struct DecodeVp9Features {
+    s_type: vk::StructureType,
+    p_next: *mut std::ffi::c_void,
+    video_decode_vp9: vk::Bool32,
+}
+// Safety: the struct's layout and structure type are the extension's; it extends
+// VkDeviceCreateInfo by the specification.
+unsafe impl vk::ExtendsDeviceCreateInfo for DecodeVp9Features {}
+unsafe impl vk::TaggedStructure for DecodeVp9Features {
+    const STRUCTURE_TYPE: vk::StructureType = vk::StructureType::from_raw(1_000_514_000);
+}
+
+/// `VkVideoDecodeVP9ProfileInfoKHR`.
+#[repr(C)]
+struct DecodeVp9Profile {
+    s_type: vk::StructureType,
+    p_next: *const std::ffi::c_void,
+    /// `StdVideoVP9Profile`: 0 is profile 0 (8-bit 4:2:0), 2 is profile 2 (10 / 12-bit 4:2:0).
+    std_profile: u32,
+}
+unsafe impl vk::ExtendsVideoProfileInfoKHR for DecodeVp9Profile {}
+unsafe impl vk::TaggedStructure for DecodeVp9Profile {
+    const STRUCTURE_TYPE: vk::StructureType = vk::StructureType::from_raw(1_000_514_003);
+}
+
+/// `VkVideoDecodeVP9CapabilitiesKHR`.
+#[repr(C)]
+struct DecodeVp9Capabilities {
+    s_type: vk::StructureType,
+    p_next: *mut std::ffi::c_void,
+    max_level: u32,
+}
+unsafe impl vk::ExtendsVideoCapabilitiesKHR for DecodeVp9Capabilities {}
+unsafe impl vk::TaggedStructure for DecodeVp9Capabilities {
+    const STRUCTURE_TYPE: vk::StructureType = vk::StructureType::from_raw(1_000_514_001);
+}
+
+/// `VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR`.
+const DECODE_VP9: vk::VideoCodecOperationFlagsKHR = vk::VideoCodecOperationFlagsKHR::from_raw(0x8);
 
 /// FFmpeg's (and our) lock / unlock around a queue submission: the renderer's device-wide lock.
 extern "C" fn device_queue_lock(lock: c_int) {
@@ -343,6 +402,15 @@ impl GpuDevice {
             extensions,
             vendor,
         }))
+    }
+
+    /// Whether the renderer's device has 16-bit normalised textures (GPUI patch `0031` asks
+    /// for them): the planes of a 10 / 12-bit picture.
+    pub fn deep_planes(&self) -> bool {
+        self.context
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
     }
 
     pub fn has_extension(&self, name: &CStr) -> bool {
@@ -583,6 +651,13 @@ pub(crate) fn surface_color(color: ColorInfo) -> gpui_wgpu::SurfaceColor {
         } else {
             [0.25, 0.0]
         },
+        depth: color.depth,
+        transfer: match color.transfer {
+            Transfer::Sdr => gpui_wgpu::SurfaceTransfer::Sdr,
+            Transfer::Pq => gpui_wgpu::SurfaceTransfer::Pq,
+            Transfer::Hlg => gpui_wgpu::SurfaceTransfer::Hlg,
+            Transfer::Bt2020Sdr => gpui_wgpu::SurfaceTransfer::Bt2020Sdr,
+        },
     }
 }
 
@@ -590,7 +665,7 @@ pub(crate) fn surface_color(color: ColorInfo) -> gpui_wgpu::SurfaceColor {
 pub(crate) static LIVE_PLANES: AtomicI64 = AtomicI64::new(0);
 
 /// Per codec: the largest picture Vulkan Video decodes, `None` when it does not decode it.
-type VulkanVideoSupport = [Option<(u32, u32)>; 3];
+type VulkanVideoSupport = [Option<(u32, u32)>; Codec::EVERY.len()];
 
 pub(crate) struct LinuxBackend {
     /// The device the current decoders are on. Weak: with the last decoder it goes, and with
@@ -639,7 +714,7 @@ impl LinuxBackend {
         {
             return *support;
         }
-        let support = Codec::ALL.map(|codec| hardware_support(context, codec));
+        let support = Codec::EVERY.map(|codec| hardware_support(context, codec));
         log::info!("video: Vulkan Video decode (largest picture per codec): {support:?}");
         *cached = Some(((*context.device).clone(), support));
         support
@@ -673,6 +748,15 @@ impl LinuxBackend {
 /// The driver's answer for 8-bit 4:2:0 decode of `codec` on the renderer's device: the largest
 /// picture, or `None` when the device cannot (or was not created to) decode it.
 fn hardware_support(context: &WgpuContext, codec: Codec) -> Option<(u32, u32)> {
+    hardware_support_at(context, codec, false)
+}
+
+/// The same for the codec's 4:2:0 profile at `deep` (10 bits: HEVC Main 10, AV1 Main, VP9
+/// profile 2) or 8 bits. H.264 has no 10-bit profile a GPU decodes.
+fn hardware_support_at(context: &WgpuContext, codec: Codec, deep: bool) -> Option<(u32, u32)> {
+    if deep && codec == Codec::H264 {
+        return None;
+    }
     // Safety: raw handles of a live device and its instance; the query structs are chained as
     // the Vulkan Video extensions require.
     unsafe {
@@ -692,17 +776,39 @@ fn hardware_support(context: &WgpuContext, codec: Codec) -> Option<(u32, u32)> {
             .std_profile_idc(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
             .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE);
         let mut h265_profile = vk::VideoDecodeH265ProfileInfoKHR::default()
-            .std_profile_idc(vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN);
+            .std_profile_idc(if deep {
+                vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10
+            } else {
+                vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
+            });
         let mut av1_profile = vk::VideoDecodeAV1ProfileInfoKHR::default()
             .std_profile(vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN)
             .film_grain_support(false);
         let profile = vk::VideoProfileInfoKHR::default()
             .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
-            .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-            .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8);
+            .luma_bit_depth(if deep {
+                vk::VideoComponentBitDepthFlagsKHR::TYPE_10
+            } else {
+                vk::VideoComponentBitDepthFlagsKHR::TYPE_8
+            })
+            .chroma_bit_depth(if deep {
+                vk::VideoComponentBitDepthFlagsKHR::TYPE_10
+            } else {
+                vk::VideoComponentBitDepthFlagsKHR::TYPE_8
+            });
         let mut h264_caps = vk::VideoDecodeH264CapabilitiesKHR::default();
         let mut h265_caps = vk::VideoDecodeH265CapabilitiesKHR::default();
         let mut av1_caps = vk::VideoDecodeAV1CapabilitiesKHR::default();
+        let mut vp9_profile = DecodeVp9Profile {
+            s_type: vk::StructureType::from_raw(1_000_514_003),
+            p_next: std::ptr::null(),
+            std_profile: if deep { 2 } else { 0 },
+        };
+        let mut vp9_caps = DecodeVp9Capabilities {
+            s_type: vk::StructureType::from_raw(1_000_514_001),
+            p_next: std::ptr::null_mut(),
+            max_level: 0,
+        };
         let mut decode_caps = vk::VideoDecodeCapabilitiesKHR::default();
         let caps = vk::VideoCapabilitiesKHR::default().push_next(&mut decode_caps);
         let (profile, mut caps) = match codec {
@@ -724,7 +830,13 @@ fn hardware_support(context: &WgpuContext, codec: Codec) -> Option<(u32, u32)> {
                     .push_next(&mut av1_profile),
                 caps.push_next(&mut av1_caps),
             ),
-            Codec::Vp8 | Codec::Vp9 => return None,
+            Codec::Vp9 => (
+                profile
+                    .video_codec_operation(DECODE_VP9)
+                    .push_next(&mut vp9_profile),
+                caps.push_next(&mut vp9_caps),
+            ),
+            Codec::Vp8 => return None,
         };
         (video.fp().get_physical_device_video_capabilities_khr)(
             hal_device.raw_physical_device(),
@@ -806,6 +918,21 @@ impl Backend for LinuxBackend {
                         codec.label()
                     )));
                 }
+                if target.deep() {
+                    // A 10-bit file: the driver's answer for the codec's 10-bit profile, and
+                    // 16-bit planes to hand the pictures over in.
+                    if !device.deep_planes() {
+                        return Err(DecodeError::decoder(
+                            "the GPU has no 16-bit normalised textures for 10-bit pictures",
+                        ));
+                    }
+                    if hardware_support_at(&device.context, codec, true).is_none() {
+                        return Err(DecodeError::decoder(format!(
+                            "the driver does not decode 10-bit {} with Vulkan Video",
+                            codec.label()
+                        )));
+                    }
+                }
                 let hw_device = device.hw_device()?;
                 Ok(Box::new(hw::VulkanDecoder::open(
                     device.clone(),
@@ -815,6 +942,9 @@ impl Backend for LinuxBackend {
                     target,
                 )?))
             }
+            DecodeBackend::Nvdec | DecodeBackend::Vaapi if target.deep() => Err(DecodeError::decoder(
+                "10-bit pictures are not handed over by this decoder yet (Vulkan Video and software are)",
+            )),
             DecodeBackend::Nvdec => {
                 let cuda = self.cuda(&device)?;
                 Ok(Box::new(nvdec::NvdecDecoder::open(
@@ -918,6 +1048,10 @@ impl Backend for LinuxBackend {
 
     fn live_textures(&self) -> i64 {
         LIVE_PLANES.load(Ordering::Relaxed)
+    }
+
+    fn deep_planes(&self) -> bool {
+        matches!(self.device(), Ok(Some(device)) if device.deep_planes())
     }
 
     fn collect(&self) {

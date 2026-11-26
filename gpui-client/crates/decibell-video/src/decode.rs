@@ -165,6 +165,11 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// Names the GPU and its driver version: what a probe's result is valid for. `None`: the
     /// renderer has no device yet.
     fn device_key(&self) -> Option<String>;
+    /// Whether a 10 / 12-bit picture keeps its depth on the way to the renderer (16-bit plane
+    /// textures) or is uploaded as its 8 most significant bits.
+    fn deep_planes(&self) -> bool {
+        false
+    }
     /// Plane textures alive in the process (tests: that a closed stream frees them).
     fn live_textures(&self) -> i64;
     /// Lets the renderer's device notice which of its submissions the GPU has finished, so the
@@ -210,8 +215,8 @@ fn find_decoder(codec: Codec, hardware: bool) -> *const ff::AVCodec {
             Codec::Av1 if hardware => ff::avcodec_find_decoder_by_name(c"av1".as_ptr()),
             Codec::Av1 => ff::avcodec_find_decoder_by_name(c"libdav1d".as_ptr()),
             Codec::Vp8 if hardware => std::ptr::null(),
-            Codec::Vp9 if hardware => std::ptr::null(),
             Codec::Vp8 => ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_VP8),
+            // FFmpeg's own VP9 decoder is both: software, and the host of the hwaccels.
             Codec::Vp9 => ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_VP9),
         }
     }
@@ -471,6 +476,21 @@ impl FfDecoder {
                 )
             };
             let colorspace = int(std::ptr::addr_of!((*frame).colorspace).cast());
+            let transfer = int(std::ptr::addr_of!((*frame).color_trc).cast());
+            let primaries = int(std::ptr::addr_of!((*frame).color_primaries).cast());
+            // Bits per sample, from the format's descriptor (8 when FFmpeg has none).
+            let descriptor = ff::av_pix_fmt_desc_get(std::mem::transmute::<c_int, ff::AVPixelFormat>(sw_format));
+            let depth = if descriptor.is_null() {
+                8
+            } else {
+                (*descriptor).comp[0].depth.clamp(8, 16) as u8
+            };
+            let transfer = match (transfer, primaries) {
+                (16, _) => Transfer::Pq,  // AVCOL_TRC_SMPTE2084
+                (18, _) => Transfer::Hlg, // AVCOL_TRC_ARIB_STD_B67
+                (_, 9) => Transfer::Bt2020Sdr, // AVCOL_PRI_BT2020
+                _ => Transfer::Sdr,
+            };
             let range = int(std::ptr::addr_of!((*frame).color_range).cast());
             let chroma_location = int(std::ptr::addr_of!((*frame).chroma_location).cast());
             let height = (*frame).height.max(0) as u32;
@@ -486,7 +506,9 @@ impl FfDecoder {
                         5 | 6 => Matrix::Bt601,   // AVCOL_SPC_BT470BG, SMPTE170M
                         9 | 10 => Matrix::Bt2020, // AVCOL_SPC_BT2020_NCL, _CL
                         1 => Matrix::Bt709,
-                        // Unspecified: what the streamer sends (BT.709 for HD).
+                        // Unspecified: HDR and wide-gamut pictures are BT.2020; else what the
+                        // streamer sends (BT.709 for HD).
+                        _ if transfer != Transfer::Sdr => Matrix::Bt2020,
                         _ if height < 720 => Matrix::Bt601,
                         _ => Matrix::Bt709,
                     },
@@ -494,6 +516,8 @@ impl FfDecoder {
                     // AVCHROMA_LOC_CENTER = 2; the encoders here produce left-sited chroma
                     // (or say nothing, which means the same).
                     chroma_centered: chroma_location == 2,
+                    depth,
+                    transfer,
                 },
                 data: [(*frame).data[0], (*frame).data[1], (*frame).data[2]],
                 linesize: [
@@ -524,12 +548,29 @@ pub(crate) enum Matrix {
     Bt2020,
 }
 
+/// What a picture's R'G'B' is: ordinary video, or something the draw has to bring to the SDR
+/// target (the renderer's `SurfaceTransfer`, GPUI patch `0031`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Transfer {
+    Sdr,
+    /// HDR10: SMPTE ST 2084 on BT.2020 primaries.
+    Pq,
+    /// HLG (ARIB STD-B67) on BT.2020 primaries.
+    Hlg,
+    /// Gamma-encoded BT.2020 (wide-gamut SDR).
+    Bt2020Sdr,
+}
+
 /// A picture's colour description, as the frame carries it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ColorInfo {
     pub matrix: Matrix,
     pub full_range: bool,
     pub chroma_centered: bool,
+    /// Bits per sample: 8, or 10 / 12 (files only; a deeper picture's planes hold 16-bit
+    /// samples).
+    pub depth: u8,
+    pub transfer: Transfer,
 }
 
 pub(crate) struct FrameInfo {
@@ -549,11 +590,15 @@ pub(crate) struct FrameInfo {
     pub linesize: [c_int; 3],
 }
 
-/// A software-decoded 8-bit 4:2:0 picture: where its planes are in memory.
+/// A software-decoded 4:2:0 picture: where its planes are in memory. 8-bit (`color.depth`), or
+/// deeper with two bytes a sample (native order).
 pub(crate) struct SwPicture<'a> {
     pub width: u32,
     pub height: u32,
     pub color: ColorInfo,
+    /// A deep picture's samples have their code in the high bits (P010); else in the low bits
+    /// (yuv420p10).
+    pub high_bits: bool,
     pub luma: Plane<'a>,
     pub chroma: Chroma<'a>,
 }
@@ -576,6 +621,79 @@ pub(crate) enum Chroma<'a> {
     Planar(Plane<'a>, Plane<'a>),
     /// Interleaved U, V (NV12).
     Interleaved(Plane<'a>),
+}
+
+impl SwPicture<'_> {
+    /// Bytes per sample in the planes.
+    pub fn sample_bytes(&self) -> usize {
+        if self.color.depth > 8 { 2 } else { 1 }
+    }
+
+    /// How far a deep sample is shifted left to have its code in the high bits of 16.
+    pub fn widen_shift(&self) -> u32 {
+        if self.high_bits { 0 } else { 16 - self.color.depth as u32 }
+    }
+
+    /// How far a deep sample is shifted right to leave its 8 most significant bits.
+    pub fn narrow_shift(&self) -> u32 {
+        if self.high_bits { 8 } else { self.color.depth as u32 - 8 }
+    }
+}
+
+/// 16-bit samples (native order) shifted left by `shift`, into `out` (as many samples).
+pub(crate) fn widen_row(out: &mut [u8], row: &[u8], shift: u32) {
+    for (out, sample) in out.as_chunks_mut::<2>().0.iter_mut().zip(row.as_chunks::<2>().0) {
+        *out = (u16::from_ne_bytes(*sample) << shift).to_ne_bytes();
+    }
+}
+
+/// 16-bit samples (native order) shifted right by `shift`, as bytes.
+pub(crate) fn narrow_row(out: &mut [u8], row: &[u8], shift: u32) {
+    for (out, sample) in out.iter_mut().zip(row.as_chunks::<2>().0) {
+        *out = (u16::from_ne_bytes(*sample) >> shift) as u8;
+    }
+}
+
+/// A 10 / 12-bit picture's 8 most significant bits, for an uploader whose textures are 8-bit
+/// (a device without 16-bit normalised formats, the OpenGL fallback, Direct3D's software
+/// slots): luma rows packed, chroma interleaved. The buffers are kept between pictures.
+#[derive(Default)]
+pub(crate) struct Narrow {
+    luma: Vec<u8>,
+    chroma: Vec<u8>,
+}
+
+impl Narrow {
+    pub fn picture<'a>(&'a mut self, deep: &SwPicture<'_>) -> SwPicture<'a> {
+        let (width, height) = (deep.width as usize, deep.height as usize);
+        let (half, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+        let shift = deep.narrow_shift();
+        self.luma.resize(width * height, 0);
+        self.chroma.resize(half * 2 * chroma_height, 0);
+        for (y, out) in self.luma.chunks_exact_mut(width).enumerate() {
+            narrow_row(out, deep.luma.row(y, width * 2), shift);
+        }
+        for (y, out) in self.chroma.chunks_exact_mut(half * 2).enumerate() {
+            match &deep.chroma {
+                Chroma::Interleaved(plane) => narrow_row(out, plane.row(y, half * 4), shift),
+                Chroma::Planar(u, v) => {
+                    let (u, v) = (u.row(y, half * 2).as_chunks::<2>().0, v.row(y, half * 2).as_chunks::<2>().0);
+                    for ((pair, u), v) in out.as_chunks_mut::<2>().0.iter_mut().zip(u).zip(v) {
+                        pair[0] = (u16::from_ne_bytes(*u) >> shift) as u8;
+                        pair[1] = (u16::from_ne_bytes(*v) >> shift) as u8;
+                    }
+                }
+            }
+        }
+        SwPicture {
+            width: deep.width,
+            height: deep.height,
+            color: ColorInfo { depth: 8, ..deep.color },
+            high_bits: false,
+            luma: Plane { bytes: &self.luma, stride: width },
+            chroma: Chroma::Interleaved(Plane { bytes: &self.chroma, stride: half * 2 }),
+        }
+    }
 }
 
 /// Gets software pictures to where the renderer samples them.
@@ -614,16 +732,21 @@ impl SoftwareDecoder {
 
     fn hand_over(&mut self, cx: &FrameCx<'_>) -> DecodeResult<bool> {
         let info = self.decoder.frame_info();
-        let planar = info.format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as c_int
-            || info.format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int;
-        let interleaved = info.format == ff::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+        let is = |format: ff::AVPixelFormat| info.format == format as c_int;
+        // 8-bit, and the 10 / 12-bit layouts the software decoders give (files only: the
+        // streamer sends 8-bit).
+        let planar_deep = is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P10LE) || is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P12LE);
+        let planar = is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P) || is(ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P) || planar_deep;
+        let interleaved_deep = is(ff::AVPixelFormat::AV_PIX_FMT_P010LE);
+        let interleaved = is(ff::AVPixelFormat::AV_PIX_FMT_NV12) || interleaved_deep;
         if !planar && !interleaved {
-            // 10-bit streams (P010 / YUV420P10) need 16-bit planes. The streamer sends 8-bit.
             return Err(DecodeError::decoder(format!(
-                "unsupported picture format {} (only 8-bit 4:2:0)",
+                "unsupported picture format {} (only 4:2:0, 8 to 12 bits)",
                 info.format
             )));
         }
+        let deep = planar_deep || interleaved_deep;
+        let sample = if deep { 2 } else { 1 };
         let (width, height) = (info.width as usize, info.height as usize);
         if width == 0 || height == 0 || info.linesize.iter().take(2).any(|&stride| stride <= 0) {
             return Err(DecodeError::decoder(
@@ -645,17 +768,21 @@ impl SoftwareDecoder {
         };
         let mut color = info.color;
         color.full_range |= info.format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int;
+        if !deep {
+            color.depth = 8;
+        }
         let picture = SwPicture {
             width: info.width,
             height: info.height,
             color,
-            luma: plane(0, height, width),
+            high_bits: interleaved_deep,
+            luma: plane(0, height, width * sample),
             chroma: if interleaved {
-                Chroma::Interleaved(plane(1, chroma_height, chroma_width * 2))
+                Chroma::Interleaved(plane(1, chroma_height, chroma_width * 2 * sample))
             } else {
                 Chroma::Planar(
-                    plane(1, chroma_height, chroma_width),
-                    plane(2, chroma_height, chroma_width),
+                    plane(1, chroma_height, chroma_width * sample),
+                    plane(2, chroma_height, chroma_width * sample),
                 )
             },
         };
