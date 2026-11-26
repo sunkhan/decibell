@@ -159,6 +159,8 @@ pub struct InputLook {
     /// No `placeholder:text-*` class: preflight's `color-mix(currentcolor 50%, transparent)`.
     pub plain_placeholder: bool,
     pub ring: bool,
+    /// Drawn inside `.chrome-scope` (the channel sidebar's dialogs): the chrome palette's colours.
+    pub chrome: bool,
 }
 
 impl InputLook {
@@ -174,7 +176,13 @@ impl InputLook {
             placeholder_font: FontRole::Sans,
             plain_placeholder: false,
             ring: false,
+            chrome: false,
         }
+    }
+
+    pub fn chrome(mut self) -> Self {
+        self.chrome = true;
+        self
     }
 
     /// The placeholder in the text's colour at half strength (no `placeholder:` class).
@@ -212,12 +220,12 @@ pub fn input_box(id: impl Into<ElementId>, state: &Entity<InputState>, look: Inp
     let empty = state.read(cx).is_empty();
     let font = if empty { look.placeholder_font } else { look.font };
     let mut style = TextField::input_style(font, look.size, look.line / look.size, cx);
-    if look.plain_placeholder {
-        style.placeholder_color = style.text.color.opacity(0.5);
-    }
+    let t = if look.chrome { &cx.theme().chrome } else { &**cx.theme() };
+    style.text.color = t.color_text_primary;
+    style.placeholder_color = if look.plain_placeholder { t.color_text_primary.opacity(0.5) } else { t.color_text_muted };
+    let (accent, border, ring) = (t.color_accent, t.color_border, t.shadow_ring.clone());
     let focus = state.read(cx).focus_handle(cx);
     let focused = focus.is_focused(window);
-    let t = cx.theme();
     div()
         .id(id)
         .track_focus(&focus)
@@ -229,9 +237,9 @@ pub fn input_box(id: impl Into<ElementId>, state: &Entity<InputState>, look: Inp
         .px(px(look.pad_x))
         .rounded(look.radius)
         .border_1()
-        .border_color(if focused { t.color_accent } else { t.color_border })
+        .border_color(if focused { accent } else { border })
         .bg(look.background)
-        .when(focused && look.ring, |this| this.shadow(t.shadow_ring.clone()))
+        .when(focused && look.ring, |this| this.shadow(ring))
         .cursor_text()
         .child(div().flex_1().min_w_0().child(TextInput::new(state, style)))
 }

@@ -179,9 +179,12 @@ impl CreateChannelOverlay {
         };
         self.name.update(cx, |n, cx| n.set_placeholder(placeholder, cx));
         let can_create = self.can_create(cx);
-        let t = cx.theme();
-        let name_box = ui::input_box("create-channel-name", &self.name, InputLook::new(t.color_bg_light, t.radius_md).plain_placeholder(), window, cx);
-        let t = cx.theme();
+        let t = &cx.theme().chrome;
+        // Inside the channel sidebar (`.chrome-scope`): the chrome palette (console-split's dark one).
+        let look = InputLook::new(t.color_bg_light, cx.theme().radius_md).plain_placeholder().chrome();
+        let name_box = ui::input_box("create-channel-name", &self.name, look, window, cx);
+        let radius_sm = cx.theme().radius_sm;
+        let t = &cx.theme().chrome;
         let (bg_light, bg_lighter, accent, accent_hover, on_accent, accent_soft, accent_bright, muted, secondary, primary) = (
             t.color_bg_light,
             t.color_bg_lighter,
@@ -202,7 +205,7 @@ impl CreateChannelOverlay {
                     .flex_1()
                     .flex()
                     .justify_center()
-                    .rounded(cx.theme().radius_sm)
+                    .rounded(radius_sm)
                     .py_1p5()
                     .cursor_pointer()
                     .when(active, |this| this.bg(accent_soft))
@@ -227,7 +230,7 @@ impl CreateChannelOverlay {
                 .child(choice(ChannelKind::Text, "Text", cx))
                 .child(choice(ChannelKind::Voice, "Voice", cx))
         });
-        let t = cx.theme();
+        let t = &cx.theme().chrome;
         let encrypted = (kind == ChannelKind::Text).then(|| {
             div()
                 .id("create-channel-encrypted")
@@ -238,7 +241,7 @@ impl CreateChannelOverlay {
                 .items_start()
                 .justify_between()
                 .gap_4()
-                .rounded(t.radius_md)
+                .rounded(cx.theme().radius_md)
                 .border_1()
                 .border_color(t.color_border_divider)
                 .bg(bg_light)
@@ -268,13 +271,13 @@ impl CreateChannelOverlay {
                 // The label's click toggles it (a handler here too would toggle twice).
                 .child(Switch::new("create-channel-encrypted-switch", self.encrypted))
         });
-        let t = cx.theme();
+        let t = &cx.theme().chrome;
         div()
             .id("create-channel-card")
             .occlude()
             .w_full()
             .max_w(px(400.))
-            .rounded(t.radius_xl)
+            .rounded(cx.theme().radius_xl)
             .border_1()
             .border_color(t.color_border)
             .bg(t.color_bg_dark)
@@ -297,7 +300,7 @@ impl CreateChannelOverlay {
                             .flex_1()
                             .flex()
                             .justify_center()
-                            .rounded(t.radius_md)
+                            .rounded(cx.theme().radius_md)
                             .bg(bg_light)
                             .py_2p5()
                             .cursor_pointer()
@@ -313,7 +316,7 @@ impl CreateChannelOverlay {
                             .flex_1()
                             .flex()
                             .justify_center()
-                            .rounded(t.radius_md)
+                            .rounded(cx.theme().radius_md)
                             .bg(accent)
                             .py_2p5()
                             .when(can_create, |this| this.cursor_pointer().hover(move |s| s.bg(accent_hover)))

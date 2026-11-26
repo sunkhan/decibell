@@ -33,11 +33,10 @@ use decibell_model::stores::permissions::perm;
 use decibell_model::{ChannelId, Model, ServerId};
 use decibell_shell::ChannelReorder;
 use decibell_ui::{
-    ActiveTheme as _, ConfirmModal, ConfirmTone, FontRole, Icon, IconName, Label, Placed, Placement, ScrollHandle,
-    visible_window_bounds,
+    ActiveTheme as _, CloseRequest, FontRole, Icon, IconName, Label, Modal, Placed, Placement, ScrollHandle, visible_window_bounds,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, DispatchPhase, Entity, Global, IntoElement, MouseMoveEvent,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, DispatchPhase, Entity, Global, IntoElement, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, Window, canvas, deferred, div, point, prelude::*, px,
 };
 
@@ -602,6 +601,15 @@ impl SyncPromptOverlay {
     }
 }
 
+impl SyncPromptOverlay {
+    fn choose(&self, sync: bool, cx: &mut App) {
+        let Some(p) = self.state.read(cx).prompt.clone().filter(|p| p.open) else { return };
+        let with = sync.then(|| (p.channel.clone(), p.category.clone()));
+        commit(p.server, p.ids.clone(), with, cx);
+        self.close(cx);
+    }
+}
+
 impl Render for SyncPromptOverlay {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let prompt = self.state.read(cx).prompt.clone();
@@ -623,48 +631,115 @@ impl Render for SyncPromptOverlay {
             }
             None => ("this channel".into(), "this category".into(), false),
         };
-        let t = cx.theme();
-        let (secondary, muted) = (t.color_text_secondary, t.color_text_muted);
-        let ids = prompt.clone();
-        let sync_ids = prompt.clone();
-        ConfirmModal::new("category-sync", open, format!("Move {label} into {category_name}?"), "Sync permissions")
-            .tone(ConfirmTone::Accent)
-            .confirm_disabled(!can_sync)
-            .secondary("Keep permissions", cx.listener(move |this, _, _, cx| {
-                if let Some(p) = ids.clone().filter(|p| p.open) {
-                    commit(p.server, p.ids.clone(), None, cx);
-                    this.close(cx);
-                }
-            }))
-            .on_confirm(cx.listener(move |this, _, _, cx| {
-                if let Some(p) = sync_ids.clone().filter(|p| p.open) {
-                    commit(p.server, p.ids.clone(), Some((p.channel.clone(), p.category.clone())), cx);
-                    this.close(cx);
-                }
-            }))
-            .on_cancel(cx.listener(|this, _, _, cx| this.close(cx)))
-            .child(
-                div().mt_2().child(
-                    Label::new(SharedString::from(format!(
-                        "{category_name} has permissions its channels can follow. Sync {label} to use them, or keep the permissions it has now."
-                    )))
-                    .size(13.)
-                    .line_height(13. * 1.55)
-                    .color(secondary),
-                ),
-            )
-            .when(!can_sync, |this| {
-                this.child(
+        // `ConfirmModal` as the channel sidebar renders it: inside `.chrome-scope`, so in the
+        // chrome palette (console-split's dark one), which the kit's dialog doesn't take.
+        let theme = cx.theme();
+        let (radius_sm, radius_md, radius_xl) = (theme.radius_sm, theme.radius_md, theme.radius_xl);
+        let t = &theme.chrome;
+        let (primary, secondary, muted, border, surface_hover, accent, accent_hover, on_accent) = (
+            t.color_text_primary,
+            t.color_text_secondary,
+            t.color_text_muted,
+            t.color_border,
+            t.color_surface_hover,
+            t.color_accent,
+            t.color_accent_hover,
+            t.color_on_accent,
+        );
+        let outline = |id: &'static str, text: &'static str| {
+            div()
+                .id(id)
+                .relative()
+                .children(decibell_shell::probes::probe(id))
+                .rounded(radius_md)
+                .border_1()
+                .border_color(border)
+                .px_4()
+                .py_2()
+                .cursor_pointer()
+                .hover(move |s| s.bg(surface_hover))
+                .child(Label::new(text).size(13.).line_height(19.5).weight(500.).color(primary))
+        };
+        let card = open.then(|| {
+            div()
+                .id("category-sync-card")
+                .occlude()
+                .w_full()
+                .max_w(px(512.))
+                .rounded(radius_xl)
+                .border_1()
+                .border_color(border)
+                .bg(t.color_bg_secondary)
+                .p_6()
+                .shadow(t.shadow_modal.clone())
+                // Enter confirms (the renderer listens on the document).
+                .on_key_down(cx.listener(move |this, e: &gpui::KeyDownEvent, _, cx| {
+                    if e.keystroke.key == "enter" && !e.keystroke.modifiers.modified() {
+                        cx.stop_propagation();
+                        if can_sync {
+                            this.choose(true, cx);
+                        }
+                    }
+                }))
+                .child(
+                    Label::new(SharedString::from(format!("Move {label} into {category_name}?")))
+                        .size(16.)
+                        .weight(600.)
+                        .tracking(-0.02)
+                        .color(primary),
+                )
+                .child(
                     div().mt_2().child(
-                        Label::new(SharedString::from(format!("Syncing needs Manage Roles in {label}.")))
-                            .size(12.)
-                            .line_height(12. * 1.55)
-                            .color(muted),
+                        Label::new(SharedString::from(format!(
+                            "{category_name} has permissions its channels can follow. Sync {label} to use them, or keep the permissions it has now."
+                        )))
+                        .size(13.)
+                        .line_height(13. * 1.55)
+                        .color(secondary),
                     ),
                 )
-            })
-            // Where the body ends (the self-tests find the buttons under it).
-            .children(decibell_shell::probes::probe("sync-prompt-body").map(|p| div().relative().w_full().h_0().child(p)))
+                .when(!can_sync, |this| {
+                    this.child(
+                        div().mt_2().child(
+                            Label::new(SharedString::from(format!("Syncing needs Manage Roles in {label}.")))
+                                .size(12.)
+                                .line_height(12. * 1.55)
+                                .color(muted),
+                        ),
+                    )
+                })
+                .child(
+                    div()
+                        .mt_5()
+                        .flex()
+                        .flex_wrap()
+                        .justify_end()
+                        .gap_2()
+                        .child(outline("sync-prompt-cancel", "Cancel").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx))))
+                        .child(outline("sync-prompt-keep", "Keep permissions").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose(false, cx))))
+                        .child(
+                            div()
+                                .id("sync-prompt-sync")
+                                .relative()
+                                .children(decibell_shell::probes::probe("sync-prompt-sync"))
+                                .rounded(radius_sm)
+                                .bg(accent)
+                                .px_4()
+                                .py_2()
+                                .when(can_sync, |this| this.cursor_pointer().hover(move |s| s.bg(accent_hover)))
+                                .when(!can_sync, |this| this.opacity(0.5))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if can_sync {
+                                        this.choose(true, cx);
+                                    }
+                                }))
+                                .child(Label::new("Sync permissions").size(13.).line_height(19.5).weight(600.).color(on_accent)),
+                        ),
+                )
+        });
+        Modal::new("category-sync", open)
+            .on_close(cx.listener(|this, _: &CloseRequest, _, cx| this.close(cx)))
+            .children(card)
     }
 }
 

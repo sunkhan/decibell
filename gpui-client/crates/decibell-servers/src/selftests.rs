@@ -1283,27 +1283,9 @@ fn prompt_open(cx: &mut App) -> bool {
     reorder::state_read(cx).is_some_and(|p| p.open)
 }
 
-/// The prompt's Keep or Sync button: `ConfirmModal` puts its buttons `mt-5` under the body,
-/// right-aligned, 8 px apart, 35.5 px tall: Sync (`px-4`, the primary: no border) at the right,
-/// Keep (`px-4`, bordered) before it. Their widths are their labels' (13 px; 600 / 500).
+/// The prompt's Keep or Sync button.
 async fn prompt_button(cx: &TestCx, sync: bool) -> Result<Point<Pixels>> {
-    let body = wait_probe(cx, "sync-prompt-body").await?;
-    let (sync_text, keep_text) = cx.update(|window, cx| {
-        let scale = window.scale_factor();
-        let width = |text: &str, weight: u16, cx: &mut App| {
-            let style = crate::ui::label_style(decibell_ui::FontRole::Sans, 13., 19.5, weight, None, cx);
-            decibell_text::Engine::global(cx).label_layout(text, &style, decibell_text::Wrapping::NOWRAP, f32::INFINITY, scale).width()
-        };
-        (width("Sync permissions", 600, cx), width("Keep permissions", 500, cx))
-    })?;
-    let y = body.bottom() + px(20. + 35.5 / 2.);
-    let sync_w = 32. + sync_text;
-    let keep_w = 32. + 2. + keep_text;
-    Ok(if sync {
-        point(body.right() - px(sync_w / 2.), y)
-    } else {
-        point(body.right() - px(sync_w + 8. + keep_w / 2.), y)
-    })
+    Ok(wait_probe(cx, if sync { "sync-prompt-sync" } else { "sync-prompt-keep" }).await?.center())
 }
 
 async fn sync_drops(cx: &TestCx, server: ServerId) -> Result<()> {
