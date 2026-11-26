@@ -58,6 +58,7 @@ pub struct ConnectToCommunityArgs {
 pub async fn connect_to_community(args: ConnectToCommunityArgs) -> Result<(), CoreError> {
     crate::rt::run(async move {
         let port = u16::try_from(args.port).map_err(|_| CoreError::invalid("Invalid port"))?;
+        forget_leaving(&args.host, port).await;
         connect_with_invite(args.server_id, args.host, port, None)
             .await
             .map_err(CoreError::other)
@@ -82,6 +83,7 @@ pub async fn redeem_invite(args: RedeemInviteArgs) -> Result<(), CoreError> {
             return Err(CoreError::invalid("Invite code is empty"));
         }
         let port = u16::try_from(args.port).map_err(|_| CoreError::invalid("Invalid port"))?;
+        forget_leaving(&args.host, port).await;
         connect_with_invite(args.server_id, args.host, port, Some(code))
             .await
             .map_err(CoreError::other)
@@ -509,6 +511,13 @@ pub async fn fetch_server_picture(args: FetchServerPictureArgs) -> Result<(), Co
 }
 
 // ─── Connecting (the commands above; central's router too) ─────────────
+
+/// The user asks to join (or open) this community: whatever it was left for no longer counts
+/// (`AppState::left_communities`), so central's MEMBERSHIP_ADDED for this join is not taken for
+/// a stale one.
+async fn forget_leaving(host: &str, port: u16) {
+    state::shared().lock().await.left_communities.remove(&(host.to_ascii_lowercase(), port));
+}
 
 /// Connect (or reconnect) to community `server_id` at host:port with our
 /// session token, presenting `invite_code` when joining by invite. Replaces

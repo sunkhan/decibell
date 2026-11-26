@@ -68,6 +68,12 @@ pub struct BootConfig {
 pub struct AppState {
     pub central: Option<CentralClient>,
     pub communities: HashMap<String, CommunityClient>,
+    /// Communities this account left or was removed from, on this device and in this run
+    /// (address → when): the answer to a leave, a kick or a ban. A MEMBERSHIP_ADDED that
+    /// central sends for one of them soon after is a stale echo of the join before it, and
+    /// connecting on it would join a public community again (`net::central`,
+    /// `join_added_membership`). A join the user asks for clears the entry.
+    pub left_communities: HashMap<(String, u16), std::time::Instant>,
     pub username: Option<String>,
     /// Our account uid (LoginResponse.uid; users by uid). 0 until login,
     /// or against a central from before it was sent.
@@ -215,6 +221,7 @@ impl Default for AppState {
         Self {
             central: None,
             communities: HashMap::new(),
+            left_communities: HashMap::new(),
             username: None,
             uid: 0,
             token: None,

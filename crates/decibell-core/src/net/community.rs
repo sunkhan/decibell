@@ -182,6 +182,15 @@ pub struct CommunityClient {
     terminated: Arc<AtomicBool>,
 }
 
+/// Remember that this account is out of the community at `server_id`'s address (it left, or
+/// was kicked or banned): see `AppState::left_communities`.
+async fn note_left(state: &Arc<Mutex<AppState>>, server_id: &str) {
+    let mut s = state.lock().await;
+    if let Some((host, port)) = s.communities.get(server_id).map(|c| (c.host.to_ascii_lowercase(), c.port)) {
+        s.left_communities.insert((host, port), std::time::Instant::now());
+    }
+}
+
 impl CommunityClient {
     /// Connect to a community server and authenticate with JWT.
     /// If `invite_code` is supplied, the server will consume it to grant
@@ -973,6 +982,7 @@ impl CommunityClient {
                 Some(packet::Payload::ModActionRes(resp)) => {
                     if resp.success && resp.action == "leave" {
                         terminated.store(true, Ordering::SeqCst);
+                        note_left(&state, &server_id).await;
                     }
                     events::emit_mod_action_responded(events::ModActionRespondedPayload {
                         server_id: server_id.clone(),
@@ -1051,6 +1061,7 @@ impl CommunityClient {
                 }
                 Some(packet::Payload::MembershipRevoked(rev)) => {
                     terminated.store(true, Ordering::SeqCst);
+                    note_left(&state, &server_id).await;
                     events::emit_membership_revoked(events::MembershipRevokedPayload {
                         server_id: server_id.clone(),
                         action: rev.action,

@@ -1035,6 +1035,15 @@ fn connected_to<'a>(
     })
 }
 
+/// How long after this device left a community a MEMBERSHIP_ADDED for it counts as the echo of
+/// the earlier join (the community reports a join to central on its own connection, and central
+/// then tells every device of the account: seconds at most, a minute to be safe).
+const STALE_ADDED_AFTER_LEAVING: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn stale_after_leaving(left: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    left.is_some_and(|left| now.saturating_duration_since(left) < STALE_ADDED_AFTER_LEAVING)
+}
+
 /// Another device of this account joined a community (MEMBERSHIP_ADDED):
 /// show its tile and connect, as auto-rejoin does at sign-in. The device that
 /// joined hears it too and is connected already, perhaps still under its
@@ -1053,6 +1062,14 @@ async fn join_added_membership(
         }
         let existing = s.communities.values().map(|c| (c.server_id.as_str(), c.host.as_str(), c.port));
         if connected_to(existing, &info) {
+            return;
+        }
+        // The account left this community (or was removed) a moment ago: this push is the echo
+        // of the join before that, perhaps delivered late. Connecting on it would make a public
+        // community add the account again, so a leave within seconds of a join did not stick.
+        let left = s.left_communities.get(&(info.host_ip.to_ascii_lowercase(), info.port as u16)).copied();
+        if stale_after_leaving(left, std::time::Instant::now()) {
+            log::info!("[membership] ignoring a MEMBERSHIP_ADDED for a community this device just left");
             return;
         }
     }
@@ -1135,7 +1152,9 @@ impl Drop for CentralClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{connected_to, is_definitive_refusal, own_presence_payload, pretty_name, ThisDevice};
+    use super::{
+        connected_to, is_definitive_refusal, own_presence_payload, pretty_name, stale_after_leaving, ThisDevice, STALE_ADDED_AFTER_LEAVING,
+    };
     use crate::net::proto::{CommunityServerInfo, OwnPresence, PresenceStatus};
 
     #[test]
@@ -1160,6 +1179,19 @@ mod tests {
         });
         assert_eq!(invisible.status, "invisible");
         assert_eq!(invisible.status_clear_in, 0.0);
+    }
+
+    #[test]
+    fn a_membership_push_right_after_leaving_is_stale() {
+        let now = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        // Never left here: a join on another device connects.
+        assert!(!stale_after_leaving(None, now));
+        // Left a moment ago (the join's echo is still on its way, or its 3 s grace is running).
+        assert!(stale_after_leaving(Some(now - std::time::Duration::from_secs(2)), now));
+        assert!(stale_after_leaving(Some(now), now));
+        // Left long ago: a new join elsewhere is real.
+        assert!(!stale_after_leaving(Some(now - STALE_ADDED_AFTER_LEAVING), now));
+        assert!(!stale_after_leaving(Some(now - std::time::Duration::from_secs(300)), now));
     }
 
     #[test]
