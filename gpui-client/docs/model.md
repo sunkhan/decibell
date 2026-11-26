@@ -563,3 +563,208 @@ Shape hints: speaking and input level are the high-rate events — each gets its
 ring must not re-render the voice stage; the mic meter must not touch the voice store); presence separate
 from names, keyed by uid, with a keyed event; `m3::clear_server_presence(server, keep)` is called from
 four handlers here.
+
+## M3. Voice, streams, calls, presence, friends, E2EE, hotkeys, devices, transfers
+
+The live / people half (`src/live/`, routed from `events/todo.rs`' `m3` functions to
+`events/{voice,calls,presence,friends,e2ee,misc}.rs`, actions in `actions/{voice,calls,presence,friends,e2ee,devices,
+hotkeys,transfers}.rs`). One grouping struct on `Model`: **`model.live: LiveStores`** (handles, cheap to clone),
+installed by `live::install` from `Model::init` (the observers that follow other stores). Calls live in
+`live::calls` / `events::calls` / `actions::calls` because `crate::call` (the "call the core" helper) already
+exists.
+
+### M3.1 Entities and their rhythm
+
+The rule of §4 decided every split: a change notifies only the entity whose state changed, and where many
+small views each show one key, the entity emits a keyed event they filter on.
+
+| Entity (`model.live.…`) | Holds | Notifies on | Keyed event | Who observes / subscribes |
+|---|---|---|---|---|
+| `voice.session` (`VoiceSession`) | connected (community, channel) or the call's peer, our mute / deafen, the channel's MLS state, the engine's error | join / leave / switch / move, `voice_state_changed`, MLS state, error | — | user panel, dock, call bar, voice header (observe) |
+| `voice.participants` | the stage's rows (connected channel, or [us, peer] in a call) | every roster change of the connected channel, a participant's mute flip | — | the voice stage (observe) |
+| `voice.rosters` (`VoiceRosters`) | every voice channel's roster on every connected community, members' flags, capabilities, our pending moves (`SelfMove`) | per batch | `VoiceRosterEvent::Changed(keys)` | the channel list subscribes and notifies only for its community's channels; never observe it from a pane |
+| `voice.speaking` | who is speaking | **high rate**: every start / stop | `SpeakingChanged { uid, speaking }` | a tile / row shows one person: **subscribe and filter by uid**; nothing that draws the whole stage may observe it |
+| `voice.input_level` | our mic level (dB) | ~16 Hz, only while a meter is retained (`retain_meter` switches the core's reporting on) | — | the Audio tab's meter only |
+| `voice.stats` | last ping, ≤ 200 samples (a 30 s gap restarts the history) | ~0.5 Hz in a session | — | the signal icon, the connection popover |
+| `voice.streams` (`StreamPresence`) | every live stream by owner across communities; a DM call's streams | stream start / stop / codec / viewers | `StreamsChanged { key }` | LIVE badges (subscribe), the stage, the profile popup |
+| `voice.thumbnails` | posters as `Arc<gpui::Image>` (encoded JPEG; GPUI decodes when drawn) + version | a poster (~15 s per stream) while the voice view retains them | `ThumbnailChanged(uid)` | stream tiles (subscribe) |
+| `voice.watching` | watched streams, focused, mini player, window fullscreen | user actions | — | stage, mini player, **the app** (applies `fullscreen` to the window) |
+| `voice.stream_views` | how many views draw each stream | never notifies | — | — (`actions::voice::show_stream` / `hide_stream` switch the core's frame sink: the video hub receives only what is displayed) |
+| `voice.own_stream` | idle / starting / live (codec, size, fps, audio, where), the Go Live error, cursor option, Windows source | Go Live, stop, failures | — | user panel, Go Live dialog |
+| `voice.devices`, `voice.stream_audio_apps`, `voice.codecs` | audio device lists; stream-audio apps; codec toggles and caps | a refresh that changed something, a toggle | — | Settings → Audio / Codecs, the Go Live picker |
+| `calls` (`Calls`) | the call state machine; the 45 s ring timer (only while ringing) | a handful of transitions per call | `ShowConversation(uid)` (accepting lands on the caller's DM: **M2's DM store subscribes**) | DM header, call stage, incoming card |
+| `presence.statuses` (`Presence`) | watched users' statuses + who central answered for | a watched user's change; a whole subscription answer is one batch | `PresenceChanged(uids)` | a dot / avatar (one person) subscribes and filters; a member list observes |
+| `presence.messages` | watched users' custom statuses (apart, so an edit doesn't regroup lists) | idem | `MessagesChanged(uids)` | idem |
+| `presence.own` (`OwnPresence`) | our status, message + clear-after timer (only while a deadline is set), idle, account idle, supported | our choices, any device's `own_presence` | — | user panel, status menu |
+| `presence.interest` | the watch set (ref-counted), 600 ms batching (timer only while a change waits) | never notifies | — | views retain / release (`actions::presence::retain`) |
+| `presence.auto_away` | the idle driver: one timer (M3.4) | our idle flag | — | — |
+| `presence.avatars` | pictures by uid: version, `Arc<gpui::Image>`, state; 6 fetches at a time, newest first, skips users off screen; ≤ 400 loaded pictures of users off screen | announced versions, finished fetches | `AvatarsChanged(uids)` | avatars subscribe and filter; call `fetch_if_needed(uid)` where the row is built |
+| `friends` | the list, the inline action error (5 s timer while shown), the list request's retries (10 s × 3, only while waiting) | a list, a presence flip of a friend | — | Friends page, DM sidebar |
+| `e2ee` | status, fingerprint, changed peers, the nudge, **the passphrase dialog** (`PassphraseFlow`: mode, busy, error) | status pushes, flow steps | `E2eeEvent::BecameReady` (**M2 reloads DM history**), `PeerChanged(uid)` | DM panel, Settings → Privacy, the dialog |
+| `hotkeys` | the listener's status, recording, the focused fallback (the core's own `Matcher`) | status, recording | — | Settings → Keybinds |
+| `devices` | the device list, sign-out busy / confirm, the change-password flow | load, steps | — | Settings → Devices, the password dialog |
+| `transfers` | downloads (mirror of the manager), this session's uploads, panel state, attention dot | ~4 Hz per active transfer | — | the title-bar button, the open panel; **the app** (progress, quit guard) |
+| `cues` (`Cues`) | sound / attention triggers | never notifies | `Cue` | **the app's audio layer and window** |
+| `notices` | the revocation notice's 8 s | — | — | — |
+
+Per-uid entities were considered for presence and rejected: the watch set is hundreds of users that come and go
+as lists scroll, each change is one user, and a keyed event costs one cheap filter per subscribed view against
+creating / dropping hundreds of entities with their observers.
+
+### M3.2 What the app wires (traits and glue)
+
+| What | Where | Notes |
+|---|---|---|
+| Sounds and attention | subscribe to `model.live.cues` | `Cue::Play(Sound)` (`Sound::asset()` → `assets/sounds/*.wav`), `StartRing` / `StopRing` (loop `call_ring.wav`), `Flash` (taskbar flash / dock bounce without focus). The model plays nothing. |
+| Decode capabilities | `codecs.update(|c, _| c.set_decoder_probe(Rc<dyn DecoderProbe>))` | The video crate's probe; the model adds the H.264 fallback, caches in `ui.json` `extra["decoder_caps.v6"]`. Without one (headless) only H.264 is advertised. |
+| Codec caps at boot | `actions::voice::init_codec_caps(false, cx)` once after `start_core` | As `main.tsx` did: decode probe, the core's `probe_native_encoders` (cached `extra["native_encoder_caps.v2"]`, one re-probe 15 s after a cached boot), shipped to the core (its caps are in memory: every start). Before it, a voice join advertises no caps. |
+| Idle source | `auto_away.update(|a, cx| a.set_source(Rc::new(CoreIdleSource), cx))` or the platform's own `IdleSource` | The core's answers Wayland + GNOME, "unsupported" on X11 / Windows / macOS (Electron used `powerMonitor`): the app supplies `XScreenSaver` / `GetLastInputInfo` / `CGEventSource` sources there, ideally with `idle_for`. Also `set_locked(bool)` on lock / sleep, `poke()` on resume pushes and on input in our window. |
+| Device hot-plug | `devices.update(|d, cx| d.hotplug(cx))` | Electron had `devicechange`; GPUI has none (PipeWire / WASAPI notifications are the app's). 400 ms debounce, timer only while pending. Pickers call `ensure_loaded`. |
+| Downloads | `transfers.update(|t, cx| t.attach_downloads(Rc<dyn DownloadControl>, cx))` → `DownloadEvents`; give `move |e| events.push(e)` to `DownloadManager::new` | `ManagerControl { manager, runtime }` implements the trait. Then `actions::transfers::configure_downloads`. |
+| Uploads | **M2**: `actions::transfers::sync_uploads(&[PendingUpload], cx)` when pendings change; `t.set_upload_control(Rc<dyn UploadControl>)` | Assumed: M2's pending has a status (queued / pending / uploading / ready / failed), paused, cancelled, error, preview image, attachment id, sizes. |
+| Taskbar / quit guard | observe `transfers`: `progress()` (fraction or none, paused-only) and `uploads_in_flight()` | Electron throttled the platform call to 4 / s. |
+| Window | observe `voice.watching.fullscreen`; `live::window_title(model, M2's active DM, cx)` | |
+| Hotkeys | window key events → `hotkeys.update(|h, _| h.key(code, down))`, blur → `window_blurred()`; `actions::hotkeys::inject_cli(arg)` from the single-instance glue (`--hotkey=<action>[:down\|:up]`) | Codes are `KeyboardEvent.code` names: `live::hotkeys::code_from_gpui_key` maps GPUI's `Keystroke::key` **assuming a US layout** (no physical code at the pin). |
+| Frame sinks | the video views: `actions::voice::show_stream(uid)` on mount, `hide_stream(uid)` on unmount | |
+
+### M3.3 Overlay requests
+
+- **The E2EE passphrase dialog** is `model.live.e2ee.passphrase` (not `Overlays::active_modal`): Settings → Privacy
+  opens it over the Settings modal. Opened by the first "locked" report of a sign-in, by Settings, and by a voice
+  join without keys ("no keys → no voice": `actions::voice::voice_keys_ready`). The foundation's
+  `overlays::modal::E2EE_*` ids are not used.
+- The change-password dialog: `model.live.devices.password`.
+- The "Review devices" toast action: `nav.set_settings_tab("devices")` + `overlays.open_modal(modal::SETTINGS)`.
+- The incoming-call card: `calls.status == Incoming` / `calls.incoming_ended` (the view clears it with
+  `clear_incoming_ended` after showing it).
+
+### M3.4 Timers (each with its live reason)
+
+The self-move expiry (only while a move is pending), the 45 s ring (only while ringing), our message's
+clear-after (only while a deadline is set), the watch set's 600 ms flush (only while a change waits), the
+friend list's 10 s reply timeout (only while waiting), the friends error's 5 s (only while shown), the device
+hot-plug 400 ms (only while pending), the revocation notice's 8 s, the codec re-probe 15 s after a cached boot
+(once), and **auto-away's one timer**: active with a known idle time → `threshold − idle_for`; unknown (the
+core's Wayland flag) → one threshold (Away may then show up to one threshold late: core gap 1); speaking holds
+it off; Away on a source that can't push resumes → 1 s re-reads (the renderer's rate) for that sole reason.
+Nothing of M3 polls at idle: signed in with nothing on screen, no M3 timer exists.
+
+### M3.5 Renderer → here
+
+| Renderer | Here |
+|---|---|
+| `stores/voiceStore.ts` | `live/voice/{session,rosters,speaking,streams}.rs`; `enterChannel` / `disconnect` / `clearServerPresence` = `actions::voice::{enter_channel,disconnect}`, `events::voice::clear_server_presence` |
+| `features/voice/useVoiceEvents.ts` (14 listeners) | `events/voice.rs` |
+| `voiceStatsStore.ts` | `live/voice/stats.rs` |
+| `voiceActions.ts`, `streaming/joinVoiceChannel.ts`, `applyVoicePrefs.ts`, `streamEnded.ts`, `stage/streamActions.ts`, `userGain.ts`, `streamAudioFilter.ts`, `useStreamThumbnails.ts`, `CaptureSourcePicker.tsx`'s Go Live, `StreamCapture.ts`'s native branch / `retarget` | `actions/voice.rs` |
+| `goLive/presets.ts`, `loadSettings.ts`' stream block | `live/voice/go_live.rs` (`StreamSettings::of` / `store` over `Settings`) |
+| `codecMap.ts`, `codecToasts.ts`, `canWatchStream.ts`, `decoderProbe.ts`, `encoderProbe.ts` (native path), `codecSettingsStore.ts` | `live/voice/codecs.rs` + `actions::voice::{init_codec_caps,set_codec_toggles}` |
+| `audioDevicesStore.ts`, `useAudioDeviceSync.ts`, `streamAudioAppsStore.ts` | `live/voice/devices.rs` |
+| `useServerEvents.ts`' `voice_force_notify`, live bitrate | `events::voice::{voice_force_notify,channel_updated}` |
+| `memberDrag.ts`, the context menu's voice moderation | `actions::voice::voice_mod` (the drag state is the view's) |
+| `streamStats.ts` | the video crate's (decode stats published by the player) |
+| `stores/callStore.ts` | `live/calls/mod.rs` |
+| `features/call/useCallEvents.ts`, `callActions.ts` | `events/calls.rs`, `actions/calls.rs` |
+| `stores/presenceStore.ts`, `usePresenceEvents.ts` | `live/presence/statuses.rs`, `events/presence.rs` |
+| `presenceInterest.ts` | `live/presence/interest.rs` |
+| `useAutoAway.ts` | `live/presence/auto_away.rs` (+ `actions::presence::CoreIdleSource`) |
+| `StatusMenu.tsx`' `chooseStatus`, `CustomStatusModal.tsx`' `saveStatusMessage` | `actions::presence::{choose_status,save_status_message}` |
+| `stores/avatarStore.ts` | `live/presence/avatars.rs` |
+| `stores/friendsStore.ts`, `useFriendsEvents.ts`, `friendList.ts`, the pages' actions | `live/friends.rs`, `events/friends.rs`, `actions/friends.rs` |
+| `stores/e2eeStore.ts`, `useE2eeEvents.ts`, `PassphraseModal.tsx`, `usePeerE2ee.ts` | `live/e2ee.rs`, `events/e2ee.rs`, `actions/e2ee.rs` |
+| `stores/hotkeysStore.ts`, `hotkeyRuntime.ts`, `keys.ts` | `live/hotkeys.rs` (the matcher is the core's), `actions/hotkeys.rs`, `events::misc::hotkey_action` |
+| `electron/main/hotkeys.ts`' `--hotkey=` | `actions::hotkeys::inject_cli` |
+| `stores/devicesStore.ts`, `DevicesTab.tsx`, `ChangePasswordModal.tsx`, `deviceLabels.ts`, the `devices_changed` toast | `live/devices.rs`, `actions/devices.rs`, `events::misc::devices_changed` |
+| `stores/transfersStore.ts`, `transfers/{downloads,uploads,format}.ts`, `TransfersButton.tsx`' derived values, `window.ts`' quit guard | `live/transfers.rs`, `actions/transfers.rs` |
+| `utils/sounds.ts` | `live::{Sound,Cue,Cues}` (triggers only) |
+| `hooks/useWindowTitle.ts` | `live::window_title` |
+| `MembershipRevokedToast.tsx` (8 s, headline) | `live::{Notices,revocation_headline}` |
+
+### M3.6 Where this differs from the renderer
+
+- **Mirrored although it looks wrong**: a failed voice join is only logged (the optimistic switch is undone, no
+  toast); the sidebar switches to the voice view even when the E2EE gate refused the join; friend-action send
+  errors keep JS's "Error: " prefix; one join / leave sound per user (simultaneous joins overlap); posters are
+  kept only while the voice view retains them (one arriving with the view closed is dropped and fetched again on
+  the next visit); `channel_updated` for a channel we had no row of retunes the bitrate; the leave hotkey does
+  nothing while a call rings; `voice_user_state_changed` patches the stage's row, not the channel roster;
+  `useAutoAway` counts only our own speaking flag; a failed avatar fetch is retried only when central names the
+  version again; the friends error clears after 5 s (the renderer's views did it; here the store).
+- **Changed**: voice and stream rosters are cleared on sign-out (the renderer kept them until the next sign-in's
+  snapshots replaced them); one `stop_stream` for the user panel and the dock (the dock's never sent STREAM_STOP
+  to a call peer; the announce is a no-op outside a call); the device list lives in the store, not the tab; the
+  native encode path is the only one (no WebCodecs fallback, no `isNativeEncodeActive` switch); the hotkey
+  status is the core's `hotkeys::status()` rather than a JSON round trip.
+- **Central**: expired status messages are cleared for others by central's 30 s sweep (they see it up to 30 s
+  late); our own copy clears exactly at the deadline, as in the renderer.
+
+### M3.7 Core and platform gaps
+
+1. `system_idle` is a query: no push of the compositor's `idled` / `resumed`, so auto-away either lags (≤ one
+   threshold) or re-reads; a push from `system_idle.rs`'s watcher would make it exact and timer-free.
+2. No out-of-voice mic test: the Audio tab's meter outside voice used Web Audio's `getUserMedia`; the core
+   meters only inside a session (`voice_input_level`).
+3. No device-change notification from the core (only `default_device_watch` for the default device).
+4. GPUI's `Keystroke` has no physical key code: the recorder's `KeyboardEvent.code` names assume a US layout.
+5. `probe_native_encoders` does not exist on macOS: encode caps are empty there.
+6. `caps_refreshed` and `stream_gpu_fallback` have no emitter (as the foundation noted).
+
+### M3.8 Tests
+
+- **Unit** (beside the code, `#[gpui::test]` with the test clock, no network): the self-move queue (switch,
+  queue order, expiry, no-op leave), community clears, capabilities, keyed events; speaking / input-level
+  notifies; stats ring; streams, watching, frame-sink counting; codec gating, fallback, intersection, toast
+  wording; Go Live validation and presets; gains; device hot-plug debounce; presence covered / delta / invisible /
+  disconnect, messages, own clear-after; interest ref-counts and 600 ms batching; auto-away's arming (threshold −
+  idle, pushing vs polling sources, lock, speech); avatars (6 in flight, newest first, off-screen skipped, 400
+  bound, sign-out drops late results); friends retries and transitions; E2EE flows; hotkeys (configure
+  collapsing, input mode, focused fallback, combos); devices; transfers (attention, progress, quit guard,
+  vanished uploads, speed, event coalescing).
+- **Router** (`src/live/tests.rs`, `Model::init` without the core, events through the real pump): rosters under
+  join / others joining / confirmation / force-move / force-disconnect / re-authentication / channel removal;
+  an unconfirmed join expiring; speaking notifying nothing else; streams and watches; no keys → no voice; the call
+  machine against a fake transport and the test clock (45 s "No answer", incoming → answered elsewhere → busy →
+  connected → hang-up, DND silencing only the ring, glare); presence routing (friends flip, friends-only DMs
+  adopted, invisible, central lost); hotkey routing; the new-device toast; sign-out; the revocation notice; the
+  window title.
+- **Stack** (`tests/stack_live.rs`, `DECIBELL_STACK=1 … --test stack_live -- --test-threads 1`): statuses reach a
+  watcher and not a bystander, invisible looks offline, a message with clear-after goes (central's 30 s sweep);
+  dave → erin request, accept, remove (seed state restored); two perf4 devices listed, one signs the other out
+  (`SESSION_CLOSED {SIGNED_OUT}` → the notice); perf3 / perf4 E2EE ready and a safety number; perf3 + perf4 in
+  Lounge, both rosters, MLS ready with two members, deafen / undeafen propagated, join / leave cues; a call
+  ringing on two perf4 devices, answered on one (the other: "Answered on another device"), **connected P2P over
+  loopback** (host path, verified), hung up. Every client is muted or deafened: no audio leaves or plays.
+  **perf3 and perf4 now have E2EE keys** on the stack (passphrase `decibell-m3-test-passphrase`): fresh profiles
+  of them start locked and unlock with it; a call to them must be signed (both sides unlocked).
+- Not exercised on one machine: speaking events (nobody sends audio), a stream (no capture in a headless run),
+  two machines across NAT (STUN srflx), lock / sleep auto-away, real hot-plug, the focused fallback with real
+  key events.
+
+### M3.9 Measured (2026-11-26, this machine; release `decibell-headless`, `--features local-central`)
+
+`tools/perf/measure.sh --pid … --settle 20 --duration 60 --gpu none --no-frames`. The binary is 36.5 MB
+stripped (25.0 MB before M3: `decibell-attachments` — hyper, rustls, image decoders — comes in with the
+Transfers store; the app links it anyway for M2).
+
+| Scenario | Private (dirty) | CPU (one core) | Wakeups / s | Threads |
+|---|---|---|---|---|
+| Signed in as perf3, Daily Gaming connected and its roster loaded, presence interest for 100 members, not in voice | **16.2 MB** (3.0) | 0.001 % | **0.23** (the `decibell-rt` keep-alives; main 0.0) | 26 |
+| Signed in as perf4, alone in Lounge (muted, MLS ready), idle | **23.5 MB** (6.1) | 2.75 % | **1388** | 36 |
+
+The voice baseline, per thread (voluntary switches / s; all the core's except the main thread):
+
+| Thread | Wakeups / s | Why |
+|---|---|---|
+| `decibell-voice-recv` | 442 | the voice UDP receive loop: a 1 ms read timeout (`pipeline.rs`), so it wakes whether or not packets come |
+| `decibell-audio` | 197 | the engine's paced 5 ms loop (`hrtimer_nanosleep`) |
+| `data-loop.0` × 2 | 187.5 each | PipeWire's client data loops (capture and playback through the ALSA `pipewire` plugin): 256 frames at 48 kHz |
+| `decibell-video-recv` | 160 | the video receive loop, running in voice although nobody streams |
+| `cpal_alsa_in`, `cpal_alsa_out` | 94 each | cpal's ALSA period, 512 frames at 48 kHz |
+| `decibell-rt` × 2 | 20.4 + 4.4 | the core's runtime: voice pings and stats, MLS, keep-alives |
+| main (the model) | 0.9 | the pump: a ping and a stats event every 2 s |
+
+So the model adds nothing at idle; in voice its share is the 0.9 wakeups / s of two telemetry events. The voice
+floor of ~1,390 wakeups / s and 2.75 % of a core is the core's media loops: `voice-recv`'s 1 ms timeout and the
+idle `video-recv` are the candidates (blocking receives, or a video receiver only while a stream is watched)
+before the client's voice targets are set. Measured under load from other builds (load average ~10); one presence
+run was disturbed by memory reclaim and was repeated.
