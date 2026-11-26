@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, FocusHandle, Hsla, IntoElement, MouseButton, ParentElement,
-    RenderOnce, SharedString, Window, deferred, div, prelude::*, px,
+    AnyElement, App, Bounds, ClickEvent, ElementId, FocusHandle, Hsla, IntoElement, MouseButton, ParentElement,
+    Pixels, RenderOnce, SharedString, Window, deferred, div, prelude::*, px,
 };
 
 use crate::motion::{self, Transition};
@@ -21,6 +21,7 @@ pub enum CloseRequest {
 }
 
 type CloseHandler = Rc<dyn Fn(CloseRequest, &mut Window, &mut App) + 'static>;
+type KeyHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// The renderer's dialog backdrop: `rgba(0,0,0,0.65)` (inline in ConfirmModal / SettingsModal,
 /// not a theme token), faded over `duration-300`.
@@ -56,6 +57,8 @@ pub struct Modal {
     id: ElementId,
     open: bool,
     on_close: Option<CloseHandler>,
+    on_enter: Option<KeyHandler>,
+    within: Option<(Bounds<Pixels>, Pixels)>,
     padding: Option<(f32, f32)>,
     children: Vec<AnyElement>,
 }
@@ -66,9 +69,31 @@ impl Modal {
             id: id.into(),
             open,
             on_close: None,
+            on_enter: None,
+            within: None,
             padding: None,
             children: Vec::new(),
         }
+    }
+
+    /// Enter (unmodified) anywhere in the modal while it is open, before the focused control
+    /// sees it: the renderer's document-level Enter (`ConfirmModal`: confirms with nothing
+    /// focused, and with Cancel focused too). Leave it unset where Enter belongs to the controls
+    /// (a form submits from its inputs only).
+    pub fn on_enter(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_enter = Some(Rc::new(handler));
+        self
+    }
+
+    /// Dim `region` (window coordinates, corners of `radius`) instead of the whole window and
+    /// centre the content in it; a press outside it is still a press on the backdrop. The
+    /// renderer's rename and change-password dialogs are `fixed inset-0` inside the Settings
+    /// window, whose `transform` makes the window their containing block (and its `overflow-hidden
+    /// rounded-xl` their clip): they dim the Settings window only
+    /// ([`crate::settings::dialog_region`]).
+    pub fn within(mut self, region: Bounds<Pixels>, radius: Pixels) -> Self {
+        self.within = Some((region, radius));
+        self
     }
 
     pub fn on_close(mut self, handler: impl Fn(&CloseRequest, &mut Window, &mut App) + 'static) -> Self {
@@ -136,18 +161,54 @@ impl RenderOnce for Modal {
         let on_close = self.on_close;
         let open = self.open;
         let (pad_x, pad_y) = self.padding.unwrap_or((16., 16.));
+        let content = div()
+            .id((id.clone(), "content"))
+            .flex()
+            .justify_center()
+            .size_full()
+            .items_center()
+            .opacity(t)
+            .children(self.children);
+        let content = match self.within {
+            None => content.into_any_element(),
+            Some((region, radius)) => div()
+                .absolute()
+                .left(region.origin.x - bounds.origin.x)
+                .top(region.origin.y - bounds.origin.y)
+                .w(region.size.width)
+                .h(region.size.height)
+                .overflow_hidden()
+                .rounded(radius)
+                .bg(BACKDROP.opacity(t))
+                .child(content)
+                .into_any_element(),
+        };
         let layer = div()
             .id(id.clone())
             .track_focus(&focus)
             .occlude()
             .w(bounds.size.width)
             .h(bounds.size.height)
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(pad_x))
-            .py(px(pad_y))
-            .bg(BACKDROP.opacity(t))
+            .when(self.within.is_none(), |this| {
+                this.flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(pad_x))
+                    .py(px(pad_y))
+                    .bg(BACKDROP.opacity(t))
+            })
+            .when_some(self.on_enter, |this, handler| {
+                this.capture_key_down(move |event, window, cx| {
+                    let keystroke = &event.keystroke;
+                    if open && keystroke.key == "enter" && !keystroke.modifiers.modified() {
+                        // Taken here, the focused control (a button Enter would click) never
+                        // sees it.
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        handler(window, cx);
+                    }
+                })
+            })
             .on_mouse_down(MouseButton::Left, {
                 let on_close = on_close.clone();
                 move |_, window, cx| {
@@ -179,16 +240,7 @@ impl RenderOnce for Modal {
                     }
                 }
             })
-            .child(
-                div()
-                    .id((id.clone(), "content"))
-                    .flex()
-                    .justify_center()
-                    .size_full()
-                    .items_center()
-                    .opacity(t)
-                    .children(self.children),
-            );
+            .child(content);
         deferred(Placed::new(Placement::At(bounds.origin)).child(layer))
             .with_priority(10)
             .into_any_element()
@@ -242,8 +294,9 @@ pub enum ConfirmTone {
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// The small confirmation dialog (delete message, leave server): title, body, Cancel and the
-/// confirm button; Escape or the backdrop cancels, Enter confirms. `busy` shows a spinner on the
-/// confirm button and ignores Enter.
+/// confirm button; Escape or the backdrop cancels, Enter confirms (as the renderer's document
+/// listener: with nothing in the dialog focused, and with Cancel focused too; Space activates a
+/// focused button). `busy` shows a spinner on the confirm button and ignores Enter.
 ///
 /// ```ignore
 /// ConfirmModal::new("delete-message", self.confirm.is_some(), "Delete message", "Delete")
@@ -391,18 +444,6 @@ impl RenderOnce for ConfirmModal {
         let wide = secondary.is_some();
 
         let card = dialog_card(if wide { 512. } else { 400. }, cx)
-            .on_key_down({
-                let on_confirm = on_confirm.clone();
-                move |event, window, cx| {
-                    if event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() {
-                        cx.stop_propagation();
-                        window.prevent_default();
-                        if open && confirmable && let Some(handler) = &on_confirm {
-                            handler(&ClickEvent::default(), window, cx);
-                        }
-                    }
-                }
-            })
             .child(
                 Label::new(self.title)
                     .size(16.)
@@ -428,6 +469,13 @@ impl RenderOnce for ConfirmModal {
         Modal::new(id, open)
             .on_close(move |_, window, cx| {
                 if let Some(handler) = &on_cancel {
+                    handler(&ClickEvent::default(), window, cx);
+                }
+            })
+            // `onKeyDown` on the document: Enter confirms whatever is focused (the modal's own
+            // layer when it opens, Cancel after a Tab), unless the button is disabled or busy.
+            .on_enter(move |window, cx| {
+                if confirmable && let Some(handler) = &on_confirm {
                     handler(&ClickEvent::default(), window, cx);
                 }
             })

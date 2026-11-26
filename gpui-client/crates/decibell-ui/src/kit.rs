@@ -75,6 +75,8 @@ impl Render for KitButtons {
             (ButtonVariant::DangerSoft, "Remove"),
             (ButtonVariant::DangerOutline, "Leave"),
             (ButtonVariant::Soft, "Copy invite"),
+            (ButtonVariant::Outline, "Record again"),
+            (ButtonVariant::QuietOutline, "Reset keys"),
         ];
         let theme = cx.theme();
         page(cx)
@@ -90,6 +92,19 @@ impl Render for KitButtons {
                 row().children(variants.iter().enumerate().map(|(i, (variant, label))| {
                     Button::new(("sm", i), *label).variant(*variant).size(ButtonSize::Sm)
                 })),
+                cx,
+            ))
+            .child(section(
+                "Sizes · lg, xs, rounded-sm",
+                row()
+                    .child(Button::new("lg", "Log Out").variant(ButtonVariant::DangerSoft).size(ButtonSize::Lg))
+                    .child(Button::new("xs", "Test mic").variant(ButtonVariant::Outline).size(ButtonSize::Xs))
+                    .child(
+                        Button::new("sm-square", "Sign out")
+                            .variant(ButtonVariant::DangerSoft)
+                            .size(ButtonSize::Sm)
+                            .rounded_sm(),
+                    ),
                 cx,
             ))
             .child(section(

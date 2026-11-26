@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail, ensure};
 use decibell_harness::{Frames, SelfTest, TestCx, perf};
 use gpui::{
-    AnyView, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity,
+    AnyView, AnyWindowHandle, App, AppContext as _, Bounds, ClickEvent, Context, Entity,
     FocusHandle, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, Render,
     ScrollDelta, ScrollEvent, StyleRefinement, TitlebarOptions, TouchPhase, Window,
@@ -17,7 +17,7 @@ use crate::kit::{KitForms, KitScroll};
 use crate::modal::CloseRequest;
 use crate::scroll::{ScrollAnimator, ScrollKind};
 use crate::{
-    ActiveTheme as _, FontRole, Modal, SaveBar, ScrollArea, ScrollHandle, Select, SelectHandle,
+    ActiveTheme as _, ConfirmModal, FontRole, Modal, SaveBar, ScrollArea, ScrollHandle, Select, SelectHandle,
     SelectOption, TITLEBAR_HEIGHT, TitleBar, Toast, ToastStack, Toasts, dialog_card,
     outer_window_size, visible_window_bounds, window_frame,
 };
@@ -43,6 +43,11 @@ pub fn selftests() -> Vec<SelfTest> {
             name: "kit-modal",
             about: "modal: focus trapped, a vetoed Escape shakes the save bar, closes, focus restored, stacking",
             run: |cx| Box::pin(kit_modal(cx)),
+        },
+        SelfTest {
+            name: "kit-confirm",
+            about: "confirm dialog: Enter confirms as it opens and with Cancel focused (once), Space on Cancel and Escape cancel, a disabled confirm ignores Enter",
+            run: |cx| Box::pin(kit_confirm(cx)),
         },
         SelfTest {
             name: "kit-scroll",
@@ -563,6 +568,91 @@ async fn kit_modal(cx: TestCx) -> Result<()> {
         ensure!(outside, "focus did not go back to where it was");
         window.log(format_args!("closed: fade-out {frames} frames over {:.0} ms; focus restored", last.as_secs_f64() * 1e3));
         assert_idle(&window, Duration::from_secs(1), "modal closed").await?;
+        Ok(())
+    }
+    .await;
+    close(&window);
+    result
+}
+
+// ── kit-confirm ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct ConfirmFixture {
+    open: bool,
+    disabled: bool,
+    confirmed: u32,
+    cancelled: u32,
+}
+
+impl Render for ConfirmFixture {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().id("confirm-fixture").size_full().bg(cx.theme().color_bg_primary).child(
+            ConfirmModal::new("confirm-fixture-dialog", self.open, "Sign out this device?", "Sign out")
+                .message("Linux will be signed out and need your password to sign in again.")
+                .confirm_disabled(self.disabled)
+                .on_confirm(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.confirmed += 1;
+                    this.open = false;
+                    cx.notify();
+                }))
+                .on_cancel(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.cancelled += 1;
+                    this.open = false;
+                    cx.notify();
+                })),
+        )
+    }
+}
+
+/// ConfirmModal's keys as the renderer's (`ConfirmModal.tsx`: Enter and Escape on the
+/// document, so with nothing in the dialog focused). The modal focuses its own layer as it
+/// opens; Enter used to be handled on the card, so it did nothing until Tab moved focus in.
+async fn kit_confirm(cx: TestCx) -> Result<()> {
+    let (window, view) = open(&cx, |_, cx| cx.new(|_| ConfirmFixture::default()).into())?;
+    let result = async {
+        let fixture: Entity<ConfirmFixture> = view.downcast().map_err(|_| anyhow::anyhow!("fixture"))?;
+        let counts = |window: &TestCx| window.update(|_, cx| {
+            let f = fixture.read(cx);
+            (f.open, f.confirmed, f.cancelled)
+        });
+        let show = async |window: &TestCx, disabled: bool| -> Result<()> {
+            window.update(|_, cx| fixture.update(cx, |f, cx| {
+                f.open = true;
+                f.disabled = disabled;
+                cx.notify();
+            }))?;
+            window.settle().await?;
+            Ok(())
+        };
+
+        show(&window, false).await?;
+        key(&window, "enter")?;
+        ensure!(counts(&window)? == (false, 1, 0), "Enter as it opened: {:?} (open, confirmed, cancelled)", counts(&window)?);
+        window.log("Enter as the dialog opened (its layer focused): confirmed once");
+
+        show(&window, false).await?;
+        key(&window, "tab")?;
+        key(&window, "enter")?;
+        ensure!(counts(&window)? == (false, 2, 0), "Enter with Cancel focused: {:?}", counts(&window)?);
+        window.log("Tab (Cancel focused), Enter: confirmed once, Cancel not clicked");
+
+        show(&window, false).await?;
+        key(&window, "tab")?;
+        key(&window, "space")?;
+        ensure!(counts(&window)? == (false, 2, 1), "Space on Cancel: {:?}", counts(&window)?);
+        show(&window, false).await?;
+        key(&window, "escape")?;
+        ensure!(counts(&window)? == (false, 2, 2), "Escape: {:?}", counts(&window)?);
+        window.log("Space on the focused Cancel and Escape cancel");
+
+        show(&window, true).await?;
+        key(&window, "enter")?;
+        ensure!(counts(&window)? == (true, 2, 2), "Enter on a disabled confirm: {:?}", counts(&window)?);
+        key(&window, "escape")?;
+        ensure!(counts(&window)? == (false, 2, 3), "Escape after it: {:?}", counts(&window)?);
+        window.log("a disabled confirm button: Enter does nothing; Escape still cancels");
+        assert_idle(&window, Duration::from_secs(1), "confirm dialog closed").await?;
         Ok(())
     }
     .await;

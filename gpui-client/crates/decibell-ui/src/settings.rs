@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Bounds, ClickEvent, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, RenderOnce, SharedString,
-    Window, canvas, div, point, prelude::*, px,
+    Window, canvas, div, point, prelude::*, px, size,
 };
 
 use crate::interaction::{Hover, focus_handle};
@@ -28,6 +28,37 @@ pub const RAIL_BREAKPOINT: f32 = decibell_theme::tailwind::BREAKPOINT_LG;
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 type CloseHandler = Rc<dyn Fn(CloseRequest, &mut Window, &mut App) + 'static>;
 
+/// The backdrop's padding around the frame (`px-[max(56px,5vw)] py-[max(48px,6vh)]`,
+/// `max-lg:p-4`) in a window of the visible size `width` × `height`.
+fn frame_padding(width: f32, height: f32) -> (f32, f32) {
+    if width < RAIL_BREAKPOINT {
+        (16., 16.)
+    } else {
+        (56f32.max(width * 0.05), 48f32.max(height * 0.06))
+    }
+}
+
+/// Where [`SettingsWindow`] puts its frame in a window whose visible area is `visible`: inside
+/// the backdrop's padding, at most 1600 × 1120 (`max-w-400 max-h-280`), centred.
+pub fn frame_bounds(visible: Bounds<Pixels>) -> Bounds<Pixels> {
+    let (w, h) = (f32::from(visible.size.width), f32::from(visible.size.height));
+    let (pad_x, pad_y) = frame_padding(w, h);
+    let (fw, fh) = ((w - 2. * pad_x).clamp(0., 1600.), (h - 2. * pad_y).clamp(0., 1120.));
+    Bounds::new(visible.origin + point(px((w - fw) / 2.), px((h - fh) / 2.)), size(px(fw), px(fh)))
+}
+
+/// The inside of the settings frame (within its 1 px border) and that inside's corner radius:
+/// what a dialog the renderer draws inside the Settings window dims and centres in
+/// ([`Modal::within`]).
+pub fn dialog_region(window: &Window, cx: &App) -> (Bounds<Pixels>, Pixels) {
+    let frame = frame_bounds(visible_window_bounds(window, cx));
+    let inside = Bounds::new(
+        frame.origin + point(px(1.), px(1.)),
+        size((frame.size.width - px(2.)).max(px(0.)), (frame.size.height - px(2.)).max(px(0.))),
+    );
+    (inside, (cx.theme().radius_xl - px(1.)).max(px(0.)))
+}
+
 /// A tab in the settings sidebar: `rounded-md px-3 py-[9px] text-[14px] transition-colors`; the
 /// active one `bg-accent-soft font-medium text-text-primary` with its icon `text-accent-bright`,
 /// the others `text-text-secondary hover:bg-surface-hover hover:text-text-primary` with the icon
@@ -40,6 +71,7 @@ pub struct NavItem {
     active: bool,
     dot: bool,
     danger: bool,
+    probe: Option<SharedString>,
     on_click: Option<Handler>,
 }
 
@@ -52,8 +84,16 @@ impl NavItem {
             active: false,
             dot: false,
             danger: false,
+            probe: None,
             on_click: None,
         }
+    }
+
+    /// Where the tab is, for the self-tests (`decibell_harness::probes`; nothing unless
+    /// `DECIBELL_TEST_PROBES=1`).
+    pub fn probe(mut self, key: impl Into<SharedString>) -> Self {
+        self.probe = Some(key.into());
+        self
     }
 
     pub fn active(mut self, active: bool) -> Self {
@@ -182,11 +222,7 @@ impl RenderOnce for SettingsWindow {
         let width = f32::from(visible.size.width);
         let height = f32::from(visible.size.height);
         let rail = width < RAIL_BREAKPOINT;
-        let (pad_x, pad_y) = if rail {
-            (16., 16.)
-        } else {
-            (56f32.max(width * 0.05), 48f32.max(height * 0.06))
-        };
+        let (pad_x, pad_y) = frame_padding(width, height);
         let theme = cx.theme();
         let id = self.id;
 
@@ -455,6 +491,7 @@ fn nav_item(item: NavItem, rail: bool, window: &mut Window, cx: &mut App) -> Any
                 .absolute()
                 .inset_0()
         })
+        .children(item.probe.and_then(decibell_harness::probes::probe))
         .child(Icon::new(item.icon).size(px(16.)).color(icon))
         .when(!rail, |this| {
             this.child(

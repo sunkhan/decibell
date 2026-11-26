@@ -19,10 +19,16 @@ pub(crate) fn focus_handle(
         .clone()
 }
 
-/// Whether the pointer is over a control, for controls whose hover colours transition
+/// Whether the pointer is over an element, for hover colours that transition
 /// (`transition-colors`): GPUI's `.hover()` styles switch at once, so the state is kept here and
-/// fed to a [`motion::transition`].
-pub(crate) struct Hover {
+/// fed to a [`motion::transition`]. Frames only while it moves; the state lives in the window's
+/// element state of `id`, so a `RenderOnce` can use it.
+///
+/// ```ignore
+/// let hover = Hover::new(window, cx, id.clone(), Some(Transition::TAILWIND));
+/// div().id(id).bg(mix(rest, hovered, hover.progress)).on_hover(hover.listener())
+/// ```
+pub struct Hover {
     pub state: Entity<bool>,
     /// 0 → 1 as the pointer enters, back as it leaves.
     pub progress: f32,

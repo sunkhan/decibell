@@ -9,8 +9,13 @@
 //! | [`ButtonVariant::DangerSoft`] | `rounded-md border border-error/20 bg-error/10 font-medium text-error transition-colors hover:bg-error/20` |
 //! | [`ButtonVariant::DangerOutline`] | `rounded-sm border border-error/40 font-semibold text-error hover:border-error/70 hover:bg-error/10` |
 //! | [`ButtonVariant::Soft`] | `rounded-sm bg-accent-soft font-medium text-accent-bright transition-colors hover:bg-accent-mid` |
+//! | [`ButtonVariant::Outline`] | `rounded-sm border border-border font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary` (Record again, Test mic, Open system shortcut settings) |
+//! | [`ButtonVariant::QuietOutline`] | `rounded-sm border border-border font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary` (E2eeSection's `SecondaryButton`) |
 //!
-//! Sizes: [`ButtonSize::Md`] `px-4 py-2 text-[13px]`, [`ButtonSize::Sm`] `px-3 py-1.5 text-[12px]`.
+//! Sizes: [`ButtonSize::Lg`] `px-5 py-2.5 text-[13px]` (Account's Log Out), [`ButtonSize::Md`]
+//! `px-4 py-2 text-[13px]`, [`ButtonSize::Sm`] `px-3 py-1.5 text-[12px]`, [`ButtonSize::Xs`]
+//! `px-2 py-0.5 text-[12px]` (Test mic). [`Button::rounded_sm`] takes `rounded-sm` where a
+//! variant has `rounded-md` (a device row's Sign out: `DangerSoft` at `Sm`).
 //! Every button takes the theme's focus ring on keyboard focus (`focus-visible:shadow-ring`),
 //! is activated by Enter / Space while focused, and goes to 50 % with a not-allowed cursor when
 //! disabled. [`IconButton`] is the square glyph button (close, dismiss); [`LinkButton`] the text
@@ -36,14 +41,20 @@ pub enum ButtonVariant {
     DangerSoft,
     DangerOutline,
     Soft,
+    Outline,
+    QuietOutline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonSize {
+    /// `px-5 py-2.5 text-[13px]`: 39.5 px tall.
+    Lg,
     /// `px-4 py-2 text-[13px]`: 35.5 px tall.
     Md,
     /// `px-3 py-1.5 text-[12px]`: 30 px tall.
     Sm,
+    /// `px-2 py-0.5 text-[12px]`: 22 px tall.
+    Xs,
 }
 
 /// The colours of one variant at rest and under the pointer.
@@ -133,6 +144,26 @@ impl ButtonVariant {
                 radius: t.radius_sm,
                 transition: Some(Transition::TAILWIND),
             },
+            ButtonVariant::Outline => Look {
+                bg: clear,
+                bg_hover: clear,
+                text: t.color_text_secondary,
+                text_hover: t.color_text_primary,
+                border: Some((t.color_border, t.color_accent.opacity(0.4))),
+                weight: 500.,
+                radius: t.radius_sm,
+                transition: Some(Transition::TAILWIND),
+            },
+            ButtonVariant::QuietOutline => Look {
+                bg: clear,
+                bg_hover: t.color_surface_hover,
+                text: t.color_text_secondary,
+                text_hover: t.color_text_primary,
+                border: Some((t.color_border, t.color_border)),
+                weight: 500.,
+                radius: t.radius_sm,
+                transition: Some(Transition::TAILWIND),
+            },
         }
     }
 }
@@ -155,6 +186,8 @@ pub struct Button {
     loading: bool,
     full_width: bool,
     weight: Option<f32>,
+    rounded_sm: bool,
+    probe: Option<SharedString>,
     on_click: Option<ClickHandler>,
 }
 
@@ -170,6 +203,8 @@ impl Button {
             loading: false,
             full_width: false,
             weight: None,
+            rounded_sm: false,
+            probe: None,
             on_click: None,
         }
     }
@@ -213,6 +248,20 @@ impl Button {
         self
     }
 
+    /// `rounded-sm` in place of the variant's radius (a row's small `DangerSoft`: DevicesTab's
+    /// Sign out).
+    pub fn rounded_sm(mut self) -> Self {
+        self.rounded_sm = true;
+        self
+    }
+
+    /// Where the button is, for the self-tests (`decibell_harness::probes`; nothing unless
+    /// `DECIBELL_TEST_PROBES=1`).
+    pub fn probe(mut self, key: impl Into<SharedString>) -> Self {
+        self.probe = Some(key.into());
+        self
+    }
+
     pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -227,9 +276,10 @@ impl RenderOnce for Button {
         let hover = Hover::new(window, cx, self.id.clone(), look.transition);
         let progress = if disabled { 0. } else { hover.progress };
         let (text_size, line_height) = match self.size {
-            ButtonSize::Md => (13., 19.5),
-            ButtonSize::Sm => (12., 18.),
+            ButtonSize::Lg | ButtonSize::Md => (13., 19.5),
+            ButtonSize::Sm | ButtonSize::Xs => (12., 18.),
         };
+        let radius = if self.rounded_sm { cx.theme().radius_sm } else { look.radius };
         let text = mix(look.text, look.text_hover, progress);
         let ring = ring(cx);
 
@@ -242,11 +292,14 @@ impl RenderOnce for Button {
             .justify_center()
             .gap_1p5()
             .map(|this| match self.size {
+                ButtonSize::Lg => this.px_5().py_2p5(),
                 ButtonSize::Md => this.px_4().py_2(),
                 ButtonSize::Sm => this.px_3().py_1p5(),
+                ButtonSize::Xs => this.px_2().py_0p5(),
             })
             .when(self.full_width, |this| this.w_full())
-            .rounded(look.radius)
+            .rounded(radius)
+            .when_some(self.probe.and_then(decibell_harness::probes::probe), |this, probe| this.relative().child(probe))
             .bg(mix(look.bg, look.bg_hover, progress))
             .when_some(look.border, |this, (rest, hovered)| {
                 this.border_1().border_color(mix(rest, hovered, progress))

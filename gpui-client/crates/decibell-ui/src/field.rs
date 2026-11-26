@@ -129,9 +129,12 @@ impl RenderOnce for Field {
 /// ```
 ///
 /// Without an editor it shows `value` (or the placeholder) as static text.
+///
+/// [`TextField::variant`] gives the other two boxes the renderer draws ([`TextFieldVariant`]).
 #[derive(IntoElement)]
 pub struct TextField {
     id: ElementId,
+    variant: TextFieldVariant,
     value: SharedString,
     placeholder: SharedString,
     focus: Option<FocusHandle>,
@@ -143,10 +146,30 @@ pub struct TextField {
     max_height: f32,
 }
 
+/// The boxes the renderer draws around an `<input>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextFieldVariant {
+    /// Channel settings' `FIELD` / SearchField (the default): `h-10 w-full rounded-md border
+    /// border-border bg-bg-lighter px-3 text-[13px] transition-all hover:border-accent/40
+    /// focus:border-accent focus:shadow-ring disabled:opacity-60`.
+    #[default]
+    Field,
+    /// The form dialogs' inputs (rename, change password, the passphrase): `w-full rounded-sm
+    /// border border-border bg-bg-dark px-3 py-2 text-[13px] text-text-primary outline-none
+    /// transition-colors placeholder:text-text-muted focus:border-accent` (37.5 px: the input
+    /// inherits the body's line-height, 1.5).
+    Dialog,
+    /// Settings → Network's custom speed: `w-28 rounded-sm border border-border bg-bg-mid
+    /// px-2.5 py-1.5 text-[12px] text-text-primary outline-none transition-colors
+    /// focus:border-accent` (32 px), its placeholder Tailwind's default (the text colour at 50 %).
+    Compact,
+}
+
 impl TextField {
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
+            variant: TextFieldVariant::Field,
             value: SharedString::default(),
             placeholder: SharedString::default(),
             focus: None,
@@ -157,6 +180,11 @@ impl TextField {
             editor: None,
             max_height: 160.,
         }
+    }
+
+    pub fn variant(mut self, variant: TextFieldVariant) -> Self {
+        self.variant = variant;
+        self
     }
 
     pub fn value(mut self, value: impl Into<SharedString>) -> Self {
@@ -235,12 +263,26 @@ impl TextField {
 
 impl RenderOnce for TextField {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let variant = self.variant;
         let hover = Hover::new(window, cx, self.id.clone(), Some(Transition::TAILWIND));
         let mut focus = self.focus;
         let mut multiline = false;
+        // `text-[13px]`, line-height `normal` in the fixed-height `FIELD` (Inter's 1.21: where the
+        // text sits is the same); the auto-height boxes inherit the body's 1.5.
+        let (text_size, leading) = match variant {
+            TextFieldVariant::Field => (13., 1.2109),
+            TextFieldVariant::Dialog => (13., 1.5),
+            TextFieldVariant::Compact => (12., 1.5),
+        };
+        let placeholder_color = match variant {
+            TextFieldVariant::Compact => cx.theme().color_text_primary.opacity(0.5),
+            _ => cx.theme().color_text_muted,
+        };
         let editor = self.editor.map(|editor| {
-            // `text-[13px]`, line-height `normal` in an `<input>` (Inter's 1.21).
-            let style = Self::input_style(FontRole::Sans, 13., 1.2109, cx);
+            let style = InputStyle {
+                placeholder_color,
+                ..Self::input_style(FontRole::Sans, text_size, leading, cx)
+            };
             let disabled = self.disabled;
             editor.update(cx, |state, cx| state.set_disabled(disabled, cx));
             let state = editor.read(cx);
@@ -277,55 +319,69 @@ impl RenderOnce for TextField {
         });
         let focused = focus.as_ref().is_some_and(|focus| focus.is_focused(window));
         let theme = cx.theme();
+        let field = variant == TextFieldVariant::Field;
         let border = if self.error {
             theme.color_error
         } else if focused {
             theme.color_accent
-        } else {
+        } else if field {
             mix(
                 theme.color_border,
                 theme.color_accent.opacity(0.4),
                 if self.disabled { 0. } else { hover.progress },
             )
+        } else {
+            theme.color_border
         };
+        let line_height = (text_size * leading * 64.).round() / 64.;
         let content = match editor.or(self.input) {
             Some(input) => input,
             None if self.value.is_empty() => Label::new(self.placeholder)
-                .size(13.)
-                .color(theme.color_text_muted)
+                .size(text_size)
+                .line_height(line_height)
+                .color(placeholder_color)
                 .truncate()
                 .into_any_element(),
             None => Label::new(self.value)
-                .size(13.)
+                .size(text_size)
+                .line_height(line_height)
                 .color(theme.color_text_primary)
                 .truncate()
                 .into_any_element(),
+        };
+        let (radius, bg) = match variant {
+            TextFieldVariant::Field => (theme.radius_md, theme.color_bg_lighter),
+            TextFieldVariant::Dialog => (theme.radius_sm, theme.color_bg_dark),
+            TextFieldVariant::Compact => (theme.radius_sm, theme.color_bg_mid),
         };
         div()
             .id(self.id)
             .when_some(focus.as_ref(), |this, focus| this.track_focus(focus))
             .relative()
             .flex()
-            // A text area: at least the field's 40 px, `py-2.5` around its lines.
-            .map(|this| if multiline { this.min_h_10().py_2p5() } else { this.h_10() })
-            .w_full()
+            .map(|this| match variant {
+                // A text area: at least the field's 40 px, `py-2.5` around its lines.
+                TextFieldVariant::Field if multiline => this.min_h_10().py_2p5().w_full(),
+                TextFieldVariant::Field => this.h_10().w_full(),
+                TextFieldVariant::Dialog => this.py_2().w_full(),
+                TextFieldVariant::Compact => this.py_1p5().w(px(112.)).flex_none(),
+            })
             .min_w_0()
             .items_center()
-            .rounded(theme.radius_md)
+            .rounded(radius)
             .border_1()
             .border_color(border)
-            .bg(theme.color_bg_lighter)
-            .map(|this| {
-                if self.leading_icon.is_some() {
-                    this.pl_9().pr_8()
-                } else {
-                    this.px_3()
-                }
+            .bg(bg)
+            .map(|this| match variant {
+                TextFieldVariant::Field if self.leading_icon.is_some() => this.pl_9().pr_8(),
+                TextFieldVariant::Compact => this.px_2p5(),
+                _ => this.px_3(),
             })
-            .when(focused && !self.error, |this| this.shadow(theme.shadow_ring.clone()))
-            .when(self.disabled, |this| this.opacity(0.6).cursor_not_allowed())
+            .when(field && focused && !self.error, |this| this.shadow(theme.shadow_ring.clone()))
+            // The boxes without `disabled:` classes keep their look (a busy dialog's fields).
+            .when(self.disabled && field, |this| this.opacity(0.6).cursor_not_allowed())
             .when(!self.disabled, |this| this.cursor_text())
-            .on_hover(hover.listener())
+            .when(field, |this| this.on_hover(hover.listener()))
             .when_some(self.leading_icon, |this, icon| {
                 this.child(
                     div()

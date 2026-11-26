@@ -45,7 +45,8 @@ use gpui::{App, AppContext as _, InteractiveElement, KeyBinding, actions};
 
 pub use assets::Assets;
 pub use button::{Button, ButtonSize, ButtonVariant, IconButton, LinkButton, button_row};
-pub use field::{Field, TextField};
+pub use field::{Field, TextField, TextFieldVariant};
+pub use interaction::Hover;
 pub use identity::{Avatar, BellMark, LetterAvatar, Presence, StatusDot, StatusPill};
 pub use menu::{ContextMenu, MenuEntry, MenuItem};
 pub use modal::{CloseRequest, ConfirmModal, ConfirmTone, Modal, dialog_card};

@@ -12,6 +12,9 @@ const VARIANTS: [string, (size: string) => string][] = [
   ["Remove", (s) => `rounded-md border border-error/20 bg-error/10 ${s} font-medium text-error transition-colors hover:bg-error/20 disabled:opacity-50`],
   ["Leave", (s) => `rounded-sm border border-error/40 ${s} font-semibold text-error hover:border-error/70 hover:bg-error/10`],
   ["Copy invite", (s) => `rounded-sm bg-accent-soft ${s} font-medium text-accent-bright transition-colors hover:bg-accent-mid`],
+  // KeybindsTab's Record again / AudioTab's Test mic, E2eeSection's SecondaryButton.
+  ["Record again", (s) => `rounded-sm border border-border ${s} font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary`],
+  ["Reset keys", (s) => `rounded-sm border border-border ${s} font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary`],
 ];
 
 /// features/auth/LoginPage.tsx's spinner, held still (the GPUI capture draws it at rest).
@@ -37,6 +40,14 @@ export default function KitButtons() {
       </Section>
       <Section title="Buttons · sm">
         <Row>{VARIANTS.map(([label, cls]) => <button key={label} className={cls(SM)}>{label}</button>)}</Row>
+      </Section>
+      <Section title="Sizes · lg, xs, rounded-sm">
+        <Row>
+          {/* AccountTab's Log Out, AudioTab's Test mic, DevicesTab's Sign out */}
+          <button className="rounded-md border border-error/20 bg-error/10 px-5 py-2.5 text-[13px] font-medium text-error transition-colors hover:bg-error/20">Log Out</button>
+          <button className="rounded-sm border border-border px-2 py-0.5 text-[12px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary">Test mic</button>
+          <button className="shrink-0 rounded-sm border border-error/20 bg-error/10 px-3 py-1.5 text-[12px] font-medium text-error transition-colors hover:bg-error/20 disabled:opacity-50">Sign out</button>
+        </Row>
       </Section>
       <Section title="States · disabled, loading, icon">
         <Row>
