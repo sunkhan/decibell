@@ -39,7 +39,7 @@ fn open_screen(cx: &TestCx, name: &str) -> Result<TestCx> {
         };
         let window = cx.open_window(options, move |window, cx| {
             let content = build(window, cx);
-            cx.new(|_| crate::root::Root::new(content))
+            cx.new(|cx| crate::root::Root::new(content, window, cx))
         })?;
         Ok(window.into())
     })?;

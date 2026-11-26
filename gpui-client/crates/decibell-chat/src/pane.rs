@@ -36,7 +36,7 @@ struct Shown {
     list: Entity<MessageList>,
     composer: Option<crate::media::ComposerParts>,
     /// The registered welcome banner, built the first time this channel shows empty.
-    welcome: Option<AnyView>,
+    welcome: Option<gpui::AnyView>,
     /// The newest-page load got no answer: Retry shows.
     failed: bool,
     _load: Option<Task<()>>,
