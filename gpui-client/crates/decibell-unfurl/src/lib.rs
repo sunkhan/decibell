@@ -8,6 +8,8 @@
 //!   concurrency limit.
 //! - [`Gifs`]: KLIPY or GIPHY search and trending feed ([`GifConfig`] from `gifs.json` or the
 //!   `GIF_API_KEY` / `GIF_API_PROVIDER` environment variables). Never Tenor: its API is gone.
+//! - [`images`]: a public-web picture's bytes for a view that shows it directly (the GIF picker's
+//!   previews), through the same guard and caps, independent of `LinkPreviews`.
 //! - [`links`]: the `decibell://invite/…` grammar and the small pure URL rules the message view
 //!   needs (GIF / image labels, which links may open in the browser).
 //!
@@ -19,6 +21,7 @@ mod http;
 mod js;
 
 pub mod gifs;
+pub mod images;
 pub mod link_preview;
 pub mod links;
 pub mod public_net;
