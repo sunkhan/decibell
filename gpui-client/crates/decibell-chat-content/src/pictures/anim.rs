@@ -108,7 +108,7 @@ impl FrameSource {
 
     /// The next whole frame and how long it shows (Chromium's minimum applied). `None` at the
     /// end of the file.
-    pub fn next(&mut self) -> Result<Option<(RgbaImage, Duration)>, String> {
+    pub fn next_frame(&mut self) -> Result<Option<(RgbaImage, Duration)>, String> {
         let frame = match &mut self.decoder {
             Decoder::Gif { decoder, canvas, saved, dispose } => {
                 // Undo what the previous frame asked to be undone.
@@ -167,8 +167,8 @@ impl FrameSource {
                     RgbaImage::from_raw(w, h, buffer.clone()).ok_or("a frame of the wrong size")?
                 } else {
                     let mut out = RgbaImage::new(w, h);
-                    for (d, s) in out.as_mut().chunks_exact_mut(4).zip(buffer.chunks_exact(3)) {
-                        d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+                    for (d, s) in out.as_mut().as_chunks_mut::<4>().0.iter_mut().zip(buffer.as_chunks::<3>().0) {
+                        *d = [s[0], s[1], s[2], 255];
                     }
                     out
                 };
@@ -205,17 +205,17 @@ mod tests {
         let mut source = FrameSource::open(Bytes::from(three_frames())).unwrap().expect("an animation");
         assert_eq!(source.size, (40, 30));
         assert_eq!(source.loops, Loops::Forever);
-        let (first, delay) = source.next().unwrap().unwrap();
+        let (first, delay) = source.next_frame().unwrap().unwrap();
         assert!(first.get_pixel(5, 5)[0] > 200);
         // A zero delay plays as 100 ms.
         assert_eq!(delay, Duration::from_millis(100));
-        let (second, delay) = source.next().unwrap().unwrap();
+        let (second, delay) = source.next_frame().unwrap().unwrap();
         assert!(second.get_pixel(5, 5)[1] > 200);
         assert_eq!(delay, Duration::from_millis(50));
-        assert!(source.next().unwrap().is_some());
-        assert!(source.next().unwrap().is_none());
+        assert!(source.next_frame().unwrap().is_some());
+        assert!(source.next_frame().unwrap().is_none());
         source.restart().unwrap();
-        assert!(source.next().unwrap().unwrap().0.get_pixel(1, 1)[0] > 200);
+        assert!(source.next_frame().unwrap().unwrap().0.get_pixel(1, 1)[0] > 200);
     }
 
     #[test]

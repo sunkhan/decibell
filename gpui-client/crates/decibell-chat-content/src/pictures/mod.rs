@@ -341,6 +341,11 @@ impl Pictures {
         self.entries.values().filter(|e| matches!(e.state, State::Ready(_))).fold((0, 0), |(b, n), e| (b + e.bytes, n + 1))
     }
 
+    /// Decoded bytes of the pictures some owner wants on screen now, and how many of them are in.
+    pub fn visible_bytes(&self) -> (usize, usize) {
+        self.visible.iter().filter_map(|k| self.entries.get(k)).filter(|e| matches!(e.state, State::Ready(_))).fold((0, 0), |(b, n), e| (b + e.bytes, n + 1))
+    }
+
     /// Decoded bytes of pictures no owner wants (what [`DECODED_BUDGET`] bounds).
     pub fn unpinned_bytes(&self) -> usize {
         self.entries.iter().filter(|(k, e)| !self.pinned.contains_key(*k) && e.waiters.is_empty()).map(|(_, e)| e.bytes).sum()
@@ -443,12 +448,12 @@ impl Pictures {
         let live: HashSet<&Source> = self.entries.iter().filter(|(_, e)| matches!(e.state, State::Waiting)).map(|(k, _)| &k.source).collect();
         let dead: Vec<Source> = self.jobs.keys().filter(|source| !live.contains(source)).cloned().collect();
         for source in dead {
-            if let Some(job) = self.jobs.remove(&source) {
-                if let JobState::Running { cancel, .. } = job.state {
-                    cancel.cancel();
-                    if let Some(count) = self.running.get_mut(&job.lane) {
-                        *count = count.saturating_sub(1);
-                    }
+            if let Some(job) = self.jobs.remove(&source)
+                && let JobState::Running { cancel, .. } = job.state
+            {
+                cancel.cancel();
+                if let Some(count) = self.running.get_mut(&job.lane) {
+                    *count = count.saturating_sub(1);
                 }
             }
         }
@@ -722,7 +727,7 @@ impl Pictures {
             });
         }
         let decoded = decibell_attachments::thumbhash::decode_b64(hash).and_then(|d| {
-            let rgba = image::RgbaImage::from_raw(d.width as u32, d.height as u32, d.rgba)?;
+            let rgba = image::RgbaImage::from_raw(d.width, d.height, d.rgba)?;
             Some(Arc::new(decode::render_image(&rgba)))
         });
         let key: SharedString = SharedString::from(hash.to_string());
@@ -768,7 +773,7 @@ impl Pictures {
     /// The tile of an animated key painted: it is on screen in a visible window.
     pub fn painted(&mut self, key: &PicKey, window: &mut Window, cx: &mut Context<Self>) {
         let handle = window.window_handle().window_id();
-        if !self.windows.contains_key(&handle) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.windows.entry(handle) {
             let pictures = cx.entity().downgrade();
             let subscription = window.observe_window_visibility(move |visibility, _, cx| {
                 let _ = pictures.update(cx, |this, cx| {
@@ -776,7 +781,7 @@ impl Pictures {
                     this.update_animations(cx);
                 });
             });
-            self.windows.insert(handle, subscription);
+            slot.insert(subscription);
         }
         if let Some(anim) = self.anims.get_mut(key) {
             anim.painted = true;
@@ -895,11 +900,11 @@ impl Pictures {
         let placement = anim.placement;
         let task = cx.background_spawn(async move {
             let mut looped = false;
-            let frame = match source.next() {
+            let frame = match source.next_frame() {
                 Ok(Some(frame)) => Ok(Some(frame)),
                 Ok(None) => {
                     looped = true;
-                    source.restart().and_then(|_| source.next())
+                    source.restart().and_then(|_| source.next_frame())
                 }
                 Err(e) => Err(e),
             };
@@ -1053,7 +1058,7 @@ fn decode_any(bytes: Bytes, spec: Spec) -> Result<Decoded, String> {
     if matches!(decode::sniff(&bytes), decode::Kind::Gif | decode::Kind::WebP)
         && let Some(mut source) = FrameSource::open(bytes.clone())?
     {
-        let (first, delay) = source.next()?.ok_or("an animation without frames")?;
+        let (first, delay) = source.next_frame()?.ok_or("an animation without frames")?;
         let placement = decode::place(spec, source.size);
         let fitted = decode::fit_pixels(&first, &placement);
         let still = decode::Still {
@@ -1065,8 +1070,8 @@ fn decode_any(bytes: Bytes, spec: Spec) -> Result<Decoded, String> {
         // One frame: a still after all.
         let animated = {
             let mut probe = FrameSource::open(bytes)?.ok_or("not an animation")?;
-            probe.next()?;
-            probe.next()?.is_some()
+            probe.next_frame()?;
+            probe.next_frame()?.is_some()
         };
         return Ok(Decoded { still, anim: animated.then(|| Box::new(source)), first_delay: delay });
     }

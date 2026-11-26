@@ -731,7 +731,7 @@ fn video_surface(
         corners,
         background: Some(black),
         alt: SharedString::default(),
-        veil: has_poster.then(|| gpui::Hsla { a: 0.3, ..black }),
+        veil: has_poster.then_some(gpui::Hsla { a: 0.3, ..black }),
     };
     let bounds: Rc<Cell<Bounds<Pixels>>> = Rc::default();
     let painted = bounds.clone();

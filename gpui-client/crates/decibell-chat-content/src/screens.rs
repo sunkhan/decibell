@@ -26,6 +26,7 @@ impl ContentPane {
         let fetcher = fixture::fetcher(cx);
         let payloads = match channel {
             fixture::EMBEDS => fixture::embed_payloads(),
+            fixture::GALLERY => fixture::gallery_payloads(&fetcher, 240),
             _ => fixture::attachment_payloads(&fetcher),
         };
         let source: Rc<dyn decibell_chat::ListSource> = fixture::open(channel, payloads, cx);

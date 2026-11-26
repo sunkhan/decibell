@@ -97,8 +97,9 @@ impl ContentStyle {
     /// The style for the active theme at `scale` (rebuilt when the theme, the text size or the
     /// scale changes).
     pub fn get(cx: &App, scale: f32) -> Rc<ContentStyle> {
+        type Stamp = (usize, u32, u32);
         thread_local! {
-            static CACHE: RefCell<Option<((usize, u32, u32), Rc<ContentStyle>)>> = const { RefCell::new(None) };
+            static CACHE: RefCell<Option<(Stamp, Rc<ContentStyle>)>> = const { RefCell::new(None) };
         }
         let theme = cx.theme();
         let stamp = (theme.id.index(), theme.scaled.text_body.to_bits(), scale.to_bits());

@@ -750,7 +750,7 @@ impl ImageViewer {
     fn scroll(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.wake(cx);
         let dy = match event.delta {
-            ScrollDelta::Lines(lines) => -f32::from(lines.y) * 16. * 3.,
+            ScrollDelta::Lines(lines) => -lines.y * 16. * 3.,
             ScrollDelta::Pixels(p) => -f32::from(p.y),
         };
         if dy == 0. {

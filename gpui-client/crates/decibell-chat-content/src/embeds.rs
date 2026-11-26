@@ -63,11 +63,11 @@ impl Links {
         self.map.insert(content.clone(), links.clone());
         self.lone.insert(content.clone(), lone.clone());
         self.order.push_back(content.clone());
-        if self.order.len() > 1024 {
-            if let Some(old) = self.order.pop_front() {
-                self.map.remove(&old);
-                self.lone.remove(&old);
-            }
+        if self.order.len() > 1024
+            && let Some(old) = self.order.pop_front()
+        {
+            self.map.remove(&old);
+            self.lone.remove(&old);
         }
         (links, lone)
     }
@@ -834,7 +834,7 @@ fn join(joins: Rc<RefCell<HashMap<SharedString, Join>>>, code: SharedString, hos
             if let Some(j) = joins.borrow_mut().get_mut(&code) {
                 j.joining = false;
             }
-            cx.update(|cx| decibell_chat::invalidate_slots(cx));
+            cx.update(decibell_chat::invalidate_slots);
         })
     };
     joins.borrow_mut().insert(code.clone(), Join { joining: true, error: None, _timeout: Some(timeout) });
@@ -883,7 +883,7 @@ fn parse_hex(text: &str) -> Option<Hsla> {
 /// `filenameOf`: the URL's last path segment, else its host.
 pub fn filename_of(url: &str) -> SharedString {
     let Ok(parsed) = url::Url::parse(url) else { return url.to_string().into() };
-    let last = parsed.path_segments().and_then(|segments| segments.filter(|s| !s.is_empty()).next_back().map(str::to_string));
+    let last = parsed.path_segments().and_then(|mut segments| segments.rfind(|s| !s.is_empty()).map(str::to_string));
     match last {
         Some(segment) => percent_decode(&segment).into(),
         None => parsed.host_str().unwrap_or(url).to_string().into(),
@@ -895,12 +895,13 @@ fn percent_decode(text: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&text[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;

@@ -152,11 +152,8 @@ pub fn bordered_bgra(rgba: &RgbaImage) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
         let row = &src[(sy * w * 4) as usize..((sy + 1) * w * 4) as usize];
         let dst = &mut out[(y * bw * 4) as usize..((y + 1) * bw * 4) as usize];
         // Inner pixels, swapped to BGRA.
-        for (d, s) in dst[4..(4 + w as usize * 4)].chunks_exact_mut(4).zip(row.chunks_exact(4)) {
-            d[0] = s[2];
-            d[1] = s[1];
-            d[2] = s[0];
-            d[3] = s[3];
+        for (d, s) in dst[4..(4 + w as usize * 4)].as_chunks_mut::<4>().0.iter_mut().zip(row.as_chunks::<4>().0) {
+            *d = [s[2], s[1], s[0], s[3]];
         }
         // The left and right border texels repeat the row's ends.
         let (first, last) = ([row[2], row[1], row[0], row[3]], {

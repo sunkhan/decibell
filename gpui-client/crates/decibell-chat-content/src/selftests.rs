@@ -59,6 +59,16 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "an invite link to Design Lab renders its card from central (not joined)",
             run: |cx| Box::pin(parent(cx, "content-invite")),
         },
+        SelfTest {
+            name: "content-scroll-fixture",
+            about: "240 picture rows (memory fetcher, 20 ms answers, real decodes off the UI thread) scrolled at 3000 px/s: frame intervals and missed frames",
+            run: |cx| Box::pin(fixture_parent(cx, "content-scroll-fixture")),
+        },
+        SelfTest {
+            name: "content-rows",
+            about: "every row's top and height on the content fixture channels (written to $DECIBELL_CHAT_ROWS_DIR for the Electron comparison)",
+            run: |cx| Box::pin(fixture_parent(cx, "content-rows")),
+        },
     ]
 }
 
@@ -71,6 +81,8 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "content-viewer", about: "(in the app)", run: |cx| Box::pin(check_viewer(cx)) },
         SelfTest { name: "content-embed", about: "(in the app)", run: |cx| Box::pin(check_embed(cx)) },
         SelfTest { name: "content-invite", about: "(in the app)", run: |cx| Box::pin(check_invite(cx)) },
+        SelfTest { name: "content-rows", about: "(in the app)", run: |cx| Box::pin(check_rows(cx)) },
+        SelfTest { name: "content-scroll-fixture", about: "(in the app)", run: |cx| Box::pin(check_scroll_fixture(cx)) },
     ]
 }
 
@@ -98,6 +110,45 @@ fn stack() -> Result<Option<Stack>> {
     Ok(reachable.then_some(Stack { central, password, accounts }))
 }
 
+/// A private session bus with nothing on it, for as long as it is held (as `chat-live`'s).
+struct EmptyBus {
+    pid: u32,
+    address: String,
+}
+
+impl EmptyBus {
+    fn start(dir: &Path) -> Result<EmptyBus> {
+        let socket = dir.join("bus");
+        let config = dir.join("bus.conf");
+        std::fs::write(
+            &config,
+            format!(
+                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><type>session</type><listen>unix:path={}</listen>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>"#,
+                socket.display()
+            ),
+        )?;
+        let out = Command::new("dbus-daemon")
+            .arg(format!("--config-file={}", config.display()))
+            .args(["--fork", "--print-pid=1", "--print-address=1"])
+            .output()
+            .context("starting dbus-daemon")?;
+        ensure!(out.status.success(), "dbus-daemon: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        let address = lines.next().context("dbus-daemon printed no address")?.to_string();
+        let pid = lines.next().and_then(|l| l.trim().parse().ok()).context("dbus-daemon printed no pid")?;
+        Ok(EmptyBus { pid, address })
+    }
+}
+
+impl Drop for EmptyBus {
+    fn drop(&mut self) {
+        let _ = Command::new("kill").arg(self.pid.to_string()).status();
+    }
+}
+
 struct Profile(PathBuf);
 
 impl Drop for Profile {
@@ -113,12 +164,18 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
     };
     let profile = Profile(std::env::temp_dir().join(format!("decibell-{check}-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&profile.0);
-    std::fs::create_dir_all(&profile.0)?;
+    std::fs::create_dir_all(profile.0.join("profile"))?;
+    std::fs::create_dir_all(profile.0.join("bus"))?;
+    // The child's at-rest key must not reach the desktop's keyring (a throwaway profile would
+    // leave an item there): it gets a session bus of its own with nothing on it.
+    let bus = EmptyBus::start(&profile.0.join("bus"))?;
     let design_invite = stack.accounts["communities"].as_array().and_then(|c| c.iter().find(|c| c["name"] == "Design Lab")).and_then(|c| c["invite"].as_str()).unwrap_or_default().to_string();
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args(["--check", check, "--login", ACCOUNT])
-        .env("DECIBELL_USER_DATA_DIR", &profile.0)
+        .env("DECIBELL_USER_DATA_DIR", profile.0.join("profile"))
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .env("DECIBELL_TEST_DESKTOP_BUS", std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default())
         .env("DECIBELL_CENTRAL", &stack.central)
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
         .env("DECIBELL_TEST_PROBES", "1")
@@ -155,6 +212,178 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
             cx.log(format_args!("│ stderr: {line}"));
         }
         bail!("{check} failed in the app ({status}, after {:.1} s)", started.elapsed().as_secs_f64());
+    }
+    Ok(())
+}
+
+/// The fixture checks need no stack: a child only so the fixture they install (a memory fetcher,
+/// the shell's fixture state) stays out of this process.
+async fn fixture_parent(cx: TestCx, check: &'static str) -> Result<()> {
+    // An empty profile (no saved sign-in: the app stays signed out), its own empty session bus,
+    // and a central nothing listens on.
+    let profile = Profile(std::env::temp_dir().join(format!("decibell-{check}-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&profile.0);
+    std::fs::create_dir_all(profile.0.join("profile"))?;
+    std::fs::create_dir_all(profile.0.join("bus"))?;
+    let bus = EmptyBus::start(&profile.0.join("bus"))?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args(["--check", check])
+        .env("DECIBELL_USER_DATA_DIR", profile.0.join("profile"))
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .env("DECIBELL_CENTRAL", "127.0.0.1:9")
+        .env_remove("DECIBELL_PERF")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = cx.app().background_executor().spawn(async move { command.output() }).await?;
+    drop(bus);
+    for line in String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.starts_with("selftest:")) {
+        cx.log(format_args!("│ {line}"));
+    }
+    if !output.status.success() {
+        for line in String::from_utf8_lossy(&output.stderr).lines().rev().take(16).collect::<Vec<_>>().into_iter().rev() {
+            cx.log(format_args!("│ stderr: {line}"));
+        }
+        bail!("{check} failed in the app ({})", output.status);
+    }
+    Ok(())
+}
+
+/// A window on a fixture channel of the content crate (its own, closed by the caller).
+fn fixture_window(cx: &TestCx, channel: &'static str) -> Result<(TestCx, Entity<crate::screens::ContentPane>)> {
+    use gpui::{AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, size};
+    let (handle, pane) = cx.app().update(|cx| -> Result<(gpui::AnyWindowHandle, Entity<crate::screens::ContentPane>)> {
+        let bounds = Bounds::centered(None, decibell_ui::outer_window_size(size(px(1280.), px(800.))), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions { title: Some("Decibell content test".into()), appears_transparent: true, traffic_light_position: None }),
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some("decibell".into()),
+            ..Default::default()
+        };
+        let mut pane = None;
+        let window = cx.open_window(options, |window, cx| {
+            let view = cx.new(|cx| crate::screens::ContentPane::new(channel, window, cx));
+            pane = Some(view.clone());
+            cx.new(|_| Framed(view.into()))
+        })?;
+        Ok((window.into(), pane.context("no pane")?))
+    })?;
+    Ok((TestCx::new(cx.app().clone(), handle), pane))
+}
+
+/// The pane in the app's window frame and title bar (as the screens and the app draw it).
+struct Framed(gpui::AnyView);
+
+impl gpui::Render for Framed {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use decibell_ui::ActiveTheme as _;
+        use gpui::{ParentElement as _, Styled as _};
+        let theme = cx.theme();
+        let content = gpui::div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(theme.font(decibell_ui::FontRole::Sans))
+            .text_size(px(theme.scaled.text_body))
+            .text_color(theme.color_text_primary)
+            .child(decibell_ui::TitleBar::new("Decibell content test"))
+            .child(gpui::div().flex_1().min_h_0().child(self.0.clone().cached(gpui::StyleRefinement::default().size_full())));
+        decibell_ui::window_frame(content, window, cx)
+    }
+}
+
+async fn check_scroll_fixture(cx: TestCx) -> Result<()> {
+    let (w, pane) = fixture_window(&cx, crate::fixture::GALLERY)?;
+    let result = async {
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        // Every file made before the run (the memory fetcher encodes on the UI thread), then
+        // answers after 20 ms and decodes off the UI thread, as on the network.
+        w.update(|_, cx| {
+            let fetcher = crate::fixture::fetcher(cx);
+            let ids: Vec<i64> = fetcher.attachments.borrow().keys().copied().collect();
+            for id in ids {
+                for thumb in [0u32, 320, 640, 1280] {
+                    let _ = fetcher.answer(&crate::pictures::Source::Attachment { server: ServerId::from_central(decibell_shell::fixture::DAILY_GAMING).wire().into(), id, thumb });
+                }
+            }
+            fetcher.latency.set(Duration::from_millis(20));
+            if let Some(p) = Pictures::global(cx) {
+                p.update(cx, |p, _| p.set_sync(false));
+            }
+        })?;
+        rest(&w, &list).await?;
+        wait_for(&w, Duration::from_secs(10), "the visible pictures", |cx| {
+            let (wanted, ready, failed) = visible_pictures(cx);
+            wanted > 0 && wanted == ready + failed
+        })
+        .await?;
+        let rows = w.update(|_, cx| list.read(cx).row_count())?;
+        let (screen_bytes, screen_count) = w.update(|_, cx| Pictures::global(cx).map(|p| p.read(cx).visible_bytes()))?.unwrap_or_default();
+        let scale = w.update(|window, _| window.scale_factor())?;
+        cx.log(format_args!("the newest screen: {screen_count} pictures in, {} KB decoded (scale {scale})", screen_bytes / 1024));
+        let before = w.update(|_, cx| Pictures::global(cx).map(|p| p.read(cx).stats))?.unwrap_or_default();
+        w.update(|_, cx| list.update(cx, |l, cx| l.begin_bench(3000., cx)))?;
+        w.sleep(Duration::from_secs(12)).await;
+        let recording = w.update(|_, cx| list.update(cx, |l, _| l.end_bench()))?.context("no recording")?;
+        let summary = decibell_chat::bench::summarize(&recording, 3000., 12., None);
+        let after = w.update(|_, cx| Pictures::global(cx).map(|p| (p.read(cx).stats, p.read(cx).bytes())))?;
+        cx.log(format_args!(
+            "{rows} picture rows, 3000 px/s for 12 s: {} frames, interval p50 {:.2} / p99 {:.2} ms, {} missed vsyncs, {} late, rows laid out {}",
+            summary["frames"],
+            summary["interval_ms"]["p50"].as_f64().unwrap_or(0.),
+            summary["interval_ms"]["p99"].as_f64().unwrap_or(0.),
+            summary["missed_vsyncs"],
+            summary["late_frames"],
+            summary["rows_laid_out"]
+        ));
+        if let Some((stats, (decoded, encoded))) = after {
+            cx.log(format_args!(
+                "pictures during the run: {} decoded (mean {} µs off the UI thread), {} first paints (mean {} µs on it), {} cancelled, {} evicted; decoded {} KB, encoded {} KB at the end",
+                stats.decoded - before.decoded,
+                (stats.decode_us - before.decode_us) / (stats.decoded - before.decoded).max(1),
+                stats.uploads - before.uploads,
+                (stats.upload_us - before.upload_us) / (stats.uploads - before.uploads).max(1),
+                stats.cancelled - before.cancelled,
+                stats.evicted - before.evicted,
+                decoded / 1024,
+                encoded / 1024
+            ));
+        }
+        println!("selftest: scroll-summary {summary}");
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+/// Dumps (id, top, height) of every row of the two content fixture channels as a 1280 px window
+/// lays them out, for `tools/electron-captures/chat-rows.mjs … content-attachments-tall
+/// content-embeds-tall`.
+async fn check_rows(cx: TestCx) -> Result<()> {
+    for (name, channel) in [("content-attachments-tall", crate::fixture::ATTACHMENTS), ("content-embeds-tall", crate::fixture::EMBEDS)] {
+        let (w, pane) = fixture_window(&cx, channel)?;
+        let dump = async {
+            let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+            rest(&w, &list).await?;
+            let (width, height) = w.update(|_, cx| (f32::from(list.read(cx).bounds().size.width), f32::from(list.read(cx).bounds().size.height)))?;
+            let rows = w.update(|_, cx| list.update(cx, |l, cx| l.row_tops(cx)))?;
+            anyhow::Ok((width, height, rows))
+        }
+        .await;
+        let _ = w.update(|window, _| window.remove_window());
+        let (width, height, rows) = dump?;
+        let total: f64 = rows.iter().map(|row| row.2 as f64).sum();
+        cx.log(format_args!("{name}: {} rows, {total} px, list {width} × {height}", rows.len()));
+        ensure!(!rows.is_empty(), "{name} has rows");
+        if let Some(dir) = std::env::var_os("DECIBELL_CHAT_ROWS_DIR") {
+            let json = serde_json::json!({
+                "list": { "width": width, "height": height },
+                "rows": rows.iter().map(|(id, top, height)| serde_json::json!({ "id": id, "top": top, "height": height })).collect::<Vec<_>>(),
+            });
+            std::fs::write(Path::new(&dir).join(format!("{name}-rows.json")), serde_json::to_vec_pretty(&json)?)?;
+        }
     }
     Ok(())
 }
@@ -275,6 +504,8 @@ async fn check_images_live(cx: TestCx) -> Result<()> {
     let after_load = cx.frames()?.since(before);
     let (last, (wanted, ready, failed)) = cx.update(|_, cx| (tops(&list, cx), visible_pictures(cx)))?;
     cx.log(format_args!("{ready} of {wanted} pictures in after {} ms ({failed} failed), {} frames drawn meanwhile", loaded.as_millis(), after_load.drawn));
+    let (screen_bytes, _) = cx.update(|_, cx| Pictures::global(cx).map(|p| p.read(cx).visible_bytes()))?.unwrap_or_default();
+    cx.log(format_args!("the screen's pictures hold {} KB decoded", screen_bytes / 1024));
     ensure!(failed == 0, "{failed} pictures failed");
     // No row moved between the first look and the loaded state.
     for (id, y) in &first.0 {
@@ -449,22 +680,26 @@ async fn gif_checks(cx: &TestCx, list: &Entity<decibell_chat::MessageList>) -> R
     // Back: it plays again.
     cx.update(|_, cx| list.update(cx, |l, cx| l.jump_to_present(cx)))?;
     wait_for(cx, Duration::from_secs(10), "the GIF to play again", |cx| Pictures::global(cx).is_some_and(|p| p.read(cx).playing() == 1)).await?;
-    // Minimised (KDE): it stops; restored, it plays.
-    let winctl = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/perf/winctl.sh");
+    // Minimised: it stops; brought back (KWin, through the desktop's bus), it plays.
     let pid = std::process::id().to_string();
-    let minimised = Command::new(&winctl).args(["minimize", &pid]).status().is_ok_and(|s| s.success());
-    if minimised {
-        cx.sleep(Duration::from_millis(600)).await;
-        let f2 = cx.frames()?;
-        let s2 = cx.update(|_, cx| Pictures::global(cx).map_or(0, |p| p.read(cx).stats.frames))?;
-        cx.sleep(Duration::from_secs(1)).await;
-        let (drawn, shown) = (cx.frames()?.since(f2).drawn, cx.update(|_, cx| Pictures::global(cx).map_or(0, |p| p.read(cx).stats.frames))? - s2);
-        cx.log(format_args!("minimised: {shown} GIF frames, {drawn} window frames in 1 s"));
-        let _ = Command::new(&winctl).args(["restore", &pid]).status();
-        ensure!(shown <= 1 && drawn <= 1, "the GIF kept going while minimised");
+    let winctl = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/perf/winctl.sh");
+    let desktop_bus = std::env::var("DECIBELL_TEST_DESKTOP_BUS").unwrap_or_default();
+    cx.update(|window, _| window.minimize_window())?;
+    cx.sleep(Duration::from_millis(800)).await;
+    let f2 = cx.frames()?;
+    let s2 = cx.update(|_, cx| Pictures::global(cx).map_or(0, |p| p.read(cx).stats.frames))?;
+    cx.sleep(Duration::from_secs(1)).await;
+    let (drawn, shown) = (cx.frames()?.since(f2).drawn, cx.update(|_, cx| Pictures::global(cx).map_or(0, |p| p.read(cx).stats.frames))? - s2);
+    let playing = cx.update(|_, cx| Pictures::global(cx).map_or(0, |p| p.read(cx).playing()))?;
+    cx.log(format_args!("minimised: {shown} GIF frames, {drawn} window frames, {playing} timers in 1 s"));
+    let restored = !desktop_bus.is_empty()
+        && Command::new(&winctl).args(["activate", &pid]).env("DBUS_SESSION_BUS_ADDRESS", &desktop_bus).status().is_ok_and(|s| s.success());
+    ensure!(shown <= 1 && drawn <= 1, "the GIF kept going while minimised");
+    if restored {
         wait_for(cx, Duration::from_secs(10), "the GIF to play after restoring", |cx| Pictures::global(cx).is_some_and(|p| p.read(cx).playing() == 1)).await?;
+        cx.log("restored: playing again");
     } else {
-        cx.log("winctl.sh couldn't minimise the window here: the minimise part skipped");
+        cx.log("winctl.sh couldn't bring the window back here: the restore part skipped");
     }
     Ok(())
 }
@@ -475,7 +710,7 @@ async fn check_viewer(cx: TestCx) -> Result<()> {
     // The gallery: the message with the most pictures on screen.
     let gallery = cx.update(|_, cx| {
         let l = list.read(cx);
-        l.visible_ids().into_iter().filter_map(|id| l.row(id)).map(|(m, _)| m).filter(|m| m.attachments.iter().filter(|a| a.kind == decibell_attachments::AttachmentKind::Image).count() >= 2).last()
+        l.visible_ids().into_iter().filter_map(|id| l.row(id)).map(|(m, _)| m).rfind(|m| m.attachments.iter().filter(|a| a.kind == decibell_attachments::AttachmentKind::Image).count() >= 2)
     })?.context("no gallery on screen in #clips")?;
     let first = gallery.attachments.iter().filter(|a| a.kind == decibell_attachments::AttachmentKind::Image).min_by_key(|a| a.position).map(|a| a.id).context("no picture")?;
     wait_for(&cx, Duration::from_secs(10), "the gallery's tile", move |_| crate::probes::tile(first).is_some()).await?;

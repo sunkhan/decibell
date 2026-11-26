@@ -24,6 +24,8 @@ use crate::pictures::{Fetcher, Source};
 
 pub const ATTACHMENTS: &str = "clips";
 pub const EMBEDS: &str = "off-topic";
+/// The picture-heavy channel of the scroll bench (`content-scroll-fixture`), not a screen.
+pub const GALLERY: &str = "gallery";
 /// 2026-11-05 21:50 UTC.
 const DAY: i64 = 1_793_915_400;
 
@@ -260,6 +262,30 @@ fn attachment(id: i64, message_id: i64, position: i32, kind: &str, filename: &st
     }
 }
 
+/// The bench's channel: `n` rows, each a picture or two of a different size and shape (some under
+/// a caption), every one a different file.
+pub fn gallery_payloads(fetcher: &MemoryFetcher, n: usize) -> Vec<ChannelMessagePayload> {
+    const SHAPES: [(u32, u32); 6] = [(1600, 900), (900, 1200), (1280, 960), (800, 800), (1920, 1080), (640, 480)];
+    let senders = [("alice", 1), ("bob", 2), ("carol", 3), ("dave", 4)];
+    let mut rows = Vec::new();
+    for i in 0..n {
+        let id = i as i64 + 1;
+        let at = DAY + i as i64 * 97;
+        let caption = if i % 3 == 0 { format!("Shot {id}") } else { String::new() };
+        let mut p = payload(id, senders[i % 4], GALLERY, &caption, at);
+        let count = if i % 5 == 4 { 2 } else { 1 };
+        for k in 0..count {
+            let (w, h) = SHAPES[(i * 7 + k * 3) % SHAPES.len()];
+            let g = Generated { w, h, kind: Kind::Still, seed: 1000 + id as u64 * 4 + k as u64 };
+            let aid = id * 10 + k as i64;
+            fetcher.attachments.borrow_mut().insert(aid, g);
+            p.attachments.push(attachment(aid, id, k as i32, "image", &format!("shot-{aid}.jpg"), "image/jpeg", 400_000, Some(&g), at));
+        }
+        rows.push(p);
+    }
+    rows
+}
+
 /// `#clips`: every attachment kind and grid shape, and their states.
 pub fn attachment_payloads(fetcher: &MemoryFetcher) -> Vec<ChannelMessagePayload> {
     let (alice, bob, carol, dave) = (("alice", 1), ("bob", 2), ("carol", 3), ("dave", 4));
@@ -423,6 +449,25 @@ pub fn embed_payloads() -> Vec<ChannelMessagePayload> {
 pub struct ContentSource {
     pub server: ServerId,
     pub channel: ChannelId,
+    /// Rows not routed yet, oldest first (a channel longer than a page is paged in as history
+    /// is, `PAGE` at a time).
+    older: RefCell<Vec<ChannelMessagePayload>>,
+}
+
+/// A history page (the server's 50).
+const PAGE: usize = 50;
+
+fn history_event(channel: &str, messages: Vec<ChannelMessagePayload>, has_more: bool, before_id: i64) -> CoreEvent {
+    CoreEvent::ChannelHistoryReceived(ChannelHistoryReceivedPayload {
+        server_id: shell::DAILY_GAMING.to_string(),
+        channel_id: channel.to_string(),
+        messages,
+        has_more,
+        has_more_after: false,
+        around_id: 0,
+        after_id: 0,
+        before_id,
+    })
 }
 
 impl decibell_chat::ListSource for ContentSource {
@@ -434,8 +479,20 @@ impl decibell_chat::ListSource for ContentSource {
     fn server(&self) -> Option<ServerId> {
         Some(self.server)
     }
-    fn load_older(&self, _: &mut App) -> Option<Task<Option<bool>>> {
-        None
+    fn load_older(&self, cx: &mut App) -> Option<Task<Option<bool>>> {
+        let page: Vec<ChannelMessagePayload> = {
+            let mut older = self.older.borrow_mut();
+            if older.is_empty() {
+                return None;
+            }
+            let from = older.len().saturating_sub(PAGE);
+            older.split_off(from)
+        };
+        let before = page.last().map_or(0, |m| m.id + 1);
+        let more = !self.older.borrow().is_empty();
+        let model = Model::global(cx).clone();
+        decibell_model::events::route(&model, history_event(&self.channel, page, more, before), cx);
+        Some(Task::ready(Some(true)))
     }
     fn load_newer(&self, _: &mut App) -> Option<Task<Option<bool>>> {
         None
@@ -494,7 +551,11 @@ pub fn open(channel: &str, payloads: Vec<ChannelMessagePayload>, cx: &mut App) -
     let server = ServerId::from_central(shell::DAILY_GAMING);
     let channel: ChannelId = channel.to_string().into();
     model.nav.update(cx, |nav, cx| nav.set_active_channel(Some(channel.clone()), cx));
-    let source = Rc::new(ContentSource { server, channel: channel.clone() });
+    let mut payloads = payloads;
+    let newest = payloads.split_off(payloads.len().saturating_sub(PAGE));
+    let more = !payloads.is_empty();
+    let source = Rc::new(ContentSource { server, channel: channel.clone(), older: RefCell::new(payloads) });
+    let payloads = newest;
     // Previews resolve before the first frame, as when a channel was visited before.
     for p in &payloads {
         let document = decibell_richtext::parse(&p.content, &decibell_richtext::ParseOptions::default());
@@ -505,16 +566,7 @@ pub fn open(channel: &str, payloads: Vec<ChannelMessagePayload>, cx: &mut App) -
             }
         }
     }
-    let event = CoreEvent::ChannelHistoryReceived(ChannelHistoryReceivedPayload {
-        server_id: shell::DAILY_GAMING.to_string(),
-        channel_id: channel.to_string(),
-        messages: payloads,
-        has_more: false,
-        has_more_after: false,
-        around_id: 0,
-        after_id: 0,
-        before_id: 0,
-    });
+    let event = history_event(&channel, payloads, more, 0);
     decibell_model::events::route(&model, event, cx);
     source
 }
