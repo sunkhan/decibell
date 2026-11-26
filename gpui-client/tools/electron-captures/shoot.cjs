@@ -8,7 +8,7 @@
 // Env: CAPTURE_DPR (default 1), CAPTURE_TIMEOUT_S (whole run, default 300),
 //      CAPTURE_GRAYSCALE_TEXT=1 (grayscale instead of LCD-subpixel text).
 "use strict";
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, protocol, net } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -54,6 +54,49 @@ if (process.env.CAPTURE_GRAYSCALE_TEXT === "1") app.commandLine.appendSwitch("di
 const profile = path.join(WORK, "profile");
 app.setPath("userData", profile);
 app.setPath("sessionData", profile);
+
+// The content pages' pictures (`decibell-content-fixture` writes them to .work/content-files):
+// the renderer's `decibell-attachment://attach/<server>/<id>[?variant=thumb&size=N]` URLs and the
+// fixture's https picture URLs answer from there, as the app's protocol and the web would. An id
+// the manifest calls "hold" never answers (the placeholder stays), "fail" answers 404. A GIF is
+// its first frame alone, so the shot doesn't depend on when it was taken.
+const CONTENT = path.join(WORK, "content-files");
+protocol.registerSchemesAsPrivileged([
+  { scheme: "decibell-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
+]);
+function contentManifest() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(CONTENT, "manifest.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+function pictureResponse(name) {
+  const bytes = fs.readFileSync(path.join(CONTENT, name));
+  const type = bytes[0] === 0x89 ? "image/png" : bytes[0] === 0x47 ? "image/gif" : bytes[0] === 0xff ? "image/jpeg" : "application/octet-stream";
+  return new Response(bytes, { status: 200, headers: { "content-type": type, "access-control-allow-origin": "*" } });
+}
+function installContentProtocols() {
+  const manifest = contentManifest();
+  protocol.handle("decibell-attachment", (req) => {
+    const url = new URL(req.url);
+    const id = url.pathname.split("/").filter(Boolean).pop() ?? "";
+    const state = manifest?.attachments?.[id];
+    // Headers, then a body that never comes: the picture stays loading (a handler that never
+    // resolves is failed by Electron instead).
+    if (state === "hold") return new Response(new ReadableStream({ start() {} }), { status: 200, headers: { "content-type": "image/jpeg" } });
+    if (state !== "ok") return new Response("not found", { status: 404 });
+    const thumb = url.searchParams.get("variant") === "thumb" ? url.searchParams.get("size") ?? "640" : "0";
+    return pictureResponse(`att-${id}-${thumb}`);
+  });
+  if (!manifest) return;
+  protocol.handle("https", (req) => {
+    const name = manifest.remote?.[req.url];
+    if (name) return pictureResponse(name);
+    // Nothing else of the web is reached from a capture.
+    return new Response("not found", { status: 404 });
+  });
+}
 
 // Electron 33 logs a harmless "No component available" rejection at startup.
 process.on("unhandledRejection", (e) => console.warn("[shoot] unhandled rejection (ignored):", String(e?.message ?? e)));
@@ -107,6 +150,7 @@ function nextPaint(win, ms = 500) {
 
 async function main() {
   await app.whenReady();
+  installContentProtocols();
   if (!fs.existsSync(DIST)) throw new Error(`${DIST} is missing: run build.sh first`);
   fs.mkdirSync(opts.out, { recursive: true });
 

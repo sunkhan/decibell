@@ -4,7 +4,11 @@
 // (`run.sh --pages chat-fixture,chat-features` writes `<out>/chat-*-<theme>.json` with every
 // row's offsetTop / offsetHeight and fractional box).
 //
-//   node tools/electron-captures/chat-rows.mjs <gpui dir> <electron dir> [theme]
+//   node tools/electron-captures/chat-rows.mjs <gpui dir> <electron dir> [theme] [channel...]
+//
+// Channels default to chat-fixture and chat-features; the content pages name theirs
+// (content-attachments-tall, content-embeds-tall: `<gpui dir>/<channel>-rows.json` against
+// `<electron dir>/<channel>-<theme>.json`).
 //
 // Rows are matched by message id. Prints, per channel: rows compared, rows whose height differs,
 // the largest difference, and whether every row's top (relative to the first common row) is the
@@ -12,13 +16,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const [, , gpuiDir, electronDir, theme = 'nocturne'] = process.argv;
+const [, , gpuiDir, electronDir, theme = 'nocturne', ...channels] = process.argv;
 if (!gpuiDir || !electronDir) {
-  console.error('usage: chat-rows.mjs <gpui dir> <electron dir> [theme]');
+  console.error('usage: chat-rows.mjs <gpui dir> <electron dir> [theme] [channel...]');
   process.exit(2);
 }
 let failed = false;
-for (const name of ['chat-fixture', 'chat-features']) {
+for (const name of channels.length > 0 ? channels : ['chat-fixture', 'chat-features']) {
   const gpui = JSON.parse(fs.readFileSync(path.join(gpuiDir, `${name}-rows.json`), 'utf8'));
   const electron = JSON.parse(fs.readFileSync(path.join(electronDir, `${name}-${theme}.json`), 'utf8'));
   const theirs = new Map(electron.rows.map((row) => [row.id, row]));
