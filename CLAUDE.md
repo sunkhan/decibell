@@ -107,6 +107,15 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   `GIF_API_KEY` (+ the `GIF_API_PROVIDER` variable, default `klipy`) → `gifs.json`. A dev
   checkout uses a gitignored `resources/gifs.json` or the two env vars for GIF search (HANDOFF
   §5.9a); crash reporting only runs in packaged builds.
+- **While both clients ship, a native-client release must never become the repository's "latest" release**
+  on GitHub. The Electron updater (electron-updater, `provider: github`, no pre-releases) asks
+  `github.com/sunkhan/decibell/releases/latest` for the latest tag and reads `latest*.yml` from that
+  release: a native release flagged latest breaks auto-update for every Electron install
+  ("Cannot find latest.yml in the latest release artifacts"). Create native releases with
+  `make_latest: false` (`gh release create --latest=false`), check `releases/latest` afterwards, and repair
+  by re-flagging the newest `ev*` release. The native updater finds its own releases by its own tags, never
+  `releases/latest`. How Electron users move to the native client at switch-over is an open owner decision
+  (`gpui-client/PACKAGING.md`).
 - Durable knowledge goes in the repo (gotchas in HANDOFF §5, owner decisions in this file), not only
   in Claude's auto-memory: the owner works from more than one machine (Linux and Windows), and the
   memory folder stays on the machine that wrote it.
