@@ -196,6 +196,11 @@ impl Presence {
         self.statuses.len()
     }
 
+    /// Every user central answered for (the headless dump).
+    pub fn known(&self) -> impl Iterator<Item = Uid> + '_ {
+        self.known.iter().copied()
+    }
+
     fn changed(&self, uids: Vec<Uid>, cx: &mut Context<Self>) {
         if !uids.is_empty() {
             cx.emit(PresenceChanged(uids));

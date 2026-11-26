@@ -7,6 +7,9 @@
 //! `DECIBELL_CENTRAL` names a loopback address **and** this build honours that variable,
 //! and `login` only takes accounts listed in the stack's `accounts.json`.
 
+#[path = "headless/live.rs"]
+mod live;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -64,6 +67,7 @@ enum Step {
     Idle(f64),
     Print(String),
     WaitFile(PathBuf),
+    Live(live::LiveStep),
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +78,7 @@ enum Wait {
     Connected(String),
     Roster(String),
     Presence { community: String, user: String, online: bool },
+    Live(live::LiveWait),
 }
 
 struct Args {
@@ -122,7 +127,10 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
                         user: next("wait online", &mut it)?,
                         online: what == "online",
                     },
-                    other => return Err(format!("wait: unknown condition {other:?}")),
+                    other => match live::parse_wait(other, &mut it)? {
+                        Some(w) => Wait::Live(w),
+                        None => return Err(format!("wait: unknown condition {other:?}")),
+                    },
                 })
             }
             "dump" => {
@@ -138,7 +146,10 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
                 }
                 Step::Dump(parts)
             }
-            other => return Err(format!("unknown step or option {other:?}")),
+            other => match live::parse(other, &mut it)? {
+                Some(step) => Step::Live(step),
+                None => return Err(format!("unknown step or option {other:?}")),
+            },
         };
         out.steps.push(step);
     }
@@ -249,6 +260,7 @@ fn holds(wait: &Wait, model: &Model, cx: &App) -> bool {
                 roster.meta().is_some()
                     && roster.members().values().any(|m| &*m.username == user.as_str() && m.is_online == *online)
             }),
+        Wait::Live(w) => live::holds(w, model, cx),
     }
 }
 
@@ -422,7 +434,7 @@ fn dump(parts: &[String], model: &Model, cx: &App) -> Result<Value, String> {
                 },
             })
         }
-        other => return Err(format!("dump: unknown store {other:?}")),
+        other => return live::dump(other, model, cx).ok_or(format!("dump: unknown store {other:?}")),
     })
 }
 
@@ -469,6 +481,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             cx.background_executor().timer(Duration::from_secs_f64(*seconds)).await;
         }
         Step::Print(text) => say(format!("MARK {text}")),
+        Step::Live(step) => live::run(step, model, timeout, cx).await?,
         Step::WaitFile(path) => {
             let started = Instant::now();
             while !path.exists() {
@@ -485,7 +498,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.is_empty() || raw.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}");
+        println!("{USAGE}\n\n{}", live::USAGE);
         return ExitCode::SUCCESS;
     }
     let args = match parse(raw) {
@@ -514,6 +527,7 @@ fn main() -> ExitCode {
         move |cx| {
             let user_data_dir = args.user_data_dir.clone().or_else(|| core::default_user_data_dir().ok());
             let model = Model::init(cx, user_data_dir.clone());
+            live::install(&model, cx);
             let local_key: Box<dyn LocalKeyProvider> =
                 if args.keychain { Box::new(KeychainKey) } else { Box::new(FixedKey(LocalKey::none())) };
             let started = Model::start_core(
