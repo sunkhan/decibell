@@ -518,3 +518,105 @@ pub fn open(channel: &str, payloads: Vec<ChannelMessagePayload>, cx: &mut App) -
     decibell_model::events::route(&model, event, cx);
     source
 }
+
+// ── The Electron capture pages' export (`decibell-content-fixture`) ─────────────────────────
+
+/// The fixture of `channel` (`ATTACHMENTS` or `EMBEDS`) as the Electron capture pages replay it:
+/// the shell's events then the channel's history (as `decibell_chat::fixture::json` writes them),
+/// the navigation, and what this fixture answers from memory: `previews` (every web link of the
+/// channel → its unfurl, `null` for nothing to show) and `invites` (code → central's answer).
+pub fn json(channel: &str) -> serde_json::Value {
+    let fetcher = MemoryFetcher::default();
+    let payloads = match channel {
+        EMBEDS => embed_payloads(),
+        _ => attachment_payloads(&fetcher),
+    };
+    let answers: HashMap<String, LinkPreview> = previews().into_iter().collect();
+    let mut links = serde_json::Map::new();
+    for p in &payloads {
+        let document = decibell_richtext::parse(&p.content, &decibell_richtext::ParseOptions::default());
+        for (url, kind) in document.embeds(&p.content) {
+            if kind == decibell_richtext::EmbedKind::Web {
+                let answer = answers.get(url).map_or(serde_json::Value::Null, |p| serde_json::to_value(p).unwrap_or_default());
+                links.insert(url.to_string(), answer);
+            }
+        }
+    }
+    let invites: serde_json::Map<String, serde_json::Value> = invites()
+        .into_iter()
+        .map(|(code, answer)| {
+            let value = match answer {
+                Ok(r) => serde_json::json!({ "resolved": {
+                    "host": r.host.to_string(), "port": r.port, "code": r.code.to_string(), "serverId": r.server_id,
+                    "serverName": r.server_name.to_string(), "serverDescription": r.server_description.to_string(),
+                    "memberCount": r.member_count, "pictureVersion": r.picture_version.to_string(),
+                } }),
+                Err(error) => serde_json::json!({ "error": error }),
+            };
+            (code.to_string(), value)
+        })
+        .collect();
+    let mut value = shell::json(shell::Scene::Server);
+    let (name, payload) = CoreEvent::ChannelHistoryReceived(ChannelHistoryReceivedPayload {
+        server_id: shell::DAILY_GAMING.to_string(),
+        channel_id: channel.to_string(),
+        messages: payloads,
+        has_more: false,
+        has_more_after: false,
+        around_id: 0,
+        after_id: 0,
+        before_id: 0,
+    })
+    .to_json();
+    if let Some(events) = value.get_mut("events").and_then(|events| events.as_array_mut()) {
+        events.push(serde_json::json!({ "event": name, "payload": payload }));
+    }
+    value["nav"]["channel"] = serde_json::json!(channel);
+    value["nav"]["voice"] = serde_json::Value::Null;
+    value["previews"] = serde_json::Value::Object(links);
+    value["invites"] = serde_json::Value::Object(invites);
+    value
+}
+
+/// Every picture the memory fetcher serves for both channels, as the Electron pages' attachment
+/// protocol and https stub serve them: `(name, bytes)` with names `att-<id>-<thumb>` (thumb 0 = the
+/// original) and `remote-<n>`, and the manifest that maps requests to them
+/// (`{ attachments: { "<id>": "ok" | "hold" | "fail" }, remote: { "<url>": "remote-<n>" } }`).
+/// A GIF is written as its first frame alone: a capture shows one frame, the first, as the GPUI
+/// capture does (Chromium's `imageAnimationPolicy: "noAnimation"` still showed a later frame in
+/// an offscreen window).
+pub fn files() -> (serde_json::Value, Vec<(String, Vec<u8>)>) {
+    let fetcher = MemoryFetcher::default();
+    let _ = attachment_payloads(&fetcher);
+    let mut out = Vec::new();
+    let mut attachments = serde_json::Map::new();
+    let mut ids: Vec<(i64, Generated)> = fetcher.attachments.borrow().iter().map(|(id, g)| (*id, *g)).collect();
+    ids.sort_by_key(|(id, _)| *id);
+    for (id, g) in ids {
+        let state = match g.kind {
+            Kind::Hold => "hold",
+            Kind::Fail => "fail",
+            _ => {
+                for thumb in [0, 320, 640, 1280] {
+                    out.push((format!("att-{id}-{thumb}"), first_frame(&g, thumb)));
+                }
+                "ok"
+            }
+        };
+        attachments.insert(id.to_string(), serde_json::json!(state));
+    }
+    let mut remote = serde_json::Map::new();
+    for (n, (url, g)) in remote_pictures().into_iter().enumerate() {
+        let name = format!("remote-{n}");
+        out.push((name.clone(), first_frame(&g, 0)));
+        remote.insert(url, serde_json::json!(name));
+    }
+    (serde_json::json!({ "attachments": attachments, "remote": remote }), out)
+}
+
+fn first_frame(g: &Generated, thumb: u32) -> Vec<u8> {
+    match g.kind {
+        Kind::Gif(_) if thumb == 0 => gif(g.seed, g.w, g.h, 1),
+        _ => file(g, thumb),
+    }
+}

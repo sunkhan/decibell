@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+# The content fixtures' JSON and pictures for the Electron capture pages.
+[[bin]]
+name = "decibell-content-fixture"
+path = "src/bin/fixture.rs"
+required-features = ["fixtures"]
+
 [features]
 # The content fixtures (a channel with every attachment kind, embeds and invites, pictures
 # generated in memory and served by a fake fetcher), the screens and the self-tests.
