@@ -73,7 +73,7 @@ screens in all seven themes beside Electron's.
 | Channel header + message search (`decibell-search`) | merged (ten commits ending `c90684e`'s pick): header with the E2EE badge, search box with chips / suggestions / date picker, results panel with Jump; the grammar equals the renderer's TypeScript on 108 cases; 9 of its 11 self-tests passed on its branch (`search-typing-cost` needs patch 0014: re-run; `search-idle` is sensitive to the shared stack) |
 | Servers: browse / join, invites, server menu, channel create / reorder, welcome banner (`decibell-servers`) | merged (eleven commits ending `34df720`): browse grid, join by link / code / address, the deep-link join dialog (`decibell_servers::open_invite_link(url, cx)`), invites and invite-friends (the friend list never goes to a community), create dialog, drag reorder with the Sync / Keep / Cancel prompt, welcome banner through the chat pane's welcome slot; its nine self-tests passed on its branch. Open with `wip/integrate-d`: the shell's menu and leave confirm in the chrome palette |
 | Platform: Copy image on Linux and the keyring label (GPUI patches from 0015), dev builds off the real profile, single instance, `decibell://` arguments, `--hotkey=`, attention, taskbar progress, window state (`decibell-platform`) | in progress, worktree `.worktrees/platform` (`wip/platform`) |
-| Media playback of attachments (`decibell-media`) | in progress, worktree `.worktrees/media` (`wip/media`) |
+| Media playback of attachments (`decibell-media`, timed streams in `decibell-video`, `decibell-chat-content/src/playback.rs`) | first pass merged (seven commits ending `aee6dce`): engine with A/V sync to the audio clock (0.14 ms max over 60 s), every audio transition ramped with sample-exact tests, cards at rest cost nothing, H.264 / HEVC / AV1 on the GPU, VP8 / VP9 in software; `media-*` self-tests passed on its branch. **Second pass in `wip/media2`**: rotation metadata (phone videos draw sideways today), 10-bit, VP9 on the GPU, the missing control pieces and last-frame poster, the sealed-channel live test, 12 MB retained after a 1080p60 clip, the Electron comparison, captures |
 | Core audio: interface sounds, the mic test outside voice, device changes without polling, the click audit's fixes | in progress, worktree `.worktrees/core-audio` (`wip/core-audio`) |
 | Conversations joined (DM read rule, composer in DMs, one user menu, pacing, type-to-focus, regional sweep, headless `register` / `login-as`) | merged (nine commits ending `269a573`'s pick): the owner's DM read rule with `dm-read-rules` (four cases) passing on its branch; `MessageList` tells `AtBottom`; send pacing spends its token when the send returns (`composer-burst` in a debug build); KaTeX italic faces marked (formulas drew slanted); one midnight timer per list re-labels. Open with `wip/integrate-d`: type-to-focus against the root that holds focus and bare-key hotkeys |
 | Cross-crate joins and the self-test suite as one run (`wip/integrate-d`): type-to-compose vs hotkeys, `render-cost`, the avatar editor in Settings → Account, kit layering inside modals, the shell's menus in the chrome palette, legacy refusal rows, the regional sweep of every crate, two clean full self-test runs | in progress, worktree `.worktrees/integrate-d` |
@@ -115,8 +115,10 @@ linked (all git-excluded through `.git/info/exclude`).
 | Worktree / branch | Work |
 |---|---|
 | `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
-| `.worktrees/windows` / `wip/windows` | the Windows batch: D3D11 external surfaces (GPUI patches from 0020), D3D11VA decode, Go Live's source list, idle on Windows, the gap table, `docs/windows-owner-checks.md`; works in rounds: I merge + push each checkpoint and send back the CI log |
-| `.worktrees/media` / `wip/media` | attachment video / audio playback; extends the shared FFmpeg prefix (every target dir then needs `cargo clean -p ffmpeg-sys-next`) |
+| `.worktrees/windows` / `wip/windows` | the Windows batch, in rounds: checkpoint 1 merged (`873fac7` + `704dff0`): GPUI patches `0020` (Direct3D 11 surfaces) and `0021` (the vsync thread parks), `decibell-video/src/windows/` (D3D11VA → software), the title bar's caption buttons, `tools/win-check.sh`, `tools/perf/windows/`, the CI job's run steps, `docs/windows-owner-checks.md`. Next round: Go Live's source grid, fixes from the CI logs. (Its `vendor/gpui-src` was rebuilt by the architect after an accidental removal: its patches were committed, nothing lost.) |
+| `.worktrees/media2` / `wip/media2` | attachment playback, second pass (rotation, 10-bit, VP9 hardware, UI pieces, sealed live test, retained memory, Electron comparison, captures) |
+| `.worktrees/platform2` / `wip/platform2` | auto-away by idle time on X11 (SYNC `IDLETIME` alarms, event-driven; tested in a private Xvfb) |
+| `.worktrees/packaging` / `wip/packaging` | the ship build and its size, Linux and Windows packages, `gpui-release.yml` (dry run on the branch), auto-update, crash reports, the Windows executable's identity |
 | `.worktrees/core-audio` / `wip/core-audio` | interface sounds, mic test, device events, click fixes (touches `crates/decibell-core`: Electron's bar + Windows check after merging) |
 | `.worktrees/land` / `wip/land` | the architect's landing tree (see below): empty of unmerged work when this was written |
 
@@ -533,14 +535,13 @@ agents compiling): load average 14.5 / 8.3 / 3.3 / 9.3 at the start of startup /
 - Startup is the window with the shell booting (the core reads its configuration and signs in with the saved sign-in
   meanwhile: `decibell: signed-in` follows ~0.3 s later in the dev markers).
 
-**Windows compile status**: Windows Native Check run 45891637575 (`da3eeba`) is green for both jobs: `check` (the
-addon and the core, with the leave fix and the per-process loopback source) and `gpui-client` (`fetch-gpui.sh` with
-all twelve patches + `cargo check --locked --workspace --all-targets` of every client crate on the branch at that
-commit: chat content, composer, home, settings, server settings, picture editor, servers, search, voice, video,
-with the client's own FFmpeg from `tools/vcpkg-overlay`). **Compiling is all that is known on Windows**: stream
-video, hardware decode, Go Live's source list and the desktop services there are being written by `wip/windows`
-and `wip/platform` (owner decision 2026-11-26 in CLAUDE.md: real implementations, tested by the owner from
-`docs/windows-owner-checks.md`). Self-tests and unit tests run on Linux only until that work adds them to CI.
+**Windows compile status**: Windows Native Check run 45898166132 (`abffdab`) is green for both jobs, with the platform
+work's Windows sides and GPUI patches `0015`–`0019`. The whole client also type-checks for `x86_64-pc-windows-msvc` **on
+Linux** now: `gpui-client/tools/win-check.sh` (run it before every push that touches `cfg(windows)` code; it found the
+three places where the Windows video backend and attachment playback met, before any CI run). Run 45900404424
+(`704dff0`) is the first with the Windows batch's checkpoint 1 and the job's new run steps (shaders through fxc, unit
+tests, the no-network self-tests on the runner's WARP device, `tools/perf/windows/row.ps1`): its logs are on
+`ci/win-gpui-check-log`. See §1c for what each level of evidence means. Nothing has run on real Windows hardware.
 
 ### Desktop integration (`crates/decibell-platform`, 2026-11-26)
 
