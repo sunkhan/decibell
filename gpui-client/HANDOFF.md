@@ -103,7 +103,7 @@ linked (all git-excluded through `.git/info/exclude`).
 | Worktree / branch | Work |
 |---|---|
 | `.worktrees/core-quality` / `wip/core-quality` | encoder quality: HEVC undershoot, tuning, colour signalling (core) |
-| `.worktrees/ffmpeg-sw` / `wip/ffmpeg-sw` | SVT-AV1 + VAAPI filter in the client's FFmpeg build (Linux prefix rebuild; Windows vcpkg overlay + CI) |
+| `.worktrees/regional` / `wip/regional` | dates, times and numbers in the system's regional formats (`decibell_model::regional`; owner decision in CLAUDE.md) |
 | `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
 | `.worktrees/voice` / `wip/voice` | voice view, streams UI, calls, stream bot |
 | `.worktrees/settings` / `wip/settings` | settings window, passphrase dialog |
