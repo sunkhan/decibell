@@ -11,6 +11,8 @@
 //!   central and drops every connection; `logged_out` clears the stores and closes Settings.
 
 use decibell_common::{UserAvatar, Watch};
+use decibell_model::live::presence::avatars::AvatarsChanged;
+use decibell_model::stores::users::NamesChanged;
 use decibell_model::{Model, Uid, actions};
 use decibell_ui::identity::{avatar_color, person_slot};
 use decibell_ui::{ActiveTheme as _, Button, ButtonVariant, FontRole, Icon, IconName, Label, ScrollHandle};
@@ -57,7 +59,9 @@ impl AccountTab {
                 let next = shown_of(a);
                 std::mem::replace(&mut this.shown, next.clone()) != next
             })
-            .people(cx, |this: &AccountTab, uid| uid == this.shown.uid);
+            // Our name and picture (not our status: the tab doesn't show it).
+            .event(&model.users, cx, |this: &mut AccountTab, e: &NamesChanged| e.0.contains(&this.shown.uid))
+            .event(&model.live.presence.avatars, cx, |this: &mut AccountTab, e: &AvatarsChanged| e.0.contains(&this.shown.uid));
         let shown = shown_of(model.auth.read(cx));
         let mut rename = RenameForm::new(cx);
         rename.open = SettingsHooks::get(cx).staged.open_rename;

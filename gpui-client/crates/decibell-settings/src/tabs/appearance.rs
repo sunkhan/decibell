@@ -8,6 +8,8 @@
 //! manual-activation radio group: picking on every arrow would repaint the whole window per key).
 
 use decibell_common::{UserAvatar, Watch};
+use decibell_model::live::presence::avatars::AvatarsChanged;
+use decibell_model::stores::users::NamesChanged;
 use decibell_model::Model;
 use decibell_model::chat::time::format_clock;
 use decibell_model::stores::settings::TimeFormat;
@@ -66,7 +68,9 @@ impl AppearanceTab {
                 std::mem::replace(&mut this.shown, next) != next
             })
             .store_if(&model.auth, cx, |this: &mut AppearanceTab, auth, _| std::mem::replace(&mut this.me, auth.uid) != auth.uid)
-            .people(cx, |this: &AppearanceTab, uid| uid == this.me);
+            // Our name and picture in the sample message (not our status: it isn't shown).
+            .event(&model.users, cx, |this: &mut AppearanceTab, e: &NamesChanged| e.0.contains(&this.me))
+            .event(&model.live.presence.avatars, cx, |this: &mut AppearanceTab, e: &AvatarsChanged| e.0.contains(&this.me));
         let cards = ThemeId::ALL.iter().map(|_| cx.focus_handle().tab_stop(true)).collect();
         let me = model.auth.read(cx).uid;
         Self { scroll: ScrollHandle::new(), close, shown: shown(model.settings.read(cx)), me, cards, _watch: watch }

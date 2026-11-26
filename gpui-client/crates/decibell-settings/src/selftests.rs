@@ -1162,17 +1162,27 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     for tab in tabs {
         open_on(&cx, tab).await?;
         park(&cx)?;
+        // The stack is shared (other clients of perf1 sign in and out, presence moves): a try
+        // counts only when no core event arrived in it; up to five tries.
         let mut last = String::new();
         let mut ok = false;
-        for attempt in 1..=3 {
+        for attempt in 1..=5 {
             let before = settle_drawn(&cx).await?;
+            let events_before = cx.update(|_, cx| model(cx).pump_stats().events)?;
             cx.sleep(Duration::from_secs(5)).await;
             let frames = cx.frames()?.since(before);
-            last = format!("{}: {} drawn, {} presented in 5 s (try {attempt})", tab.label(), frames.drawn, frames.presented);
-            if frames.drawn == 0 {
-                ok = true;
-                break;
+            let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events_before;
+            last = format!(
+                "{}: {} drawn, {} presented in 5 s (try {attempt}; {events} core events)",
+                tab.label(),
+                frames.drawn,
+                frames.presented
+            );
+            if events > 0 && frames.drawn > 0 {
+                continue;
             }
+            ok = frames.drawn == 0;
+            break;
         }
         cx.log(&last);
         ensure!(ok, "not idle: {last}");
