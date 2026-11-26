@@ -554,6 +554,17 @@ Series 1 (load average 3.4–8.7), the same code:
   requester's own `role_ids` doubled when their row is already in the page (`src/community/main.cpp`); this
   client de-duplicates on arrival.
 
+- **The message list's "today" is fixed when the list is built** (found by the regional-formats work): a
+  list left open past midnight keeps labelling yesterday's messages with a bare time until it is rebuilt.
+  Fix: one one-shot timer for the next local midnight (not a polling timer) that re-labels visible rows;
+  check what the renderer does first (its bubbles are memoised, so it may be stale the same way).
+- **Self-test order dependence**: `--selftest chat-rows,chat-history` fails in `chat-history` ("150 → 95
+  rows"); each passes alone and in the registry's order (`chat-history` first). `chat-rows` leaves its
+  fixture in the process's model. Make each chat self-test start from its own seeded state.
+- **`message_stamp` costs ~117 ns** a call, of which ~58 ns is formatting and the rest `chrono::Local`'s
+  zone conversion (it re-checks `TZ` / `/etc/localtime` at most once a second per thread). Rows cache
+  their labels, so it is not on the scroll path; cache the local time per message if a profile ever shows it.
+
 ## 6. Needs owner
 
 Things only the owner can do; nothing here blocks the rest.

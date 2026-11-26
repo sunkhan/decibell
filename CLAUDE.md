@@ -181,8 +181,10 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   digit grouping come from the OS's format settings (Linux `LC_ALL` / `LC_TIME` / `LC_NUMERIC` / `LANG`,
   Windows' regional format), read once at startup by `decibell_model::regional`. Month and weekday names
   stay English, placed in the system's field order ("Saturday, 7 November 2026" for a day-first system).
-  A `C` / `POSIX` time locale means "no preference" and gets the neutral forms Qt and KDE show for it
-  ("7 Nov 2026", 24-hour), not glibc's US-ordered leftover (`%m/%d/%y`). Settings → Appearance's time
+  A `C` / `POSIX` time locale means "no preference", not glibc's US-ordered leftover (`%m/%d/%y`): it
+  gets day-first dates with the month as a word ("7 Nov 2026", "Saturday, 7 November 2026"), 24-hour
+  time, Monday first. That is Qt's C locale (what KDE shows), except that Qt's short date is the
+  all-numeric "7 11 2026"; ours names the month so the order can't be misread. Settings → Appearance's time
   format still overrides 12 / 24 h. Never format a date, a time of day or a count by hand in
   `gpui-client/`. Electron formats by its UI language through `Intl` (Chromium ignores the OS's format
   setting) and isn't changed by this.
