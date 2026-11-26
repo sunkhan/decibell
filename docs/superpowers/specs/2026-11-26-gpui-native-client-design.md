@@ -12,8 +12,8 @@ Electron client it is compared with.
 This record replaces the Qt design (`2026-11-07-qt-native-client-design.md`) as the plan of record. What of that
 design still holds, unchanged, is listed in §1; the rest of this document is what GPUI changes.
 
-Status: §2–§6 are decided (§5 from the source survey, `gpui-client/docs/gpui-notes.md`). §7 (video) is filled in
-from the video prototype as it lands (`gpui-client/docs/video-design.md`); the running state of the work is
+Status: §2–§7 are decided (§5 from the source survey, `gpui-client/docs/gpui-notes.md`; §7 from the video
+prototype, `gpui-client/docs/video-design.md`); the running state of the work is
 `gpui-client/HANDOFF.md`, the checklist `gpui-client/PARITY.md`.
 
 ---
@@ -226,9 +226,42 @@ completed picture when it draws; a new picture asks for exactly one redraw; noth
 arrives. One decoder per stream, however many places show it (grid tile, focus, mini-player); self-preview
 decodes our own encoded frames like any other stream. Software decode only as a fallback.
 
-How a decoded picture reaches a GPUI frame without a CPU copy (GPUI on Linux renders through wgpu), which
-FFmpeg hwaccel feeds it per vendor and OS, the patch to GPUI and the measured numbers are in
-`gpui-client/docs/video-design.md`.
+### 7.1 Decided, from the prototype (`gpui-client/docs/video-design.md`)
+
+- **Linux: FFmpeg's Vulkan Video hwaccel on GPUI's own `VkDevice`** (H.264, HEVC, AV1). GPUI's wgpu device is
+  created through a hook that adds the video-decode queue family and extensions; FFmpeg's `AVVulkanDeviceContext`
+  is filled from the same raw handles. One device, as mpv and Chromium do it (and as the Qt design's D6 did on
+  D3D11).
+- **One GPU copy, no CPU copy.** On this driver the decoder's output picture is also its reference picture
+  (`reuse_dst_dpb`), held in a decode layout and guarded by FFmpeg's own semaphore, which wgpu cannot wait on.
+  So each decoded picture is copied on the GPU (two `vkCmdCopyImage` regions: luma to an R8 image, chroma to an
+  RG8 image) into one of 5 slots per stream; the renderer samples the newest completed slot and converts
+  NV12 → RGB (BT.709 limited range, exact on the test pattern) in the fragment shader at the size it is drawn.
+- **The GPUI patch** (`patches/0001-gpui-external-surfaces.patch`, 7 files, +574 / −46): GPUI's scene already
+  had a surface primitive for macOS that the wgpu renderer skipped; the patch draws it (rounded corners,
+  content mask, in scene order, so text and overlays sit on top), adds `Window::paint_external_surface` and
+  **`Window::request_present()`**: a new picture re-presents the retained scene with the newest slot, with no
+  layout and no paint. Nothing is drawn when no picture arrives.
+- **Threads**: per stream a decoder thread behind a 3-frame queue (shed to the next keyframe on overflow); one
+  device-wide queue lock shared by the renderer, FFmpeg's queue callbacks and the copy.
+- **Fallbacks**: NVDEC (CUDA → Vulkan copy) on NVIDIA and VAAPI (DMA-BUF import) on AMD / Intel where Vulkan
+  Video is missing: designed, the FFmpeg build carries both hwaccels; software decode (FFmpeg H.264 / HEVC,
+  dav1d for AV1) uploading into the same plane textures: built and run (keeps up at 1080p60, not at 1440p120
+  HEVC / AV1).
+- **Windows**: D3D11VA on `gpui_windows`' D3D11 device, sampling the decoder's texture array slice directly
+  (no copy needed there): designed, compile-checked in CI, run by the owner.
+- **FFmpeg** for this client: a static LGPL 8.1 build with the three decoders, their parsers, the Vulkan /
+  NVDEC / VAAPI hwaccels, dav1d and the encoders the core already uses, in its own prefix
+  (`gpui-client/vendor/ffmpeg`); Electron's prefix and script are untouched.
+
+Measured on this machine (RTX 4080, 280 Hz, other builds running, so CPU is an upper bound): one 1440p120
+stream 4.1–6.0 % of a core, **two 1440p120 streams 7.5–12 %**, every decoded frame drawn (3362 of 3362 in
+28 s), private memory 99–122 MB, packet → picture published 1.3–2.8 ms; zero draws after the stream ends.
+(For orientation, on Windows the Qt spike measured 18.5 % and Electron's player path 52.6 % for two streams.)
+
+Open before it ships (`video-design.md` §12): device-loss recovery (one unexplained loss in ~95 early starts,
+none in 250 soak starts after the queue lock went in), no validation-layer run, AMD / Intel and Windows
+unrun, mip-less downscale aliasing in small tiles, 10-bit streams refused.
 
 ## 8. What replaces Electron's main process and Chromium services
 
