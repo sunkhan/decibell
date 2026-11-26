@@ -1557,9 +1557,20 @@ async fn check_idle(cx: TestCx) -> Result<()> {
         let moving = cx.frames()?.since(start);
         ensure!(cx.update(|_, cx| reorder::state(cx).read(cx).is_dragging())?, "no drag");
         cx.sleep(Duration::from_millis(400)).await;
-        let held = cx.frames()?;
-        cx.sleep(Duration::from_secs(2)).await;
-        let still = cx.frames()?.since(held);
+        // Held still: up to three 2 s windows, a window that saw core events (other test clients'
+        // presence redraws a dot) taken again, as `quiet_for` does.
+        let mut still = Frames { drawn: 0, presented: 0 };
+        for attempt in 1..=3 {
+            let held = cx.frames()?;
+            let events = cx.update(|_, cx| model(cx).pump_stats().events)?;
+            cx.sleep(Duration::from_secs(2)).await;
+            still = cx.frames()?.since(held);
+            let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events;
+            if still.drawn == 0 || events == 0 {
+                break;
+            }
+            cx.log(format_args!("held still: {} drawn with {events} core events (try {attempt}): again", still.drawn));
+        }
         cx.keystroke("escape")?;
         cx.mouse_up(to)?;
         let after = settle_drawn(&cx).await?;
