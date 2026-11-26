@@ -277,6 +277,43 @@ occlusion tracking and stops drawing. The Windows baseline's idle-channel run (0
 can only have had the client covered (a visible client would have drawn the glow at 279 Hz), so its Linux
 counterpart is `idle-channel-hidden`; `idle-channel` is what a visible, unfocused client costs on Linux.
 
+### Wheel and key scrolling (`electron-wheel-linux.py`)
+
+How Chromium animates the message list on a wheel notch or a scroll key, measured on the Electron client so the GPUI
+client can match it. Results and the derived spec: `gpui-client/docs/wheel-scroll.md`.
+
+```sh
+tools/perf/electron-local.sh run && tools/perf/electron-local.sh open "Daily Gaming" general
+tools/perf/electron-wheel-linux.py --notches 1 --direction down --start middle --runs 8 --trace --label notch
+tools/perf/electron-wheel-linux.py --notches 3 --spacing-ms 30 --start middle --runs 3 --trace     # retargets
+tools/perf/electron-wheel-linux.py --pattern 'd@0,u@60' --start middle --runs 3 --trace            # reversal
+tools/perf/electron-wheel-linux.py --key PageDown --start middle --runs 3                         # keys (focus!)
+tools/perf/electron-wheel-linux.py --key ArrowDown --hold-ms 1500 --start middle                  # auto-repeat
+tools/perf/electron-wheel-linux.py --inject cdp --notches 1 --start middle                         # precise deltas
+tools/perf/electron-wheel-linux.py --reanalyze tools/perf/results/wheel-linux-<…>                  # no input
+```
+
+- **Input is XSendEvent, not XTest.** Under KWin, Xwayland forwards XTest through libei and KWin pops a "Remote
+  Control: python3 is asking to control input devices" prompt (`kwin_eis_prompter`) for the owner; XTest also moves
+  the real pointer. The tool sends core ButtonPress 4 / 5 and KeyPress / KeyRelease straight to the client's X window
+  with `CLOCK_MONOTONIC` ms timestamps: Chromium turns a core wheel button into the same 120 px, non-precise wheel
+  event a real notch makes (the curve code from there on is the real one), no pointer moves, and the wheel needs no
+  focus. Keys do: key runs activate the window through KWin (and hand focus back after), and focus the list
+  programmatically (Blink's key scrolling starts at the focused / last-pressed node). A run whose keys arrive while
+  another window took focus prints `no input events reached the page`. CDP `Input.dispatchMouseEvent` wheels are
+  precise-pixel and never animate (`--inject cdp` shows exactly that).
+- **Window**: placed at 1280×800 in the centre of the primary output and kept above for the burst, then put back
+  (`--no-place` leaves it, e.g. when another tool's window sits there). Each invocation is a few seconds per run.
+- **Clocks**: rAF timestamps count from navigation start, `performance.now()` / `event.timeStamp` from
+  `performance.timeOrigin`, 52 ms later in this page; every invocation calibrates the offset exactly with a short trace
+  (rAF times snapped onto `Scheduler::BeginImplFrame` frame_times). Uncorrected, every onset looks ~52 ms late.
+- **Output**: `results/wheel-linux-<time>[-label]/run-N.json` (frames, events, sent events, trace subset, analysis)
+  and `summary.json`; one line per run: distance, onset, duration, dropped frames, free fits (ease-in-out bezier,
+  smoothstep, exponential) for single moves, and the error of a re-implementation of cc's
+  `ScrollOffsetAnimationCurve` driven by the run's own timing (with `--trace`: Chromium's traced processing times and
+  frame receipts, 0.13–0.23 px rms). The content position is scrollTop corrected by an anchor row, so history pages
+  prepended mid-animation do not read as jumps.
+
 ## Who wakes up
 
 `threads.ps1 -ProcessName <name> [-Seconds 10] [-Top 10]` ranks every thread of the client by context switches per
