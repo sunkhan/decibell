@@ -52,7 +52,8 @@ const stub = (window as unknown as { decibell: Record<string, unknown> }).decibe
 });
 
 let id = 0;
-function deliver(event: string, payload: unknown) {
+/// Deliver one event to the hooks (the settings pages answer their requests through it).
+export function deliver(event: string, payload: unknown) {
   for (const cb of listeners.get(event) ?? []) cb({ event, payload, id: ++id });
 }
 
