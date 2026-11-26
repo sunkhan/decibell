@@ -472,6 +472,35 @@ shell's (`DmRows`, `UnreadDmTiles`).
   `status-custom`, `user-menu-moderation`, `home-idle`) run child apps (`--check home-…`): read-only as `alice`,
   everything that changes state between two throwaway accounts registered once per run.
 
+## Chat content (`decibell-chat-content`)
+
+What messages contain: the `attachments`, `inflight` and `embeds` slots of the list, the lone-link rule, the
+image right-click menu, the image viewer, the Transfers panel, and the picture pipeline under all of them.
+`decibell_chat_content::init(cx)` installs it (the app's `registry::init_features`); screens use
+`install_fixture` with a memory fetcher.
+
+- **Every picture goes through `pictures::Pictures`** (module doc in `src/pictures/mod.rs`). Ask for a picture as
+  a `PicKey` = `Source` (an attachment's thumbnail or original, a remote https URL, `Local` bytes handed over with
+  `provide`) + the box it is drawn in (`Spec`: logical size, scale, `Fit::{Contain, Cover}`, upscale or not). A view
+  that shows pictures for rows calls `set_wants((its entity, n), wants)` with what is near and what is on screen
+  (the list's `RowSlot::near` does this for the slots); anything else drawn once calls `request(key, Some(view))`.
+  Draw with `tile::Tile` (placeholder → picture → broken image in one canvas) or `Picture::paint`; never `img()`
+  for chat pictures (GPUI's caches keep everything forever and animate by re-rendering at the refresh rate).
+- **Rules the pipeline keeps**: decode off the UI thread at the box's device pixels (never larger than the file);
+  one texel of border on every decoded picture (GPUI's atlas packs tiles edge to edge: without it a scaled picture
+  bleeds its neighbours' texels) — paint with `Placement::image_bounds`; evicted pictures leave the atlas
+  (`drop_image`); a picture arriving notifies the owners that want it, nothing else draws; animations run one timer
+  each, only while some owner wants them on screen and the window is visible and paints them.
+- **Heights before pixels**: a slot's `height()` reads only the message, the slot space, the text engine and
+  stores whose change calls `invalidate_slots` (link previews, invites, the toggle, a link picture whose size only
+  its pixels tell). Never make a height depend on whether a picture has loaded otherwise.
+- **The player seam** (`src/player.rs`): the video / audio cards set `model.chat.video` / `chat.audio` and record
+  where each video surface was drawn (`VideoHosts`); the persistent players (another crate) serve that.
+- **Dates, times of day and counts** go through the private `fmt.rs` only (owner decision 2026-11-26: they will
+  follow the system's regional formats); sizes, speeds and durations keep the renderer's formatting.
+- Screens `content-attachments`, `content-embeds`, `image-viewer`, `image-viewer-zoomed`, `transfers-panel`;
+  self-tests `content-*` (local stack, `--check` children as `perf2`).
+
 ## GPUI gotchas met so far
 
 (`docs/gpui-notes.md` §12 has the survey's list; these were hit while building the skeleton.)

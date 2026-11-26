@@ -174,6 +174,11 @@ pub struct Stats {
     pub anim_decoded: u64,
     /// Timers alive now (one per playing animation).
     pub playing: usize,
+    /// Pictures painted for the first time (their atlas upload is in that paint), and the µs
+    /// those first paints took on the UI thread.
+    pub uploads: u64,
+    pub upload_us: u64,
+    pub upload_max_us: u64,
 }
 
 struct Anim {
@@ -220,6 +225,8 @@ pub struct Pictures {
     placeholders: Placeholders,
     windows: HashMap<gpui::WindowId, Subscription>,
     window_hidden: bool,
+    /// Image ids painted at least once (their first paint uploads them).
+    painted_ids: HashSet<gpui::ImageId>,
     /// Screens: fetch (from memory) and decode within the call that asks.
     sync: bool,
     pub stats: Stats,
@@ -264,6 +271,7 @@ impl Pictures {
             placeholders: Placeholders::default(),
             windows: HashMap::new(),
             window_hidden: false,
+            painted_ids: HashSet::new(),
             sync: false,
             stats: Stats::default(),
         }
@@ -659,6 +667,7 @@ impl Pictures {
         self.stats.evicted += 1;
         let mut images = Vec::new();
         if let State::Ready(picture) = entry.state {
+            self.painted_ids.remove(&picture.image.id);
             images.push(picture.image);
         }
         if let Some(anim) = self.anims.remove(&key) {
@@ -732,6 +741,22 @@ impl Pictures {
     }
 
     // ── Animations ───────────────────────────────────────────────────────────────────────────
+
+    /// Whether `image` was painted before (its upload done); records it.
+    pub fn first_paint(&mut self, image: &RenderImage) -> bool {
+        if self.painted_ids.len() > 4096 {
+            // Ids of pictures long gone (released ones are removed): start over.
+            self.painted_ids.clear();
+        }
+        self.painted_ids.insert(image.id)
+    }
+
+    /// The first paint of a picture took `us` (its upload to the atlas included).
+    pub fn note_upload(&mut self, us: u64) {
+        self.stats.uploads += 1;
+        self.stats.upload_us += us;
+        self.stats.upload_max_us = self.stats.upload_max_us.max(us);
+    }
 
     /// The tile of an animated key painted: it is on screen in a visible window.
     pub fn painted(&mut self, key: &PicKey, window: &mut Window, cx: &mut Context<Self>) {

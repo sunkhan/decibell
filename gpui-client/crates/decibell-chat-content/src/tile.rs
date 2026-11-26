@@ -67,7 +67,13 @@ impl Tile {
                 // Pictures with transparency show the blur through, as an `<img>` over its
                 // background does.
                 self.paint_placeholder(bounds, Some(&pictures), window, cx);
+                let first = pictures.update(cx, |p, _| p.first_paint(&picture.image));
+                let started = std::time::Instant::now();
                 picture.paint(bounds.origin, self.corners, window);
+                if first {
+                    let us = started.elapsed().as_micros() as u64;
+                    pictures.update(cx, |p, _| p.note_upload(us));
+                }
                 if let Some(veil) = self.veil {
                     window.paint_quad(gpui::quad(bounds, self.corners, veil, gpui::Edges::default(), gpui::transparent_black(), gpui::BorderStyle::default()));
                 }

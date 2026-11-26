@@ -292,12 +292,15 @@ async fn check_images_live(cx: TestCx) -> Result<()> {
     let stats = cx.update(|_, cx| Pictures::global(cx).map(|p| (p.read(cx).stats, p.read(cx).bytes())))?;
     if let Some((stats, (decoded, encoded))) = stats {
         cx.log(format_args!(
-            "pipeline: {} fetched ({} KB), {} decoded (mean {} µs, max {} µs), decoded {} KB, encoded {} KB, {} ms total",
+            "pipeline: {} fetched ({} KB), {} decoded (mean {} µs, max {} µs, off the UI thread), {} first paints with upload (mean {} µs, max {} µs, UI thread), decoded {} KB, encoded {} KB, {} ms total",
             stats.fetched,
             stats.fetched_bytes / 1024,
             stats.decoded,
             stats.decode_us / stats.decoded.max(1),
             stats.decode_max_us,
+            stats.uploads,
+            stats.upload_us / stats.uploads.max(1),
+            stats.upload_max_us,
             decoded / 1024,
             encoded / 1024,
             started.elapsed().as_millis()
