@@ -1,0 +1,31 @@
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index 5cf0731..1f1061a 100644
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -54,7 +54,9 @@ pub(crate) const SCROLL_LINES: f32 = 3.0;
+ pub(crate) const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+ #[cfg(any(feature = "wayland", feature = "x11"))]
+ pub(crate) const DOUBLE_CLICK_DISTANCE: Pixels = px(5.0);
+-pub(crate) const KEYRING_LABEL: &str = "zed-github-account";
++/// The label of the application's items in the Secret Service keyring: what the desktop's keyring
++/// manager shows for them, and what reads and deletes match.
++pub(crate) const KEYRING_LABEL: &str = "Decibell";
+ 
+ #[cfg(any(feature = "wayland", feature = "x11"))]
+ const FILE_PICKER_PORTAL_MISSING: &str =
+diff --git a/crates/gpui_windows/src/util.rs b/crates/gpui_windows/src/util.rs
+index eb19387..57716dc 100644
+--- a/crates/gpui_windows/src/util.rs
++++ b/crates/gpui_windows/src/util.rs
+@@ -82,8 +82,10 @@ pub(crate) unsafe fn set_window_long(
+     }
+ }
+ 
++/// The Credential Manager target of the application's items: what Windows' credential manager shows
++/// for them, and what reads and deletes look up.
+ pub(crate) fn windows_credentials_target_name(url: &str) -> String {
+-    format!("zed:url={}", url)
++    format!("Decibell:url={}", url)
+ }
+ 
+ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
