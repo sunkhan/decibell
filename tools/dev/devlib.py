@@ -50,6 +50,13 @@ BY_NAME = {c["name"]: c for c in COMMUNITIES}
 
 PASSWORD = "decibell-test-1"
 ACCOUNTS = ["alice", "bob", "carol", "dave", "erin", "perf1", "perf2", "perf3", "perf4"]
+# Accounts added after the stack was first seeded (`local-stack.sh top-up`, and the end of `seed`): each
+# (name, the community it joins, its role there, whether it gets E2EE keys). perf5: a second streaming
+# account beside perf4 for measurements with two streams (tools/perf/scenarios.sh … watch-2).
+EXTRA_ACCOUNTS = [("perf5", "gaming", "Member", True)]
+# The passphrase of every stack account that has E2EE keys (perf3, perf4, perf5): what the GPUI client's
+# voice self-tests and tools/perf/streambot.sh use.
+E2EE_PASSPHRASE = "decibell-m3-test-passphrase"
 
 
 def community_dir(slug):

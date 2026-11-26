@@ -1063,7 +1063,8 @@ def write_accounts(ctx):
         "central_cert_sha256": st.get("central", {}).get("fingerprint", ""),
         "password": d.PASSWORD,
         "accounts": [{"name": n, "uid": ctx.uids.get(n), "password": d.PASSWORD, "email": f"{n}@example.test",
-                      "communities": member_of.get(ctx.uids.get(n), [])} for n in d.ACCOUNTS],
+                      "communities": member_of.get(ctx.uids.get(n), [])}
+                     for n in d.ACCOUNTS + [e[0] for e in d.EXTRA_ACCOUNTS] if ctx.uids.get(n)],
         "communities": [{"name": c["name"], "slug": c["slug"], "owner": c["owner"], "host": c["ip"],
                          "port": d.COMMUNITY_PORT, "attachment_port": d.COMMUNITY_PORT + 3,
                          "server_id": st.get("communities", {}).get(c["slug"], {}).get("server_id"),
@@ -1143,9 +1144,170 @@ def main(args):
     except (SeedError, d.PinMismatch) as e:
         print(f"seed: {e}", file=sys.stderr)
         sys.exit(1)
+    try:
+        top_up(ctx)
+    except (SeedError, d.PinMismatch) as e:
+        print(f"seed: {e}", file=sys.stderr)
+        sys.exit(1)
     time.sleep(1.0)   # memberships reach central through the communities' sync worker
     write_accounts(ctx)
+    for line in top_up_e2ee(ctx):
+        log(line)
+    for note in ctx.notes:
+        log(f"note: {note}")
     log(f"done in {time.time() - t0:.1f} s. Summary:")
     for line in summary(ctx):
         print("  " + line)
     print(f"  accounts file: {d.ACCOUNTS_JSON}")
+
+
+# --- Top-up ------------------------------------------------------------------------------------------------
+# What was added to the fixtures after stacks were seeded. Purely additive and idempotent: it looks first
+# and adds only what is missing, through the protocol, with the stack running and other clients signed
+# in; nothing that exists is changed, no server is stopped, no row is rewritten. `seed` ends with it, so
+# a stack made from scratch has the same.
+
+def headless_binary():
+    """The GPUI client's `decibell-headless` (it sets E2EE keys up as a client does), if it is built."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for path in (os.environ.get("DECIBELL_HEADLESS", ""),
+                 os.path.join(repo, "gpui-client", "target", "release", "decibell-headless"),
+                 os.path.join(repo, "gpui-client", "target", "debug", "decibell-headless")):
+        if path and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def has_e2ee_keys(uid):
+    return bool(d.pg("SELECT 1 FROM e2ee_keys WHERE uid = %s LIMIT 1", uid))
+
+
+def set_up_e2ee(name):
+    """Identity keys for `name` with the stack's passphrase, made by a client (the keys never exist
+    outside one): `decibell-headless login <name> e2ee-ready <passphrase> logout` in a throwaway profile.
+    Returns None when done, else why not."""
+    import shutil
+    import subprocess
+    import tempfile
+    exe = headless_binary()
+    if not exe:
+        return ("decibell-headless is not built (cd gpui-client && cargo build --release -p decibell-model "
+                "--features local-central --bin decibell-headless), or name it with DECIBELL_HEADLESS")
+    profile = tempfile.mkdtemp(prefix="decibell-topup-")
+    try:
+        env = dict(os.environ, DECIBELL_CENTRAL=f"{d.CENTRAL_HOST}:{d.CENTRAL_PORT}", DECIBELL_DEV_PASSWORD=d.PASSWORD)
+        r = subprocess.run([exe, "--user-data-dir", profile, "--timeout", "120", "login", name,
+                            "e2ee-ready", d.E2EE_PASSPHRASE, "logout", "wait", "logged-out"],
+                           env=env, capture_output=True, text=True, timeout=180)
+        if r.returncode != 0 or "FAILED" in r.stdout:
+            tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-3:])
+            return f"decibell-headless could not set the keys up: {tail}"
+        return None
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"decibell-headless: {e}"
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def top_up(ctx):
+    """Adds each of `devlib.EXTRA_ACCOUNTS` that is missing: the account, its membership (joined by the
+    community's open invite, as a client joins), its role, its E2EE keys, its entry in accounts.json.
+    Returns what it did, for the log."""
+    did = []
+    for name, slug, role_name, e2ee in d.EXTRA_ACCOUNTS:
+        rows = d.pg("SELECT uid FROM users WHERE username = %s", name)
+        if not rows:
+            r = d.register(name)
+            if not r or not r.success:
+                raise SeedError(f"register {name}: {r.message if r else 'no answer'}")
+            rows = d.pg("SELECT uid FROM users WHERE username = %s", name)
+            did.append(f"registered {name} (uid {rows[0][0]})")
+        uid = ctx.uids[name] = rows[0][0]
+        community = d.BY_SLUG[slug]["name"]
+        member = is_member(slug, uid)
+        role_id = q1(slug, "SELECT id FROM roles WHERE name = ?", role_name)
+        has_role = role_id is not None and bool(q(slug, "SELECT 1 FROM member_roles WHERE uid = ? AND role_id = ?", uid, role_id))
+        if not member or not has_role:
+            s = owner_session(ctx, slug)
+            try:
+                if not member:
+                    code = ensure_invite(s)          # the open invite `seed` made; made only if it is gone
+                    ctx.invites.setdefault(slug, code)
+                    ctx.session(slug, name, invite=code).close()
+                    did.append(f"{name} joined {community}")
+                if not has_role:
+                    if role_id is None:
+                        raise SeedError(f"{community} has no role {role_name!r} (seed the stack first)")
+                    assign(s, uid, [role_id])
+                    did.append(f"{name} got the role {role_name}")
+            finally:
+                s.close()
+    return did
+
+
+def top_up_e2ee(ctx):
+    """E2EE keys for the extra accounts that should have them and have none. After accounts.json lists
+    them: the client that makes the keys signs in from it."""
+    did = []
+    for name, _, _, e2ee in d.EXTRA_ACCOUNTS:
+        uid = ctx.uids.get(name)
+        if not e2ee or not uid or has_e2ee_keys(uid):
+            continue
+        why = set_up_e2ee(name)
+        if why is None and has_e2ee_keys(uid):
+            did.append(f"{name} has E2EE keys (passphrase {d.E2EE_PASSPHRASE!r})")
+        else:
+            ctx.notes.append(f"{name} has no E2EE keys yet: {why or 'central has none after the setup'}. "
+                             f"Its first client sets them up (tools/perf/streambot.sh does, with the "
+                             f"stack's passphrase), or run top-up again once the binary is built.")
+    return did
+
+
+def top_up_accounts_file(ctx):
+    """accounts.json gains the entries of the extra accounts; every other byte of it stays."""
+    try:
+        with open(d.ACCOUNTS_JSON) as f:
+            out = json.load(f)
+    except (OSError, ValueError):
+        raise SeedError(f"{d.ACCOUNTS_JSON} is missing: this stack was never seeded (local-stack.sh seed)")
+    changed = False
+    for name, slug, _, _ in d.EXTRA_ACCOUNTS:
+        uid = ctx.uids.get(name)
+        communities = [c["name"] for c in d.COMMUNITIES if is_member(c["slug"], uid)]
+        entry = {"name": name, "uid": uid, "password": d.PASSWORD, "email": f"{name}@example.test",
+                 "communities": communities}
+        have = next((a for a in out["accounts"] if a.get("name") == name), None)
+        if have != entry:
+            if have is None:
+                out["accounts"].append(entry)
+            else:
+                have.clear()
+                have.update(entry)
+            changed = True
+    if changed:
+        d.write_json(d.ACCOUNTS_JSON, out)
+    return changed
+
+
+def top_up_main(args):
+    stack.require_up()
+    ctx = Ctx()
+    try:
+        did = top_up(ctx)
+        if did:
+            time.sleep(1.0)   # the membership reaches central through the community's sync worker
+        if top_up_accounts_file(ctx):
+            did.append("accounts.json lists " + ", ".join(e[0] for e in d.EXTRA_ACCOUNTS))
+        did += top_up_e2ee(ctx)
+    except (SeedError, d.PinMismatch) as e:
+        print(f"top-up: {e}", file=sys.stderr)
+        sys.exit(1)
+    for line in did:
+        print(f"[top-up] {line}", flush=True)
+    for note in ctx.notes:
+        print(f"[top-up] note: {note}", flush=True)
+    if not did:
+        print("[top-up] nothing to add: " + ", ".join(
+            f"{name} (uid {ctx.uids[name]}) is in {d.BY_SLUG[slug]['name']} as {role}"
+            + (", with E2EE keys" if e2ee and has_e2ee_keys(ctx.uids[name]) else "")
+            for name, slug, role, e2ee in d.EXTRA_ACCOUNTS), flush=True)

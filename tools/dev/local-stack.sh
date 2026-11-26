@@ -6,6 +6,7 @@
 #   local-stack.sh setup        build deps + both servers (idempotent)
 #   local-stack.sh up           start postgres, central, the communities
 #   local-stack.sh seed         fill the stack with the test fixtures (idempotent)
+#   local-stack.sh top-up       add what was added to the fixtures since (perf5); changes nothing else
 #   local-stack.sh status       what runs, ports, the client env
 #   local-stack.sh down         stop everything
 #   local-stack.sh logs <name>  tail a log (central, postgres, gaming, rust, design)
@@ -136,7 +137,7 @@ cmd_setup() {
 
 case "${1:-}" in
   setup) cmd_setup ;;
-  up|down|status|logs|reset|seed|client-env)
+  up|down|status|logs|reset|seed|top-up|client-env)
     [ -x "$PY" ] || die "not set up yet: run '$0 setup' first"
     exec "$PY" -I -B "$HERE/stack.py" "$@" ;;
   smoke)

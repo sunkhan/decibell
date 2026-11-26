@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local test stack: up / down / status / logs / reset / client-env / seed.
+"""Local test stack: up / down / status / logs / reset / client-env / seed / top-up.
 Run through tools/dev/local-stack.sh (the harness venv's python, -I)."""
 import os
 import secrets
@@ -440,6 +440,9 @@ def main():
     elif cmd == "seed":
         import seed
         seed.main(args)
+    elif cmd == "top-up":
+        import seed
+        seed.top_up_main(args)
     else:
         die(f"unknown command {cmd!r}")
 

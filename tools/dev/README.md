@@ -21,7 +21,8 @@ tools/dev/local-stack.sh down
 |---|---|
 | `setup` | Runs the two harness scripts (`src/community/tests/setup_deps.sh`, `src/server/tests/setup_deps.sh` + their `build.sh`) into the dev dir, builds the bind shim, adds Pillow to the venv. Idempotent: deps are redone only when `proto/messages.proto` or a harness script changed; a server binary is rebuilt when any of its sources (`src/server/*`, `src/community/*.{cpp,hpp}`, `src/common/*.hpp`, the generated pb) is newer than it. Parallel compile jobs are capped at 8 (`DECIBELL_DEV_JOBS`) by putting a wrapper `nproc` first on `PATH` for the harness scripts. |
 | `up` | Starts what isn't running: PostgreSQL (unix socket only), central, then each community, waiting until each has registered with central through its heartbeat. Refuses with a clear message when a port it needs is taken. |
-| `seed` | Fills the stack (below). Idempotent: every step checks the databases first, so a second run changes nothing (~10 s). |
+| `seed` | Fills the stack (below). Idempotent: every step checks the databases first, so a second run changes nothing (~10 s). Ends with what `top-up` adds. |
+| `top-up` | Adds what was added to the fixtures after stacks were seeded, **and nothing else**: today the account `perf5` (below). It looks first and adds only what is missing, through the protocol, with the stack running: no server is stopped, no existing row or account is touched, `accounts.json` gains the entry and keeps every other byte. A second run prints `nothing to add`. Safe while other clients and agents use the stack; use it instead of `seed` on a stack that is in use (`seed` stops each community for its bulk SQL). |
 | `status` | What runs, pids, each community's id / member count / listing / last heartbeat as central sees it, whether a binary was rebuilt since start, the client env. |
 | `logs <name>` | `tail -F` a log: `central`, `postgres`, `gaming`, `rust`, `design` (or `daily-gaming`, …). |
 | `down` | Stops everything (SIGTERM, then SIGKILL after 10 s; `pg_ctl stop -m fast`). **Data persists**: `up` brings the same seeded state back. |
@@ -101,7 +102,10 @@ run/                   all state; `reset` wipes it except keys/
   value without `:port`, silently uses the live central: check that the client's log or UI shows
   127.0.0.1:18080 before typing a password.
 - Accounts: `alice`, `bob`, `carol`, `dave`, `erin`, `perf1`..`perf4`, all with password `decibell-test-1`,
-  emails `<name>@example.test`. Uids 1..9 in that order after `reset`. `run/accounts.json`:
+  emails `<name>@example.test`. Uids 1..9 in that order after `reset`. Then `perf5` (same password; the next
+  free uid: 10 on a stack made from scratch, whatever was free on one topped up later; read it from
+  `accounts.json`), a member of Daily Gaming with the Member role: the second streaming account beside perf4
+  (`tools/perf/scenarios.sh <client> watch-2 --streamers perf4,perf5`; a user streams one stream). `run/accounts.json`:
   ```json
   {"central": "127.0.0.1:18080", "central_cert_sha256": "…", "password": "decibell-test-1",
    "accounts": [{"name": "alice", "uid": 1, "password": "…", "email": "…", "communities": ["Daily Gaming", "Rustaceans"]}, …],
@@ -110,7 +114,14 @@ run/                   all state; `reset` wipes it except keys/
   ```
 - Use a separate client profile (user-data dir) for the stack, so a saved sign-in for a real account is
   never offered to it and test pins / device ids stay out of the real profile.
-- No account has E2EE keys: a client sets them up itself (passphrase prompt) the first time it needs them.
+- `seed` gives no account E2EE keys: a client sets them up itself (passphrase prompt) the first time it needs
+  them. The accounts the GPUI client's voice tests and `streambot.sh` use have them, all with the passphrase
+  `decibell-m3-test-passphrase` (`devlib.E2EE_PASSPHRASE`): `perf3` and `perf4` since their first voice test,
+  and `perf5` from `top-up` (and the end of `seed`), which runs `gpui-client`'s `decibell-headless login perf5
+  e2ee-ready <passphrase> logout` in a throwaway profile: the keys are made by a client, as always. Without
+  that binary (`cd gpui-client && cargo build --release -p decibell-model --features local-central --bin
+  decibell-headless`, or `DECIBELL_HEADLESS=<path>`) the account is made without keys, the command says so,
+  and its first client (the stream bot) sets them up with the same passphrase.
 - `seed` and `smoke` sign in from one fixed tool device per account ("Decibell dev stack", linux), so
   each account's device list shows that device too.
 - DM calls: central hands out no STUN list (`DECIBELL_STUN_SERVERS` unset), so clients use their built-in
@@ -122,11 +133,11 @@ Timestamps are anchored to the moment `seed` runs (the fixture's newest #general
 before it; the live messages follow); ids, contents, people and structure are the same on every
 `reset && up && seed`.
 
-**Central.** 9 accounts. Friends: alice↔bob and alice↔carol accepted, dave → alice pending, alice blocked
+**Central.** 10 accounts (9, then `perf5`: see `top-up`). Friends: alice↔bob and alice↔carol accepted, dave → alice pending, alice blocked
 erin. DMs: alice↔bob 599 (594 by SQL over 45 days in conversation bursts, 16 edited, 24 replies; then 5
 sent for real, the last two from bob unread for alice), alice↔carol 30 (29 + 1; alice hasn't read them).
 
-**Daily Gaming** (owner alice, public, 298 members):
+**Daily Gaming** (owner alice, public, 298 members, 299 with perf5):
 - Categories / channels: *Information* (`welcome`, empty: the welcome banner; `announcements`, read-only
   for @everyone, Moderators may post, topic), *Text Channels* (`general`, `clips`, `off-topic` with a topic
   and a member overwrite giving dave Manage Messages, `slow-lane` with 30 s slowmode, `vault`
@@ -141,7 +152,7 @@ sent for real, the last two from bob unread for alice), alice↔carol 30 (29 + 1
   the picture cache. `#off-topic`: 300 more fixture-style messages.
 - Real uploads over the HTTPS API (init → PATCH → complete → thumbnails): a 3-image gallery, a phone
   screenshot, a PNG, a text file, a zip, a WAV in `#clips`; an image in `#general`.
-- Roles: Admin (bob), Moderator (carol + 3 placeholders), Member (dave, erin, perf1-4 + 198 placeholders).
+- Roles: Admin (bob), Moderator (carol + 3 placeholders), Member (dave, erin, perf1-4, perf5 + 198 placeholders).
 - Moderation done for real, so the audit log has it: griefer_9000 banned (reason given), drive_by_dan
   kicked, loud_larry timed out for a day, a moderator deleted a message, 5 nicknames (bob is "Bobby 🛠").
   Invites: an open one, a 5-use one, one expiring in a week.
