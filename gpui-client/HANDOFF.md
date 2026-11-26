@@ -98,7 +98,8 @@ screens in all seven themes beside Electron's.
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
-| Packaging, auto-update, crash reports | not started |
+| Desktop integration (`crates/decibell-platform`, GPUI patches `0015`–`0018`; branch `wip/platform`) | done on Linux (2026-11-26), every job of Electron's main process accounted for in §1b: one instance per profile (a second start hands its `decibell://` link or `--hotkey` over in ~20 ms and exits), links as the pending invite before sign-in, `--hotkey` from a second start, the taskbar flash on an incoming call (not under DND), launcher progress, the upload quit guard and paused downloads at quit, window state, sleep / lock → Away, Copy image on Wayland and X11 (patch `0015`), the keyring label `Decibell` (`0016`), development builds off the shipped profile. Self-tests `content-copy-image`, `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`, `keyring-label`, `window-state`, `profile-guard` (results: §4 "Desktop integration"). Windows: §5 "Windows batch". By hand: §6 |
+| Packaging, auto-update, crash reports | not started (the desktop entry for packaging: `assets/linux/decibell.desktop`) |
 
 ## 1a. Worktrees in use (check `git worktree list`; merge or remove each when its work reports)
 
@@ -122,6 +123,54 @@ linked (all git-excluded through `.git/info/exclude`).
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
 clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
 (a mixed reset: it never touches working files).
+
+## 1b. What Electron's main process did, and who has it here
+
+Every job of `electron-client/electron/main/*.ts` and the preload, with where this client has it (2026-11-26, the
+platform work; "this work" = `crates/decibell-platform`, the GPUI patches `0015`–`0018`, the hooks listed in
+CONVENTIONS "Platform").
+
+| Main process (file) | What it did | Here | State / owner |
+|---|---|---|---|
+| `index.ts` `requestSingleInstanceLock`, `second-instance` | one instance per user-data dir; a second start restores and focuses the window and forwards its link | `decibell_platform::instance` (lock per profile, Unix socket / loopback port + secret, a listener thread blocked in `accept`), `apply`: the window comes forward (Wayland: with the second start's `XDG_ACTIVATION_TOKEN`, patch `0018`) | this work |
+| `index.ts` + `hotkeys.ts` `parseHotkeyArg`, `injectHotkey("cli")` | `decibell --hotkey=<action>[:down/:up]` acts in the running instance without focusing it; with nothing running it exits | `launch::parse_hotkey`, `apply` → `actions::hotkeys::inject_cli`; boot exits 0 with a message when nothing runs | this work |
+| `index.ts` `setAsDefaultProtocolClient("decibell")` at every start | registers (and re-points) the URL handler | `assets/linux/decibell.desktop` (`MimeType=x-scheme-handler/decibell`), installed by packaging; the app never registers or re-points anything (Electron's re-pointing is a bug: §4) | packaging (later); Windows: the installer's `HKCU\Software\Classes\decibell` |
+| `index.ts` `isValidDeepLink`, `pendingDeepLinks`, `deep_link_received` | validated links buffered until the renderer listens; before sign-in kept as the pending invite | `launch::is_valid_deep_link`; `apply` → `actions::servers::open_invite_link` → `ServersStore::pending_invite` (kept until the main layout shows it) | this work; the join dialog: `decibell-servers` (its `join` overlay already reads `pending_invite`) |
+| `index.ts` `open-url` (macOS) | links on macOS | — | no macOS target |
+| `index.ts` `LIBVA_DRIVER_NAME` / `NVD_BACKEND` for NVIDIA | Chromium's VA-API on NVIDIA | the video crate probes its decoders itself | video (done) |
+| `index.ts` Chromium switches (HEVC, VA-API, Ozone, ANGLE, sandboxes, logging) | Chromium's configuration | — | no Chromium |
+| `index.ts` `loadSentryBootConfig`, `sentry.ts` | crash reports, install id | not built | crash-reporting task (later) |
+| `index.ts` `registerCustomSchemes`, `protocol.ts` | `decibell-attachment:` / `decibell-file:` for the renderer | — (the attachments crate fetches; files are read directly) | done |
+| `index.ts` `createWindow` | 1280 × 800, at least 800 × 600, frameless, dark background, icon, shown when ready | `decibell-app/src/window.rs` (size, minimum, our title bar, app id) + `window_state` (the last size, place where allowed, maximised) | done / this work; the X11 window icon (`_NET_WM_ICON`) is not set: KDE takes it from the desktop file once installed (packaging) |
+| `index.ts` `dumpGpuInfo` | GPU diagnostics in the log | the video crate's probe | video (done) |
+| `index.ts` `kickoffInitialCheck`, `update.ts`, `ipc.ts` update handlers, `openReleasePage` | auto-update | not built (Settings → About has the seam) | updater task (later) |
+| `index.ts` `stopOrphanedShare` | stop a native share a reloaded / crashed renderer left running | — (one process) | — |
+| `window.ts` `hardenNavigation` | no navigation, `window.open` → the browser (https only), no `<webview>`, back / forward swallowed | — (no web content); links open through `cx.open_url` (`decibell_unfurl::links::external_link_target`) | chat (done) |
+| `index.ts` `capture:listSources` / `setNextSource`, `setDisplayMediaRequestHandler` | the Windows source grid, the portal on Linux | the core's capture, Go Live | voice / core |
+| `index.ts` `setCertificateVerifyProc`, `certificate-error` | community certificate pins for attachment HTTPS | the attachments crate's pinned TLS | done |
+| `index.ts` `sweepStale` (5 min) | file-registry GC | — (no registry) | — |
+| `mediaServer.ts` | loopback HTTP for `<video>` / `<audio>` | — (the player reads directly) | player (another crate) |
+| `index.ts` `before-quit` | ask about uploads, pause downloads, stop the update check, shut the addon down (3 s), exit | `quit_guard` (asks, `on_app_quit` pauses downloads through `DownloadControl::pause_all_for_quit`), `boot.rs` (core shutdown, 3 s) | this work + done |
+| `index.ts` `window-all-closed`, `activate` (macOS) | quit with the last window | GPUI `QuitMode::Default` | done |
+| `window.ts` window controls (minimise, maximise, toggle, close, `isMaximized`, `setTitle`, `setFullscreen`), `attachWindowEvents` | the title bar's buttons and state | `decibell_ui::TitleBar`, `Root`, the voice view's fullscreen | done; the close button now goes through `decibell_ui::request_window_close` (the quit guard) |
+| `window.ts` `setTransferProgress` → `setProgressBar` | launcher / taskbar progress of the transfers | `progress` (Linux `com.canonical.Unity.LauncherEntry`, Windows `ITaskbarList3`) | this work |
+| `window.ts` `flash` → `flashFrame`, dock bounce | attention on an incoming call (not in DND) | `attention` + patch `0017` (Wayland) | this work |
+| `window.ts` `close` → `confirmLosingUploads` | closing with uploads in flight asks | `quit_guard` | this work |
+| `clipboard.ts` `copyAttachment`, `writeImage`, `writeText` | copy a picture (as PNG) / a link | `decibell-chat-content/src/actions.rs` + patch `0015` (Linux pictures) | this work (pictures); text: done |
+| `dialog.ts` open / save | file pickers (with filters; a save name made unique in Downloads) | `cx.prompt_for_paths` (composer), `cx.prompt_for_new_path` (downloads); GPUI's portal dialogs take no file-type filters | composer / chat-content |
+| `fs.ts`, `fileRegistry.ts`, `writeApproval.ts`, `noStore.ts` | the renderer's file access, sandboxed | — (native code reads and writes itself) | — |
+| `netFetch.ts`, `attachment*.ts`, `downloadPacer.ts`, `downloads.ts` | attachment fetch / crypto / downloads / caps | `decibell-attachments`, chat-content's Transfers | done |
+| `linkPreview.ts`, `publicNet.ts`, `gifs.ts` | link previews, GIF search | `decibell-unfurl`, composer | done |
+| `hotkeys.ts` macOS accelerators | press actions on macOS | — | no macOS target |
+| `hotkeys.ts` `desktop`, `openMouseSettings`, `launchCommand` | the Keybinds tab's desktop help | `decibell-settings` (keybinds tab) | done |
+| `idle.ts` `getSystemIdleState` | auto-away readings | the core's `system_idle` (Wayland, GNOME); X11 / Windows answer "unsupported" | model / core (X11 and Windows readings: open) |
+| `idle.ts` `lock-screen` / `unlock-screen` / `suspend` / `resume` | Away at once on lock / sleep | `session` (sleep / wake: GPUI's logind and `WM_POWERBROADCAST` hooks; lock: `ActiveChanged` of `org.freedesktop.ScreenSaver` / `org.gnome.ScreenSaver`) → `AutoAway::set_locked` | this work; Windows lock: the Windows batch |
+| `e2eeLocalKey.ts` `safeStorage` | the at-rest key in the OS keychain | `decibell_model::local_key::KeychainKey` (GPUI credentials) + patch `0016` (our label) | done + this work |
+| `addon.ts` | load / init / buses / shutdown of the addon | `decibell-model` | done |
+| preload `webUtils.getPathForFile` | dropped files' paths | GPUI's `ExternalPaths` | composer (done) |
+| Chromium's spellchecker (squiggles in the composer; the renderer has no suggestion menu) | spelling | **not built, not small**: a checker (Hunspell / Nuspell dictionaries per language, shipped or the system's: there is no OS spelling service on Linux), the editor's wavy underline per misspelt range, re-checked as typed off the UI thread; suggestions would need a context menu the renderer never had | listed |
+| Chromium's page zoom (the default menu's Ctrl + = / − / 0, if it reaches a frameless window: unverified) | zoom the whole UI | **not built, not small**: the theme already scales text and rows (`Theme::set_scale`, Settings → Appearance); a zoom would scale every token, icon, image box and the chat list's measured heights (`ChatStyle`), with the key bindings and a saved factor | listed |
+| tray, autostart, power-save blocker, notifications | — | — | Electron had none (`FEATURES.md` §10) |
 
 ## 2. Building and running
 
@@ -196,14 +245,18 @@ cargo build -p decibell-app             # debug: our crates unoptimised, depende
 **Run**
 
 ```sh
-target/release/decibell [--theme <id>] [--screen <name>] [--perf]
+target/release/decibell [--theme <id>] [--screen <name>] [--perf] [decibell://invite/<code>] [--hotkey=<action>]
 ```
 
 Without `--screen` / `--selftest` this is the app: the state model and the core start (profile:
-`$DECIBELL_USER_DATA_DIR`, else `~/.config/decibell`; the at-rest key in the keychain), the window shows the
-sign-in page or, with a saved sign-in, the main layout (`decibell-shell`). **A build without `dev-local`
-talks to the live central**: for the local test stack build `--features dev-local` (honours
-`DECIBELL_CENTRAL`, adds `--login`; never ship it) and use your own profile:
+`$DECIBELL_USER_DATA_DIR`, else `~/.config/decibell` in a shipped build and **`~/.cache/decibell-dev/gpui-default`
+in a development build** (`dev-local` or debug; `decibell_model::core::development_profile_dir`), which also refuses
+`~/.config/decibell` when `DECIBELL_USER_DATA_DIR` names it (exit 2); the at-rest key in the keychain, in a file of the
+profile for development builds), the window shows the sign-in page or, with a saved sign-in, the main layout
+(`decibell-shell`). One instance per profile: a second start hands its `decibell://` link or `--hotkey` to the running
+one and exits (`decibell-platform`; CONVENTIONS "Platform"). **A build without `dev-local` talks to the live
+central**: for the local test stack build `--features dev-local` (honours `DECIBELL_CENTRAL`, adds `--login`; never
+ship it) and use your own profile:
 
 ```sh
 cargo build --release -p decibell-app --features dev-local
@@ -273,6 +326,9 @@ or GL driver.
 **Measure** (`tools/perf/README.md`, Linux section)
 
 ```sh
+# Always a profile of its own: without one the app starts the core on the default profile (2026-11-26: a
+# measurement like this created ~/.config/decibell; development builds now default to ~/.cache/decibell-dev/).
+export DECIBELL_USER_DATA_DIR=$(mktemp -d)
 ../tools/perf/startup.sh --runs 5 --ready-marker 'first-frame .* monotonic_ns=(?P<ns>\d+)' -- \
     target/release/decibell --perf
 target/release/decibell & ../tools/perf/winctl.sh unfocus $!
@@ -451,6 +507,30 @@ with the client's own FFmpeg from `tools/vcpkg-overlay`). **Compiling is all tha
 video, hardware decode, Go Live's source list and the desktop services there are being written by `wip/windows`
 and `wip/platform` (owner decision 2026-11-26 in CLAUDE.md: real implementations, tested by the owner from
 `docs/windows-owner-checks.md`). Self-tests and unit tests run on Linux only until that work adds them to CI.
+
+### Desktop integration (`crates/decibell-platform`, 2026-11-26)
+
+Release build with `dev-local`, KDE Plasma 6.8 (KWin 6.8.3) Wayland and XWayland, load average 6–20 (other agents
+building). Every self-test runs the app as children with throwaway profiles on a private, empty session bus.
+
+| Self-test | What it showed |
+|---|---|
+| `single-instance` | the second start on a profile exits 0 after **20 ms** (it hands over in < 1 ms and never starts GPUI); the first, unfocused, is marked by KWin as demanding attention on Wayland (no activation token from a shell; a launcher's token would focus it: §6) and is activated on X11 (`_NET_ACTIVE_WINDOW`); a second profile's instance runs beside the first |
+| `deep-link-arg` | `decibell://invite/PLATFORMA1` on the first start is `ServersStore::pending_invite` before sign-in and still after it (as carol); a second start's link replaces it |
+| `hotkey-cli` | `--hotkey=toggle_mute` with nothing running exits 0 in 20 ms without opening anything; with an instance, four second starts (`toggle_mute` ×2, `push_to_talk:down` / `:up`) exit in 20 ms each and the instance's voice actions run (`Play(Mute)`, `Play(Unmute)`) without raising the window |
+| `attention` | erin (`decibell-headless`) calls dave (the app, unfocused): the window asks for attention and KWin reports `demandsAttention` within ~0.5 s (the KWin query's own time), on Wayland (patch `0017`) and XWayland (the urgency hint); under Do Not Disturb the call rings in and no request is made |
+| `taskbar-progress` | `dbus-monitor` on the private bus sees `Update("application://decibell.desktop", …)` with progress 0 → 0.25 → 0.5 → 0.5 (paused: the protocol has no paused state) → hidden, then 0.1 → hidden for an upload; closing with that upload in flight asks and keeps the window, and closes once nothing uploads |
+| `keyring-label` | a throwaway gnome-keyring on the private bus holds the at-rest key's item and a test item labelled `Decibell` (patch `0016`); read and delete find them |
+| `window-state` | Wayland: resized to 1020 × 720 → quit → reopened at 1020 × 720; maximised → reopened maximised → unmaximised to 1020 × 720. X11: the same with the visible size (1000 × 700; within the 20 px margin after a maximised start, §5), and a saved place at 100000,100000 reopens on a screen |
+| `profile-guard` | with `HOME` a temporary directory and no `DECIBELL_USER_DATA_DIR`, the app and `decibell-headless` use `~/.cache/decibell-dev/gpui-default`; pointed at `~/.config/decibell` both exit 2 and create nothing; the real `~/.config/decibell` never appears |
+| `content-copy-image` | Wayland and X11 each: three pictures copied with "Copy image" (a 1600 × 900 PNG, 313 KB; a GIF's first frame, 46 KB; 2.8 MB of noise) offered as `image/png` only (no text types), read back by another process (`wl-paste`; `tools/x11_clipboard.py`, INCR for the 2.8 MB) after the window lost the focus, pixels identical; on Wayland a `wl-paste --watch` reader (a clipboard manager's way) got each at once; the owner's clipboard read before and put back after (through Klipper), checked |
+
+**At rest** (the sign-in page, unfocused, 15 s settle + 40 s, `tools/perf/measure.sh`; the same commit before and after
+the platform work): threads **35 → 37** (`decibell-instance`, blocked in `accept`; one more `zbus::Connection`
+executor, the screen-lock watcher's, blocked on its socket), own wakeups **0 → 0 / s**, frames 0, CPU 0.005 % of a core
+both; anonymous memory 26.9 → 27.3 MB, private dirty 41.6 → 42.4 MB (private and PSS moved by tens of MB between
+runs of the same binary: the machine was swapping, 17.7 GB of swap in use). The launcher-progress connection exists
+only while a progress shows.
 
 ### Stream playback (`crates/decibell-video`, 2026-11-26)
 
@@ -800,10 +880,38 @@ and 941 → 873 µs; a message arriving 3.0 → 2.0 views and no time difference
   (conversation-integration run, load high, 53.7 pictures / s). The exit-time crash in NVIDIA's driver was fixed
   by `decibell_video::shutdown` in the quit hook (video / voice integration); check whether a failing self-test
   leaves by another path that skips it.
+- **Windows batch (desktop integration)**: written to compile, never run (`crates/decibell-platform`):
+  the single instance (an exclusive lock on `<profile>\instance.lock`; a loopback port and a 16-byte secret in
+  `<profile>\instance.port`; the second start calls `AllowSetForegroundWindow` on the first's pid), the flash
+  (`FlashWindowEx(FLASHW_TRAY | FLASHW_TIMERNOFG)`: until the window comes to the foreground, as Electron's
+  `flashFrame(true)`), the taskbar progress (`ITaskbarList3`: normal / paused / none, created on the UI thread), the
+  quit guard (`WM_CLOSE` through `on_window_should_close`, and the title bar), the window state (positions saved),
+  the Credential Manager target `Decibell:url=…` (patch `0016`). **Not built**: screen lock → Away
+  (`WTSRegisterSessionNotification`; sleep / wake works through GPUI's `WM_POWERBROADCAST`), the `decibell://`
+  registration (the installer's `HKCU\Software\Classes\decibell`), and pictures for bitmap-only programs: GPUI writes
+  the registered "PNG" (and "GIF" / "JFIF") formats but no `CF_DIB`, so Paint and older Office paste nothing (a
+  `gpui_windows` patch: add a `CF_DIBV5` beside the PNG).
+- **X11 (KWin) window geometry with client-side decorations is racy**: a window opened at a given size comes up with
+  its visible size equal to it or 20 px smaller (the margin), depending on whether KWin learns `_GTK_FRAME_EXTENTS`
+  before it maps the window (measured: 1300 → 1300, 1280 → 1260 on first starts; a restored size round-trips, and a
+  window opened maximised restores within 20 px). `window-state` passes with that tolerance for the maximised case.
+  The fix belongs in `gpui_linux` (set the extents before mapping); not done.
+- **The launcher progress is keyed to `decibell.desktop`**, the id of the window (`app_id`). On this machine that
+  desktop file is the installed Electron client's, so a development build's progress (any self-test child on the
+  session bus with a download running) would show on its taskbar entry; the platform's own tests use a private bus.
 
 ## 6. Needs owner
 
 Things only the owner can do; nothing here blocks the rest.
+
+- **The desktop integration by hand** (`decibell-platform`, Linux): (1) after packaging installs
+  `assets/linux/decibell.desktop`, click a `decibell://invite/…` link in a browser while Decibell runs: the window
+  comes to the front (the forwarded activation token, patch `0018`, is only exercised by a real launcher; without a
+  token KWin marks the window instead) and the join dialog shows; with Decibell closed it starts with the dialog after
+  sign-in. (2) Paste a copied picture into GIMP, LibreOffice, a browser and Discord, on Wayland and under XWayland,
+  and with Klipper's "Save images" on (it reads the picture at once). (3) Start a download and watch the task
+  manager's progress on Decibell's entry. (4) Quit with an upload running: the "A file is still uploading" question
+  (Enter keeps uploading). (5) Lock the screen: Away at once; unlock: back. (6) The Windows batch in §5.
 
 - **Watch a stream in the Electron client built from this branch before it merges to `main`.** The core's video
   receive path was reworked for this client (frames reach the napi sink directly from the receive thread, one

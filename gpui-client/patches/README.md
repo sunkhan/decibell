@@ -596,8 +596,13 @@ types and its own marker type whatever the item held and answered every request 
 **Why.** "Copy image" (owner request, 2026-11-26): `decibell-chat-content`'s `actions::copy_image` puts a PNG on the
 clipboard, as the Electron client's `clipboard.writeImage` does.
 
-**Evidence.** `decibell --selftest content-copy-image` (`crates/decibell-app/src/copy_image.rs`): see `HANDOFF.md`
-§1 (the platform row) for the run.
+**Evidence.** `decibell --selftest content-copy-image` (`crates/decibell-app/src/copy_image.rs`), on KDE Plasma 6.8:
+on Wayland and under XWayland, "Copy image" of a 1600 × 900 PNG (313 KB), a GIF's first frame (46 KB) and 2.8 MB of
+noise is offered as `image/png` alone and read back by another process (`wl-paste`; a python-xlib reader, `INCR` for
+the 2.8 MB) with identical pixels, after the window lost the focus; a `wl-paste --watch` reader (a clipboard manager)
+got each at once. Before the patch the same copy offered three text types and served the empty string. Not run here:
+the serial fallback's unit test (`gpui_linux` is not a member of the client's workspace and its own tests build in
+Zed's); the runtime path is the self-test's, which has no real input.
 
 **Windows and macOS** were not changed: Windows writes the picture under its registered format ("PNG", "GIF", "JFIF")
 plus a PNG and **no `CF_DIB`**, so programs that paste only bitmaps (Paint, older Office) get nothing (the Windows batch
@@ -612,8 +617,9 @@ question for upstream (their test pins the opposite).
 GPUI's credentials API writes, reads and deletes are labelled `Decibell` (was `zed-github-account`; reads and deletes
 match the label). Windows: the Credential Manager target is `Decibell:url=<url>` (was `zed:url=<url>`). The at-rest key
 (`decibell_model::local_key::KeychainKey`) is the only user; no client with the old names ever shipped, so nothing is
-migrated (development builds keep their key in a file: `FileKey`). Evidence: see `HANDOFF.md` §1 (a throwaway
-gnome-keyring on a private bus). Upstream: as an application-provided label (`set_app_identity`'s name) it could go.
+migrated (development builds keep their key in a file: `FileKey`). Evidence: `decibell --selftest keyring-label`: a
+throwaway gnome-keyring on a private session bus (never the desktop's keyring) holds the at-rest key's item and a test
+item labelled `Decibell`; read and delete find them (`secret-tool search` on that bus). Windows: compiled only. Upstream: as an application-provided label (`set_app_identity`'s name) it could go.
 
 ## 0017: attention on Wayland
 
@@ -621,8 +627,9 @@ gnome-keyring on a private bus). Upstream: as an application-provided label (`se
 active, it asks for an xdg-activation token carrying only the app id (no serial, no surface) and activates the window
 with it: a compositor never grants focus for such a token and marks the window as demanding attention instead (KWin's
 `XdgActivationV1Integration` refuses it and calls `demandAttention`; Mutter shows "… is ready"). KWin clears the state
-when the window is activated. X11 already set the urgency hint and Windows `FlashWindowEx`. Evidence: the `attention`
-self-test reads KWin's `demandsAttention` for the ringing window (`HANDOFF.md` §1). Upstream: yes.
+when the window is activated. X11 already set the urgency hint and Windows `FlashWindowEx`. Evidence: `decibell
+--selftest attention`: an incoming call to the unfocused app; KWin reports `demandsAttention` for it within ~0.5 s;
+under Do Not Disturb no request is made. Before the patch Wayland showed nothing. Upstream: yes.
 
 ## 0018: activating with a forwarded token
 

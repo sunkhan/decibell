@@ -208,13 +208,13 @@ Windows custom title bar: mark elements with `.window_control_area(WindowControl
   - X11: `_NET_ACTIVE_WINDOW` client message, source=application, `CurrentTime` (`crates/gpui_linux/src/linux/x11/window.rs:1561-1579`).
   - Windows: restores if iconic, `SetActiveWindow`/`SetFocus`, then **synthesizes an Alt press+release with `SendInput`** before `SetForegroundWindow` (`crates/gpui_windows/src/window.rs:815-867`). Our `GetAsyncKeyState`-polled hotkeys can observe that synthetic Alt.
   - `cx.activate(..)` (app-level) is log-only on Linux (`crates/gpui_linux/src/linux/platform.rs:758-760`) and a no-op on Windows (`crates/gpui_windows/src/platform.rs:708`).
-- Startup focus on Wayland: `XDG_ACTIVATION_TOKEN` is taken from the env at platform creation and consumed by the first toplevel (`crates/gpui_linux/src/linux/wayland/client.rs:202-210`, `:563-571`, `:1367-1369`). **No API accepts a token forwarded from a second process** to activate an existing window (searched `activation_token` in `crates/gpui/src`: only the `GraphicalEnvironment` field used when (re)connecting).
+- Startup focus on Wayland: `XDG_ACTIVATION_TOKEN` is taken from the env at platform creation and consumed by the first toplevel (`crates/gpui_linux/src/linux/wayland/client.rs:202-210`, `:563-571`, `:1367-1369`). **No API accepted a token forwarded from a second process** at the pin; patch `0018` adds `Window::activate_window_with_token` (the single instance uses it).
 
 ### 2.10 Attention / urgency (`window.request_attention()`, `window.rs:7280`)
 
 | Wayland | X11 | Windows |
 |---|---|---|
-| **no-op** (`crates/gpui_linux/src/linux/wayland/window.rs:1915`); xdg-activation is used only for `activate()`/open_uri. Workaround: `activate_window()` while unfocused → "demands attention" on KWin/Mutter (`:1902-1904`) | ICCCM `WM_HINTS` urgency if not active (`crates/gpui_linux/src/linux/x11/window.rs:410-441`, `:1581-1587`); cleared on focus gain (`:1154-1158`) | `FlashWindowEx(FLASHW_ALL, uCount=1)` if not active (`crates/gpui_windows/src/window.rs:869-888`) |
+| **no-op at the pin** (`crates/gpui_linux/src/linux/wayland/window.rs:1915`); **patched (`0017`)**: an xdg-activation token without a serial, used at once → the compositor marks the window as demanding attention | ICCCM `WM_HINTS` urgency if not active (`crates/gpui_linux/src/linux/x11/window.rs:410-441`, `:1581-1587`); cleared on focus gain (`:1154-1158`) | `FlashWindowEx(FLASHW_ALL, uCount=1)` if not active (`crates/gpui_windows/src/window.rs:869-888`) |
 
 ### 2.11 Close interception
 
@@ -240,7 +240,7 @@ Types: `ClipboardItem{entries: Vec<ClipboardEntry>}` (`platform.rs:3201-3204`), 
 | | Wayland | X11 | Windows |
 |---|---|---|---|
 | Write text | yes; needs a focused window and a recent key/pointer press serial or it is skipped (`crates/gpui_linux/src/linux/wayland/client.rs:1482-1506`) | yes (`crates/gpui_linux/src/linux/x11/client.rs:1845-1857`) | `CF_UNICODETEXT` (CRLF) + GPUI metadata (`crates/gpui_windows/src/clipboard.rs:180-199`) |
-| Write image | **no**: only text MIME types are offered and only `text()` is sent (`crates/gpui_linux/src/linux/wayland/clipboard.rs:17-19`, `:177-191`) | **no**: writes `item.text()` only; `set_image` exists but is unused (`crates/gpui_linux/src/linux/x11/client.rs:1849-1853`, `crates/gpui_linux/src/linux/x11/clipboard.rs:1012`) | yes: native PNG/GIF/JFIF/SVG + an extra PNG; **no `CF_DIB`** (`clipboard.rs:201-221`) |
+| Write image | **no at the pin**: only text MIME types are offered and only `text()` is sent (`crates/gpui_linux/src/linux/wayland/clipboard.rs:17-19`, `:177-191`); **patched (`0015`)**: each picture under its type, non-blocking writes | **no at the pin**: writes `item.text()` only; `set_image` unused (`crates/gpui_linux/src/linux/x11/client.rs:1849-1853`, `crates/gpui_linux/src/linux/x11/clipboard.rs:1012`); **patched (`0015`)**: every entry, `INCR` above 1 MiB | yes: native PNG/GIF/JFIF/SVG + an extra PNG; **no `CF_DIB`** (`clipboard.rs:201-221`) |
 | Read text / image | text (utf-8) first, then first matching image MIME (`crates/gpui_linux/src/linux/wayland/clipboard.rs:98-135`, `:193-209`) | images first, then text (`crates/gpui_linux/src/linux/x11/clipboard.rs:1026-1060`) | text, image (incl. `CF_DIB`→BMP), files (`CF_HDROP`) (`clipboard.rs:92-128`, `:253-280`) |
 | Read blocks UI thread | yes, pipe read up to 4 s (`crates/gpui_linux/src/linux/platform.rs:1333-1370`) | yes, up to 4 s (`crates/gpui_linux/src/linux/x11/clipboard.rs:102-105`) | — |
 | Primary selection | text write; text/image read (`crates/gpui_linux/src/linux/wayland/client.rs:1457-1480`) | text write (`crates/gpui_linux/src/linux/x11/client.rs:1832-1843`) | n/a |
@@ -267,7 +267,7 @@ X11 clipboard (adapted from arboard, `crates/gpui_linux/src/linux/x11/clipboard.
 ### 2.18 Credentials / keyring
 
 `cx.write_credentials(url, username, &[u8])`, `read_credentials(url) -> Option<(String, Vec<u8>)>`, `delete_credentials(url)`, all `Task<Result<..>>` on the background executor (`crates/gpui/src/app.rs:2061-2096`).
-- Linux: `oo7::Keyring` (Secret Service over D-Bus, `native_crypto`; `crates/gpui_linux/Cargo.toml:76-81`); items keyed by attributes `url`+`username` with a **hard-coded label `"zed-github-account"`**, and reads/deletes match only that label (`crates/gpui_linux/src/linux/platform.rs:57`, `:1086-1150`). Works for us, but our items will show under that label in Seahorse/KWallet.
+- Linux: `oo7::Keyring` (Secret Service over D-Bus, `native_crypto`; `crates/gpui_linux/Cargo.toml:76-81`); items keyed by attributes `url`+`username` with a **hard-coded label `"zed-github-account"`** at the pin, and reads/deletes match only that label (`crates/gpui_linux/src/linux/platform.rs:57`, `:1086-1150`). **Patched (`0016`)**: the label is `Decibell` (Windows target `Decibell:url=…`).
 - Windows: Credential Manager `CRED_TYPE_GENERIC`, target **`"zed:url=<url>"`**, `CRED_PERSIST_LOCAL_MACHINE`; secrets above `CRED_MAX_CREDENTIAL_BLOB_SIZE` are rejected up front (`crates/gpui_windows/src/platform.rs:1053-1144`, `crates/gpui_windows/src/util.rs:85-87`).
 - Fine for one small secret per URL (saved password / resume token); E2EE key material larger than the Windows blob limit needs another store.
 
@@ -316,14 +316,14 @@ Decibell's native `system_idle.rs` (ext-idle-notify) and lock detection must sta
 ### Gaps
 
 - **System tray: none** on any platform. Build it ourselves (StatusNotifierItem/`ksni`-style on Linux, `Shell_NotifyIconW` on Windows), plus taskbar badges (none either).
-- **Single instance + `decibell://` deep links: none.** `on_open_urls`/`on_reopen` never fire on Linux/Windows and `register_url_scheme` errors. We need the scheme registration, argv parsing, IPC to the first instance, and an activation path. On Wayland we cannot hand a forwarded `XDG_ACTIVATION_TOKEN` to an existing window.
-- **Attention on Wayland: `request_attention` is a no-op**; the only lever is `activate_window()` (with `app_id` set).
+- **Single instance + `decibell://` deep links: none.** `on_open_urls`/`on_reopen` never fire on Linux/Windows and `register_url_scheme` errors. Built in `crates/decibell-platform` (lock, IPC, argv, activation with a forwarded token through patch `0018`); the scheme is the desktop file's (packaging).
+- **Attention on Wayland: `request_attention` was a no-op**; patched (`0017`).
 - **No hide/unhide-window API**; `show:false` and `focus:false` are honoured only on Windows. Tray-style "hide" = close + reopen with `QuitMode::Explicit`.
 - **CSD on Wayland is our job:** with no xdg-decoration (e.g. GNOME), GPUI silently switches to Client and draws nothing; we must draw the title bar, buttons (honour `button_layout`), shadows/insets and resize edges (`window_shadow` example is the Apache reference). X11 CSD needs a compositor. Windows custom title bar works through `WindowControlArea` (snap layouts included).
-- Clipboard **image writes are text-only on Wayland and X11**, and reads block the UI thread up to 4 s. Windows writes no `CF_DIB`.
+- Clipboard **image writes were text-only on Wayland and X11** (patched: `0015`), and reads block the UI thread up to 4 s. Windows writes no `CF_DIB`.
 - Drag-out: Wayland only. Drop-in: file paths only.
 - Notifications: no dismiss, no sound, a thread per toast on Linux; toasts are silent and in-process on Windows.
-- Keyring labels/targets are hard-coded to Zed's (`"zed-github-account"`, `"zed:url="`), and Windows caps blob size.
+- Keyring labels/targets were hard-coded to Zed's (`"zed-github-account"`, `"zed:url="`; patched: `0016`), and Windows caps blob size.
 - No idle-time, lock/unlock, screensaver or display-required inhibition; thermal always Nominal.
 - Native popups (`AnchoredPopup`) only on Wayland; `LayerShell` needs wlr-layer-shell; `PopUp` isn't always-on-top on Wayland; `Floating` is plain on Windows.
 - Default inactive / low-power 30 fps caps throttle video in unfocused windows unless overridden.

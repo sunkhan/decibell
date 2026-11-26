@@ -13,6 +13,7 @@ small binary. Measure what you add (`HANDOFF.md` §2, `tools/perf/`).
 | `decibell-ui` | The design system on GPUI: `Theme`, fonts, `Label`, `Icon`, window frame, title bar, shared components. No feature logic, no stores. | theme, harness |
 | service crates (`decibell-attachments`, `decibell-unfurl`, …) | What Electron's main process did. No GPUI. | — |
 | feature crates (one per area) | Views and their state. | ui, harness, theme, the services they use |
+| `decibell-platform` | The desktop around the window (what Electron's main process did that needs the OS): one instance per profile, `decibell://` links and `--hotkey`, attention, taskbar progress, the quit guard, window state, sleep / lock. | gpui, model, ui, harness |
 | `decibell-app` | The binaries. Boot, the main window, the root view, the registry of screens and self-tests. | everything |
 
 - GPUI comes only through the workspace: `gpui.workspace = true` (and `gpui_platform.workspace = true` in the
@@ -633,6 +634,46 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
   with a throwaway profile on a private empty session bus (a throwaway profile otherwise leaves an at-rest key item
   in the desktop's keyring); nothing they post stays (the GIF is deleted, link and invite messages are routed into
   the client only, nothing is joined).
+
+## Platform (`decibell-platform`)
+
+The desktop integration: what Electron's main process did for the window and the OS (the services table in
+`HANDOFF.md` lists every one of main's jobs and who has it). `decibell-app`'s boot calls
+`decibell_platform::instance::start(profile, &launch)` **before GPUI starts** (a second start hands over and exits
+without opening anything), then `decibell_platform::install(window, launch, instance, profile, cx)` once the main
+window is open, and draws the view it returns (the quit question) over the window's content.
+
+- **One instance per profile directory**: an exclusive lock on `<profile>/instance.lock`, then a Unix socket
+  (`<profile>/instance.sock`, or `$XDG_RUNTIME_DIR/decibell-<hash>.sock` when the path is too long; only the user's own
+  connections are accepted) or, on Windows, a loopback port and a secret in `<profile>/instance.port`. The listener is a
+  thread blocked in `accept`. Tests and development profiles run side by side with each other and with a shipped
+  instance; a self-test that starts two children on one profile gets one instance.
+- **What a start asks for** is a `Launch` (`launch.rs`: the `decibell://` arguments as `isValidDeepLink` accepts them,
+  `--hotkey` as `parseHotkeyArg` does, the desktop's `XDG_ACTIVATION_TOKEN`). The first start applies its own, later
+  ones arrive through the instance: links become `ServersStore::pending_invite` (`actions::servers::open_invite_link`;
+  it waits there until the join dialog, decibell-servers, shows it after sign-in), hotkeys go to
+  `actions::hotkeys::inject_cli` without raising the window, anything else raises it (with the token when there is one).
+- **Attention** answers the model's `Cue::Flash` (the model decides: an incoming call, not under Do Not Disturb) only
+  while the window is not active; the desktop ends it on activation. **Taskbar progress** observes
+  `model.live.transfers`' `progress()` and sends only changes (≤ 4 / s while moving, at once when it appears, pauses or
+  clears). **The quit guard** answers the title bar's close (`decibell_ui::CloseHandler`) and the desktop's
+  (`on_window_should_close`) while uploads are in flight, and pauses downloads in `on_app_quit`. **Window state** is
+  `window-state.json` in the profile, written on a maximise change, on losing the focus, on close and at quit (no
+  timer).
+- **No polling, nothing at rest**: a service that isn't in use costs nothing (the D-Bus connection for the launcher
+  progress exists from a progress to its clear). Every thread is named (`decibell-instance`).
+- **Markers**: development builds print `decibell: platform <event>` lines (`instance listening`, `instance forwarded …`,
+  `deep-link pending`, `hotkey <action> injected`, `attention requested`, `progress <‰> [paused]`, `window-state saved …`,
+  `quit-guard asks …`); the self-tests' parents read them.
+- **Self-tests** (`profile-guard`, `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`,
+  `window-state`; `content-copy-image` lives in `decibell-app`) run the app as children with throwaway profiles on a
+  private, empty session bus, and ask KWin (through `tools/perf/linux/kwin.py`) what it shows. The owner's clipboard is
+  saved and put back by `content-copy-image`; nothing writes to the session keyring, the URL handlers or autostart.
+- **Development builds never touch the shipped profile** (`decibell_model::core::DEVELOPMENT_BUILD`: `local-central`
+  or a debug build): the default profile is `~/.cache/decibell-dev/gpui-default` (`development_profile_dir`), and
+  `check_profile` refuses `~/.config/decibell` even when `DECIBELL_USER_DATA_DIR` names it (the app exits 2, the core
+  refuses to start, `decibell-headless` refuses in any build). Self-tests still give every child its own temporary
+  profile.
 
 ## GPUI gotchas met so far
 
