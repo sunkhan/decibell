@@ -105,6 +105,7 @@ pub struct SettingsWindow {
     title: SharedString,
     context: Option<SharedString>,
     on_close: Option<CloseHandler>,
+    pane: Option<AnyElement>,
     children: Vec<AnyElement>,
 }
 
@@ -120,8 +121,18 @@ impl SettingsWindow {
             title: SharedString::default(),
             context: None,
             on_close: None,
+            pane: None,
             children: Vec::new(),
         }
+    }
+
+    /// A pane the caller draws instead of the built-in one (whose title, context, scroll handle
+    /// and children are then unused): a tab drawn as its own cached view, which renders a
+    /// [`SettingsPane`] at the size it is given. Lay the element out to fill the space beside the
+    /// sidebar (`flex_1`, `min_w_0`, `h_full`: a cached view's style).
+    pub fn pane(mut self, pane: impl IntoElement) -> Self {
+        self.pane = Some(pane.into_any_element());
+        self
     }
 
     /// The small uppercase label over the tabs (hidden on the rail).
@@ -219,6 +230,116 @@ impl RenderOnce for SettingsWindow {
 
         let theme = cx.theme();
         let on_close = self.on_close.clone();
+        let pane = match self.pane {
+            Some(pane) => pane,
+            None => {
+                let mut pane = SettingsPane::new((id.clone(), "pane"), &self.scroll).title(self.title);
+                if let Some(context) = self.context {
+                    pane = pane.context(context);
+                }
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(pane.close_handler(on_close.clone()).children(self.children))
+                    .into_any_element()
+            }
+        };
+
+        let frame = div()
+            .id((id.clone(), "frame"))
+            .occlude()
+            .flex()
+            .size_full()
+            .max_h(px(1120.))
+            .max_w(px(1600.))
+            .overflow_hidden()
+            .rounded(theme.radius_xl)
+            .border_1()
+            .border_color(theme.color_border)
+            .bg(theme.color_bg_dark)
+            .shadow(theme.shadow_modal.clone())
+            .child(nav)
+            .child(pane);
+
+        Modal::new(id, self.open)
+            .padding(pad_x, pad_y)
+            .on_close(move |request, window, cx| {
+                if let Some(handler) = &on_close {
+                    handler(*request, window, cx);
+                }
+            })
+            .child(frame)
+    }
+}
+
+/// The scrolling pane beside the settings sidebar (`SETTINGS_PANE`, `SettingsPaneHeader`,
+/// `SETTINGS_BODY`): the title row (title, `context` beside it on the rail, ✕) scrolling with the
+/// body (`flex-1 px-8 pb-7`, `max-lg:px-6`), the bar's gutter held. [`SettingsWindow`] draws one
+/// with its own children; a tab drawn as its own cached view renders one itself and is passed to
+/// [`SettingsWindow::pane`]. Fills what it is given (`size_full`).
+///
+/// ```ignore
+/// SettingsPane::new("audio-pane", &self.scroll).title("Audio")
+///     .on_close(move |_, window, cx| close(window, cx)).child(body)
+/// ```
+#[derive(IntoElement)]
+pub struct SettingsPane {
+    id: ElementId,
+    scroll: ScrollHandle,
+    title: SharedString,
+    context: Option<SharedString>,
+    on_close: Option<CloseHandler>,
+    children: Vec<AnyElement>,
+}
+
+impl SettingsPane {
+    pub fn new(id: impl Into<ElementId>, scroll: &ScrollHandle) -> Self {
+        Self {
+            id: id.into(),
+            scroll: scroll.clone(),
+            title: SharedString::default(),
+            context: None,
+            on_close: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    /// Shown beside the title on the rail, where the sidebar's heading is hidden.
+    pub fn context(mut self, context: impl Into<SharedString>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    /// ✕ (as `CloseRequest::Escape`).
+    pub fn on_close(mut self, handler: impl Fn(&CloseRequest, &mut Window, &mut App) + 'static) -> Self {
+        self.on_close = Some(Rc::new(move |request, window, cx| handler(&request, window, cx)));
+        self
+    }
+
+    fn close_handler(mut self, handler: Option<CloseHandler>) -> Self {
+        self.on_close = handler;
+        self
+    }
+}
+
+impl ParentElement for SettingsPane {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements)
+    }
+}
+
+impl RenderOnce for SettingsPane {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let rail = f32::from(visible_window_bounds(window, cx).size.width) < RAIL_BREAKPOINT;
+        let theme = cx.theme();
+        let id = self.id;
+        let on_close = self.on_close;
         let header = div()
             .flex()
             .items_center()
@@ -254,23 +375,16 @@ impl RenderOnce for SettingsWindow {
                         })
                     }),
             )
-            .child(
-                IconButton::new((id.clone(), "close"), IconName::Close).on_click({
-                    let on_close = on_close.clone();
-                    move |_, window, cx| {
-                        if let Some(handler) = &on_close {
-                            handler(CloseRequest::Escape, window, cx);
-                        }
-                    }
-                }),
-            );
+            .child(IconButton::new((id.clone(), "close"), IconName::Close).on_click(move |_, window, cx| {
+                if let Some(handler) = &on_close {
+                    handler(CloseRequest::Escape, window, cx);
+                }
+            }));
 
-        let pane = ScrollArea::new((id.clone(), "pane"))
+        ScrollArea::new(id)
             .track_scroll(&self.scroll)
             .gutter_stable()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+            .size_full()
             .child(header)
             .child(
                 div()
@@ -280,32 +394,7 @@ impl RenderOnce for SettingsWindow {
                     .pb_7()
                     .map(|this| if rail { this.px_6() } else { this.px_8() })
                     .children(self.children),
-            );
-
-        let frame = div()
-            .id((id.clone(), "frame"))
-            .occlude()
-            .flex()
-            .size_full()
-            .max_h(px(1120.))
-            .max_w(px(1600.))
-            .overflow_hidden()
-            .rounded(theme.radius_xl)
-            .border_1()
-            .border_color(theme.color_border)
-            .bg(theme.color_bg_dark)
-            .shadow(theme.shadow_modal.clone())
-            .child(nav)
-            .child(pane);
-
-        Modal::new(id, self.open)
-            .padding(pad_x, pad_y)
-            .on_close(move |request, window, cx| {
-                if let Some(handler) = &on_close {
-                    handler(*request, window, cx);
-                }
-            })
-            .child(frame)
+            )
     }
 }
 

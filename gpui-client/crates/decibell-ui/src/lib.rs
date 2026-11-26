@@ -49,7 +49,7 @@ pub use field::{Field, TextField};
 pub use identity::{Avatar, BellMark, LetterAvatar, Presence, StatusDot, StatusPill};
 pub use menu::{ContextMenu, MenuEntry, MenuItem};
 pub use modal::{CloseRequest, ConfirmModal, ConfirmTone, Modal, dialog_card};
-pub use settings::{NavItem, SaveBar, SettingsWindow};
+pub use settings::{NavItem, SaveBar, SettingsPane, SettingsWindow};
 pub use structure::{
     Badge, BadgeTone, Banner, EmptyState, ErrorCard, Heading, Notice, SectionLabel, divider,
     vertical_divider,
