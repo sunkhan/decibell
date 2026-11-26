@@ -179,6 +179,13 @@ impl JoinOverlay {
     }
 }
 
+impl JoinOverlay {
+    /// For the self-tests: joining, and the error the dialog would show.
+    pub fn error_for_tests(&self) -> (bool, Option<SharedString>) {
+        (self.joining, self.local_error.clone())
+    }
+}
+
 impl Render for JoinOverlay {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.pending.is_some();

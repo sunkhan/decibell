@@ -43,7 +43,7 @@ use crate::reorder;
 
 const MARK: &str = "SERVERS-MARK";
 const DESIGN_LAB: &str = "Design Lab";
-const CHILD_LIMIT: Duration = Duration::from_secs(240);
+const CHILD_LIMIT: Duration = Duration::from_secs(600);
 
 // ── The parents ──────────────────────────────────────────────────────────────────────────────
 
@@ -336,7 +336,15 @@ async fn throwaway(cx: TestCx, check: &'static str) -> Result<()> {
     let env = throwaway_env("");
     cx.log(format_args!("throwaway account {}", env[0].1));
     let profile = Profile::new(check)?;
-    spawn(check, None, &stack, &profile.0, &env)?.finish(&cx, CHILD_LIMIT).await
+    let result = spawn(check, None, &stack, &profile.0, &env)?.finish(&cx, CHILD_LIMIT).await;
+    sweep(&cx, &stack).await?;
+    result
+}
+
+/// As Design Lab's owner, remove the throwaway accounts a test left a member.
+async fn sweep(cx: &TestCx, stack: &Stack) -> Result<()> {
+    let profile = Profile::new("servers-sweep")?;
+    spawn("servers-sweep", Some("carol"), stack, &profile.0, &[])?.finish(cx, Duration::from_secs(120)).await
 }
 
 /// A child signed in as carol; skipped when the binary has no `--login`.
@@ -435,8 +443,9 @@ async fn friends(cx: TestCx) -> Result<()> {
         &profiles.2.0,
         &with(&c, &[inviter.clone(), ("DECIBELL_TEST_ROLE", "member".into()), ("DECIBELL_TEST_GO", done.display().to_string())]),
     )?;
-    friend_b.wait_mark(&cx, "ready", Duration::from_secs(90)).await?;
-    friend_c.wait_mark(&cx, "ready", Duration::from_secs(90)).await?;
+    // A sign-up can wait for central's per-address limit (minutes).
+    friend_b.wait_mark(&cx, "ready", Duration::from_secs(400)).await?;
+    friend_c.wait_mark(&cx, "ready", Duration::from_secs(400)).await?;
     cx.log("both friends registered (and C joined Design Lab): the inviter starts");
     let main = spawn(
         "invite-friends-live",
@@ -452,7 +461,8 @@ async fn friends(cx: TestCx) -> Result<()> {
     dm?;
     cx.log(format_args!("the friend received: {}", friend_b.mark_value("dm").unwrap_or_default()));
     friend_b.finish(&cx, Duration::from_secs(60)).await?;
-    friend_c.finish(&cx, Duration::from_secs(90)).await
+    friend_c.finish(&cx, Duration::from_secs(90)).await?;
+    sweep(&cx, &stack).await
 }
 
 // ── Inside the app ───────────────────────────────────────────────────────────────────────────
@@ -470,6 +480,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "category-sync-drop", about: "(in the app) the sync prompt", run: |cx| Box::pin(check_sync_drop(cx)) },
         SelfTest { name: "welcome-banner", about: "(in the app) the banner", run: |cx| Box::pin(check_welcome(cx)) },
         SelfTest { name: "servers-idle", about: "(in the app) at rest and dragging", run: |cx| Box::pin(check_idle(cx)) },
+        SelfTest { name: "servers-sweep", about: "(in the app) remove throwaway members", run: |cx| Box::pin(check_sweep(cx)) },
     ]
 }
 
@@ -524,11 +535,23 @@ async fn throwaway_sign_in(cx: &TestCx) -> Result<String> {
     let name = env("DECIBELL_TEST_ACCOUNT")?;
     let password = env("DECIBELL_TEST_PASSWORD")?;
     wait_for(cx, Duration::from_secs(20), "the core to boot", |cx| model(cx).auth.read(cx).booted).await?;
-    let (n, e, p) = (name.clone(), env("DECIBELL_TEST_EMAIL")?, password.clone());
-    cx.update(move |_, cx| actions::auth::register(n, e, p, cx))?;
-    wait_for(cx, Duration::from_secs(20), "the registration's answer", |cx| model(cx).auth.read(cx).register_result.is_some()).await?;
-    let result = cx.update(|_, cx| model(cx).auth.read(cx).register_result.clone())?.context("no answer")?;
-    ensure!(result.success, "registering {name} was refused: {}", result.message);
+    // Central allows 10 sign-ups per address, then one per 2 minutes, and other tests on this
+    // machine sign up from the same loopback address: wait for the bucket rather than fail.
+    let started = Instant::now();
+    loop {
+        cx.update(|_, cx| model(cx).auth.update(cx, |a, cx| a.set_register_result(None, cx)))?;
+        let (n, e, p) = (name.clone(), env("DECIBELL_TEST_EMAIL")?, password.clone());
+        cx.update(move |_, cx| actions::auth::register(n, e, p, cx))?;
+        wait_for(cx, Duration::from_secs(20), "the registration's answer", |cx| model(cx).auth.read(cx).register_result.is_some()).await?;
+        let result = cx.update(|_, cx| model(cx).auth.read(cx).register_result.clone())?.context("no answer")?;
+        if result.success {
+            break;
+        }
+        let limited = result.message.contains("Too many sign-ups");
+        ensure!(limited && started.elapsed() < Duration::from_secs(300), "registering {name} was refused: {}", result.message);
+        cx.log("central's sign-up limit for this address (shared with other tests): waiting 30 s");
+        cx.sleep(Duration::from_secs(30)).await;
+    }
     let n = name.clone();
     cx.update(move |_, cx| actions::auth::sign_in(n, password, cx))?;
     signed_in(cx).await?;
@@ -667,6 +690,31 @@ async fn clean_up(cx: &TestCx, server: ServerId) -> Result<()> {
     for c in mine.iter().filter(|c| c.kind != ChannelKind::Category).chain(mine.iter().filter(|c| c.kind == ChannelKind::Category)) {
         api_delete(cx, server, &c.id).await?;
     }
+    sweep_members(cx, server).await
+}
+
+/// These tests' throwaway accounts that stayed members (the core's reconnect race above, or a
+/// run that failed before it left): `sv<8 hex>[abc]`, and `t<9 hex>[abc]` from before they were
+/// named so. Kicked (as the owner).
+async fn sweep_members(cx: &TestCx, server: ServerId) -> Result<()> {
+    let ours = |name: &str| {
+        let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+        let tagged = |rest: &str, n: usize| (rest.len() == n && hex(rest)) || (rest.len() == n + 1 && hex(&rest[..n]) && matches!(rest.as_bytes()[n], b'a' | b'b' | b'c'));
+        name.strip_prefix("sv").is_some_and(|r| tagged(r, 8)) || name.strip_prefix('t').is_some_and(|r| tagged(r, 9) && r.len() == 10)
+    };
+    wait_for(cx, Duration::from_secs(10), "the roster", move |cx| model(cx).community(server, cx).is_some_and(|c| c.roster.read(cx).meta().is_some())).await?;
+    let stale: Vec<(i64, String)> = cx.update(move |_, cx| {
+        model(cx)
+            .community(server, cx)
+            .map(|c| c.roster.read(cx).members().values().filter(|m| m.uid > 0 && ours(&m.username)).map(|m| (m.uid, m.username.to_string())).collect())
+            .unwrap_or_default()
+    })?;
+    for (uid, name) in stale {
+        api::community::kick_member(api::community::KickMemberArgs { server_id: server.wire(), username: Some(name.clone()), uid, reason: None })
+            .await
+            .map_err(|e| anyhow::anyhow!("kick_member: {e}"))?;
+        cx.log(format_args!("removed {name}, a throwaway account an earlier run left a member"));
+    }
     Ok(())
 }
 
@@ -770,6 +818,8 @@ async fn check_browse_join(cx: TestCx) -> Result<()> {
 }
 
 async fn leave_by_menu(cx: &TestCx, server: ServerId) -> Result<()> {
+    // A dialog that just closed covers the window while it fades out.
+    settle_drawn(cx).await?;
     click_probe(cx, "server-menu-button").await?;
     wait_for(cx, Duration::from_secs(5), "the server menu", |_| probes::flag_set("server-menu-open")).await?;
     click_probe(cx, "server-menu-leave").await?;
@@ -785,33 +835,60 @@ async fn leave_by_menu(cx: &TestCx, server: ServerId) -> Result<()> {
     })
     .await?;
     wait_for(cx, Duration::from_secs(10), "the leave's answer (Browse)", |cx| model(cx).nav.read(cx).active_view == ActiveView::Browse).await?;
-    let still = probes::bounds(&format!("server-tile:{}", server.get()));
-    cx.sleep(Duration::from_millis(300)).await;
-    let _ = still;
     cx.log("left: the tile is gone and Browse shows");
+    ensure_out(cx, server).await
+}
+
+/// After a leave the core may be back in: the community closes the connection right after its
+/// answer, and the core reconnects — and, Design Lab being public, joins again — before it acts
+/// on the answer (`decibell-core`'s `net/community.rs`; the Electron client shares it). Not this
+/// crate's to fix: said in the log; the parent's sweep (`servers-sweep`, as the owner) removes the
+/// throwaway account from the community afterwards.
+async fn ensure_out(cx: &TestCx, server: ServerId) -> Result<()> {
+    cx.sleep(Duration::from_millis(2500)).await;
+    let back = cx.update(move |_, cx| {
+        let m = model(cx);
+        let c = m.connections.read(cx);
+        c.is_connected(server) || c.is_pending(server)
+    })?;
+    if back {
+        cx.log("NOTE: after the leave the core reconnected and joined again (decibell-core's reconnect race; swept after the test)");
+    }
     Ok(())
 }
 
 // ── servers-join-link ───────────────────────────────────────────────────────────────────────
 
 async fn check_join_link(cx: TestCx) -> Result<()> {
-    throwaway_sign_in(&cx).await?;
+    local_only()?;
     let design = community(DESIGN_LAB)?;
     let server = design.id;
-    // 1. The deep link: the join dialog resolves the code, Accept joins.
+    // 1. A deep link that arrives before the sign-in (the link started the app): the join dialog
+    // shows once signed in, resolves the code, Accept joins.
     let link = format!("decibell://invite/{}", design.invite);
+    wait_for(&cx, Duration::from_secs(20), "the core to boot", |cx| model(cx).auth.read(cx).booted).await?;
     ensure!(cx.update(|_, cx| crate::open_invite_link(&link, cx))?, "the link didn't parse");
+    throwaway_sign_in(&cx).await?;
     wait_for(&cx, Duration::from_secs(15), "the dialog to resolve the code", |cx| {
         crate::current::<crate::join::JoinOverlay>(cx).is_some_and(|j| j.read(cx).state(cx).name.as_deref() == Some(DESIGN_LAB))
     })
     .await?;
+    settle_drawn(&cx).await?;
     click_probe(&cx, "join-accept").await?;
-    wait_for(&cx, Duration::from_secs(30), "the join (dialog)", move |cx| {
+    let joined = wait_for(&cx, Duration::from_secs(30), "the join (dialog)", move |cx| {
         let m = model(cx);
         m.connections.read(cx).is_connected(server) && m.nav.read(cx).active_server == Some(server) && m.servers.read(cx).pending_invite.is_none()
     })
-    .await?;
-    cx.log("joined through the deep-link dialog");
+    .await;
+    if let Err(e) = joined {
+        let (pending, connected, active, error) = cx.update(move |_, cx| {
+            let m = model(cx);
+            let error = crate::current::<crate::join::JoinOverlay>(cx).map(|j| j.read(cx).error_for_tests());
+            (m.servers.read(cx).pending_invite.is_some(), m.connections.read(cx).is_connected(server), m.nav.read(cx).active_server, error)
+        })?;
+        bail!("{e} (pending {pending}, connected {connected}, active {active:?}, dialog {error:?}, accept at {:?})", probes::bounds("join-accept"));
+    }
+    cx.log("a link from before the sign-in: the dialog showed after it, resolved the code and joined");
     leave_by_menu(&cx, server).await?;
 
     // 2. A pasted code-only link, then 3. the old host:port form, on Browse.
@@ -837,10 +914,20 @@ async fn check_join_link(cx: TestCx) -> Result<()> {
     let error = browse_error(&cx, "an unknown code").await?;
     ensure!(error.ends_with(". Enter the server's host and port below."), "unknown code: {error}");
     cx.log(format_args!("an unknown code: {error}"));
+    // Still out of Design Lab (no rejoin behind our back).
+    cx.sleep(Duration::from_secs(3)).await;
+    let (connected, member) = cx.update(move |_, cx| {
+        let m = model(cx);
+        let c = m.connections.read(cx);
+        (c.is_connected(server) || c.is_pending(server), m.servers.read(cx).get(server).is_some())
+    })?;
+    cx.log(format_args!("after the last leave: connected {connected}, tile entry {member}"));
+    ensure!(!connected, "Design Lab is connected again after the last leave");
     log_out(&cx).await
 }
 
 async fn paste_and_join(cx: &TestCx, text: &str) -> Result<()> {
+    settle_drawn(cx).await?;
     cx.update(|_, cx| model(cx).nav.update(cx, |n, cx| n.set_active_view(ActiveView::Browse, cx)))?;
     wait_for(cx, Duration::from_secs(5), "Browse", |cx| crate::current::<BrowseView>(cx).is_some()).await?;
     let text = text.to_string();
@@ -977,7 +1064,7 @@ async fn join_by_code(cx: &TestCx, design: &Community) -> Result<()> {
 async fn leave_quietly(cx: &TestCx, server: ServerId) -> Result<()> {
     cx.update(move |_, cx| actions::servers::leave(server, cx))?;
     wait_for(cx, Duration::from_secs(15), "the leave", move |cx| !model(cx).connections.read(cx).is_connected(server)).await?;
-    Ok(())
+    ensure_out(cx, server).await
 }
 
 fn friend_status(name: &str, cx: &App) -> Option<(i64, FriendStatus)> {
@@ -1396,6 +1483,16 @@ async fn check_welcome(cx: TestCx) -> Result<()> {
     .await;
     api_delete(&cx, server, &id).await?;
     result?;
+    log_out(&cx).await
+}
+
+async fn check_sweep(cx: TestCx) -> Result<()> {
+    signed_in(&cx).await?;
+    let server = community(DESIGN_LAB)?.id;
+    wait_for(&cx, Duration::from_secs(30), "Design Lab", move |cx| model(cx).connections.read(cx).is_connected(server)).await?;
+    // Let a rejoin that is under way land first.
+    cx.sleep(Duration::from_secs(2)).await;
+    sweep_members(&cx, server).await?;
     log_out(&cx).await
 }
 
