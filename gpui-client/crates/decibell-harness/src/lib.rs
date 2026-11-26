@@ -9,6 +9,8 @@
 //!   (off unless `DECIBELL_TEST_PROBES=1`).
 //! - [`focus`]: whether the window counts as focused, and the self-tests' hold of it.
 //!
+//! - [`test_audio`]: a null sink and its monitor, so a self-test about sound makes none.
+//!
 //! A crate exposes `pub fn screens() -> Vec<Screen>` and `pub fn selftests() -> Vec<SelfTest>`;
 //! `decibell-app`'s `registry` module lists the crates. No linker tricks: a screen or test that
 //! isn't listed there doesn't exist. How to add one: `gpui-client/CONVENTIONS.md`.
@@ -18,6 +20,7 @@ pub mod perf;
 pub mod probes;
 mod screens;
 mod selftest;
+pub mod test_audio;
 
 pub use screens::Screen;
 pub use selftest::{Frames, SelfTest, TestCx, run_selftests};

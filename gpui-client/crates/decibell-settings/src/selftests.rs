@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use decibell_harness::{Frames, SelfTest, TestCx};
+use decibell_harness::{Frames, SelfTest, TestCx, test_audio};
 use decibell_model::live::e2ee::E2eeStatus;
 use decibell_model::live::hotkeys::InputMode;
 use decibell_model::stores::overlays::modal;
@@ -81,7 +81,7 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         SelfTest {
             name: "settings-audio-meter",
-            about: "device lists load; the meter holds the input-level reporting only while shown; the input mode outlives a restart",
+            about: "device lists load and follow a device appearing / going (no poll); the meter holds the input-level reporting only while shown; on a null sink: the mic test meters a cue and the looping ring and rests at -96, no thread stays; the input mode outlives a restart",
             run: |cx| Box::pin(perf1(cx, "settings-audio-meter", Phases::Restart)),
         },
         SelfTest {
@@ -281,6 +281,9 @@ impl Drop for Running {
     }
 }
 
+/// The sink a check may play on (`decibell-app/src/audio.rs`): set only by the test that made one.
+const CUE_SINK_ENV: &str = "DECIBELL_CUE_SINK";
+
 const CHILD_LIMIT: Duration = Duration::from_secs(180);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -306,14 +309,40 @@ macro_rules! skip_without_stack {
 async fn perf1(cx: TestCx, check: &'static str, phases: Phases) -> Result<()> {
     let stack = skip_without_stack!(cx);
     let profile = Profile::new(check)?;
-    let first = spawn(check, Some("perf1"), &stack, &profile.0, &[("DECIBELL_CHECK_PHASE", "1".into())], &[])?;
+    // The sound part plays on a null sink and meters its monitor, never the desktop's devices.
+    // This process owns the sink and unloads it after the child has gone (declared before the
+    // child: dropped after it), so no stream of the child can be moved to the real output.
+    let mut env = vec![("DECIBELL_CHECK_PHASE", "1".to_string())];
+    let sink = if check == "settings-audio-meter" {
+        match test_audio::NullSink::load("") {
+            Ok(sink) => {
+                cx.log(format_args!("null sink {} (module {}) for the sound part", sink.name(), sink.module()));
+                env.push((CUE_SINK_ENV, sink.name().to_string()));
+                Some(sink)
+            }
+            Err(e) => {
+                cx.log(format_args!("no null sink ({e:#}): the sound part is skipped"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Only the sink made here is ever named to the child.
+    let stale: &[&str] = if sink.is_some() { &[] } else { &[CUE_SINK_ENV] };
+    let env: Vec<(&str, String)> = env;
+    let first = spawn(check, Some("perf1"), &stack, &profile.0, &env, stale)?;
     let first = wait_end_or_skip(&cx, first).await?;
+    if let Some(sink) = sink {
+        sink.unload()?;
+        cx.log("null sink unloaded; the default devices are as they were");
+    }
     if !first {
         return Ok(());
     }
     if phases == Phases::Restart {
         cx.log("restarting on the same profile (the saved sign-in signs in)");
-        let second = spawn(check, None, &stack, &profile.0, &[("DECIBELL_CHECK_PHASE", "2".into())], &[])?;
+        let second = spawn(check, None, &stack, &profile.0, &[("DECIBELL_CHECK_PHASE", "2".into())], &[CUE_SINK_ENV])?;
         second.finish(&cx, CHILD_LIMIT).await?;
     }
     Ok(())
@@ -957,11 +986,221 @@ async fn check_audio(cx: TestCx) -> Result<()> {
     wait_for(&cx, Duration::from_secs(2), "another tab to let go of it", move |cx| meters(cx) == 0).await?;
     open_on(&cx, TabId::Audio).await?;
     wait_for(&cx, Duration::from_secs(2), "the Audio tab again", move |cx| meters(cx) == 1).await?;
+    audio_devices_follow(&cx).await?;
+    audio_sound(&cx).await?;
     cx.keystroke("escape")?;
     wait_for(&cx, Duration::from_secs(2), "closing to let go of it (after the fade-out)", move |cx| meters(cx) == 0).await?;
     cx.log("the meter is held exactly while the threshold bar shows");
+    wait_for(&cx, Duration::from_secs(2), "the closed window to stop watching the devices", |cx| {
+        model(cx).live.voice.devices.read(cx).watchers() == 0
+    })
+    .await?;
+    wait_gone(&cx, "decibell-audio-devices", Duration::from_secs(2)).await?;
+    for thread in ["decibell-cue", "decibell-mic-test"] {
+        ensure!(!test_audio::has_thread(thread), "a {thread} thread is alive with Settings closed");
+    }
+    cx.log("Settings closed: nothing watches the devices, no audio thread of ours exists");
     cx.update(|_, cx| actions::hotkeys::set_input_mode(true, Some(250), cx))?;
     cx.sleep(Duration::from_millis(600)).await;
+    Ok(())
+}
+
+fn audio_tab(cx: &TestCx) -> Result<gpui::Entity<crate::tabs::audio::AudioTab>> {
+    cx.update(|_, cx| {
+        let settings = crate::handles::settings(cx).context("Settings is not open")?;
+        match settings.read(cx).view() {
+            Some(TabView::Audio(tab)) => Ok(tab.clone()),
+            _ => bail!("Settings → Audio is not the open tab"),
+        }
+    })?
+}
+
+/// Wait until no thread named `name` exists.
+async fn wait_gone(cx: &TestCx, name: &'static str, limit: Duration) -> Result<Duration> {
+    wait_for(cx, limit, &format!("the {name} thread to end"), move |_| !test_audio::has_thread(name)).await
+}
+
+/// With the Audio tab open the device lists follow the devices: a sink that appears is listed
+/// within a second and one that goes is gone, from the core's notifications (the tab's watch),
+/// never a poll.
+async fn audio_devices_follow(cx: &TestCx) -> Result<()> {
+    let listed = |cx: &App, name: &str| model(cx).live.voice.devices.read(cx).outputs.iter().any(|d| d.name.as_ref() == name);
+    ensure!(cx.update(|_, cx| model(cx).live.voice.devices.read(cx).watchers())? == 1, "the Audio tab doesn't watch the device lists");
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    wait_for(cx, Duration::from_secs(3), "the core's device listener", |_| test_audio::has_thread("decibell-audio-devices")).await?;
+    let extra = match test_audio::NullSink::load("-plug") {
+        Ok(extra) => extra,
+        Err(e) => {
+            cx.log(format_args!("no null sink ({e:#}): device changes not checked"));
+            return Ok(());
+        }
+    };
+    let name = extra.name().to_string();
+    let appeared = {
+        let name = name.clone();
+        wait_for(cx, Duration::from_secs(3), "the new sink in the output list", move |cx| listed(cx, &name)).await?
+    };
+    ensure!(appeared < Duration::from_millis(1500), "the new sink took {} ms to be listed", appeared.as_millis());
+    extra.unload()?;
+    let went = {
+        let name = name.clone();
+        wait_for(cx, Duration::from_secs(3), "the removed sink to leave the output list", move |cx| !listed(cx, &name)).await?
+    };
+    ensure!(went < Duration::from_millis(1500), "the removed sink took {} ms to go", went.as_millis());
+    cx.log(format_args!(
+        "a sink appearing was listed after {} ms, gone {} ms after it was removed (the 400 ms debounce included)",
+        appeared.as_millis(),
+        went.as_millis()
+    ));
+    Ok(())
+}
+
+/// The interface sounds and the microphone test through the core, on the null sink the parent
+/// made (`DECIBELL_CUE_SINK`) and its monitor: nothing reaches the desktop's devices.
+async fn audio_sound(cx: &TestCx) -> Result<()> {
+    use decibell_core::api::audio;
+    use decibell_model::live::Sound;
+    let Ok(sink) = std::env::var(CUE_SINK_ENV) else {
+        cx.log("no test sink: the sound part is skipped");
+        return Ok(());
+    };
+    let monitor = format!("{sink}.monitor");
+    let tab = audio_tab(cx)?;
+    let level = {
+        let tab = tab.clone();
+        move |cx: &App| tab.read(cx).level()
+    };
+    let on_sink = |what: &str| -> Result<test_audio::Streams> {
+        test_audio::ensure_only_on(&sink).with_context(|| format!("while {what}"))
+    };
+    ensure!(
+        cx.update(|_, cx| model(cx).live.voice.devices.read(cx).outputs.iter().any(|d| d.name.as_ref() == sink))?,
+        "the test sink {sink} is not in the output list"
+    );
+    // A voice session and the sounds in it play on the saved output device: the sink, before
+    // anything sounds. The app's player hands the core nothing otherwise.
+    {
+        let (sink, monitor) = (sink.clone(), monitor.clone());
+        cx.update(move |_, cx| {
+            actions::voice::set_output_device(Some(sink), cx);
+            actions::voice::set_input_device(Some(monitor), cx);
+        })?;
+    }
+    // Where a sound really goes, shown with silence first: the core's stream for sounds opens
+    // on the sink it is given.
+    audio::play_sound(&audio::Sound::from_pcm(vec![0; 9600], 48_000), Some(&sink));
+    wait_for(cx, Duration::from_secs(3), "the core's stream for sounds", |_| test_audio::has_thread("decibell-cue")).await?;
+    let started = Instant::now();
+    loop {
+        let streams = on_sink("playing silence")?;
+        if !streams.sinks.is_empty() {
+            break;
+        }
+        if !test_audio::has_thread("decibell-cue") || started.elapsed() > Duration::from_secs(2) {
+            bail!("the stream for sounds was never seen on the sound server");
+        }
+        cx.sleep(Duration::from_millis(20)).await;
+    }
+    let closed = wait_gone(cx, "decibell-cue", Duration::from_secs(3)).await?;
+    cx.log(format_args!("silence played on {sink} only; its stream and thread were gone {} ms later", closed.as_millis()));
+
+    // "Test mic": the core's test on the sink's monitor, through the user's processing.
+    cx.update(|_, cx| tab.update(cx, |tab, cx| tab.toggle_test(cx)))?;
+    ensure!(cx.update(|_, cx| tab.read(cx).test_running())?, "the mic test didn't start (see the log)");
+    ensure!(audio::mic_test_running(), "the core runs no mic test");
+    let started = Instant::now();
+    loop {
+        let streams = on_sink("the mic test opens its device")?;
+        if !streams.sources.is_empty() {
+            break;
+        }
+        ensure!(started.elapsed() < Duration::from_secs(3), "the mic test's capture stream was never seen on the sound server");
+        cx.sleep(Duration::from_millis(20)).await;
+    }
+    ensure!(test_audio::has_thread("decibell-mic-test"), "no decibell-mic-test thread while the test runs");
+    cx.sleep(Duration::from_millis(600)).await;
+    let rest = cx.update(|_, cx| level(cx))?;
+    ensure!(rest == -96., "the meter reads {rest} dB on a silent input");
+
+    // A sound, as the model asks for one: the app's player → the core → the sink → the meter.
+    cx.update(|_, cx| model(cx).live.cues.update(cx, |c, cx| c.play(Sound::UserJoin, cx)))?;
+    let mut peak = -96f32;
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(1500) {
+        peak = peak.max(cx.update(|_, cx| level(cx))?);
+        cx.sleep(Duration::from_millis(20)).await;
+    }
+    on_sink("a sound plays")?;
+    ensure!(peak > -60., "the meter never rose above -60 dB while user_join played (peak {peak:.1})");
+    let t = {
+        let level = level.clone();
+        wait_for(cx, Duration::from_secs(4), "the meter to rest after the sound", move |cx| level(cx) == -96.).await?
+    };
+    cx.log(format_args!("user_join on the sink: the meter peaked at {peak:.1} dB and rested at -96 dB {} ms later", t.as_millis()));
+
+    // The ring loops (0.8 s of tone in each 2 s) until it is stopped.
+    cx.update(|_, cx| model(cx).live.cues.update(cx, |c, cx| c.start_ring(cx)))?;
+    // A burst: the tone after at least 0.7 s without it (the tone itself dips once).
+    let (mut bursts, mut first, mut last, mut heard_at) = (0u32, None, None, None::<Instant>);
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(6600) {
+        if cx.update(|_, cx| level(cx))? > -45. {
+            if heard_at.is_none_or(|at| at.elapsed() > Duration::from_millis(700)) {
+                bursts += 1;
+                first.get_or_insert(started.elapsed());
+                last = Some(started.elapsed());
+            }
+            heard_at = Some(Instant::now());
+        }
+        cx.sleep(Duration::from_millis(20)).await;
+    }
+    on_sink("the ring plays")?;
+    let span = last.unwrap_or_default().saturating_sub(first.unwrap_or_default());
+    ensure!(bursts >= 3, "the ring was heard {bursts} time(s) in 6.6 s: it doesn't loop");
+    let period = span.as_secs_f64() / f64::from(bursts - 1);
+    ensure!((1.8..2.2).contains(&period), "the ring repeats every {period:.2} s, not every 2 s");
+    cx.update(|_, cx| model(cx).live.cues.update(cx, |c, cx| c.stop_ring(cx)))?;
+    {
+        let level = level.clone();
+        wait_for(cx, Duration::from_secs(3), "the meter to rest after the ring stopped", move |cx| level(cx) == -96.).await?;
+    }
+    let mut after = -96f32;
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(2500) {
+        after = after.max(cx.update(|_, cx| level(cx))?);
+        cx.sleep(Duration::from_millis(50)).await;
+    }
+    ensure!(after == -96., "the ring was heard again after it was stopped ({after:.1} dB)");
+    cx.log(format_args!("the ring looped {bursts} times in 6.6 s (every {period:.2} s) and stopped"));
+
+    // A processing switch flipped under a running test: the test starts over with it.
+    let aec = cx.update(|_, cx| model(cx).settings.read(cx).get().aec_enabled)?;
+    cx.update(move |_, cx| actions::voice::set_aec_enabled(!aec, cx))?;
+    cx.sleep(Duration::from_millis(300)).await;
+    ensure!(cx.update(|_, cx| tab.read(cx).test_running())? && audio::mic_test_running(), "the test didn't survive a processing switch");
+    on_sink("the test restarted")?;
+    cx.update(move |_, cx| actions::voice::set_aec_enabled(aec, cx))?;
+    cx.sleep(Duration::from_millis(300)).await;
+
+    // "Stop test": the device closes and the thread goes; the sounds' stream closed by itself.
+    cx.update(|_, cx| tab.update(cx, |tab, cx| tab.toggle_test(cx)))?;
+    ensure!(!audio::mic_test_running(), "the core still runs the mic test after Stop");
+    let mic = wait_gone(cx, "decibell-mic-test", Duration::from_secs(2)).await?;
+    let cue = wait_gone(cx, "decibell-cue", Duration::from_secs(3)).await?;
+    let left = test_audio::streams_of(std::process::id())?;
+    ensure!(left.sinks.is_empty() && left.sources.is_empty(), "streams left open: {left:?}");
+    cx.log(format_args!(
+        "test stopped: the mic test's thread gone after {} ms, the sounds' after {} ms, no stream left",
+        mic.as_millis(),
+        cue.as_millis()
+    ));
+    // The profile is used again (the restart): back to the defaults before the sink goes.
+    cx.update(|_, cx| {
+        actions::voice::set_output_device(None, cx);
+        actions::voice::set_input_device(None, cx);
+    })?;
     Ok(())
 }
 
