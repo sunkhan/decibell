@@ -17,6 +17,15 @@
 #                    Windows' occlusion tracking does to a covered window (the Windows baseline's "another window
 #                    focused" run had the client covered). On Linux a covered window keeps drawing.
 #     scroll         #general scrolled into history at constant speed from requestAnimationFrame, window on top
+#     watch-1        in Daily Gaming / Lounge watching one live stream large (streambot.sh: a .dbv recording streamed
+#                    by a headless perf4 through the whole path: relay, receive, FEC, MLS, decode, present), desktop
+#                    focused, client visible; the client's own presented / received counts recorded with the samples
+#     watch-2        the same with two streams watched (two streamer accounts with E2EE keys: --streamers)
+#                    (watch-*: not part of `all`; the client needs the hooks client_voice_join / client_watch)
+#   --dbv FILE[,FILE]    the recordings for watch-* (default gpui-client/vendor/streams/1080p60_h264.dbv; watch-2:
+#                        1440p120_h264.dbv twice)
+#   --streamers a[,b]    the stack accounts streaming them (default perf4[,<none>]: a user streams one stream)
+#   --voice-channel NAME (default Lounge)
 #   --quick              validation lengths: settle 15 s, 30 samples, 2 startup runs (+1 discarded), 1 scroll run;
 #                        results get a -quick suffix and the table goes to results/<client>-baseline-quick.md
 #   --settle S --duration S --interval S --startup-runs N --scroll-runs N --scroll-seconds S --scroll-speed PX
@@ -40,6 +49,7 @@ shift 2
 
 quick=0 settle="" duration="" interval=1 srun="" scroll_runs="" scroll_secs=6 scroll_speed=1000
 server="Daily Gaming" channel="general"
+dbv="" streamers="perf4" voice_channel="Lounge"
 while (($#)); do
   case "$1" in
     --quick) quick=1; shift ;;
@@ -52,6 +62,9 @@ while (($#)); do
     --scroll-speed) scroll_speed="$2"; shift 2 ;;
     --server) server="$2"; shift 2 ;;
     --channel) channel="$2"; shift 2 ;;
+    --dbv) dbv="$2"; shift 2 ;;
+    --streamers) streamers="$2"; shift 2 ;;
+    --voice-channel) voice_channel="$2"; shift 2 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -202,6 +215,74 @@ sc_scroll() {
   finish "$d"; DIRS+=("$d")
 }
 
+# watch-1 / watch-2: live streams from streambot.sh, watched through the whole path.
+sc_watch() {
+  local name="$1" count="$2" d pid
+  has client_voice_join && has client_watch || die "clients/$client.sh has no voice hooks (client_voice_join, client_watch)"
+  d="$(newdir "$name")"; begin "$d" "$name"
+  local streams="$PERF/../../gpui-client/vendor/streams" files=()
+  if [[ -n "$dbv" ]]; then IFS=, read -r -a files <<<"$dbv"; fi
+  if ((${#files[@]} == 0)); then
+    if ((count == 1)); then files=("$streams/1080p60_h264.dbv"); else files=("$streams/1440p120_h264.dbv" "$streams/1440p120_h264.dbv"); fi
+  fi
+  ((${#files[@]} == count)) || die "$name needs $count .dbv files (--dbv)"
+  local accts=(); IFS=, read -r -a accts <<<"$streamers"
+  ((${#accts[@]} >= count)) || die "$name needs $count streamer accounts with E2EE keys (--streamers a,b): the stack has perf3 and perf4, and perf3 is the watching client"
+  if has client_voice_profile; then client_voice_profile; fi
+  client_preflight
+  say "$name: streambot: ${files[*]##*/} as ${accts[*]:0:$count}"
+  "$PERF/streambot.sh" start --community "$server" --channel "$voice_channel" --accounts "$(IFS=,; echo "${accts[*]:0:$count}")" \
+    "${files[@]}" 2>>"$d/hooks.log" || die "streambot did not start (see $d/hooks.log)"
+  pid="$(client_launch 2>>"$d/hooks.log")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || { "$PERF/streambot.sh" stop; die "client_launch gave no pid ($pid)"; }
+  client_ready >>"$d/hooks.log" 2>&1
+  client_voice_join "$server" "$voice_channel" >"$d/goto.json" 2>>"$d/hooks.log"
+  local uids=() a
+  for a in "${accts[@]:0:$count}"; do
+    uids+=("$(python3 -I -c 'import json,sys; print(next(x["uid"] for x in json.load(open(sys.argv[1]))["accounts"] if x["name"]==sys.argv[2]))' \
+      "${DECIBELL_DEV_DIR:-$HOME/.cache/decibell-dev}/run/accounts.json" "$a")")
+  done
+  client_watch "${uids[0]}" >>"$d/goto.json" 2>>"$d/hooks.log"
+  local u; for u in "${uids[@]:1}"; do client_watch_too "$u" >>"$d/goto.json" 2>>"$d/hooks.log"; done
+  "${UTIL[@]}" place --pid "$pid" >"$d/place.json"
+  sleep 6   # the first keyframe (the streamer answers the request with its next keyframe)
+  "$PERF/winctl.sh" unfocus "$pid" >>"$d/hooks.log" 2>&1
+  local focus="desktop focused (winctl unfocus), client visible, ${count} stream(s) watched"
+  if has client_facts; then client_facts "$pid" >"$d/client-facts.json" 2>>"$d/hooks.log" || true; fi
+  if has client_check; then client_check >>"$d/hooks.log" 2>&1; fi
+  local margs=()
+  if has client_measure_args; then mapfile -d '' margs < <(client_measure_args); fi
+  say "$name: pid $pid; settle ${settle} s, then ${duration} samples at ${interval} s ($focus)"
+  ( sleep "$settle"; for u in "${uids[@]}"; do has client_video_stats && client_video_stats "$u" >>"$d/video-stats-start.jsonl" 2>/dev/null; done ) &
+  local stats_pid=$!
+  "$PERF/measure.sh" --pid "$pid" "${margs[@]}" --settle "$settle" --duration "$duration" --interval "$interval" \
+    --gpu pmon --focus-log --include-compositor --label "$client $name" --out "$d" --quiet 2>&1 | tail -40 >"$d/measure.txt"
+  wait "$stats_pid" 2>/dev/null || true
+  for u in "${uids[@]}"; do has client_video_stats && client_video_stats "$u" >>"$d/video-stats-end.jsonl" 2>/dev/null || true; done
+  [[ -f "$d/summary.json" ]] || { cat "$d/measure.txt" >&2; client_stop; "$PERF/streambot.sh" stop; die "measure.sh wrote no summary"; }
+  if [[ -s "$d/video-stats-start.jsonl" && -s "$d/video-stats-end.jsonl" ]]; then
+    python3 -I - "$d" "$duration" <<'PY' >&2
+import json, sys
+d, dur = sys.argv[1], float(sys.argv[2])
+a = [json.loads(l) for l in open(d + "/video-stats-start.jsonl")]
+b = [json.loads(l) for l in open(d + "/video-stats-end.jsonl")]
+rows = []
+for s, e in zip(a, b):
+    secs = (e["monotonicMs"] - s["monotonicMs"]) / 1000 or dur
+    rows.append({k: round((e[k] - s[k]) / secs, 2) for k in ("received", "decoded", "presented", "replaced")} |
+                {"dropped": e["dropped"] - s["dropped"], "codec": e["codec"], "path": e["path"], "size": f'{e["width"]}x{e["height"]}', "seconds": secs})
+json.dump(rows, open(d + "/video-rates.json", "w"), indent=2)
+for r in rows: print("[scenarios] video:", json.dumps(r))
+PY
+  fi
+  client_stop >>"$d/hooks.log" 2>&1
+  "$PERF/streambot.sh" stop 2>>"$d/hooks.log"
+  meta "$d" --set "focus_mode=$focus" --json-file "placement=$d/place.json" \
+    --json-file "client_facts=$d/client-facts.json" --set "settle_s=$settle" --set "duration_s=$duration" \
+    --set "dbv=${files[*]}"
+  finish "$d"; DIRS+=("$d")
+}
+
 table() {
   local out="$RESULTS/$client-baseline$suffix.md"
   local args=("$client" --out "$out")
@@ -229,6 +310,8 @@ case "$what" in
   startup) sc_startup; table ;;
   idle-home|idle-channel|idle-channel-hidden) sc_idle "$what"; table ;;
   scroll) sc_scroll; table ;;
+  watch-1) sc_watch watch-1 1; table ;;
+  watch-2) sc_watch watch-2 2; table ;;
   table)
     for s in install-size startup idle-home idle-channel idle-channel-hidden scroll; do
       n="$(newest "$s")"; [[ -n "$n" ]] && DIRS+=("$n")
@@ -236,5 +319,5 @@ case "$what" in
     ((${#DIRS[@]})) || die "no results for $client$suffix"
     table
     ;;
-  *) die "unknown scenario $what (install-size startup idle-home idle-channel idle-channel-hidden scroll all table)" ;;
+  *) die "unknown scenario $what (install-size startup idle-home idle-channel idle-channel-hidden scroll watch-1 watch-2 all table)" ;;
 esac

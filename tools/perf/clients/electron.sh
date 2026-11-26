@@ -127,3 +127,22 @@ client_facts() {
   python3 -B "$PERF/linux/scenario_util.py" display-server --pid "$1" \
     --desktop-file /usr/share/applications/decibell.desktop
 }
+
+# ---- voice (the watch-1 / watch-2 scenarios): NOT IMPLEMENTED YET -----------------------------------------------------
+# scenarios.sh's watch scenarios call these optional hooks (clients/gpui.sh has them); without them they refuse to run.
+# What the Electron side needs, precisely:
+#   client_voice_profile   MLS voice needs an account with E2EE keys: perf3 (passphrase decibell-m3-test-passphrase).
+#                          electron-local.sh keeps ONE isolated profile ($DECIBELL_DEV_DIR/electron-profile, perf1):
+#                          it needs a profile option (e.g. EL_PROFILE_NAME=electron-profile-voice → its own user-data
+#                          and config.json) and `electron-local.sh signin --user perf3` into it once. Never the real
+#                          profile. perf3 can't be in voice from both clients at once (one uid, one voice session):
+#                          measure the two clients one after the other against the same streambot streams.
+#   client_voice_join S C  over CDP (electron-cdp.mjs): if the E2EE prompt is up (PassphraseModal), type the passphrase
+#                          into its input and press its submit button (or open it from Settings → Privacy); then set
+#                          mute + deafen BEFORE joining (`invoke("set_voice_mute", {muted:true})`,
+#                          `invoke("set_voice_deafen", {deafened:true})` through window.decibell.invoke) and click the
+#                          voice channel's row in the channel list (the row whose text is C under the server S).
+#   client_watch UID       click the stream tile (role=button, aria-label "<name>'s screen") or call the renderer's
+#                          streamActions.focusStream through a window hook if one is exposed; watch_stream_too likewise.
+#   client_video_stats UID the player's counters: useStreamStatsStore.getState().statsByUser[UID] (the renderer only
+#                          publishes rates every 500 ms, not cumulative counts: record inputFps / fps / dropped).

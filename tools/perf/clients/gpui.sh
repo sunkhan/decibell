@@ -135,3 +135,37 @@ client_install_paths() { printf 'gpui release (dev-local, stripped)\t%s\n' "$GPU
 client_scroll() { echo '{"error":"the chat pane is not built yet in the GPUI client"}'; return 1; }
 
 client_facts() { python3 -B "$PERF/linux/scenario_util.py" display-server --pid "$1"; }
+
+# ---- voice (the watch scenarios) ------------------------------------------------------------------------------------
+# MLS voice needs E2EE keys: the watch scenarios run as perf3 (keys on the stack, passphrase below) in a profile of
+# their own, so perf1's profile (the idle rows) is untouched. The streams come from tools/perf/streambot.sh.
+
+GPUI_VOICE_PASSPHRASE="${GPUI_VOICE_PASSPHRASE:-decibell-m3-test-passphrase}"
+
+# Switch the hooks to the voice account and profile (called by scenarios.sh before client_preflight).
+client_voice_profile() {
+  GPUI_ACCOUNT=perf3
+  GPUI_PROFILE="$GPUI_DEV_DIR/gpui-profile-voice"
+  GPUI_STATE="$GPUI_DEV_DIR/gpui-run-voice"
+}
+
+# Unlock the E2EE keys and join a voice channel (muted and deafened first: nothing captured or played).
+client_voice_join() {
+  _gpui_control "unlock $GPUI_VOICE_PASSPHRASE" || return 1
+  sleep 2
+  _gpui_control "voice $1	$2" || return 1
+  sleep 3
+  printf '{"voice":{"server":"%s","channel":"%s"}}\n' "$1" "$2"
+}
+
+# Watch a stream large (focus): the first stream; `client_watch_too` adds one to the grid.
+client_watch() { _gpui_control "watch $1" && printf '{"watch":%s}\n' "$1"; }
+client_watch_too() { client_watch "$@"; }
+
+# The hub's counters of a watched stream (one JSON line).
+client_video_stats() {
+  _gpui_control "video-stats $1" >/dev/null || return 1
+  grep "^decibell: video-stats $1 " "$GPUI_STATE/app.log" | tail -1 | cut -d' ' -f4-
+}
+
+client_leave_voice() { _gpui_control leave; }

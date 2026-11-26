@@ -352,6 +352,36 @@ feature (`npx napi build --platform --release --features stream-dump --js index.
 stream's rate, keyframes, bitrate and arrival spacing. No barcode in a real stream, so framecount reads nothing
 there: compare resources and the apps' own counters.
 
+## Live streams on the local stack (`streambot.sh`)
+
+`streambot.sh` puts real screen streams on the local test stack without capture or an encoder, so any client watches
+**the same live streams through the whole path** (community relay → the client's core: receive, FEC, MLS decrypt →
+its decoder → its screen): the GPUI client and the Electron client measured the same way.
+
+```sh
+tools/perf/streambot.sh start gpui-client/vendor/streams/1080p60_h264.dbv            # perf4 streams into Daily Gaming / Lounge
+tools/perf/streambot.sh start --accounts perf4,<keyed account> a.dbv b.dbv           # two streams: two accounts
+tools/perf/streambot.sh status
+tools/perf/streambot.sh stop                                                          # announced as ended, no process left
+```
+
+Each streamer is `decibell-headless` (`cargo build --release -p decibell-model --features local-central --bin
+decibell-headless` in `gpui-client/`): it signs in as a stack account **with E2EE keys** (MLS voice needs them; the
+stack's perf3 and perf4 have them, passphrase `decibell-m3-test-passphrase`), joins the channel muted and deafened, waits
+for MLS, then runs the headless `stream-file` step: `start_screen_share` with `native_encode: false` (the renderer's
+WebCodecs path: the core announces the stream and makes its sender, MLS-sealed like any stream) and the recording's
+frames through `api::streaming::send_video_frame` at its timing (DBV1 at its fps, DBV2 on its arrival times), looped. A
+watcher's keyframe request (the core's `keyframe_requested`) makes it jump to the recording's next keyframe, as the
+renderer forced one. A user streams one stream: N streams need N keyed accounts. State, logs and profiles live in
+`$DECIBELL_DEV_DIR/streambot/`. Loopback only; nothing plays or captures sound.
+
+The watch scenarios run it for you: `scenarios.sh gpui watch-1` (one 1080p60 H.264 stream, or `--dbv`) and `watch-2`
+(two streams, `--streamers a,b`): the client joins Lounge as perf3 (its own profile), unlocks its keys, watches the
+stream(s) large, the desktop takes the focus with the client visible, and `measure.sh --gpu pmon` samples it (CPU,
+private memory, wakeups per thread, GPU sm / dec). The GPUI client's hub counters before and after the window
+(`decibell: video-stats` over the control pipe) give `video-rates.json`: received / decoded / presented / replaced per
+second and frames dropped. `clients/electron.sh` has no voice hooks yet (see the notes in that file).
+
 ## Chat scrolling and selection against the live client
 
 - `scroll-compare.ps1 [-Runs 3] [-Seconds 6] [-Speed 1000]`: starts the installed client with a debugging port,
