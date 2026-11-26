@@ -42,6 +42,8 @@ pub fn enable_report() {
     unsafe {
         libc::signal(libc::SIGUSR1, on_sigusr1 as *const () as libc::sighandler_t);
     }
+    #[cfg(windows)]
+    windows_report::listen();
 }
 
 /// Records when `window`'s first frame reached the screen. Call once, when the window opens.
@@ -139,9 +141,81 @@ fn monotonic_ns() -> Option<u64> {
         .then(|| ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn monotonic_ns() -> Option<u64> {
+    windows_report::performance_counter_ns()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn monotonic_ns() -> Option<u64> {
     None
+}
+
+/// Windows has no signal to ask a process for its counters. The twin of `SIGUSR1`: a named
+/// event, `Local\decibell-perf-<pid>`, that a measuring script sets
+/// (`[Threading.EventWaitHandle]::OpenExisting(..).Set()`, `tools/perf/windows/`); each time it
+/// is set the frames line is printed. One thread (`decibell-perf`), which exists only with
+/// `--perf` / `DECIBELL_PERF` and sleeps in the wait: no timer, no wakeup of its own.
+#[cfg(windows)]
+mod windows_report {
+    use std::ffi::c_void;
+    use std::sync::atomic::Ordering;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateEventW(
+            attributes: *const c_void,
+            manual_reset: i32,
+            initial_state: i32,
+            name: *const u16,
+        ) -> *mut c_void;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn QueryPerformanceCounter(count: *mut i64) -> i32;
+        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    }
+
+    const INFINITE: u32 = 0xFFFF_FFFF;
+    const WAIT_OBJECT_0: u32 = 0;
+
+    /// The performance counter in nanoseconds: the clock `[Diagnostics.Stopwatch]::GetTimestamp()`
+    /// reads, so a script that started the process can subtract.
+    pub(super) fn performance_counter_ns() -> Option<u64> {
+        let (mut count, mut frequency) = (0i64, 0i64);
+        // Safety: both out pointers are valid; the calls cannot fail on Windows XP or later.
+        let ok = unsafe {
+            QueryPerformanceCounter(&mut count) != 0 && QueryPerformanceFrequency(&mut frequency) != 0
+        };
+        (ok && frequency > 0)
+            .then(|| (count as u128 * 1_000_000_000 / frequency as u128) as u64)
+    }
+
+    pub(super) fn listen() {
+        let name: Vec<u16> = format!("Local\\decibell-perf-{}", std::process::id())
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let spawned = std::thread::Builder::new()
+            .name("decibell-perf".into())
+            .spawn(move || {
+                // Safety: a null security descriptor and a NUL-terminated name; auto-reset,
+                // initially unset. The handle lives as long as the process.
+                let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+                if event.is_null() {
+                    return;
+                }
+                // Safety: a valid event handle, waited on by this thread only.
+                while unsafe { WaitForSingleObject(event, INFINITE) } == WAIT_OBJECT_0 {
+                    super::print(format_args!(
+                        "decibell: frames drawn={} presented={}",
+                        super::FRAMES_DRAWN.load(Ordering::Relaxed),
+                        super::FRAMES_PRESENTED.load(Ordering::Relaxed),
+                    ));
+                }
+            });
+        if let Err(error) = spawned {
+            super::print(format_args!("decibell: no perf listener thread: {error}"));
+        }
+    }
 }
 
 /// Writes `decibell: frames drawn=N presented=M\n` with nothing but atomics, stack memory and

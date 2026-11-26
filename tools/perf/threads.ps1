@@ -14,7 +14,9 @@
   .\threads.ps1 -ProcessName decibell-qt -Seconds 10 -Top 8
 #>
 param(
-  [Parameter(Mandatory)] [string] $ProcessName,
+  [string] $ProcessName,
+  # This process and its descendants only, whatever they are named (see measure.ps1).
+  [int] $ProcessId = 0,
   [int] $Seconds = 10,
   [int] $Top = 10
 )
@@ -28,7 +30,23 @@ if (-not ('PerfThreads.Native' -as [type])) {
 [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr p);
 '@
 }
-$procs = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+if ($ProcessId -gt 0) {
+  $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
+  $set = @{ $ProcessId = $true }
+  do {
+    $grew = $false
+    foreach ($p in $all) {
+      if ($set.ContainsKey([int]$p.ParentProcessId) -and -not $set.ContainsKey([int]$p.ProcessId)) {
+        $set[[int]$p.ProcessId] = $true; $grew = $true
+      }
+    }
+  } while ($grew)
+  $procs = @($set.Keys | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+  $ProcessName = (Get-Process -Id $ProcessId).ProcessName
+} else {
+  if (-not $ProcessName) { throw "give -ProcessName or -ProcessId" }
+  $procs = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+}
 if ($procs.Count -eq 0) { throw "no process named $ProcessName" }
 
 function Snap {

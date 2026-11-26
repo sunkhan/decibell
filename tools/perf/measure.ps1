@@ -26,7 +26,10 @@
   .\measure.ps1 -ProcessName Decibell -Seconds 300 -Label "electron idle, busy channel" -Out results\electron-idle
 #>
 param(
-  [Parameter(Mandatory)] [string] $ProcessName,
+  [string] $ProcessName,
+  # Measure this process and its descendants only (the name is then taken from it). Needed when
+  # two clients share a name: the Electron client is Decibell.exe, the native one decibell.exe.
+  [int] $ProcessId = 0,
   [int] $Seconds = 120,
   [int] $Interval = 1,
   [int] $WarmupSeconds = 0,
@@ -37,6 +40,26 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $cores = [Environment]::ProcessorCount
+# The process tree under -ProcessId, as a set of pids; $null = every process named -ProcessName.
+function TreePids([int] $root) {
+  $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
+  $set = @{ $root = $true }
+  do {
+    $grew = $false
+    foreach ($p in $all) {
+      if ($set.ContainsKey([int]$p.ParentProcessId) -and -not $set.ContainsKey([int]$p.ProcessId)) {
+        $set[[int]$p.ProcessId] = $true; $grew = $true
+      }
+    }
+  } while ($grew)
+  $set
+}
+$onlyPids = $null
+if ($ProcessId -gt 0) {
+  $ProcessName = (Get-Process -Id $ProcessId).ProcessName
+} elseif (-not $ProcessName) {
+  throw "give -ProcessName or -ProcessId"
+}
 $pn = $ProcessName
 $counters = @(
   "\Process($pn*)\ID Process",
@@ -61,12 +84,15 @@ $rows = New-Object System.Collections.Generic.List[object]
 
 Get-Counter -Counter $counters -SampleInterval $Interval -MaxSamples $n -ErrorAction SilentlyContinue | ForEach-Object {
   $s = $_
+  # With -ProcessId: the tree as it is now (a client may start a helper process later).
+  if ($ProcessId -gt 0) { $onlyPids = TreePids $ProcessId }
   # Instance name -> pid for our processes (and dwm when asked).
   $pidByInst = @{}
   $dwmPid = $null
   foreach ($c in $s.CounterSamples) {
     if ($c.Path -match '\\process\((.+)\)\\id process$') {
-      if ($Matches[1] -eq 'dwm') { $dwmPid = [int]$c.CookedValue } else { $pidByInst[$Matches[1]] = [int]$c.CookedValue }
+      if ($Matches[1] -eq 'dwm') { $dwmPid = [int]$c.CookedValue }
+      elseif ($null -eq $onlyPids -or $onlyPids.ContainsKey([int]$c.CookedValue)) { $pidByInst[$Matches[1]] = [int]$c.CookedValue }
     }
   }
   $pids = @{}; foreach ($v in $pidByInst.Values) { if ($v -gt 0) { $pids[$v] = $true } }

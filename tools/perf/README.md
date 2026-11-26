@@ -33,6 +33,28 @@ What `measure.ps1` reports (summed over the process tree; mean / p50 / p95 / max
 Everything comes from one `Get-Counter` stream (PDH computes the rates over the interval); the scripts add no
 polling inside the measured app. Measure on a quiet machine: no build, download or update running.
 
+### The native client against Electron, one row at a time (`windows\row.ps1`)
+
+```powershell
+# The native client: started by you with its perf markers on and stderr in a file, measured by process id
+$p = Start-Process .\gpui-client\target\release\decibell.exe -ArgumentList '--perf' -RedirectStandardError perf.log -PassThru
+.\tools\perf\windows\row.ps1 -ProcessId $p.Id -Client gpui -Label "idle, #general, unfocused" -PerfLog perf.log
+# The Electron client: start it yourself (never from a script: it would open your own profile), then
+.\tools\perf\windows\row.ps1 -ProcessId <pid of Decibell.exe's main process> -Client electron -Label "idle, #general, unfocused"
+.\tools\perf\windows\install-size.ps1 "$env:LOCALAPPDATA\Programs\decibell-electron-client"
+```
+
+`row.ps1` settles (20 s), runs `measure.ps1` (60 s) and `threads.ps1` (10 s) on that process and its
+descendants and appends one row to `tools\perf\results\windows-table.md`: private working set first (the twin
+of Linux's private memory; the script's header says how the two differ), commit, CPU, context switches per
+second (the wakeups), the frames the native client drew and presented in the window (its own counters, read
+through the named event `Local\decibell-perf-<pid>` that `--perf` listens on: Windows' stand-in for
+`SIGUSR1`), GPU 3D and video-decode utilisation, GPU memory. The per-thread table lands beside the samples as
+`<run>-threads.txt`; threads carry the names the client gave them (Rust's `thread::Builder::name` calls
+`SetThreadDescription`). `measure.ps1` and `threads.ps1` take `-ProcessId` because both clients are
+`decibell.exe` to Windows. The Windows Native Check runs `row.ps1` against the built client on its runner
+(under Windows PowerShell 5.1) to keep the script working; the numbers of a machine without a GPU mean nothing.
+
 `startup.ps1` signs in on every run when the client has a saved sign-in; keep `-Runs` small (central allows 30
 password sign-ins per address, then one per 2 s).
 
