@@ -1,15 +1,17 @@
 //! Form fields: the label / help / error frame around a control ([`Field`]) and the text field's
 //! shell ([`TextField`]).
 
+use decibell_text::input::{InputState, InputStyle, TextArea, TextInput};
+use decibell_text::{Engine, FontSpec, LineHeight, TextStyle};
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, IntoElement, ParentElement, RenderOnce, SharedString,
+    AnyElement, App, ElementId, Entity, FocusHandle, Focusable as _, IntoElement, ParentElement, RenderOnce, SharedString,
     Window, div, prelude::*, px,
 };
 
 use crate::interaction::Hover;
 use crate::motion::{Transition, mix};
 use crate::structure::SectionLabel;
-use crate::{ActiveTheme as _, Icon, IconName, Label};
+use crate::{ActiveTheme as _, FontRole, Icon, IconName, Label, ScrollAlign, ScrollArea, ScrollHandle};
 
 /// A setting with its label (channel settings' `Field`): the uppercase [`SectionLabel`] over the
 /// control (`mb-2.5 flex h-3 items-center justify-between`, an optional element at its right),
@@ -107,19 +109,26 @@ impl RenderOnce for Field {
     }
 }
 
-/// **Placeholder until `decibell-text` ships its input.** The text field's final shell — the
-/// renderer's `FIELD` (channel settings) / SearchField: `h-10 w-full rounded-md border
-/// border-border bg-bg-lighter px-3 text-[13px] text-text-primary transition-all
-/// placeholder:text-text-muted hover:border-accent/40 focus:border-accent focus:shadow-ring
-/// disabled:opacity-60`, an error state (`border-error`), an optional leading icon (SearchField's
-/// 15 px magnifier, `pl-9`). It has no editor of its own: it shows `value` (or the placeholder)
-/// as static text, or hosts the editor element given to [`TextField::input`] and shows the focus
-/// look while `focus` is focused. The API is meant to stay as it is when the editor arrives.
+/// The text field: the renderer's `FIELD` (channel settings) / SearchField box: `h-10 w-full
+/// rounded-md border border-border bg-bg-lighter px-3 text-[13px] text-text-primary
+/// transition-all placeholder:text-text-muted hover:border-accent/40 focus:border-accent
+/// focus:shadow-ring disabled:opacity-60`, an error state (`border-error`), an optional leading
+/// icon (SearchField's 15 px magnifier, `pl-9`).
+///
+/// The text lives in an [`InputState`] the view owns (`decibell_text::input`): the view makes
+/// it once, reads `value()` and subscribes to its `InputEvent`s (`Change`, `Submit` on Enter,
+/// `Escape`), and passes it to [`TextField::editor`] every render. A multi-line state grows the
+/// box with its text up to [`TextField::max_height`], then scrolls.
 ///
 /// ```ignore
-/// TextField::new("server-name").focus(&self.name_focus).value(self.name.clone())
-///     .placeholder("My server").error(self.name_error.is_some())
+/// // in the view's constructor
+/// let name = cx.new(|cx| InputState::single_line(window, cx).placeholder("My server").max_bytes(64));
+/// cx.subscribe(&name, |this, _, event: &InputEvent, cx| if *event == InputEvent::Submit { this.save(cx) }).detach();
+/// // in render
+/// TextField::new("server-name").editor(&self.name).error(self.name_error.is_some())
 /// ```
+///
+/// Without an editor it shows `value` (or the placeholder) as static text.
 #[derive(IntoElement)]
 pub struct TextField {
     id: ElementId,
@@ -130,6 +139,8 @@ pub struct TextField {
     disabled: bool,
     leading_icon: Option<IconName>,
     input: Option<AnyElement>,
+    editor: Option<Entity<InputState>>,
+    max_height: f32,
 }
 
 impl TextField {
@@ -143,6 +154,8 @@ impl TextField {
             disabled: false,
             leading_icon: None,
             input: None,
+            editor: None,
+            max_height: 160.,
         }
     }
 
@@ -177,20 +190,92 @@ impl TextField {
         self
     }
 
-    /// The editor element (from `decibell-text`), drawn in place of the static value.
+    /// An element of your own drawn in place of the static value.
     pub fn input(mut self, input: impl IntoElement) -> Self {
         self.input = Some(input.into_any_element());
         self
+    }
+
+    /// The field's text and editing state: this makes it a working field. Its placeholder,
+    /// limits and Enter policy are the state's; `disabled` here disables it too.
+    pub fn editor(mut self, editor: &Entity<InputState>) -> Self {
+        self.editor = Some(editor.clone());
+        self
+    }
+
+    /// How high a multi-line editor's text may grow before it scrolls, px (default 160, the
+    /// composer's).
+    pub fn max_height(mut self, max_height: f32) -> Self {
+        self.max_height = max_height;
+        self
+    }
+
+    /// The style a field's text is drawn in: the theme's `font` at `size` px with a line
+    /// height factor, `text-text-primary`, placeholder `text-text-muted`, Chromium's default
+    /// selection colours (the renderer has no `::selection` rule) and a caret in the text
+    /// colour (`caret-color: auto`). For editors drawn outside a `TextField` (the composer).
+    pub fn input_style(font: FontRole, size: f32, leading: f32, cx: &mut App) -> InputStyle {
+        let engine = Engine::global(cx);
+        let theme = cx.theme();
+        let face = engine.face(&FontSpec {
+            family: theme.font(font),
+            weight: 400,
+            italic: false,
+        });
+        let mut text = TextStyle::new(face, size, theme.color_text_primary);
+        text.line_height = LineHeight::Factor(leading);
+        // The body's letter-spacing is inherited as px of the 16 px root size (see `Label`).
+        text.letter_spacing = theme.palette.t_ls_body * 16.;
+        InputStyle {
+            placeholder_color: theme.color_text_muted,
+            ..InputStyle::new(text)
+        }
     }
 }
 
 impl RenderOnce for TextField {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let hover = Hover::new(window, cx, self.id.clone(), Some(Transition::TAILWIND));
-        let focused = self
-            .focus
-            .as_ref()
-            .is_some_and(|focus| focus.is_focused(window));
+        let mut focus = self.focus;
+        let mut multiline = false;
+        let editor = self.editor.map(|editor| {
+            // `text-[13px]`, line-height `normal` in an `<input>` (Inter's 1.21).
+            let style = Self::input_style(FontRole::Sans, 13., 1.2109, cx);
+            let disabled = self.disabled;
+            editor.update(cx, |state, cx| state.set_disabled(disabled, cx));
+            let state = editor.read(cx);
+            focus = Some(state.focus_handle(cx));
+            multiline = state.rules().multiline;
+            let hooked = state.has_reveal_hook();
+            if !multiline {
+                return TextInput::new(&editor, style).into_any_element();
+            }
+            // A text area grows to `max_height`, then scrolls with the caret kept in view.
+            let scroll = window
+                .use_keyed_state((self.id.clone(), "scroll"), cx, |_, _| ScrollHandle::new())
+                .read(cx)
+                .clone();
+            if !hooked {
+                let scroll = scroll.clone();
+                editor.update(cx, |state, _| {
+                    state.on_reveal_caret(move |caret, _| {
+                        let (top, bottom) = (caret.top(), caret.bottom());
+                        let (from, to) = (scroll.offset(), scroll.offset() + scroll.viewport_height());
+                        if top < from || bottom > to {
+                            scroll.scroll_into_view(top, caret.size.height, ScrollAlign::Nearest);
+                        }
+                    })
+                });
+            }
+            ScrollArea::new((self.id.clone(), "area"))
+                .track_scroll(&scroll)
+                .without_keys()
+                .w_full()
+                .max_h(px(self.max_height))
+                .child(TextArea::new(&editor, style))
+                .into_any_element()
+        });
+        let focused = focus.as_ref().is_some_and(|focus| focus.is_focused(window));
         let theme = cx.theme();
         let border = if self.error {
             theme.color_error
@@ -203,7 +288,7 @@ impl RenderOnce for TextField {
                 if self.disabled { 0. } else { hover.progress },
             )
         };
-        let content = match self.input {
+        let content = match editor.or(self.input) {
             Some(input) => input,
             None if self.value.is_empty() => Label::new(self.placeholder)
                 .size(13.)
@@ -218,10 +303,11 @@ impl RenderOnce for TextField {
         };
         div()
             .id(self.id)
-            .when_some(self.focus.as_ref(), |this, focus| this.track_focus(focus))
+            .when_some(focus.as_ref(), |this, focus| this.track_focus(focus))
             .relative()
             .flex()
-            .h_10()
+            // A text area: at least the field's 40 px, `py-2.5` around its lines.
+            .map(|this| if multiline { this.min_h_10().py_2p5() } else { this.h_10() })
             .w_full()
             .min_w_0()
             .items_center()

@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use decibell_text::input::{InputState, TextInput};
 use decibell_theme::ThemeId;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, Bounds, DispatchPhase, ElementId, Entity, Hsla,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, DispatchPhase, ElementId, Entity, Focusable as _, Hsla,
     IntoElement, MouseButton, Pixels, RenderOnce, ScrollEvent, SharedString, Transformation,
     Window, canvas, deferred, div, linear_color_stop, linear_gradient, prelude::*, px,
     radians, svg,
@@ -157,6 +158,7 @@ struct SelectState {
     /// Scrolling for the pointer revealed the half-visible row under it, the synthetic mouse
     /// move after the scroll made the next row active, and the list ran away (Select.tsx).
     reveal: Option<ScrollAlign>,
+    /// The filter row's text as last seen (the row is a `TextInput`; see `render`).
     query: String,
     typeahead: String,
     typeahead_at: Option<Instant>,
@@ -250,8 +252,8 @@ impl SelectHandle {
 /// the b's), Escape closes without reaching what is underneath (a modal), Tab closes. The menu
 /// opens below the trigger, or above it when there is more room there, as tall as its options
 /// up to 320 px, at least as wide as the trigger; a press outside, the wheel outside it or the
-/// window losing focus closes it. Past 10 options it has a filter row (typing filters; it is
-/// the select's own buffer until `decibell-text` provides an input). Each theme family styles
+/// window losing focus closes it. Past 10 options it has a filter row (a `TextInput`, focused
+/// while the menu is open: typing filters). Each theme family styles
 /// it as globals.css does (`.dsel-*`).
 ///
 /// ```ignore
@@ -443,6 +445,36 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Select<T> {
         let total: usize = self.groups.iter().map(|group| group.options.len()).sum();
         let searchable = self.searchable.unwrap_or(total > 10);
         let groups = Rc::new(self.groups);
+        // The filter row is a real text field (`decibell_text::input`), focused while the menu
+        // is open: its text is the query, a change of it re-targets the first match, and a
+        // closed menu forgets it and gives the focus back to the trigger. The select's key
+        // handler sits on the element around both, so it still sees the keys first.
+        let filter = searchable.then(|| {
+            window.use_keyed_state((id.clone(), "filter"), cx, |window, cx| {
+                InputState::single_line(window, cx).placeholder("Filter…")
+            })
+        });
+        if let Some(filter) = &filter {
+            let open = state.read(cx).open;
+            if !open && !filter.read(cx).is_empty() {
+                filter.update(cx, |filter, cx| filter.clear(cx));
+            }
+            if filter.read(cx).value() != state.read(cx).query {
+                let typed = filter.read(cx).value().to_string();
+                state.update(cx, |state, _| {
+                    state.query = typed;
+                    state.active = None;
+                });
+            }
+            let filter_focus = filter.focus_handle(cx);
+            if open && focus.is_focused(window) {
+                let filter = filter.clone();
+                window.defer(cx, move |window, cx| filter.update(cx, |filter, cx| filter.focus(window, cx)));
+            } else if !open && filter_focus.is_focused(window) {
+                let focus = focus.clone();
+                window.defer(cx, move |window, cx| focus.focus(window, cx));
+            }
+        }
         let (open, query) = {
             let state = state.read(cx);
             (state.open, state.query.clone())
@@ -542,19 +574,14 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Select<T> {
                             state.close();
                             handled = false;
                         }
-                        "backspace" if searchable => {
-                            state.query.pop();
-                            state.active = None;
-                        }
+                        // The filter row's own keys.
+                        "backspace" if searchable => handled = false,
                         _ => {
                             let text = keystroke.key_char.as_deref().filter(|_| {
                                 !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform
                             });
                             match text {
-                                Some(text) if searchable => {
-                                    state.query.push_str(text);
-                                    state.active = None;
-                                }
+                                Some(_) if searchable => handled = false,
                                 Some(text) => {
                                     let now = Instant::now();
                                     let recent = state.typeahead_at.is_some_and(|at| now - at < TYPEAHEAD);
@@ -639,7 +666,6 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Select<T> {
                     let groups = groups.clone();
                     let value = self.value.clone();
                     this.cursor_pointer()
-                        .capture_key_down(on_key)
                         .on_click(move |_, _, cx| {
                             if state.read(cx).open {
                                 update_state(&state, cx, |state| state.close());
@@ -667,6 +693,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Select<T> {
                 family,
                 font,
                 searchable,
+                filter: filter.clone(),
                 menu_min_width: self.menu_min_width,
             }, window, cx)
         });
@@ -675,6 +702,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Select<T> {
             .relative()
             .w_full()
             .min_w_0()
+            .when(!self.disabled, |this| this.capture_key_down(on_key))
             .child(trigger)
             .child({
                 // Records the trigger's border box for the menu's width and side.
@@ -750,6 +778,7 @@ struct MenuArgs<T: Clone + PartialEq + 'static> {
     family: Family,
     font: FontRole,
     searchable: bool,
+    filter: Option<Entity<InputState>>,
     menu_min_width: Option<Pixels>,
 }
 
@@ -763,7 +792,7 @@ fn option_height(size: SelectSize, hint: bool) -> f32 {
 }
 
 fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut Window, cx: &mut App) -> AnyElement {
-    let MenuArgs { id, state, groups, shown, flat, value, on_change, size, family, font, searchable, menu_min_width } = args;
+    let MenuArgs { id, state, groups, shown, flat, value, on_change, size, family, font, searchable, filter, menu_min_width } = args;
 
     // Geometry: every row's height is fixed by its classes, so the menu's natural height (and
     // where the active row is) is known before layout.
@@ -870,9 +899,9 @@ fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut W
         );
     }
 
+    let filter_style = crate::TextField::input_style(font, 13., 1.2109, cx);
     let theme = cx.theme();
-    let query = state.read(cx).query.clone();
-    let search = searchable.then(|| {
+    let search = filter.map(|filter| {
         div()
             .flex()
             .flex_none()
@@ -883,11 +912,7 @@ fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut W
             .border_b_1()
             .border_color(theme.color_border_divider)
             .child(Icon::new(IconName::Search).size(px(13.)).color(theme.color_text_muted))
-            .child(if query.is_empty() {
-                Label::new("Filter…").font(font).size(13.).line_height(13. * 1.2109).color(theme.color_text_muted)
-            } else {
-                Label::new(query).font(font).size(13.).line_height(13. * 1.2109).color(theme.color_text_primary)
-            })
+            .child(div().flex_1().min_w_0().child(TextInput::new(&filter, filter_style)))
     });
 
     let dismiss = {

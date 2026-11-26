@@ -1,0 +1,536 @@
+diff --git a/crates/gpui/src/app/test_context.rs b/crates/gpui/src/app/test_context.rs
+index df3cce6..2114535 100644
+--- a/crates/gpui/src/app/test_context.rs
++++ b/crates/gpui/src/app/test_context.rs
+@@ -1012,6 +1012,7 @@ impl VisualTestContext {
+         self.simulate_event(ModifiersChangedEvent {
+             modifiers,
+             capslock: Capslock { on: false },
++            key: None,
+         })
+     }
+ 
+@@ -1020,6 +1021,7 @@ impl VisualTestContext {
+         self.simulate_event(ModifiersChangedEvent {
+             modifiers: Modifiers::none(),
+             capslock: Capslock { on },
++            key: None,
+         })
+     }
+ 
+diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index 754a975..3bc5110 100644
+--- a/crates/gpui/src/elements/div.rs
++++ b/crates/gpui/src/elements/div.rs
+@@ -5545,6 +5545,7 @@ mod tests {
+                     keystroke,
+                     is_held: false,
+                     prefer_character_input: false,
++                    code: crate::KeyCode::Unknown,
+                 }
+                 .to_platform_input(),
+                 cx,
+@@ -5557,7 +5558,11 @@ mod tests {
+         let os = cx.read(|cx| cx.platform_info().os);
+         let keystroke = Keystroke::parse_with_os(key, os).unwrap();
+         cx.update_window(window, |_, window, cx| {
+-            window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
++            window.dispatch_event(KeyUpEvent {
++                    keystroke,
++                    code: crate::KeyCode::Unknown,
++                }
++                .to_platform_input(), cx);
+         })
+         .unwrap();
+     }
+diff --git a/crates/gpui/src/interactive.rs b/crates/gpui/src/interactive.rs
+index cfb1410..ac7642c 100644
+--- a/crates/gpui/src/interactive.rs
++++ b/crates/gpui/src/interactive.rs
+@@ -20,6 +20,37 @@ pub trait MouseEvent: InputEvent {}
+ /// A gesture event from the platform.
+ pub trait GestureEvent: InputEvent {}
+ 
++/// The physical key of a key event: which key on the keyboard, whatever the layout makes
++/// it type (the DOM's `KeyboardEvent.code`, as a raw platform number). GPUI does not name
++/// the keys: map the number with the table of your choice.
++///
++/// Decibell patch 0012.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
++pub enum KeyCode {
++    /// The platform gave none (macOS and the web at this patch, a simulated keystroke, a
++    /// key event an input method re-injected).
++    #[default]
++    Unknown,
++    /// Linux: the evdev key code (`KEY_*` in `linux/input-event-codes.h`). Wayland's
++    /// `wl_keyboard.key` value; an X11 keycode minus 8.
++    Evdev(u16),
++    /// Windows: the set-1 scan code from the key message's `lParam` (bits 16-23), with
++    /// `0xE000` added for an extended key (bit 24): `0x001D` is the left Control,
++    /// `0xE01D` the right one.
++    Windows(u16),
++}
++
++/// A physical modifier key that went down or up (see [`ModifiersChangedEvent::key`]).
++///
++/// Decibell patch 0012.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct ModifierKey {
++    /// Which key.
++    pub code: KeyCode,
++    /// Down (`true`) or up.
++    pub pressed: bool,
++}
++
+ /// The key down event equivalent for the platform.
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct KeyDownEvent {
+@@ -32,6 +63,9 @@ pub struct KeyDownEvent {
+     /// Whether to prefer character input over keybindings for this keystroke.
+     /// In some cases, like AltGr on Windows, modifiers are significant for character input.
+     pub prefer_character_input: bool,
++
++    /// The physical key (Decibell patch 0012).
++    pub code: KeyCode,
+ }
+ 
+ impl Sealed for KeyDownEvent {}
+@@ -47,6 +81,9 @@ impl KeyEvent for KeyDownEvent {}
+ pub struct KeyUpEvent {
+     /// The keystroke that was released.
+     pub keystroke: Keystroke,
++
++    /// The physical key (Decibell patch 0012).
++    pub code: KeyCode,
+ }
+ 
+ impl Sealed for KeyUpEvent {}
+@@ -64,6 +101,12 @@ pub struct ModifiersChangedEvent {
+     pub modifiers: Modifiers,
+     /// The new state of the capslock key
+     pub capslock: Capslock,
++    /// The modifier key whose press or release this event reports, when the platform
++    /// knows it (Decibell patch 0012). Linux and Windows send one event per physical
++    /// modifier key press and release, also when `modifiers` did not change (the second
++    /// Shift key while the first is held), so a listener can tell the left key from the
++    /// right; an event for any other reason (focus, a layout switch) has `None`.
++    pub key: Option<ModifierKey>,
+ }
+ 
+ impl Sealed for ModifiersChangedEvent {}
+diff --git a/crates/gpui/src/key_dispatch.rs b/crates/gpui/src/key_dispatch.rs
+index c273f16..5d5611d 100644
+--- a/crates/gpui/src/key_dispatch.rs
++++ b/crates/gpui/src/key_dispatch.rs
+@@ -945,6 +945,7 @@ mod tests {
+                     },
+                     is_held: false,
+                     prefer_character_input,
++                    code: crate::KeyCode::Unknown,
+                 }),
+                 cx,
+             )
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index f71f85a..6316217 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -6244,6 +6244,7 @@ impl Window {
+                 keystroke: keystroke.clone(),
+                 is_held: false,
+                 prefer_character_input: false,
++                code: crate::KeyCode::Unknown,
+             }),
+             cx,
+         );
+@@ -7142,6 +7143,7 @@ impl Window {
+                 keystroke: replay.keystroke.clone(),
+                 is_held: false,
+                 prefer_character_input: true,
++                code: crate::KeyCode::Unknown,
+             };
+ 
+             cx.propagate_event = true;
+@@ -9990,6 +9992,7 @@ mod tests {
+                     keystroke: Keystroke::parse("down").expect("valid keystroke"),
+                     is_held: false,
+                     prefer_character_input: false,
++                    code: crate::KeyCode::Unknown,
+                 }),
+                 cx,
+             );
+diff --git a/crates/gpui/src/window/native_view.rs b/crates/gpui/src/window/native_view.rs
+index 06287b4..e5c7a4e 100644
+--- a/crates/gpui/src/window/native_view.rs
++++ b/crates/gpui/src/window/native_view.rs
+@@ -475,6 +475,7 @@ mod tests {
+             keystroke: Keystroke::parse(keystroke).unwrap(),
+             is_held: false,
+             prefer_character_input: false,
++            code: crate::KeyCode::Unknown,
+         };
+         let actions = |cx: &mut TestAppContext| {
+             window
+diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index 5fd2bd7..d17e722 100644
+--- a/crates/gpui_linux/src/linux/wayland/client.rs
++++ b/crates/gpui_linux/src/linux/wayland/client.rs
+@@ -2128,6 +2128,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+                 let input = PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                     modifiers: state.modifiers,
+                     capslock: state.capslock,
++                    key: None,
+                 });
+                 drop(state);
+ 
+@@ -2214,6 +2215,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+                             keystroke: keystroke.clone(),
+                             is_held: false,
+                             prefer_character_input: false,
++                            code: gpui::KeyCode::Evdev(key as u16),
+                         });
+ 
+                         state.repeat.current_id += 1;
+@@ -2229,6 +2231,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+                                     keystroke,
+                                     is_held: true,
+                                     prefer_character_input: false,
++                                    code: gpui::KeyCode::Evdev(key as u16),
+                                 });
+                                 let this = this.clone();
+                                 move |event_timestamp, _metadata, _| {
+@@ -2262,6 +2265,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+                     wl_keyboard::KeyState::Released if !keysym.is_modifier_key() => {
+                         let input = PlatformInput::KeyUp(KeyUpEvent {
+                             keystroke: keystroke_from_xkb(keymap_state, state.modifiers, keycode),
++                            code: gpui::KeyCode::Evdev(key as u16),
+                         });
+ 
+                         if state.repeat.current_keycode == Some(keycode) {
+@@ -2271,6 +2275,22 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+                         drop(state);
+                         focused_window.handle_input(input);
+                     }
++                    // Decibell patch 0012: a modifier key itself. `wl_keyboard.modifiers`
++                    // reports the new state (after this event, and only when the state
++                    // changed); this says which physical key moved, with the state as
++                    // last reported.
++                    wl_keyboard::KeyState::Pressed | wl_keyboard::KeyState::Released => {
++                        let input = PlatformInput::ModifiersChanged(ModifiersChangedEvent {
++                            modifiers: state.modifiers,
++                            capslock: state.capslock,
++                            key: Some(gpui::ModifierKey {
++                                code: gpui::KeyCode::Evdev(key as u16),
++                                pressed: key_state == wl_keyboard::KeyState::Pressed,
++                            }),
++                        });
++                        drop(state);
++                        focused_window.handle_input(input);
++                    }
+                     _ => {}
+                 }
+             }
+@@ -2318,6 +2338,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
+                             },
+                             is_held: false,
+                             prefer_character_input: false,
++                            code: gpui::KeyCode::Unknown,
+                         }));
+                     } else {
+                         window.handle_ime(ImeInput::InsertText(commit_text));
+diff --git a/crates/gpui_linux/src/linux/x11/client.rs b/crates/gpui_linux/src/linux/x11/client.rs
+index d5bc281..047ad44 100644
+--- a/crates/gpui_linux/src/linux/x11/client.rs
++++ b/crates/gpui_linux/src/linux/x11/client.rs
+@@ -1164,6 +1164,7 @@ impl X11Client {
+                         ModifiersChangedEvent {
+                             modifiers,
+                             capslock,
++                            key: None,
+                         },
+                     ));
+                 }
+@@ -1187,6 +1188,9 @@ impl X11Client {
+                     let keysym = key_event_state.key_get_one_sym(code);
+ 
+                     if keysym.is_modifier_key() {
++                        let input = modifier_key_input(&state, event.detail, true);
++                        drop(state);
++                        window.handle_input(input);
+                         return Some(());
+                     }
+ 
+@@ -1234,6 +1238,7 @@ impl X11Client {
+                     keystroke,
+                     is_held: false,
+                     prefer_character_input: false,
++                    code: evdev_code(event.detail),
+                 }));
+             }
+             Event::KeyRelease(event) => {
+@@ -1250,13 +1255,19 @@ impl X11Client {
+                     let keysym = key_event_state.key_get_one_sym(code);
+ 
+                     if keysym.is_modifier_key() {
++                        let input = modifier_key_input(&state, event.detail, false);
++                        drop(state);
++                        window.handle_input(input);
+                         return Some(());
+                     }
+ 
+                     keystroke
+                 };
+                 drop(state);
+-                window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }));
++                window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent {
++                    keystroke,
++                    code: evdev_code(event.detail),
++                }));
+             }
+             Event::XinputButtonPress(event) => {
+                 let window = self.get_window(event.event)?;
+@@ -3264,3 +3275,26 @@ mod tests {
+         assert_eq!(key_event_state.key_get_utf8(space), " ");
+     }
+ }
++
++/// Decibell patch 0012: the physical key of an X11 key event. X11 keycodes are the kernel's
++/// evdev codes plus 8.
++fn evdev_code(keycode: u8) -> gpui::KeyCode {
++    match keycode.checked_sub(8) {
++        Some(code) => gpui::KeyCode::Evdev(code as u16),
++        None => gpui::KeyCode::Unknown,
++    }
++}
++
++/// Decibell patch 0012: a modifier key went down or up. `XkbStateNotify` reports the new
++/// modifier state (only when it changed, and in no fixed order with the key event); this
++/// says which physical key moved, with the state as last reported.
++fn modifier_key_input(state: &X11ClientState, keycode: u8, pressed: bool) -> PlatformInput {
++    PlatformInput::ModifiersChanged(ModifiersChangedEvent {
++        modifiers: state.last_modifiers_changed_event,
++        capslock: state.last_capslock_changed_event,
++        key: Some(gpui::ModifierKey {
++            code: evdev_code(keycode),
++            pressed,
++        }),
++    })
++}
+diff --git a/crates/gpui_macos/src/events.rs b/crates/gpui_macos/src/events.rs
+index 89ae111..69f41a7 100644
+--- a/crates/gpui_macos/src/events.rs
++++ b/crates/gpui_macos/src/events.rs
+@@ -141,15 +141,18 @@ pub(crate) unsafe fn platform_input_from_native(
+                             .modifierFlags()
+                             .contains(NSEventModifierFlags::CapsLock),
+                     },
++                    key: None,
+                 }))
+             }
+             NSEventType::KeyDown => Some(PlatformInput::KeyDown(KeyDownEvent {
+                 keystroke: parse_keystroke(native_event),
+                 is_held: native_event.isARepeat(),
+                 prefer_character_input: false,
++                code: gpui::KeyCode::Unknown,
+             })),
+             NSEventType::KeyUp => Some(PlatformInput::KeyUp(KeyUpEvent {
+                 keystroke: parse_keystroke(native_event),
++                code: gpui::KeyCode::Unknown,
+             })),
+             NSEventType::LeftMouseDown
+             | NSEventType::RightMouseDown
+diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
+index 2601fc5..a66e979 100644
+--- a/crates/gpui_macos/src/window.rs
++++ b/crates/gpui_macos/src/window.rs
+@@ -3181,11 +3181,13 @@ extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_event: *mut Any
+             PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                 modifiers,
+                 capslock,
++                ..
+             }) => {
+                 // Only raise modifiers changed event when they have actually changed
+                 if let Some(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                     modifiers: prev_modifiers,
+                     capslock: prev_capslock,
++                    ..
+                 })) = &lock.previous_modifiers_changed_event
+                     && prev_modifiers == modifiers
+                     && prev_capslock == capslock
+@@ -3817,6 +3819,7 @@ extern "C" fn do_command_by_selector(this: &AnyObject, _: Sel, _: Sel) {
+             keystroke,
+             is_held: false,
+             prefer_character_input: false,
++            code: gpui::KeyCode::Unknown,
+         }));
+         state.as_ref().lock().do_command_handled = Some(!handled.propagate);
+     }
+diff --git a/crates/gpui_macos/src/window/native_views.rs b/crates/gpui_macos/src/window/native_views.rs
+index 0f551ca..333bff5 100644
+--- a/crates/gpui_macos/src/window/native_views.rs
++++ b/crates/gpui_macos/src/window/native_views.rs
+@@ -1385,6 +1385,7 @@ extern "C" fn become_first_responder(this: &AnyObject, _: Sel) -> Bool {
+                 let event = PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                     modifiers: current_modifiers(),
+                     capslock: current_capslock(),
++                    key: None,
+                 });
+                 let mut lock = window_state.lock();
+                 let unchanged = matches!(
+diff --git a/crates/gpui_web/src/events.rs b/crates/gpui_web/src/events.rs
+index 55ba155..30a6669 100644
+--- a/crates/gpui_web/src/events.rs
++++ b/crates/gpui_web/src/events.rs
+@@ -561,8 +561,12 @@ impl WebWindowInner {
+             keystroke: keystroke.clone(),
+             is_held: false,
+             prefer_character_input: false,
++            code: gpui::KeyCode::Unknown,
+         }));
+-        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent { keystroke }));
++        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
++                keystroke,
++                code: gpui::KeyCode::Unknown,
++            }));
+     }
+ 
+     fn register_pointer_move(self: &Rc<Self>) -> EventListenerHandle {
+@@ -721,6 +725,7 @@ impl WebWindowInner {
+                 this.dispatch_input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                     modifiers,
+                     capslock,
++                    key: None,
+                 }));
+             }
+ 
+@@ -757,6 +762,7 @@ impl WebWindowInner {
+                 keystroke,
+                 is_held,
+                 prefer_character_input: false,
++                code: gpui::KeyCode::Unknown,
+             }));
+ 
+             if let Some(result) = result {
+@@ -800,6 +806,7 @@ impl WebWindowInner {
+                 this.dispatch_input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                     modifiers,
+                     capslock,
++                    key: None,
+                 }));
+             }
+ 
+@@ -817,7 +824,10 @@ impl WebWindowInner {
+                 key_char,
+             };
+ 
+-            let result = this.dispatch_input(PlatformInput::KeyUp(KeyUpEvent { keystroke }));
++            let result = this.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
++                keystroke,
++                code: gpui::KeyCode::Unknown,
++            }));
+             if let Some(result) = result {
+                 if !result.propagate {
+                     event.prevent_default();
+diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
+index d7511dc..9434038 100644
+--- a/crates/gpui_windows/src/events.rs
++++ b/crates/gpui_windows/src/events.rs
+@@ -412,7 +412,10 @@ impl WindowsWindowInner {
+ 
+     fn handle_syskeyup_msg(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+         let input = handle_key_event(wparam, lparam, &self.state, |keystroke, _| {
+-            PlatformInput::KeyUp(KeyUpEvent { keystroke })
++            PlatformInput::KeyUp(KeyUpEvent {
++                keystroke,
++                code: key_code(lparam),
++            })
+         })?;
+         let mut func = self.state.callbacks.input.take()?;
+ 
+@@ -435,6 +438,7 @@ impl WindowsWindowInner {
+                     keystroke,
+                     is_held: lparam.0 & (0x1 << 30) > 0,
+                     prefer_character_input,
++                    code: key_code(lparam),
+                 })
+             },
+         ) else {
+@@ -454,7 +458,10 @@ impl WindowsWindowInner {
+ 
+     fn handle_keyup_msg(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+         let Some(input) = handle_key_event(wparam, lparam, &self.state, |keystroke, _| {
+-            PlatformInput::KeyUp(KeyUpEvent { keystroke })
++            PlatformInput::KeyUp(KeyUpEvent {
++                keystroke,
++                code: key_code(lparam),
++            })
+         }) else {
+             return Some(1);
+         };
+@@ -828,6 +835,7 @@ impl WindowsWindowInner {
+                 let input = PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                     modifiers: current_modifiers(),
+                     capslock: current_capslock(),
++                    key: None,
+                 });
+                 func(input);
+                 this.state.callbacks.input.set(Some(func));
+@@ -1554,10 +1562,16 @@ where
+ 
+     match virtual_key {
+         VK_SHIFT | VK_CONTROL | VK_MENU | VK_LMENU | VK_RMENU | VK_LWIN | VK_RWIN => {
+-            if state
+-                .last_reported_modifiers
+-                .get()
+-                .is_some_and(|prev_modifiers| prev_modifiers == modifiers)
++            // Decibell patch 0012: every press and release of a modifier key is reported
++            // with its physical key, also when the modifiers did not change (the second
++            // Shift while the first is held); only auto-repeats are still dropped.
++            let released = lparam.0 & (0x1 << 31) != 0;
++            let repeated = !released && lparam.0 & (0x1 << 30) != 0;
++            if repeated
++                && state
++                    .last_reported_modifiers
++                    .get()
++                    .is_some_and(|prev_modifiers| prev_modifiers == modifiers)
+             {
+                 return None;
+             }
+@@ -1565,6 +1579,10 @@ where
+             Some(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                 modifiers,
+                 capslock: current_capslock(),
++                key: (!repeated).then(|| gpui::ModifierKey {
++                    code: key_code(lparam),
++                    pressed: !released,
++                }),
+             }))
+         }
+         VK_PACKET => None,
+@@ -1581,6 +1599,7 @@ where
+             Some(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                 modifiers,
+                 capslock,
++                key: None,
+             }))
+         }
+         vkey => {
+@@ -1641,6 +1660,19 @@ fn parse_immutable(vkey: VIRTUAL_KEY) -> Option<String> {
+     )
+ }
+ 
++/// Decibell patch 0012: the physical key of a `WM_KEYDOWN` / `WM_KEYUP` / `WM_SYSKEY*`
++/// message: the set-1 scan code in bits 16-23 of `lParam`, with `0xE000` added when the
++/// extended-key flag (bit 24) is set. A message without a scan code (injected input can
++/// leave it 0) gives `Unknown`.
++fn key_code(lparam: LPARAM) -> gpui::KeyCode {
++    let scan_code = ((lparam.0 >> 16) & 0xFF) as u16;
++    if scan_code == 0 {
++        return gpui::KeyCode::Unknown;
++    }
++    let extended = lparam.0 & (0x1 << 24) != 0;
++    gpui::KeyCode::Windows(if extended { 0xE000 | scan_code } else { scan_code })
++}
++
+ fn parse_normal_key(
+     vkey: VIRTUAL_KEY,
+     lparam: LPARAM,

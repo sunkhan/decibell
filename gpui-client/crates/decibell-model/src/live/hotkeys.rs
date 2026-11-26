@@ -18,10 +18,13 @@
 //!
 //! Keys are DOM `KeyboardEvent.code` names (physical, layout-free), generic `Control` /
 //! `Shift` / `Alt` / `Meta` in a combo with a real key, sided codes only in modifier-only
-//! combos, and `Mouse3`..`Mouse5`; the core speaks the same spelling. GPUI's `Keystroke`
-//! at the pin carries the layout's character, not the physical key, so
-//! [`code_from_gpui_key`] maps it assuming a US layout: the recorder needs the platform's
-//! scancode from GPUI to be exact (docs/model.md M3, gaps).
+//! combos, and `Mouse3`..`Mouse5`; the core speaks the same spelling. GPUI's key events
+//! carry the platform's physical key (`KeyCode`, GPUI patch 0012: the evdev code on Linux,
+//! the scan code on Windows), and [`code_of`] names it through the core's own table
+//! (`hotkeys/keys.rs`), so the [`Recorder`] and the focused fallback
+//! ([`Hotkeys::key_event`]) see the same key whatever the keyboard layout types with it.
+//! Only where the platform gives no code (macOS at this patch) is the name guessed from
+//! the character, as a US layout would produce it ([`code_from_gpui_key`]).
 
 use std::rc::Rc;
 
@@ -155,8 +158,141 @@ pub fn mouse_key(button: gpui::MouseButton) -> Option<&'static str> {
     }
 }
 
-/// GPUI's `Keystroke::key` → a `KeyboardEvent.code`, **assuming a US layout** (GPUI
-/// gives the layout's character, not the physical key; see the module doc).
+/// Every `KeyboardEvent.code` the core's table has (`decibell_core::hotkeys::keys`). Only
+/// the names live here: the numbers come from the core (`evdev_code`, `win_scancode`),
+/// which has no reverse lookup. A test checks every name is one the core knows.
+const CODE_NAMES: [&str; 177] = [
+    "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK", "KeyL", "KeyM", "KeyN",
+    "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV", "KeyW", "KeyX", "KeyY", "KeyZ", "Digit1",
+    "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9", "Digit0", "Enter", "Escape",
+    "Backspace", "Tab", "Space", "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "Semicolon", "Quote",
+    "Backquote", "Comma", "Period", "Slash", "CapsLock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9",
+    "F10", "F11", "F12", "PrintScreen", "ScrollLock", "Pause", "Insert", "Home", "PageUp", "Delete", "End",
+    "PageDown", "ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "NumLock", "NumpadDivide", "NumpadMultiply",
+    "NumpadSubtract", "NumpadAdd", "NumpadEnter", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6",
+    "Numpad7", "Numpad8", "Numpad9", "Numpad0", "NumpadDecimal", "IntlBackslash", "ContextMenu", "Power",
+    "NumpadEqual", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "Open",
+    "Help", "Select", "Again", "Undo", "Cut", "Copy", "Paste", "Find", "AudioVolumeMute", "AudioVolumeUp",
+    "AudioVolumeDown", "NumpadComma", "IntlRo", "KanaMode", "IntlYen", "Convert", "NonConvert", "Lang1", "Lang2",
+    "Lang3", "Lang4", "Lang5", "NumpadParenLeft", "NumpadParenRight", "ControlLeft", "ShiftLeft", "AltLeft",
+    "MetaLeft", "ControlRight", "ShiftRight", "AltRight", "MetaRight", "BrightnessUp", "BrightnessDown",
+    "MediaPlay", "MediaPause", "MediaRecord", "MediaFastForward", "MediaRewind", "MediaTrackNext",
+    "MediaTrackPrevious", "MediaStop", "Eject", "MediaPlayPause", "MediaSelect", "LaunchMail", "LaunchApp2",
+    "LaunchApp1", "LaunchControlPanel", "SelectTask", "LaunchScreenSaver", "LaunchAssistant", "BrowserSearch",
+    "BrowserHome", "BrowserBack", "BrowserForward", "BrowserStop", "BrowserRefresh", "BrowserFavorites",
+    "ZoomToggle", "MailReply", "MailForward", "MailSend", "KeyboardLayoutSelect", "ShowAllWindows",
+];
+
+/// The name (`KeyboardEvent.code`) of a physical key as GPUI reports it. `None` for a key
+/// the core's table lacks and for [`gpui::KeyCode::Unknown`].
+pub fn code_of(code: gpui::KeyCode) -> Option<&'static str> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    type Table = HashMap<u16, &'static str>;
+    static EVDEV: OnceLock<Table> = OnceLock::new();
+    static WINDOWS: OnceLock<Table> = OnceLock::new();
+    let table = |number: fn(&str) -> Option<u16>| -> Table {
+        // The first name wins where two share a number, as in the core's own lookups.
+        let mut table = Table::new();
+        for name in CODE_NAMES {
+            if let Some(number) = number(name) {
+                table.entry(number).or_insert(name);
+            }
+        }
+        table
+    };
+    match code {
+        gpui::KeyCode::Evdev(code) => EVDEV.get_or_init(|| table(keys::evdev_code)).get(&code).copied(),
+        gpui::KeyCode::Windows(code) => WINDOWS.get_or_init(|| table(keys::win_scancode)).get(&code).copied(),
+        gpui::KeyCode::Unknown => None,
+    }
+}
+
+/// The key a key event is about: its physical code, or, where the platform reports none,
+/// the US-layout guess from the character.
+pub fn event_code(code: gpui::KeyCode, keystroke: &gpui::Keystroke) -> Option<String> {
+    match code {
+        gpui::KeyCode::Unknown => code_from_gpui_key(&keystroke.key),
+        code => code_of(code).map(str::to_string),
+    }
+}
+
+/// What the Keybinds tab's recorder decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recorded {
+    /// The combo to bind (already normalised: [`normalize_combo`]).
+    Combo(Vec<String>),
+    /// Escape with nothing held: recording is cancelled.
+    Cancelled,
+}
+
+/// The Keybinds tab's recorder (`KeybindsTab.tsx` `startRecording`): feed it the window's
+/// key and mouse events while it records; it answers when the combo is complete. A
+/// non-modifier key completes the combo with the modifiers held; modifiers alone complete
+/// when the last one is released (and keep their sides); Mouse3..5 complete with the
+/// modifiers held; auto-repeats are ignored.
+#[derive(Debug, Default)]
+pub struct Recorder {
+    held: Vec<String>,
+    peak: Vec<String>,
+}
+
+impl Recorder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A key went down, by name (`KeyboardEvent.code`).
+    pub fn key_down(&mut self, code: &str, repeat: bool) -> Option<Recorded> {
+        if repeat {
+            return None;
+        }
+        if code == "Escape" && self.held.is_empty() {
+            return Some(Recorded::Cancelled);
+        }
+        for keys in [&mut self.held, &mut self.peak] {
+            if !keys.iter().any(|key| key == code) {
+                keys.push(code.to_string());
+            }
+        }
+        modifier_of(code).is_none().then(|| Recorded::Combo(normalize_combo(&self.held)))
+    }
+
+    pub fn key_up(&mut self, code: &str) -> Option<Recorded> {
+        self.held.retain(|key| key != code);
+        (self.held.is_empty() && !self.peak.is_empty()).then(|| Recorded::Combo(normalize_combo(&self.peak)))
+    }
+
+    /// GPUI's key-down event.
+    pub fn on_key_down(&mut self, event: &gpui::KeyDownEvent) -> Option<Recorded> {
+        let code = event_code(event.code, &event.keystroke)?;
+        self.key_down(&code, event.is_held)
+    }
+
+    pub fn on_key_up(&mut self, event: &gpui::KeyUpEvent) -> Option<Recorded> {
+        let code = event_code(event.code, &event.keystroke)?;
+        self.key_up(&code)
+    }
+
+    /// GPUI's modifiers-changed event: a modifier key going down or up, when it says which
+    /// one (`ModifiersChangedEvent::key`, patch 0012).
+    pub fn on_modifiers_changed(&mut self, event: &gpui::ModifiersChangedEvent) -> Option<Recorded> {
+        let key = event.key?;
+        let code = code_of(key.code)?;
+        if key.pressed { self.key_down(code, false) } else { self.key_up(code) }
+    }
+
+    /// A mouse button: Mouse3..5 complete the combo with the modifiers held.
+    pub fn on_mouse_down(&mut self, button: gpui::MouseButton) -> Option<Recorded> {
+        let key = mouse_key(button)?;
+        let mut keys: Vec<String> = self.held.iter().filter(|held| modifier_of(held).is_some()).cloned().collect();
+        keys.push(key.to_string());
+        Some(Recorded::Combo(normalize_combo(&keys)))
+    }
+}
+
+/// GPUI's `Keystroke::key` → a `KeyboardEvent.code`, **assuming a US layout**: only for a
+/// platform that reports no physical key (see [`event_code`]).
 pub fn code_from_gpui_key(key: &str) -> Option<String> {
     let code = match key {
         k if k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase() => format!("Key{}", k.to_ascii_uppercase()),
@@ -418,6 +554,23 @@ impl Hotkeys {
         self.inject(fired);
     }
 
+    /// The focused fallback fed from GPUI's events: a key of our own window went down or
+    /// up, named by its physical code (so a binding fires on the key it was recorded on,
+    /// whatever the layout). Call it with `KeyDownEvent` / `KeyUpEvent` (`code`,
+    /// `keystroke`) and with `ModifiersChangedEvent::key` for the modifier keys.
+    pub fn key_event(&mut self, code: gpui::KeyCode, keystroke: Option<&gpui::Keystroke>, down: bool) {
+        if self.fallback.is_none() {
+            return;
+        }
+        let name = match keystroke {
+            Some(keystroke) => event_code(code, keystroke),
+            None => code_of(code).map(str::to_string),
+        };
+        if let Some(name) = name {
+            self.key(&name, down);
+        }
+    }
+
     /// Our window lost focus: keys released meanwhile never reach us.
     pub fn window_blurred(&mut self) {
         if self.fallback.is_some() {
@@ -528,6 +681,223 @@ mod tests {
         assert_eq!(calls.borrow().paused, vec![true]);
         assert_eq!(calls.borrow().injected.last().unwrap(), &(Action::PushToTalk, false, "p".into()));
         assert!(!h.read_with(cx, |h, _| h.fallback_armed()));
+    }
+
+    /// The names here are the core's: every one is in its table, the numbers round-trip,
+    /// and the Windows spelling (set-1 scan code, `0xE0xx` for extended keys) maps too.
+    #[test]
+    fn physical_codes_are_named_by_the_cores_table() {
+        for name in CODE_NAMES {
+            assert_eq!(keys::intern(name), Some(name), "{name} is not in the core's table");
+            if let Some(evdev) = keys::evdev_code(name) {
+                let back = code_of(gpui::KeyCode::Evdev(evdev)).unwrap();
+                assert_eq!(keys::evdev_code(back), Some(evdev), "{name}");
+            }
+            if let Some(scan) = keys::win_scancode(name) {
+                let back = code_of(gpui::KeyCode::Windows(scan)).unwrap();
+                assert_eq!(keys::win_scancode(back), Some(scan), "{name}");
+            }
+        }
+        let evdev = |code| code_of(gpui::KeyCode::Evdev(code));
+        assert_eq!(evdev(39), Some("Semicolon"));
+        assert_eq!(evdev(30), Some("KeyA"));
+        assert_eq!(evdev(97), Some("ControlRight"));
+        assert_eq!(evdev(0), None);
+        let windows = |code| code_of(gpui::KeyCode::Windows(code));
+        assert_eq!(windows(0x0027), Some("Semicolon"));
+        assert_eq!(windows(0x001d), Some("ControlLeft"));
+        assert_eq!(windows(0xe01d), Some("ControlRight"));
+        assert_eq!(windows(0x0036), Some("ShiftRight"));
+        assert_eq!(windows(0xe048), Some("ArrowUp"));
+        assert_eq!(windows(0x0048), Some("Numpad8"));
+        assert_eq!(code_of(gpui::KeyCode::Unknown), None);
+        // Without a code (macOS at this patch) the character is all there is.
+        let keystroke = gpui::Keystroke::parse("m").unwrap();
+        assert_eq!(event_code(gpui::KeyCode::Unknown, &keystroke).as_deref(), Some("KeyM"));
+        assert_eq!(event_code(gpui::KeyCode::Evdev(39), &keystroke).as_deref(), Some("Semicolon"));
+    }
+
+    /// Key events as they arrive under a non-US layout: xkbcommon compiles the layout and
+    /// says what each physical key types; the event carries that character and the key's
+    /// evdev code, as GPUI's Linux layer builds it (patch 0012).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    mod layouts {
+        use xkbcommon::xkb;
+
+        use super::super::*;
+
+        pub struct Layout(xkb::State);
+
+        impl Layout {
+            pub fn new(layout: &str) -> Self {
+                let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                let keymap = xkb::Keymap::new_from_names(&context, "evdev", "pc105", layout, "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                    .unwrap_or_else(|| panic!("no xkb layout {layout:?} (xkeyboard-config)"));
+                Self(xkb::State::new(&keymap))
+            }
+
+            /// What the key with this evdev code types (X11 keycode = evdev + 8).
+            pub fn typed(&self, evdev: u16) -> String {
+                self.0.key_get_utf8(xkb::Keycode::new(evdev as u32 + 8))
+            }
+
+            pub fn down(&self, evdev: u16) -> gpui::KeyDownEvent {
+                gpui::KeyDownEvent {
+                    keystroke: self.keystroke(evdev),
+                    is_held: false,
+                    prefer_character_input: false,
+                    code: gpui::KeyCode::Evdev(evdev),
+                }
+            }
+
+            pub fn up(&self, evdev: u16) -> gpui::KeyUpEvent {
+                gpui::KeyUpEvent {
+                    keystroke: self.keystroke(evdev),
+                    code: gpui::KeyCode::Evdev(evdev),
+                }
+            }
+
+            fn keystroke(&self, evdev: u16) -> gpui::Keystroke {
+                let typed = self.typed(evdev);
+                gpui::Keystroke {
+                    modifiers: gpui::Modifiers::default(),
+                    key: typed.clone(),
+                    key_char: Some(typed),
+                }
+            }
+        }
+
+        pub fn modifier(evdev: u16, pressed: bool) -> gpui::ModifiersChangedEvent {
+            gpui::ModifiersChangedEvent {
+                key: Some(gpui::ModifierKey {
+                    code: gpui::KeyCode::Evdev(evdev),
+                    pressed,
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn combo(keys: &[&str]) -> Option<Recorded> {
+            Some(Recorded::Combo(keys.iter().map(|key| key.to_string()).collect()))
+        }
+
+        /// (evdev code, what the layout types with it, the key's name).
+        const TURKISH_Q: [(u16, &str, &str); 9] = [
+            (39, "ş", "Semicolon"),
+            (23, "ı", "KeyI"),
+            (40, "i", "Quote"),
+            (26, "ğ", "BracketLeft"),
+            (27, "ü", "BracketRight"),
+            (51, "ö", "Comma"),
+            (52, "ç", "Period"),
+            (16, "q", "KeyQ"),
+            (41, "\"", "Backquote"),
+        ];
+        const GERMAN: [(u16, &str, &str); 7] = [
+            (21, "z", "KeyY"),
+            (44, "y", "KeyZ"),
+            (26, "ü", "BracketLeft"),
+            (39, "ö", "Semicolon"),
+            (40, "ä", "Quote"),
+            (12, "ß", "Minus"),
+            (53, "-", "Slash"),
+        ];
+
+        #[test]
+        fn the_recorder_stores_the_physical_key_under_turkish_and_german_layouts() {
+            for (name, keys) in [("tr", &TURKISH_Q[..]), ("de", &GERMAN[..])] {
+                let layout = Layout::new(name);
+                for &(evdev, typed, code) in keys {
+                    assert_eq!(layout.typed(evdev), typed, "{name}: what evdev {evdev} types");
+                    let mut recorder = Recorder::new();
+                    assert_eq!(recorder.on_key_down(&layout.down(evdev)), combo(&[code]), "{name}: the key that types {typed:?}");
+                }
+            }
+            // What the character alone would have given (the recorder before patch 0012):
+            // nothing for ş, ğ, ü, ö, ç, ß, and the wrong key for the letters that moved.
+            assert_eq!(code_from_gpui_key("ş"), None);
+            assert_eq!(code_from_gpui_key("i").as_deref(), Some("KeyI"), "Turkish i is on the Quote key");
+            assert_eq!(code_from_gpui_key("z").as_deref(), Some("KeyZ"), "German z is on the KeyY key");
+        }
+
+        #[test]
+        fn combos_with_modifiers_keep_the_physical_key_and_the_modifier_sides() {
+            let layout = Layout::new("tr");
+            // Left Ctrl + the ş key: generic Control + Semicolon.
+            let mut recorder = Recorder::new();
+            assert_eq!(recorder.on_modifiers_changed(&modifier(29, true)), None);
+            assert_eq!(recorder.on_key_down(&layout.down(39)), combo(&["Control", "Semicolon"]));
+            // Modifiers alone: complete when the last one is released, sides kept.
+            let mut recorder = Recorder::new();
+            assert_eq!(recorder.on_modifiers_changed(&modifier(54, true)), None); // right Shift
+            assert_eq!(recorder.on_modifiers_changed(&modifier(29, true)), None); // left Ctrl
+            assert_eq!(recorder.on_modifiers_changed(&modifier(54, false)), None);
+            assert_eq!(recorder.on_modifiers_changed(&modifier(29, false)), combo(&["ControlLeft", "ShiftRight"]));
+            // A modifiers event that names no key (focus, a layout switch) records nothing.
+            let mut recorder = Recorder::new();
+            assert_eq!(recorder.on_modifiers_changed(&gpui::ModifiersChangedEvent::default()), None);
+            // Escape with nothing held cancels; with a modifier held it is a key like any other.
+            assert_eq!(recorder.on_key_down(&layout.down(1)), Some(Recorded::Cancelled));
+            recorder.on_modifiers_changed(&modifier(56, true)); // left Alt
+            assert_eq!(recorder.on_key_down(&layout.down(1)), combo(&["Alt", "Escape"]));
+            // A mouse button with a modifier held; left and right buttons are never bound.
+            let mut recorder = Recorder::new();
+            recorder.on_modifiers_changed(&modifier(56, true));
+            assert_eq!(recorder.on_mouse_down(gpui::MouseButton::Left), None);
+            assert_eq!(
+                recorder.on_mouse_down(gpui::MouseButton::Navigate(gpui::NavigationDirection::Back)),
+                combo(&["Alt", "Mouse4"])
+            );
+            // An auto-repeat is not a second press; a key released alone completes it.
+            let mut recorder = Recorder::new();
+            let mut held = layout.down(39);
+            held.is_held = true;
+            assert_eq!(recorder.on_key_down(&held), None);
+            recorder.on_modifiers_changed(&modifier(125, true)); // left Super
+            assert_eq!(recorder.on_key_up(&layout.up(39)), None);
+            assert_eq!(recorder.on_modifiers_changed(&modifier(125, false)), combo(&["MetaLeft"]));
+        }
+    }
+
+    /// The focused fallback fires a binding on the key it was recorded on: Ctrl + the key
+    /// right of L, which types ş on a Turkish keyboard and ö on a German one.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[gpui::test]
+    fn the_focused_fallback_matches_the_physical_key_under_any_layout(cx: &mut TestAppContext) {
+        let calls: Rc<RefCell<Calls>> = Rc::default();
+        let executor = cx.executor();
+        let h = cx.new(|_| Hotkeys::new(backend(calls.clone(), executor)));
+        let s = AppSettings {
+            hotkeys: vec![binding("m", "toggle_mute", &["Control", "Semicolon"])],
+            ..AppSettings::default()
+        };
+        h.update(cx, |h, cx| {
+            h.sync(&s, cx);
+            h.set_status(status(true), &s, cx);
+        });
+        for name in ["tr", "de", "us"] {
+            let layout = layouts::Layout::new(name);
+            let (down, up) = (layout.down(39), layout.up(39));
+            h.update(cx, |h, _| {
+                h.key_event(layouts::modifier(29, true).key.unwrap().code, None, true);
+                h.key_event(down.code, Some(&down.keystroke), true);
+                h.key_event(up.code, Some(&up.keystroke), false);
+                h.key_event(layouts::modifier(29, false).key.unwrap().code, None, false);
+            });
+            assert_eq!(
+                calls.borrow().injected.last().unwrap(),
+                &(Action::ToggleMute, true, "m".into()),
+                "{name}: Ctrl + the {:?} key",
+                layout.typed(39)
+            );
+            calls.borrow_mut().injected.clear();
+        }
+        // The key that *types* a semicolon on a German keyboard (Shift + Comma) is not it.
+        h.update(cx, |h, _| {
+            h.key_event(gpui::KeyCode::Evdev(29), None, true);
+            h.key_event(gpui::KeyCode::Evdev(51), Some(&gpui::Keystroke::parse(";").unwrap()), true);
+        });
+        assert!(calls.borrow().injected.is_empty());
     }
 
     #[test]

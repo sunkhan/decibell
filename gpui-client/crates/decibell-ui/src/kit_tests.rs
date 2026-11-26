@@ -141,9 +141,13 @@ fn key(cx: &TestCx, keystroke: &'static str) -> Result<()> {
             keystroke: keystroke.clone(),
             is_held: false,
             prefer_character_input: false,
+            code: gpui::KeyCode::Unknown,
         }),
     )?;
-    input(cx, PlatformInput::KeyUp(KeyUpEvent { keystroke }))
+    input(cx, PlatformInput::KeyUp(KeyUpEvent {
+            keystroke,
+            code: gpui::KeyCode::Unknown,
+        }))
 }
 
 fn mouse_move(cx: &TestCx, position: Point<Pixels>) -> Result<()> {

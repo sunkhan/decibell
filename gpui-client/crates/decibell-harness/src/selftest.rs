@@ -3,8 +3,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail};
 use futures::future::LocalBoxFuture;
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, Keystroke, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, Window,
+    AnyWindowHandle, App, AsyncApp, KeyCode, KeyDownEvent, KeyUpEvent, Keystroke, ModifierKey, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point,
+    Window,
 };
 
 /// A scripted check run by `decibell --selftest <name>|all` inside the real app: real platform,
@@ -112,6 +113,78 @@ impl TestCx {
     pub fn keystroke(&self, keystroke: &'static str) -> Result<bool> {
         let keystroke = Keystroke::parse(keystroke)?;
         self.update(|window, cx| window.dispatch_keystroke(keystroke, cx))
+    }
+
+    /// Types `text` one character at a time, each as the key press the platform sends for
+    /// it: key listeners first, then the focused field's input handler.
+    pub fn type_text(&self, text: &str) -> Result<()> {
+        let mut buffer = [0; 4];
+        for character in text.chars() {
+            let typed = character.encode_utf8(&mut buffer);
+            let keystroke = Keystroke {
+                modifiers: Modifiers::default(),
+                key: if character == ' ' { "space".into() } else { typed.to_lowercase() },
+                key_char: Some(typed.to_string()),
+            };
+            self.update(|window, cx| window.dispatch_keystroke(keystroke, cx))?;
+        }
+        Ok(())
+    }
+
+    /// A key going down or up with its **physical key** (`KeyCode`, GPUI patch 0012), as a
+    /// platform reports it: `keystroke` is what the layout makes of the key (`"ş"`),
+    /// `code` which key it is. Key listeners see it; no text is inserted.
+    pub fn key_event(&self, keystroke: Keystroke, code: KeyCode, down: bool) -> Result<()> {
+        self.input(if down {
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: false,
+                code,
+            })
+        } else {
+            PlatformInput::KeyUp(KeyUpEvent { keystroke, code })
+        })
+    }
+
+    /// A modifier key going down or up, as Linux and Windows report it: the modifiers as
+    /// they are after it, and which physical key moved.
+    pub fn modifier_key(&self, code: KeyCode, pressed: bool, modifiers: Modifiers) -> Result<()> {
+        self.input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+            modifiers,
+            capslock: Default::default(),
+            key: Some(ModifierKey { code, pressed }),
+        }))
+    }
+
+    /// A left button press at `position`: `clicks` 2 is the second press of a double click.
+    pub fn mouse_down(&self, position: Point<Pixels>, clicks: usize, modifiers: Modifiers) -> Result<()> {
+        self.mouse_move(position)?;
+        self.input(PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: clicks,
+            first_mouse: false,
+        }))
+    }
+
+    /// The pointer moving with the left button held.
+    pub fn mouse_drag(&self, position: Point<Pixels>) -> Result<()> {
+        self.input(PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }))
+    }
+
+    pub fn mouse_up(&self, position: Point<Pixels>) -> Result<()> {
+        self.input(PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }))
     }
 
     pub fn mouse_move(&self, position: Point<Pixels>) -> Result<()> {

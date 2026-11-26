@@ -50,3 +50,8 @@ tokio-rustls = { version = "0.26", default-features = false }
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"
+
+# The hotkeys recorder is tested under Turkish and German keymaps: xkbcommon (the version
+# GPUI's Linux layer links) says what each physical key types there.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+xkbcommon = { version = "0.8", default-features = false }

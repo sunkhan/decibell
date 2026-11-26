@@ -1,6 +1,6 @@
 [package]
 name = "decibell-text-gallery"
-description = "Capture and live-view screens for decibell-text (text roles, rich text)"
+description = "Capture and live-view screens for decibell-text (text roles, rich text, inputs) and the inputs' self-tests"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -12,5 +12,6 @@ decibell-text.workspace = true
 decibell-ui.workspace = true
 decibell-harness.workspace = true
 decibell-theme.workspace = true
+anyhow.workspace = true
 decibell-richtext = { path = "../../decibell-richtext" }
 decibell-highlight = { path = "../../decibell-highlight" }

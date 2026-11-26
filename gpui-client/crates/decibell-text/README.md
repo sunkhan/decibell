@@ -1,6 +1,6 @@
 # decibell-text
 
-The text engine of the GPUI client: every label, message body and (later) input is laid out and
+The text engine of the GPUI client: every label, message body and input is laid out and
 painted by this crate, on top of GPUI's shaper and glyph atlas. GPUI's own text elements cannot
 draw a chat client that looks like its Chromium original (no letter-spacing, no inline images, no
 mixed sizes in a paragraph, no selection, no slanted italics, line breaking that differs), so the
@@ -240,6 +240,179 @@ SVG), file-backed pages that are only read where an emoji is used. A checkout wi
 every emoji falls back to the system emoji font, which is also what an emoji without a Twemoji
 drawing does (as in the renderer).
 
+## Inputs (`decibell_text::input`)
+
+GPUI ships no text field, only the IME protocol. This module is the client's: an editing engine
+for short texts and the two fields built on it. The Electron client defines the behaviour
+(`RichInput.tsx`, every `<input>`); Chromium's own editing was recorded with real key events and
+is checked as vectors (below).
+
+| Type | What it is |
+|---|---|
+| `Buffer` | The text (a `String`; a message is a few KB at most), the selection (`Selection { anchor, head }` in bytes), the `Rules`, the atoms, the IME's marked range and the undo history. No GPUI, no layout: plain data, unit-tested. |
+| `Rules` | `multiline`, `max_utf16` (HTML `maxlength`), `max_utf8` (the renderer's `clampLine`: settings fields under the server's byte caps), `accept` (a character filter: `numeric`), `emoji_atoms` (the composer), `masked` (a password), `read_only`. |
+| `InputState` | The field as a GPUI entity **and view**: buffer + focus handle + layout + caret blink + mouse + clipboard + `EntityInputHandler` (IME). The view that owns a field makes one and keeps it. |
+| `TextInput`, `TextArea` | What goes in the element tree: `TextInput::new(&state, style)` (one line, scrolls sideways), `TextArea::new(&state, style)` (wraps, as high as its text). In the app both are reached through `decibell_ui::TextField::new(id).editor(&state)`, which is the box around them. |
+| `InputStyle` | Text style, placeholder / selection / caret colours, wrapping, atom size. No theme (`decibell_ui::TextField::input_style(font, size, leading, cx)` fills it from the theme). |
+| `InputEvent` | `Change`, `Submit`, `Escape`, `ArrowUpEmpty`, `Focus`, `Blur`: `cx.subscribe(&state, …)`. Delivered after the edit, so a handler may read and change the input. `Blur` / `Focus` also come when the window is deactivated / activated with the field focused (GPUI's focus events follow the window): a composition in progress is then kept as text. |
+| `Enter` | What Enter does: `Submit` (a single line), `Newline`, `Chat` (Enter submits, Shift+Enter and an open ``` fence break the line), `Custom(fn(text, shift) -> submit?)`. |
+
+### The handle
+
+`InputState` is the imperative handle (`RichInputHandle`): `value()`, `set_value(text, cx)`,
+`clear(cx)`, `insert_text(text, cx)` (over the selection, one undo step: the emoji picker, a
+mention), `selection()`, `select(…)`, `select_all(cx)`, `focus(window, cx)` (caret to the end),
+`is_empty()` / `is_blank()`, `is_composing()`, `caret_bounds()` (window coordinates: where to
+anchor a popup), `focus_handle(cx)`. Hooks for what needs an answer on the spot:
+`on_escape(|window, cx| handled?)`, `on_paste_non_text(|item, window, cx| taken?)` (images and
+files on the clipboard: the composer's attachments), `pass_keys(|keystroke| leave_alone?)` (a
+list's filter box lets ↑ ↓ Enter through), `on_reveal_caret(|rect, cx| …)` (a scroll container
+keeps the caret in view). `type_to_focus(&key_down, window, cx) -> bool` is "type anywhere to
+compose": call it from the chat view's key listener when no field has focus; a printable key
+focuses the input and lands in it. `InputEvent::ArrowUpEmpty` is ArrowUp in a blank composer
+(edit the last message).
+
+```rust
+// A settings field, capped as the community server caps it. In the view's constructor:
+let name = cx.new(|cx| InputState::single_line(window, cx).placeholder("Server name").max_bytes(64).with_value(&server.name));
+cx.subscribe(&name, |this, name, event: &InputEvent, cx| match event {
+    InputEvent::Change => this.draft.name = name.read(cx).value().to_string(),
+    InputEvent::Submit => this.save(cx),
+    _ => {}
+}).detach();
+// In render:
+Field::new("Server name").child(TextField::new("server-name").editor(&self.name).error(self.name_error.is_some()))
+```
+
+```rust
+// The composer's input. In the composer view's constructor:
+let input = cx.new(|cx| InputState::composer(window, cx).placeholder(format!("Message #{channel}")));
+input.update(cx, |input, _| {
+    input.on_escape(move |_, cx| drop_pending_reply(cx));                       // true swallows Escape
+    input.on_paste_non_text(move |item, window, cx| attach_from_clipboard(item, window, cx));
+});
+cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| match event {
+    InputEvent::Submit => { let text = input.read(cx).value().to_string(); input.update(cx, |i, cx| i.clear(cx)); this.send(text, window, cx) }
+    InputEvent::ArrowUpEmpty => this.edit_last_message(window, cx),
+    InputEvent::Change => this.draft_changed(input.read(cx).value(), cx),      // preview strip: composer::preview_visible
+    _ => {}
+}).detach();
+// In render: the renderer's `.rich-input` (channel font and size, line-height 1.4), growing to 160 px:
+let style = TextField::input_style(FontRole::Channel, theme.scaled.text_channel, 1.4, cx);
+ScrollArea::new("composer-input").track_scroll(&self.scroll).max_h(px(160.)).child(TextArea::new(&self.input, style))
+// + input.on_reveal_caret(|caret, _| scroll.scroll_into_view(caret.top(), caret.size.height, ScrollAlign::Nearest))
+// The picker: self.input.update(cx, |input, cx| { input.insert_text("😀", cx); input.focus(window, cx) });
+```
+
+### What it does
+
+- **Keys** (`keymap.rs`; Linux and Windows agree, macOS uses Cmd / Option): arrows, Ctrl+arrows by
+  word, Home / End (the visual line), Ctrl+Home / End, Page Up / Down, Shift to extend, Ctrl+A,
+  Backspace / Delete, Ctrl+Backspace / Delete, Ctrl+C / X / V, Ctrl+Insert, Shift+Insert,
+  Shift+Delete, Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Enter, Escape. The field matches keystrokes in its
+  own key-down listener (no global key bindings, no `init`): any other key propagates, so the
+  platform or the IME inserts its text and an application binding on it still works. Up / Down
+  keep a goal column across wrapped lines and lines of different lengths; in a single line they
+  go to the ends, as in Chromium's `<input>`.
+- **Mouse**: click, Shift+click, drag (the field keeps scrolling towards a pointer that left it),
+  double click (word) and triple click (line) with drags that extend by words / lines, and on
+  Linux the primary selection (published on selection, pasted by the middle button).
+- **Undo / redo** as Chromium groups them (`history.rs`): a typing burst is one step however long
+  the pauses; a Backspace or Delete starts a step that the typing after it joins; a caret move, a
+  paste, a cut, a programmatic insert and a blur end the step; an IME composition is one step.
+  1,000 steps / 1 MB, stored as the changed text only.
+- **Rules**: a single line takes pasted line breaks as spaces (Chromium); `max_length` cuts the
+  insertion on a character boundary to fit the UTF-16 budget (Chromium's `maxlength`); `max_bytes`
+  is `lib/utf8.ts` `clampLine` exactly (line breaks and tabs → one space, control characters
+  removed, **the value's tail** cut on a character boundary); `accept` filters characters.
+- **Atoms**: with `emoji_atoms`, every emoji `decibell_richtext::composer::emoji_atoms` finds is one
+  caret step and one deletion, drawn as a Twemoji box (`.rich-emoji`: 1.375 em, −0.3 em, 1 px
+  margins) through the engine's inline boxes, and copied / read (`value()`) as its characters. A
+  known `:shortcode:` becomes its emoji when its closing colon is typed (and on `set_value`), in
+  the same undo step. Only the edited lines are scanned.
+- **Password**: drawn as bullets (the secret is in no paragraph, no layout and no cache key: a
+  password's layout key is its character count and byte widths), `selected_text()` is `None` (copy
+  and cut do nothing), Ctrl+arrows see one word, the IME gets no text (`text_for_range` → `None`).
+- **IME**: `EntityInputHandler` with UTF-16 ↔ UTF-8 at the boundary: marked text (drawn underlined
+  in place), `bounds_for_range` for the candidate window (re-reported when the caret moves, from
+  paint: `invalidate_character_coordinates`), commit, cancel (an empty preedit), unmark on blur
+  (the preedit stays as text). Enter and Escape are the IME's while it composes.
+- **The caret** is a rectangle, 1 px (at least one device pixel), in the text colour
+  (`caret-color: auto`). It blinks at Blink's rate (500 ms shown, 500 ms hidden) from one timer task
+  that exists only while the field is focused **and** its window is active; typing and moving only
+  move the next blink's time (no task restart). No caret and no frames with a range selected,
+  blurred, or in an inactive window.
+- **Layout** (`display.rs`): one `Paragraph` + `Layout` per hard line. An edit shapes the line it
+  happened in; the others are matched by a hash of their text and keep their layouts; a new width
+  wraps the existing paragraphs again and shapes nothing. `InputState` is its own view: a key
+  re-renders it and its ancestors, never its siblings.
+
+### Against Chromium
+
+`tools/chromium/input-keys.js` drives a hidden Electron page (`<textarea>`, `<input>`) with
+`webContents.sendInputEvent` (Blink's own key handling) and records caret stops, values and undo
+steps: `tests/data/chromium-input.json` (Chromium 130, Linux), checked by
+`cargo test -p decibell-text --test input_vectors` and `input::tests`:
+
+| | Cases | Result |
+|---|---|---|
+| Ctrl+Left / Right stops, Ctrl+Backspace / Delete results | 16 strings (punctuation, URLs, numbers, Turkish, emoji, line breaks, leading / trailing spaces) | 15 identical; 1 differs (below) |
+| Left / Right stops, Backspace and Delete results | 8 strings (ZWJ family, flags, keycap, skin tone, combining marks, Hangul, Thai) | identical |
+| Undo / redo steps | 11 sequences (bursts with 1.5 s and 4 s pauses, Backspace in a burst, caret moves, Enter, Ctrl+A, word delete) | identical |
+| Selection collapse, word moves from a selection, Up / Down in an `<input>` and at a textarea's first / last line, Home / End, the goal column, pasted line breaks, `maxlength` | 17 | identical |
+
+What the vectors taught (each is in the code where it applies): Ctrl+arrows skip spaces and stop at
+words, at **runs of punctuation** and at each line break; a full stop or colon between letters
+breaks a word ("example.com" is three stops) but not between digits; Backspace takes one code
+point off a combining sequence but a whole emoji sequence, while Delete takes the grapheme;
+Chromium has no undo timer.
+
+Known differences:
+
+- **Words in Chinese, Japanese and Thai**: Chromium uses ICU's dictionaries (日本語 | の | テキスト);
+  here a run of such letters is one word. The dictionaries are about 2 MB of data.
+- **Windows' Ctrl+Right** lands before the next word (Chromium's Windows behaviour); written
+  (`next_word(.., skip_space)`), not recorded from a Windows Chromium.
+- **A triple click** selects the hard line without its line break (Chromium's selection runs to
+  the start of the next paragraph).
+- **Caret blink**: Blink's default 500 ms. Chromium on Linux takes GTK's `gtk-cursor-blink-time`
+  when it is set and stops blinking after `gtk-cursor-blink-timeout`; not read here.
+- **Selection colours** are Chromium's defaults as measured on the dark themes (`#0538A4` /
+  white) in every theme; an unfocused field shows no selection.
+- **Drag autoscroll** moves about a character (or a line) every 50 ms; Chromium's speed depends on
+  how far outside the pointer is.
+- **Bidi**: as the engine (above): one direction per paragraph; the caret moves in logical order.
+
+### Cost (i7-12700K, release; `cargo test --release -p decibell-text --test input_cost -- --nocapture`, `decibell --selftest input-typing,input-caret-idle`)
+
+| | |
+|---|---|
+| Frames per typed character, caret move, preedit update, new line | **1** (2 for the first key after a click: GPUI redraws once when input changes from pointer to keyboard) |
+| Typing a 200-character message into a `TextArea`, per key | edit (key dispatch → buffer → re-shape the line → layout) **≈ 50–70 µs**, 84 allocations (58 at 20 characters, 116 at 190: cosmic-text's shaper, per shaped run); the frame that shows it **≈ 17–35 µs**, 13 allocations (the element tree of the test window) |
+| The same key with 8 KB in 40 other lines above it | 62 allocations (no more than alone); 1 line shaped, 40 reused; edit ≈ 110 µs (hashing the lines to match them: about 5 µs per KB) |
+| A width change | every line wrapped again, nothing shaped |
+| Focused, window active, idle | 2 frames/s (the blink), nothing else: 10 frames in 5 s; 30 ms of CPU in those 5 s (0.6 % of a core, all threads, release build, measured on X11 where the test window can be activated) |
+| Blurred, or focused in an inactive window | **0 frames in 5 s**, no timer |
+| Memory per field | `InputState` 1,032 bytes + 2.5 KB of heap (entity, focus handle, three subscriptions) empty; 6.8 KB with a 200-character message typed (text, undo step, paragraph, layout) |
+
+### Windows, IME, and what was not run
+
+- **A live IME was not run** (no fcitx / ibus in this session): the self-test `input-ime` drives the
+  same `EntityInputHandler` methods a platform calls (preedit updates without ranges, as Wayland
+  sends them; UTF-16 ranges; candidate bounds; commit; cancel). To check by hand: fcitx5 or ibus
+  with a Japanese or Chinese engine in `decibell --screen inputs`: the preedit underlined in place,
+  the candidate window under the caret (also on a wrapped line of the text area and in a
+  scrolled single line), Enter committing without sending.
+- **Windows**: nothing here is platform code except `cfg`s (`paste_primary`, the word-right rule);
+  GPUI's IMM32 path calls the same handler. Not run: IME (IMM32; no TSF in GPUI), the clipboard,
+  DirectWrite's shaping under the caret geometry, Ctrl+Right's Windows stops.
+- **Wayland refuses a clipboard write without the serial of a real key or button press**, so
+  `input-clipboard` and `input-password` run their clipboard round trip only on X11
+  (`WAYLAND_DISPLAY= decibell --selftest input-clipboard`); with a real key press (a user) GPUI's
+  Wayland clipboard works as for any GPUI app.
+- GPUI on Linux writes only text to the clipboard and reads images; a pasted image reaches
+  `on_paste_non_text` (checked on X11).
+
 ## Fonts and fallback
 
 - The app starts with only the bundled faces in GPUI's font database (patch 0011). A character
@@ -256,9 +429,8 @@ drawing does (as in the renderer).
 
 ## Deferred, with pointers
 
-- **Inputs** (composer, fields, IME): not started. `Layout` has what a field needs
-  (`caret`, `hit`, `rects_for_range`, `word_at`, positions with affinity); what is missing is an
-  editable buffer and `EntityInputHandler` glue (`docs/gpui-notes.md` §7).
+- **The composer around the input** (the preview strip, the emoji / GIF pickers, attachments,
+  slowmode, send pacing): the chat view's. "Inputs" below says what the input gives it.
 - **Code block and display math chrome** (header, copy button, 14-line collapse, horizontal
   scroll): the chat view's. Building blocks: `Engine::highlighted`, `code_layout`, `TextBlock`,
   `MathBlock`, `RichText::slot`. `gallery/src/rich.rs` has a minimal version of both.
@@ -310,6 +482,8 @@ src/math.rs        formulas: decibell-tex's display list → paintable
 src/code.rs        highlighted code: background highlighting, code paragraphs
 src/label.rs       Label, TextBlock, MathBlock
 src/rich.rs        RichStyle, RichLayout, RichText
-gallery/           the text-roles and rich-text screens (its own crate: it uses decibell-ui)
+src/input/         text input: buffer, undo, key map, display, InputState, TextInput / TextArea
+gallery/           the text-roles, rich-text and inputs screens and the inputs' self-tests (its own
+                   crate: it uses decibell-ui)
 tools/             the Chromium harness (tools/README.md)
 ```

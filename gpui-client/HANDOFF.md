@@ -485,14 +485,13 @@ Series 1 (load average 3.4–8.7), the same code:
 - Timed waits that remain in the core by decision: the 5 ms audio tick and device-clock wakeups in voice, the
   30 s server pings, the 500 ms MLS tick (could be deadline-driven), `default_device_watch`'s 1 s poll on
   Windows / macOS (should become OS notifications), the documented hotkey polls.
-- **Physical key codes (must be fixed before the Keybinds screen and the focused-window hotkey path are done).**
-  Bindings name keys by physical position (`KeyboardEvent.code`: `Semicolon`, `KeyQ`; `hotkeys/keys.rs`). GPUI's
-  `Keystroke` carries only the character the key produced (`key`, `key_char`; `KeyDownEvent` has no code), so a
-  recorder built on it assumes a US layout: on a German keyboard the key labelled Z would be saved as the
-  physical Y position, and Turkish ş / ı / ğ keys could not be recorded or would be saved as the wrong key. The
-  platform layers have the code at hand (Linux: the xkb keycode passed to `keystroke_from_xkb`; Windows: the
-  scan code in the key message), so the fix is a small GPUI patch adding the physical code to key events, and
-  the hotkeys store using it. A self-test must cover a non-US layout (e.g. an xkb `tr` / `de` keymap).
+- **Physical key codes: done** (GPUI patch 0012, `patches/README.md`). Key events carry the platform's
+  physical key (`KeyDownEvent::code`: the evdev code on Linux, the scan code on Windows) and modifier keys
+  arrive with their side (`ModifiersChangedEvent::key`); `decibell_model::live::hotkeys` names them through
+  the core's table (`code_of`), and the recorder (`Recorder`) and the focused fallback (`Hotkeys::key_event`)
+  use that, tested under xkb's `tr` and `de` layouts. Still to do: the Keybinds screen feeds the recorder, the
+  app's root feeds the fallback; and by hand, once: record a binding on a real Turkish or German keyboard
+  under Wayland, and on Windows (scan codes there were never run).
 - `system_idle` can only be queried, not subscribed to: auto-away is late by up to one threshold on Wayland.
   There is no device-change notification from the core and no mic test outside a voice session (Electron used
   Web Audio for the out-of-voice meter).

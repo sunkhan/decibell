@@ -47,6 +47,24 @@ echo '{"families":["Decibell Sans","Decibell Inter","Decibell Mono"],"sizes":[11
 crates/decibell-text/tools/chromium/run.sh $T/m.json $T/metrics.json --dsf 2 --page metrics.html
 ```
 
+## Input vectors
+
+`chromium/input-keys.js` (run by `chromium/input-keys.sh <out.json>`, ~30 s, a hidden window, a
+throwaway profile, no clipboard) presses real keys in a `<textarea>` and an `<input>` with
+`webContents.sendInputEvent` and records what Blink's editing did: the caret stops of Left / Right
+and Ctrl+Left / Right, the values after Backspace / Delete and their Ctrl variants, the undo and
+redo steps of typed sequences, and a handful of single facts (selection collapse, Up / Down at the
+ends, Home / End, the goal column, pasted line breaks, `maxlength`).
+
+```sh
+crates/decibell-text/tools/chromium/input-keys.sh crates/decibell-text/tests/data/chromium-input.json
+cargo test -p decibell-text --test input_vectors && cargo test -p decibell-text --lib input
+```
+
+Offsets in the file are UTF-16 code units (`selectionStart`); the tests convert. To add a case, add
+the string or the step list in `input-keys.js` and rerun: a new string is checked automatically,
+a new kind of step needs a line in `tests/input_vectors.rs`.
+
 ## Pixels
 
 ```sh

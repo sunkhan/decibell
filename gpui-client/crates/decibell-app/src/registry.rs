@@ -23,6 +23,7 @@ pub fn selftests() -> Vec<SelfTest> {
     let mut tests = Vec::new();
     tests.extend(crate::selftests::selftests());
     tests.extend(decibell_ui::selftests());
+    tests.extend(decibell_text_gallery::selftests());
     tests.extend(decibell_video::selftests());
     tests.extend(decibell_shell::selftests());
     tests.extend(decibell_chat::selftests());

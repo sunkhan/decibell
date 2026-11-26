@@ -860,7 +860,7 @@ creating / dropping hundreds of entities with their observers.
 | Uploads | done by the model (§16): `bridge::install` sets the composer as the `UploadControl` and mirrors its pendings through `actions::transfers::sync_uploads` | Nothing for the app. Rows: `go_to_upload` / `go_to_download` for "Go to message". |
 | Taskbar / quit guard | observe `transfers`: `progress()` (fraction or none, paused-only) and `uploads_in_flight()` | Electron throttled the platform call to 4 / s. |
 | Window | observe `voice.watching.fullscreen`; `live::window_title(model, cx)` (reads the open DM itself) when `nav`, `servers`, `dm.list` or `NamesChanged` fire | Set the title only when it differs. |
-| Hotkeys | window key events → `hotkeys.update(|h, _| h.key(code, down))`, blur → `window_blurred()`; `actions::hotkeys::inject_cli(arg)` from the single-instance glue (`--hotkey=<action>[:down\|:up]`) | Codes are `KeyboardEvent.code` names: `live::hotkeys::code_from_gpui_key` maps GPUI's `Keystroke::key` **assuming a US layout** (no physical code at the pin). |
+| Hotkeys | window key events → `hotkeys.update(|h, _| h.key_event(event.code, Some(&event.keystroke), down))` (modifier keys: `ModifiersChangedEvent::key` → `h.key_event(key.code, None, key.pressed)`), blur → `window_blurred()`; the Keybinds tab feeds a `live::hotkeys::Recorder` the same events; `actions::hotkeys::inject_cli(arg)` from the single-instance glue (`--hotkey=<action>[:down\|:up]`) | Codes are `KeyboardEvent.code` names, from the event's physical key (`live::hotkeys::code_of`, GPUI patch 0012: layout-independent). Only where the platform reports none (macOS at the patch) is the name guessed from the character (`code_from_gpui_key`, US layout). |
 | Frame sinks | the video views: `actions::voice::show_stream(uid)` on mount, `hide_stream(uid)` on unmount | |
 
 ### M3.3 Overlay requests
@@ -941,7 +941,7 @@ Nothing of M3 polls at idle: signed in with nothing on screen, no M3 timer exist
 2. No out-of-voice mic test: the Audio tab's meter outside voice used Web Audio's `getUserMedia`; the core
    meters only inside a session (`voice_input_level`).
 3. No device-change notification from the core (only `default_device_watch` for the default device).
-4. GPUI's `Keystroke` has no physical key code: the recorder's `KeyboardEvent.code` names assume a US layout.
+4. ~~GPUI's `Keystroke` has no physical key code~~: fixed by GPUI patch 0012 (`KeyDownEvent::code`, `ModifiersChangedEvent::key`); `live::hotkeys` names keys from it. macOS still guesses from the character.
 5. `probe_native_encoders` does not exist on macOS: encode caps are empty there.
 6. `caps_refreshed` and `stream_gpu_fallback` have no emitter (as the foundation noted).
 

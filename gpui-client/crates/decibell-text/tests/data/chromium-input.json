@@ -1,0 +1,1076 @@
+{
+ "chromium": "130.0.6723.191",
+ "platform": "linux",
+ "words": [
+  {
+   "text": "hello, wörld_1  foo.bar",
+   "right": [
+    0,
+    5,
+    6,
+    14,
+    19,
+    20,
+    23
+   ],
+   "left": [
+    23,
+    20,
+    19,
+    16,
+    7,
+    5,
+    0
+   ],
+   "delete": [
+    ", wörld_1  foo.bar",
+    " wörld_1  foo.bar",
+    "  foo.bar",
+    ".bar",
+    "bar",
+    ""
+   ],
+   "backspace": [
+    "hello, wörld_1  foo.",
+    "hello, wörld_1  foo",
+    "hello, wörld_1  ",
+    "hello, ",
+    "hello",
+    ""
+   ]
+  },
+  {
+   "text": "one  two\tthree",
+   "right": [
+    0,
+    3,
+    8,
+    14
+   ],
+   "left": [
+    14,
+    9,
+    5,
+    0
+   ],
+   "delete": [
+    "  two\tthree",
+    "\tthree",
+    ""
+   ],
+   "backspace": [
+    "one  two\t",
+    "one  ",
+    ""
+   ]
+  },
+  {
+   "text": "a ... b",
+   "right": [
+    0,
+    1,
+    5,
+    7
+   ],
+   "left": [
+    7,
+    6,
+    2,
+    0
+   ],
+   "delete": [
+    " ... b",
+    " b",
+    ""
+   ],
+   "backspace": [
+    "a ... ",
+    "a ",
+    ""
+   ]
+  },
+  {
+   "text": "foo-bar baz/qux",
+   "right": [
+    0,
+    3,
+    4,
+    7,
+    11,
+    12,
+    15
+   ],
+   "left": [
+    15,
+    12,
+    11,
+    8,
+    4,
+    3,
+    0
+   ],
+   "delete": [
+    "-bar baz/qux",
+    "bar baz/qux",
+    " baz/qux",
+    "/qux",
+    "qux",
+    ""
+   ],
+   "backspace": [
+    "foo-bar baz/",
+    "foo-bar baz",
+    "foo-bar ",
+    "foo-",
+    "foo",
+    ""
+   ]
+  },
+  {
+   "text": "don't stop",
+   "right": [
+    0,
+    5,
+    10
+   ],
+   "left": [
+    10,
+    6,
+    0
+   ],
+   "delete": [
+    " stop",
+    ""
+   ],
+   "backspace": [
+    "don't ",
+    ""
+   ]
+  },
+  {
+   "text": "x=1+2*3",
+   "right": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "left": [
+    7,
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0
+   ],
+   "delete": [
+    "=1+2*3",
+    "1+2*3",
+    "+2*3",
+    "2*3",
+    "*3",
+    "3",
+    ""
+   ],
+   "backspace": [
+    "x=1+2*",
+    "x=1+2",
+    "x=1+",
+    "x=1",
+    "x=",
+    "x",
+    ""
+   ]
+  },
+  {
+   "text": "ışık ığdır İstanbul",
+   "right": [
+    0,
+    4,
+    10,
+    19
+   ],
+   "left": [
+    19,
+    11,
+    5,
+    0
+   ],
+   "delete": [
+    " ığdır İstanbul",
+    " İstanbul",
+    ""
+   ],
+   "backspace": [
+    "ışık ığdır ",
+    "ışık ",
+    ""
+   ]
+  },
+  {
+   "text": "日本語のテキスト",
+   "right": [
+    0,
+    3,
+    4,
+    8
+   ],
+   "left": [
+    8,
+    4,
+    3,
+    0
+   ],
+   "delete": [
+    "のテキスト",
+    "テキスト",
+    ""
+   ],
+   "backspace": [
+    "日本語の",
+    "日本語",
+    ""
+   ]
+  },
+  {
+   "text": "emoji 😀 mid 👨‍👩‍👧 end",
+   "right": [
+    0,
+    5,
+    8,
+    12,
+    21,
+    25
+   ],
+   "left": [
+    25,
+    22,
+    13,
+    9,
+    6,
+    0
+   ],
+   "delete": [
+    " 😀 mid 👨‍👩‍👧 end",
+    " mid 👨‍👩‍👧 end",
+    " 👨‍👩‍👧 end",
+    " end",
+    ""
+   ],
+   "backspace": [
+    "emoji 😀 mid 👨‍👩‍👧 ",
+    "emoji 😀 mid ",
+    "emoji 😀 ",
+    "emoji ",
+    ""
+   ]
+  },
+  {
+   "text": "  leading and trailing  ",
+   "right": [
+    0,
+    9,
+    13,
+    22,
+    24
+   ],
+   "left": [
+    24,
+    14,
+    10,
+    2,
+    0
+   ],
+   "delete": [
+    " and trailing  ",
+    " trailing  ",
+    "  ",
+    ""
+   ],
+   "backspace": [
+    "  leading and ",
+    "  leading ",
+    "  ",
+    ""
+   ]
+  },
+  {
+   "text": "line one\nline two\n\nfour",
+   "right": [
+    0,
+    4,
+    8,
+    9,
+    13,
+    17,
+    18,
+    19,
+    23
+   ],
+   "left": [
+    23,
+    19,
+    18,
+    17,
+    14,
+    9,
+    8,
+    5,
+    0
+   ],
+   "delete": [
+    " one\nline two\n\nfour",
+    "\nline two\n\nfour",
+    "line two\n\nfour",
+    " two\n\nfour",
+    "\n\nfour",
+    "\nfour",
+    "four",
+    ""
+   ],
+   "backspace": [
+    "line one\nline two\n\n",
+    "line one\nline two\n",
+    "line one\nline two",
+    "line one\nline ",
+    "line one\n",
+    "line one",
+    "line ",
+    ""
+   ]
+  },
+  {
+   "text": "http://example.com/a?b=c",
+   "right": [
+    0,
+    4,
+    7,
+    14,
+    15,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24
+   ],
+   "left": [
+    24,
+    23,
+    22,
+    21,
+    20,
+    19,
+    18,
+    15,
+    14,
+    7,
+    4,
+    0
+   ],
+   "delete": [
+    "://example.com/a?b=c",
+    "example.com/a?b=c",
+    ".com/a?b=c",
+    "com/a?b=c",
+    "/a?b=c",
+    "a?b=c",
+    "?b=c",
+    "b=c",
+    "=c",
+    "c",
+    ""
+   ],
+   "backspace": [
+    "http://example.com/a?b=",
+    "http://example.com/a?b",
+    "http://example.com/a?",
+    "http://example.com/a",
+    "http://example.com/",
+    "http://example.com",
+    "http://example.",
+    "http://example",
+    "http://",
+    "http",
+    ""
+   ]
+  },
+  {
+   "text": "under_score CamelCase",
+   "right": [
+    0,
+    11,
+    21
+   ],
+   "left": [
+    21,
+    12,
+    0
+   ],
+   "delete": [
+    " CamelCase",
+    ""
+   ],
+   "backspace": [
+    "under_score ",
+    ""
+   ]
+  },
+  {
+   "text": "3.14 1,000 v2.0",
+   "right": [
+    0,
+    4,
+    10,
+    15
+   ],
+   "left": [
+    15,
+    11,
+    5,
+    0
+   ],
+   "delete": [
+    " 1,000 v2.0",
+    " v2.0",
+    ""
+   ],
+   "backspace": [
+    "3.14 1,000 ",
+    "3.14 ",
+    ""
+   ]
+  },
+  {
+   "text": "(parens) [brackets] {braces}",
+   "right": [
+    0,
+    1,
+    7,
+    8,
+    10,
+    18,
+    19,
+    21,
+    27,
+    28
+   ],
+   "left": [
+    28,
+    27,
+    21,
+    20,
+    18,
+    10,
+    9,
+    7,
+    1,
+    0
+   ],
+   "delete": [
+    "parens) [brackets] {braces}",
+    ") [brackets] {braces}",
+    " [brackets] {braces}",
+    "brackets] {braces}",
+    "] {braces}",
+    " {braces}",
+    "braces}",
+    "}",
+    ""
+   ],
+   "backspace": [
+    "(parens) [brackets] {braces",
+    "(parens) [brackets] {",
+    "(parens) [brackets] ",
+    "(parens) [brackets",
+    "(parens) [",
+    "(parens) ",
+    "(parens",
+    "(",
+    ""
+   ]
+  },
+  {
+   "text": "tab\tand  spaces",
+   "right": [
+    0,
+    3,
+    7,
+    15
+   ],
+   "left": [
+    15,
+    9,
+    4,
+    0
+   ],
+   "delete": [
+    "\tand  spaces",
+    "  spaces",
+    ""
+   ],
+   "backspace": [
+    "tab\tand  ",
+    "tab\t",
+    ""
+   ]
+  }
+ ],
+ "graphemes": [
+  {
+   "text": "a👨‍👩‍👧‍👦b",
+   "right": [
+    0,
+    1,
+    12,
+    13
+   ],
+   "left": [
+    13,
+    12,
+    1,
+    0
+   ],
+   "backspace": [
+    "a👨‍👩‍👧‍👦",
+    "a",
+    ""
+   ],
+   "delete": [
+    "👨‍👩‍👧‍👦b",
+    "b",
+    ""
+   ]
+  },
+  {
+   "text": "🇹🇷🇩🇪",
+   "right": [
+    0,
+    4,
+    8
+   ],
+   "left": [
+    8,
+    4,
+    0
+   ],
+   "backspace": [
+    "🇹🇷",
+    ""
+   ],
+   "delete": [
+    "🇩🇪",
+    ""
+   ]
+  },
+  {
+   "text": "1️⃣2",
+   "right": [
+    0,
+    3,
+    4
+   ],
+   "left": [
+    4,
+    3,
+    0
+   ],
+   "backspace": [
+    "1️⃣",
+    ""
+   ],
+   "delete": [
+    "2",
+    ""
+   ]
+  },
+  {
+   "text": "👍🏽x",
+   "right": [
+    0,
+    4,
+    5
+   ],
+   "left": [
+    5,
+    4,
+    0
+   ],
+   "backspace": [
+    "👍🏽",
+    ""
+   ],
+   "delete": [
+    "x",
+    ""
+   ]
+  },
+  {
+   "text": "éä́",
+   "right": [
+    0,
+    2,
+    5
+   ],
+   "left": [
+    5,
+    2,
+    0
+   ],
+   "backspace": [
+    "éä",
+    "éa",
+    "é",
+    "e",
+    ""
+   ],
+   "delete": [
+    "ä́",
+    ""
+   ]
+  },
+  {
+   "text": "ığİ",
+   "right": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "left": [
+    3,
+    2,
+    1,
+    0
+   ],
+   "backspace": [
+    "ığ",
+    "ı",
+    ""
+   ],
+   "delete": [
+    "ğİ",
+    "İ",
+    ""
+   ]
+  },
+  {
+   "text": "한글กำ",
+   "right": [
+    0,
+    1,
+    2,
+    4
+   ],
+   "left": [
+    4,
+    2,
+    1,
+    0
+   ],
+   "backspace": [
+    "한글ก",
+    "한글",
+    "한",
+    ""
+   ],
+   "delete": [
+    "글กำ",
+    "กำ",
+    ""
+   ]
+  },
+  {
+   "text": "a\nb",
+   "right": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "left": [
+    3,
+    2,
+    1,
+    0
+   ],
+   "backspace": [
+    "a\n",
+    "a",
+    ""
+   ],
+   "delete": [
+    "\nb",
+    "b",
+    ""
+   ]
+  }
+ ],
+ "undo": [
+  {
+   "name": "burst",
+   "steps": [
+    [
+     "type",
+     "hello"
+    ]
+   ],
+   "typed": "hello",
+   "undo": [
+    ""
+   ],
+   "redo": [
+    "hello"
+   ]
+  },
+  {
+   "name": "burst_with_pause",
+   "steps": [
+    [
+     "type",
+     "abc"
+    ],
+    [
+     "wait",
+     1500
+    ],
+    [
+     "type",
+     "def"
+    ]
+   ],
+   "typed": "abcdef",
+   "undo": [
+    ""
+   ],
+   "redo": [
+    "abcdef"
+   ]
+  },
+  {
+   "name": "burst_with_long_pause",
+   "steps": [
+    [
+     "type",
+     "abc"
+    ],
+    [
+     "wait",
+     4000
+    ],
+    [
+     "type",
+     "def"
+    ]
+   ],
+   "typed": "abcdef",
+   "undo": [
+    ""
+   ],
+   "redo": [
+    "abcdef"
+   ]
+  },
+  {
+   "name": "backspace_in_burst",
+   "steps": [
+    [
+     "type",
+     "abcd"
+    ],
+    [
+     "key",
+     "Backspace"
+    ],
+    [
+     "type",
+     "e"
+    ]
+   ],
+   "typed": "abce",
+   "undo": [
+    "abcd",
+    ""
+   ],
+   "redo": [
+    "abcd",
+    "abce"
+   ]
+  },
+  {
+   "name": "delete_after_typing",
+   "steps": [
+    [
+     "type",
+     "abcd"
+    ],
+    [
+     "key",
+     "Left"
+    ],
+    [
+     "key",
+     "Delete"
+    ]
+   ],
+   "typed": "abc",
+   "undo": [
+    "abcd",
+    ""
+   ],
+   "redo": [
+    "abcd",
+    "abc"
+   ]
+  },
+  {
+   "name": "caret_move",
+   "steps": [
+    [
+     "type",
+     "abc"
+    ],
+    [
+     "key",
+     "Left"
+    ],
+    [
+     "key",
+     "Right"
+    ],
+    [
+     "type",
+     "d"
+    ]
+   ],
+   "typed": "abcd",
+   "undo": [
+    "abc",
+    ""
+   ],
+   "redo": [
+    "abc",
+    "abcd"
+   ]
+  },
+  {
+   "name": "words",
+   "steps": [
+    [
+     "type",
+     "one two three"
+    ]
+   ],
+   "typed": "one two three",
+   "undo": [
+    ""
+   ],
+   "redo": [
+    "one two three"
+   ]
+  },
+  {
+   "name": "enter",
+   "steps": [
+    [
+     "type",
+     "one"
+    ],
+    [
+     "key",
+     "Enter"
+    ],
+    [
+     "type",
+     "two"
+    ]
+   ],
+   "typed": "onetwo",
+   "undo": [
+    ""
+   ],
+   "redo": [
+    "onetwo"
+   ]
+  },
+  {
+   "name": "insert_text_command",
+   "steps": [
+    [
+     "type",
+     "abc"
+    ],
+    [
+     "insert",
+     " PASTED"
+    ],
+    [
+     "type",
+     "!"
+    ]
+   ],
+   "typed": "abc PASTED!",
+   "undo": [
+    ""
+   ],
+   "redo": [
+    "abc PASTED!"
+   ]
+  },
+  {
+   "name": "select_all_retype",
+   "steps": [
+    [
+     "type",
+     "abc"
+    ],
+    [
+     "key",
+     "a",
+     [
+      "control"
+     ]
+    ],
+    [
+     "type",
+     "x"
+    ]
+   ],
+   "typed": "x",
+   "undo": [
+    "abc",
+    ""
+   ],
+   "redo": [
+    "abc",
+    "x"
+   ]
+  },
+  {
+   "name": "word_delete",
+   "steps": [
+    [
+     "type",
+     "one two"
+    ],
+    [
+     "key",
+     "Backspace",
+     [
+      "control"
+     ]
+    ],
+    [
+     "type",
+     "x"
+    ]
+   ],
+   "typed": "one x",
+   "undo": [
+    "one two",
+    ""
+   ],
+   "redo": [
+    "one two",
+    "one x"
+   ]
+  }
+ ],
+ "misc": {
+  "left_collapses": [
+   2,
+   2,
+   "forward"
+  ],
+  "right_collapses": [
+   4,
+   4,
+   "forward"
+  ],
+  "left_collapses_backward": [
+   2,
+   2,
+   "forward"
+  ],
+  "word_left_from_selection": [
+   8,
+   8,
+   "forward"
+  ],
+  "word_right_from_selection": [
+   13,
+   13,
+   "forward"
+  ],
+  "word_right_from_backward_selection": [
+   7,
+   7,
+   "forward"
+  ],
+  "shift_word_right": [
+   0,
+   3,
+   "forward"
+  ],
+  "input_up": [
+   0,
+   0,
+   "forward"
+  ],
+  "input_down": [
+   6,
+   6,
+   "forward"
+  ],
+  "area_up_first_line": [
+   0,
+   0,
+   "forward"
+  ],
+  "area_down_last_line": [
+   10,
+   10,
+   "forward"
+  ],
+  "home_end": [
+   [
+    3,
+    3,
+    "forward"
+   ],
+   [
+    7,
+    7,
+    "forward"
+   ]
+  ],
+  "ctrl_home_end": [
+   [
+    0,
+    0,
+    "forward"
+   ],
+   [
+    10,
+    10,
+    "forward"
+   ]
+  ],
+  "goal_column": [
+   13,
+   22,
+   13,
+   8
+  ],
+  "input_newlines": "one two three four",
+  "maxlength_insert": "ab😀cd",
+  "maxlength_odd": "a😀"
+ }
+}

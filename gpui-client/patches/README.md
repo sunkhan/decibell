@@ -14,6 +14,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0006-wgpu-keep-lost-instance.patch` | After a device loss the renderer no longer destroys the lost context's wgpu instance. | With two windows open, the second window to recover crashed inside NVIDIA's driver (segfault in `vkGetPhysicalDeviceSurfaceSupportKHR`). Found by the `video-recover` self-test. |
 | `0010-gpui-text-engine.patch` | What `decibell-text` needs from GPUI's text system: shaping without GPUI's per-window cache (`TextSystem::shape_line_uncached`), a glyph's unkerned advance, a font's metrics and its glyph for a character; and on Linux, synthesised styles (an italic request on a family without an italic face is slanted by 0.25, a weight of 600 or more on a family lighter than 600 is emboldened by 1/24 em, each as a `FontId` of its own) and families the application added that have no letters (KaTeX's symbol faces) resolving by name. | The client lays text out itself (`crates/decibell-text/README.md`). Chromium synthesises exactly these styles for the renderer, which loads no italic face. |
 | `0011-linux-deferred-system-fonts.patch` | On Linux the text system starts with an empty font database (`CosmicTextSystem::new_with_deferred_system_fonts`) and indexes the installed fonts only if a family is requested that no added font provides. | Indexing 1,095 installed faces and walking that index for every new (family, weight, style) cost about 85 ms of the time to the first frame; the client names only its bundled families, and `decibell-text` adds a fallback font when a character needs one. |
+| `0012-gpui-physical-key-codes.patch` | Key events carry the physical key: `KeyDownEvent::code` / `KeyUpEvent::code` (`KeyCode::Evdev(n)` on Linux, `KeyCode::Windows(scan)` on Windows, `Unknown` elsewhere and for simulated keystrokes), and `ModifiersChangedEvent::key` names the modifier key that went down or up. | Hotkey bindings name keys by position (`KeyboardEvent.code`); GPUI's `Keystroke` has only the character the layout types, so a recorder built on it saved the wrong key on every non-US keyboard (`HANDOFF.md` §5, now closed). |
 
 ## How the patches are applied
 
@@ -267,6 +268,66 @@ The 21 ms can be moved off the frame that first needs it: `decibell_text::prewar
 fontconfig from any thread (the app can call it on a background thread once the first frame is out). Not
 exercised: a machine without libfontconfig (no fallback: the glyph stays missing, a warning is logged).
 Upstream: the constructor is generic and could go; Zed itself wants the system fonts.
+
+## 0012: the physical key on key events
+
+**What.** A key event says which key it is, not only what the keyboard layout makes it type.
+
+- `gpui::KeyCode` (new, `interactive.rs`): `Unknown`, `Evdev(u16)`, `Windows(u16)`. GPUI names no keys:
+  the number is the platform's, and the application maps it (the client: `decibell_model::live::hotkeys::
+  code_of`, through the core's `hotkeys/keys.rs` table, to the DOM's `KeyboardEvent.code` names).
+- `KeyDownEvent::code`, `KeyUpEvent::code`.
+  - **Wayland**: the `key` argument of `wl_keyboard.key`, which is the evdev code (`KEY_*`). The repeated
+    key-down events the client synthesises carry it too.
+  - **X11**: the event's keycode minus 8 (X keycodes are evdev codes plus 8); below 8: `Unknown`.
+  - **Windows**: the set-1 scan code from bits 16-23 of the key message's `lParam`, plus `0xE000` when the
+    extended-key bit (24) is set: `0x001D` is the left Control, `0xE01D` the right one, `0xE048` the
+    arrow up, `0x0048` the numpad 8. A message whose scan code is 0 (some injected input): `Unknown`.
+  - **macOS, web**: `Unknown` (not implemented: `NSEvent.keyCode` and `KeyboardEvent.code` are there to
+    take when those ports matter).
+  - A keystroke that was never a key: `Window::dispatch_keystroke`, replayed pending input, the one-byte
+    IME commit Wayland re-injects as a key press: `Unknown`.
+- `ModifiersChangedEvent::key: Option<ModifierKey { code, pressed }>`. A modifier key is not a key event
+  in GPUI: it only shows as a change of `modifiers`, which cannot tell the left Shift from the right one
+  and reports nothing when a second modifier of the same kind is pressed. Now Linux and Windows send one
+  `ModifiersChanged` per press and release of a modifier key with `key` set, carrying the modifiers **as
+  last reported** (on Linux the new state arrives in its own event, `wl_keyboard.modifiers` /
+  `XkbStateNotify`, with `key: None`, in no fixed order with the key on X11). Windows already built its
+  event from the key message: there the patch only stops dropping the ones that change no modifier
+  (auto-repeats are still dropped). An event for another reason (focus, a layout switch): `None`.
+
+**Why.** Bindings are stored by physical key (`Semicolon`, `KeyQ`), as the Electron client records them
+from `KeyboardEvent.code`, and the core's listeners watch evdev codes and scan codes. A recorder that
+has only the character saves the wrong key on a German keyboard (Z is on the `KeyY` key) and cannot save
+ş, ğ, ü, ö, ç or ß at all; and modifier-only bindings (`ControlRight`) need the side.
+
+**Cost.** One `u32`-sized field per key event; one more `ModifiersChanged` event per modifier key press
+and release (no frame: nothing listens that redraws; the `idle-frames` and kit self-tests are unchanged).
+
+**Evidence.**
+- `decibell-model`: `live::hotkeys::tests::layouts` compiles the `tr` and `de` layouts with xkbcommon,
+  takes what each evdev code types under them, builds the events the Linux layer builds, and checks the
+  recorder stores `Semicolon` for ş, `KeyI` / `Quote` for ı / i, `KeyY` for the German Z, sided
+  modifier-only combos, and that the focused fallback fires `Control + Semicolon` on that key under `tr`,
+  `de` and `us`.
+- `decibell --selftest hotkeys-layout`: the codes pass through GPUI's dispatch to key-down, key-up and
+  modifiers listeners; and on X11 (run with `WAYLAND_DISPLAY=`) real X key events sent to the test window
+  alone (`XSendEvent`, python-xlib) arrive with keycode − 8, the right Control as a modifier key with
+  `Evdev(97)`.
+- Not run: the Wayland path with a real key (nothing can inject one into a single window; the code is
+  `wl_keyboard.key`'s own argument), and everything on Windows (written to compile; no Windows target is
+  installed here, so not even compile-checked: the Windows Native Check workflow does that).
+
+**Files.** `gpui/src/interactive.rs` (+43: the types and fields), `gpui_linux/src/linux/wayland/client.rs`
+(+21), `gpui_linux/src/linux/x11/client.rs` (+36), `gpui_windows/src/events.rs` (+44 / −6), and the
+struct literals that needed the new field (`gpui`: `window.rs`, `elements/div.rs`, `key_dispatch.rs`,
+`window/native_view.rs`, `app/test_context.rs`; `gpui_macos`; `gpui_web`). Zed's own crates that build
+these events (`agent_ui`, `keymap_editor`, `terminal_view`, `vim`…) are not patched: they are not part of
+the client's build.
+
+**Upstream.** A physical key code on key events is something GPUI lacks for every application with
+rebindable shortcuts; the shape here (a raw platform number) is the smallest one. A version for upstream
+would fill macOS and the web and probably name the keys.
 
 ## Considered and not patched
 

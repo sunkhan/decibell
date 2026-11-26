@@ -1906,6 +1906,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "xkbcommon",
 ]
 
 [[package]]
@@ -1972,6 +1973,7 @@ dependencies = [
 name = "decibell-text-gallery"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "decibell-harness",
  "decibell-highlight",
  "decibell-richtext",

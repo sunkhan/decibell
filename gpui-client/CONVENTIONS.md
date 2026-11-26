@@ -110,8 +110,12 @@ control is a tab stop and Enter / Space activate it; `decibell_ui::init` binds T
   `Select::options(id, Some(value), vec![SelectOption::new(v, "Label").hint(…)])` or `Select::new(id, value,
   groups)` (`.size(SelectSize::Sm)`, `.variant(SelectVariant::Sunken)`, `.placeholder(…)`, `.icon(…)`,
   `.track(&SelectHandle::new(cx))` to open / inspect it from code); `Field::new("Label").hint(…)
-  .error(…).child(control)` (`Field::plain` for dialogs); `TextField::new(id).focus(&handle).value(…)
-  .placeholder(…).error(…)` — **a shell only** until `decibell-text`'s editor is passed to `.input(editor)`.
+  .error(…).child(control)` (`Field::plain` for dialogs); `TextField::new(id).editor(&state).error(…)
+  .leading_icon(…).disabled(…)` with `state: Entity<decibell_text::input::InputState>` made once by the view
+  (`InputState::single_line(window, cx).placeholder(…).max_bytes(64)`, `password`, `multi_line`, `composer`;
+  read `value()`, subscribe to `InputEvent::{Change, Submit, Escape}`); a multi-line state grows the field to
+  `.max_height(px)` and then scrolls. `crates/decibell-text/README.md` "Inputs" has the whole API; live:
+  `decibell --screen inputs`.
 - Overlays: `Modal::new(id, open).on_close(|request: &CloseRequest, …| …).child(dialog_card(400., cx)…)`
   (render it open or not; content must `.occlude()`; refuse a close by not closing);
   `ConfirmModal::new(id, open, "Delete message", "Delete").message(…).tone(…).busy(…).on_confirm(…)
