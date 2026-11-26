@@ -68,7 +68,8 @@ screens in all seven themes beside Electron's.
 | Message list and rows (`crates/decibell-chat`) | in progress (main tree) |
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
 | Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
-| Core: voice idle wakeups and polling, per-packet voice allocations, `FrameBuf` padding, idle / device-change events | in progress, worktree `.worktrees/core-voice` (`wip/core-voice`) |
+| Core: voice / media plane without polling | on the branch `344068e`..`5840094` (verification running): UDP receive loops block instead of polling at 1 ms, the video receive thread exists only while a stream is watched or sent, a talking peer allocates nothing per packet (PCM sample-identical in tests), `FrameBuf` keeps FFmpeg's padding, system idle as an event on Wayland. **No audio stream or processing is paused** (owner rule). In a voice channel alone and muted: 1,380 → 766 wakeups/s; what remains is the device clock and the 5 ms audio tick |
+| Encoder quality (NVENC HEVC bitrate undershoot, per-codec tuning, colour signalling) | in progress, worktree `.worktrees/core-quality` (`wip/core-quality`) |
 | Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software; VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
 | Shell (`decibell-common`, `decibell-shell`, app boot with core + model) | done `f4ac4fe`: sign-in / register pages, server bar, channel sidebar with voice rosters, user panel, member list, friends frame, pane / overlay / menu registration (CONVENTIONS "Shell"); self-tests `shell-signin`, `-navigate`, `-members`, `-idle`, `-signout`, `-no-keyring`; captures within 0.3–1.2 % of Electron's; numbers in §4 "Shell". Left: channel drag-to-reorder, panes of the other features |
 | Voice view, stream watching, mini-player, Go Live, calls (`decibell-voice`) + the stream bot for measurements | in progress, worktree `.worktrees/voice` (`wip/voice`) |
@@ -98,7 +99,7 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/core-voice` / `wip/core-voice` | voice wakeups / polling, voice allocations, `FrameBuf` padding (core) |
+| `.worktrees/core-quality` / `wip/core-quality` | encoder quality: HEVC undershoot, tuning, colour signalling (core) |
 | `.worktrees/land` / `wip/land` | text inputs + GPUI patch 0012 (physical key codes) |
 | `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
 | `.worktrees/voice` / `wip/voice` | voice view, streams UI, calls, stream bot |
@@ -465,10 +466,25 @@ Series 1 (load average 3.4–8.7), the same code:
   `cargo tree -e features -i zbus` shows no `tokio`. `decibell_model::core::prepare` (the earlier workaround) can
   go when the app's boot is wired. Keep `blocking` at 1.6.x in the lockfile (1.7.0 keeps an idle pool thread
   waking every 500 ms).
-- **Voice costs ~1,400 wakeups/s at rest in a channel, in the shared core** (numbers in §4): the voice socket is
-  read with a 1 ms timeout loop instead of blocking, and the video receive thread runs for every voice session
-  whether or not a stream is watched. Both clients pay it. To fix in the core (blocking receive with a wake on
-  shutdown; start the video receiver with the first watched stream), with Electron's bar.
+- **Where audio can click or gap today** (read-only audit of the core's voice path, 2026-11-26; pre-existing in
+  both clients; file:line in the voice task's notes and the review log). Fixing any of these changes audible
+  output, so each fix needs a sample-exact test and the owner's listening test:
+  1. output device switched mid-speech: rings are cut with no fade and the next frame gets no fade-in (click);
+  2. undeafen while someone talks: no fade-in (click);
+  3. per-user volume change: gain steps at a 20 ms frame boundary, no ramp ("zipper");
+  4. input device switched mid-speech: gate / pre-roll not reset, AEC reconverges (~1 s of echo);
+  5. toggling echo cancellation / noise suppression / gain control rebuilds the processors (gain resets);
+  6. the output pull estimate is not reset on a device change (crackle or extra latency for ~2 s, e.g. wired →
+     Bluetooth);
+  7. the output callback goes silent for one period if it cannot take the stream-audio lock (very rare);
+  8. ten lost frames in a row reset the jitter buffer (~100 ms gap; by design);
+  9. stream audio splices when 60 ms over target, no onset fade;
+  10. push-to-talk press has no pre-roll (10 ms fade-in on the first frame); mute mid-word sends a 60 ms tail;
+  11. building a device stream blocks the audio loop during a hot-swap (a hiccup for listeners);
+  12. the audio thread (not the device callback) allocates per capture frame.
+- Timed waits that remain in the core by decision: the 5 ms audio tick and device-clock wakeups in voice, the
+  30 s server pings, the 500 ms MLS tick (could be deadline-driven), `default_device_watch`'s 1 s poll on
+  Windows / macOS (should become OS notifications), the documented hotkey polls.
 - **Physical key codes (must be fixed before the Keybinds screen and the focused-window hotkey path are done).**
   Bindings name keys by physical position (`KeyboardEvent.code`: `Semicolon`, `KeyQ`; `hotkeys/keys.rs`). GPUI's
   `Keystroke` carries only the character the key produced (`key`, `key_char`; `KeyDownEvent` has no code), so a
@@ -500,6 +516,16 @@ Things only the owner can do; nothing here blocks the rest.
   hop fewer; the Linux self-preview moves its buffer instead of copying; reassembly and FEC no longer copy
   fragments twice). Electron's bar and the allocation tests pass and frames are byte-identical in tests, but no
   one has watched a real stream through it yet. Also the decision list in `docs/electron-quirks.md`.
+- **Listen to voice after the core's receive-path change** (two or three people in an MLS channel, talking in
+  turns): no new crackle, word starts not clipped, speaking indicators and mute state as before; a P2P call both
+  ways with a screen share in it; watch a stream (first picture as fast as before, stream audio plays), stop and
+  re-watch; join / leave / switch channels quickly and quit: nothing hangs. The hand-off of a voice packet to
+  the audio thread is 3–5 µs later at the median than the old 1 ms polling loop and better at p99.
+- **Then listen for the pre-existing click sources** listed in §5 ("Where audio can click or gap today"),
+  especially: switch output device while someone talks; undeafen mid-sentence; drag a user's volume while they
+  talk; switch wired → Bluetooth mid-talk.
+- **Run the encoder checks on AMD and Intel hardware** (`crates/decibell-core/tools/verify-encoders.md`: one
+  command per backend on Linux and Windows) and a real Go Live through each.
 - **Decide the active-tile glow's behaviour.** In Electron it breathes forever (2.4 s opacity cycle) and costs
   ~15 % of a core on Linux while the window is visible. This client breathes it only while the window is
   focused, at a capped frame rate, presenting without re-rendering; unfocused it rests. Say if it should
