@@ -12,6 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use futures::future::{LocalBoxFuture, Shared};
 use gpui::{App, Context, Task};
 
 use crate::ids::ServerId;
@@ -45,6 +46,9 @@ impl Pacer {
 pub struct SendPacing {
     pacers: HashMap<ServerId, Pacer>,
     suppress_legacy_until: Option<Instant>,
+    /// Per community, the last admitted send's call: the next one starts after it, so
+    /// sends leave in the order they were made (the core runs calls concurrently).
+    pub(crate) chains: HashMap<ServerId, Shared<LocalBoxFuture<'static, ()>>>,
 }
 
 impl SendPacing {
@@ -138,6 +142,7 @@ impl SendPacing {
     pub fn reset_for_logout(&mut self) {
         self.pacers.clear();
         self.suppress_legacy_until = None;
+        self.chains.clear();
     }
 }
 

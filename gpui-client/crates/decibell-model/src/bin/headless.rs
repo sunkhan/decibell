@@ -16,6 +16,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+// The message steps (M2).
+#[path = "headless/chat.rs"]
+mod chat;
+
 use decibell_model::local_key::{FixedKey, KeychainKey, LocalKey, LocalKeyProvider};
 use decibell_model::stores::community::{ChannelKind, Community};
 use decibell_model::stores::permissions::perm;
@@ -54,7 +58,9 @@ sign-in — always comes first):
   wait-file <path>                until that file exists (a cue from a test)
 
 Exit status: 0 when every step ran, 1 when one failed or timed out, 2 for bad usage or an
-unsafe environment.";
+unsafe environment.
+
+";
 
 #[derive(Debug, Clone)]
 enum Step {
@@ -67,6 +73,7 @@ enum Step {
     Idle(f64),
     Print(String),
     WaitFile(PathBuf),
+    Chat(chat::ChatStep),
     Live(live::LiveStep),
 }
 
@@ -136,7 +143,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "dump" => {
                 let what = next(&arg, &mut it)?;
                 let extra = match what.as_str() {
-                    "channels" | "roles" | "roster" => 1,
+                    "channels" | "roles" | "roster" | "chat" | "dm" => 1,
                     "permissions" => 2,
                     _ => 0,
                 };
@@ -146,6 +153,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
                 }
                 Step::Dump(parts)
             }
+            cmd if chat::is_step(cmd) => Step::Chat(chat::parse(cmd, &mut it)?),
             other => match live::parse(other, &mut it)? {
                 Some(step) => Step::Live(step),
                 None => return Err(format!("unknown step or option {other:?}")),
@@ -228,7 +236,7 @@ fn init_logging() {
 
 // ── Running the script ──────────────────────────────────────────────────────
 
-fn say(line: String) {
+pub(crate) fn say(line: String) {
     use std::io::Write as _;
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
@@ -434,6 +442,7 @@ fn dump(parts: &[String], model: &Model, cx: &App) -> Result<Value, String> {
                 },
             })
         }
+        "chat" | "dm" | "search" => chat::dump(parts, model, cx)?,
         other => return live::dump(other, model, cx).ok_or(format!("dump: unknown store {other:?}")),
     })
 }
@@ -481,6 +490,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             cx.background_executor().timer(Duration::from_secs_f64(*seconds)).await;
         }
         Step::Print(text) => say(format!("MARK {text}")),
+        Step::Chat(step) => chat::run(step, model, timeout, cx).await?,
         Step::Live(step) => live::run(step, model, timeout, cx).await?,
         Step::WaitFile(path) => {
             let started = Instant::now();
@@ -498,7 +508,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.is_empty() || raw.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}\n\n{}", live::USAGE);
+        println!("{USAGE}{}\n\n{}", chat::USAGE, live::USAGE);
         return ExitCode::SUCCESS;
     }
     let args = match parse(raw) {
