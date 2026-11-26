@@ -632,7 +632,13 @@ async fn check_open(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     // The main layout and the user panel are drawn.
     settle_drawn(&cx).await?;
-    step(&cx, "the user panel's gear", async |cx| click_probe(cx, "user-panel-settings").await, |cx| settings_open(cx)).await?;
+    // The gear sits at the window's foot, under no scrolling pane: clicked where it is.
+    step(&cx, "the user panel's gear", async |cx| {
+        let gear = wait_probe(cx, "user-panel-settings").await?;
+        cx.click(gear.center())?;
+        park(cx)
+    }, |cx| settings_open(cx))
+    .await?;
     for tab in [TabId::Appearance, TabId::Audio, TabId::About, TabId::Account] {
         let key = format!("settings-tab:{}", tab.id());
         step(&cx, &format!("the {} tab", tab.label()), async |cx| click_probe(cx, &key).await, move |cx| {
@@ -1046,32 +1052,28 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     ensure!(problem.as_deref().is_some_and(|p| p.starts_with("Same keys as")), "no conflict named");
 
     // Record the second row again, as other keyboards send their keys: the physical key is
-    // stored, whatever the layout types with it.
-    // (layout, what, the keys (key, what it types, evdev code), what is recorded)
-    type Case<'a> = (&'a str, &'a str, &'a [(&'a str, Option<&'a str>, u16)], &'a [&'a str]);
-    let cases: [Case; 4] = [
-        ("de", "Ctrl + the key labelled Z", &[("z", Some("z"), 21)], &["Control", "KeyY"]),
-        ("de", "the key labelled Ö", &[("ö", Some("ö"), 39)], &["Semicolon"]),
-        ("tr", "the key labelled Ş", &[("ş", Some("ş"), 39)], &["Semicolon"]),
-        ("tr", "the key labelled i (dotted)", &[("i", Some("i"), 40)], &["Quote"]),
+    // stored, whatever the layout types with it. With Ctrl + Shift held, so the X server's grab
+    // of the recorded combo (until the next case replaces it) can't swallow anyone's typing.
+    // (layout, the key, what it types there, its evdev code, the key recorded)
+    let cases = [
+        ("de", "the key labelled Z", "z", 21, "KeyY"),
+        ("de", "the key labelled Ö", "ö", 39, "Semicolon"),
+        ("tr", "the key labelled Ş", "ş", 39, "Semicolon"),
+        ("tr", "the key labelled i (dotted)", "i", 40, "Quote"),
     ];
-    for (layout, what, keys, expected) in cases {
+    for (layout, what, typed, evdev, code) in cases {
         click_probe(&cx, "keybind-record:1").await?;
         wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
-        let with_ctrl = expected.first() == Some(&"Control");
-        if with_ctrl {
-            modifier(&cx, CONTROL_L, true, ctrl)?;
-        }
-        for (key, typed, evdev) in keys {
-            press(&cx, key, *typed, *evdev, if with_ctrl { ctrl } else { Modifiers::default() })?;
-        }
-        if with_ctrl {
-            modifier(&cx, CONTROL_L, false, Modifiers::default())?;
-        }
-        let want: Vec<String> = expected.iter().map(|k| k.to_string()).collect();
-        let want_now = want.clone();
-        wait_for(&cx, Duration::from_secs(3), &format!("{layout}: {what}"), move |cx| !recording(cx) && keys_of(cx, 1) == want_now).await?;
-        cx.log(format_args!("{layout}: {what} → {want:?}"));
+        modifier(&cx, CONTROL_L, true, ctrl)?;
+        modifier(&cx, SHIFT_L, true, ctrl_shift())?;
+        press(&cx, typed, None, evdev, ctrl_shift())?;
+        modifier(&cx, SHIFT_L, false, ctrl)?;
+        modifier(&cx, CONTROL_L, false, Modifiers::default())?;
+        wait_for(&cx, Duration::from_secs(3), &format!("{layout}: Ctrl + Shift + {what}"), move |cx| {
+            !recording(cx) && keys_of(cx, 1) == ["Control", "Shift", code]
+        })
+        .await?;
+        cx.log(format_args!("{layout}: Ctrl + Shift + {what} (types {typed:?}, evdev {evdev}) → Control + Shift + {code}"));
     }
     // Modifiers alone: complete as the last one is released, sides kept.
     click_probe(&cx, "keybind-record:1").await?;
