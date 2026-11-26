@@ -1511,10 +1511,23 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
             if let Some(d) = cx.dump.as_deref_mut() {
                 d.event(&format!("{} DROP excess={} rms={:.0}dB", peer.name, peer.voice_jitter.excess(), rms_db));
             }
+            // Kept (the first of a run) for the crossfade into the next
+            // played frame: see `crossfade_in`.
+            if !peer.voice_cut_held {
+                peer.voice_cut = pcm;
+                peer.voice_cut_held = true;
+            }
             if !voice_ring_paced { peer.voice_drain_time -= frame_dur; }
             continue;
         }
         if !cx.deafened {
+            // Frames were cut before this one to catch up: it starts as a
+            // crossfade out of the first of them (unless it starts playback
+            // anyway and fades in below).
+            if peer.voice_cut_held && !(peer.onset_pending && peer.ring_len() == 0) {
+                crossfade_in(&peer.voice_cut, &mut pcm, 1);
+            }
+            peer.voice_cut_held = false;
             let gain = cx.user_volumes.get(peer.name.as_str()).copied().unwrap_or(1.0);
             let mut f32_frame = [0.0f32; FRAME_SIZE];
             // A changed volume ramps across this frame from the gain the
@@ -1565,6 +1578,7 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
             // starts playback again and fades in like a talkspurt's first
             // (the peer may be mid-word).
             peer.onset_pending = true;
+            peer.voice_cut_held = false;
         }
     }
 }

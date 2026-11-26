@@ -557,3 +557,32 @@ fn stream_audio_starts_stalls_and_catches_up_without_a_step() {
 
 /// The watch set is process-wide.
 static STREAM_TESTS: Mutex<()> = Mutex::new(());
+
+/// The same for voice: a network stall whose packets then arrive in a burst
+/// leaves the jitter buffer far over its target, and past 200 ms over even
+/// speech is cut to catch up. The cut is crossfaded.
+#[test]
+fn a_late_burst_of_voice_is_cut_down_without_a_step() {
+    for (from, len) in [(60usize, 22usize), (61, 26), (63, 30)] {
+        let mut rx = Rx::new();
+        let mut held: Vec<usize> = Vec::new();
+        for _ in 0..200 {
+            let step = rx.step;
+            if (from..from + len).contains(&step) {
+                held.push(step);
+                rx.tick(false);
+                continue;
+            }
+            // The held packets arrive together, just before this step's own.
+            for seq in held.drain(..) {
+                rx.late(seq);
+            }
+            rx.tick(true);
+        }
+        let dropped = rx.peer().voice_jitter.dropped_frames;
+        println!("voice stall of {len} from step {from}: {dropped} frames cut to catch up");
+        let heard = rx.heard();
+        assert!(heard[heard.len() - 9_600..].iter().any(|s| s.abs() > 0.15));
+        assert_clean(&heard, 1.0, &format!("voice stall of {len} from step {from}"));
+    }
+}
