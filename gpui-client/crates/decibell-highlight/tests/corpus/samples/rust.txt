@@ -1,0 +1,178 @@
+//! A small ring-buffer cache with a C-compatible surface.
+//!
+//! The crate keeps the last `N` frames and hands out borrowed views.
+#![allow(dead_code, clippy::needless_lifetimes)]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::{self, Debug, Display};
+use std::sync::{Arc, Mutex};
+use std::{borrow::Cow, ffi::c_void, future::Future, pin::Pin};
+
+/* Block comment. /* A nested one, which Rust allows. */ Still the outer comment. */
+
+/// Largest frame we accept, in bytes. See [`Ring::push`].
+pub const MAX_FRAME: usize = 0x10_0000;
+const MASK: u8 = 0b1111_0000u8;
+const MODE: u32 = 0o755;
+const RATIO: f32 = 1.5f32;
+const SCALE: f64 = 2.5e-3_f64;
+const BIG: u64 = 10u64 + 1_000_000;
+static GREETING: &str = "héllo \u{1F600} \x41\n\t\"quoted\" 日本語 🎉";
+static mut COUNTER: isize = 0isize;
+
+const RAW: &str = r#"a "raw" string with \ backslashes"#;
+const RAW2: &str = r##"it can hold "# too"##;
+const BYTES: &[u8] = b"bytes\x00\xff";
+const RAW_BYTES: &[u8; 4] = br"\n\n";
+const C_STR: &std::ffi::CStr = c"nul-terminated";
+const NEWLINE: char = '\n';
+const QUOTE: char = '\'';
+const SNOWMAN: char = '\u{2603}';
+const BYTE: u8 = b'x';
+
+macro_rules! frame {
+    ($($byte:expr),* $(,)?) => {
+        Frame { data: Cow::Owned(vec![$($byte as u8),*]), seq: 0 }
+    };
+    (@empty) => { Frame { data: Cow::Borrowed(&[]), seq: 0 } };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[repr(C)]
+pub struct Frame<'a> {
+    pub data: Cow<'a, [u8]>,
+    pub seq: u64,
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CacheError {
+    Full { capacity: usize },
+    TooLarge(usize),
+    Poisoned,
+}
+
+impl Display for CacheError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Full { capacity } => write!(f, "cache full ({capacity} frames)"),
+            CacheError::TooLarge(n) => write!(f, "frame of {} bytes is over {:#x}", n, MAX_FRAME),
+            Self::Poisoned => f.write_str("lock poisoned"),
+        }
+    }
+}
+
+/// Anything that can report its size.
+pub trait Sized2: Send + Sync {
+    type Unit: Copy + Into<u64>;
+
+    fn size(&self) -> Self::Unit;
+    fn is_empty(&self) -> bool { self.size().into() == 0 }
+}
+
+impl<'a> Sized2 for Frame<'a> {
+    type Unit = u32;
+
+    #[inline(always)]
+    fn size(&self) -> u32 { self.data.len() as u32 }
+}
+
+pub struct Ring<'a, T, const N: usize>
+where
+    T: Sized2 + Clone + 'a,
+{
+    slots: [Option<T>; N],
+    head: usize,
+    index: HashMap<u64, usize>,
+    on_evict: Option<Box<dyn FnMut(&T) -> bool + Send + 'a>>,
+}
+
+impl<'a, T: Sized2 + Clone + 'a, const N: usize> Ring<'a, T, N> {
+    pub fn new() -> Self {
+        Self { slots: std::array::from_fn(|_| None), head: 0, index: HashMap::new(), on_evict: None }
+    }
+
+    pub fn push(&mut self, seq: u64, item: T) -> Result<Option<T>, CacheError> {
+        let size: u64 = item.size().into();
+        if size as usize > MAX_FRAME { return Err(CacheError::TooLarge(size as usize)); }
+        let slot = self.head % N;
+        let old = self.slots[slot].replace(item);
+        if let (Some(evicted), Some(cb)) = (&old, self.on_evict.as_mut()) { let _keep = cb(evicted); }
+        self.index.insert(seq, slot);
+        self.head = self.head.wrapping_add(1);
+        Ok(old)
+    }
+
+    pub fn get<'b>(&'b self, seq: u64) -> Option<&'b T> {
+        self.index.get(&seq).and_then(|&i| self.slots[i].as_ref())
+    }
+
+    pub fn total(&self) -> u64 {
+        self.slots.iter().flatten().map(|t| t.size().into()).sum::<u64>()
+    }
+}
+
+fn classify(byte: u8, strict: bool) -> &'static str {
+    match byte {
+        0 => "nul",
+        b'a'..=b'z' | b'A'..=b'Z' => "letter",
+        b'0'..=b'9' if !strict => "digit",
+        n @ 0x80..=0xff if n & MASK != 0 => "high",
+        _ => "other",
+    }
+}
+
+async fn flush<F, Fut>(frames: Vec<Frame<'static>>, mut sink: F) -> Result<usize, Box<dyn std::error::Error>>
+where
+    F: FnMut(Frame<'static>) -> Fut,
+    Fut: Future<Output = std::io::Result<()>>,
+{
+    let mut sent = 0usize;
+    'outer: for (i, frame) in frames.into_iter().enumerate() {
+        loop {
+            if frame.is_empty() { continue 'outer; }
+            sink(frame.clone()).await?;
+            sent += 1;
+            break;
+        }
+        if i >= 1_000 { break 'outer; }
+    }
+    Ok(sent)
+}
+
+extern "C" {
+    fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void;
+}
+
+/// # Safety
+/// `dst` must point to at least `frame.data.len()` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn frame_copy(frame: *const Frame<'_>, dst: *mut u8) -> i32 {
+    let Some(frame) = frame.as_ref() else { return -1 };
+    memcpy(dst.cast(), frame.data.as_ptr().cast(), frame.data.len());
+    COUNTER += 1;
+    frame.data.len() as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "boom")]
+    fn ring_keeps_the_last_frames() {
+        let mut ring: Ring<'_, Frame<'_>, 4> = Ring::new();
+        let shared = Arc::new(Mutex::new(BTreeMap::<u64, String>::new()));
+        let log = Arc::clone(&shared);
+        ring.on_evict = Some(Box::new(move |f| log.lock().unwrap().insert(f.seq, format!("{f:?}")).is_none()));
+        for seq in 0..6u64 {
+            ring.push(seq, frame![1, 2, 3, seq]).expect("push");
+        }
+        let parsed = "42".parse::<i64>().unwrap_or_default() as f64 * 1e3;
+        println!("{GREETING} {RAW} {parsed:>8.2} {:?} {}", classify(b'q', true), ring.total());
+        assert_eq!(ring.get(5).map(|f| f.size()), Some(4), "last frame is {} bytes", 4);
+        let _ = (frame!(@empty), vec![0u8; 16], RAW2, BYTES, RAW_BYTES, C_STR, NEWLINE, QUOTE, SNOWMAN, BYTE);
+        panic!("boom");
+    }
+}

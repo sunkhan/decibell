@@ -1,0 +1,129 @@
+{
+  "name": "weather-dashboard",
+  "version": "2.4.1",
+  "description": "A small dashboard. It shows \"live\" readings from a few stations.",
+  "private": true,
+  "license": null,
+  "homepage": "https://example.org/dashboard?tab=overview&lang=tr#top",
+  "keywords": ["weather", "hava durumu", "天気", "🎉"],
+  "author": {
+    "name": "Zeynep Çelik",
+    "email": "zeynep@example.org",
+    "active": true,
+    "retired": false,
+    "nickname": null
+  },
+  "numbers": {
+    "integer": 42,
+    "negative": -17,
+    "zero": 0,
+    "float": 3.14159,
+    "negativeFloat": -0.5,
+    "exponent": 6.022e23,
+    "negativeExponent": 1.6E-19,
+    "plusExponent": 2e+10,
+    "big": 9007199254740993
+  },
+  "escapes": {
+    "quote": "She said \"hi\".",
+    "backslash": "C:\\Users\\zeynep\\data",
+    "slash": "a\/b",
+    "control": "tab\there\nnew line\r\nback\bspace form\ffeed",
+    "unicode": "\u00e9\u00e7 \u65e5\u672c \ud83c\udf89",
+    "empty": ""
+  },
+  "scripts": {
+    "start": "node --enable-source-maps dist/server.js",
+    "build": "tsc -p . && cp -r public dist/",
+    "test": "node --test 'tests/**/*.test.js'"
+  },
+  "stations": [
+    {
+      "id": "ank-01",
+      "city": "Ankara",
+      "location": { "lat": 39.9334, "lon": 32.8597, "altitude_m": 938 },
+      "sensors": ["temperature", "humidity", "wind"],
+      "readings": [[1700000000, 12.5], [1700003600, 11.9], [1700007200, -0.4]],
+      "online": true
+    },
+    {
+      "id": "tky-07",
+      "city": "東京",
+      "location": { "lat": 35.6762, "lon": 139.6503, "altitude_m": 40 },
+      "sensors": [],
+      "readings": [],
+      "online": false,
+      "lastError": { "code": 503, "message": "upstream timed out", "retryAfter": null }
+    }
+  ],
+  "matrix": [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1]
+  ],
+  "nested": { "a": { "b": { "c": { "d": [{}, [], [[]], { "e": [null, true, false] }] } } } },
+  "emptyObject": {},
+  "emptyArray": []
+}
+
+// ---------------------------------------------------------------------
+// Second half: JSON with comments (JSONC / JSON5 flavour), the kind of
+// file editors and compilers read. TODO: split per environment.
+// ---------------------------------------------------------------------
+{
+  // Compiler options. Each one has a short note.
+  "compilerOptions": {
+    "target": "ES2022", // the newest runtime we ship to
+    "module": "NodeNext",
+    "strict": true,
+    "noEmit": false, /* emit is on for the build */
+    "outDir": "./dist",
+    "paths": {
+      "@app/*": ["./src/*"],
+      "@tests/*": ["./tests/*", "./fixtures/*"], // trailing comma below
+    },
+    "lib": [
+      "ES2022",
+      "DOM",
+    ],
+    /*
+     * A block comment that spans several lines.
+     * FIXME: incremental builds ignore this file. NOTE: ünïcödé is fine.
+     */
+    "incremental": true,
+    "maxNodeModuleJsDepth": 0,
+  },
+  "include": ["src/**/*.ts", "types/*.d.ts"],
+  "exclude": ["node_modules", "dist"],
+  "watchOptions": {
+    "pollingInterval": 250,
+    "excludeFiles": null,
+  },
+
+  // Editor settings in the same flavour.
+  "editor.fontSize": 13.5,
+  "editor.rulers": [80, 120,],
+  "editor.formatOnSave": true,
+  "files.exclude": { "**/.git": true, "**/*.log": false },
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": { "comments": false, "strings": false, "other": true },
+  },
+  "terminal.integrated.env.linux": { "LANG": "tr_TR.UTF-8", "PAGER": "less -R" },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node",
+        "request": "launch",
+        "name": "Run the server",
+        "program": "${workspaceFolder}/dist/server.js",
+        "args": ["--port", "8080", "--verbose"],
+        "env": { "NODE_ENV": "development", "RETRIES": "3" },
+        "skipFiles": ["<node_internals>/**"],
+        "timeout": 1e4,
+        "offset": -2.5e-3,
+      },
+    ],
+  },
+}

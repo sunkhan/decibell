@@ -1,0 +1,178 @@
+From 4b43163e9d405e0f1c2a3b4c5d6e7f8091a2b3c4 Mon Sep 17 00:00:00 2001
+From: Deniz Kaya <deniz@example.org>
+Date: Thu, 26 Nov 2026 08:30:00 +0300
+Subject: [PATCH 1/2] catalogue: count loans per shelf, rename the helper
+
+The shelf view showed the total for the whole room. Count per shelf.
+---
+ src/catalogue.py        | 14 ++++++++------
+ src/{util.py => text.py} |  2 +-
+ assets/logo.png         | Bin 0 -> 2048 bytes
+ 3 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/src/catalogue.py b/src/catalogue.py
+index 3f1c2aa..9b0d4e1 100644
+--- a/src/catalogue.py
++++ b/src/catalogue.py
+@@ -1,5 +1,7 @@
+ """Catalogue queries."""
+ import sqlite3
++from collections import Counter
++from typing import Iterable
+ 
+ from .text import fold
+ 
+@@ -42,11 +44,11 @@ class Catalogue:
+     def loans(self, shelf: int | None = None) -> int:
+         """Return the number of open loans."""
+         cur = self.db.cursor()
+-        cur.execute("SELECT COUNT(*) FROM loans WHERE returned IS NULL")
+-        return cur.fetchone()[0]
++        rows = cur.execute("SELECT shelf FROM loans WHERE returned IS NULL")
++        counts = Counter(row[0] for row in rows)
++        return counts[shelf] if shelf is not None else sum(counts.values())
+ 
+-    def titles(self):
+-        return [fold(t) for (t,) in self.db.execute("SELECT title FROM books")]
++    def titles(self) -> Iterable[str]:
++        return (fold(t) for (t,) in self.db.execute("SELECT title FROM books"))
+ 
+     def close(self) -> None:
+@@ -88,3 +90,3 @@ def main(argv: list[str]) -> int:
+     catalogue = Catalogue(argv[1])
+-    print(catalogue.loans())
++    print(catalogue.loans(shelf=int(argv[2]) if len(argv) > 2 else None))
+     return 0
+\ No newline at end of file
+diff --git a/src/util.py b/src/text.py
+similarity index 92%
+rename from src/util.py
+rename to src/text.py
+index 77aa001..77aa0c2 100644
+--- a/src/util.py
++++ b/src/text.py
+@@ -7,4 +7,4 @@ def fold(text: str) -> str:
+     """Lower-case and strip accents: "Çay" -> "cay"."""
+-    return text.lower()  # 🎉
++    return text.casefold().replace("ı", "i")
+ 
+diff --git a/assets/logo.png b/assets/logo.png
+new file mode 100644
+index 0000000..8c1f2d3
+Binary files /dev/null and b/assets/logo.png differ
+diff --git a/scripts/run.sh b/scripts/run.sh
+old mode 100644
+new mode 100755
+diff --cc src/merge.py
+index 1a2b3c4,5d6e7f8..9a8b7c6
+--- a/src/merge.py
++++ b/src/merge.py
+@@@ -10,7 -10,7 +10,8 @@@ def merge(a, b)
+      result = dict(a)
+ -    result.update(b)
+ +    for key, value in b.items():
+++        result.setdefault(key, value)
+      return result
+--
+2.47.0
+
+==== A classic unified diff, as `diff -u old new` prints it ====
+diff -u -r1.4 -r1.5 config/settings.ini
+--- config/settings.ini	2026-11-20 10:15:02.000000000 +0300
++++ config/settings.ini	2026-11-26 08:30:44.123456789 +0300
+@@ -3,9 +3,10 @@
+ [server]
+ host = 0.0.0.0
+-port = 8080
++port = 8443
++tls = on
+ 
+ [logging]
+-level = debug
++level = info
+ file = /var/log/reading-room.log
+ ; keep two weeks
+ keep = 14
+@@ -20,0 +22,2 @@ keep = 14
++[features]
++search = on
+Only in config: settings.ini.orig
+Files config/logo.png and config.new/logo.png differ
+
+==== A context diff, as `diff -c old new` prints it ====
+*** src/shelf.c	2026-11-20 10:15:02.000000000 +0300
+--- src/shelf.c	2026-11-26 08:31:10.000000000 +0300
+***************
+*** 12,20 ****
+  int shelf_count(const struct shelf *s)
+  {
+!     int n = 0;
+!     for (int i = 0; i < s->len; i++)
+!         n += s->books[i] != NULL;
+!     return n;
+  }
+  
+- /* unused */
+  static int shelf_full(const struct shelf *s)
+--- 12,19 ----
+  int shelf_count(const struct shelf *s)
+  {
+!     size_t n = 0;
+!     for (size_t i = 0; i < s->len; i++)
+!         n += s->books[i] != NULL;
+!     return (int)n;
+  }
+  
+  static int shelf_full(const struct shelf *s)
+***************
+*** 40,42 ****
+--- 39,43 ----
+      free(s->books);
++     s->books = NULL;
++     s->len = 0;
+      free(s);
+
+==== A normal diff, as plain `diff old new` prints it ====
+3c3
+< port = 8080
+---
+> port = 8443
+7,8d6
+< ; keep two weeks
+< keep = 14
+12a11,13
+> [features]
+> search = on
+> uploads = off
+20,22c21
+< name = Reading Room
+< motto = "Okumak güzeldir"
+< lang = tr
+---
+> name = Reading Room (読書室)
+
+==== Subversion style ====
+Index: trunk/README.txt
+===================================================================
+--- trunk/README.txt	(revision 1041)
++++ trunk/README.txt	(working copy)
+@@ -1,4 +1,5 @@
+ Reading Room
+ ============
+-A catalogue for a shared bookshelf.
++A small catalogue for a shared bookshelf.
++See INSTALL.txt to get started.
+ 
+Index: trunk/INSTALL.txt
+===================================================================
+--- trunk/INSTALL.txt	(nonexistent)
++++ trunk/INSTALL.txt	(revision 1042)
+@@ -0,0 +1,2 @@
++Run ./rr serve and open http://localhost:8080
++That is all.
+
+Property changes on: trunk/INSTALL.txt
+___________________________________________________________________
+Added: svn:eol-style
+## -0,0 +1 ##
++native

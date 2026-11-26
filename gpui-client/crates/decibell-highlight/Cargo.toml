@@ -1,0 +1,13 @@
+[package]
+name = "decibell-highlight"
+version = "0.1.0"
+edition = "2021"
+description = "highlight.js-compatible code highlighting for Decibell's native client: the real highlight.js grammars as data, interpreted by a Rust port of its engine"
+publish = false
+
+[dependencies]
+regress = { path = "vendor/regress", default-features = false, features = ["utf16", "std", "few-properties"] }
+
+[dev-dependencies]
+# reads the gzipped test vectors (pure Rust)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

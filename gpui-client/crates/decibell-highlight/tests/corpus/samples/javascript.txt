@@ -1,0 +1,157 @@
+#!/usr/bin/env node
+"use strict";
+
+/**
+ * Inventory sync worker. It reads a feed, normalises every row and
+ * pushes the result to the warehouse API. Nothing here is clever.
+ *
+ * @module inventory/sync
+ * @author Zoë Müller <zoe@example.org>
+ * @see {@link https://example.org/docs/sync|the sync guide}
+ * TODO: retry with jitter. FIXME: the 429 path drops one row. NOTE: 在庫 means stock.
+ */
+import fs, { promises as fsp } from "node:fs";
+import * as path from "node:path";
+import defaultLogger, { createLogger as mkLog } from "./logger.js";
+export { default as Queue } from "./queue.js";
+export * from "./errors.js";
+
+const MAX_BATCH = 1_000;
+const HEX_MASK = 0xFF_EC_DE, OCTAL = 0o755, BINARY = 0b1010_0101, LEGACY = 0777;
+const BIG = 9_007_199_254_740_993n, RATIO = 1.5e-3, HALF = .5, WHOLE = 5., EXP = 2E10;
+const SKU_RE = /^(?<prefix>[A-Z]{2,4})-(\d+)[^\s\/\]]*$/giu;
+const SPLIT_RE = /[,;]\s*|\s+\/\s+/y;
+const greeting = 'It\'s "fine" \x41é\u{1F600}\n', café = "naïve 🎉 日本語";
+
+let retries = 0, lastError = null, pending = undefined;
+var legacyFlag = typeof window === "undefined" ? true : false;
+
+// Tagged templates: the tag decides what the text means.
+const html = (strings, ...values) => strings.raw.reduce((acc, s, i) => acc + s + (values[i] ?? ""), "");
+const css = html, gql = html;
+const badge = html`<div class="badge ${legacyFlag ? "old" : "new"}">${café}</div>`;
+const sheet = css`a { color: red; margin: ${4 * 2}px } .row:hover > b { opacity: .5 }`;
+const query = gql`query Stock($id: ID!) { item(id: $id) { sku, count } }`;
+
+/**
+ * A row that failed validation.
+ * @extends Error
+ */
+export class RowError extends Error {
+  static #count = 0;
+  static codes = Object.freeze({ EMPTY: 1, BAD_SKU: 2 });
+  #row;
+  code = RowError.codes.EMPTY;
+
+  /**
+   * @param {string} message - what went wrong
+   * @param {{sku?: string, count: number}} row - the offending row
+   */
+  constructor(message, row) {
+    super(message);
+    if (!new.target) throw new TypeError("use new");
+    this.#row = row;
+    RowError.#count++;
+  }
+
+  get row() { return this.#row; }
+  set row(value) { this.#row = { ...value }; }
+  static get count() { return RowError.#count; }
+  #describe() { return `${this.name}: ${this.message} (${JSON.stringify(this.#row)})`; }
+  toString() { return this.#describe(); }
+  static { defaultLogger.debug?.("RowError ready"); }
+}
+
+export default class SyncWorker extends EventTarget {
+  #queue = new Map();
+  #timer;
+
+  constructor({ endpoint, token = process.env.TOKEN, ...rest } = {}) {
+    super();
+    this.endpoint = new URL(endpoint ?? "https://warehouse.example/api/v2");
+    this.options = { batch: MAX_BATCH, ...rest };
+    this.log = mkLog(`sync:${this.endpoint.host}`);
+    void token;
+  }
+
+  /** @returns {Generator<number, void, unknown>} */
+  *ids(from = 0, to = Infinity) {
+    for (let i = from; i < to; i += 1) yield i;
+  }
+
+  async *pages(file) {
+    const handle = await fsp.open(file, "r");
+    try {
+      for await (const line of handle.readLines()) {
+        if (line.trim() === "" || line.startsWith("#")) continue;
+        yield line.split(SPLIT_RE);
+      }
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * @async
+   * @param {string[]} cells
+   * @throws {RowError} when the SKU is malformed
+   */
+  async push([sku, count = "0", ...extra]) {
+    const match = SKU_RE.exec(sku);
+    if (match === null) throw new RowError(`bad sku "${sku}"`, { sku, count: +count });
+    const { groups: { prefix }, 2: digits } = match;
+    const body = { sku, prefix, n: Number(digits), count: parseInt(count, 10) || 0, extra };
+    const res = await fetch(this.endpoint, { method: "POST", body: JSON.stringify(body) });
+    if (!res.ok && res.status >= 500) retries += 1;
+    return res?.headers?.get?.("x-request-id") ?? null;
+  }
+}
+
+function clamp(a, b, c, d) {
+  // Plain comparisons, not JSX: a < b && c > d must stay operators.
+  if (a < b && c > d) return a;
+  const within = a <b> (c);
+  const shifted = (a << 2) >>> 1 | b & ~c ^ d;
+  return within ? shifted % 7 : a ** 2 / (b || 1);
+}
+
+const debounce = (fn, ms = 250) => {
+  let id;
+  return (...args) => { clearTimeout(id); id = setTimeout(() => fn(...args), ms); };
+};
+
+export async function main(argv = process.argv.slice(2)) {
+  const [file = "feed.csv", ...flags] = argv;
+  const worker = new SyncWorker({ endpoint: undefined, verbose: flags.includes("--verbose") });
+  const seen = new Set(), failures = [];
+  let total = 0n;
+
+  outer: for await (const cells of worker.pages(path.resolve(file))) {
+    for (const cell of cells) {
+      if (cell === "END") break outer;
+      if (seen.has(cell)) continue outer;
+    }
+    try {
+      const id = await worker.push(cells);
+      seen.add(cells[0]);
+      total += BigInt(cells[1] ?? 0);
+      worker.log.info(`pushed ${cells[0]} → ${id ?? `n/a (${retries} retr${retries === 1 ? "y" : "ies"})`}`);
+    } catch (err) {
+      if (err instanceof RowError) failures.push(err.toString());
+      else { lastError = err; throw err; }
+    }
+  }
+
+  do { pending = failures.pop(); } while (pending !== undefined && failures.length > 0);
+  switch (true) {
+    case total > BIG: console.warn("overflow?", total); break;
+    case seen.size === 0: console.log("nothing to do"); break;
+    default: console.log("%d rows, %s units", seen.size, total.toLocaleString("tr-TR"));
+  }
+  delete worker.options.batch;
+  return { ok: failures.length === 0, total, when: new Date().toISOString(), sym: Symbol.for("sync") };
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().then(({ ok }) => process.exit(ok ? 0 : 1), debounce(console.error, 0));
+}

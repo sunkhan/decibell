@@ -1,0 +1,311 @@
+diff -ruN regress-orig/src/budget.rs /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/budget.rs
+--- regress-orig/src/budget.rs	1970-01-01 01:00:00.000000000 +0100
++++ /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/budget.rs	2026-11-26 11:36:28.253929237 +0100
+@@ -0,0 +1,71 @@
++//! Decibell addition: a budget for the backtracking matcher.
++//!
++//! A backtracking regex can take time exponential in its input. This module
++//! lets a caller bound the work of every match made on the current thread:
++//! each attempt to match at a position and each backtrack spends one step,
++//! and once the steps (or the optional deadline) run out every match in
++//! progress fails at once and later ones fail immediately, until the budget
++//! is set again. A failed match is then indistinguishable from "no match",
++//! so the caller must check [`exhausted`] before trusting a `None`.
++
++use core::cell::Cell;
++use std::time::Instant;
++
++/// No limit.
++pub const UNLIMITED: u64 = u64::MAX;
++
++/// How often (in steps) the deadline is compared with the clock.
++const CLOCK_INTERVAL: u64 = 4096;
++
++std::thread_local! {
++    static STEPS: Cell<u64> = const { Cell::new(UNLIMITED) };
++    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
++    static EXHAUSTED: Cell<bool> = const { Cell::new(false) };
++}
++
++/// Sets this thread's budget and clears the exhausted flag.
++pub fn set(steps: u64, deadline: Option<Instant>) {
++    STEPS.with(|s| s.set(steps));
++    DEADLINE.with(|d| d.set(deadline));
++    EXHAUSTED.with(|e| e.set(false));
++}
++
++/// Removes any limit.
++pub fn clear() {
++    set(UNLIMITED, None);
++}
++
++/// Steps left (`UNLIMITED` when there is no limit).
++pub fn remaining() -> u64 {
++    STEPS.with(|s| s.get())
++}
++
++/// Whether a match was cut short since the budget was last set.
++pub fn exhausted() -> bool {
++    EXHAUSTED.with(|e| e.get())
++}
++
++/// Spends one step. Returns false once the budget is gone.
++#[inline]
++pub(crate) fn step() -> bool {
++    STEPS.with(|s| {
++        let n = s.get();
++        if n == UNLIMITED {
++            return true;
++        }
++        if n == 0 {
++            EXHAUSTED.with(|e| e.set(true));
++            return false;
++        }
++        s.set(n - 1);
++        if n % CLOCK_INTERVAL == 0 {
++            let late = DEADLINE.with(|d| d.get()).is_some_and(|d| Instant::now() >= d);
++            if late {
++                s.set(0);
++                EXHAUSTED.with(|e| e.set(true));
++                return false;
++            }
++        }
++        true
++    })
++}
+diff -ruN regress-orig/src/classicalbacktrack.rs /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/classicalbacktrack.rs
+--- regress-orig/src/classicalbacktrack.rs	2026-11-26 11:36:28.251224455 +0100
++++ /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/classicalbacktrack.rs	2026-11-26 11:36:28.260995954 +0100
+@@ -500,6 +500,13 @@
+         _dir: Dir,
+     ) -> bool {
+         loop {
++            // Decibell: every backtrack spends a step of the thread's budget.
++            // Out of budget, drop the whole stack so the match fails now.
++            #[cfg(feature = "std")]
++            if !crate::budget::step() {
++                self.bts.truncate(1);
++                return false;
++            }
+             // We always have a single Exhausted instruction backstopping our stack,
+             // so we do not need to check for empty bts.
+             debug_assert!(!self.bts.is_empty(), "Backtrack stack should not be empty");
+@@ -636,6 +643,11 @@
+             self.bts.len() == 1,
+             "Should be only initial exhausted backtrack insn"
+         );
++        // Decibell: every attempt spends a step of the thread's budget.
++        #[cfg(feature = "std")]
++        if !crate::budget::step() {
++            return None;
++        }
+         // TODO: we are inconsistent about passing Input by reference or value.
+         let input = &inp;
+         let re = self.re;
+@@ -1086,6 +1098,11 @@
+                 }
+                 return Some(self.successful_match(pos, end));
+             }
++            // Decibell: out of budget, stop searching (see budget.rs).
++            #[cfg(feature = "std")]
++            if crate::budget::exhausted() {
++                return None;
++            }
+             // Didn't find it at this position, try the next one.
+             pos = inp.next_right_pos(pos)?;
+         }
+diff -ruN regress-orig/src/lib.rs /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/lib.rs
+--- regress-orig/src/lib.rs	2026-11-26 11:36:28.251415393 +0100
++++ /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/lib.rs	2026-11-26 11:36:28.265312030 +0100
+@@ -141,6 +141,8 @@
+ 
+ */
+ 
++// Decibell: this is a vendored copy; its lints are upstream's business.
++#![allow(warnings, clippy::all, clippy::pedantic)]
+ #![cfg_attr(not(feature = "std"), no_std)]
+ #![cfg_attr(feature = "pattern", feature(pattern))]
+ #![warn(clippy::all)]
+@@ -167,6 +169,8 @@
+ #[macro_use]
+ mod util;
+ 
++#[cfg(feature = "std")]
++pub mod budget;
+ mod api;
+ mod bytesearch;
+ mod charclasses;
+diff -ruN regress-orig/src/parse.rs /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/parse.rs
+--- regress-orig/src/parse.rs	2026-11-26 11:36:28.251542702 +0100
++++ /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/parse.rs	2026-11-26 11:50:05.905323772 +0100
+@@ -847,7 +847,13 @@
+                 Some(']') => {
+                     self.consume(']');
+                     if self.flags.icase {
+-                        result.cps = unicode::add_icase_code_points(result.cps);
++                        // Decibell: without the unicode flag, case-insensitivity
++                        // is uppercase-based (see add_icase_code_points_legacy)
++                        result.cps = if self.flags.unicode || self.flags.unicode_sets {
++                            unicode::add_icase_code_points(result.cps)
++                        } else {
++                            unicode::add_icase_code_points_legacy(result.cps)
++                        };
+                     }
+                     return Ok(ir::Node::Bracket(result));
+                 }
+@@ -1598,7 +1604,8 @@
+                 Ok(make_bracket_class(
+                     CharacterClassType::Digits,
+                     c == 'd' as u32,
+-                    self.flags.icase,
++                    // Decibell: no case expansion without the unicode flag
++                    self.flags.icase && (self.flags.unicode || self.flags.unicode_sets),
+                 ))
+             }
+ 
+@@ -1607,7 +1614,8 @@
+                 Ok(make_bracket_class(
+                     CharacterClassType::Spaces,
+                     c == 's' as u32,
+-                    self.flags.icase,
++                    // Decibell: no case expansion without the unicode flag
++                    self.flags.icase && (self.flags.unicode || self.flags.unicode_sets),
+                 ))
+             }
+ 
+@@ -1616,7 +1624,8 @@
+                 Ok(make_bracket_class(
+                     CharacterClassType::Words,
+                     c == 'w' as u32,
+-                    self.flags.icase,
++                    // Decibell: no case expansion without the unicode flag
++                    self.flags.icase && (self.flags.unicode || self.flags.unicode_sets),
+                 ))
+             }
+ 
+diff -ruN regress-orig/src/unicode.rs /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/unicode.rs
+--- regress-orig/src/unicode.rs	2026-11-26 11:36:28.251704995 +0100
++++ /home/sun/Desktop/decibell/gpui-client/crates/decibell-highlight/vendor/regress/src/unicode.rs	2026-11-26 11:49:54.006007065 +0100
+@@ -185,16 +185,32 @@
+         } else {
+             TO_UPPERCASE.get(index).expect("Invalid index")
+         };
+-        fr.apply(cu)
++        let up = fr.apply(cu);
++        // Decibell: Canonicalize(ch) without the unicode flag keeps ch when
++        // it is not ASCII and its uppercase is (ES2024 22.2.2.7.3 step 6.h):
++        // /s/i does not match U+017F, /i/i does not match U+0131.
++        if legacy_excluded(cu, up) { cu } else { up }
+     } else {
+         cu
+     }
+ }
+ 
++/// Decibell: the non-unicode Canonicalize exclusion (see `uppercase`).
++#[inline]
++fn legacy_excluded(from: u32, to: u32) -> bool {
++    from >= 128 && to < 128
++}
++
+ // Add all folded characters in the given interval to the given code point set.
+ // This skips characters which fold to themselves.
+ fn fold_interval(iv: Interval, recv: &mut CodePointSet) {
+-    let overlaps = FOLDS.equal_range_by(|tr| {
++    map_interval(&FOLDS, false, iv, recv)
++}
++
++// Decibell: `fold_interval` over either table; `legacy` applies the
++// non-unicode Canonicalize exclusion.
++fn map_interval(table: &[FoldRange], legacy: bool, iv: Interval, recv: &mut CodePointSet) {
++    let overlaps = table.equal_range_by(|tr| {
+         if tr.first() > iv.last {
+             Ordering::Greater
+         } else if tr.last() < iv.first {
+@@ -203,7 +219,7 @@
+             Ordering::Equal
+         }
+     });
+-    for fr in &FOLDS[overlaps] {
++    for fr in &table[overlaps] {
+         debug_assert!(
+             fr.transformed_from().overlaps(iv),
+             "Interval does not overlap transform"
+@@ -217,7 +233,7 @@
+             // Optimization: when modulo is 1, every character in range gets transformed
+             for cu in first_trans..(last_trans + 1) {
+                 let cs = fr.add_delta(cu);
+-                if cs != cu {
++                if cs != cu && !(legacy && legacy_excluded(cu, cs)) {
+                     recv.add_one(cs);
+                 }
+             }
+@@ -229,7 +245,9 @@
+             let mut cu = start_aligned;
+             while cu <= last_trans {
+                 let cs = fr.add_delta(cu);
+-                recv.add_one(cs);
++                if !(legacy && legacy_excluded(cu, cs)) {
++                    recv.add_one(cs);
++                }
+                 cu += modulo;
+             }
+         }
+@@ -239,9 +257,14 @@
+ /// Find all characters that fold into the given interval and add them to the given code point set.
+ /// This skips characters which fold to themselves.
+ fn unfold_interval(iv: Interval, recv: &mut CodePointSet) {
++    unmap_interval(&FOLDS, false, iv, recv)
++}
++
++// Decibell: `unfold_interval` over either table (see `map_interval`).
++fn unmap_interval(table: &[FoldRange], legacy: bool, iv: Interval, recv: &mut CodePointSet) {
+     // Note: We still need to check all ranges because the relationship between
+     // transformed_from and transformed_to intervals can be complex
+-    for tr in FOLDS.iter() {
++    for tr in table.iter() {
+         if !iv.overlaps(tr.transformed_to()) {
+             continue;
+         }
+@@ -252,7 +275,7 @@
+ 
+         let mut process_cp = |cp| {
+             let tcp = tr.apply(cp);
+-            if tcp != cp && iv.contains(tcp) {
++            if tcp != cp && iv.contains(tcp) && !(legacy && legacy_excluded(cp, tcp)) {
+                 recv.add_one(cp);
+             }
+         };
+@@ -312,7 +335,8 @@
+         }
+         for cp in tr.transformed_from().codepoints() {
+             let tcp = tr.apply(cp);
+-            if tcp == fcp {
++            // Decibell: the non-unicode Canonicalize exclusion
++            if tcp == fcp && !legacy_excluded(cp, tcp) {
+                 res.push(cp);
+             }
+         }
+@@ -348,6 +372,23 @@
+     }
+     input
+ }
++
++/// Decibell: `add_icase_code_points` for a regex without the unicode flag.
++/// There a class matches `ch` when Canonicalize(ch) equals Canonicalize of a
++/// member, and Canonicalize is `toUpperCase` with the ASCII exclusion, not
++/// Unicode case folding (upstream folds here, so `[a-z]` with `i` wrongly
++/// matched U+017F and U+212A).
++pub fn add_icase_code_points_legacy(mut input: CodePointSet) -> CodePointSet {
++    let mut upper = input.clone();
++    for iv in input.intervals() {
++        map_interval(&TO_UPPERCASE, true, *iv, &mut upper)
++    }
++    input.clone_from(&upper);
++    for iv in upper.intervals() {
++        unmap_interval(&TO_UPPERCASE, true, *iv, &mut input);
++    }
++    input
++}
+ 
+ pub(crate) enum PropertyEscapeKind {
+     CharacterClass(&'static [Interval]),

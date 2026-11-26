@@ -1,0 +1,174 @@
+#!/usr/bin/env kotlin
+@file:JvmName("WeatherKt")
+@file:Suppress("unused", "MemberVisibilityCanBePrivate")
+
+package org.example.weather
+
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import java.time.Instant
+import kotlin.math.roundToInt
+import kotlin.properties.Delegates
+import com.squareup.moshi.Json as JsonName
+
+/**
+ * Weather station client. It polls a few stations and prints a summary.
+ *
+ * The code is a sample: it favours variety over good taste.
+ *
+ * @property name human-readable station name
+ * @param T the reading type
+ * @see Station.poll
+ * TODO: cache readings. FIXME: retries ignore cancellation. NOTE: 天気 = weather.
+ */
+typealias Celsius = Double
+typealias Handler<T> = suspend (T) -> Unit
+
+const val MAX_STATIONS = 1_000
+private const val MASK = 0xFF_FFL
+val BITS = 0b1010_0101
+val RATIO = 1.5f
+val TINY = 2.5e-3
+val BIG = 9_000_000_000L
+val UNSIGNED = 42u + 7UL
+val TAB = '\t'
+val QUOTE = '\''
+val SNOWMAN = '☃'
+
+annotation class Audited(val by: String = "system", val level: Int = 1)
+
+enum class Unit2(val symbol: String) {
+    METRIC("°C"), IMPERIAL("°F") {
+        override fun convert(c: Celsius) = c * 9 / 5 + 32
+    };
+
+    open fun convert(c: Celsius): Double = c
+}
+
+sealed class Reading {
+    abstract val at: Instant
+
+    data class Ok(override val at: Instant, val temp: Celsius, val humidity: Int? = null) : Reading()
+    data class Failed(override val at: Instant, val cause: Throwable) : Reading()
+    object Offline : Reading() {
+        override val at: Instant get() = Instant.EPOCH
+    }
+}
+
+sealed interface Source<out T> {
+    suspend fun next(): T
+}
+
+data class Station(
+    @field:JsonName(name = "station_id") val id: String,
+    @get:JvmName("displayName") val name: String,
+    @param:Audited("ops") var online: Boolean = true,
+    private val offsets: List<Double> = emptyList(),
+) : Source<Reading>, Comparable<Station> {
+
+    var polls: Int by Delegates.observable(0) { _, old, new -> check(new >= old) }
+    lateinit var region: String
+    val label: String by lazy { "$name (${id.uppercase()})" }
+
+    companion object Factory {
+        @JvmStatic
+        fun parse(line: String): Station? {
+            val (id, name) = line.split(';').takeIf { it.size >= 2 } ?: return null
+            return Station(id.trim(), name.trim())
+        }
+
+        @JvmField val UNKNOWN = Station("?", "unknown", online = false)
+    }
+
+    init {
+        require(id.isNotBlank()) { "id must not be blank" }
+    }
+
+    override suspend fun next(): Reading {
+        if (!online) return Reading.Offline
+        delay(10L)
+        polls++
+        return try {
+            Reading.Ok(Instant.now(), temp = 20.0 + (offsets.firstOrNull() ?: 0.0), humidity = 55)
+        } catch (e: IllegalStateException) {
+            Reading.Failed(Instant.now(), e)
+        } finally {
+            region = if (::region.isInitialized) region else "n/a"
+        }
+    }
+
+    override operator fun compareTo(other: Station): Int = id.compareTo(other.id)
+    operator fun plus(offset: Double) = copy(offsets = offsets + offset)
+    operator fun get(index: Int): Double = offsets[index]
+}
+
+fun Celsius.pretty(unit: Unit2 = Unit2.METRIC): String = "${unit.convert(this).roundToInt()}${unit.symbol}"
+
+infix fun Station.near(other: Station): Boolean = this.id.take(2) == other.id.take(2)
+
+inline fun <reified T : Reading> List<Reading>.only(): List<T> = filterIsInstance<T>()
+
+inline fun <T, R> Iterable<T>.mapTimed(crossinline block: (T) -> R, noinline log: ((Long) -> kotlin.Unit)? = null): List<R> {
+    val start = System.nanoTime()
+    return map { block(it) }.also { log?.invoke(System.nanoTime() - start) }
+}
+
+fun <T> describe(value: T, unit: Unit2): String where T : Any = when (value) {
+    is Reading.Ok -> "${value.temp.pretty(unit)} at ${value.at}, humidity ${value.humidity ?: "?"}%"
+    is Reading.Failed -> "failed: ${value.cause.message!!}"
+    Reading.Offline -> "offline"
+    in 0..9, 42 -> "a small number"
+    !is String -> "something else"
+    else -> "text of ${value.length} chars"
+}
+
+class Poller<in S : Source<Reading>>(private val scope: CoroutineScope, vararg handlers: Handler<Reading>) {
+    private val handlers = handlers.toList()
+
+    fun watch(source: S, every: Long = 1_000): Flow<Reading> = flow {
+        while (currentCoroutineContext().isActive) {
+            emit(source.next())
+            delay(every)
+        }
+    }
+
+    tailrec fun backoff(attempt: Int, acc: Long = 100): Long =
+        if (attempt <= 0) acc else backoff(attempt - 1, (acc * 1.5).toLong())
+}
+
+fun main(args: Array<String>) = runBlocking {
+    val raw = """
+        |ank;Ankara
+        |ist;İstanbul "Boğaz"  \n stays raw
+        |tky;東京 ${'$'}9.99 ${args.size}
+    """.trimMargin()
+
+    val stations = raw.lines().mapNotNull(Station::parse).sorted()
+    val readings = mutableListOf<Reading>()
+
+    outer@ for ((index, station) in stations.withIndex()) {
+        for (attempt in 1..3 step 1) {
+            if (index >= MAX_STATIONS) break@outer
+            val reading = withContext(Dispatchers.Default) { station.next() }
+            readings += reading
+            if (reading is Reading.Ok) continue@outer
+        }
+    }
+
+    stations.forEach { station ->
+        if (!station.online) return@forEach
+        println("${station.label}: ${station.polls} poll(s), near first: ${station near stations.first()}")
+    }
+
+    val warm = readings.only<Reading.Ok>().filter { it.temp > 18.0 && it.temp < 30.0 }
+    val jobs = stations.map { async { it.next() } }
+    val all = jobs.awaitAll().mapTimed({ describe(it, Unit2.IMPERIAL) }) { ns -> println("took $ns ns") }
+    val shifted = (MASK shl 2) or (BITS.toLong() and 0x0F) xor 1L
+    val obj = object : Comparator<Station> {
+        override fun compare(a: Station, b: Station) = a.compareTo(b)
+    }
+    do {
+        println("$all ${warm.size} $shifted $RATIO $TINY $BIG $UNSIGNED $TAB$QUOTE$SNOWMAN ${obj.hashCode()} 🎉")
+    } while (false)
+}

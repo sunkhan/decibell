@@ -1,0 +1,46 @@
+# regress 0.12.0 (https://github.com/ridiculousfish/regress, MIT OR Apache-2.0),
+# vendored for decibell-highlight with two changes: a step / time budget for
+# the backtracking matcher (src/budget.rs, and the hooks in
+# src/classicalbacktrack.rs), and JavaScript's case-insensitive matching for
+# regexes without the unicode flag (src/unicode.rs, src/parse.rs). See ../../README.md and ../regress-decibell.patch.
+# The upstream tests, benches and Cargo.lock are not copied.
+
+[package]
+edition = "2024"
+name = "regress"
+version = "0.12.0"
+authors = ["ridiculousfish <corydoras@ridiculousfish.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "A regular expression engine targeting EcmaScript syntax (Decibell's copy, with a match budget)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ridiculousfish/regress"
+publish = false
+
+[features]
+alloc = ["dep:hashbrown", "memchr/alloc"]
+backend-pikevm = []
+default = ["backend-pikevm", "std"]
+few-properties = []
+index-positions = []
+pattern = []
+prohibit-unsafe = []
+std = ["memchr/std"]
+utf16 = []
+
+[lib]
+name = "regress"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies.hashbrown]
+version = ">=0.16, <0.18"
+optional = true
+
+[dependencies.memchr]
+version = "2.4.0"
+default-features = false

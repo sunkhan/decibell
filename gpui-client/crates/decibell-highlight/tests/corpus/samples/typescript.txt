@@ -1,0 +1,170 @@
+/**
+ * Typed event bus with a small plugin registry.
+ * It is deliberately dense: most of the type system shows up somewhere.
+ *
+ * @packageDocumentation
+ * @example
+ * const bus = new Bus<AppEvents>();
+ * bus.on("login", (e) => console.log(e.user));
+ * TODO: wildcard topics. FIXME: `once` leaks when the handler throws. NOTE: ünïcödé is fine.
+ */
+import type { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
+import * as crypto from "node:crypto";
+export type { Readable as Source };
+
+declare module "node:events" {
+  interface EventEmitter {
+    listenerNames?(): Array<string | symbol>;
+  }
+}
+
+declare global {
+  var __BUS_DEBUG__: boolean | undefined;
+}
+
+declare const VERSION: string;
+declare function structuredCloneish<T>(value: T): T;
+
+export const enum Level { Debug = 0, Info, Warn = 1 << 2, Error = Warn | 0x10 }
+enum Transport { Memory = "memory", Socket = "socket" }
+
+export interface Envelope<T = any> {
+  readonly id: string;
+  topic: string;
+  payload: T;
+  sentAt?: Date;
+  [meta: `x-${string}`]: unknown;
+}
+
+interface AppEvents {
+  login: { user: string; at: number };
+  logout: { user: string; reason?: "timeout" | "manual" };
+  tick: bigint;
+}
+
+type Handler<P> = (payload: P, envelope: Envelope<P>) => void | Promise<void>;
+type Keys<T> = Extract<keyof T, string>;
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+type Handlers<T> = { [K in keyof T]?: Array<Handler<T[K]>> };
+type Unwrap<T> = T extends Promise<infer U> ? Unwrap<U> : T extends ReadonlyArray<infer V> ? V : T;
+type Pair = [left: string, right?: number, ...rest: boolean[]];
+type Getters<T> = { [K in keyof T as `get${Capitalize<K & string>}`]: () => T[K] };
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+
+const LIMITS = { maxListeners: 1_000, timeoutMs: 2.5e3, mask: 0xff, flags: 0b1010, big: 10n } as const;
+const defaults = { transport: Transport.Memory, level: Level.Info } satisfies Partial<BusOptions>;
+const identity = <T,>(x: T): T => x;
+const pick = <T, K extends keyof T>(obj: T, ...keys: K[]): Pick<T, K> =>
+  Object.fromEntries(keys.map((k) => [k, obj[k]])) as Pick<T, K>;
+
+interface BusOptions {
+  transport: Transport;
+  level: Level;
+  name?: string;
+}
+
+function logged(prefix: string) {
+  return function <This, Args extends unknown[], R>(
+    target: (this: This, ...args: Args) => R,
+    context: ClassMethodDecoratorContext<This>,
+  ) {
+    return function (this: This, ...args: Args): R {
+      if (globalThis.__BUS_DEBUG__) console.debug(`${prefix}:${String(context.name)}`, args.length);
+      return target.apply(this, args);
+    };
+  };
+}
+
+function sealed<T extends abstract new (...args: any[]) => object>(ctor: T, _ctx: ClassDecoratorContext): void {
+  Object.seal(ctor.prototype);
+}
+
+export abstract class Plugin<TEvents extends object = {}> {
+  static readonly registry = new Map<string, Plugin<any>>();
+  protected abstract readonly name: string;
+  private attached = false;
+  declare bus?: Bus<TEvents>;
+
+  abstract setup(bus: Bus<TEvents>): void | Promise<void>;
+
+  public get isAttached(): boolean { return this.attached; }
+  protected markAttached(): asserts this is this & { bus: Bus<TEvents> } { this.attached = true; }
+}
+
+@sealed
+export class Bus<TEvents extends object> extends EventEmitter implements Disposable {
+  readonly #handlers: Handlers<TEvents> = {};
+  private seq = 0;
+  public constructor(private readonly options: BusOptions = { ...defaults }, protected plugins: Plugin<TEvents>[] = []) {
+    super({ captureRejections: true });
+  }
+
+  on<K extends Keys<TEvents>>(topic: K, handler: Handler<TEvents[K]>): this;
+  on(topic: string | symbol, handler: (...args: any[]) => void): this;
+  on(topic: any, handler: any): this {
+    (this.#handlers[topic as keyof TEvents] ??= []).push(handler);
+    return super.on(topic, handler);
+  }
+
+  @logged("bus")
+  async publish<K extends Keys<TEvents>>(topic: K, payload: TEvents[K]): Promise<number> {
+    const envelope: Envelope<TEvents[K]> = {
+      id: crypto.randomUUID(),
+      topic,
+      payload,
+      sentAt: new Date(),
+      "x-seq": ++this.seq,
+    };
+    const list = this.#handlers[topic]!;
+    await Promise.all(list.map((h) => h(payload, envelope)));
+    return list.length;
+  }
+
+  [Symbol.dispose](): void {
+    this.removeAllListeners();
+  }
+}
+
+export namespace Codec {
+  export const MAGIC = "\u{1F4E8}bus\x01";
+  export function isEnvelope(value: unknown): value is Envelope {
+    return typeof value === "object" && value !== null && "topic" in value && "id" in value;
+  }
+  export function decode<T extends Json = Json>(raw: string | Uint8Array): Envelope<T> | never {
+    const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
+    const parsed: unknown = JSON.parse(text.replace(/^﻿|[\r\n]+$/g, ""));
+    if (!isEnvelope(parsed)) throw new TypeError(`not an envelope: ${text.slice(0, 16)}…`);
+    return <Envelope<T>>parsed;
+  }
+}
+
+class Metrics extends Plugin<AppEvents> {
+  protected readonly name = "metrics";
+  private counts: Record<Keys<AppEvents>, number> = { login: 0, logout: 0, tick: 0 };
+
+  override setup(bus: Bus<AppEvents>): void {
+    this.markAttached();
+    for (const topic of Object.keys(this.counts) as Array<Keys<AppEvents>>) {
+      bus.on(topic, () => void this.counts[topic]++);
+    }
+  }
+
+  snapshot(): Readonly<typeof this.counts> { return Object.freeze({ ...this.counts }); }
+}
+
+export async function demo(): Promise<Unwrap<Promise<string[]>>> {
+  using bus = new Bus<AppEvents>();
+  const metrics = new Metrics();
+  metrics.setup(bus);
+  const pair: Pair = ["a", 1, true, false];
+  let maybe: string | undefined = pair[0]?.toUpperCase();
+  const n = await bus.publish("login", { user: maybe ?? "anon", at: Date.now() });
+  const view: Mutable<typeof LIMITS> = structuredCloneish(LIMITS);
+  view.mask = 0xff;
+  const sub = pick(view, "big", "flags");
+  if (n > 0 && sub.flags < 0o17) maybe = undefined;
+  return identity(`${VERSION}: ${JSON.stringify(metrics.snapshot())} ✅ 完了`);
+}
+
+export default Bus;

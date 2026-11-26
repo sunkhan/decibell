@@ -1,0 +1,177 @@
+// Package crawler fetches pages with a bounded worker pool.
+//
+// TODO: respect robots.txt. FIXME: redirects are counted twice. NOTE: 巡回 = crawl.
+package crawler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	str "strconv"
+)
+
+/* Block comment. The constants below use iota, typed and untyped. */
+type State uint8
+
+const (
+	Pending State = iota
+	Fetching
+	Done
+	Failed = iota * 10
+	maxDepth = 1 << 3
+)
+
+const (
+	userAgent        = "sample-crawler/1.0 (+https://example.org)"
+	timeout          = 2500 * time.Millisecond
+	mask      uint32 = 0xFF_EC
+	perms            = 0o644
+	legacy           = 0755
+	bits             = 0b1010_0101
+	ratio            = 1.5e-3
+	hexFloat         = 0x1p-2
+	imaginary        = 2.5i
+	newline          = '\n'
+	quote            = '\''
+	snowman          = '☃'
+	hexRune          = '\x41'
+)
+
+var (
+	ErrTooDeep = errors.New("crawler: too deep")
+	usage      = `Usage: crawler [flags] URL...
+  -depth N   follow links N levels ("raw" strings keep \n as is)
+  -json      print JSON, çıktı, 出力 🎉`
+)
+
+// Page is one fetched document.
+type Page struct {
+	URL      string            `json:"url" yaml:"url"`
+	Status   int               `json:"status,omitempty"`
+	Links    []string          `json:"links"`
+	Headers  map[string]string `json:"-"`
+	Elapsed  time.Duration     `json:"elapsed_ns"`
+	parent   *Page
+	callback func(*Page) error
+}
+
+// Fetcher abstracts the network so tests can fake it.
+type Fetcher interface {
+	Fetch(ctx context.Context, url string) (*Page, error)
+	fmt.Stringer
+}
+
+type Set[T comparable] map[T]struct{}
+
+func (s Set[T]) Add(v T) bool {
+	if _, ok := s[v]; ok { return false }
+	s[v] = struct{}{}
+	return true
+}
+
+func Map[T, U any](in []T, f func(T) U) (out []U) {
+	for i := range in { out = append(out, f(in[i])) }
+	return out
+}
+
+type httpFetcher struct {
+	client *http.Client
+	mu     sync.Mutex
+	hits   map[string]int
+}
+
+func (f *httpFetcher) String() string { return fmt.Sprintf("httpFetcher(%d hosts)", len(f.hits)) }
+
+func (f *httpFetcher) Fetch(ctx context.Context, url string) (page *Page, err error) {
+	start := time.Now()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil { return nil, fmt.Errorf("bad url %s: %w", url, err) }
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := f.client.Do(req)
+	if err != nil || resp == nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	f.mu.Lock()
+	f.hits[req.URL.Host]++
+	f.mu.Unlock()
+	return &Page{URL: url, Status: resp.StatusCode, Elapsed: time.Since(start)}, nil
+}
+
+// Crawl walks the seeds with `workers` goroutines and returns every page.
+func Crawl(ctx context.Context, f Fetcher, workers int, urls ...string) ([]*Page, error) {
+	jobs := make(chan string, len(urls))
+	results := make(chan *Page)
+	errs := make(chan error, 1)
+	seen := Set[string]{}
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for url := range jobs {
+				page, err := f.Fetch(ctx, url)
+				switch {
+				case errors.Is(err, context.Canceled):
+					return
+				case err != nil:
+					errs <- err
+					continue
+				}
+				results <- page
+			}
+		}(w)
+	}
+
+	for _, u := range urls {
+		if seen.Add(strings.TrimSpace(u)) { jobs <- u }
+	}
+	close(jobs)
+	go func() { wg.Wait(); close(results) }()
+
+	var pages []*Page
+loop:
+	for {
+		select {
+		case page, ok := <-results:
+			if !ok { break loop }
+			pages = append(pages, page)
+		case err := <-errs:
+			return pages, err
+		case <-time.After(timeout):
+			goto timedOut
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return pages, nil
+
+timedOut:
+	return pages, fmt.Errorf("timed out after %v with %d/%d pages", timeout, len(pages), len(seen))
+}
+
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fetcher := &httpFetcher{client: new(http.Client), hits: map[string]int{}}
+	pages, err := Crawl(ctx, fetcher, 4, os.Args[1:]...)
+	if err != nil && len(pages) == 0 {
+		fmt.Fprintln(os.Stderr, usage, err)
+		os.Exit(1)
+	}
+	var out any = Map(pages, func(p *Page) string { return p.URL + ":" + str.Itoa(p.Status) })
+	if list, ok := out.([]string); ok && len(list) > 0 {
+		data, _ := json.MarshalIndent(list, "", "  ")
+		fmt.Printf("%s\n%v %c%c%c%c %d %v\n", data, ratio+hexFloat, newline, quote, snowman, hexRune,
+			mask&^bits|perms^legacy, real(imaginary) < 1 && Failed > maxDepth)
+	}
+}

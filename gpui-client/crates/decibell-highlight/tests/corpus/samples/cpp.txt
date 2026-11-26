@@ -1,0 +1,180 @@
+/**
+ * @file scheduler.cpp
+ * @brief A cooperative task scheduler with priorities.
+ *
+ * The scheduler owns its tasks. It is not thread-safe on purpose.
+ * TODO: time slices. FIXME: starvation of low priorities. NOTE: görev = task, タスク.
+ */
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+#include "scheduler.hpp"
+
+#pragma once
+#define SCHED_STR_(x) #x
+#define SCHED_STR(x) SCHED_STR_(x)
+#define SCHED_TRACE(msg, ...)                                  \
+    do {                                                       \
+        if (::sched::detail::tracing)                          \
+            std::fprintf(stderr, "[%s:%d] " msg "\n",          \
+                         __FILE__, __LINE__, ##__VA_ARGS__);   \
+    } while (false)
+
+#if __cplusplus >= 202002L && !defined(SCHED_NO_CONCEPTS)
+#  define SCHED_HAS_CONCEPTS 1
+#elif defined(_MSC_VER)
+#  error "this file needs C++20"
+#else
+#  define SCHED_HAS_CONCEPTS 0
+#endif
+
+namespace sched {
+namespace detail {
+inline bool tracing = false;
+constexpr unsigned long long kMaxTasks = 1'000'000ULL;
+constexpr auto kMask = 0xFF'FFu;
+constexpr int kBits = 0b1010'0101, kMode = 0755;
+constexpr double kTick = 1.5e-3, kHex = 0x1.4p-2;
+constexpr float kHalf = .5f;
+constexpr long double kWide = 3.14159'26535L;
+}  // namespace detail
+
+using namespace std::string_literals;
+using namespace std::string_view_literals;
+
+constexpr long double operator""_ms(long double v) noexcept { return v / 1000.0L; }
+constexpr unsigned long long operator""_kb(unsigned long long v) noexcept { return v * 1024; }
+
+template <typename F>
+concept Runnable = std::invocable<F> && requires(F f) {
+    { f() } -> std::convertible_to<bool>;
+};
+
+enum class Priority : std::uint8_t { Low, Normal = 5, High = 10 };
+
+struct TaskId {
+    std::uint32_t value{};
+    [[nodiscard]] constexpr auto operator<=>(const TaskId&) const noexcept = default;
+    explicit constexpr operator bool() const noexcept { return value != 0; }
+};
+
+class Task {
+public:
+    Task() = default; Task(const Task&) = delete;
+    Task& operator=(Task&&) noexcept = default;
+    virtual ~Task() = default;
+
+    [[nodiscard]] virtual bool run() = 0;
+    virtual std::string_view name() const noexcept { return "task"sv; }
+
+    friend std::ostream& operator<<(std::ostream& os, const Task& task) {
+        return os << '<' << task.name() << '>';
+    }
+
+protected:
+    mutable int runs_ = 0;
+};
+
+template <Runnable F>
+class FnTask final : public Task {
+public:
+    explicit FnTask(F&& fn, std::string label = "lambda"s) : fn_(std::forward<F>(fn)), label_(std::move(label)) {}
+
+    [[nodiscard]] bool run() override {
+        ++runs_;
+        return static_cast<bool>(fn_());
+    }
+    std::string_view name() const noexcept override { return label_; }
+
+private:
+    F fn_;
+    std::string label_;
+};
+
+template <typename Key = TaskId, typename Compare = std::less<>>
+class Scheduler {
+    struct Slot {
+        std::unique_ptr<Task> task;
+        Priority priority;
+    };
+    std::map<Key, Slot, Compare> slots_;
+    std::vector<std::pair<Key, std::vector<std::string>>> history_; static inline thread_local int depth_ = 0;
+    std::uint32_t next_ = 1;
+
+public:
+    template <Runnable F>
+    [[nodiscard]] Key spawn(F&& fn, Priority priority = Priority::Normal) {
+        if (slots_.size() >= detail::kMaxTasks) throw std::length_error{"too many tasks"};
+        Key id{next_++};
+        slots_.emplace(id, Slot{std::make_unique<FnTask<F>>(std::forward<F>(fn)), priority});
+        return id;
+    }
+
+    Task& operator[](const Key& id) { return *slots_.at(id).task; }
+
+    std::size_t run_once() noexcept(false) {
+        std::vector<Key> done;
+        auto urgent = [this](const auto& a, const auto& b) -> bool {
+            return slots_.at(a).priority > slots_.at(b).priority;
+        };
+        std::vector<Key> order;
+        for (const auto& [id, slot] : slots_) order.push_back(id);
+        std::ranges::sort(order, urgent);
+        for (auto&& id : order) {
+            try {
+                if (!slots_[id].task->run()) done.push_back(id);
+            } catch (const std::exception& e) {
+                SCHED_TRACE("task %u failed: %s", id.value, e.what());
+                done.push_back(id);
+            } catch (...) { throw; }
+        }
+        std::erase_if(slots_, [&done](const auto& kv) { return std::ranges::find(done, kv.first) != done.end(); });
+        return done.size();
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return slots_.empty(); }
+};
+
+}  // namespace sched
+
+static const char* const kUsage = R"usage(Usage: sched [--trace] N
+  Runs N "tasks" until they finish.
+  Backslashes \n stay as they are (raw).)usage";
+
+int main(int argc, char** argv) {
+    using sched::Priority;
+    sched::Scheduler<> scheduler;
+    const wchar_t* wide = L"geniş";
+    const char8_t* utf8 = u8"café 🎉";
+    const char16_t* utf16 = u"日本";
+    char32_t rocket = U'\U0001F680';
+    char tab = '\t', quote = '\'';
+
+    if (argc < 2 || std::string_view{argv[1]} == "--help") {
+        std::cerr << kUsage << '\n';
+        return argc < 2 ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    int budget = std::stoi(argv[argc - 1]), ticks = 0;
+    auto countdown = [n = budget, &ticks]() mutable { ++ticks; return --n > 0; };
+    auto a = scheduler.spawn(std::move(countdown), Priority::High);
+    auto b = scheduler.spawn([] { return false; }, Priority::Low);
+    const auto timeout = 250.0_ms;
+    auto limit = 64_kb;
+
+    while (!scheduler.empty() && ticks < 1'000) {
+        if (auto finished = scheduler.run_once(); finished > 0 && a <=> b != 0) {
+            std::cout << "finished " << finished << " after " << ticks << " ticks\n";
+        }
+    }
+    delete[] new (std::nothrow) int[4]{1, 2, 3, 4};
+    std::cout << std::boolalpha << (a < b) << ' ' << timeout << ' ' << (limit >> 2) << ' '
+              << sizeof(wide) + alignof(char32_t) << static_cast<int>(tab + quote) << (utf8 != nullptr)
+              << (utf16 ? 1 : 0) << (rocket == U'x') << SCHED_STR(SCHED_HAS_CONCEPTS) << std::endl;
+    return 0;
+}

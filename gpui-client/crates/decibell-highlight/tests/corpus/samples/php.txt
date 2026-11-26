@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title><?= htmlspecialchars($title ?? 'Invoices') ?></title>
+</head>
+<body class="page">
+<?php
+declare(strict_types=1);
+
+namespace App\Billing;
+
+use App\Contracts\{Arrayable, Jsonable as JsonContract};
+use DateTimeImmutable;
+use InvalidArgumentException as BadInput;
+use function array_map, sprintf;
+use const PHP_EOL;
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+/**
+ * Invoice model. It holds lines and knows how to print itself.
+ *
+ * The class is a sample; do not use it to bill anyone.
+ *
+ * @package App\Billing
+ * @property-read float $total
+ * @method static self make(string $number)
+ * @todo Round per line. FIXME: currency is ignored. NOTE: fatura = 請求書 = invoice.
+ */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final class Route
+{
+    public function __construct(public readonly string $path, public array $methods = ['GET']) {}
+}
+
+interface Printable extends \Stringable
+{
+    public const FORMAT = "%-20s %10.2f";
+    public function render(bool $html = false): string;
+}
+
+trait Auditable
+{
+    private array $log = [];
+    protected static int $instances = 0;
+
+    public function audit(string $event, mixed ...$context): static
+    {
+        $this->log[] = [$event, $context, time()];
+        return $this;
+    }
+    abstract public function id(): string|int;
+}
+
+enum Status: string
+{
+    case Draft = 'draft';
+    case Sent = 'sent';
+    case Paid = 'paid';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Draft => 'Taslak',
+            self::Sent, self::Paid => ucfirst($this->value),
+        };
+    }
+}
+
+#[Route('/invoices/{id}', methods: ['GET', 'POST'])]
+class Invoice implements Printable, \Countable
+{
+    use Auditable;
+
+    public const TAX = 0.18;
+    private const MASK = 0xFF_EC, PERMS = 0o644, BITS = 0b1010_0101, BIG = 1_000_000, TINY = 1.5e-3, OLD = 0755;
+    public ?Customer $customer = null;
+    protected array $lines = [];
+    private static ?self $last = null;
+
+    public function __construct(
+        private readonly string $number,
+        protected Status $status = Status::Draft,
+        public readonly DateTimeImmutable $issued = new DateTimeImmutable('now'),
+    ) {
+        static::$instances++;
+        self::$last = $this;
+    }
+
+    public function __get(string $name): mixed
+    {
+        return $name === 'total' ? $this->total() : throw new BadInput("No property $name");
+    }
+
+    public function id(): string { return $this->number; }
+    public function count(): int { return \count($this->lines); }
+
+    public function add(string $label, float|int $price, int $qty = 1): self
+    {
+        if ($qty <= 0 or $price < 0) {
+            throw new BadInput(sprintf('Bad line "%s": qty=%d', $label, $qty));
+        }
+        $this->lines[] = compact('label', 'price', 'qty');
+        return $this->audit('line.added', label: $label);
+    }
+
+    public function total(bool $withTax = true): float
+    {
+        $sum = array_sum(array_map(fn(array $l): float => $l['price'] * $l['qty'], $this->lines));
+        return round($withTax ? $sum * (1 + self::TAX) : $sum, 2);
+    }
+
+    public function render(bool $html = false): string
+    {
+        $city = $this->customer?->address?->city ?? 'unknown';
+        $rows = '';
+        foreach ($this->lines as $i => ['label' => $label, 'price' => $price, 'qty' => $qty]) {
+            $rows .= sprintf(static::FORMAT, "$qty × {$label}", (float) $price * (int) $qty) . PHP_EOL;
+        }
+        $first = $this->lines[0] ?? ['label' => 'n/a'];
+        $summary = "Invoice #{$this->number} for $city: {$first['label']} and ${rows}\t\x41\u{1F9FE}\n";
+        $text = <<<EOT
+            Invoice {$this->number} ({$this->status->label()})
+            Issued: {$this->issued->format('Y-m-d')}  Lines: {$this->count()}
+            $rows
+            Total: {$this->total()} ₺ — "quoted" and \$escaped
+            EOT;
+        $legal = <<<'EOT'
+            Nothing is interpolated here: $rows {$this->number} \n stays.
+            EOT;
+        return $html ? '<pre>' . htmlspecialchars($text . $legal, ENT_QUOTES) . '</pre>' : $text . $summary;
+    }
+
+    public function __toString(): string { return $this->render(); }
+    public static function last(): ?static { return static::$last; }
+    public function __destruct() { /* nothing to release */ }
+}
+
+function discount(Invoice $invoice, callable|null $rule = null): \Closure
+{
+    $rate = 0.1;
+    $rule ??= function (float $total) use ($rate, &$invoice): float {
+        return $total > 1_000 ? $total * (1 - $rate) : $total;
+    };
+    return static fn(): float => $rule($invoice->total());
+}
+
+$invoice = new Invoice(number: '2026-0042', status: Status::Sent);
+$invoice->add('Çay bardağı', 12.5, 6)->add(label: 'Demlik', price: 340);
+$field = 'customer';
+$$field = $invoice->$field;
+$ids = [1, 2, 3, ...[4, 5]];
+[$a, , $b] = $ids;
+$isBig = $invoice->total <=> 1000;
+$flags = (int) '42' + (float) "1.5" . (string) true;
+$cmd = `date +%s`;
+$object = (object) ['list' => array_filter($ids, fn($n) => $n % 2 === 0 && $n !== null)];
+if ($invoice instanceof Printable && !empty($ids)):
+    echo $invoice, PHP_EOL, __FILE__, ':', __LINE__, ' ', __NAMESPACE__, ' ', Invoice::class, PHP_EOL;
+elseif (isset($customer)):
+    print("customer set\n");
+else:
+    die('unreachable');
+endif;
+# A hash comment, then the template part of the page.
+?>
+  <h1><?= $invoice->id() ?> &mdash; <?php echo $invoice->count(); ?> lines</h1>
+  <?php foreach ($ids as $id): ?>
+    <li class="<?= $id % 2 ? 'odd' : 'even' ?>">Row <?= $id ?></li>
+  <?php endforeach; ?>
+  <p>Total: <?= number_format(discount($invoice)(), 2, ',', '.') ?> ₺ 🎉</p>
+</body>
+</html>

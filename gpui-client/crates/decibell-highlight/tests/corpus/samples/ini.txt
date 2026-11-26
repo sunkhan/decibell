@@ -1,0 +1,142 @@
+; Application settings for the sync service.
+; Lines that start with a semicolon are comments. So are lines that
+; start with a hash. TODO: document every key. FIXME: the paths are Unix-only.
+# NOTE: ayarlar = 設定 = settings 🎉
+
+; Keys before the first section belong to the "global" scope.
+app_name = Sync Service
+app_version = 2.4.1
+debug = false
+locale = tr_TR.UTF-8
+
+[general]
+name = "Quoted value with spaces"
+motto = 'single quoted; a semicolon inside'
+description = A plain value with several words and no quotes
+enabled = true
+verbose = False
+autostart = yes
+legacy_mode = off
+optional = null
+workers = 8
+timeout = 30.5
+retries = -1
+ratio = 1.5e-3
+mask = 0xFF
+home = ${HOME}/sync
+log_dir = ${general:home}/logs
+url = https://example.org/api?x=1&y=2
+
+[database]
+host: db.internal
+port: 5432
+user: sync_user
+password: "p@ss;word#1"
+name: sync_prod
+ssl: on
+pool_size: 20
+connect_timeout: 2.5
+dsn = postgres://${user}:${password}@${host}:${port}/${name}
+
+[database.replica]
+host = replica-1.db.internal
+port = 5433
+read_only = true
+weight = 0.25
+
+[database.replica.fallback]
+host = replica-2.db.internal
+lag_limit_ms = 1500
+
+[paths]
+data = /var/lib/sync
+cache = /var/cache/sync
+windows_data = C:\ProgramData\Sync\data
+pid_file = /run/sync/sync.pid
+include = conf.d/*.ini
+empty_value =
+key with spaces = value with spaces
+
+[logging]
+level = INFO
+format = %(asctime)s [%(levelname)s] %(name)s: %(message)s
+datefmt = %Y-%m-%d %H:%M:%S
+rotate = daily
+keep = 14
+handlers = console, file, syslog
+multi_line = first line
+    second line, indented
+    third line, indented
+
+[logging.handlers.file]
+class = logging.handlers.RotatingFileHandler
+args = ("/var/log/sync/app.log", "a", 10485760, 5)
+encoding = utf-8
+
+[features]
+; Feature switches. Anything not listed is off.
+search = on
+uploads = on
+experimental_merge = off
+max_upload_mb = 250
+allowed_types = [".png", ".jpg", ".pdf"]
+limits = { burst = 10, per_second = 3 }
+
+[mail "smtp"]
+server = smtp.example.org
+port = 587
+tls = starttls
+from = "Sync Service" <noreply@example.org>
+subject_prefix = [sync]
+
+[user]
+	name = Ayşe Yılmaz
+	email = ayse@example.org
+	signingkey = 0xDEADBEEF
+
+[core]
+	editor = nvim -c "set tw=72"
+	autocrlf = input
+	excludesfile = ~/.gitignore_global
+	quotepath = false
+
+[alias]
+	st = status --short --branch
+	lg = log --graph --pretty=format:'%C(yellow)%h%Creset %s %C(dim)(%cr)%Creset'
+	undo = !git reset --soft HEAD~1
+
+[remote "origin"]
+	url = git@example.org:team/sync.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+
+[Unit]
+Description=Sync service (günlük eşitleme)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=sync
+Environment="SYNC_ENV=production" "SYNC_PORT=8080"
+EnvironmentFile=-/etc/default/sync
+ExecStart=/usr/bin/sync-service --config /etc/sync/sync.ini
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+
+[Desktop Entry]
+Type=Application
+Name=Sync
+Name[tr]=Eşitleme
+Name[ja]=同期
+Exec=sync-gui %U
+Terminal=false
+Categories=Network;FileTransfer;

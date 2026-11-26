@@ -1,0 +1,132 @@
+# syntax=docker/dockerfile:1.7
+# escape=\
+#
+# Reading Room - production image.
+# Three stages: build the web client, build the server, assemble a
+# small runtime image. TODO: distroless base. FIXME: the cache mount
+# is ignored by older builders. NOTE: imaj = イメージ = image 🎉
+
+ARG NODE_VERSION=20.17
+ARG GO_VERSION=1.23
+ARG ALPINE_VERSION="3.20"
+ARG TARGETPLATFORM
+
+# ---- Stage 1: web client ----
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS web
+WORKDIR /src/web
+ENV NODE_ENV=production \
+    npm_config_fund=false \
+    npm_config_audit="false"
+ENV CI true
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-progress \
+ && npm cache verify
+COPY web/ ./
+RUN npm run build -- --outDir=/out/web && \
+    find /out/web -name '*.map' -delete && \
+    echo "built $(ls /out/web | wc -l) files" >&2
+
+# ---- Stage 2: server ----
+FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS server
+ARG VERSION=dev
+ARG COMMIT
+ARG CGO_ENABLED=0
+WORKDIR /src
+RUN apk add --no-cache git ca-certificates tzdata 'build-base>=0.5' \
+    && update-ca-certificates
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+COPY . .
+COPY --from=web /out/web ./internal/assets/web
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
+    export GOFLAGS="-trimpath -mod=readonly"; \
+    LDFLAGS="-s -w -X 'main.version=${VERSION}' -X main.commit=${COMMIT:-unknown}"; \
+    for cmd in server migrate; do \
+        go build -ldflags "$LDFLAGS" -o "/out/bin/$cmd" "./cmd/$cmd" || exit 1; \
+    done; \
+    /out/bin/server --version | tee /out/VERSION | grep -q "$VERSION"; \
+    if [ "$CGO_ENABLED" = "0" ] && ! ldd /out/bin/server 2>&1 | grep -q 'not a dynamic'; then \
+        echo "expected a static binary" >&2; exit 1; \
+    fi
+
+# A long shell command with a heredoc (BuildKit).
+RUN <<EOF
+set -e
+mkdir -p /out/etc
+cat > /out/etc/defaults.env <<'INNER'
+RR_PORT=8080
+RR_DATA=/data
+INNER
+awk -F= '{ printf "%-10s %s\n", $1, $2 }' /out/etc/defaults.env | sort -r
+EOF
+
+# ---- Stage 3: tests (optional target) ----
+FROM server AS test
+RUN go vet ./... && go test -count=1 -race ./... 2>&1 | tail -n 20
+
+# ---- Stage 4: runtime ----
+FROM alpine:${ALPINE_VERSION} AS runtime
+
+LABEL org.opencontainers.image.title="Reading Room" \
+      org.opencontainers.image.description="A self-hosted catalogue for a shared \"bookshelf\"." \
+      org.opencontainers.image.licenses='MIT' \
+      org.opencontainers.image.source=https://example.org/reading-room \
+      maintainer="Deniz Kaya <deniz@example.org>"
+LABEL version=1.4.2
+
+ARG UID=10001
+ARG GID=10001
+ENV RR_PORT=8080 RR_DATA=/data RR_LOG_LEVEL="info"
+ENV PATH="/app/bin:${PATH}" \
+    TZ=Europe/Istanbul \
+    LANG=C.UTF-8
+
+SHELL ["/bin/sh", "-eu", "-c"]
+
+RUN addgroup -g "$GID" -S rr \
+ && adduser -u "$UID" -S -G rr -h /app -s /sbin/nologin rr \
+ && mkdir -p "$RR_DATA" /app/bin /app/etc \
+ && chown -R rr:rr "$RR_DATA" /app \
+ && apk add --no-cache tini curl \
+ && rm -rf /var/cache/apk/* /tmp/*
+
+WORKDIR /app
+COPY --from=server --chown=rr:rr /out/bin/ /app/bin/
+COPY --from=server --chown=rr:rr --chmod=0644 /out/etc/defaults.env /app/etc/
+COPY --from=server /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --link ["docker/entry point.sh", "/app/bin/entrypoint.sh"]
+ADD --chown=rr:rr https://example.org/static/licenses.tar.gz /app/licenses/
+ADD docs/*.md /app/docs/
+
+copy docker/motd /etc/motd
+run chmod 0755 /app/bin/entrypoint.sh && cat /etc/motd
+user rr
+
+EXPOSE 8080
+EXPOSE 8443/tcp 9090/udp
+VOLUME ["/data"]
+VOLUME /app/cache /app/tmp
+
+USER ${UID}:${GID}
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${RR_PORT}/healthz" || exit 1
+
+ONBUILD COPY extra-config/ /app/etc/
+ONBUILD RUN echo "extra config: $(ls /app/etc | wc -l) files"
+
+ENTRYPOINT ["/sbin/tini", "--", "/app/bin/entrypoint.sh"]
+CMD ["server", "--port", "8080", "--data", "/data"]
+
+# ---- Stage 5: a debug variant in shell form ----
+FROM runtime AS debug
+USER root
+RUN apk add --no-cache strace busybox-extras
+ENV RR_LOG_LEVEL debug
+HEALTHCHECK NONE
+ENTRYPOINT exec /app/bin/server --port "$RR_PORT" --verbose
+CMD echo "started at $(date -u +%FT%TZ)" && tail -f /dev/null
+MAINTAINER legacy@example.org

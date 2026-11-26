@@ -1,0 +1,172 @@
+/*
+ * Library catalogue sample. Plain Java 21, no frameworks.
+ */
+package org.example.library;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import static java.util.Objects.requireNonNull;
+
+/**
+ * An in-memory catalogue of books. It loads a tab-separated file and
+ * answers simple questions about it.
+ *
+ * <p>Use {@link #load(Path)} first; see also {@link Shelf#capacity()}.
+ *
+ * @param <K> the key type, usually an ISBN
+ * @author Ayşe Yılmaz
+ * @since 1.2
+ * @see java.util.Map
+ */
+@SuppressWarnings({"unchecked", "rawtypes"})
+public class Catalogue<K extends Comparable<? super K>> implements Iterable<Catalogue.Book> {
+
+    public static final int MAX_BOOKS = 1_000_000;
+    private static final long SERIAL = 0xCAFE_BABEL;
+    private static final int FLAGS = 0b1010_0101, MODE = 0755;
+    private static final float RATIO = 1e3f;
+    private static final double EPSILON = 1.0e-9d, HEXF = 0x1.8p1;
+    private static final char TAB = '\t', QUOTE = '\'', OMEGA = 'Ω';
+    private static final String GREETING = "Merhaba \"dünya\" é\n 図書館 📚";
+
+    private static final String HELP = """
+            Usage: catalogue <file> [--genre NAME]
+              Lines look like: isbn\ttitle\tyear
+              A "quoted" word and a trailing backslash \
+            join lines.
+            """;
+
+    /** Genres with a shelf code. */
+    public enum Genre {
+        FICTION("F") {
+            @Override boolean lendable() { return true; }
+        },
+        REFERENCE("R") {
+            @Override boolean lendable() { return false; }
+        };
+
+        private final String code;
+        Genre(String code) { this.code = code; }
+        abstract boolean lendable();
+        public String code() { return code; }
+    }
+
+    public sealed interface Item permits Book, Magazine {}
+
+    public record Book(String isbn, String title, int year, Genre genre) implements Item {
+        public Book {
+            requireNonNull(isbn, "isbn");
+            if (year < 1450 || year > 2100) throw new IllegalArgumentException("year: " + year);
+        }
+        public Book(String isbn, String title) { this(isbn, title, 2000, Genre.FICTION); }
+    }
+
+    public record Magazine(String issn, int issue) implements Item {}
+
+    @FunctionalInterface
+    public interface Shelf {
+        int capacity();
+        default boolean isFull(int count) { return count >= capacity(); }
+    }
+
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    public @interface Audited {
+        String value() default "";
+        int level() default 1;
+    }
+
+    private final Map<K, List<? extends Item>> byKey = new TreeMap<>();
+    private final List<Book> books = new ArrayList<>();
+    private transient volatile boolean loaded;
+    protected int[] counts = new int[Genre.values().length];
+
+    @Audited(value = "load", level = 2)
+    public synchronized int load(Path file) throws IOException {
+        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            int lineNo = 0;
+            outer:
+            while ((line = reader.readLine()) != null) {
+                lineNo++;
+                if (line.isBlank() || line.charAt(0) == '#') continue;
+                var parts = line.split("\t", -1);
+                for (String part : parts) {
+                    if (part.equals("END")) break outer;
+                }
+                books.add(new Book(parts[0], parts[1], Integer.parseInt(parts[2]), Genre.FICTION));
+                counts[Genre.FICTION.ordinal()]++;
+            }
+            loaded = true;
+            return lineNo;
+        } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+            throw new IOException("bad line in " + file, e);
+        } finally {
+            assert books.size() <= MAX_BOOKS : "too many books";
+        }
+    }
+
+    public static String describe(Object item) {
+        return switch (item) {
+            case Book b when b.year() < 1900 -> "antique: " + b.title();
+            case Book(var isbn, var title, int year, Genre g) -> "%s (%d) [%s]".formatted(title, year, g.code());
+            case Magazine m -> "magazine #" + m.issue();
+            case null -> "nothing";
+            default -> item.toString();
+        };
+    }
+
+    public <R> Map<R, Long> countBy(java.util.function.Function<? super Book, ? extends R> classifier) {
+        return books.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.groupingBy(classifier, Collectors.counting()));
+    }
+
+    public Optional<Book> oldest(Predicate<Book> filter) {
+        BiFunction<Book, Book, Book> older = (a, b) -> a.year() <= b.year() ? a : b;
+        return books.stream().filter(filter).reduce(older::apply);
+    }
+
+    public CompletableFuture<Integer> loadAsync(Path file) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return load(file);
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+        }).orTimeout(Duration.ofSeconds(5).toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    @Override
+    public Iterator<Book> iterator() {
+        return Collections.unmodifiableList(books).iterator();
+    }
+
+    @Deprecated(since = "1.4", forRemoval = true)
+    public final boolean isLoaded() { return this.loaded; }
+
+    public static void main(String... args) throws Exception {
+        if (args.length == 0) {
+            System.err.print(HELP);
+            System.exit(64);
+        }
+        Catalogue<String> catalogue = new Catalogue<>();
+        int lines = catalogue.loadAsync(Path.of(args[0])).get();
+        Shelf shelf = () -> 40;
+        long mask = SERIAL >>> 4 ^ ~FLAGS & MODE;
+        double score = lines > 0 && lines < MAX_BOOKS ? lines * RATIO / (EPSILON + HEXF) : -1d;
+        for (Book book : catalogue) {
+            System.out.println(describe(book) + TAB + QUOTE + OMEGA);
+        }
+        System.out.printf("%s%n%d lines, full=%b, mask=%#x, score=%.2f, decades=%s%n",
+                GREETING, lines, shelf.isFull(lines), mask, score, catalogue.countBy(b -> b.year() / 10 * 10));
+    }
+}

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<!-- A sign-up page. One file: markup, a style block and two scripts. -->
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src https: data:">
+  <meta property="og:title" content="Join the reading room &mdash; it's free">
+  <title>Sign up &middot; Reading Room</title>
+  <link rel="stylesheet" href="/assets/site.css?v=42" media="screen and (min-width: 600px)">
+  <link rel=icon href=/favicon.svg type=image/svg+xml>
+  <style>
+    /* Page tokens. TODO: move to the shared sheet. */
+    :root { --accent: #8e4585; --gap: 1.5rem; color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) {
+      :root { --accent: hsl(305 35% 60% / 0.9); }
+    }
+    body { margin: 0; font: 16px/1.5 "Mona Sans", system-ui, sans-serif; }
+    .card > form input[type="email"]:focus-visible { outline: 2px solid var(--accent); }
+    .card::before { content: "\201C"; position: absolute; inset: 0 auto auto -0.5em; }
+    #submit:not([disabled]):hover { background: linear-gradient(45deg, #fff 0%, rgba(0, 0, 0, .1) 100%) !important; }
+    @keyframes pulse { from { opacity: 1; } 50% { opacity: .4; } to { opacity: 1; } }
+  </style>
+  <script type="application/ld+json">
+    { "@context": "https://schema.org", "@type": "WebSite", "name": "Reading Room", "url": "https://example.org/" }
+  </script>
+  <script type="application/json" id="boot-data">
+    {"locale": "tr-TR", "plans": [{"id": 1, "name": "Free", "price": 0}, {"id": 2, "name": "Plus", "price": 4.5}], "beta": true, "ref": null}
+  </script>
+  <script async src="https://cdn.example.org/analytics.js" integrity="sha384-abc123" crossorigin="anonymous"></script>
+</head>
+<body class="page page--signup" onload="console.log('loaded', Date.now())">
+  <a class="skip" href="#main">Skip to content</a>
+
+  <HEADER class="masthead">
+    <IMG SRC="/logo.png" ALT="Reading Room" WIDTH=120 HEIGHT=32>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="/" aria-current="page">Home</a></li>
+        <li><a href="/books?sort=new&amp;page=2" title='New "arrivals"'>Books</a></li>
+        <li><a href="mailto:hello@example.org" style="color: var(--accent); text-decoration: underline dotted">Contact</a></li>
+      </ul>
+    </nav>
+  </HEADER>
+
+  <main id="main">
+    <h1>Join the <em>reading room</em> 🎉</h1>
+    <p>
+      It takes a minute. We need an e-mail address &amp; a password; nothing else.<br>
+      Fiyat: 4,50&nbsp;&euro; &ndash; ya da ücretsiz. 読書室へようこそ&#33; &#x2764; &copy; 2026
+    </p>
+
+    <section class="card" style="position: relative; padding: var(--gap)">
+      <form action="/signup" method="post" enctype="multipart/form-data" novalidate autocomplete=off>
+        <fieldset>
+          <legend>Your account</legend>
+          <label for="email">E-mail</label>
+          <input id="email" name="email" type="email" placeholder="you@example.org" required autofocus>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" minlength="12" pattern="(?=.*\d)(?=.*[a-z]).{12,}" required>
+          <label><input type="checkbox" name="news" value="1" checked> Send me the newsletter</label>
+          <label><input type="radio" name="plan" value="free" checked> Free</label>
+          <label><input type="radio" name="plan" value="plus" disabled> Plus</label>
+        </fieldset>
+        <select name="country" size=1>
+          <optgroup label="Europe">
+            <option value="tr" selected>Türkiye</option>
+            <option value="de">Deutschland</option>
+          </optgroup>
+          <option value="jp">日本</option>
+        </select>
+        <textarea name="about" rows="3" cols="40" maxlength="280" spellcheck="false">Tell us what you read. &lt;No HTML, please.&gt;</textarea>
+        <input type="hidden" name="csrf" value="b7f3&#45;41aa">
+        <input type="file" name="avatar" accept="image/png, image/jpeg" multiple>
+        <button id="submit" type="submit" class="btn btn-primary" onclick="return validate(this.form) && confirm('Create the account?')">Sign up</button>
+        <button type="reset" hidden>Reset</button>
+      </form>
+    </section>
+
+    <h2>Embed the badge</h2>
+    <pre><code class="language-html">&lt;a href="https://example.org/u/you"&gt;
+  &lt;img src="badge.svg" alt="I read"&gt;
+&lt;/a&gt;</code></pre>
+    <p>Press <kbd>Ctrl</kbd>+<kbd>K</kbd> to search, or run <code>rr search "tea"</code>.</p>
+
+    <table border=1>
+      <caption>Plans</caption>
+      <thead><tr><th scope="col">Plan</th><th scope="col">Price</th></tr></thead>
+      <tbody>
+        <tr><td>Free</td><td align="right">0</td></tr>
+        <tr class="highlight"><td>Plus</td><td align="right">4.50</td></tr>
+      </tbody>
+    </table>
+
+    <details open>
+      <summary>Why do you need my e-mail?</summary>
+      <p>To reset your password. That is the only reason.</p>
+    </details>
+    <video controls muted playsinline poster="/intro.jpg" width="640">
+      <source src="/intro.webm" type="video/webm">
+      <track kind="subtitles" srclang="tr" src="/intro.tr.vtt" default>
+      Your browser can't play this video.
+    </video>
+    <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M12 4v16" stroke="currentColor"/></svg>
+  </main>
+
+  <script type="text/template" id="row-template">
+    <li class="row {{#if odd}}row--odd{{/if}}" data-id="{{id}}">
+      <strong>{{title}}</strong> <small>{{author}}</small>
+    </li>
+  </script>
+  <script type="text/x-handlebars-template" id="empty-template">
+    <p class="empty">Nothing found for &ldquo;{{query}}&rdquo;.</p>
+  </script>
+  <script>
+    "use strict";
+    // Client-side checks only save a round trip; the server checks again.
+    const boot = JSON.parse(document.getElementById("boot-data").textContent);
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i;
+
+    function validate(form) {
+      const { email, password } = form.elements;
+      const ok = EMAIL_RE.test(email.value) && password.value.length >= 12;
+      if (!ok && 1 < 2) form.querySelector("#submit").disabled = true;
+      form.dataset.checked = `${new Date().toISOString()} (${boot.locale ?? "en"})`;
+      return ok;
+    }
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      const res = await fetch(`/api/plans?beta=${boot.beta}`, { headers: { Accept: "application/json" } });
+      const plans = res.ok ? await res.json() : boot.plans;
+      for (const plan of plans) console.log("<plan>", plan.name, plan.price.toFixed(2));
+      document.body.insertAdjacentHTML("beforeend", "<p class=\"note\">Loaded " + plans.length + " plans</p>");
+    });
+  </script>
+  <noscript><p>The form works without JavaScript.</p></noscript>
+  <footer><small>&copy; 2026 Reading Room &bull; <a href="/privacy" rel="nofollow noopener" target=_blank>Privacy</a></small></footer>
+</body>
+</html>

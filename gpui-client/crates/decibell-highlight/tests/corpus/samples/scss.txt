@@ -1,0 +1,179 @@
+@charset "UTF-8";
+@use "sass:math";
+@use "sass:map";
+@use "sass:color" as c;
+@use "./tokens" as t with ($radius: 6px, $accent: #8e4585);
+@forward "./mixins" show respond, truncate;
+@forward "./functions" as fn-*;
+
+// Reading Room - component styles.
+// Line comments are dropped from the output; block comments are kept.
+// TODO: split this file. FIXME: the dark map misses "muted". NOTE: stil = スタイル 🎉
+/* Component layer.
+   Compiled with Dart Sass 1.77+. */
+
+$font-stack: "Mona Sans", 'Segoe UI', system-ui, sans-serif !default;
+$accent: #8e4585 !default;
+$accent-dark: darken($accent, 12%);
+$accent-light: lighten($accent, 30%);
+$gap: 1.5rem;
+$columns: 12;
+$enable-shadows: true;
+$nothing: null;
+$breakpoints: (
+  "sm": 576px,
+  "md": 768px,
+  "lg": 1024px,
+  "xl": 1280px,
+);
+$themes: (
+  light: (ink: #18181b, paper: #f7f4ee, line: rgba(0, 0, 0, 0.1)),
+  dark: (ink: #eeeeee, paper: hsl(270, 15%, 10%), line: rgba(#fff, .12)),
+);
+$sides: top, right, bottom, left;
+
+@function rem($px, $base: 16px) {
+  @if math.is-unitless($px) {
+    @warn "rem() got a unitless value: #{$px}";
+    @return math.div($px, 16) * 1rem;
+  }
+  @return math.div($px, $base) * 1rem;
+}
+
+@function theme-value($theme, $key) {
+  $palette: map-get($themes, $theme);
+  @if not map-has-key($palette, $key) {
+    @error "Unknown key `#{$key}` in theme #{$theme}.";
+  }
+  @return map.get($palette, $key);
+}
+
+@mixin respond($name, $direction: min) {
+  $width: map-get($breakpoints, $name);
+  @if $direction == min {
+    @media screen and (min-width: $width) { @content; }
+  } @else if $direction == max {
+    @media screen and (max-width: $width - 0.02px) { @content; }
+  } @else {
+    @debug "respond(): unknown direction #{$direction}";
+  }
+}
+
+@mixin truncate($lines: 1) {
+  overflow: hidden;
+  @if $lines == 1 {
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  } @else {
+    display: -webkit-box;
+    -webkit-line-clamp: $lines;
+    -webkit-box-orient: vertical;
+  }
+}
+
+@mixin button-variant($bg, $fg: white, $args...) {
+  background-color: $bg;
+  color: $fg;
+  &:hover:not(.is-disabled) { background-color: c.adjust($bg, $lightness: -8%); }
+  &:active { background-color: mix(black, $bg, 20%); }
+  @content;
+}
+
+%card-base {
+  position: relative;
+  padding: $gap;
+  border-radius: t.$radius;
+  @if $enable-shadows { box-shadow: 0 1px 2px rgba(black, 0.12); }
+}
+
+:root {
+  --accent: #{$accent};
+  --gap: #{$gap};
+  @each $name, $width in $breakpoints {
+    --bp-#{$name}: #{$width};
+  }
+}
+
+body {
+  font: 400 #{rem(16px)}/#{1.5} $font-stack;
+  margin: 0;
+}
+
+.card {
+  @extend %card-base;
+  $local-pad: $gap * 0.5 !global;
+  width: calc(100% - #{$gap * 2});
+  border: 1px solid theme-value(light, line);
+
+  &:hover,
+  &.is-active { border-color: $accent; }
+  &::before { content: "\201C"; opacity: .15; }
+  &-title { @include truncate(2); font-weight: 600; margin: 0 0 math.div($gap, 3); }
+  &__body { color: rgba(theme-value(light, ink), 0.8); > p + p { margin-top: 1em; } }
+  &--wide { grid-column: span 2; }
+  & + & { margin-top: $gap; }
+  .sidebar & { padding: $local-pad; }
+  > .badge ~ .badge { margin-left: -4px; }
+
+  @include respond("md") {
+    padding: $gap * 1.5;
+    &-title { font-size: percentage(math.div(9, 8)); }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    background: theme-value(dark, paper);
+    border-color: theme-value(dark, line);
+  }
+
+  @at-root .no-js #{&} { display: block; }
+}
+
+.btn {
+  @include button-variant($accent, $fg: #fff) {
+    padding: rem(8px) rem(16px);
+    transition: background-color 150ms ease-in-out;
+  }
+  &-ghost { @include button-variant(transparent, $accent-dark); border: 1px solid currentColor; }
+  &.sr-only { position: absolute !important; clip: rect(0 0 0 0); }
+}
+
+@each $theme, $palette in $themes {
+  [data-theme="#{$theme}"] {
+    @each $key, $value in $palette {
+      --#{$key}: #{$value};
+    }
+    color: map-get($palette, ink);
+  }
+}
+
+@each $side in $sides {
+  .m#{str-slice($side, 1, 1)}-auto { margin-#{$side}: auto; }
+}
+
+@for $i from 1 through $columns {
+  .col-#{$i} { flex: 0 0 percentage(math.div($i, $columns)); max-width: math.round($i * 8.3333%) ; }
+}
+
+@for $n from 0 to 3 { .z-#{$n} { z-index: $n * 10 + 1; } }
+
+$step: 6;
+@while $step > 0 {
+  .gap-#{$step} { gap: #{$step * 4}px; margin: -#{$step}px; width: (100% / 3) + $step % 4; }
+  $step: $step - 2;
+}
+
+.status {
+  $map: (ok: green, warn: #e6a700, fail: red);
+  @each $state, $color in $map {
+    &.is-#{$state} { color: $color; background: rgba($color, 0.1); border-color: if($state == fail, darken($color, 10%), $color); }
+  }
+  content: "#{length($map)} states: #{map-keys($map)}";
+  width: if($enable-shadows and not $nothing, 10em, auto);
+  opacity: unquote("0.#{9}");
+}
+
+@keyframes fade-#{in} {
+  from { opacity: 0; }
+  50% { opacity: math.div(1, 2); }
+  to { opacity: 1; }
+}

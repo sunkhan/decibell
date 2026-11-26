@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+#
+# backup.sh - rotate and compress a directory into dated archives.
+#
+# The script keeps the newest N archives and removes the rest.
+# It is safe to run from cron. TODO: remote targets. FIXME: spaces in
+# exclude patterns. NOTE: yedek = バックアップ = backup 🎉
+set -euo pipefail
+IFS=$'\n\t'
+shopt -s nullglob extglob
+
+readonly VERSION="1.3.0"
+readonly SCRIPT_NAME="${0##*/}"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+declare -r DEFAULT_KEEP=7
+declare -i verbose=0 keep=$DEFAULT_KEEP
+declare -a excludes=('*.tmp' "node_modules" .cache)
+declare -A sizes=([small]=1024 [large]=$((1024 * 1024)))
+export BACKUP_ROOT="${BACKUP_ROOT:-$HOME/backups}"
+export LC_ALL=C TZ=UTC
+target=''
+dry_run=false
+
+usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME [-k N] [-x PATTERN] [-n] [-v] SOURCE
+  -k N        keep N archives (default: ${DEFAULT_KEEP})
+  -x PATTERN  exclude PATTERN (repeatable); now: ${excludes[*]}
+  -n          dry run, print what \$SCRIPT_NAME would do
+Version $VERSION, running as $(id -un) on `hostname`.
+EOF
+}
+
+license() {
+  cat <<-'EOF'
+	Nothing expands here: $HOME, $(whoami) and `date` stay literal.
+	Tabs in front of these lines are stripped.
+	EOF
+}
+
+function log {
+  local level=$1; shift
+  local stamp
+  stamp=$(date '+%Y-%m-%d %H:%M:%S')
+  if [[ $level == debug && $verbose -eq 0 ]]; then
+    return 0
+  fi
+  printf '%s [%-5s] %s\n' "$stamp" "${level^^}" "$*" >&2
+}
+
+die() { log error "$@"; exit 1; }
+
+cleanup() {
+  local code=$?
+  [[ -n ${tmpdir:-} && -d $tmpdir ]] && rm -rf -- "$tmpdir"
+  (( code != 0 )) && log error "failed with status $code at line ${BASH_LINENO[0]}"
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'log warn "interrupted"; exit 130' INT TERM
+
+human_size() {
+  local -i bytes=$1 unit=0
+  local units=(B KiB MiB GiB)
+  while (( bytes >= 1024 && unit < ${#units[@]} - 1 )); do
+    bytes=$(( bytes / 1024 ))
+    (( unit++ )) || true
+  done
+  echo "${bytes} ${units[$unit]}"
+}
+
+while getopts ':k:x:nvh' opt; do
+  case "$opt" in
+    k) keep=$OPTARG ;;
+    x) excludes+=("$OPTARG") ;;
+    n) dry_run=true ;;
+    v) verbose+=1 ;;
+    h | \?) usage; [[ $opt == h ]] && exit 0 || exit 64 ;;
+    :) die "option -$OPTARG needs an argument" ;;
+    *) die "unreachable" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ $# -lt 1 ] || [ -z "$1" ]; then
+  usage >&2
+  exit 64
+elif [[ ! -d $1 || ! -r $1 ]]; then
+  die "source '$1' is not a readable directory"
+else
+  target=${1%/}
+fi
+
+[[ $keep =~ ^[0-9]+$ ]] || die "keep must be a number, got \"$keep\""
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/backup.XXXXXX")
+name=${target##*/}
+safe_name=${name//[^A-Za-z0-9._-]/_}
+archive="$BACKUP_ROOT/${safe_name,,}-$(date +%Y%m%d-%H%M%S).tar.gz"
+exclude_args=()
+for pattern in "${excludes[@]}"; do
+  exclude_args+=(--exclude="$pattern")
+done
+
+log info "backing up '$target' to $archive (${#excludes[@]} excludes, args: $@, pid $$)"
+mkdir -p -- "$BACKUP_ROOT"
+
+if $dry_run; then
+  log info "dry run: tar ${exclude_args[*]} -czf $archive -C ${target%/*} $name"
+else
+  tar "${exclude_args[@]}" -czf "$tmpdir/archive.tar.gz" -C "${target%/*}" "$name" 2>"$tmpdir/tar.err" \
+    || die "tar failed: $(<"$tmpdir/tar.err")"
+  mv -- "$tmpdir/archive.tar.gz" "$archive"
+  size=$(stat -c %s "$archive" 2>/dev/null || stat -f %z "$archive")
+  log info "wrote $(human_size "$size") ($size bytes, small is under ${sizes[small]})"
+fi
+
+# Rotation: newest first, drop everything past $keep.
+mapfile -t archives < <(ls -1t "$BACKUP_ROOT"/"${safe_name,,}"-*.tar.gz 2>/dev/null)
+count=${#archives[@]}
+i=0
+until (( i >= count )); do
+  file=${archives[i]}
+  if (( i >= keep )); then
+    log debug "removing ${file}"
+    $dry_run || rm -f -- "$file"
+  fi
+  i=$((i + 1))
+done
+
+for (( n = 0; n < 3; n++ )); do
+  [[ -e "$archive" ]] && break
+  sleep 0.2
+done
+
+checksum=$(sha256sum "$archive" 2>/dev/null | awk '{ print $1 }' | tr 'a-f' 'A-F' || true)
+read -r first_word _ <<< "${checksum:-none} trailing words"
+grep -q "^$first_word" <<<"$checksum" && log debug "checksum ${first_word:0:12}… ok"
+
+select answer in yes no; do
+  [[ $answer == yes ]] && license | sed -e 's/^/  /' -e "s/literal/LITERAL/g" | tee -a "$BACKUP_ROOT/log.txt" >/dev/null 2>&1
+  break
+done </dev/null
+
+echo "Done: kept $(( count < keep ? count : keep )) of $count archive(s); last status $?, last arg $_"
+echo 'Single quotes keep $everything and \n literal; it'\''s the only escape.'
+echo -e "Double quotes expand \$HOME=$HOME, \"nest\", and \\ backslash\tTAB ${#name} ${name:0:3} ${!name@} ${keep:+set}"
+exit 0

@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml-stylesheet type="text/xsl" href="catalogue.xsl"?>
+<!DOCTYPE catalogue [
+  <!ELEMENT catalogue (meta, book+, svg:svg?)>
+  <!ELEMENT book (title, author+, price, summary?)>
+  <!ATTLIST book
+      id      ID       #REQUIRED
+      lang    CDATA    "en"
+      inPrint (yes|no) 'yes'>
+  <!ENTITY publisher "Example Press &#169; 2026">
+  <!ENTITY % common SYSTEM "common.dtd">
+  <!ENTITY logo SYSTEM "logo.png" NDATA png>
+  <!NOTATION png PUBLIC "image/png">
+]>
+<!--
+  A library catalogue. The file is a sample for parsers and highlighters.
+  TODO: add series information. FIXME: prices have no currency for two books.
+  NOTE: katalog = カタログ = catalogue 🎉
+-->
+<catalogue xmlns="https://example.org/ns/catalogue"
+           xmlns:dc="http://purl.org/dc/elements/1.1/"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:svg="http://www.w3.org/2000/svg"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           xsi:schemaLocation="https://example.org/ns/catalogue catalogue.xsd"
+           version="2.1" xml:lang="en">
+
+  <meta>
+    <dc:title>Reading Room Catalogue</dc:title>
+    <dc:creator>Elif Şahin</dc:creator>
+    <dc:date>2026-11-26</dc:date>
+    <generator name='catalogue-export' version='0.9.4'/>
+    <publisher>&publisher;</publisher>
+    <count books="3" shelves="12" empty=""/>
+  </meta>
+
+  <book id="b001" lang="en" inPrint="yes">
+    <title>Tea &amp; Sympathy: A &quot;Short&quot; History</title>
+    <author role="primary">A. N. Other</author>
+    <author role='editor'>J. Doe</author>
+    <price currency="GBP">12.50</price>
+    <summary>Covers 1 &lt; 2 and 3 &gt; 2, the non-breaking&#160;space, a hex&#x20;space and an &apos;apostrophe&apos;.</summary>
+    <tags><tag>history</tag><tag>tea</tag><tag/></tags>
+  </book>
+
+  <book id="b002" lang="tr">
+    <title>Çay Bahçesi</title>
+    <author>Ömer Çağlar</author>
+    <price>180</price>
+    <summary><![CDATA[
+      Raw text: <b>not a tag</b>, & not an entity, ]] not the end either.
+      if (a < b && c > d) { return "ok"; }
+    ]]></summary>
+    <?page-break before="always"?>
+  </book>
+
+  <book id="b003" lang="ja" inPrint="no">
+    <title>茶の本</title>
+    <author>岡倉 天心</author>
+    <price currency="JPY">880</price>
+    <!-- No summary yet. -->
+    <cover href="covers/b003.png" width="600" height="900" />
+    <related ref="b001" xlink:href="#b001" xlink:type="simple"/>
+  </book>
+
+  <svg:svg viewBox="0 0 120 60" width="240" height="120" role="img" aria-label="Shelf diagram">
+    <svg:defs>
+      <svg:linearGradient id="wood" x1="0" y1="0" x2="1" y2="1">
+        <svg:stop offset="0%" stop-color="#8e4585"/>
+        <svg:stop offset="100%" stop-color="rgb(181, 166, 66)" stop-opacity=".8"/>
+      </svg:linearGradient>
+      <svg:style type="text/css"><![CDATA[
+        .book { fill: url(#wood); stroke: #222; stroke-width: 0.5px; }
+        .book:hover { opacity: 0.7; }
+      ]]></svg:style>
+    </svg:defs>
+    <svg:rect class="book" x="5" y="10" width="12" height="40" rx="1.5"/>
+    <svg:rect class="book" x="20" y="14" width="9" height="36" transform="rotate(-4 24 32)"/>
+    <svg:circle cx="60" cy="30" r="8" fill="none" stroke="currentColor"/>
+    <svg:path d="M 40 50 L 110 50 Q 115 50 115 45 l 0 -5 z" fill="#ffffffaa"/>
+    <svg:text x="60" y="58" font-size="6" text-anchor="middle">Shelf 12 — raf</svg:text>
+    <svg:use xlink:href="#wood"/>
+  </svg:svg>
+</catalogue>
+
+<!-- A second, unrelated fragment: a build file. -->
+<project name="reading-room" default="dist" basedir=".">
+  <property name="src" location="src"/>
+  <property name="build" location="${basedir}/build"/>
+  <property environment="env"/>
+
+  <path id="classpath">
+    <fileset dir="lib" includes="**/*.jar" excludes="**/*-sources.jar"/>
+    <pathelement path="${env.JAVA_HOME}/lib/tools.jar"/>
+  </path>
+
+  <target name="init" description="Create the build directory">
+    <tstamp><format property="today" pattern="yyyy-MM-dd"/></tstamp>
+    <mkdir dir="${build}"/>
+  </target>
+
+  <target name="compile" depends="init" unless="skip.compile">
+    <javac srcdir="${src}" destdir="${build}" includeantruntime="false" debug="on" source="21">
+      <classpath refid="classpath"/>
+      <compilerarg value="-Xlint:all"/>
+    </javac>
+    <echo message="Compiled at ${today}: &quot;done&quot;" level="info"/>
+  </target>
+
+  <target name="dist" depends="compile">
+    <jar jarfile="dist/reading-room-${today}.jar" basedir="${build}">
+      <manifest>
+        <attribute name="Main-Class" value="org.example.Main"/>
+        <attribute name="Implementation-Title" value='Reading "Room"'/>
+      </manifest>
+    </jar>
+  </target>
+</project>
+
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>New arrivals</title>
+    <link>https://example.org/arrivals?sort=new&amp;page=1</link>
+    <atom:link href="https://example.org/arrivals.rss" rel="self" type="application/rss+xml"/>
+    <item>
+      <title>Three new books this week</title>
+      <description><![CDATA[<p>See the <a href="/arrivals">list</a>.</p>]]></description>
+      <pubDate>Thu, 26 Nov 2026 08:30:00 +0300</pubDate>
+      <guid isPermaLink="false">arrivals-2026-48</guid>
+    </item>
+  </channel>
+</rss>

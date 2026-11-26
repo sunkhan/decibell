@@ -1,0 +1,176 @@
+%YAML 1.2
+---
+# Site configuration. The first document holds scalars of every kind.
+# TODO: move secrets out. FIXME: the cache size is a guess. NOTE: ayarlar = 設定.
+title: Weather Dashboard
+subtitle: "A \"quoted\" title with a tab\t and é"
+motto: 'single quotes keep \n literal; it''s escaped by doubling'
+plain multi word key: plain multi word value
+empty:
+tilde: ~
+explicit_null: null
+enabled: true
+disabled: false
+legacy_yes: yes
+legacy_off: Off
+count: 42
+negative: -17
+ratio: 3.14159
+exponent: 6.022e+23
+hex: 0xFF
+octal: 0o755
+infinity: .inf
+not_a_number: .NaN
+released: 2026-11-26
+built_at: 2026-11-26T08:30:00+03:00
+version: !!str 1.10
+port: !!int "8080"
+binary: !!binary |
+  R0lGODlhDAAMAIQAAP//9/X17unp5WZmZgAAAOfn515eXvPz7Y6OjuDg4J+fn5
+? a complex
+  multi-line key
+: its value
+url: https://example.org/path?x=1&y=2#frag
+greeting: Merhaba dünya, こんにちは 🎉
+template: "{{ site.title }} - {{ page.title | default('Home') }}"
+bare_template: {{ value }}
+
+description: |
+  A literal block keeps line breaks.
+    Indented lines stay indented.
+  # this is text, not a comment
+  key: value is text too
+
+summary: >-
+  A folded block joins lines
+  into one paragraph and strips
+  the final newline.
+
+keep: |+
+  trailing blank lines are kept
+
+indented: |2
+    explicit indentation indicator
+
+flow_list: [1, two, "three", 4.0, true, null, [nested, list]]
+flow_map: {name: Ada, age: 36, tags: [a, b], address: {city: London}}
+---
+# Second document: anchors, aliases and merge keys.
+defaults: &defaults
+  adapter: postgres
+  host: localhost
+  pool: 5
+  options: &opts {ssl: true, timeout: 30}
+
+development:
+  <<: *defaults
+  database: app_dev
+
+production:
+  <<: [*defaults]
+  database: app_prod
+  host: db.internal
+  options: *opts
+  password: !Ref DatabasePassword
+  arn: !Sub "arn:aws:s3:::${BucketName}/*"
+  list: !!seq
+    - one
+    - two
+
+people:
+  - name: Ada Lovelace
+    born: 1815
+    languages: [en, fr]
+  - name: Hedy Lamarr
+    born: 1914
+    notes:
+      - actress
+      - inventor
+  -
+    name: 紫式部
+    born: ~
+---
+# Third document: a CI workflow.
+name: CI
+on:
+  push:
+    branches: [main, 'release/**']
+    tags: ["v*"]
+  pull_request:
+    paths-ignore: ['docs/**', '*.md']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "20"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [18, 20]
+        include:
+          - os: macos-latest
+            node: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with: {node-version: "${{ matrix.node }}", cache: npm}
+      - name: Install and test
+        if: github.event_name != 'pull_request' && !cancelled()
+        run: |
+          npm ci
+          npm test -- --coverage 2>&1 | tee test.log
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+---
+# Fourth document: a compose file.
+version: "3.9"
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+
+services:
+  web:
+    image: "nginx:1.27-alpine"
+    ports:
+      - "8080:80"
+      - 127.0.0.1:8443:443
+    environment:
+      - TZ=Europe/Istanbul
+      - GREETING=hello world
+    volumes:
+      - ./site:/usr/share/nginx/html:ro
+      - type: volume
+        source: cache
+        target: /var/cache/nginx
+    depends_on: [api]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      retries: 3
+  api:
+    build: {context: ./api, dockerfile: Dockerfile, args: {NODE_ENV: production}}
+    command: >
+      node server.js
+      --port 3000
+    environment:
+      DATABASE_URL: "postgres://app:secret@db:5432/app"
+      LOG_LEVEL: 'debug'
+      FEATURE_FLAGS: ""
+    restart: unless-stopped
+
+volumes:
+  cache: {}
+...

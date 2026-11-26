@@ -1,0 +1,166 @@
+#Requires -Version 7.0
+<#
+.SYNOPSIS
+    Collects disk usage for a set of computers and writes a report.
+
+.DESCRIPTION
+    The script queries each computer, keeps the drives that are nearly
+    full and exports the result. It is a sample, not a monitoring tool.
+
+.PARAMETER ComputerName
+    One or more computers. Accepts pipeline input.
+
+.EXAMPLE
+    PS C:\> Get-DiskReport -ComputerName srv01, srv02 -Threshold 90 -Verbose
+
+.NOTES
+    TODO: CIM sessions. FIXME: UNC paths with spaces. Yazar: Gökhan Öz, 報告 🎉
+#>
+using namespace System.Collections.Generic
+using module Microsoft.PowerShell.Utility
+
+[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'ByName')]
+param(
+    [Parameter(Mandatory, Position = 0, ValueFromPipeline, ParameterSetName = 'ByName')]
+    [ValidateNotNullOrEmpty()]
+    [Alias('CN', 'Server')]
+    [string[]] $ComputerName,
+
+    [Parameter()]
+    [ValidateRange(1, 100)]
+    [int] $Threshold = 85,
+
+    [ValidateSet('Csv', 'Json', 'Table')]
+    [string] $Format = 'Table',
+
+    [System.IO.FileInfo] $OutFile = "$env:TEMP\disk-report.csv",
+
+    [switch] $PassThru
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$script:Checked = 0
+$global:LastReport = $null
+
+enum Severity {
+    Ok = 0
+    Warning = 1
+    Critical = 2
+}
+
+class DriveInfo {
+    [string] $Computer
+    [string] $Drive
+    [long] $SizeBytes
+    [long] $FreeBytes
+    hidden [datetime] $Stamp = [datetime]::UtcNow
+    static [int] $Count = 0
+
+    DriveInfo([string] $computer, [string] $drive, [long] $size, [long] $free) {
+        $this.Computer = $computer
+        $this.Drive = $drive
+        $this.SizeBytes = $size
+        $this.FreeBytes = $free
+        [DriveInfo]::Count++
+    }
+
+    [double] UsedPercent() {
+        if ($this.SizeBytes -le 0) { return 0.0 }
+        return [math]::Round(100 * (1 - $this.FreeBytes / $this.SizeBytes), 2)
+    }
+
+    [Severity] GetSeverity([int] $threshold) {
+        $used = $this.UsedPercent()
+        if ($used -ge 95) { return [Severity]::Critical }
+        elseif ($used -ge $threshold) { return [Severity]::Warning }
+        else { return [Severity]::Ok }
+    }
+
+    [string] ToString() { return "$($this.Computer) $($this.Drive) $($this.UsedPercent())%" }
+}
+
+function Get-DiskReport {
+    [CmdletBinding()]
+    [OutputType([DriveInfo])]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)] [string[]] $ComputerName,
+        [int] $Threshold = 85
+    )
+    begin {
+        $results = [List[DriveInfo]]::new()
+        $sizes = @{ Small = 512MB; Large = 2TB; Mask = 0xFF; Ratio = 1.5e3; Big = 100L; Dec = 1.25d }
+        Write-Verbose "Threshold is $Threshold%, small is $($sizes.Small / 1GB) GB"
+    }
+    process {
+        foreach ($computer in $ComputerName) {
+            $script:Checked++
+            $query = @{
+                ClassName    = 'Win32_LogicalDisk'
+                ComputerName = $computer
+                Filter       = "DriveType = 3 AND Size > $($sizes['Small'])"
+                ErrorAction  = 'SilentlyContinue'
+            }
+            try {
+                Get-CimInstance @query |
+                    Where-Object { $_.Size -gt 0 -and $_.DeviceID -notlike 'X:*' } |
+                    ForEach-Object {
+                        $info = [DriveInfo]::new($computer, $_.DeviceID, $_.Size, $_.FreeSpace)
+                        if ($info.GetSeverity($Threshold) -ne [Severity]::Ok) { $results.Add($info) }
+                    }
+            }
+            catch [System.UnauthorizedAccessException] {
+                Write-Warning "Access denied on ${computer}: $($_.Exception.Message)"
+            }
+            catch {
+                Write-Error -Message "Query failed on '$computer'" -Exception $_.Exception
+                continue
+            }
+            finally {
+                Write-Progress -Activity 'Disks' -Status $computer -PercentComplete ([int](100 * $script:Checked / $ComputerName.Count))
+            }
+        }
+    }
+    end {
+        , $results.ToArray() | Sort-Object -Property Computer, @{ Expression = { $_.UsedPercent() }; Descending = $true }
+    }
+}
+
+filter ConvertTo-Row { [pscustomobject]@{ Computer = $_.Computer; Drive = $_.Drive; Used = '{0:N1} %' -f $_.UsedPercent() } }
+
+$drives = @($ComputerName | Get-DiskReport -Threshold $Threshold)
+$names = @('alpha', "beta", 'it''s quoted', "say `"hi`"`t`n")
+$first, $rest = $names
+$summary = @"
+Disk report for $($ComputerName -join ', ')
+  Drives over ${Threshold}%: $($drives.Count)   Checked: $script:Checked
+  Escapes: `$notAVariable, a backtick-n: `n, "quotes" are fine here.
+"@
+$legal = @'
+Nothing expands here: $drives, $(Get-Date) and `n stay literal.
+'@
+
+switch -Regex ($Format) {
+    '^csv$' { $drives | ConvertTo-Row | Export-Csv -Path $OutFile -NoTypeInformation -Encoding utf8; break }
+    'json' { $drives | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $OutFile }
+    default {
+        $drives | ConvertTo-Row | Format-Table -AutoSize | Out-String -Width 120 | Write-Host -ForegroundColor Cyan
+    }
+}
+
+if ($PSCmdlet.ShouldProcess($OutFile.FullName, 'Write report') -and $drives.Count -gt 0) {
+    $long = Get-ChildItem -Path $env:SystemRoot -Filter '*.log' -Recurse -ErrorAction Ignore `
+        | Select-Object -First 5 -ExpandProperty Name `
+        | ForEach-Object { $_.ToUpper() }
+    $ok = ($first -match '^(?<head>al)') -and ($rest -contains 'beta') -or !($long -is [array]) -xor $false
+    $i = 0
+    do { $i++ } while ($i -lt 3)
+    while ($true) { if (++$i -ge 5) { break } }
+    for ($j = 0; $j -lt 2; $j += 1) { $null = $j * 2 % 3 }
+    $text = $summary -replace '\s+$', '' -split "`n" | Select-Object -Skip 1
+    $global:LastReport = [ordered]@{ When = Get-Date -Format o; Ok = $ok; Head = $Matches.head; Lines = $text; Legal = $legal }
+    & "$PSScriptRoot\Send-Report.ps1" -To 'ops@example.org' 2>&1 | Out-Null
+    . $PROFILE
+}
+
+if ($PassThru) { return $drives } else { exit ([int]($drives.Count -gt 0)) }

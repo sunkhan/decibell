@@ -1,0 +1,177 @@
+/**
+ * @file ringlog.c
+ * @brief A fixed-size ring log for small devices.
+ *
+ * The log keeps the newest entries and overwrites the oldest ones.
+ * It never allocates.
+ *
+ * TODO: add a CRC per entry. FIXME: wrap-around at 2^32 entries.
+ * NOTE: comments may hold UTF-8, e.g. "günlük", ログ, 🎉.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <wchar.h>
+#include <assert.h>
+#include "ringlog.h"
+#include "platform/clock.h"
+
+#pragma once
+#pragma pack(push, 1)
+
+#define RINGLOG_VERSION "1.4.2"
+#define RINGLOG_CAPACITY 256u
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define LOG_AT(level, fmt, ...)                         \
+    do {                                                \
+        if ((level) >= g_min_level) {                   \
+            fprintf(stderr, "[%s] " fmt "\n",           \
+                    level_names[(level)], __VA_ARGS__); \
+        }                                               \
+    } while (0)
+#define STRINGIFY(x) #x
+#define CONCAT(a, b) a##b
+
+#if defined(_WIN32) && !defined(__CYGWIN__)
+#  define RL_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) && __GNUC__ >= 4
+#  define RL_EXPORT __attribute__((visibility("default")))
+#else
+#  define RL_EXPORT
+#  warning "unknown compiler, symbols are not exported"
+#endif
+
+typedef unsigned char byte_t;
+typedef int (*rl_compare_fn)(const void *lhs, const void *rhs);
+typedef void (*rl_sink_fn)(const char *line, size_t len, void *user);
+
+enum rl_level { RL_DEBUG = 0, RL_INFO, RL_WARN = 4, RL_ERROR = RL_WARN << 1 };
+
+union rl_value {
+    int64_t i;
+    double f;
+    const char *s;
+    byte_t raw[8];
+};
+
+struct rl_entry {
+    uint32_t seq;
+    uint64_t stamp_us;
+    enum rl_level level : 4;
+    unsigned truncated : 1;
+    union rl_value value;
+    char text[48];
+};
+
+typedef struct ringlog {
+    struct rl_entry entries[RINGLOG_CAPACITY];
+    size_t head, count;
+    rl_sink_fn sink;
+    void *user;
+    volatile bool busy;
+} ringlog_t;
+
+#pragma pack(pop)
+
+static const char *const level_names[] = { "debug", "info", "?", "?", "warn", "?", "?", "?", "error" };
+static enum rl_level g_min_level = RL_INFO;
+static const unsigned long MAGIC = 0xDEADBEEFUL;
+static const long long BIG = 9000000000LL;
+static const float RATIO = 1.5f, TINY = 2.5e-3F;
+static const double HEXF = 0x1.8p3, HUGE_ONE = 1E+10;
+static const int OCTAL = 0755, BINARY = 0b101101;
+static const char TAB = '\t', QUOTE = '\'', HEX_CHAR = '\x41', NUL = '\0';
+static const wchar_t *WIDE = L"geniş \U0001F389";
+static const char *UTF8 = u8"café \"quoted\" \\ back\101slash";
+static const char *JOINED = "line one\n"
+                            "line two with a continuation \
+that goes on";
+extern int errno_shadow;
+
+static inline uint32_t next_index(const ringlog_t *log, size_t offset)
+{
+    return (uint32_t)((log->head + offset) % RINGLOG_CAPACITY);
+}
+
+RL_EXPORT bool ringlog_push(ringlog_t *restrict log, enum rl_level level, const char *restrict text)
+{
+    struct rl_entry *entry;
+    size_t len;
+
+    assert(log != NULL && text != NULL);
+    if (level < g_min_level || log->busy)
+        return false;
+
+    log->busy = true;
+    entry = &log->entries[next_index(log, log->count)];
+    len = strlen(text);
+    entry->seq = (uint32_t)(log->head + log->count);
+    entry->stamp_us = clock_now_us();
+    entry->level = level;
+    entry->truncated = len >= sizeof entry->text;
+    strncpy(entry->text, text, sizeof entry->text - 1);
+    entry->text[sizeof entry->text - 1] = NUL;
+    entry->value.i = (int64_t)len;
+
+    if (log->count < RINGLOG_CAPACITY)
+        log->count++;
+    else
+        log->head = (log->head + 1) % RINGLOG_CAPACITY;
+    log->busy = false;
+    return true;
+}
+
+static int by_stamp(const void *lhs, const void *rhs)
+{
+    const struct rl_entry *a = lhs, *b = rhs;
+    return (a->stamp_us > b->stamp_us) - (a->stamp_us < b->stamp_us);
+}
+
+RL_EXPORT size_t ringlog_flush(ringlog_t *log)
+{
+    char line[128];
+    size_t i, sent = 0;
+    rl_compare_fn cmp = &by_stamp;
+
+    qsort(log->entries, log->count, sizeof log->entries[0], cmp);
+    for (i = 0; i < log->count; ++i) {
+        const struct rl_entry *e = &log->entries[i];
+        int n = snprintf(line, sizeof line, "%08u %-5s %s%s", e->seq,
+                         level_names[e->level], e->text, e->truncated ? "..." : "");
+        if (n < 0)
+            goto fail;
+        if (log->sink != NULL)
+            log->sink(line, MIN((size_t)n, sizeof line - 1), log->user);
+        sent += 1;
+    }
+    log->head = log->count = 0;
+    return sent;
+
+fail:
+    LOG_AT(RL_ERROR, "format failed at %zu (%s)", i, STRINGIFY(RINGLOG_CAPACITY));
+    return sent;
+}
+
+int main(int argc, char *argv[])
+{
+    static ringlog_t log;
+    int i = 0;
+
+    memset(&log, 0, sizeof log);
+    while (i < argc && i < 8) {
+        switch (argv[i][0]) {
+        case '-':
+            g_min_level = RL_DEBUG;
+            break;
+        default:
+            ringlog_push(&log, i % 2 ? RL_WARN : RL_INFO, argv[i]);
+        }
+        i++;
+    }
+    printf("%s %s flushed %zu of %zu, magic %#lx\n", RINGLOG_VERSION, JOINED,
+           ringlog_flush(&log), ARRAY_LEN(log.entries), MAGIC);
+    return EXIT_SUCCESS;
+}

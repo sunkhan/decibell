@@ -1,0 +1,160 @@
+Reading Room
+============
+
+A small, self-hosted catalogue for a shared bookshelf.
+It runs on one machine and needs no account.
+
+Status
+------
+
+[![build](https://ci.example.org/badge.svg)](https://ci.example.org/reading-room "Build status")
+![Screenshot of the shelf view](docs/shelf.png "The shelf view")
+
+# Getting started
+
+Install it with *one* command, then open the _local_ page. The **server**
+keeps __everything__ in a single file; ***back it up***. Use `rr serve`
+to start it, or ``rr serve --port `8080` `` if the default port is taken.
+A line that ends with two spaces  
+breaks here, and a backslash\
+breaks here too.
+
+Escapes: \*not emphasis\*, \_nor this\_, \# not a heading, \[not a link\], 2 \* 3 = 6, a \\ backslash.
+
+## Install
+
+1. Download the archive from <https://example.org/downloads>.
+2. Unpack it:
+   ```sh
+   tar -xzf reading-room.tar.gz && cd reading-room
+   ```
+3. Run the server.
+   1. On Linux: `./rr serve`
+   2. On Windows: `rr.exe serve`
+10. Write to <hello@example.org> if it fails.
+
+- Books
+  - Titles, authors and *tags*
+  - Covers (PNG or JPEG)
+    * up to 2 MB each
+    * stored next to the database
+- Shelves
++ Loans, with [due dates](#loans)
+* [ ] Wish list (planned)
+* [x] Search
+
+### Configuration
+
+The settings live in `config.toml`. See the [reference][config-ref] and
+the [FAQ]; the [sample file][1] is a good start, as is [this page](<docs/my config.md>).
+
+[config-ref]: https://example.org/docs/config "Configuration reference"
+[FAQ]: ./docs/faq.md
+[1]: <https://example.org/sample config.toml> 'Sample file'
+
+```toml
+[server]
+port = 8080          # change if taken
+data = "./data"
+```
+
+#### An example client ####
+
+```js
+// Fetch the first page of books.
+const res = await fetch(`/api/books?page=${page}`, { headers: { Accept: "application/json" } });
+const { items = [], total } = await res.json();
+console.log(`${items.length} of ${total}`, items.map((b) => b.title));
+```
+
+~~~python
+import json
+from urllib.request import urlopen
+
+def books(page: int = 1) -> list[dict]:
+    """Return one page of books."""
+    with urlopen(f"http://localhost:8080/api/books?page={page}") as res:
+        return json.load(res)["items"]
+~~~
+
+```html
+<form action="/search" method="get">
+  <input type="search" name="q" placeholder="Ara&hellip;" required>
+  <button class="btn">Search</button>
+</form>
+```
+
+````markdown
+A fence inside a longer fence:
+```
+plain text
+```
+````
+
+An indented code block follows a blank line:
+
+    $ rr import shelf.csv
+    imported 128 books (3 skipped)
+
+##### Notes and quotes
+
+> A room without books is like a body without a soul.
+>
+> > Nested: the attribution is *disputed*.
+> > It still looks good on a wall.
+>
+> - a list inside a quote
+> - with `code` and a [link](https://example.org)
+>
+> ```
+> code inside a quote
+> ```
+
+###### Table
+
+| Command      | Does                     | Since |
+|:-------------|:------------------------:|------:|
+| `rr serve`   | Starts the **server**    |   0.1 |
+| `rr import`  | Reads a CSV \| TSV file  |   0.4 |
+| `rr export`  | Writes *everything* out  |   0.9 |
+
+---
+
+Unicode works: Türkçe karakterler (ğ, ş, ı), 日本語のテキスト, and emoji 🎉.
+HTML entities too: &copy; 2026 &mdash; 5 &lt; 6 &amp;&amp; 7 &gt; 6.
+
+***
+
+<div align="center">
+  <img src="docs/logo.svg" alt="logo" width="96">
+  <p><b>Reading Room</b> &middot; <a href="https://example.org">example.org</a></p>
+</div>
+
+<details>
+<summary>Why not a spreadsheet?</summary>
+
+Because *nobody* updates the spreadsheet. Inline HTML works too:
+press <kbd>Ctrl</kbd>+<kbd>K</kbd>, use H<sub>2</sub>O and x<sup>2</sup>, or <mark>highlight</mark> a word.<br>
+
+</details>
+
+<!-- An HTML comment: TODO: write the loans section. FIXME: the screenshot is old. -->
+
+___
+
+Loans
+-----
+
+Term
+: A definition, in the flavours that support it.
+
+A loan has a due date.[^1] Late loans turn ~~red~~ **orange** in the list.
+Visit http://example.org/loans or www.example.org for the hosted demo.
+
+[^1]: Fourteen days by default. NOTE: the limit is per shelf.
+
+* * *
+
+Setext with trailing text
+=========================
+Copyright (c) 2026 the Reading Room authors. Licensed under the [MIT license](LICENSE).

@@ -1,0 +1,165 @@
+import * as React from "react";
+import { createContext, useCallback, useContext, useReducer, useRef, type ReactNode } from "react";
+import type { ComponentPropsWithoutRef, Dispatch, FC, KeyboardEvent } from "react";
+
+/**
+ * A generic, keyboard-friendly data table.
+ * NOTE: sorting is stable. TODO: column resize. FIXME: Türkçe "ı" collation.
+ */
+export interface Column<Row, K extends keyof Row = keyof Row> {
+  readonly key: K;
+  title: string;
+  width?: number | `${number}%`;
+  align?: "left" | "right" | "center";
+  render?: (value: Row[K], row: Row) => ReactNode;
+  compare?(a: Row[K], b: Row[K]): number;
+}
+
+type SortDir = "asc" | "desc";
+type SortState<Row> = { key: keyof Row; dir: SortDir } | null;
+type Action<Row> =
+  | { type: "sort"; key: keyof Row }
+  | { type: "select"; id: string; additive?: boolean }
+  | { type: "clear" };
+
+interface State<Row> {
+  sort: SortState<Row>;
+  selected: ReadonlySet<string>;
+}
+
+interface TableProps<Row extends { id: string }> extends Omit<ComponentPropsWithoutRef<"table">, "children"> {
+  rows: readonly Row[];
+  columns: ReadonlyArray<Column<Row>>;
+  caption?: string;
+  empty?: ReactNode;
+  onOpen?: (row: Row) => void;
+}
+
+const enum Key { Enter = "Enter", Space = " ", Escape = "Escape" }
+const DENSITY = { compact: 28, cozy: 36, roomy: 44 } as const satisfies Record<string, number>;
+type Density = keyof typeof DENSITY;
+
+const DensityContext = createContext<Density>("cozy");
+const identity = <T,>(value: T): T => value;
+const byLocale = <T extends string>(a: T, b: T) => a.localeCompare(b, "tr");
+
+function reducer<Row>(state: State<Row>, action: Action<Row>): State<Row> {
+  switch (action.type) {
+    case "sort": {
+      const same = state.sort?.key === action.key;
+      const dir: SortDir = same && state.sort!.dir === "asc" ? "desc" : "asc";
+      return { ...state, sort: { key: action.key, dir } };
+    }
+    case "select": {
+      const next = new Set<string>(action.additive ? state.selected : []);
+      next.has(action.id) ? next.delete(action.id) : next.add(action.id);
+      return { ...state, selected: next };
+    }
+    case "clear":
+      return { sort: null, selected: new Set() };
+    default:
+      return action satisfies never;
+  }
+}
+
+function useSorted<Row>(rows: readonly Row[], sort: SortState<Row>, columns: ReadonlyArray<Column<Row>>): Row[] {
+  return React.useMemo(() => {
+    if (sort === null) return [...rows];
+    const column = columns.find((c) => c.key === sort.key);
+    const sign = sort.dir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const x = a[sort.key], y = b[sort.key];
+      if (column?.compare) return sign * column.compare(x, y);
+      return sign * (x < y ? -1 : x > y ? 1 : 0);
+    });
+  }, [rows, sort, columns]);
+}
+
+const HeaderCell = <Row,>({ column, sort, dispatch }: {
+  column: Column<Row>;
+  sort: SortState<Row>;
+  dispatch: Dispatch<Action<Row>>;
+}) => {
+  const active = sort?.key === column.key;
+  return (
+    <th
+      scope="col"
+      style={{ width: column.width, textAlign: column.align ?? "left" }}
+      aria-sort={active ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}
+      onClick={() => dispatch({ type: "sort", key: column.key })}
+    >
+      {column.title}
+      {active && <span aria-hidden>{sort!.dir === "asc" ? " ▲" : " ▼"}</span>}
+    </th>
+  );
+};
+
+export function DataTable<Row extends { id: string }>({ rows, columns, caption, empty, onOpen, ...rest }: TableProps<Row>) {
+  const density = useContext(DensityContext);
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const [state, dispatch] = useReducer(reducer<Row>, { sort: null, selected: new Set<string>() });
+  const sorted = useSorted(rows, state.sort, columns);
+
+  const onKeyDown = useCallback((event: KeyboardEvent<HTMLTableRowElement>, row: Row) => {
+    if (event.key === Key.Enter) onOpen?.(row);
+    else if (event.key === Key.Space) dispatch({ type: "select", id: row.id, additive: event.shiftKey });
+    else if (event.key === Key.Escape) dispatch({ type: "clear" });
+  }, [onOpen]);
+
+  return (
+    <table {...rest} data-density={density}>
+      {caption ? <caption>{caption}</caption> : null}
+      <thead>
+        <tr style={{ height: DENSITY[density] }}>
+          {columns.map((column) => (
+            <HeaderCell<Row> key={String(column.key)} column={column} sort={state.sort} dispatch={dispatch} />
+          ))}
+        </tr>
+      </thead>
+      <tbody ref={bodyRef}>
+        {/* An empty table still renders one full-width row. */}
+        {sorted.length === 0 && (
+          <tr>
+            <td colSpan={columns.length}>{empty ?? <em>Nothing here yet &mdash; 何もありません</em>}</td>
+          </tr>
+        )}
+        {sorted.map((row, index) => (
+          <tr
+            key={row.id}
+            tabIndex={index === 0 ? 0 : -1}
+            aria-selected={state.selected.has(row.id)}
+            onKeyDown={(e) => onKeyDown(e, row)}
+            onDoubleClick={() => onOpen?.(row)}
+          >
+            {columns.map(({ key, render, align }) => (
+              <td key={key as string} className={align === "right" ? "num" : undefined}>
+                {render ? render(row[key], row) : String(row[key] as unknown)}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+interface User { id: string; name: string; age: number; tags: string[] }
+
+const columns: Array<Column<User>> = [
+  { key: "name", title: "Name", compare: (a, b) => byLocale(a as string, b as string) },
+  { key: "age", title: "Age", align: "right", width: "10%", render: (v) => <b>{(v as number).toFixed(0)}</b> },
+  { key: "tags", title: "Tags", render: (v) => <>{(v as string[]).map((t) => <kbd key={t}>{t}</kbd>)}</> },
+];
+
+export const UsersPage: FC<{ users?: User[] }> = ({ users = [] }) => {
+  const adults = users.filter((u): u is User & { age: number } => u.age >= 18 && u.name.length < 64);
+  const first = identity<User | undefined>(adults[0]);
+  return (
+    <DensityContext.Provider value="compact">
+      <h1>Users ({adults.length}) {first !== undefined && <small>first: {first.name} 🎉</small>}</h1>
+      <DataTable<User> rows={adults} columns={columns} caption="Kullanıcılar" onOpen={(u) => alert(`Hello, ${u.name}!`)} />
+    </DensityContext.Provider>
+  );
+};
+
+export default UsersPage;

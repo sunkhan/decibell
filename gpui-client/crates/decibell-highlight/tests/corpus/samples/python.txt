@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Tiny rate limiter and report tool.
+
+The module keeps a token bucket per client and prints a summary.
+It has no dependencies outside the standard library.
+
+    >>> bucket = Bucket(capacity=3, refill=1.5)
+    >>> bucket.take()
+    True
+    >>> [bucket.take() for _ in range(3)]
+    [True, True, False]
+    ... # the bucket is empty now
+
+TODO: persist buckets. FIXME: clock skew on resume. NOTE: 速度 means rate.
+"""
+from __future__ import annotations
+
+import asyncio
+import re
+import sys
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from functools import lru_cache, wraps
+from typing import Any, Callable, ClassVar, Generic, Iterator, Optional, TypeVar, Union
+
+T = TypeVar("T", bound="Bucket")
+
+MAX_CLIENTS = 10_000
+MASK = 0xFF_FF
+PERMS = 0o644
+FLAGS = 0b1010_0001
+AVOGADRO = 6.022_140_76e23
+TINY = 1e-9
+IMPEDANCE = 3 + 4j
+HALF, WHOLE = .5, 10.
+_total_taken = 0
+
+PATTERN = re.compile(r"^(?P<name>[\w.-]+)@(?P<host>[^\s@]+)\.\w{2,}$", re.IGNORECASE)
+RAW_BYTES = rb"\x00\xff raw \d+"
+BYTES_RAW = br'\n is two characters here'
+PLAIN_BYTES = b"caf\xc3\xa9\n"
+UNICODE = u"naïve \N{SNOWMAN} \U0001F389 日本語"
+ESCAPES = 'tab\there, quote\'s, bell\a, hex\x41, octal\101'
+
+
+def timed(label: str = "call") -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorator factory. Prints how long *label* took."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            import time
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - start
+                print(f"{label}: {elapsed * 1e3:>8.2f} ms", file=sys.stderr)
+        return wrapper
+    return decorator
+
+
+class Limiter(ABC, Generic[T]):
+    @abstractmethod
+    def take(self, n: int = 1) -> bool: ...
+
+    @property
+    @abstractmethod
+    def remaining(self) -> float:
+        raise NotImplementedError
+
+
+@dataclass(order=True, slots=True)
+class Bucket(Limiter["Bucket"]):
+    '''A token bucket. Use ``take`` to spend tokens.'''
+    capacity: int = 10
+    refill: float = 3.0
+    tokens: float = field(default=-1.0, compare=False)
+    owner: Optional[str] = None
+    instances: ClassVar[int] = 0
+
+    def __post_init__(self) -> None:
+        if self.tokens < 0:
+            self.tokens = float(self.capacity)
+        Bucket.instances += 1
+
+    def __repr__(self) -> str:
+        return f"<Bucket {self.owner!r} {self.tokens:.1f}/{self.capacity}>"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.tokens)
+
+    @classmethod
+    def for_owner(cls: type[T], owner: str, /, *, capacity: int = 10) -> T:
+        return cls(capacity=capacity, owner=owner)
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def cost(kind: str) -> int:
+        return {"read": 1, "write": 5}.get(kind, 2)
+
+    def take(self, n: int = 1) -> bool:
+        global _total_taken
+        if (left := self.tokens - n) < 0:
+            return False
+        self.tokens = left
+        _total_taken += n
+        return True
+
+
+def counter() -> Callable[[], int]:
+    count = 0
+
+    def bump() -> int:
+        nonlocal count
+        count += 1
+        return count
+    return bump
+
+
+def describe(event: object) -> str:
+    match event:
+        case {"type": "take", "n": int(n)} if n > 1:
+            return f"took {n} tokens"
+        case ("refill", float() | int() as amount):
+            return f"refilled by {amount}"
+        case Bucket(capacity=c, owner=None):
+            return f"anonymous bucket of {c}"
+        case str() as text if PATTERN.match(text):
+            return "an address"
+        case None | [] | {}:
+            return "nothing"
+        case _:
+            return "unknown"
+
+
+def chunks(items: list[Any], size: int) -> Iterator[list[Any]]:
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+    yield from ()
+
+
+async def drain(bucket: Bucket, *, delay: float = 0.01) -> int:
+    taken = 0
+    async with asyncio.timeout(1):
+        while bucket.take():
+            taken += 1
+            await asyncio.sleep(delay)
+    return taken
+
+
+@timed("report")
+def report(buckets: dict[str, Bucket], width: int = 12) -> str:
+    rows = [f"{name!s:<{width}}|{b.remaining:>{width}.2f}|{'ok' if b.tokens else 'empty':^7}" for name, b in buckets.items()]
+    squares = {n: n ** 2 for n in range(5) if n % 2 == 0 and n is not None}
+    evens = {n for n in squares} - {0}
+    ratio = (lambda a, b: a / b if b else float("inf"))(len(rows), len(evens))
+    header = f"{'client':<{width}}|{"tokens":>{width}}| state  {{braces}} {ratio=:.3f}"
+    assert not isinstance(ratio, complex), "ratio must be real"
+    return "\n".join([header, *sorted(rows, key=len, reverse=True)])
+
+
+if __name__ == "__main__":
+    tick = counter()
+    pool = {name: Bucket.for_owner(name, capacity=3) for name in ("ada", "grace", "željko")}
+    try:
+        with pool["ada"] as b:
+            print(asyncio.run(drain(b)), tick(), describe({"type": "take", "n": 2}))
+    except* (TimeoutError, KeyError) as group:
+        print("failed:", group.exceptions, end="\n\n")
+    else:
+        del pool["grace"]
+    finally:
+        print(report(pool), _total_taken @ 1 if False else "🎉", sep="\n")

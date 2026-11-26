@@ -1,0 +1,172 @@
+# Project manifest for a small audio tool.
+# TOML comments start with a hash and run to the end of the line.
+# TODO: split the workspace. FIXME: the bench profile is copied from release.
+# NOTE: ses = 音 = sound 🎉
+
+title = "Audio Tool"
+enabled = true
+legacy = false
+
+[package]
+name = "audio-tool"
+version = "0.9.4"
+edition = "2021"
+rust-version = "1.80"
+authors = ["Deniz Kaya <deniz@example.org>", "森 花子 <hanako@example.org>"]
+description = "A \"small\" tool.\tIt resamples audio and prints levels.\n"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["audio", "dsp", "cli"]
+categories = [
+    "command-line-utilities",
+    "multimedia::audio",   # a comment inside an array
+]
+include = ['src/**/*.rs', 'C:\literal\path', 'no \n escapes here']
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "audio_tool"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "audio-tool"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "levels"
+path = "src/bin/levels.rs"
+
+[dependencies]
+anyhow = "1"
+log = "0.4.22"
+serde = { version = "1.0", features = ["derive"], default-features = false }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "fs"], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+resampler = { git = "https://example.org/audio/resampler.git", rev = "4b43163" }
+local-helper = { path = "../helper", package = "helper" }
+
+[dependencies.ffmpeg]
+version = "8.0"
+default-features = false
+features = [
+    "codec",
+    "format",
+]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Media_Audio"] }
+
+[target."cfg(target_os = \"linux\")".dependencies]
+pipewire = "0.8"
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:tokio"]
+simd = []
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[workspace]
+members = ["crates/*", "tools/gen"]
+resolver = "2"
+
+# --- Application settings in the same file: every value type. ---
+[settings]
+"quoted key" = "value"
+'literal key' = 'value'
+bare-key_1 = "dashes and underscores"
+1234 = "numeric bare key"
+dotted.key.path = "nested by dots"
+site."example.org".tls = true
+
+integer = 42
+positive = +17
+negative = -5
+separated = 1_000_000
+hex = 0xDEAD_BEEF
+octal = 0o755
+binary = 0b1101_0110
+float = 3.1415
+exponent = 6.022e23
+small = -2.5E-3
+separated_float = 9_224.617_445
+infinity = inf
+negative_infinity = -inf
+not_a_number = nan
+signed_nan = +nan
+
+offset_datetime = 2026-11-26T08:30:00+03:00
+utc_datetime = 2026-11-26T05:30:00.123456Z
+space_datetime = 2026-11-26 05:30:00Z
+local_datetime = 2026-11-26T08:30:00
+local_date = 2026-11-26
+local_time = 08:30:00.5
+
+basic = "tab\t quote\" backslash\\ unicode \u00E9 \U0001F389"
+literal = 'C:\Users\deniz\music "as is"'
+multi_basic = """
+Roses are red,
+  "quotes" are allowed, even two in a row "".
+A trailing backslash joins \
+    this line to the previous one."""
+multi_literal = '''
+Nothing is escaped here: \n \t \\
+Regex: ^\d{3}-\w+$ and 'single quotes' too.
+'''
+empty = ""
+
+mixed_array = [1, 2.5, "three", true, 2026-11-26, [4, 5], { six = 6 }]
+nested_arrays = [[1, 2], ["a", "b"], []]
+point = { x = 1.5, y = -2.0, label = "origin-ish", tags = ["a", "b"] }
+palette = [
+    { name = "plum", rgb = [142, 69, 133] },
+    { name = "brass", rgb = [181, 166, 66] },
+]
+
+[[servers]]
+name = "alpha"
+address = "10.0.0.1"
+ports = [8001, 8002]
+weight = 0.75
+
+[servers.limits]
+burst = 10
+per_second = 3.0
+
+[[servers]]
+name = "beta"
+address = "10.0.0.2"
+ports = []
+
+[[servers.mirrors]]
+region = "eu-central"
+url = "https://eu.example.org/beta"
+
+[[servers.mirrors]]
+region = "ap-northeast"
+url = "https://ap.example.org/ベータ"
+
+[tool.formatter]
+line-length = 100
+target-version = ["py311", "py312"]
+exclude = '''
+/(
+    \.git
+  | build
+)/
+'''

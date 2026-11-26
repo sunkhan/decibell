@@ -1,0 +1,179 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# encoding: utf-8
+
+require "json"
+require 'set'
+require_relative "lib/recipes/version"
+
+=begin
+A recipe box. It stores recipes, scales them and prints shopping lists.
+This block comment runs until the matching end marker.
+=end
+
+# Top-level namespace for the sample.
+#
+# @author Émile Durand
+# @example Scale a recipe
+#   irb(main):001:0> box = Recipes::Box.new
+#   irb(main):002:0> box.add("çay", serves: 2)
+#   => #<Recipes::Recipe çay>
+#   >> box.size
+#   => 1
+# TODO: unit conversion. FIXME: fractions lose precision. NOTE: レシピ = recipe.
+module Recipes
+  VERSION_TAG = "v#{VERSION rescue '0.0.0'}"
+  MAX_SERVINGS = 1_000
+  MASK = 0xFF_EC
+  PERMS = 0o644
+  BITS = 0b1010_0101
+  AVOGADRO = 6.022e23
+  THIRD = 1/3r
+  PHASE = 2i
+  COMPLEX = 1.5ri
+  LETTER_A = ?a
+  NEWLINE = ?\n
+  $verbose_recipes = false
+
+  class Error < StandardError; end
+  class EmptyError < Error
+    def initialize(msg = "the box is empty") = super
+  end
+
+  Ingredient = Struct.new(:name, :amount, :unit, keyword_init: true) do
+    def to_s = "#{amount} #{unit} #{name}"
+  end
+
+  module Scalable
+    def scale(factor)
+      dup.tap { |copy| copy.ingredients = ingredients.map { |i| i.dup.tap { _1.amount *= factor } } }
+    end
+  end
+
+  class Recipe
+    include Comparable
+    include Scalable
+
+    attr_accessor :ingredients, :serves
+    attr_reader :name, :tags
+    attr_writer :notes
+
+    @@count = 0
+    DEFAULTS = { serves: 4, tags: %i[untested draft], "legacy key" => :kept, :old => "rocket" }.freeze
+    WORDS = %w[boil simmer fry bake]
+    QUOTED = %q(single 'quoted' with (nested) parens)
+    DOUBLE = %Q[double "quoted" #{WORDS.size} words]
+    SYMBOLS = %I[a#{1} b]
+    AMOUNT_RE = /\A(?<amount>\d+(?:[.,]\d+)?)\s*(?<unit>g|ml|kg)?\s+(?<name>.+)\z/ix
+    PATH_RE = %r{^/recipes/(\d+)/?$}m
+
+    def self.count = @@count
+
+    def initialize(name, serves: DEFAULTS[:serves], tags: [], **options, &block)
+      @name = name
+      @serves = serves
+      @tags = tags | DEFAULTS.fetch(:tags)
+      @ingredients = []
+      @notes = options[:notes]
+      @@count += 1
+      instance_eval(&block) if block_given?
+    end
+
+    def add(line)
+      case line
+      in String => text if (m = AMOUNT_RE.match(text))
+        @ingredients << Ingredient.new(name: m[:name], amount: m[:amount].tr(",", ".").to_f, unit: m[:unit]&.to_sym)
+      in { name: String => name, amount: Integer | Float => amount }
+        @ingredients << Ingredient.new(name:, amount:, unit: :piece)
+      in [name, amount, *rest]
+        add({ name: name.to_s, amount: amount })
+      in nil | ""
+        nil
+      else
+        raise ArgumentError, "can't parse #{line.inspect}"
+      end
+      self
+    end
+    alias << add
+
+    def vegan? = !tags.include?(:meat) && tags.none? { |t| t == :dairy }
+    def <=>(other) = name <=> other.name
+    def [](index) = @ingredients[index]
+
+    def rename!(new_name)
+      @name = new_name.strip.then { |s| s.empty? ? @name : s }
+      self
+    end
+
+    def to_s
+      header = "%-20s serves %2d" % [name, serves]
+      <<~TEXT
+        #{header}
+        #{'-' * header.length}
+        #{ingredients.map.with_index(1) { |ing, i| "#{i}. #{ing}" }.join("\n")}
+        Notes: #{@notes || "none"} \t (tab, é, \u{1F35C}, \x41, \\ and \#{not interpolated})
+      TEXT
+    end
+  end
+
+  class Box
+    include Enumerable
+
+    def initialize = @recipes = {}
+    def each(&) = @recipes.each_value(&)
+    def size = @recipes.size
+
+    def add(name, **opts, &block)
+      @recipes[name.to_sym] = Recipe.new(name, **opts, &block)
+    end
+
+    def shopping_list(*names, servings: nil)
+      raise EmptyError if @recipes.empty?
+
+      chosen = names.empty? ? @recipes.values : @recipes.values_at(*names.map(&:to_sym)).compact
+      totals = Hash.new(0)
+      chosen.each do |recipe|
+        factor = servings ? servings.fdiv(recipe.serves) : 1
+        recipe.scale(factor).ingredients.each { |ing| totals[[ing.name, ing.unit]] += ing.amount }
+      end
+      totals.sort_by { |(name, _unit), amount| [-amount, name] }.to_h
+    rescue KeyError, TypeError => e
+      warn "shopping list failed: #{e.message} (#{e.class})"
+      {}
+    ensure
+      $stderr.puts "listed #{chosen&.size.to_i} recipe(s)" if $verbose_recipes
+    end
+  end
+end
+
+if __FILE__ == $0 || $PROGRAM_NAME.end_with?("recipes")
+  box = Recipes::Box.new
+  tea = box.add("çay", serves: 2, notes: "demli olsun") { add "10 g siyah çay"; add "500 ml su" }
+  box.add("ramen ラーメン", tags: [:meat]) << "200 g noodles" << ["egg", 2] << { name: "nori", amount: 3 }
+
+  double = ->(recipe) { recipe.scale(2) }
+  shout = proc { |text| text.upcase + "!" }
+  square = lambda do |n|
+    n ** 2
+  end
+
+  legal = <<-'EOS'
+    Nothing is interpolated here: #{tea} \n stays as typed.
+    EOS
+  sql = <<-EOS.lines.map(&:strip).join(" ")
+    SELECT * FROM recipes
+    WHERE name = '#{tea.name}'
+  EOS
+
+  until box.size >= 2 do break end
+  for n in 1..3 do next if n.odd?; redo if false end
+  range = (1...10).step(3).to_a + ('a'..'e').first(2)
+  puts double.(tea), shout["ready"], square.call(7), legal, sql, range.inspect unless tea.nil?
+  puts box.shopping_list(servings: 4).to_json, Recipes::Recipe.count, tea.vegan? ? "vegan 🎉" : "not vegan"
+  puts [__method__.inspect, __LINE__, __dir__, defined?(yield), ENV.fetch("HOME", "~"), ARGV.first].join(" | ")
+  printf("%05.1f%% %s\n", 12.5, :"quoted symbol") if tea.name =~ /^ç/u and not $verbose_recipes
+  exit 0
+end
+
+__END__
+Everything after the marker is data, not code.

@@ -1,0 +1,161 @@
+import React, { Fragment, useEffect, useMemo, useState } from "react";
+import PropTypes from "prop-types";
+import { formatPrice } from "./money.js";
+
+/**
+ * Shopping cart panel. Shows the rows, a summary and an empty state.
+ * TODO: keyboard navigation. NOTE: prices are in minor units (kuruş).
+ */
+const TAX_RATE = 0.18;
+const EMPTY = Object.freeze([]);
+const currency = { code: "TRY", symbol: "₺", digits: 2 };
+
+function Icon({ name, size = 16, ...rest }) {
+  return <svg width={size} height={size} aria-hidden="true" {...rest}><use href={`#icon-${name}`} /></svg>;
+}
+
+const Badge = ({ count, children }) => (
+  <span className="badge" data-count={count} title={`${count} item${count === 1 ? "" : "s"}`}>
+    {children}
+    {count > 99 ? "99+" : count}
+  </span>
+);
+
+function Row({ item, onRemove, onChange }) {
+  const { id, title, price, qty, tags = EMPTY } = item;
+  const total = price * qty;
+  const cheap = price < 500 && qty > 0;
+
+  return (
+    <li className={"row" + (cheap ? " row--cheap" : "")} key={id}>
+      {/* The thumbnail falls back to a placeholder icon. */}
+      {item.image ? <img src={item.image} alt="" loading="lazy" /> : <Icon name="box" size={32} />}
+      <div className="row__body">
+        <strong>{title}</strong>
+        <small style={{ opacity: 0.7, marginLeft: 4 }}>{formatPrice(price, currency)}</small>
+        {tags.length > 0 && (
+          <ul className="tags">
+            {tags.map((tag, i) => (
+              <li key={tag} className={i % 2 === 0 ? "even" : "odd"}>#{tag}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <input
+        type="number"
+        min={1}
+        max={99}
+        value={qty}
+        disabled={item.locked}
+        onChange={(e) => onChange(id, Number(e.target.value))}
+      />
+      <span className="row__total">{formatPrice(total, currency)}</span>
+      <button type="button" onClick={() => onRemove(id)} aria-label={`Remove ${title}`}>
+        <Icon name="trash" /> Remove
+      </button>
+    </li>
+  );
+}
+
+Row.propTypes = {
+  item: PropTypes.shape({ id: PropTypes.string.isRequired, price: PropTypes.number }).isRequired,
+  onRemove: PropTypes.func,
+};
+
+function Summary({ subtotal, children }) {
+  const tax = Math.round(subtotal * TAX_RATE);
+  return (
+    <>
+      <dl className="summary">
+        <dt>Subtotal</dt>
+        <dd>{formatPrice(subtotal, currency)}</dd>
+        <dt>Tax ({(TAX_RATE * 100).toFixed(0)}%)</dt>
+        <dd>{formatPrice(tax, currency)}</dd>
+        <dt>Total</dt>
+        <dd><b>{formatPrice(subtotal + tax, currency)}</b></dd>
+      </dl>
+      {children}
+    </>
+  );
+}
+
+class ErrorBoundary extends React.Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return <p role="alert">Something broke: {String(this.state.error.message)} 😞</p>;
+    }
+    return this.props.children;
+  }
+}
+
+export default function Cart({ initialItems = EMPTY, onCheckout }) {
+  const [items, setItems] = useState(initialItems);
+  const [coupon, setCoupon] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const subtotal = useMemo(
+    () => items.reduce((sum, { price, qty }) => sum + price * qty, 0),
+    [items],
+  );
+
+  useEffect(() => {
+    document.title = items.length ? `Cart (${items.length})` : "Cart";
+    return () => { document.title = "Shop"; };
+  }, [items.length]);
+
+  const remove = (id) => setItems((prev) => prev.filter((it) => it.id !== id));
+  const change = (id, qty) =>
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, qty } : it)));
+
+  async function checkout(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await onCheckout?.({ items, coupon: coupon.trim() || null });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (items.length === 0) {
+    return (
+      <section className="cart cart--empty">
+        <Icon name="cart" size={48} />
+        <p>Your cart is empty. Sepetiniz boş &mdash; 空っぽ.</p>
+        <a href="/products?sort=new&amp;page=1">Browse products &rarr;</a>
+      </section>
+    );
+  }
+
+  return (
+    <ErrorBoundary>
+      <form className="cart" onSubmit={checkout} noValidate>
+        <h2>
+          Cart <Badge count={items.length}><Icon name="cart" /></Badge>
+        </h2>
+        <ul>
+          {items.map((item) => <Row key={item.id} item={item} onRemove={remove} onChange={change} />)}
+        </ul>
+        <Summary subtotal={subtotal}>
+          <label htmlFor="coupon">
+            Coupon
+            <input id="coupon" value={coupon} placeholder="e.g. HOŞGELDİN10" onChange={(e) => setCoupon(e.target.value)} />
+          </label>
+          {coupon.length > 0 && coupon.length < 4 ? <em>Too short</em> : null}
+        </Summary>
+        <React.Fragment>
+          <button type="submit" disabled={busy || subtotal <= 0}>
+            {busy ? <Fragment>Paying&hellip;</Fragment> : "Pay now 🎉"}
+          </button>
+          <button type="reset" onClick={() => setItems(EMPTY)}>Clear</button>
+        </React.Fragment>
+      </form>
+    </ErrorBoundary>
+  );
+}

@@ -1,0 +1,177 @@
+#!/usr/bin/env lua
+-- inventory.lua - a tiny inventory with stacks, events and a save format.
+--
+-- TODO: weight limits. FIXME: split() drops empty fields. NOTE: envanter = 在庫 🎉
+
+--[[
+  A block comment.
+  It spans several lines and may hold "quotes" and -- dashes.
+]]
+
+--[==[
+  A levelled block comment can contain ]] without ending.
+]==]
+
+local M = {}
+M.__index = M
+M._VERSION = "1.4.2"
+
+local MAX_STACK <const> = 99
+local MASK = 0xFF
+local HEX_FLOAT = 0x1.8p3
+local RATIO = 1.5e-3
+local BIG = 1e10
+local HALF = .5
+local unpack = table.unpack or unpack
+local fmt, insert, concat = string.format, table.insert, table.concat
+
+local single = 'single "quoted" with \'escapes\''
+local double = "double 'quoted' with \"escapes\", tab\t, newline\n, \x41, \065, \u{1F389}, \z
+                and a line joined by backslash-z"
+local long = [[
+A long string keeps
+  line breaks and "quotes" as they are; \n is two characters.
+]]
+local levelled = [==[
+It can contain ]] and [[ without ending.
+]==]
+
+local defaults = {
+  capacity = 24,
+  name = "backpack",
+  ["key with spaces"] = true,
+  [1] = "first",
+  tags = { "starter", "çanta"; "かばん" },
+  nested = { deep = { deeper = { value = nil } } },
+  on_change = false,
+}
+
+--- Create an inventory.
+-- @param opts table|nil options, see `defaults`
+-- @return table the new inventory
+function M.new(opts)
+  opts = opts or {}
+  local self = setmetatable({}, M)
+  self.capacity = opts.capacity or defaults.capacity
+  self.name = opts.name or defaults.name
+  self.slots, self.listeners = {}, {}
+  return self
+end
+
+function M:on(event, handler)
+  local list = self.listeners[event]
+  if not list then list = {}; self.listeners[event] = list end
+  list[#list + 1] = handler
+  return function()
+    for i = #list, 1, -1 do
+      if list[i] == handler then table.remove(list, i) end
+    end
+  end
+end
+
+function M:emit(event, ...)
+  local n = select("#", ...)
+  for _, handler in ipairs(self.listeners[event] or {}) do
+    local ok, err = pcall(handler, self, ...)
+    if not ok then io.stderr:write(fmt("handler for %q failed: %s (%d args)\n", event, tostring(err), n)) end
+  end
+end
+
+function M:add(item, count)
+  count = count or 1
+  if type(item) ~= "string" or item == "" then
+    error("item must be a non-empty string", 2)
+  elseif count <= 0 or count ~= math.floor(count) then
+    error({ code = "bad_count", count = count })
+  end
+  for _, slot in ipairs(self.slots) do
+    if slot.item == item and slot.count < MAX_STACK then
+      local room = MAX_STACK - slot.count
+      local moved = math.min(room, count)
+      slot.count, count = slot.count + moved, count - moved
+      if count == 0 then goto done end
+    end
+  end
+  while count > 0 do
+    if #self.slots >= self.capacity then return false, "full" end
+    local moved = count > MAX_STACK and MAX_STACK or count
+    insert(self.slots, { item = item, count = moved })
+    count = count - moved
+  end
+  ::done::
+  self:emit("change", item)
+  return true
+end
+
+function M:total(filter)
+  local sum, i = 0, 1
+  repeat
+    local slot = self.slots[i]
+    if slot and (filter == nil or filter(slot)) then sum = sum + slot.count end
+    i = i + 1
+  until i > #self.slots
+  return sum
+end
+
+M.__len = function(self) return #self.slots end
+M.__tostring = function(self) return fmt("<%s %d/%d>", self.name, #self.slots, self.capacity) end
+M.__eq = function(a, b) return a.name == b.name end
+M.__concat = function(a, b) return tostring(a) .. " + " .. tostring(b) end
+M.__call = function(self, item) return self:add(item) end
+
+local function split(text, sep)
+  local out = {}
+  for field in text:gmatch("([^" .. sep .. "]+)") do out[#out + 1] = field end
+  return out
+end
+
+local function serialize(inv)
+  local lines = {}
+  for index, slot in ipairs(inv.slots) do
+    lines[index] = ("%02d;%s;%d"):format(index, slot.item:gsub("[;\n]", "_"), slot.count)
+  end
+  return concat(lines, "\n")
+end
+
+local function counter(step)
+  local n = 0
+  return function(...)
+    local extra = { ... }
+    n = n + (step or 1) + #extra
+    return n
+  end
+end
+
+local producer = coroutine.wrap(function()
+  for _, name in ipairs({ "rope", "torch", "çay", "お茶" }) do coroutine.yield(name, #name) end
+  return nil
+end)
+
+local bag = M.new { name = "satchel", capacity = 4 }
+local changes = counter()
+local off = bag:on("change", function(_, item) changes(item) end)
+
+for name, len in producer do
+  assert(bag:add(name, len * 10 // 3), "bag is full")
+end
+bag("rope")
+off()
+
+local ok, err = pcall(bag.add, bag, "", 1)
+local ok2, err2 = xpcall(function() return bag:add("x", -1) end, debug.traceback)
+local co = coroutine.create(function(a, b) local c = coroutine.yield(a + b); return c * 2 end)
+local _, first = coroutine.resume(co, 1, 2)
+local words = split(single:upper():lower():rep(1), " ")
+local bits = (MASK & 0x0F) | (1 << 4) ~ 3 >> 1
+local floor_div, power, modulo = 7 // 2, 2 ^ 10, -7 % 3
+
+if not ok and ok2 == false and type(err2) == "string" then
+  print(bag, #bag, bag:total(), bag:total(function(s) return s.count >= 50 end), err)
+elseif first ~= nil then
+  print(coroutine.status(co), first)
+else
+  print(long .. levelled .. double, HEX_FLOAT, RATIO, BIG, HALF, 1 / 3, unpack(words))
+end
+print(serialize(bag), bag .. bag, bag == M.new { name = "satchel" }, bits, floor_div, power, modulo, _VERSION, _G.M)
+
+return M

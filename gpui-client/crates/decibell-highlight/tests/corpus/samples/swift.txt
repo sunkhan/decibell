@@ -1,0 +1,179 @@
+#!/usr/bin/env swift
+//  Playlist.swift
+//  A small music-library model with a player actor.
+import Foundation
+#if canImport(UIKit)
+import UIKit
+#elseif os(macOS) || os(Linux)
+import struct Foundation.URL
+#endif
+
+/// A track in the library.
+///
+/// Tracks are values. Two tracks are equal when their ids match.
+/// - Parameter title: what the user sees.
+/// - Returns: nothing; this is only a doc comment.
+/// - Note: 曲 means "track". TODO: gapless playback. FIXME: sort is not locale-aware.
+/* Block comments /* nest */ in Swift. */
+infix operator <~>: AdditionPrecedence
+prefix operator √
+precedencegroup PipePrecedence { associativity: left; higherThan: AssignmentPrecedence }
+
+let maxTracks = 1_000
+let mask: UInt32 = 0xFF_EC
+let bits = 0b1010_0101, mode = 0o755
+let hexFloat = 0x1p3, tiny = 1.25e-3, big = 1_000_000.5
+let greeting = "Merhaba \"dünya\" \u{1F3B5}\n\t\\ 🎉"
+let raw = #"A raw string keeps \n and "quotes"; \#(maxTracks) still interpolates."#
+let wordPattern = /(?<artist>[A-Za-z]+)\s+-\s+(\d{2,4})/
+let extended = #/ ^ \s* (\w+) / (\w+) $ /#
+
+@propertyWrapper
+struct Clamped<Value: Comparable> {
+    private var value: Value
+    let range: ClosedRange<Value>
+
+    var wrappedValue: Value {
+        get { value }
+        set { value = min(max(newValue, range.lowerBound), range.upperBound) }
+    }
+    var projectedValue: ClosedRange<Value> { range }
+
+    init(wrappedValue: Value, _ range: ClosedRange<Value>) {
+        self.range = range
+        self.value = min(max(wrappedValue, range.lowerBound), range.upperBound)
+    }
+}
+
+protocol Playable: Identifiable, Sendable where ID == UUID {
+    associatedtype Artwork = Data
+    var title: String { get }
+    var duration: TimeInterval { get set }
+    static var kind: String { get }
+    func preview(seconds: Int) async throws -> Artwork?
+    mutating func rate(_ stars: Int)
+}
+
+enum PlayerError: Error, CustomStringConvertible {
+    case empty
+    case missing(id: UUID)
+    case decode(code: Int, reason: String)
+    indirect case wrapped(PlayerError)
+
+    var description: String {
+        switch self {
+        case .empty: return "nothing to play"
+        case .missing(let id): return "no track \(id.uuidString.prefix(8))"
+        case let .decode(code, reason) where code >= 500: return "server: \(reason) (\(code))"
+        case .decode(_, let reason): return reason
+        case .wrapped(let inner): return "wrapped: \(inner)"
+        }
+    }
+}
+
+struct Track: Playable, Hashable, Codable {
+    let id: UUID
+    var title: String
+    var duration: TimeInterval
+    @Clamped(0...5) var stars: Int = 0
+    private(set) var plays = 0; static let kind = "track"
+
+    init?(line: String) {
+        let parts = line.split(separator: ";", maxSplits: 2).map(String.init)
+        guard parts.count == 2, let seconds = Double(parts[1]) else { return nil }
+        self.id = UUID()
+        self.title = parts[0]
+        self.duration = seconds
+    }
+
+    func preview(seconds: Int = 30) async throws -> Data? {
+        try await Task.sleep(nanoseconds: 1_000_000)
+        return title.data(using: .utf8)
+    }
+
+    mutating func rate(_ stars: Int) { self.stars = stars }
+
+    static func <~> (lhs: Track, rhs: Track) -> TimeInterval { lhs.duration + rhs.duration }
+    static prefix func √ (track: Track) -> Double { track.duration.squareRoot() }
+    subscript(minute index: Int) -> ClosedRange<Double> { Double(index * 60)...Double(index * 60 + 59) }
+}
+
+extension Array where Element: Playable {
+    var totalDuration: TimeInterval { reduce(0) { $0 + $1.duration } }
+    func sorted<T: Comparable>(by keyPath: KeyPath<Element, T>) -> [Element] {
+        sorted { $0[keyPath: keyPath] < $1[keyPath: keyPath] }
+    }
+}
+
+@available(iOS 15, macOS 12.0, *)
+@MainActor
+final class LibraryViewModel: NSObject {
+    @objc dynamic var isBusy = false
+    lazy var formatter: DateComponentsFormatter = { DateComponentsFormatter() }(); unowned let owner: NSObject
+    var onChange: ((_ count: Int) -> Void)?
+
+    init(owner: NSObject) { self.owner = owner }
+    deinit { print("released") }
+
+    @objc func refresh(_ sender: Any?) {
+        let selector = #selector(refresh(_:))
+        _ = (selector, #file, #line, #function)
+    }
+}
+
+actor Player<Item: Playable> {
+    private var queue: [Item] = []
+    private(set) var current: Item?
+    nonisolated let name: String
+
+    init(name: String) { self.name = name }
+
+    func enqueue(_ items: Item...) { queue.append(contentsOf: items) }
+
+    @discardableResult func next() throws -> Item {
+        guard !queue.isEmpty else { throw PlayerError.empty }
+        defer { current = queue.first }
+        return queue.removeFirst()
+    }
+}
+
+func describe(_ item: some Playable, among all: [any Playable]) -> String {
+    let position = all.firstIndex { $0.id == item.id } ?? -1
+    let summary = """
+        Title:    \(item.title)
+        Length:   \(String(format: "%.1f", item.duration / 60)) min \
+        (#\(position + 1) of \(all.count))
+        Quote:    "indented" text, emoji 🎶, kana カタカナ
+        """
+    return summary
+}
+
+func load(_ text: String) async -> (tracks: [Track], skipped: Int) {
+    var result: (tracks: [Track], skipped: Int) = ([], 0)
+    outer: for line in text.split(whereSeparator: \.isNewline) {
+        if line.hasPrefix("#") { continue outer }
+        if let track = Track(line: String(line)) {
+            result.tracks.append(track)
+        } else if let match = try? wordPattern.firstMatch(in: String(line)) {
+            print("artist only:", match.artist)
+        } else {
+            result.skipped += 1
+        }
+    }
+    return result
+}
+
+let (tracks, skipped) = await load("Intro;61.5\nÇay Şarkısı;203\n# comment\nbroken")
+let player = Player<Track>(name: "main")
+do {
+    for track in tracks.sorted(by: \.duration) { await player.enqueue(track) }
+    let first = try await player.next()
+    let pair = tracks.count > 1 && skipped < 2 ? first <~> tracks[1] : √first
+    if #available(macOS 13, *), let last = tracks.last as Track?, last.stars == 0 {
+        print(describe(first, among: tracks), pair, last[minute: 1], raw, greeting, separator: "\n")
+    }
+} catch let error as PlayerError {
+    print("player error: \(error)")
+} catch {
+    fatalError("unexpected: \(error.localizedDescription)")
+}

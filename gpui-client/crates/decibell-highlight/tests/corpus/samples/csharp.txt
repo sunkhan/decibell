@@ -1,0 +1,167 @@
+// Order processing sample. One file, several small types.
+#nullable enable
+#define TRACE_ORDERS
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+using static System.Math;
+using Money = System.Decimal;
+
+[assembly: System.Reflection.AssemblyVersion("2.1.0.0")]
+
+namespace Shop.Orders
+{
+    /// <summary>
+    /// The state of an order. Values are stable; they are stored as numbers.
+    /// </summary>
+    [Flags]
+    public enum OrderState : byte { None = 0, Paid = 1, Packed = 1 << 1, Shipped = 0b0100, Cancelled = 0x80 }
+
+    public delegate void OrderHandler<in T>(object sender, T order) where T : IOrder;
+
+    public interface IOrder
+    {
+        Guid Id { get; }
+        Money Total { get; }
+        string? Note { get; set; }
+    }
+
+    /// <summary>A line on an order.</summary>
+    /// <param name="Sku">Stock keeping unit, e.g. <c>AB-1234</c>.</param>
+    /// <param name="Quantity">How many. Must be positive.</param>
+    public record OrderLine(string Sku, int Quantity, Money UnitPrice)
+    {
+        public Money Total => Quantity * UnitPrice;
+    }
+
+    public readonly record struct Address(string City, string Country = "TR");
+
+    [Serializable]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public sealed class Order : IOrder, IComparable<Order>
+    {
+        private readonly List<OrderLine> _lines = new();
+        private static int s_created;
+        public const double TaxRate = 0.18d;
+
+        public Guid Id { get; } = Guid.NewGuid();
+        public required Address ShipTo { get; init; }
+        public OrderState State { get; private set; }
+        public string? Note { get; set; }
+        public IReadOnlyList<OrderLine> Lines => _lines;
+        public Money Total => _lines.Sum(l => l.Total);
+        public OrderLine this[int index] => _lines[index];
+
+        public event OrderHandler<Order>? Changed;
+        public event EventHandler<string> Logged = delegate { };
+
+        public Order() => Interlocked.Increment(ref s_created);
+
+        [Obsolete("Use Add(OrderLine) instead.", error: false)]
+        public void Add(string sku, int quantity, Money price) => Add(new OrderLine(sku, quantity, price));
+
+        public void Add(OrderLine line)
+        {
+            ArgumentNullException.ThrowIfNull(line);
+            if (line.Quantity is <= 0 or > 1_000)
+                throw new ArgumentOutOfRangeException(nameof(line), $"bad quantity {line.Quantity}");
+            _lines.Add(line);
+            Changed?.Invoke(this, this);
+        }
+
+        public int CompareTo(Order? other) => other is null ? 1 : Total.CompareTo(other.Total);
+
+        public static Order operator +(Order order, OrderLine line) { order.Add(line); return order; }
+
+        public string Describe() => this switch
+        {
+            { State: OrderState.Cancelled } => "cancelled",
+            { Lines.Count: 0 } => "empty",
+            { Total: > 1000m, ShipTo.Country: "TR" or "DE" } => "large, domestic-ish",
+            { Note: { Length: > 0 } note } when note.StartsWith('!') => $"urgent: {note[1..]}",
+            _ => "ordinary",
+        };
+
+        internal void Advance(OrderState next) => State |= next;
+    }
+
+    public static class Reports
+    {
+        private const string Header = @"C:\reports\daily ""orders"".csv";
+        private static readonly char[] Separators = { ',', ';', '\t', '\'', '\u00e9' };
+
+        public static string Render(IEnumerable<Order> orders, string title = "Günlük rapor 📦")
+        {
+            var rows =
+                from order in orders
+                where order.State.HasFlag(OrderState.Paid) && order.Total > 0
+                join line in orders.SelectMany(o => o.Lines) on order.Lines.FirstOrDefault() equals line into firstLines
+                let tax = order.Total * (Money)Order.TaxRate
+                orderby order.Total descending, order.Id ascending
+                group new { order, tax } by order.ShipTo.Country into byCountry
+                select new { Country = byCountry.Key, Count = byCountry.Count(), Tax = byCountry.Sum(x => x.tax) };
+
+            var body = string.Join(Environment.NewLine,
+                rows.Select(r => $"{r.Country,-4}|{r.Count,6:N0}|{r.Tax,12:F2}|{(r.Count > 1 ? "many" : "one")}"));
+            var path = $@"{Header}\{DateTime.UtcNow:yyyy-MM-dd}.csv";
+            var json = $$"""
+                {
+                  "title": "{{title}}",
+                  "path": "{{path.Replace("\\", "/")}}",
+                  "note": "braces { } are literal here, 日本語 too"
+                }
+                """;
+            return $"{title}\n{body}\n{json}";
+        }
+
+        public static async Task<int> ShipAllAsync(IAsyncEnumerable<Order> orders, CancellationToken ct = default)
+        {
+            var shipped = 0;
+            await foreach (var order in orders.WithCancellation(ct).ConfigureAwait(false))
+            {
+#if TRACE_ORDERS && !RELEASE
+                Console.Error.WriteLine("shipping {0:D} ({1:C})", order.Id, order.Total);
+#elif DEBUG
+#warning Tracing is off in this build
+#endif
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(Min(50, 2.5e1)), ct);
+                    order.Advance(OrderState.Packed | OrderState.Shipped);
+                    checked { shipped++; }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                finally
+                {
+                    order.Note ??= "shipped";
+                }
+            }
+            return shipped;
+        }
+
+        #region Helpers
+        public static T? FirstOrNull<T>(this IEnumerable<T> source, Func<T, bool> predicate) where T : struct
+        {
+            foreach (var item in source)
+                if (predicate(item)) return item;
+            return null;
+        }
+
+        public static unsafe long Checksum(ReadOnlySpan<byte> data)
+        {
+            ulong sum = 0xCBF2_9CE4_8422_2325UL;
+            long big = 100L; uint u = 7u; float f = 1.5f; decimal m = 0.1m;
+            fixed (byte* p = data)
+                for (var i = 0; i < data.Length; i++) sum = (sum ^ p[i]) * 0x100_0000_01B3;
+            return unchecked((long)sum) + big + u + (long)f + (long)m + sizeof(int) + Separators.Length;
+        }
+        #endregion
+    }
+}
