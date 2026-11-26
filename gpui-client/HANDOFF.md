@@ -51,8 +51,6 @@ screens in all seven themes beside Electron's.
 | Core split step 2 (typed `CoreEvent`) | on the branch `1930905` + `ebb65d2`: 85 variants, `to_json()` pinned byte-for-byte by a golden test recorded from the old path; Linux bar passed (tsc 0, napi build with `index.d.ts` / `index.js` unchanged, 327 + 2 tests, smoke); Windows Native Check run 45806591240 green (after `34f6527` fixed a Windows-only test) |
 | Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle `rt`) | done `a67554d` + `79b7eba`: 132 functions in 16 areas returning `CoreError`, structs defined once in core (optional `napi` feature), every async api fn awaitable from any executor; Linux bar passed (tsc 0, napi build with `index.js` identical and `index.d.ts` identical in content, 340 core tests, `smoke-load.cjs`, `smoke-stack.cjs` signing in against the local stack); Windows Native Check run 45808677484 green |
 | Client state model, foundation (`crates/decibell-model`, `docs/model.md`) | done `7b45b47`: core handle (2-worker runtime), one-wake-per-burst pump (10,000 events from 8 threads = 5 wakes), router over all 85 events, stores for auth / users / navigation / servers / communities / roster / permissions / settings, `decibell-headless`; 65 tests incl. stack tests |
-| State model, live half (voice, streams, calls, presence, friends, e2ee, hotkeys, devices, transfers) | on the branch `a92fd4d`..`173c8e9`: 120 unit tests, 6 stack tests (two test clients in an MLS voice channel, a P2P call connected over loopback, statuses by subscription, devices, friends, E2EE setup) |
-| State model, chat half (message slices with a change log for the list, history merge, pacing, slowmode, drafts, DMs, search) | done on `wip/model-chat` (107 unit tests, 6 stack tests; 340 bytes retained per message); being integrated with the live half in `.worktrees/integrate` (`wip/integrate`) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
 | Linux measurement tools | done `5285180`: `tools/perf/measure.sh`, `startup.sh`, `winctl.sh`, `install-size.sh` (README has the Linux section) |
 | Electron baseline on this machine (Linux) | runner being built (`tools/perf/electron-local.sh`, `scenarios.sh`); the full run needs a quiet machine |
@@ -60,8 +58,12 @@ screens in all seven themes beside Electron's.
 | Video research + prototype (`docs/video-design.md`) | in progress |
 | Theme generator + assets | done `e846392`: `crates/decibell-theme` (162 tokens × 7 themes, 12 scaled, scopes), `tools/gen-theme`, `tools/fetch-assets.mjs`, `docs/css-component-rules.md` |
 | Skeleton (workspace, patched GPUI copy, static font faces, window frame, theme gallery, capture + self-test harness, perf markers, Windows check job) | done `b120b2f`; `CONVENTIONS.md`; self-tests `boot`, `idle-frames`, `window-frame`, `themes` pass on Wayland and XWayland |
-| Component kit (in `decibell-ui`) + Electron capture harness (`tools/electron-captures/`) | done, **uncommitted in the main tree** until the text engine lands (it shares `decibell-ui/Cargo.toml` and `text.rs`): `ScrollAnimator` / `ScrollArea` (11 wheel vectors within 0.005 px), buttons, forms, `Select`, overlays, `SettingsWindow`, `SaveBar`, identity bits, 153 icons; 56 capture pairs against the real React components differ in ≤ 1.08 % of pixels |
-| Text engine (`decibell-text`), video crate (`decibell-video`) | in progress |
+| Component kit (in `decibell-ui`) + Electron capture harness (`tools/electron-captures/`) | done `d1c99c9`: `ScrollAnimator` / `ScrollArea` (11 wheel vectors within 0.005 px), buttons, forms, `Select`, overlays, `SettingsWindow`, `SaveBar`, identity bits, 153 icons; 56 capture pairs against the real React components differ in ≤ 1.08 % of pixels; self-tests `kit-*` |
+| Text engine (`crates/decibell-text`, GPUI patches 0010 / 0011) | done `d1c99c9`: line breaks identical to Chromium on 21,389 / 21,391 fixture paragraphs (heights identical where breaks agree), letter-spacing, synthesised italics (skew 0.25), inline Twemoji (2,879 SVGs packed in 2.6 MB), rich bodies with code / math slots, selection contract, fallback fonts loaded lazily; cold layout 16.6 µs median, cached paint 0 allocations |
+| State model, both halves integrated | done `8ebaa28`: 176 unit tests, 16 stack tests; signed in with `#general` open and 100 users watched: 19.6 MB private, 0.17 wakeups/s; Windows check run 45833447742 green |
+| Text inputs (`decibell_text::input`, `TextField`, `TextArea`) + GPUI patch for physical key codes | in progress, **in the worktree `.worktrees/land` (branch `wip/land`)**: merge that branch when it reports |
+| Message list and rows (`crates/decibell-chat`) | in progress (main tree) |
+| Video crate (`decibell-video`) | in progress (main tree) |
 | Encoders on every vendor + software fallback (core) | in progress, worktree `.worktrees/core-encoders` (`wip/core-encoders`) |
 | Shell (boot with core + model, sign-in pages, server bar, channel sidebar, user panel, member list; `decibell-common`, `decibell-shell`) | in progress |
 | Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
@@ -71,7 +73,7 @@ screens in all seven themes beside Electron's.
 | Attachments (`crates/decibell-attachments`), link previews + GIF search (`crates/decibell-unfurl`) | done `08412dc`, `d835d32` (vectors from the real TS; stack tests) |
 | Wheel / key scrolling spec | done `0777f91`: `docs/wheel-scroll.md` (120 px per notch, ease-in-out bezier, cc's duration + retarget rules, 11 vectors) |
 | Stream playback: design + prototype | done `8c990eb`: `docs/video-design.md`, `patches/0001-gpui-external-surfaces.patch`; the real crate (`decibell-video`) not started |
-| Stream playback | not started |
+| Stream playback (`crates/decibell-video`) | built, tested and measured on Linux (2026-11-26): Vulkan Video on GPUI's device, software fallback, `VideoHub` / `VideoView`, device-loss recovery, patches `0005` + `0006`, `tools/build-ffmpeg.sh`, `tools/streamgen/`; six self-tests (`video-*`); numbers in §4. Not wired to the model yet (the app calls `VideoDevice::install()` at boot; the frame sink is `VideoHub::push_frame`, feature `core`). Windows: compiles in principle, draws nothing until `gpui_windows` draws surfaces (`docs/video-design.md` §8) |
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
@@ -98,6 +100,13 @@ cargo build -p decibell-app             # debug: our crates unoptimised, depende
   (`[workspace.dependencies]` in `Cargo.toml`). The script is a no-op while the pin and patches are unchanged
   and refuses to throw away edits that are in no patch. What each patch does and how to write one:
   `patches/README.md`. `Cargo.lock` started as Zed's own, so GPUI's dependencies are at the versions Zed ships.
+- **FFmpeg**: the client links one static, LGPL FFmpeg 8.1 for decode (`crates/decibell-video`) and encode
+  (`crates/decibell-core`), from `vendor/ffmpeg`; `.cargo/config.toml` points pkg-config at it.
+  `tools/build-ffmpeg.sh` builds it (no sudo; about 3 minutes; a no-op when the prefix is current): it fetches
+  FFmpeg 8.1.3, dav1d, nasm, nv-codec-headers and the Vulkan headers, each checked against a pinned SHA-256,
+  and fails if the configured tree is not LGPL-2.1+. It needs a C toolchain, make, curl, python3, ninja and
+  the libva + libdrm headers. A prefix built before the script existed has no stamp and is rebuilt on the first
+  run. Test streams for the video tests: `tools/streamgen/make-streams.sh` (needs NVENC) → `vendor/streams`.
 - **Never build the shipped binary with `--features capture` or `--all-features`**: that feature turns on
   GPUI's test platform. `cargo build --workspace` is fine (the capture tool is skipped without its feature).
 
@@ -260,6 +269,99 @@ addon and the core) and `gpui-client` (`fetch-gpui.sh` + `cargo check --locked -
 every client crate committed so far, and the capture build). Two things had to be fixed for the first client
 run: patches arrived with CRLF on a Windows checkout (`.gitattributes` now pins LF under `gpui-client/`), and
 the attachment tests read git-ignored `*.key` / `*.crt` files (they generate their certificate now).
+
+### Stream playback (`crates/decibell-video`, 2026-11-26)
+
+`tools/streamgen/measure.sh <label> 30 <streams>`: `decibell --screen video-test` (release, 1280×800 window on
+the 280 Hz display; focus makes no difference: the main window has no inactive frame cap) fed from
+`vendor/streams` at the streams' timing, 5 s settle, 30 s sampled by `tools/perf/measure.sh`. Streams are
+NVENC with the streamer's settings: 1080p60 at 10 Mbit/s, 1440p120 at 20, 2160p60 at 30. "main" is the four
+threads named `decibell` (the main thread and GPUI's helpers), "decoder" the `decibell-video-<n>` threads
+(Linux shows the name cut to 15 characters); the feeder thread standing in for the core's receive thread
+(0.1–0.3 % of a core, one wakeup per frame) is in the CPU total. "replaced" = published but overtaken by the
+next picture before a frame was drawn; "dropped" = shed by the hub.
+
+**The machine was never quiet** (other agents building): two series, the load average at the start of each
+run in the last column. CPU moves by a factor of two between runs of the same scenario (4.7–7.3 % for one
+1440p120 HEVC stream), and not simply with the load: a quieter machine clocks its cores down, and the figure is
+time on a core, not work. Read the lowest figure of a scenario as "at most this on a quiet machine", and the
+counts, wakeups and GPU columns as stable.
+
+Series 2 (load average 1.3–8.3):
+
+| Run | CPU, % of a core | main / decoder threads | Private / PSS, MB | Wakeups /s: main; decoder; driver | GPU sm / dec %, fb MB | In 30 s: received / decoded / presented / replaced / dropped | Decode p50 / p99, ms | Presented every p50 / p99, ms (source) | Load avg |
+|---|---|---|---|---|---|---|---|---|---|
+| 1080p60-h264 | **4.1** | 2.6 / 1.1 | 97.6 / 113.9 | 180; 238; 173 | 0.0 / 5.8, 161 | 1800 / 1800 / 1800 / 1 / 0 | 1.82 / 4.22 | 16.90 / 18.94 (16.67) | 1.56 |
+| 1080p60-hevc | **4.7** | 2.9 / 1.4 | 79.1 / 105.9 | 180; 178; 172 | 4.4 / 2.5, 304 | 1800 / 1800 / 1798 / 3 / 0 | 0.88 / 3.26 | 16.90 / 18.94 (16.67) | 4.18 |
+| 1080p60-av1 | **3.4** | 2.1 / 1.0 | 119.8 / 122.5 | 180; 237; 171 | 9.6 / 4.1, 202 | 1800 / 1801 / 1801 / 0 / 0 | 1.82 / 4.48 | 16.90 / 18.94 (16.67) | 5.19 |
+| 1440p120-h264 | **6.8** | 4.5 / 2.0 | 129.1 / 131.0 | 360; 586; 142 | 9.5 / 28.7, 187 | 3600 / 3600 / 3601 / 0 / 0 | 3.14 / 4.74 | 8.45 / 9.98 (8.33) | 4.29 |
+| 1440p120-hevc | **7.3** | 4.2 / 2.6 | 138.1 / 140.0 | 359; 476; 141 | 12.8 / 11.7, 332 | 3601 / 3601 / 3601 / 1 / 0 | 1.57 / 3.65 | 8.45 / 10.50 (8.33) | 5.00 |
+| 1440p120-av1 | **10.2** | 6.7 / 3.0 | 120.5 / 122.4 | 358; 505; 142 | 15.1 / 14.0, 235 | 3600 / 3601 / 3601 / 0 / 0 | 2.37 / 5.25 | 8.45 / 11.01 (8.33) | 4.93 |
+| 2x1440p120 | **13.6** | 8.4 / 4.6 | 147.2 / 149.1 | 720; 1029; 142 | 25.4 / 28.0, 509 | 3601 / 3601 / 3600 / 0 / 0 + 3600 / 3601 / 3601 / 0 / 0 | 1.31 / 2.62, 1.89 / 3.14 | 8.45 / 9.98 (8.33), 8.45 / 10.50 (8.33) | 8.31 |
+| 2160p60-h264 | **3.3** | 1.9 / 1.1 | 141.7 / 143.8 | 180; 409; 169 | 7.3 / 30.4, 259 | 1800 / 1800 / 1800 / 0 / 0 | 6.78 / 8.45 | 16.90 / 17.92 (16.67) | 7.59 |
+| 2160p60-hevc | **3.7** | 1.8 / 1.6 | 159.7 / 161.8 | 180; 265; 172 | 5.4 / 11.7, 412 | 1800 / 1800 / 1801 / 0 / 0 | 3.01 / 5.25 | 16.90 / 17.92 (16.67) | 5.36 |
+| 2160p60-av1 | **3.2** | 1.9 / 0.9 | 121.1 / 123.0 | 180; 312; 170 | 1.2 / 12.1, 327 | 1800 / 1800 / 1800 / 0 / 0 | 4.74 / 7.30 | 16.90 / 18.94 (16.67) | 3.73 |
+| 1440p120-hevc-mirror | **5.7** | 3.3 / 2.0 | 138.1 / 140.0 | 360; 479; 142 | 14.4 / 10.3, 332 | 3600 / 3600 / 3601 / 0 / 0 | 1.50 / 3.65 | 8.45 / 10.50 (8.33) | 3.00 |
+| sw-1080p60-h264 | **21.1** | 1.7 / 19.1 | 127.1 / 128.9 | 180; 138; 170 | 5.8 / 0.0, 73 | 1800 / 1801 / 1800 / 0 / 0 | 4.22 / 6.78 | 16.90 / 18.94 (16.67) | 2.72 |
+| sw-1080p60-av1 | **35.0** | 1.7 / 1.6 (+ dav1d 31.4) | 131.9 / 134.6 | 180; 197; 171 | 7.0 / 0.0, 73 | 1800 / 1800 / 1800 / 0 / 0 | 5.50 / 8.96 | 16.90 / 19.97 (16.67) | 2.27 |
+| x11-1440p120-hevc | **4.7** | 2.8 / 1.6 | 148.8 / 152.9 | 359; 448; 142 | 11.4 / 11.2, 333 | 3600 / 3600 / 3601 / 0 / 0 | 1.44 / 3.39 | 8.45 / 9.98 (8.33) | 1.67 |
+| x11-2x1440p120 | **7.8** | 4.1 / 3.2 | 158.5 / 160.5 | 493; 1517; 142 | 17.3 / 28.0, 510 | 3600 / 3600 / 3600 / 1 / 0 + 3600 / 3601 / 3600 / 1 / 0 | 1.31 / 2.62, 2.50 / 3.78 | 7.04 / 11.52 (8.33), 7.30 / 11.52 (8.33) | 1.27 |
+
+Series 1 (load average 3.4–8.7), the same code:
+
+| Run | CPU, % of a core | main / decoder threads | Private / PSS, MB | Wakeups /s: main; decoder; driver | GPU sm / dec %, fb MB | In 30 s: received / decoded / presented / replaced / dropped | Decode p50 / p99, ms | Presented every p50 / p99, ms (source) | Load avg |
+|---|---|---|---|---|---|---|---|---|---|
+| 1080p60-h264 | **3.0** | 2.0 / 0.8 | 126.4 / 127.4 | 180; 235; 173 | 4.5 / 6.1, 161 | 1800 / 1800 / 1801 / 0 / 0 | 1.63 / 3.78 | 16.90 / 18.94 (16.67) | 6.98 |
+| 1080p60-hevc | **3.2** | 1.9 / 1.0 | 131.0 / 132.0 | 180; 224; 171 | 0.0 / 1.9, 304 | 1800 / 1800 / 1801 / 0 / 0 | 0.91 / 3.65 | 16.90 / 18.94 (16.67) | 5.73 |
+| 1080p60-av1 | **2.8** | 1.8 / 0.8 | 120.0 / 121.6 | 180; 234; 170 | 0.0 / 3.8, 202 | 1800 / 1801 / 1801 / 0 / 0 | 1.76 / 4.22 | 16.90 / 18.94 (16.67) | 6.19 |
+| 1440p120-h264 | **5.2** | 3.3 / 1.5 | 124.6 / 128.7 | 356; 630; 142 | 6.8 / 25.3, 187 | 3600 / 3600 / 3551 / 50 / 0 | 2.50 / 4.22 | 8.45 / 10.50 (8.33) | 3.95 |
+| 1440p120-hevc | **5.3** | 3.0 / 1.9 | 138.7 / 139.8 | 360; 478; 142 | 9.8 / 9.7, 332 | 3600 / 3600 / 3597 / 4 / 0 | 1.50 / 3.52 | 8.45 / 10.50 (8.33) | 4.94 |
+| 1440p120-av1 | **5.6** | 3.6 / 1.6 | 119.9 / 121.6 | 360; 519; 142 | 8.6 / 14.2, 235 | 3600 / 3601 / 3601 / 0 / 0 | 2.24 / 4.99 | 8.45 / 11.01 (8.33) | 3.68 |
+| 2x1440p120 | **17.3** | 10.9 / 5.7 | 148.9 / 150.1 | 712; 1472; 142 | 25.8 / 28.0, 509 | 3601 / 3601 / 3601 / 1 / 0 + 3601 / 3602 / 3602 / 0 / 0 | 1.38 / 2.88, 2.50 / 4.22 | 8.45 / 9.98 (8.33), 7.30 / 11.01 (8.33) | 3.42 |
+| 2160p60-h264 | **5.2** | 3.1 / 1.6 | 142.2 / 143.4 | 180; 423; 170 | 5.6 / 32.0, 259 | 1800 / 1800 / 1800 / 0 / 0 | 7.04 / 8.45 | 16.90 / 17.92 (16.67) | 5.49 |
+| 2160p60-hevc | **5.5** | 2.7 / 2.3 | 160.3 / 161.4 | 180; 276; 172 | 14.0 / 11.0, 412 | 1800 / 1800 / 1800 / 0 / 0 | 3.39 / 5.50 | 16.90 / 17.92 (16.67) | 7.81 |
+| 2160p60-av1 | **3.9** | 2.3 / 1.2 | 104.5 / 113.6 | 180; 310; 171 | 7.7 / 16.9, 327 | 1802 / 1803 / 1803 / 0 / 0 | 4.03 / 6.27 | 16.90 / 17.92 (16.65) | 6.82 |
+| 1440p120-hevc-mirror | **6.8** | 4.0 / 2.4 | 138.6 / 139.7 | 360; 473; 142 | 13.0 / 11.3, 332 | 3600 / 3600 / 3601 / 0 / 0 | 1.50 / 3.65 | 8.45 / 10.50 (8.33) | 5.52 |
+| sw-1080p60-h264 | **23.6** | 2.2 / 21.1 | 102.4 / 115.9 | 180; 138; 171 | 5.8 / 0.0, 73 | 1800 / 1801 / 1801 / 0 / 0 | 4.22 / 8.06 | 16.90 / 19.97 (16.67) | 5.01 |
+| sw-1080p60-av1 | **37.5** | 2.0 / 1.8 (+ dav1d 33.3) | 121.2 / 128.5 | 180; 200; 172 | 8.0 / 0.0, 73 | 1800 / 1800 / 1800 / 0 / 0 | 5.76 / 9.47 | 16.90 / 18.94 (16.67) | 5.35 |
+| x11-1440p120-hevc | **12.0** | 7.4 / 4.2 | 138.2 / 144.6 | 359; 428; 142 | 12.3 / 11.0, 333 | 3600 / 3600 / 3601 / 0 / 0 | 1.63 / 3.78 | 8.45 / 10.50 (8.33) | 4.10 |
+| x11-2x1440p120 | **17.8** | 10.2 / 6.9 | 158.6 / 159.6 | 475; 1217; 142 | 20.6 / 28.0, 510 | 3600 / 3600 / 3599 / 1 / 0 + 3600 / 3601 / 3596 / 5 / 0 | 1.57 / 3.14, 2.11 / 3.39 | 8.45 / 12.03 (8.33), 8.06 / 12.03 (8.33) | 8.67 |
+
+- **No stream** (the same screen, nothing to play): 0.01 % CPU, 0 wakeups / s of our threads, 107 MB private
+  (25.7 MB dirty), 58 MB of GPU memory. A stream adds 10–50 MB of private memory depending on codec and size
+  (mostly the driver's decode session) and 100–450 MB of GPU memory (the decoder's reference pool; the five
+  slots are 16 / 28 / 62 MB at 1080p / 1440p / 2160p). After the stream ends everything of it is freed
+  (`video-idle`: 0 threads, 0 textures, 0 frames drawn or presented over 5 s).
+- **Frames**: in every hardware run every frame received was decoded and none was dropped; 0–4 of 3,600
+  pictures were overtaken before a frame was drawn, except one run under load (1440p120 H.264, series 1: 50).
+  Pacing: pictures reach a frame every 8.45 ms at p50 for an 8.33 ms source and every 16.9 ms for 16.67 ms (the
+  histogram's buckets are 4–6 % wide), p99 within 2.7 ms of the source interval.
+- **Wakeups per frame**: 3 on the main thread (the presenter's wake, the frame, the compositor's callback),
+  4–5 on the decoder thread (H.264 at 2160p: 7), 0 anywhere when no picture arrives. The driver's
+  `[vkps] Update` thread wakes 142 times a second in any process with a swapchain.
+- **Small views**: the `--mirror` row adds a 384×216 mini-player of the 1440p stream (the 4×4-tap
+  minification filter of patch `0005`): within the noise of the row without it (5.7–6.8 against 4.7–7.3 % CPU,
+  13.0–14.4 against 9.8–12.8 % GPU `sm`); with the filter compiled out the mirror row measured 7.2 % CPU and
+  18 % `sm`, i.e. the filter has no measurable cost.
+- **Allocations** (`tools/streamgen/malloc-count.c`, 1080p60 HEVC): our Rust code allocates nothing per
+  frame (`cargo test -p decibell-video --test alloc`: 0 over 100 steady-state frames, all three codecs); the
+  decoder thread sees 38 `malloc` calls per frame on the hardware path and 16 on the software path, all inside
+  FFmpeg and the driver; the main thread 285 per presented frame, inside GPUI's renderer and wgpu (each
+  picture is one draw of the retained scene). That last number is where a stream's CPU goes ("main" is
+  about two thirds of every hardware row) and is the next thing to cut (`docs/video-design.md` §12.6).
+- **Against the prototype** (`docs/video-design.md` §11: 2.8–3.9 % for 1080p60, 4.1–4.4 % for 1440p120,
+  7.5 % for 2 × 1440p120, the quietest runs of its day). The prototype binary measured again today with the
+  same tool, between the two series: **8.5 %** for 1 × 1440p120 HEVC (main 5.2, decoder 2.9; 160 MB private)
+  and **20.1 %** for 2 × 1440p120 (main 13.1, decoders 6.3), against this crate's 4.7–7.3 % and 7.8–17.3 %
+  (139 MB private). So: not worse than the prototype like for like; the absolute numbers of both need a quiet
+  machine.
+- **Against Electron**: not measurable yet. A like-for-like row needs the streamer bot (two accounts streaming
+  these same `.dbv` files into a voice channel of the local stack), Electron watching both in its grid with the
+  window visible, and this client doing the same through the model (so the core's receive, FEC and decrypt
+  cost is in both). The Qt spike's Windows figures for the same streams (Electron 31.5–33.1 % for one
+  1440p120 stream, 52.6 % for two) put the target for two at ≤ 17.5 %.
+- **Modes**: the self-tests also pass with `DECIBELL_VIDEO_SHARED_QUEUE=1` (the single-queue mode AMD / Intel
+  would use, forced on NVIDIA), with `DECIBELL_VIDEO_UPLOAD=wgpu`, and under XWayland.
 
 ## 5. Open items
 
