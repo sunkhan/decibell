@@ -1,0 +1,40 @@
+[package]
+name = "decibell-server-settings"
+description = "Server Settings (Overview, Members, Roles, Bans, Audit Log, Storage) and Channel Settings (Overview, Permissions, Retention): the community's administration windows"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# The seeded community the screens are drawn from (the shell's fixture plus roles, bans, an
+# audit log, search results and storage), answered by a fixture requester instead of a server.
+fixtures = ["decibell-shell/fixtures", "decibell-picture-editor/fixtures"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-text.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-shell.workspace = true
+decibell-picture-editor.workspace = true
+# The core's API (the requests, `requests.rs`) and its event payloads. zbus on async-io, as
+# every crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+base64 = "0.22"
+image = { version = "0.25", default-features = false }
+smallvec = "1.6"
+serde_json = "1"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[[bin]]
+name = "decibell-server-settings-fixture"
+path = "src/bin/settings-fixture.rs"
+required-features = ["fixtures"]

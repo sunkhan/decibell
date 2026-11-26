@@ -363,6 +363,60 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
   child app (`--check`), posting only in `#off-topic` / `#slow-lane` and deleting what they post (waiting for the
   server's confirmation, not the optimistic removal).
 
+## Server and channel settings (`decibell-server-settings`, `decibell-picture-editor`)
+
+- **Mount points.** `decibell_server_settings::init(cx)` registers two shell overlays
+  (`host::ServerSettingsHost`, `host::ChannelSettingsHost`). They hold nothing while their modal is closed;
+  opening (`overlays.open_modal(modal::SERVER_SETTINGS)`, `overlays.open_channel_settings(id)`) builds the
+  window for `nav.active_server` (and the channel), closing lets it fade 300 ms and then drops it with every
+  tab, search, subscription and picture it held. Tabs are entities built when first shown and dropped on a
+  switch (`ServerSettingsWindow::show`); nothing polls, timers exist only while they have a reason (a
+  250 ms search debounce, an 8 s "no answer", a 5 s echo wait, a role assignment's expiry).
+- **Requests.** The model has no actions for administration, so every call into `decibell_core::api` is one
+  `requests::Request` sent through `requests::send` / `fire`. A `Requester` installed with
+  `requests::install` sees each request first and may answer it (`fixture::install`: the screens' community
+  server, answering through the model's real router after the call returns) or let it through (the
+  self-tests' recorder). Answers no store keeps arrive on `Model::answers`; a view subscribes while open.
+- **Draft → echo.** An edit lives in the tab's draft (`Option<…>`: `None` follows the server) and the shown
+  value is the draft's, else the store's. Save starts a `save_echo::EchoSave` with what was sent and sends
+  it; the draft stays ("Saving…") until a store change makes the stored value equal what was sent
+  (`settle`), a refusal on `model.answers` (`stop`) or 5 s ends it and keeps the draft. Never clear a draft
+  when a request goes out. Channel settings keep one draft for Overview and Retention plus a permission
+  draft (staged overwrites in the order they'll be sent, the category switch); Save sends rename → update →
+  overwrites → category switch in order (`send_in_order`), and the draft drops rows as the server's pushes
+  show them. Text fields clamp to the server's byte caps as typed (`InputState::max_bytes`).
+- **Leave guard.** The window owns a shared `Nudge` (`Rc<Cell<u32>>`) handed to every tab. Esc, ✕, a backdrop
+  click or a tab switch while the open tab is dirty bump it instead of leaving; `SaveBar::nudge(n)` shakes on
+  every new value. The Roles tab does the same on a role switch, channel settings on close. Edits are never
+  dropped silently.
+- **Lists.** Long lists (members, a role's holders, bans, the audit log, pickers) draw only the rows that meet
+  the pane's viewport (`rows::PaneRows`: uniform or measured heights, measured once per width) inside the one
+  settings scroll; toolbars stick with `rows::StickyTop`. Member lists come from the server's search
+  (`member_search::MemberSearch`, patched by roster deltas), never from the roster store.
+- **Over a modal.** GPUI paints deferred layers by priority alone, so a popover or select opened inside a
+  modal must be built `.over_modal()` (`Popover`, `Select`), or it is drawn under the modal.
+- **Mixed-style sentences** (audit entries, counts with inline dots / avatars) are one paragraph
+  (`sentence::Sentence` over `decibell_text`), with inline boxes filled by elements; an inline box only as
+  tall as the part above the baseline keeps the CSS line height.
+- **Picture editor** (`decibell-picture-editor`, no dependency on the settings crates): open it with the
+  source and the shape, draw it, and answer its Save with the upload's result:
+
+  ```rust
+  let editor = cx.new(|cx| PictureEditor::new(
+      PictureSource::Path(path),                 // or PictureSource::Bytes { bytes, name }
+      EditorOptions::avatar(uid, name, Presence::Online), // 256 × 256, round; or ::server(name, members): 880 × 302
+      window, cx));
+  cx.subscribe(&editor, |this, editor, event: &PictureEditorEvent, cx| match event {
+      PictureEditorEvent::Save(jpeg) => { /* upload jpeg (≤ 1000 KiB JPEG at the output size), then: */
+          editor.update(cx, |e, cx| e.save_done(Ok(()) /* or Err(message.into()) */, cx)) }
+      PictureEditorEvent::Closed { saved } => { this.editor = None; cx.notify() } // saved: the bytes, if saved
+  }).detach();
+  // render: .children(self.editor.clone())  — it is a modal; it fades out, then emits Closed and drops its textures
+  ```
+  `EditorOptions { shape, title, output, previews }` can be built by hand (`Previews::Custom` draws your own
+  previews from the live crop). EXIF orientation is applied; HEIC and files over 80 MP are refused with the
+  renderer's messages.
+
 ## Regional formats (`decibell_model::regional`)
 
 Owner instruction (2026-11-26): the UI's language stays English; **dates, times of day and numbers follow

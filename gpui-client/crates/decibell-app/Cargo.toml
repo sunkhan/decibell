@@ -46,6 +46,7 @@ decibell-settings = { workspace = true, features = ["fixtures"] }
 decibell-composer = { workspace = true, features = ["fixtures"] }
 decibell-home = { workspace = true, features = ["fixtures"] }
 decibell-chat-content = { workspace = true, features = ["fixtures"] }
+decibell-server-settings = { workspace = true, features = ["fixtures"] }
 decibell-picture-editor = { workspace = true, features = ["fixtures"] }
 anyhow.workspace = true
 futures.workspace = true
