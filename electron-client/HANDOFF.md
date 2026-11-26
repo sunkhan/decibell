@@ -656,6 +656,18 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   held a 60 fps DXGI share at ~32 fps. Keep capture / composite fully asynchronous on the GPU
   (`cursor_gpu.rs`); readbacks only on the encoder thread at low rate. The tell is a large `send_max` in
   `[capture_dxgi] 1s:` telemetry.
+- **Encoder backends** (2026-11-26, `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md`):
+  `DECIBELL_ENCODER=nvenc|amf|qsv|vaapi|software` forces one (the way to verify a backend on its hardware:
+  `crates/decibell-core/tools/verify-encoders.md`); the probe test-encodes and logs `[encoder-probe]` lines
+  with why each backend was skipped. Learned on the way: a bare `avcodec_open2` proves nothing for VAAPI
+  (it needs its device + frames context, which is why it never probed before); swscale converts RGB → YUV
+  with BT.601 unless `sws_setColorspaceDetails` says BT.709, and single-threaded it costs 6 ms a 1080p
+  frame (`YuvScaler` threads it); SVT-AV1's `rtc=1` is tuned for camera video and is 9 dB worse on text
+  than plain low delay (`pred-struct=1`) at the same preset, and its presets above 8 drop the
+  screen-content tools; in low delay SVT-AV1's packet call blocks until the frame is encoded (one packet
+  per call); FFmpeg 8.0 cannot derive a QSV frames context from a fixed D3D11 pool of render-target
+  textures (the texture list is still empty at derive time): Quick Sync uses a dynamic pool; FFmpeg 8.1
+  turns that fixed pool into a texture array, which is why vcpkg stays pinned (`ffmpeg-encoders.md`).
 - **zbus bodies need their real signature.** Deserializing `oa(sa{sv})` into `(OwnedObjectPath, Value)`
   fails as `SignatureMismatch` and the handler silently never fires; use concrete types and unit-test
   with `zbus::Message::signal(..).build(&body)` round trips.

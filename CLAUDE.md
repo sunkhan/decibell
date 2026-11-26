@@ -169,6 +169,12 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   software. The native client has no Chromium fallback, so a vendor path that silently fails is a
   missing feature there: probe, fall through in that order, and report which path is in use. Only
   NVIDIA hardware is on hand; AMD / Intel paths are compile- and unit-tested and listed for the owner.
+  Encode is built (`docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md`): the probe
+  test-encodes each backend, a stream start falls through them in order, `DECIBELL_ENCODER=nvenc|amf|qsv|
+  vaapi|software` forces one, and `crates/decibell-core/tools/verify-encoders.md` is the one command per
+  backend for hardware nobody here has. Software is offered only when no hardware encoder works at all,
+  within CPU-count limits, and needs an FFmpeg with SVT-AV1 4.0+ (`tools/ffmpeg-encoders.md`; the Electron
+  addon's has none and keeps its WebCodecs fallback).
 - **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
   `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native
   what holds sockets, speaks the wire, hooks the voice capture loop (AEC / AGC / NS) or owns files. The

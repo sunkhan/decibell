@@ -26,12 +26,12 @@ deltas); **partly** = some of it shipped; **history** = superseded or never buil
 | `2026-04-27-video-codec-negotiation-design.md` | partly: capabilities ride `JOIN_VOICE_REQ` and the streamer picks a codec; mid-stream renegotiation (Plan C) was never wired |
 | `2026-04-28-windows-d3d11-zero-copy-design.md` | live (Windows D3D11 pipeline) |
 | `2026-05-12-custom-profile-pictures-design.md` | live (editor replaced 2026-10-28: picture editor) |
-| `2026-05-12-windows-native-ffmpeg-encoder-design.md` | live (QSV later dropped from the probe) |
+| `2026-05-12-windows-native-ffmpeg-encoder-design.md` | live (QSV dropped from the probe, then built: `2026-11-26-encoders-every-vendor-design.md`) |
 | `2026-05-14-auto-rejoin-communities-design.md` | live |
 | `2026-05-14-live-stream-indicators-design.md` | live |
 | `2026-05-14-persistent-dms-design.md` | live (conversation list later moved to a trigger-kept table, review B11) |
 | `2026-05-15-custom-server-pictures-design.md` | live |
-| `2026-05-15-linux-native-ffmpeg-encoder-design.md` | live: the PipeWire SHM → NVENC path; the DMA-BUF zero-copy part was closed (dead code remains) |
+| `2026-05-15-linux-native-ffmpeg-encoder-design.md` | live: the PipeWire SHM → NVENC path; the DMA-BUF zero-copy part was closed and its encoder side deleted 2026-11-26 |
 | `2026-05-15-message-deletion-design.md` | live |
 | `2026-05-16-electron-auto-update-design.md` | live |
 | `2026-05-17-sentry-error-monitoring-design.md` | live |
@@ -64,6 +64,7 @@ deltas); **partly** = some of it shipped; **history** = superseded or never buil
 | `2026-10-28-picture-editor-design.md` | live |
 | `2026-11-07-qt-native-client-design.md` | set aside for GPUI (owner, 2026-11-26); its targets (§3), core split (§6), threads (§7) and replacement table (§10) still hold: the native Qt 6 Quick + Rust client (core split, zero-copy video, theming, spike plan, Electron baseline) |
 | `2026-11-26-gpui-native-client-design.md` | in progress on the `gpui-client` branch: the native GPUI client (decision, what carries over from the Qt design, targets, architecture, order of work) |
+| `2026-11-26-encoders-every-vendor-design.md` | live for NVENC and software SVT-AV1 (measured); VAAPI, Quick Sync and the Windows side are written and await a test on their hardware (§8): encoder backends, the probe that encodes, fallthrough, per-backend settings with sources |
 
 `superpowers/plans/` holds the step-by-step implementation plans for the 2026-03 … 2026-05 specs (same
 names). They're history: useful for why code is shaped the way it is, never as a to-do list. The

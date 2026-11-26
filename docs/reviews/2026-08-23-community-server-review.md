@@ -4884,3 +4884,45 @@ streams with their arrival times for replay (`DECIBELL_STREAM_DUMP`, `native/src
 on Windows: `cargo test --lib` 315 passed plus the 2 known Windows-only failures, `cargo check --features
 stream-dump`, a release build with the feature recorded the owner's stream. The installed baseline for watching a
 live 1440p120 stream is now in the design's §2. No server or wire change.
+
+### Feature: encoders on every vendor, software as the last resort (2026-11-26, `wip/core-encoders`)
+
+Owner's rule (CLAUDE.md "Video codecs"): screen shares are encoded on the GPU on NVIDIA, AMD and Intel on both
+OSes, and only a machine with no usable hardware encoder falls back to software (SVT-AV1). Design record with
+every setting, its source and the measurements: `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md`.
+
+- **Backends and order** (`media/encoder_backend.rs`): NVENC, VAAPI (Linux AMD / Intel), AMF and Quick Sync
+  (Windows), software. Linux: NVENC → VAAPI per render node (boot GPU first) → software. Windows: NVENC / AMF
+  (AMF first on an AMD primary, as before) → Quick Sync → software. `DECIBELL_ENCODER=…` forces one.
+- **The probe encodes** (`media/encoder_probe.rs`): each backend is opened as a stream opens it and encodes
+  three 640×360 frames; the result names the backend ("VAAPI (AMD)") and why each other one was skipped, and is
+  cached per GPU + driver build (process and `encoder_probe.json`). Never at startup. The old probes only opened
+  an encoder, which VAAPI cannot do without its device: it had never been offered.
+- **VAAPI** (`media/encoder_vaapi.rs`): BGRA upload + the driver's video processor to NV12 (`scale_vaapi`), with
+  a CPU-convert tier; CBR → VBR → FFmpeg's choice. **Quick Sync** (`media/encoder.rs`): FFmpeg's D3D11 → QSV
+  derive + map route on a dynamic pool. **Software** (`media/encoder_software.rs`): SVT-AV1 low delay with
+  screen-content tools, preset and size / rate limits from the CPU count; Linux converts with threaded swscale,
+  Windows reads the video processor's NV12 back without waiting on the GPU (`media/nv12_readback.rs`).
+- **Fallthrough**: a stream start walks the order for its codec; a backend that cannot open, or fails before
+  its first packet, hands over to the next, and `native_stream_failed` is only the last one failing. The cache
+  is corrected.
+- **API** (additive): `NativeEncoderCap.backend / label / maxPixelRate`, `StartScreenShareResult.codec /
+  encoder`, `cached_native_encoders`. No wire change.
+- Removed: `gpu_interop.rs` and the encoder's DMA-BUF / CUDA / dead D3D11 branches, the `libx264` candidate.
+
+Measured (i7-12700K, RTX 4080): the harness's 720p30 / 3 Mbps stream through h264_nvenc, hevc_nvenc, av1_nvenc
+and libsvtav1 passes every check and decodes 150 / 150; SVT-AV1 at 1080p30 / 4 Mbps costs 18 to 25 ms of CPU a
+frame at presets 12 / 10 for PSNR-Y 36 to 37 dB on scrolling text, 56 dB at preset 8; its real-time mode
+(`rtc=1`) measured 9 dB worse and was dropped. Tables in the design record §6.
+
+Electron: unchanged on machines that stream natively today (NVENC on Linux; NVENC / AMF on Windows: same
+encoders, options and ceilings). Changed where the native probe used to find nothing: AMD / Intel on Linux now
+get VAAPI natively when it test-encodes, Intel-only Windows machines Quick Sync; a native start that fails
+still falls back to WebCodecs. The addon's FFmpeg has no SVT-AV1, so it reports no software backend.
+
+Verified (Linux): core `cargo test --lib` 403 passed + 7 ignored (was 361 + 4), with the addon's FFmpeg and with
+the development prefix (`tools/build-ffmpeg-encoders.sh`: SVT-AV1 + decoders), both zbus modes; `npx napi build`
+(index.d.ts: additions only), smoke-load, smoke-stack, renderer typecheck. **Not verified**: VAAPI on AMD /
+Intel, Quick Sync, AMF under the new probe, software on Windows, and all `cfg(windows)` code (compiled only by
+the Windows Native Check workflow): one command per backend in `crates/decibell-core/tools/verify-encoders.md`.
+A live Go Live through NVENC after the change is still to be done by hand.

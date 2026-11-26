@@ -572,14 +572,33 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
   follow the OS default (`default_device_watch.rs`).
 - **Screen capture + encode** (sender). Sources are listed by Electron's `desktopCapturer` (Chromium
   ids `screen:N:0` / `window:HWND:0`, parsed natively by `source_id.rs`).
+  - **Encoder backends** (`media/encoder_backend.rs`, `encoder_probe.rs`; design
+    `2026-11-26-encoders-every-vendor-design.md`): NVENC (both OSes), VAAPI for AMD / Intel (Linux), AMF
+    and Quick Sync (Windows), then software SVT-AV1 (AV1 only; in a build whose FFmpeg has libsvtav1:
+    the GPUI client's, not the Electron addon's). Order: Linux NVENC → VAAPI on each AMD / Intel render
+    node (boot GPU first) → software; Windows NVENC / AMF (AMF first on an AMD primary) → Quick Sync →
+    software. The probe test-encodes three 640×360 frames through each backend as a stream would open
+    it, takes the first hardware backend that works per codec (software is listed only when no
+    hardware encoder works), and keeps the result for the process and in `encoder_probe.json`, keyed
+    by GPUs + driver builds; it runs when the client asks for the encoder list or at the first stream
+    start, never at startup. A stream start walks the same order for its codec: a backend that
+    fails to open, or fails before its first packet, hands over to the next, and `native_stream_failed`
+    is only for the last one; the cache is corrected either way. `DECIBELL_ENCODER=nvenc|amf|qsv|vaapi|
+    software` forces one backend. Caps and the start's result name the backend ("VAAPI (AMD)").
+    Only NVENC and software have run on real hardware: `crates/decibell-core/tools/verify-encoders.md`.
   - **Windows** (native by default; `localStorage["decibell.win_native_encode"] = "0"` opts out): WGC
     (Win11, borderless) or DXGI Desktop Duplication with GPU cursor compositing (Win10 monitors) →
-    D3D11 video processor (BGRA → NV12, sized from the input) → FFmpeg NVENC or AMF (vendor order by
-    adapter; QSV is left out of the probe), dynamically linked LGPL FFmpeg from vcpkg. No CPU↔GPU sync in
-    the capture loop.
+    D3D11 video processor (BGRA → NV12, sized from the input) → FFmpeg NVENC / AMF (the NV12 pool
+    texture as it is) or Quick Sync (the same texture mapped to a QSV frame, FFmpeg's `hwmap` route),
+    dynamically linked LGPL FFmpeg from vcpkg. Software: the video processor's NV12 picture is read
+    back through a ring of staging textures mapped with DO_NOT_WAIT (`nv12_readback.rs`) and encoded
+    by SVT-AV1. No CPU↔GPU sync in the capture loop on any path.
   - **Linux** (native when a hardware encoder probes; `decibell.linux_native_encode = "0"` opts out):
-    xdg-desktop-portal ScreenCast + PipeWire SHM → static LGPL FFmpeg NVENC (BGRA in, converted on the
-    GPU). VAAPI's probe is unreliable, so AMD / Intel normally take the fallback.
+    xdg-desktop-portal ScreenCast + PipeWire SHM → static LGPL FFmpeg. NVENC takes BGRA and converts
+    on the GPU. VAAPI (`encoder_vaapi.rs`) uploads the BGRA frame to a surface and the driver's video
+    processor converts + scales to NV12 (`scale_vaapi`), or, without that filter or VPP support,
+    swscale converts and an NV12 frame is uploaded. Software converts with swscale (threaded, BT.709)
+    to I420.
   - **Fallback, and always on macOS**: `getDisplayMedia` → `MediaStreamTrackProcessor` → WebCodecs
     `VideoEncoder` (the castlabs Electron build adds H.264 / HEVC encoders) → chunks to native for
     packetising.
@@ -676,8 +695,11 @@ and the runtime handle):
   (`InitOptions`: `user_data_dir`, `app_version`, `e2ee_local_key` (32 bytes, base64; from the OS
   keychain), `local_key_protected`); the host sets up its own logger. `api::lifecycle::shutdown()` last.
 - **Dead code** (moved into the core as it was; delete when convenient): `capture_wlr_screencopy.rs`
-  (unreachable), `gpu_interop.rs` and the DMA-BUF / CUDA / VAAPI encode branches (never fed),
-  `codec_selection.rs` (tests only),
+  (unreachable), the capture side's DMA-BUF plumbing (`capture::DmaBufFrame`, `CaptureOutput::
+  gpu_receiver`, `capture_pipewire.rs`'s `gpu_tx`: never sent to; `gpu_interop.rs` and the encoder's
+  DMA-BUF / CUDA / zero-copy VAAPI / D3D11 branches that read it were deleted 2026-11-26, which left
+  the crate's `khronos-egl`, `gl` and `libloading` dependencies unused: drop them with the next lock
+  change), `codec_selection.rs` (tests only),
   `emit_stream_gpu_fallback`, `emit_caps_refreshed`, `watcher_event_tx` (no subscriber). Several file
   headers still claim "FFmpeg removed entirely" (`lib.rs`, `media/mod.rs`, `video_pipeline.rs`) — false.
 
