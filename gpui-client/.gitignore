@@ -3,3 +3,4 @@
 # Fetched by tools/fetch-assets.mjs (thousands of files / third-party data pinned by the renderer lockfile)
 /assets/twemoji/
 /assets/emoji-data/
+/target-*/
