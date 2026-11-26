@@ -258,10 +258,91 @@ fn keys_of(layout: &Layout, server: ServerId, space: SlotSpace, out: &mut Vec<Pi
 }
 
 /// The attachments slot. See the module doc.
-#[derive(Default)]
 pub struct AttachmentSlot {
     /// The download buttons showing their tick: (first attachment id) → its timer.
     saved: Rc<RefCell<HashMap<i64, Task<()>>>>,
+    /// The lists whose near rows hold an audio or video card (redrawn when playback or the
+    /// media volume changes).
+    media_lists: Rc<RefCell<std::collections::HashSet<EntityId>>>,
+    /// Near rows told before their community's attachment endpoint was known, per list.
+    later: Rc<RefCell<HashMap<EntityId, Later>>>,
+    /// The watch for those endpoints (only while some list waits).
+    watching: RefCell<Option<Task<()>>>,
+    this: RefCell<std::rc::Weak<AttachmentSlot>>,
+    _subscriptions: Vec<gpui::Subscription>,
+}
+
+type Later = (ServerId, SlotSpace, Vec<Arc<Message>>, std::ops::Range<usize>);
+
+impl AttachmentSlot {
+    pub fn new(cx: &mut App) -> AttachmentSlot {
+        let media_lists: Rc<RefCell<std::collections::HashSet<EntityId>>> = Rc::default();
+        let mut subscriptions = Vec::new();
+        if let Some(model) = cx.try_global::<Model>().cloned() {
+            let redraw = |lists: Rc<RefCell<std::collections::HashSet<EntityId>>>| {
+                move |cx: &mut App| {
+                    let lists: Vec<EntityId> = lists.borrow().iter().copied().collect();
+                    for list in lists {
+                        cx.notify(list);
+                    }
+                }
+            };
+            let (a, v) = (redraw(media_lists.clone()), redraw(media_lists.clone()));
+            subscriptions.push(cx.observe(&model.chat.audio, move |_, cx| a(cx)));
+            subscriptions.push(cx.observe(&model.chat.video, move |_, cx| v(cx)));
+            let s = redraw(media_lists.clone());
+            let mut was = { let v = model.settings.read(cx).get(); (v.media_audio_volume, v.media_audio_muted) };
+            subscriptions.push(cx.observe(&model.settings, move |settings, cx| {
+                let now = { let v = settings.read(cx).get(); (v.media_audio_volume, v.media_audio_muted) };
+                if now != was {
+                    was = now;
+                    s(cx);
+                }
+            }));
+        }
+        AttachmentSlot { saved: Rc::default(), media_lists, later: Rc::default(), watching: RefCell::default(), this: RefCell::default(), _subscriptions: subscriptions }
+    }
+
+    /// The slot in its `Rc` (so the endpoint watch can call back into it).
+    pub fn shared(self) -> Rc<AttachmentSlot> {
+        let slot = Rc::new(self);
+        *slot.this.borrow_mut() = Rc::downgrade(&slot);
+        slot
+    }
+
+    /// Checks every 250 ms, while some list waits, whether its community's endpoint arrived
+    /// (the core says so through no event); tells the list's rows again when it has.
+    fn watch_endpoints(&self, cx: &mut App) {
+        if self.watching.borrow().is_some() {
+            return;
+        }
+        let this = self.this.borrow().clone();
+        let task = cx.spawn(async move |cx| {
+            for _ in 0..240 {
+                cx.background_executor().timer(Duration::from_millis(250)).await;
+                let Some(slot) = this.upgrade() else { return };
+                let done = cx.update(|cx| {
+                    let ready: Vec<(EntityId, Later)> = {
+                        let mut later = slot.later.borrow_mut();
+                        let lists: Vec<EntityId> = later.iter().filter(|(_, (server, ..))| endpoint_known(*server, cx)).map(|(list, _)| *list).collect();
+                        lists.into_iter().filter_map(|list| later.remove(&list).map(|l| (list, l))).collect()
+                    };
+                    for (list, (server, space, near, visible)) in ready {
+                        slot.near(list, Some(server), space, &near, visible, cx);
+                    }
+                    slot.later.borrow().is_empty()
+                });
+                if done {
+                    break;
+                }
+            }
+            if let Some(slot) = this.upgrade() {
+                slot.later.borrow_mut().clear();
+                slot.watching.borrow_mut().take();
+            }
+        });
+        *self.watching.borrow_mut() = Some(task);
+    }
 }
 
 impl RowSlot for AttachmentSlot {
@@ -284,11 +365,29 @@ impl RowSlot for AttachmentSlot {
     }
 
     fn near(&self, list: EntityId, server: Option<ServerId>, space: SlotSpace, near: &[Arc<Message>], visible: std::ops::Range<usize>, cx: &mut App) {
+        if near.is_empty() {
+            self.media_lists.borrow_mut().remove(&list);
+            self.later.borrow_mut().remove(&list);
+        }
         let (Some(server), Some(pictures)) = (server, Pictures::global(cx)) else { return };
         if !endpoint_known(server, cx) {
+            // The channel opened before the community said where its files are (a restored
+            // channel at start-up): told again once it has.
+            pictures.update(cx, |p, cx| p.set_wants((list, 0), Vec::new(), cx));
+            if !near.is_empty() {
+                self.later.borrow_mut().insert(list, (server, space, near.to_vec(), visible));
+                self.watch_endpoints(cx);
+            }
             return;
         }
+        self.later.borrow_mut().remove(&list);
         let style = ContentStyle::get(cx, space.scale);
+        let media = near.iter().any(|m| m.attachments.iter().any(|a| matches!(a.kind, AttachmentKind::Audio | AttachmentKind::Video)));
+        if media {
+            self.media_lists.borrow_mut().insert(list);
+        } else {
+            self.media_lists.borrow_mut().remove(&list);
+        }
         let mut wants = Vec::new();
         let mut keys = Vec::new();
         for (i, message) in near.iter().enumerate() {
@@ -835,17 +934,28 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                 .child(div().flex_none().child(label(format!("{} / {}", fmt(time), fmt(shown)), &style.meta_10, decibell_text::Wrapping::NOWRAP)))
                 .child(
                     div()
+                        .id(SharedString::from(format!("audio-mute-{}", a.id)))
                         .size_7()
                         .flex_none()
                         .flex()
                         .items_center()
                         .justify_center()
                         .rounded(theme.radius_sm)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.color_surface_hover))
+                        .tooltip(title_tooltip(if muted { "Unmute" } else { "Mute" }))
                         .child(
                             Icon::new(if muted || volume == 0. { IconName::ContentVolumeMuted } else { IconName::ContentVolume })
                                 .size(px(14.))
                                 .color(theme.color_text_muted),
-                        ),
+                        )
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        // `audioToggleMute`: a setting, so it works before anything plays.
+                        .on_click(|_, _, cx| {
+                            if let Some(model) = cx.try_global::<Model>().cloned() {
+                                model.settings.update(cx, |s, cx| s.change(|v| v.media_audio_muted = !v.media_audio_muted, cx));
+                            }
+                        }),
                 )
                 .child(
                     div()

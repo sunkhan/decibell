@@ -88,6 +88,8 @@ pub struct EmbedsSlot {
     /// Remote pictures whose box waits for their size (no declared dimensions): their arrival
     /// re-measures.
     sized_by_pixels: Rc<RefCell<HashSet<Source>>>,
+    /// Community pictures asked of central (once per version).
+    asked_pictures: Rc<RefCell<HashSet<(ServerId, SharedString)>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -106,6 +108,7 @@ fn preview_of(url: &str, cx: &App) -> Option<Arc<LinkPreview>> {
 impl EmbedsSlot {
     pub fn new(cx: &mut App) -> EmbedsSlot {
         let mut subscriptions = Vec::new();
+        let asked_pictures: Rc<RefCell<HashSet<(ServerId, SharedString)>>> = Rc::default();
         let sized_by_pixels: Rc<RefCell<HashSet<Source>>> = Rc::default();
         if let Some(model) = cx.try_global::<Model>().cloned() {
             // A preview landing grows its row; an invite resolving fills its card in; the
@@ -124,6 +127,17 @@ impl EmbedsSlot {
                 }
             }));
             subscriptions.push(cx.observe(&model.connections, |_, cx| invalidate_soon(cx)));
+            // A community picture landing for an invite card's banner: the lists redraw (only
+            // then: the servers store changes for much else).
+            let asked = asked_pictures.clone();
+            let mut had: usize = 0;
+            subscriptions.push(cx.observe(&model.servers, move |servers, cx| {
+                let have = asked.borrow().iter().filter(|(server, _)| servers.read(cx).picture(*server).is_some()).count();
+                if have != had {
+                    had = have;
+                    invalidate_soon(cx);
+                }
+            }));
         }
         if let Some(pictures) = Pictures::global(cx) {
             let sized = sized_by_pixels.clone();
@@ -135,7 +149,7 @@ impl EmbedsSlot {
                 }
             }));
         }
-        EmbedsSlot { links: RefCell::default(), joins: Rc::default(), sized_by_pixels, _subscriptions: subscriptions }
+        EmbedsSlot { links: RefCell::default(), joins: Rc::default(), sized_by_pixels, asked_pictures, _subscriptions: subscriptions }
     }
 
     /// The lone-link rule (installed as `ChatSlots::text_hidden`).
@@ -475,6 +489,18 @@ impl RowSlot for EmbedsSlot {
                         if let Some(parsed) = decibell_richtext::links::parse_invite_link(url) {
                             let code = parsed.code.to_string();
                             model.invites.update(cx, |invites, cx| invites.request(&code, cx));
+                            // The community's picture for the banner (`useFetchServerPictureIfMissing`):
+                            // its version registered, the bytes asked of central once.
+                            let resolved = model.invites.read(cx).get(&code).and_then(|e| e.resolved.clone());
+                            if let Some(r) = resolved.filter(|r| r.server_id > 0 && !r.picture_version.is_empty()) {
+                                let server = ServerId::from_central(r.server_id as i32);
+                                let missing = model.servers.read(cx).picture(server).is_none();
+                                let version = r.picture_version.clone();
+                                model.servers.update(cx, |s, cx| s.set_picture_version(server, &version, cx));
+                                if missing && self.asked_pictures.borrow_mut().insert((server, version.clone())) {
+                                    actions::servers::fetch_server_picture(server, cx);
+                                }
+                            }
                         }
                     }
                     EmbedKind::Web if web && !message.suppress_embeds => {
@@ -609,8 +635,13 @@ impl EmbedsSlot {
         let edge = site.color.as_deref().and_then(parse_hex).unwrap_or(theme.color_accent);
         let (bg_dark, bg_secondary, radius_md, radius_sm, accent) = (theme.color_bg_dark, theme.color_bg_secondary, theme.radius_md, theme.radius_sm, theme.color_accent);
         let mut column = div().min_w_0().flex_1().px_3().py(px(10.));
+        // Each text in a box of exactly the height the geometry counted (a label rounds its own
+        // up to whole pixels, which would push what follows down by the fractions).
+        let exact = |text: &str, text_style: &decibell_text::TextStyle, wrapping: Wrapping| {
+            div().h(px(style.height(text, text_style, wrapping, g.column))).child(label(text.to_string(), text_style, wrapping))
+        };
         if let Some(name) = site.site_name.as_deref().filter(|s| !s.is_empty()) {
-            column = column.child(label(name.to_string(), &style.site_name, Wrapping::TRUNCATE));
+            column = column.child(exact(name, &style.site_name, Wrapping::TRUNCATE));
         }
         if let Some(title) = site.title.as_deref().filter(|s| !s.is_empty()) {
             let url = site.url.clone();
@@ -619,7 +650,7 @@ impl EmbedsSlot {
                     .id(SharedString::from(format!("site-title-{}-{}", message.id, site.url)))
                     .mt(px(2.))
                     .cursor_pointer()
-                    .child(label(title.to_string(), &style.site_title, clamp_anywhere(2)))
+                    .child(exact(title, &style.site_title, clamp_anywhere(2)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _, cx| {
                         if let Some(target) = decibell_unfurl::links::external_link_target(&url) {
@@ -629,7 +660,7 @@ impl EmbedsSlot {
             );
         }
         if let Some(description) = site.description.as_deref().filter(|s| !s.is_empty()) {
-            column = column.child(div().mt_1().child(label(description.to_string(), &style.site_description, clamp_anywhere(3))));
+            column = column.child(div().mt_1().child(exact(description, &style.site_description, clamp_anywhere(3))));
         }
         if g.large.is_some()
             && let Some(image) = &site.image
@@ -693,9 +724,16 @@ impl EmbedsSlot {
             }
         };
         let title_color = if view.invalid { theme.color_text_muted } else { theme.color_text_bright };
-        let mut column = div().min_w_0().flex_1().child(label_in(view.title.clone(), &style.invite_title, Wrapping::TRUNCATE, title_color));
+        // In boxes of the heights `invite_height` counted (labels round theirs up).
+        let inner = width - 2. - 32.;
+        let column_w = (inner - 12. - if view.joined { 2. + 32. + 36. } else { 32. + 30. }).max(1.);
+        let mut column = div()
+            .min_w_0()
+            .flex_1()
+            .child(div().h(px(style.line(&style.invite_title))).child(label_in(view.title.clone(), &style.invite_title, Wrapping::TRUNCATE, title_color)));
         if !view.description.is_empty() {
-            column = column.child(label(view.description.clone(), &style.invite_description, clamp_anywhere(2)));
+            let h = style.height(&view.description, &style.invite_description, clamp_anywhere(2), column_w);
+            column = column.child(div().h(px(h)).child(label(view.description.clone(), &style.invite_description, clamp_anywhere(2))));
         }
         if !view.invalid && (view.members.is_some() || view.joined) {
             let mut meta = div().mt(px(2.)).flex();
@@ -736,16 +774,21 @@ impl EmbedsSlot {
             let disabled = busy || view.invalid || host_key.is_none();
             let (host, port, code) = (view.host.to_string(), view.port, view.code.clone());
             let joins = self.joins.clone();
+            // `disabled:opacity-50` fades the button as one layer; GPUI fades each primitive on
+            // its own (the label would blend with the card, not the button), so the faded
+            // colours are mixed here: each half over the card.
+            let card = theme.color_bg_dark;
+            let fade = |c: Hsla| if disabled { card.blend(c.opacity(0.5)) } else { c };
             div()
                 .id(SharedString::from(format!("invite-join-{}-{}", message.id, view.code)))
                 .flex_none()
                 .px_4()
                 .py_2()
                 .rounded(theme.radius_sm)
-                .bg(theme.color_accent)
+                .bg(fade(theme.color_accent))
                 .when(!disabled, |d| d.hover(|s| s.bg(theme.color_accent_hover)).cursor_pointer())
-                .when(disabled, |d| d.opacity(0.5).cursor_not_allowed())
-                .child(label(if busy { "Joining…" } else { "Join" }, &style.button, Wrapping::NOWRAP))
+                .when(disabled, |d| d.cursor_not_allowed())
+                .child(label_in(if busy { "Joining…" } else { "Join" }, &style.button, Wrapping::NOWRAP, fade(style.button.color)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(move |_, _, cx| {
                     if disabled {

@@ -109,19 +109,22 @@ impl Tile {
         paint_cover(&image, (w, h), bounds, self.corners, window);
     }
 
-    /// Chromium's broken image: its icon at the top-left and the alt text beside it.
+    /// Chromium's broken image: its 16 px icon in the top-left corner, the alt text on the first
+    /// line centred across the box (the `<button>`'s `text-align: center`) in the inherited text.
     fn paint_broken(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        let color = cx.theme().color_text_muted;
-        let icon = Bounds::new(bounds.origin + point(px(2.), px(2.)), size(px(16.), px(16.)));
-        let _ = window.paint_svg(icon, SharedString::new_static(IconName::ContentBrokenImage.path()), None, gpui::TransformationMatrix::unit(), color, cx);
+        let icon = Bounds::new(bounds.origin, size(px(16.), px(16.)));
+        let _ = window.paint_svg(icon, SharedString::new_static(IconName::ContentBrokenImage.path()), None, gpui::TransformationMatrix::unit(), cx.theme().color_text_muted, cx);
         if self.alt.is_empty() {
             return;
         }
         let style = crate::style::ContentStyle::get(cx, window.scale_factor());
-        let width = (f32::from(bounds.size.width) - 22.).max(1.);
+        let box_w = f32::from(bounds.size.width);
+        // The icon floats left: the line is what remains beside it.
+        let width = (box_w - 16.).max(1.);
         let layout = style.engine.label_layout(&self.alt, &style.alt, decibell_text::Wrapping::TRUNCATE, width, style.scale);
+        let x = 16. + ((width - layout.width()) / 2.).max(0.);
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            layout.paint(bounds.origin + point(px(20.), px(1.)), &decibell_text::PaintOptions::default(), window, cx);
+            layout.paint(bounds.origin + point(px(x), px(0.)), &decibell_text::PaintOptions::default(), window, cx);
         });
     }
 }

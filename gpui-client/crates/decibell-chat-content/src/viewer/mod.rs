@@ -904,7 +904,6 @@ impl Render for ImageViewer {
         let at_fit = (view.scale - fit).abs() < 1e-4;
         let phase = session.phase;
         let chrome_on = phase == Phase::Open && !session.idle;
-        let theme = cx.theme();
         let stage_color = stage::stage_color(cx);
         let item = self.item().cloned();
         let strip = session.items.len() > 1;
@@ -930,6 +929,19 @@ impl Render for ImageViewer {
             _ => None,
         };
         let picture_box = self.picture_bounds(view, nat);
+        // `shadow-modal` sits on the transformed picture: it scales with the zoom over fit.
+        let shadow_scale = view.scale / fit_scale(nat, view.rot, self.area()).max(1e-6);
+        let picture_shadow: Vec<gpui::BoxShadow> = cx
+            .theme()
+            .shadow_modal
+            .iter()
+            .map(|s| gpui::BoxShadow {
+                offset: point(s.offset.x * shadow_scale, s.offset.y * shadow_scale),
+                blur_radius: s.blur_radius * shadow_scale,
+                spread_radius: s.spread_radius * shadow_scale,
+                ..s.clone()
+            })
+            .collect();
         let wash = stage::wash(&item, &self.session.as_ref().expect("checked").wash, cx);
         if let Some((k, image)) = &wash
             && let Some(s) = &mut self.session
@@ -998,7 +1010,7 @@ impl Render for ImageViewer {
                     });
                 }
             },
-            move |bounds, _, window, cx| {
+            move |bounds, _, window, _| {
                 window.paint_quad(gpui::fill(bounds, Hsla { a: stage_color.a * shown_amount, ..stage_color }));
             },
         )
@@ -1034,6 +1046,10 @@ impl Render for ImageViewer {
                     }
                     None => (level0.image.clone(), level0.placement.out),
                 };
+                window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                    let shadowed = clip.map_or(target, |c| c.intersect(&target));
+                    window.paint_drop_shadows(shadowed, Corners::default(), &picture_shadow);
+                });
                 window.with_content_mask(Some(gpui::ContentMask { bounds: clip.unwrap_or(bounds) }), |window| {
                     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
                         crate::tile::paint_fill(&image, out, target, Corners::default(), window);
@@ -1297,7 +1313,6 @@ fn detail_bounds(target: Bounds<Pixels>, nat: Size, rot: i32, region: [f32; 4]) 
 impl ImageViewer {
     /// Who posted it, when, where; then the file (`ViewerHeader`).
     fn header(&self, item: &ViewerImage, loading: bool, failed: bool, style: &Rc<ContentStyle>, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let theme = cx.theme();
         let has_sender = item.sender.is_some();
         let uid = item.sender_uid.unwrap_or(0);
         let name: SharedString = if has_sender {
@@ -1394,25 +1409,42 @@ impl ImageViewer {
             let source = source_of(item.thumb_url.as_ref().or(item.preview_url.as_ref()).unwrap_or(&item.url));
             let key = PicKey::new(source, Spec { width: 44., height: 44., scale: window.scale_factor(), fit: Fit::Cover, upscale: true });
             wants.push(Want { key: key.clone(), visible: false });
+            // An `<img>` on `bg-bg-lighter`, no blur. The thumb fades as one layer in CSS; GPUI
+            // fades each primitive, so nothing is painted under a picture that is in (the
+            // background would show through the faded picture).
+            let ready = Pictures::global(cx).is_some_and(|p| matches!(p.read(cx).look(&key), Look::Ready(_)));
             let tile = crate::tile::Tile {
                 key: Some(key),
-                placeholder: item.placeholder.clone().unwrap_or_default(),
+                placeholder: SharedString::default(),
                 corners: Corners::all(theme.radius_md),
-                background: Some(theme.color_bg_lighter),
+                background: (!ready).then_some(theme.color_bg_lighter),
                 alt: SharedString::default(),
                 veil: None,
+            };
+            // `ring-2 ring-accent ring-offset-2 ring-offset-bg-light`: two rings outside the
+            // thumb that take no room (the strip's `p-1` holds them).
+            let ring = |inset: f32, color: Hsla| {
+                div()
+                    .absolute()
+                    .top(px(-inset))
+                    .left(px(-inset))
+                    .right(px(-inset))
+                    .bottom(px(-inset))
+                    .rounded(theme.radius_md + px(inset))
+                    .border_2()
+                    .border_color(color)
             };
             row = row.child(
                 div()
                     .id(SharedString::from(format!("viewer-strip-{i}")))
+                    .relative()
                     .size_11()
                     .flex_none()
-                    .rounded(theme.radius_md)
-                    .when(current, |d| d.border_2().border_color(cx.theme().color_accent))
+                    .when(current, |d| d.child(ring(4., cx.theme().color_accent)).child(ring(2., theme.color_bg_light)))
                     .when(!current, |d| d.opacity(0.55).hover(|s| s.opacity(1.)))
                     .cursor_pointer()
                     .tooltip(title_tooltip(item.filename.clone()))
-                    .child(tile.element())
+                    .child(div().absolute().size_full().rounded(theme.radius_md).overflow_hidden().child(tile.element()))
                     .on_click(cx.listener(move |this, _, _, cx| this.go(i, cx))),
             );
         }

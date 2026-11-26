@@ -335,6 +335,12 @@ impl Pictures {
         self.visible.iter().cloned().collect()
     }
 
+    /// Decoded bytes of the ready pictures, counted again from the entries (a check on
+    /// [`Self::bytes`]'s running total), and how many there are.
+    pub fn ready_bytes(&self) -> (usize, usize) {
+        self.entries.values().filter(|e| matches!(e.state, State::Ready(_))).fold((0, 0), |(b, n), e| (b + e.bytes, n + 1))
+    }
+
     /// Decoded bytes of pictures no owner wants (what [`DECODED_BUDGET`] bounds).
     pub fn unpinned_bytes(&self) -> usize {
         self.entries.iter().filter(|(k, e)| !self.pinned.contains_key(*k) && e.waiters.is_empty()).map(|(_, e)| e.bytes).sum()
@@ -374,6 +380,7 @@ impl Pictures {
             }
             return;
         }
+        log::debug!("[pictures] wanted {:?} at {}×{} device px", key.source, key.w, key.h);
         self.entries.insert(
             key.clone(),
             Entry { state: State::Waiting, bytes: 0, used: self.clock, waiters: view.into_iter().collect(), started: Instant::now() },
@@ -961,6 +968,9 @@ impl Pictures {
                 let gone: Vec<Arc<RenderImage>> =
                     anim.kept.drain(..).map(|(image, _)| image).filter(|image| Some(image.id) != current.as_ref().map(|c| c.id)).collect();
                 self.decoded_bytes = self.decoded_bytes.saturating_sub(anim.kept_bytes);
+                if let Some(entry) = self.entries.get_mut(key) {
+                    entry.bytes = entry.bytes.saturating_sub(anim.kept_bytes);
+                }
                 anim.kept_bytes = 0;
                 cx.defer(move |cx| drop_images(gone, cx));
             }

@@ -46,7 +46,7 @@ pub struct ContentStyle {
     pub invite_description: TextStyle,
     pub invite_meta: TextStyle,
     pub button: TextStyle,
-    /// Chromium's broken-image alt text (the UI font at 13 px).
+    /// Chromium's broken-image alt text: what the `<button>` inherits (the message text).
     pub alt: TextStyle,
     pub engine: Rc<Engine>,
 }
@@ -89,7 +89,7 @@ impl ContentStyle {
             invite_description: text(FontRole::Sans, scaled.text_meta, 400., theme.color_text_secondary).leading(leading),
             invite_meta: text(FontRole::Meta, scaled.text_meta, 400., theme.color_text_muted),
             button: text(FontRole::Sans, 13., 600., theme.color_on_accent),
-            alt: text(FontRole::Sans, 13., 400., theme.color_text_muted),
+            alt: text(FontRole::Sans, scaled.text_body, 400., theme.color_text_primary),
             engine,
         }
     }

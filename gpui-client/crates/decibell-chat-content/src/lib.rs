@@ -76,10 +76,11 @@ pub fn install(fetcher: Rc<dyn Fetcher>, fixture: bool, cx: &mut App) {
     let engine = Engine::global(cx);
     cx.set_global(Shared { engine, fixture });
     Pictures::install(fetcher, cx);
+    let attachments = attachments::AttachmentSlot::new(cx).shared();
     let inflight = Rc::new(inflight::InflightSlot::new(cx));
     let embeds = Rc::new(embeds::EmbedsSlot::new(cx));
     let slots = decibell_chat::slots(cx);
-    slots.attachments = Some(Rc::new(attachments::AttachmentSlot::default()));
+    slots.attachments = Some(attachments);
     slots.inflight = Some(inflight);
     slots.embeds = Some(embeds.clone());
     slots.text_hidden = Some(Rc::new(move |message, _, cx| embeds.text_hidden(message, cx)));

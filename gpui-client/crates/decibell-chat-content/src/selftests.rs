@@ -7,7 +7,7 @@
 //! do stays on the stack: the GIF upload is deleted again, the link and invite messages are routed
 //! into the client only, nothing is joined.
 
-use std::io::{BufRead as _, Read as _, Write as _};
+use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -360,16 +360,25 @@ async fn check_cache_bound(cx: TestCx) -> Result<()> {
     cx.update(|_, cx| actions::servers::go_home(cx))?;
     cx.settle().await?;
     cx.sleep(Duration::from_secs(1)).await;
-    let (decoded, encoded) = cx.update(|_, cx| Pictures::global(cx).map_or((0, 0), |p| p.read(cx).bytes()))?;
+    let (decoded, encoded, unpinned, (ready, count)) = cx.update(|_, cx| {
+        Pictures::global(cx).map_or((0, 0, 0, (0, 0)), |p| {
+            let p = p.read(cx);
+            (p.bytes().0, p.bytes().1, p.unpinned_bytes(), p.ready_bytes())
+        })
+    })?;
     let left = private_mb();
     cx.log(format_args!(
-        "private memory: {baseline:.1} MB before, {scrolled:.1} MB scrolled, {left:.1} MB after leaving (caches: decoded {} KB ≤ {} KB, encoded {} KB ≤ {} KB)",
-        decoded / 1024,
+        "private memory: {baseline:.1} MB before, {scrolled:.1} MB scrolled, {left:.1} MB after leaving; caches after leaving: {count} pictures decoded, {} KB ({} KB no list wants, budget {} KB; running total {} KB), encoded {} KB (budget {} KB)",
+        ready / 1024,
+        unpinned / 1024,
         crate::pictures::DECODED_BUDGET / 1024,
+        decoded / 1024,
         encoded / 1024,
         crate::pictures::ENCODED_BUDGET / 1024
     ));
-    ensure!(decoded <= crate::pictures::DECODED_BUDGET && encoded <= crate::pictures::ENCODED_BUDGET + (8 << 20), "the caches kept more than their budgets");
+    ensure!(unpinned <= crate::pictures::DECODED_BUDGET, "pictures no list wants went past the decoded budget after leaving");
+    ensure!(decoded.abs_diff(ready) < 4096, "the running total of decoded bytes drifted from the entries");
+    ensure!(encoded <= crate::pictures::ENCODED_BUDGET + (8 << 20), "the encoded cache kept more than its budget");
     Ok(())
 }
 
@@ -547,8 +556,10 @@ fn inject(channel: &ChannelId, id: i64, content: &str, cx: &mut App) {
     decibell_model::events::route(&model(cx), event, cx);
 }
 
+#[cfg(feature = "loopback")]
 /// A one-page HTTP server on 127.0.0.1 (a thread that serves until the test ends).
 fn page_server() -> Result<(u16, std::sync::Arc<std::sync::atomic::AtomicBool>)> {
+    use std::io::Write as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -574,11 +585,21 @@ fn page_server() -> Result<(u16, std::sync::Arc<std::sync::atomic::AtomicBool>)>
 }
 
 async fn check_embed(cx: TestCx) -> Result<()> {
+    #[cfg(not(feature = "loopback"))]
+    {
+        cx.log("SKIP: this build has no loopback unfurler (build with --features dev-local)");
+        Ok(())
+    }
+    #[cfg(feature = "loopback")]
+    embed_with_loopback(cx).await
+}
+
+#[cfg(feature = "loopback")]
+async fn embed_with_loopback(cx: TestCx) -> Result<()> {
     let (channel, list) = open_channel(&cx, "off-topic").await?;
     let (port, stop) = page_server()?;
     // The unfurler that may reach 127.0.0.1 (this build's `loopback` feature), on the core's runtime.
     cx.update(|_, cx| {
-        #[cfg(feature = "loopback")]
         {
             let previews = std::sync::Arc::new(decibell_unfurl::LinkPreviews::loopback("selftest"));
             let unfurler: decibell_model::chat::link_previews::Unfurler = std::rc::Rc::new(move |url: gpui::SharedString, cx: &mut App| {
@@ -591,13 +612,7 @@ async fn check_embed(cx: TestCx) -> Result<()> {
             });
             model(cx).chat.link_previews.update(cx, |m, _| m.set_unfurler(unfurler));
         }
-        let _ = cx;
     })?;
-    #[cfg(not(feature = "loopback"))]
-    {
-        cx.log("SKIP: this build has no loopback unfurler (build with --features dev-local)");
-        return Ok(());
-    }
     let id = 9_000_000_001;
     let url = format!("http://127.0.0.1:{port}/page");
     let content = format!("Look: {url}");
