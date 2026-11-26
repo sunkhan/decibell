@@ -102,8 +102,15 @@ control is a tab stop and Enter / Space activate it; `decibell_ui::init` binds T
   `ScrollHandle::new()` (`scroll_to`, `scroll_to_bottom`, `scroll_into_view(top, height, ScrollAlign)`,
   `is_at_bottom`, `shift`); `scroll::ScrollAnimator` (the pure model, for the message list's own element).
 - Buttons: `Button::new(id, "Save changes").variant(ButtonVariant::Danger).size(ButtonSize::Sm).icon(…)
-  .loading(saving).disabled(…).full_width().on_click(…)`; `IconButton::new(id, IconName::Close).small()`;
-  `LinkButton::new(id, "Undo")` (`.recolor()`: the menu idiom); `Spinner::new().size(px(20.))`.
+  .loading(saving).disabled(…).full_width().on_click(…)`; variants `Primary`, `Secondary`, `Ghost`, `Danger`,
+  `DangerSoft`, `DangerOutline`, `Soft`, `Outline` (`rounded-sm border-border text-secondary`, border
+  `accent/40` on hover: Record again, Test mic) and `QuietOutline` (the same with `hover:bg-surface-hover`:
+  E2eeSection's buttons); sizes `Lg` (`px-5 py-2.5`, 13 px: Log Out), `Md`, `Sm`, `Xs` (`px-2 py-0.5`,
+  12 px); `.rounded_sm()` where a variant's `rounded-md` is `rounded-sm` in the TSX (a device's Sign out);
+  `.probe(key)` for the self-tests (`decibell_harness::probes`). `button.rs`'s table maps each to its
+  classes. `IconButton::new(id, IconName::Close).small()`; `LinkButton::new(id, "Undo")` (`.recolor()`: the
+  menu idiom); `Spinner::new().size(px(20.))`. A hover colour that transitions on an element of your own:
+  `Hover::new(window, cx, id, Some(Transition::TAILWIND))` (`progress`, `listener()`).
 - Forms: `Switch::new(id, on).on_toggle(…)`; `Checkbox::new(id, on).label("…")`;
   `SegmentedControl::new(id, vec![Segment::new(v, "Low"), …], selected).on_change(…)`;
   `Slider::new(id, value, min, max).step(10.).fill().ticks([…]).on_change(…).on_commit(…)`;
@@ -111,22 +118,27 @@ control is a tab stop and Enter / Space activate it; `decibell_ui::init` binds T
   groups)` (`.size(SelectSize::Sm)`, `.variant(SelectVariant::Sunken)`, `.placeholder(…)`, `.icon(…)`,
   `.track(&SelectHandle::new(cx))` to open / inspect it from code); `Field::new("Label").hint(…)
   .error(…).child(control)` (`Field::plain` for dialogs); `TextField::new(id).editor(&state).error(…)
-  .leading_icon(…).disabled(…)` with `state: Entity<decibell_text::input::InputState>` made once by the view
+  .leading_icon(…).disabled(…).variant(TextFieldVariant::Dialog)` (the form dialogs' `bg-bg-dark rounded-sm
+  py-2` box) or `TextFieldVariant::Compact` (Network's `w-28 bg-bg-mid px-2.5 py-1.5 text-[12px]`), with
+  `state: Entity<decibell_text::input::InputState>` made once by the view
   (`InputState::single_line(window, cx).placeholder(…).max_bytes(64)`, `password`, `multi_line`, `composer`;
   read `value()`, subscribe to `InputEvent::{Change, Submit, Escape}`); a multi-line state grows the field to
   `.max_height(px)` and then scrolls. `crates/decibell-text/README.md` "Inputs" has the whole API; live:
   `decibell --screen inputs`.
 - Overlays: `Modal::new(id, open).on_close(|request: &CloseRequest, …| …).child(dialog_card(400., cx)…)`
-  (render it open or not; content must `.occlude()`; refuse a close by not closing);
+  (render it open or not; content must `.occlude()`; refuse a close by not closing; `.on_enter(…)`: Enter
+  anywhere in it before the focused control, as a document listener; `.within(region, radius)`: dim and
+  centre in a region, `settings::dialog_region` for a dialog the renderer draws inside a settings window);
   `ConfirmModal::new(id, open, "Delete message", "Delete").message(…).tone(…).busy(…).on_confirm(…)
-  .on_cancel(…)`; `ContextMenu::new(id, point).entry(MenuItem::new("Kick").icon(…).danger())
+  .on_cancel(…)` (Enter confirms as it opens and with Cancel focused; Space activates the focused button;
+  `kit-confirm`); `ContextMenu::new(id, point).entry(MenuItem::new("Kick").icon(…).danger())
   .entry(MenuEntry::Separator).on_dismiss(…)` (`MenuEntry::Label`, `Custom`, `MenuItem::checked`,
   `expander`, `keep_open`); `Popover::new(id, point).child(…)`; `place_menu(…)` / `Placed` for your own
   layer; `Tooltip::new(id, "Audio", bounds).shown(hovered)` (the settings rail's label) and
   `title_tooltip("…")` for GPUI's `.tooltip(…)`; `Toasts::push(cx, Toast::error("…").body(…).action(…))`
   with one `ToastStack::new()` in the **root** view (not inside a cached view).
 - Structure: `SettingsWindow::new(id, open, &scroll).nav_label(…).item(NavItem::new(id, icon, "Audio")
-  .active(…).dot(dirty)).foot_item(…).title(…).context(…).on_close(…).child(tab)` (folds to the 64 px rail
+  .active(…).dot(dirty).probe(key)).foot_item(…).title(…).context(…).on_close(…).child(tab)` (folds to the 64 px rail
   below 1024 px); `SaveBar::new(id, &pane_scroll, dirty, nudge).saving(…).on_reset(…).on_save(…)` (bump
   `nudge` on a refused leave: it shakes); `SectionLabel::new(…)`, `Heading::new(…)`, `divider(cx)`,
   `Badge::new(…).tone(BadgeTone::…)`, `Notice::error(…)`, `ErrorCard::new(id, …)`, `EmptyState::new(icon,
@@ -238,7 +250,8 @@ opens):
   snapshot with `Tokens`' field names; shadows are read from `cx.theme()` where drawn).
 - **Self-tests that need a signed-in app** run it as a child: `decibell --check <name> --login perf1`
   (`decibell_shell::checks()`; a binary with `dev-local`), with its own profile and `DECIBELL_TEST_PROBES=1`,
-  which makes `crate::probes::probe(key)` record where elements are so the check can click them.
+  which makes `decibell_harness::probes::probe(key)` (also `decibell_shell::probes`) record where elements
+  are so the check can click them (the kit's `Button` and `NavItem` take `.probe(key)`).
 
 ## Chat (`decibell-chat`)
 
@@ -404,13 +417,26 @@ avatar editor subscribes and opens over Settings).
   is Network's typed custom speed (applied on Enter or blur): while it is unapplied the tab shows the
   `SaveBar` and leaving (Esc, ✕, the backdrop, another tab) shakes it (`TabView::dirty` / `nudge`). A new
   drafted field: make the tab's `dirty()` say so and give it a `SaveBar`; the window does the rest.
-- **Dates, times of day and counts** go through `fmt.rs` only (en-US for now; the system's regional
-  format through `decibell_model::regional` replaces its bodies). Automatic time format means the
-  system's regional setting (the renderer said "system language").
-- **Text fields** are drawn by `fields.rs` (`Input` + `InputBox`: the dialogs' `bg-bg-dark rounded-sm` look
-  and Network's compact box, which the kit's `TextField` doesn't have). Until `decibell-text`'s editor is
-  wired, the views hold the text and the self-tests set it (`set_fields`, `set_rename_fields`,
-  `set_custom_text`); wiring the editor changes `fields.rs` only.
+- **Dates, times of day and counts** come from `decibell_model::regional` (Devices' "Last active" is
+  `relative`, "Signed in" `medium_date`, counts `group`; Appearance's sample is `time(14, 32, pref)`).
+  Automatic time format means the system's regional setting (the renderer said "system language"), and
+  the Appearance tab says so with the system's real time.
+- **Text fields** are `decibell_text`'s editor (`InputState`, passwords `InputState::password`) in the
+  kit's `TextField`: `TextFieldVariant::Dialog` in the rename, change-password and passphrase dialogs
+  (`dialogs::field`), `Compact` for Network's custom speed (`accept(numeric)`, as `type="number"`). Enter
+  in a dialog's input submits (`dialogs::submit_on_enter`), Enter on a focused button presses it; the
+  rename field lower-cases as typed and holds 32 characters. Network's box applies on Enter and on blur
+  (`InputEvent::Blur`: a press elsewhere, Tab, the window going to the background), so a draft exists
+  only while it has the focus: Esc then shakes the save bar. Rename and change-password dim the Settings
+  window only, as the renderer's do (`DialogParts::in_settings` → `Modal::within`;
+  `docs/electron-quirks.md` #12).
+- **Keybinds** record with the model's `Recorder` on physical codes (`KeyDownEvent::code`,
+  `ModifiersChangedEvent::key` for a modifier alone and its side): the German key labelled Z records
+  `KeyY`. The app's root feeds the focused fallback (`decibell-app/src/hotkeys.rs`, self-test
+  `hotkeys-focused`).
+- **Log Out** is `actions::auth::log_out` (hangs up a call first, then signs out); the attachment speed
+  caps reach the attachment service through the model (`CoreAttachmentService::set_limits`, at its
+  creation and on every settings change).
 - **Screens** (`--screen settings-…`, `passphrase-*`, `rename-modal`, `password-modal`; `settings-narrow` at
   `--size 900x800`) are the signed-in shell from the shell's fixture plus `decibell_settings::fixture`
   (devices, E2EE states, keybinds with the portal's status, audio devices, codecs, a fixed clock).
@@ -423,7 +449,10 @@ avatar editor subscribes and opens over Settings).
   device). `settings-keybinds-record` runs its child under XWayland: the X11 listener grabs exactly the bound
   combos, where the Wayland portal would open the desktop's confirmation dialog. (Self-tests and screens
   share one namespace: the self-tests that would take a screen's name carry a suffix,
-  `settings-devices-signout`, `settings-keybinds-record`, ….)
+  `settings-devices-signout`, `settings-keybinds-record`, ….) The checks type into the fields
+  (`TestCx::type_text`, `keystroke("tab" | "enter" | "ctrl-a")`), click by probes (the user panel's gear
+  `user-panel-settings`, the tabs `settings-tab:<id>`, the views' own) and record keybinds from events
+  built as xkb's `de` and `tr` keymaps produce them (`KeyCode::Evdev` + what the layout types).
 
 ## Home / DMs / people (`decibell-home`)
 
@@ -544,6 +573,17 @@ image right-click menu, the image viewer, the Transfers panel, and the picture p
     (two lines) gave 0 list frames for 43 keys and halved the key → frame time, with `chat-*`, `shell-navigate`,
     `shell-idle`, `idle-frames` and `themes` passing; not applied (it changes caching for every view).
 12. `img(…)` animates a GIF only when it has an `.id(…)` and only while the window is active.
+13. With nothing focused, GPUI dispatches key and modifier events to the window's root dispatch node only
+    (the root view's element, above every listener a view can register). The app's `Root` therefore holds
+    the focus whenever nothing else does (and takes it back through `on_focus_lost`, of which a window has
+    one): its listeners (the focused hotkey fallback, Tab) see every key. A test window of your own that
+    needs keys focuses something first.
+14. Focus changes reach their listeners (`on_focus`, `on_blur`, `InputEvent::Blur`) when the window next
+    draws, and a mouse event is dispatched to the frame last drawn while a key event draws a pending frame
+    first. A self-test that presses and releases with no frame between sees the release handled before the
+    blur, and a click right after a change can reach the old frame's handlers (a window in the background
+    may not draw on its own): draw what is pending first (`draw_pending` in `decibell-settings`'
+    self-tests: a modifiers event that names no key) and put one between press and release.
 
 ## Voice (`decibell-voice`)
 
