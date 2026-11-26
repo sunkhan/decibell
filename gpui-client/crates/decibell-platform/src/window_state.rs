@@ -5,10 +5,12 @@
 //! - **Position** only where the platform lets an application place its window: X11 and Windows.
 //!   Wayland's compositor places windows itself: no position is saved or asked for there.
 //! - **Which bounds**: what reopens the same window (`current`): Wayland's `window_bounds`, X11's
-//!   `inner_window_bounds`. A maximised window keeps the windowed size it came from. X11 (KWin):
-//!   a window *opened* maximised comes back from it within the client-side margin (20 px) of the
-//!   saved size, depending on when KWin learns the margin (`_GTK_FRAME_EXTENTS`) relative to the
-//!   maximise; measured 980 and 1020 for a saved 1000.
+//!   `inner_window_bounds`. A maximised window keeps the windowed size it came from.
+//! - **X11 (KWin) and the client-side margin**: KWin learns the margin (`_GTK_FRAME_EXTENTS`) only
+//!   after the window is mapped, and depending on the order the window comes up (or back from
+//!   maximised) at its size or 20 px smaller. Corrected once: the saved size when the window first
+//!   becomes active, the size it had when it comes back from maximised (each a single `resize`, no
+//!   timer); without that the window shrank by 20 px on some starts, and kept shrinking.
 //! - **Off every screen** (a monitor that is gone): the saved place is dropped and the window opens
 //!   centred, as on a first start; a size larger than every screen is shrunk to the largest.
 //! - **Saving without a timer**: every move or resize updates the state in memory (cheap); the file
@@ -164,6 +166,10 @@ pub struct Tracker {
     /// (`_NET_WM_STATE` client messages count only for mapped windows): asked again once the
     /// window is active.
     maximize_when_active: bool,
+    /// X11: the visible size a restored window must have; checked once the window is active,
+    /// because KWin can map it 20 px smaller (it learns the client-side margin only after the
+    /// window is mapped: `HANDOFF.md` §5).
+    size_when_active: Option<Size<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -183,7 +189,7 @@ impl Tracker {
         }
     }
 
-    fn moved(&mut self, window: &Window) {
+    fn moved(&mut self, window: &mut Window) {
         let Some(mut now) = current(window, self.place) else { return };
         let before = self.latest.or(self.written);
         // A maximised window keeps the size and place it had before (X11 reports the maximised
@@ -192,6 +198,21 @@ impl Tracker {
             && let Some(before) = before
         {
             now = Saved { maximized: true, ..before };
+        }
+        // X11 (KWin): coming back from maximised, the window can land 20 px off the size it had
+        // (the client-side margin): put it back to that size once.
+        if self.place
+            && cfg!(any(target_os = "linux", target_os = "freebsd"))
+            && let Some(before) = before
+            && before.maximized
+            && !now.maximized
+            && ((now.width - before.width).abs() > 0. || (now.height - before.height).abs() > 0.)
+            && (now.width - before.width).abs() <= 20.
+            && (now.height - before.height).abs() <= 20.
+        {
+            window.resize(decibell_ui::outer_window_size(size(px(before.width), px(before.height))));
+            now.width = before.width;
+            now.height = before.height;
         }
         self.latest = Some(now);
         if before.is_some_and(|b| b.maximized != now.maximized) {
@@ -211,8 +232,17 @@ pub fn track(window: &mut Window, profile: PathBuf, cx: &mut App) -> gpui::Entit
         let activation = cx.observe_window_activation(window, |this, window, _| {
             if !window.is_window_active() {
                 this.write_if_changed();
-            } else if std::mem::take(&mut this.maximize_when_active) && !window.is_maximized() {
-                window.zoom_window();
+            } else {
+                if std::mem::take(&mut this.maximize_when_active) && !window.is_maximized() {
+                    window.zoom_window();
+                }
+                if let Some(wanted) = this.size_when_active.take()
+                    && !window.is_maximized()
+                    && let WindowBounds::Windowed(inner) = window.inner_window_bounds()
+                    && inner.size != wanted
+                {
+                    window.resize(decibell_ui::outer_window_size(wanted));
+                }
             }
         });
         let quitting = cx.on_app_quit(|this, _| {
@@ -225,8 +255,18 @@ pub fn track(window: &mut Window, profile: PathBuf, cx: &mut App) -> gpui::Entit
                 weak.update(cx, |this, _| this.write_if_changed()).ok();
             }
         });
-        let maximize_when_active = place && cfg!(any(target_os = "linux", target_os = "freebsd")) && written.is_some_and(|w| w.maximized);
-        let mut tracker = Tracker { profile, place, latest: None, written, maximize_when_active, _subscriptions: vec![bounds, activation, quitting, closing] };
+        let x11 = place && cfg!(any(target_os = "linux", target_os = "freebsd"));
+        let maximize_when_active = x11 && written.is_some_and(|w| w.maximized);
+        let size_when_active = written.filter(|w| x11 && !w.maximized).map(|w| size(px(w.width), px(w.height)));
+        let mut tracker = Tracker {
+            profile,
+            place,
+            latest: None,
+            written,
+            maximize_when_active,
+            size_when_active,
+            _subscriptions: vec![bounds, activation, quitting, closing],
+        };
         tracker.moved(window);
         tracker
     })

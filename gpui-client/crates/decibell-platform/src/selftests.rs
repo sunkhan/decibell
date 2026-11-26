@@ -1161,10 +1161,8 @@ async fn window_state_test(cx: TestCx) -> Result<()> {
         cx.log(format_args!("{session}: {}", restored.join("; ")));
         ensure!(restored.iter().any(|l| l == "opened maximized"), "{session}: not maximised at start");
         let third = saved().context("nothing saved")?;
-        // X11 (KWin): within the client-side margin (window_state's module doc).
-        let slack = if session == "x11" { 20. } else { 0. };
         ensure!(
-            !third.maximized && (third.width - first.width).abs() <= slack && (third.height - first.height).abs() <= slack,
+            !third.maximized && third.width == first.width && third.height == first.height,
             "{session}: unmaximised to {third:?}, expected {first:?}"
         );
         if session == "x11" {

@@ -521,7 +521,7 @@ building). Every self-test runs the app as children with throwaway profiles on a
 | `attention` | erin (`decibell-headless`) calls dave (the app, unfocused): the window asks for attention and KWin reports `demandsAttention` within ~0.5 s (the KWin query's own time), on Wayland (patch `0017`) and XWayland (the urgency hint); under Do Not Disturb the call rings in and no request is made |
 | `taskbar-progress` | `dbus-monitor` on the private bus sees `Update("application://decibell.desktop", …)` with progress 0 → 0.25 → 0.5 → 0.5 (paused: the protocol has no paused state) → hidden, then 0.1 → hidden for an upload; closing with that upload in flight asks and keeps the window, and closes once nothing uploads |
 | `keyring-label` | a throwaway gnome-keyring on the private bus holds the at-rest key's item and a test item labelled `Decibell` (patch `0016`); read and delete find them |
-| `window-state` | Wayland: resized to 1020 × 720 → quit → reopened at 1020 × 720; maximised → reopened maximised → unmaximised to 1020 × 720. X11: the same with the visible size (1000 × 700; within the 20 px margin after a maximised start, §5), and a saved place at 100000,100000 reopens on a screen |
+| `window-state` | Wayland: resized to 1020 × 720 → quit → reopened at 1020 × 720; maximised → reopened maximised → unmaximised to 1020 × 720. X11: the same with the visible size (1000 × 700, exact after the one-time correction of §5), and a saved place at 100000,100000 reopens on a screen |
 | `profile-guard` | with `HOME` a temporary directory and no `DECIBELL_USER_DATA_DIR`, the app and `decibell-headless` use `~/.cache/decibell-dev/gpui-default`; pointed at `~/.config/decibell` both exit 2 and create nothing; the real `~/.config/decibell` never appears |
 | `content-copy-image` | Wayland and X11 each: three pictures copied with "Copy image" (a 1600 × 900 PNG, 313 KB; a GIF's first frame, 46 KB; 2.8 MB of noise) offered as `image/png` only (no text types), read back by another process (`wl-paste`; `tools/x11_clipboard.py`, INCR for the 2.8 MB) after the window lost the focus, pixels identical; on Wayland a `wl-paste --watch` reader (a clipboard manager's way) got each at once; the owner's clipboard read before and put back after (through Klipper), checked |
 
@@ -893,9 +893,11 @@ and 941 → 873 µs; a message arriving 3.0 → 2.0 views and no time difference
   `gpui_windows` patch: add a `CF_DIBV5` beside the PNG).
 - **X11 (KWin) window geometry with client-side decorations is racy**: a window opened at a given size comes up with
   its visible size equal to it or 20 px smaller (the margin), depending on whether KWin learns `_GTK_FRAME_EXTENTS`
-  before it maps the window (measured: 1300 → 1300, 1280 → 1260 on first starts; a restored size round-trips, and a
-  window opened maximised restores within 20 px). `window-state` passes with that tolerance for the maximised case.
-  The fix belongs in `gpui_linux` (set the extents before mapping); not done.
+  before it maps the window (measured: 1300 → 1300, 1280 → 1260 on first starts; 1000 → 980 on some restores, also
+  when coming back from a window opened maximised). `window_state` corrects a restored window once (at its first
+  activation, and when it comes back from maximised), so saved sizes no longer shrink (`window-state` passes exactly,
+  4 runs in a row); a first start without a saved state can still be 20 px off. The real fix belongs in `gpui_linux`
+  (set the extents before mapping); not done.
 - **The launcher progress is keyed to `decibell.desktop`**, the id of the window (`app_id`). On this machine that
   desktop file is the installed Electron client's, so a development build's progress (any self-test child on the
   session bus with a download running) would show on its taskbar entry; the platform's own tests use a private bus.
