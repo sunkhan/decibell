@@ -45,7 +45,7 @@ const FONT: [[u8; 7]; 36] = [
     [0x11,0x11,0x11,0x0A,0x04,0x04,0x04], [0x1F,0x01,0x02,0x04,0x08,0x10,0x1F],
 ];
 
-fn hash(a: u32, b: u32) -> u32 {
+pub(super) fn hash(a: u32, b: u32) -> u32 {
     let mut x = a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA6B) ^ 0x2545_F491;
     x ^= x >> 15;
     x = x.wrapping_mul(0x2C1B_3C6D);
@@ -56,7 +56,7 @@ fn hash(a: u32, b: u32) -> u32 {
 /// Draw one glyph at (`x`, `y`) of a `stride`-wide BGRA buffer, `scale`
 /// pixels a font pixel, clipped to `w`×`h`.
 #[allow(clippy::too_many_arguments)]
-fn glyph(buf: &mut [u8], stride: usize, w: usize, h: usize, x: usize, y: usize, scale: usize, g: usize, bgr: [u8; 3]) {
+pub(super) fn glyph(buf: &mut [u8], stride: usize, w: usize, h: usize, x: usize, y: usize, scale: usize, g: usize, bgr: [u8; 3]) {
     for (row, bits) in FONT[g % FONT.len()].iter().enumerate() {
         for col in 0..5 {
             if bits & (0x10 >> col) == 0 {
@@ -444,12 +444,36 @@ pub enum DecodeError {
     Failed(String),
 }
 
+/// A decoded 4:2:0 picture and the colour description its bitstream
+/// carries (FFmpeg's `AVCOL_*` numbers, which are the H.273 code points:
+/// 1 = BT.709, 2 = unspecified, 5 / 6 = BT.601; range 1 = studio, 2 = full).
+pub struct Picture<'a> {
+    pub index: usize,
+    pub w: usize,
+    pub h: usize,
+    /// Y, U, V; chroma is (w+1)/2 × (h+1)/2.
+    pub planes: [&'a [u8]; 3],
+    pub strides: [usize; 3],
+    pub matrix: i32,
+    pub primaries: i32,
+    pub transfer: i32,
+    pub range: i32,
+}
+
 /// Decode `packets` with FFmpeg's software decoder (h264, hevc, libdav1d)
 /// and hand each picture's luma to `on_frame(index, y, stride, width,
 /// height)`. Any decode error fails; the caller compares the count.
 pub fn decode<F>(codec: CodecKind, framing: Framing, packets: &[Packet], mut on_frame: F) -> Result<usize, DecodeError>
 where
     F: FnMut(usize, &[u8], usize, u32, u32),
+{
+    decode_pictures(codec, framing, packets, |p| on_frame(p.index, p.planes[0], p.strides[0], p.w as u32, p.h as u32))
+}
+
+/// `decode`, with the whole picture and its colour description.
+pub fn decode_pictures<F>(codec: CodecKind, framing: Framing, packets: &[Packet], mut on_frame: F) -> Result<usize, DecodeError>
+where
+    F: FnMut(&Picture),
 {
     ff::init().map_err(|e| DecodeError::Failed(e.to_string()))?;
     let name = match codec {
@@ -487,7 +511,26 @@ where
         loop {
             match decoder.receive_frame(&mut frame) {
                 Ok(()) => {
-                    on_frame(*count, frame.data(0), frame.stride(0), frame.width(), frame.height());
+                    use ff::format::Pixel;
+                    if !matches!(frame.format(), Pixel::YUV420P | Pixel::YUVJ420P) {
+                        return Err(DecodeError::Failed(format!("decoded as {:?}, not 8-bit 4:2:0", frame.format())));
+                    }
+                    let (matrix, primaries, transfer, range) = unsafe {
+                        let f = frame.as_ptr();
+                        ((*f).colorspace as i32, (*f).color_primaries as i32, (*f).color_trc as i32, (*f).color_range as i32)
+                    };
+                    on_frame(&Picture {
+                        index: *count,
+                        w: frame.width() as usize,
+                        h: frame.height() as usize,
+                        planes: [frame.data(0), frame.data(1), frame.data(2)],
+                        strides: [frame.stride(0), frame.stride(1), frame.stride(2)],
+                        matrix,
+                        primaries,
+                        transfer,
+                        // yuvj420p is full range whatever the field says.
+                        range: if frame.format() == Pixel::YUVJ420P { 2 } else { range },
+                    });
                     *count += 1;
                 }
                 Err(ff::Error::Other { errno }) if errno == ff::error::EAGAIN => return Ok(()),
@@ -508,6 +551,121 @@ where
     decoder.send_eof().map_err(|e| DecodeError::Failed(format!("send_eof: {e}")))?;
     drain(&mut decoder, &mut count)?;
     Ok(count)
+}
+
+/// The YCbCr matrix a description names, as a receiver reads it: BT.601
+/// for code points 5 / 6, BT.709 for 1 and for "unspecified" on an HD
+/// picture (what Chromium and the GPUI client's decoder assume).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Matrix {
+    Bt601,
+    Bt709,
+}
+
+impl Matrix {
+    pub fn of(code: i32, height: usize) -> Matrix {
+        match code {
+            5 | 6 => Matrix::Bt601,
+            1 => Matrix::Bt709,
+            _ if height < 720 => Matrix::Bt601,
+            _ => Matrix::Bt709,
+        }
+    }
+
+    /// (Kr, Kb).
+    fn k(self) -> (f64, f64) {
+        match self {
+            Matrix::Bt601 => (0.299, 0.114),
+            Matrix::Bt709 => (0.2126, 0.0722),
+        }
+    }
+
+    /// Full-range R'G'B' to 8-bit Y'CbCr, unrounded (studio range unless `full`).
+    pub fn to_yuv(self, rgb: [f64; 3], full: bool) -> [f64; 3] {
+        let (kr, kb) = self.k();
+        let y = kr * rgb[0] + (1.0 - kr - kb) * rgb[1] + kb * rgb[2];
+        let (cb, cr) = ((rgb[2] - y) / (2.0 * (1.0 - kb)), (rgb[0] - y) / (2.0 * (1.0 - kr)));
+        if full {
+            [y, 128.0 + cb, 128.0 + cr]
+        } else {
+            [16.0 + y * 219.0 / 255.0, 128.0 + cb * 224.0 / 255.0, 128.0 + cr * 224.0 / 255.0]
+        }
+    }
+
+    /// 8-bit Y'CbCr back to full-range R'G'B', unclamped.
+    pub fn to_rgb(self, yuv: [f64; 3], full: bool) -> [f64; 3] {
+        let (kr, kb) = self.k();
+        let (y, cb, cr) = if full {
+            (yuv[0], yuv[1] - 128.0, yuv[2] - 128.0)
+        } else {
+            ((yuv[0] - 16.0) * 255.0 / 219.0, (yuv[1] - 128.0) * 255.0 / 224.0, (yuv[2] - 128.0) * 255.0 / 224.0)
+        };
+        let r = y + 2.0 * (1.0 - kr) * cr;
+        let b = y + 2.0 * (1.0 - kb) * cb;
+        let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+        [r, g, b]
+    }
+}
+
+/// What a correct conversion of a BGRA frame gives: tightly packed Y, and
+/// U / V averaged over each 2×2 block (chroma sited in the block's middle;
+/// an encoder that sites it elsewhere differs slightly on hard colour
+/// edges, the same for every setting of that encoder).
+pub fn reference_yuv(bgra: &[u8], stride: usize, w: usize, h: usize, matrix: Matrix, full: bool) -> [Vec<u8>; 3] {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let mut y = vec![0u8; w * h];
+    let mut sums = vec![[0f32; 2]; cw * ch];
+    for row in 0..h {
+        let src = &bgra[row * stride..][..w * 4];
+        for (x, px) in src.chunks_exact(4).enumerate() {
+            let yuv = matrix.to_yuv([px[2] as f64, px[1] as f64, px[0] as f64], full);
+            y[row * w + x] = yuv[0].round().clamp(0.0, 255.0) as u8;
+            let c = &mut sums[(row / 2) * cw + x / 2];
+            c[0] += yuv[1] as f32;
+            c[1] += yuv[2] as f32;
+        }
+    }
+    let mut u = vec![0u8; cw * ch];
+    let mut v = vec![0u8; cw * ch];
+    for cy in 0..ch {
+        for cx in 0..cw {
+            // Blocks on an odd right / bottom edge hold fewer pixels.
+            let n = ((w - cx * 2).min(2) * (h - cy * 2).min(2)) as f32;
+            let c = sums[cy * cw + cx];
+            u[cy * cw + cx] = (c[0] / n).round().clamp(0.0, 255.0) as u8;
+            v[cy * cw + cx] = (c[1] / n).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    [y, u, v]
+}
+
+/// A decoded picture as the RGB a viewer sees (chroma bilinearly
+/// upsampled, the stream's own matrix and range), tightly packed RGB24.
+pub fn picture_rgb(p: &Picture) -> Vec<u8> {
+    let matrix = Matrix::of(p.matrix, p.h);
+    let full = p.range == 2;
+    let (cw, ch) = (p.w.div_ceil(2), p.h.div_ceil(2));
+    let chroma = |plane: usize, x: usize, y: usize| -> f64 {
+        // Sample position in chroma coordinates, sited mid-block.
+        let fx = ((x as f64 - 0.5) / 2.0).clamp(0.0, (cw - 1) as f64);
+        let fy = ((y as f64 - 0.5) / 2.0).clamp(0.0, (ch - 1) as f64);
+        let (x0, y0) = (fx as usize, fy as usize);
+        let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
+        let (ax, ay) = (fx - x0 as f64, fy - y0 as f64);
+        let at = |xx: usize, yy: usize| p.planes[plane][yy * p.strides[plane] + xx] as f64;
+        (at(x0, y0) * (1.0 - ax) + at(x1, y0) * ax) * (1.0 - ay) + (at(x0, y1) * (1.0 - ax) + at(x1, y1) * ax) * ay
+    };
+    let mut rgb = vec![0u8; p.w * p.h * 3];
+    for y in 0..p.h {
+        for x in 0..p.w {
+            let yuv = [p.planes[0][y * p.strides[0] + x] as f64, chroma(1, x, y), chroma(2, x, y)];
+            let c = matrix.to_rgb(yuv, full);
+            for i in 0..3 {
+                rgb[(y * p.w + x) * 3 + i] = c[i].round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    rgb
 }
 
 #[cfg(test)]

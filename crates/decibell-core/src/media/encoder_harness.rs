@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 
 use super::caps::CodecKind;
 use super::encoder_backend::{self as backend, Backend, Os};
-use super::encoder_checks::{check_packets, decode, psnr, ssim, DecodeError, Expect, Framing, Packet, Screen};
+use super::encoder_checks::{
+    check_packets, decode, decode_pictures, psnr, reference_yuv, ssim, DecodeError, Expect, Framing, Matrix, Packet, Screen,
+};
 use super::encoder_linux::{EncodedFrame, EncoderConfig, EncoderTarget, H264Encoder};
 
 struct Run {
@@ -145,16 +147,21 @@ fn quality(r: &Run, out: &Output, every: usize) -> Result<Option<(usize, f64, f6
     let (w, h) = (r.width as usize, r.height as usize);
     let (mut sum_psnr, mut sum_ssim, mut worst, mut compared) = (0.0, 0.0, f64::MAX, 0usize);
     let mut size_error = None;
-    let decoded = decode(r.codec, framing(r.codec), &out.packets, |i, y, stride, fw, fh| {
-        if fw != r.width || fh != r.height {
-            size_error = Some(format!("decoded {fw}x{fh}, encoded {}x{}", r.width, r.height));
+    let decoded = decode_pictures(r.codec, framing(r.codec), &out.packets, |p| {
+        let (i, y, stride) = (p.index, p.planes[0], p.strides[0]);
+        if p.w != w || p.h != h {
+            size_error = Some(format!("decoded {}x{}, encoded {}x{}", p.w, p.h, r.width, r.height));
             return;
         }
         if !compare || i % every != 0 {
             return;
         }
         screen.render(i as u32, &mut picture);
-        let reference = screen.luma(&picture);
+        // The source's luma under the matrix and range the stream itself
+        // declares, which is what a viewer's decoder undoes. (This compared
+        // against BT.709 luma whatever the stream said, and NVENC's BGRA
+        // conversion is BT.601: every coloured pixel counted as an error.)
+        let [reference, _, _] = reference_yuv(&picture, screen.stride, w, h, Matrix::of(p.matrix, p.h), p.range == 2);
         let mut got = vec![0u8; w * h];
         for row in 0..h {
             got[row * w..][..w].copy_from_slice(&y[row * stride..][..w]);
@@ -243,12 +250,13 @@ fn sound(b: Backend, codec: CodecKind) -> Result<Option<String>, String> {
         forced_at: r.forced_at.clone(),
         forced_within: 2,
         // Over 5 s a CBR encoder stays within a few percent above its
-        // target (measured here: NVENC +1%, SVT-AV1 under it).
+        // target (measured here: NVENC under it, SVT-AV1 under it).
         max_overshoot: 0.15,
         // Well under what any of them reaches on a screen that changes
-        // every frame (measured: h264_nvenc 100%, av1_nvenc 101%,
-        // hevc_nvenc with its `tune=ll` 56%, SVT-AV1 about 90%): this only
-        // catches rate control that is not working at all.
+        // every frame (measured: h264_nvenc 96%, av1_nvenc 96%, hevc_nvenc
+        // 90%, SVT-AV1 75%; hevc_nvenc was at 56% in a single pass): this
+        // only catches rate control that is not working at all. The NVENC
+        // streams are held to 10% either way in encoder_bench.rs.
         min_share: 0.3,
     };
     let summary = check_packets(&out.packets, &expect).map_err(|e| format!("{name}: {e}"))?;
@@ -258,11 +266,11 @@ fn sound(b: Backend, codec: CodecKind) -> Result<Option<String>, String> {
             if n != frames {
                 return Err(format!("{name}: {frames} frames encoded, {n} decoded"));
             }
-            // 3 Mbps is tight for a page of text scrolling at 720p: the
-            // encoders here average 28 to 38 dB, and a keyframe squeezed
-            // into the four-frame buffer dips to 16 to 20. A corrupt or
-            // misplaced picture, or the wrong byte order, is far below
-            // these.
+            // 3 Mbps is tight for a page of text scrolling at 720p with a
+            // keyframe every 2 s: NVENC averages 34 to 41 dB here, and a
+            // keyframe squeezed into the 133 ms buffer dips to 18 to 21. A
+            // corrupt or misplaced picture, or the wrong byte order, is
+            // far below these.
             if mean < 22.0 || s < 0.80 || worst < 12.0 {
                 return Err(format!(
                     "{name}: decoded pictures are PSNR-Y {mean:.1} dB (worst {worst:.1}), SSIM {s:.3} from their source"
