@@ -63,7 +63,9 @@ screens in all seven themes beside Electron's.
 | State model, both halves integrated | done `8ebaa28`: 176 unit tests, 16 stack tests; signed in with `#general` open and 100 users watched: 19.6 MB private, 0.17 wakeups/s; Windows check run 45833447742 green |
 | Text inputs (`decibell_text::input`, `TextField`, `TextArea`) + GPUI patch for physical key codes | in progress, **in the worktree `.worktrees/land` (branch `wip/land`)**: merge that branch when it reports |
 | Message list and rows (`crates/decibell-chat`) | in progress (main tree) |
-| Video crate (`decibell-video`) | in progress (main tree) |
+| Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
+| Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
+| Core: voice idle wakeups and polling, per-packet voice allocations, `FrameBuf` padding, idle / device-change events | in progress, worktree `.worktrees/core-voice` (`wip/core-voice`) |
 | Encoders on every vendor + software fallback (core) | in progress, worktree `.worktrees/core-encoders` (`wip/core-encoders`) |
 | Shell (boot with core + model, sign-in pages, server bar, channel sidebar, user panel, member list; `decibell-common`, `decibell-shell`) | in progress |
 | Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
@@ -78,6 +80,28 @@ screens in all seven themes beside Electron's.
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
 | Packaging, auto-update, crash reports | not started |
+
+## 1a. Worktrees in use (check `git worktree list`; merge or remove each when its work reports)
+
+Parallel work that touches shared code runs in its own git worktree under `.worktrees/`, each on a `wip/*`
+branch that is **never pushed**; finished work is cherry-picked or fast-forwarded onto `gpui-client` after it
+is verified in a clean checkout (the branch head must always build: the Windows job checks it with `--locked`).
+GPUI client worktrees need `gpui-client/vendor/{zed,ffmpeg}` linked from the main tree and their own
+`vendor/gpui-src` (`tools/fetch-gpui.sh`); core worktrees need `electron-client/native/vendor`,
+`electron-client/node_modules`, `electron-client/native/node_modules` and the generated `twemoji-data.json`
+linked (all git-excluded through `.git/info/exclude`).
+
+| Worktree / branch | Work |
+|---|---|
+| `.worktrees/core-encoders` / `wip/core-encoders` | encoders on every vendor + SVT-AV1 software fallback (core) |
+| `.worktrees/core-voice` / `wip/core-voice` | voice wakeups / polling, voice allocations, `FrameBuf` padding (core) |
+| `.worktrees/land` / `wip/land` | text inputs + GPUI patch 0012 (physical key codes) |
+| `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
+| main tree (uncommitted until each reports) | the shell (`decibell-common`, `decibell-shell`, app boot), the message list (`decibell-chat`) |
+
+When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
+clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
+(a mixed reset: it never touches working files).
 
 ## 2. Building and running
 
