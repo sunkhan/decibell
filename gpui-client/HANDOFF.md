@@ -88,16 +88,30 @@ _To be written with the skeleton._ The pin is `gpui-client/GPUI_PIN`; the Zed ch
 
 _The Electron baseline and each phase's numbers against the targets go here._
 
-| Target | Electron 0.9.4 (Linux, this machine) | Target for this client | This client |
+| Target | Electron 0.9.4 (Linux, this machine; **provisional**: the 30 s quick run of 2026-11-26 under load) | Target for this client | This client |
 |---|---|---|---|
-| Install size | 416.8 MB (`/opt/Decibell`, `install-size.sh`) | ≤ 104 MB | — |
-| Idle private memory, busy channel open | _baseline pending (quiet machine)_ | ≤ 1/3 | — |
-| Idle CPU | _pending_ | ≤ 1/10 | — |
-| Idle wakeups, own threads | _pending_ | ≤ 30 / s | — |
-| Frames at idle | _pending_ | 0 | — |
-| Startup to a visible window | _pending_ | ≤ 1/3 | — |
-| Watching 2 streams | _pending (needs the stream bot)_ | CPU ≤ 1/3, GPU ≤ Electron | — |
-| Scrolling the 10k channel | _pending_ | every frame in the refresh interval; 0 px on a history page | — |
+| Idle private memory, `#general` (10k) open, visible, unfocused | 341.7 MB (private dirty 253.4, PSS 476.7, RSS 947.1); minimized 335.6; Home 315.3 | ≤ 1/3: **≤ 114 MB** | — |
+| Idle CPU, same | **14.5 %** of a core visible (the active server tile's glow animates: 276 frames/s); 0.54 % minimized; 0.49 % Home | ≤ 1/10: ≤ 1.45 % visible, ≤ 0.05 % with nothing animating | — |
+| Idle wakeups, own threads | 4,292 / s visible; 4 / s minimized (+ ~210 / s from NVIDIA's unnamed GL threads either way) | ≤ 30 / s | — |
+| Frames at idle | 276 / s visible; 0 minimized | 0 while nothing on screen changes | — |
+| Startup to a visible window (warm, saved sign-in) | 671 ms (settled 1,178 ms) | ≤ 1/3: **≤ 224 ms** | — |
+| Install size | 417.0 MB on disk (`/opt/Decibell`, 80 files) | ≤ 1/4: **≤ 104 MB** | — |
+| Watching 2 streams | _pending (needs the stream bot)_ | CPU ≤ 1/3, GPU ≤ Electron, no frame lost beyond the source's | — |
+| Scrolling the 10k channel, 1000 px/s | frame interval p50 3.60 / p99 3.70 ms, 14 missed vsyncs of 1,680 at 280 Hz | every frame in the refresh interval; 0 px on a history page | — |
+
+Electron runs as an X11 client under XWayland here (as the shipped launcher starts it), packaged with
+`electron-builder --linux dir` from the checkout with the `local-central` addon, on an isolated profile and a
+private session bus (`tools/perf/electron-local.sh`). Take the real baseline on a quiet machine:
+`tools/dev/local-stack.sh up && tools/perf/scenarios.sh electron all` (~24 min) → `tools/perf/results/electron-baseline.md`.
+
+**Electron findings from the baseline work** (for `main`; nothing here was changed in the client):
+- The active server tile's breathing glow (`ActiveTileGlow`, an infinite opacity animation) makes the whole
+  client composite at the display's refresh rate whenever the window is visible: ~15 % of a core and ~4,300
+  wakeups/s at 280 Hz on Linux, where Chromium under XWayland can't tell the window is covered. (On Windows
+  Chromium stops drawing covered windows, which is how the Windows baseline read 0.58 %.)
+- `--password-store=basic` (or any Linux machine without a keyring) leaves the client unable to sign in:
+  `e2eeLocalKey: null` is refused by napi (see §5).
+- The app re-points the `decibell://` handler at `decibell-electron-client.desktop` on every start.
 
 **GPUI hello-world at the pin** (one window, custom title bar, 400 wrapping chat rows; `docs/gpui-notes.md` §13):
 19.3 MB stripped binary (14.1 MB at `opt-level = "s"`); spawn → first frame 141–186 ms; Wayland idle: 0 frames,
@@ -120,4 +134,7 @@ until patched.
 
 Things only the owner can do; nothing here blocks the rest.
 
-- _None yet._
+- **Decide the active-tile glow's behaviour.** In Electron it breathes forever (2.4 s opacity cycle) and costs
+  ~15 % of a core on Linux while the window is visible. This client breathes it only while the window is
+  focused, at a capped frame rate, presenting without re-rendering; unfocused it rests. Say if it should
+  breathe unfocused too (it then draws frames at idle) or not at all.
