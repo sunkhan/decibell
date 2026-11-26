@@ -224,6 +224,9 @@ pub struct RowLayout {
     slots: [(f32, f32); 3],
     media: Vec<MediaBox>,
     sender: Uid,
+    /// The list draws this row's bubble itself for now (the last row's `fadeUp` entrance, with
+    /// an opacity the rows' own paint can't apply): [`Self::paint`] draws only the day divider.
+    pub overlaid: std::cell::Cell<bool>,
 }
 
 const SLOT_ATTACHMENTS: usize = 0;
@@ -535,6 +538,7 @@ impl RowLayout {
             slots,
             media,
             sender: message.sender_uid,
+            overlaid: std::cell::Cell::new(false),
         }
     }
 
@@ -764,36 +768,210 @@ impl RowLayout {
         }
     }
 
-    /// The text a selection from `from` to `to` (both in this row) copies, as displayed.
-    /// `name_line` builds the line for a selected name and time (Chromium's serialisation of
-    /// the header: see `selection.rs`).
-    pub fn copy_text(&self, from: RowPos, to: RowPos, out: &mut String) {
+    /// What a selection from `from` to `to` (both in this row) adds to a copy: what Chromium's
+    /// Ctrl+C serialises from the renderer's DOM for the same selection (measured against the
+    /// Electron client: see [`CopyText`]). The header's name and time and the body are blocks
+    /// of their own; the avatar, the quoted reply line, the day divider and a grouped row's hover
+    /// time are `user-select: none` and copy nothing; "(edited)" and the attachments' text come
+    /// with the body's end.
+    pub fn copy_text(&self, from: RowPos, to: RowPos, out: &mut CopyText) {
         let label_text = |layout: &Rc<Layout>, a: u32, b: u32| -> String {
             let text = layout.paragraph().text();
             let (a, b) = ((a as usize).min(text.len()), (b as usize).min(text.len()));
             text.get(a..b).unwrap_or("").to_string()
         };
-        let mut parts: Vec<String> = Vec::new();
+        out.newlines(1);
         if let (Some(name), true) = (&self.name, from.part == Part::Name) {
             let end = if to.part == Part::Name { to.pos.offset } else { u32::MAX };
-            parts.push(label_text(name, from.pos.offset, end));
+            out.text(&label_text(name, from.pos.offset, end));
+            out.newlines(1);
         }
         if let (Some(time), true) = (&self.time, !self.grouped && from.part <= Part::Time && to.part >= Part::Time) {
             let start = if from.part == Part::Time { from.pos.offset } else { 0 };
             let end = if to.part == Part::Time { to.pos.offset } else { u32::MAX };
-            parts.push(label_text(time, start, end));
+            out.text(&label_text(time, start, end));
+            out.newlines(1);
         }
-        if let (Body::Rich { layout, document }, true) = (&self.body, to.part == Part::Body) {
-            let start = if from.part == Part::Body { from.pos } else { layout.start() };
-            parts.push(layout.copy_text(start, to.pos.min(layout.end()), document, &self.message.content));
-        }
-        // Each part is a block of its own in the renderer's DOM (the header's flex items, the
-        // body's div): Chromium's copy puts a line break between blocks.
-        for part in parts.iter().filter(|part| !part.is_empty()) {
-            if !out.is_empty() {
-                out.push('\n');
+        match (&self.body, to.part == Part::Body) {
+            (Body::Rich { layout, document }, true) => {
+                let start = if from.part == Part::Body { from.pos } else { layout.start() };
+                let end = to.pos.min(layout.end());
+                let text = decibell_richtext::plain::as_copied_range(
+                    document,
+                    &self.message.content,
+                    layout.text_pos(start, document),
+                    layout.text_pos(end, document),
+                );
+                // `<span class="ml-1 select-none">(edited)</span>`: the global `.select-text *`
+                // rule (`!important`) makes it selectable after all; its margin is no space.
+                let edited = self.facts.edited && end >= layout.end();
+                if text.is_empty() {
+                    out.text(if edited { "(edited)" } else { "" });
+                } else {
+                    out.text(&text);
+                    if edited {
+                        out.append("(edited)");
+                    }
+                }
             }
-            out.push_str(part);
+            (Body::Notice { layout }, true) => out.text(&label_text(layout, 0, u32::MAX)),
+            _ => {}
+        }
+        // The attachments come with the end of the row (a selection can't end inside them).
+        if to >= self.resolve(RowPos::END, true) {
+            out.newlines(1);
+            attachments_copy(&self.message, out);
+        }
+    }
+}
+
+/// A copy being written: text with the line breaks between blocks held until more text comes
+/// (Chromium's `TextIterator` writes a block's closing line break only before what follows it,
+/// so a copy never ends in one; a "blank line" is two).
+#[derive(Default)]
+pub struct CopyText {
+    out: String,
+    pending: usize,
+}
+
+impl CopyText {
+    /// At least `count` line breaks before the next text.
+    pub fn newlines(&mut self, count: usize) {
+        self.pending = self.pending.max(count);
+    }
+
+    /// `text` after the held line breaks (nothing for empty text).
+    pub fn text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if !self.out.is_empty() {
+            self.out.extend(std::iter::repeat_n('\n', self.pending));
+        }
+        self.pending = 0;
+        self.out.push_str(text);
+    }
+
+    /// `text` right after what came before, whatever line breaks were held (an inline element).
+    pub fn append(&mut self, text: &str) {
+        self.pending = 0;
+        self.out.push_str(text);
+    }
+
+    pub fn finish(self) -> String {
+        self.out
+    }
+}
+
+/// A whole row's copy, what [`RowLayout::copy_text`] adds for a selection over all of it:
+/// `header` = (the name as shown, the header's time) of a row that opens a group.
+pub fn whole_row_copy(header: Option<(&str, &str)>, message: &Message, edited: bool, out: &mut CopyText) {
+    out.newlines(1);
+    if let Some((name, time)) = header {
+        out.text(name);
+        out.newlines(1);
+        out.text(time);
+        out.newlines(1);
+    }
+    if message.decrypt_error.is_none() && !message.content.is_empty() {
+        let document = decibell_richtext::parse(&message.content, &decibell_richtext::ParseOptions::default());
+        let end = decibell_richtext::plain::TextPos { span: document.spans().len(), offset: 0 };
+        let text = decibell_richtext::plain::as_copied_range(&document, &message.content, decibell_richtext::plain::TextPos { span: 0, offset: 0 }, end);
+        if text.is_empty() {
+            out.text(if edited { "(edited)" } else { "" });
+        } else {
+            out.text(&text);
+            if edited {
+                out.append("(edited)");
+            }
+        }
+    }
+    out.newlines(1);
+    attachments_copy(message, out);
+}
+
+/// JavaScript's `n.toFixed(1)` (ties round up, as the exact decimal value is compared).
+fn to_fixed_1(value: f64) -> String {
+    format!("{:.1}", (value * 10.).round() / 10.)
+}
+
+/// `formatFileSize` (attachmentHelpers.ts).
+pub fn format_file_size(bytes: i64) -> String {
+    let bytes = bytes.max(0) as f64;
+    if bytes < 1024. {
+        format!("{bytes} B")
+    } else if bytes < 1024. * 1024. {
+        format!("{} KB", to_fixed_1(bytes / 1024.))
+    } else if bytes < 1024. * 1024. * 1024. {
+        format!("{} MB", to_fixed_1(bytes / 1024. / 1024.))
+    } else {
+        format!("{} GB", to_fixed_1(bytes / 1024. / 1024. / 1024.))
+    }
+}
+
+/// `formatDuration`: whole seconds, rounded.
+fn format_duration(ms: u32) -> String {
+    let total = (ms as f64 / 1000.).round() as u64;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
+/// The audio card's clock (`fmt`: seconds floored).
+fn format_clock(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0. {
+        return "0:00".into();
+    }
+    format!("{}:{:02}", (seconds / 60.).floor() as u64, (seconds % 60.).floor() as u64)
+}
+
+/// The attachment list's share of a copy (`AttachmentList.tsx` as Chromium serialises it,
+/// measured against the Electron client): the pictures and videos first (their `<img alt>` is
+/// the file name; a video card shows its name and size), a blank line after them (the download
+/// button), then audio cards, documents and purged files in position order.
+pub fn attachments_copy(message: &Message, out: &mut CopyText) {
+    let mut sorted: Vec<&decibell_model::chat::Attachment> = message.attachments.iter().collect();
+    sorted.sort_by_key(|a| a.position);
+    let (media, rest): (Vec<_>, Vec<_>) =
+        sorted.into_iter().partition(|a| a.purged_at == 0 && matches!(a.kind, AttachmentKind::Image | AttachmentKind::Video));
+    for attachment in &media {
+        out.newlines(1);
+        out.text(&attachment.filename);
+        if attachment.kind == AttachmentKind::Video {
+            // The caption's name and size (or "Paused at …" once played; not tracked here).
+            out.newlines(1);
+            out.text(&format_file_size(attachment.size_bytes));
+        }
+    }
+    if !media.is_empty() {
+        out.newlines(2);
+    }
+    for attachment in rest {
+        if attachment.purged_at > 0 {
+            let name = if attachment.filename.is_empty() { "Attachment" } else { &attachment.filename };
+            out.newlines(1);
+            out.text(&format!("{name} (deleted by retention policy)"));
+            continue;
+        }
+        match attachment.kind {
+            AttachmentKind::Audio => {
+                out.newlines(1);
+                out.text(&attachment.filename);
+                out.newlines(1);
+                let size = format_file_size(attachment.size_bytes);
+                if attachment.duration_ms > 0 {
+                    out.text(&format!("{} · {size}", format_duration(attachment.duration_ms)));
+                } else {
+                    out.text(&size);
+                }
+                out.newlines(3);
+                out.text(&format!("0:00 / {}", format_clock(attachment.duration_ms as f64 / 1000.)));
+                out.newlines(2);
+            }
+            _ => {
+                out.newlines(2);
+                out.text(&attachment.filename);
+                out.newlines(1);
+                out.text(&format_file_size(attachment.size_bytes));
+            }
         }
     }
 }
@@ -1007,7 +1185,6 @@ impl RowLayout {
         // Boxes sit on whole device pixels, as Blink snaps them; text snaps its own baselines.
         let snap = |value: f32| px((value * scale).round() / scale);
         let at = |x: f32, y: f32| point(origin.x + snap(x), origin.y + snap(y));
-        let faded = |color: Hsla| if self.message.pending { Hsla { a: color.a * 0.5, ..color } } else { color };
 
         // The day divider: two hairlines and the date between them.
         if let Some(label) = &self.divider {
@@ -1020,6 +1197,18 @@ impl RowLayout {
             }
             label.paint(at(ROW_PAD_LEFT + side + DIVIDER_GAP, DIVIDER_PAD_TOP), &label_options(style.text_muted, None, style), window, cx);
         }
+        if !self.overlaid.get() {
+            self.paint_bubble(origin, width, paint, style, window, cx);
+        }
+    }
+
+    /// Everything of the row under its day divider (`MessageBubble`; the divider is a sibling
+    /// element in the renderer, outside the bubble's entrance animation).
+    pub fn paint_bubble(&self, origin: Point<Pixels>, width: f32, paint: &RowPaint<'_>, style: &ChatStyle, window: &mut Window, cx: &mut App) {
+        let scale = style.scale;
+        let snap = |value: f32| px((value * scale).round() / scale);
+        let at = |x: f32, y: f32| point(origin.x + snap(x), origin.y + snap(y));
+        let faded = |color: Hsla| if self.message.pending { Hsla { a: color.a * 0.5, ..color } } else { color };
 
         // The row's wash: jump flash > reply rail > hover.
         let bubble = Bounds::new(at(0., self.bubble_y), size(px(width), px(self.height - self.bubble_y)));
@@ -1320,6 +1509,115 @@ mod tests {
         assert_eq!(kind_label(&[AttachmentKind::Image]), "Image");
         assert_eq!(kind_label(&[AttachmentKind::Video, AttachmentKind::Video]), "2 Videos");
         assert_eq!(kind_label(&[AttachmentKind::Video, AttachmentKind::Image, AttachmentKind::Audio]), "3 Attachments");
+    }
+
+    fn attachment(id: i64, kind: AttachmentKind, filename: &str, size_bytes: i64, position: i32) -> decibell_model::chat::Attachment {
+        decibell_model::chat::Attachment {
+            id,
+            message_id: 0,
+            kind,
+            filename: filename.to_string().into(),
+            mime: SharedString::default(),
+            size_bytes,
+            url: SharedString::default(),
+            position,
+            created_at: 0,
+            purged_at: 0,
+            width: 0,
+            height: 0,
+            thumbnail_size_bytes: 0,
+            thumbnail_sizes_mask: 0,
+            duration_ms: 0,
+            placeholder: SharedString::default(),
+            encrypted: false,
+            key_b64: None,
+            chunk_bytes: 0,
+        }
+    }
+
+    fn with(message: Arc<Message>, attachments: Vec<decibell_model::chat::Attachment>) -> Arc<Message> {
+        let mut message = (*message).clone();
+        message.attachments = attachments.into();
+        Arc::new(message)
+    }
+
+    fn copy(rows: &[(Option<(&str, &str)>, Arc<Message>, bool)]) -> String {
+        let mut out = CopyText::default();
+        for (header, message, edited) in rows {
+            whole_row_copy(*header, message, *edited, &mut out);
+        }
+        out.finish()
+    }
+
+    /// The Electron client's clipboard after selecting whole rows and Ctrl+C (Chromium's
+    /// `document.execCommand('copy')` over a DOM range from the first row's `.select-text` to the
+    /// last's, read back with `wl-paste`), against the local stack's Daily Gaming `#general`
+    /// rows 9431–9442: inline code, a picture grid, a code block, a grouped row, nicknames, an
+    /// edited reply, a day divider, a jumbo emoji and an inline one.
+    #[test]
+    fn a_copy_is_what_electrons_clipboard_holds() {
+        use crate::testing::message as m;
+        let images = with(
+            m(9432, 100029, "Nice driver voice selam loud build reboot now what noise tonight server loud lag this leave how patch fps match stream wow when a thanks?", 0),
+            vec![attachment(1, AttachmentKind::Image, "photo-22-640x480.jpg", 28_909, 0), attachment(2, AttachmentKind::Image, "photo-11-1280x960.jpg", 64_605, 1)],
+        );
+        let image = with(m(9437, 100014, "Echo evet lost `--release` how", 0), vec![attachment(3, AttachmentKind::Image, "photo-20-1600x1066.jpg", 106_684, 0)]);
+        let long = "No what hayır match server driver it noise stream fps yes selam how sorry echo güncelleme where clip naber server later yes selam frame build channel server queue encoder. Echo works thanks later join thanks fixed lag bitrate quiet wayland broken watch voice when lol game great. Reboot again wow selam wayland nvidia oyun güncelleme where it look lol noise release where clip selam queue fixed loud what sorry update windows queue watch config maç how tonight sonra. Watch win leave wow queue now driver bitrate driver the windows maybe voice yes thanks fine broken great naber server lobby nvidia release this maybe broken thanks works mic wayland sorry güncelleme watch game.";
+        let rows = [
+            (Some(("carol", "11/12/2026, at 10:21 PM")), m(9431, 3, "How wow `fps=120` how lobby encoder noise ranked now again", 0), false),
+            (Some(("rapid.falcon", "11/12/2026, at 10:23 PM")), images, false),
+            (Some(("carol", "11/12/2026, at 10:38 PM")), m(9433, 3, "Win why queue frame tamam what:\n```sh\ncargo test --lib\nnpx napi build --platform\n```", 0), false),
+            (Some(("dave", "11/12/2026, at 10:38 PM")), m(9434, 4, "Naber today wayland", 0), false),
+            (None, m(9435, 4, "Bugün lag", 0), false),
+            (Some(("Mert (AFK)", "11/12/2026, at 10:39 PM")), m(9436, 100015, long, 0), false),
+            (Some(("Zeynep ✨", "11/12/2026, at 10:40 PM")), image, false),
+            (Some(("turbo.quokka", "11/12/2026, at 10:46 PM")), m(9438, 100033, "Yes kanal patch what", 0), true),
+            (Some(("erin", "11/13/2026, at 7:46 AM")), m(9439, 5, "🎮😂", 0), false),
+            (Some(("shy.quokka94", "11/13/2026, at 7:47 AM")), m(9440, 100028, "A how broken the headset win cool yes tamam selam ok test lag windows driver.", 0), false),
+            (Some(("dave", "11/13/2026, at 7:48 AM")), m(9441, 4, "Voice when 🎮", 0), false),
+            (Some(("Bobby 🛠", "11/13/2026, at 7:48 AM")), m(9442, 2, "When audio who hayır headset oyun tomorrow server", 0), false),
+        ];
+        let electron = format!(
+            "carol\n11/12/2026, at 10:21 PM\nHow wow fps=120 how lobby encoder noise ranked now again\nrapid.falcon\n11/12/2026, at 10:23 PM\nNice driver voice selam loud build reboot now what noise tonight server loud lag this leave how patch fps match stream wow when a thanks?\nphoto-22-640x480.jpg\nphoto-11-1280x960.jpg\n\ncarol\n11/12/2026, at 10:38 PM\nWin why queue frame tamam what:\nsh\n\ncargo test --lib\nnpx napi build --platform\ndave\n11/12/2026, at 10:38 PM\nNaber today wayland\nBugün lag\nMert (AFK)\n11/12/2026, at 10:39 PM\n{long}\nZeynep ✨\n11/12/2026, at 10:40 PM\nEcho evet lost --release how\nphoto-20-1600x1066.jpg\n\nturbo.quokka\n11/12/2026, at 10:46 PM\nYes kanal patch what(edited)\nerin\n11/13/2026, at 7:46 AM\nshy.quokka94\n11/13/2026, at 7:47 AM\nA how broken the headset win cool yes tamam selam ok test lag windows driver.\ndave\n11/13/2026, at 7:48 AM\nVoice when \nBobby 🛠\n11/13/2026, at 7:48 AM\nWhen audio who hayır headset oyun tomorrow server"
+        );
+        assert_eq!(copy(&rows), electron);
+    }
+
+    /// The same for the stack's `#clips` (all five rows): a picture grid, one picture, two
+    /// documents, an audio file and a picture last.
+    #[test]
+    fn attachments_copy_as_electron_serialises_them() {
+        use crate::testing::message as m;
+        let rows = [
+            (
+                Some(("alice", "11:11 AM")),
+                with(
+                    m(10308, 1, "new clips from last night's session", 0),
+                    vec![
+                        attachment(1, AttachmentKind::Image, "clip-night-1.jpg", 89_249, 0),
+                        attachment(2, AttachmentKind::Image, "clip-night-2.jpg", 68_498, 1),
+                        attachment(3, AttachmentKind::Image, "clip-night-3.jpg", 62_560, 2),
+                    ],
+                ),
+                false,
+            ),
+            (Some(("Bobby 🛠", "11:11 AM")), with(m(10309, 2, "phone screenshot of the scoreboard", 0), vec![attachment(4, AttachmentKind::Image, "phone-screenshot.jpg", 84_139, 0)]), false),
+            (
+                Some(("carol", "11:11 AM")),
+                with(
+                    m(10310, 3, "patch notes + my settings export, for anyone asking", 0),
+                    vec![attachment(5, AttachmentKind::Document, "patch-notes.txt", 105, 0), attachment(6, AttachmentKind::Document, "settings-export.zip", 301, 1)],
+                ),
+                false,
+            ),
+            (Some(("dave", "11:11 AM")), with(m(10311, 4, "mic test, does this sound clipped?", 0), vec![attachment(7, AttachmentKind::Audio, "voice-memo.wav", 132_344, 0)]), false),
+            (Some(("erin", "11:11 AM")), with(m(10312, 5, "ultrawide finally works in this game", 0), vec![attachment(8, AttachmentKind::Image, "ultrawide.png", 361_656, 0)]), false),
+        ];
+        assert_eq!(
+            copy(&rows),
+            "alice\n11:11 AM\nnew clips from last night's session\nclip-night-1.jpg\nclip-night-2.jpg\nclip-night-3.jpg\n\nBobby 🛠\n11:11 AM\nphone screenshot of the scoreboard\nphone-screenshot.jpg\n\ncarol\n11:11 AM\npatch notes + my settings export, for anyone asking\n\npatch-notes.txt\n105 B\n\nsettings-export.zip\n301 B\ndave\n11:11 AM\nmic test, does this sound clipped?\nvoice-memo.wav\n129.2 KB\n\n\n0:00 / 0:00\n\nerin\n11:11 AM\nultrawide finally works in this game\nultrawide.png"
+        );
+        assert_eq!(format_file_size(1280), "1.3 KB", "toFixed rounds a tie up");
     }
 
     #[test]

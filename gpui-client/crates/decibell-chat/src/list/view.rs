@@ -1,6 +1,7 @@
 //! [`MessageList`]: the view that owns one list's state. Its `render` returns one custom
 //! element ([`super::element::ListElement`]) plus the few overlays it shows itself (the
-//! jump-to-present pill, the message menu); everything per frame happens in that element's
+//! jump-to-present pill, a hover action's tooltip, the last row's entrance); everything per
+//! frame happens in that element's
 //! `prepaint` / `paint`, which call back into the methods here.
 //!
 //! What a frame does while only the offset changes: read the animator's position, binary-search
@@ -20,11 +21,12 @@ use decibell_model::{Model, Uid, actions};
 use decibell_text::Engine;
 use decibell_ui::identity::{avatar_color, person_slot};
 use decibell_ui::scroll::{LINE_STEP_PX, ScrollAnimator, ScrollKind};
-use decibell_ui::{ActiveTheme as _, ContextMenu, FontRole, Icon, IconName, Label, MenuEntry, MenuItem};
+use decibell_ui::motion::{self, Transition};
+use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, title_tooltip};
 use gpui::{
-    App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Hitbox, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollEvent, Subscription,
-    Task, Window, div, point, prelude::*, px,
+    AnyTooltip, AnyView, App, Bounds, ClipboardItem, ContentMask, Context, Entity, EventEmitter, FocusHandle, Hitbox, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollEvent,
+    SharedString, Subscription, Task, Window, canvas, div, point, prelude::*, px,
 };
 
 use super::core::{ListCore, NEAR_PX, OVERDRAW_PX, Placement, RETAIN_PX, Side};
@@ -46,6 +48,36 @@ const COPIED: Duration = Duration::from_millis(1500);
 const SLICE_BUDGET: Duration = Duration::from_micros(1500);
 /// `historyRequests.RETRY_DELAY_MS`.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+/// How long the pointer rests on a button before its `title` shows (GPUI's own tooltip delay,
+/// `DEFAULT_TOOLTIP_SHOW_DELAY`, which `title_tooltip` elsewhere in the app uses).
+const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+/// The last row's entrance (`animate-[fadeUp_0.3s_ease_both]`: opacity 0 → 1 and 6 px up).
+const FADE_UP: Duration = Duration::from_millis(300);
+const FADE_UP_PX: f32 = 6.;
+/// The pill's entrance (`animate-[fadeUp_0.18s_ease_both]`).
+const PILL_IN: Transition = Transition::new(180, motion::EASE);
+
+/// A hover action's or code button's `title=` tooltip: pending (its delay running) or shown.
+struct Tip {
+    row: RowKey,
+    target: Target,
+    label: SharedString,
+    /// Where the pointer was when it showed (GPUI draws tooltips at the pointer).
+    at: Option<Point<Pixels>>,
+    view: Option<AnyView>,
+    _show: Option<Task<()>>,
+}
+
+/// What a button in a row says on hover (`title=`), as the renderer writes it.
+fn title_of(target: Target) -> Option<&'static str> {
+    match target {
+        Target::Action(RowAction::Reply) => Some("Reply"),
+        Target::Action(RowAction::Edit) => Some("Edit message"),
+        Target::Action(RowAction::Delete) => Some("Delete message (Shift+click to skip confirmation)"),
+        Target::CodeCopy(_) => Some("Copy code"),
+        _ => None,
+    }
+}
 
 /// What the list asks of its owner.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,7 +161,12 @@ pub struct MessageList {
     copied_task: Option<Task<()>>,
     /// Scroll offsets of code blocks that were scrolled: (row, span, x, y).
     pub(super) code_scroll: Vec<(RowKey, u32, f32, f32)>,
-    menu: Option<(Point<Pixels>, RowKey)>,
+    tip: Option<Tip>,
+    /// A press on a button hides its tooltip until the pointer leaves it (Chromium's).
+    tip_suppressed: Option<(RowKey, Target)>,
+    /// The last row as last seen, and the one fading in (`isLast`'s entrance) since when.
+    last_key: Option<RowKey>,
+    fade: Option<(RowKey, Instant)>,
     pending_jump: Option<i64>,
     jump_task: Option<Task<()>>,
     slide: Option<(Instant, f32)>,
@@ -257,7 +294,10 @@ impl MessageList {
             copied: None,
             copied_task: None,
             code_scroll: Vec::new(),
-            menu: None,
+            tip: None,
+            tip_suppressed: None,
+            last_key: None,
+            fade: None,
             pending_jump: None,
             jump_task: None,
             slide: None,
@@ -380,6 +420,7 @@ impl MessageList {
         self.asked_older = 0;
         self.asked_newer = 0;
         self.relocate_selection();
+        self.note_last(now, cx);
         self.hover = None;
         self.code_scroll.retain(|(key, ..)| self.core.entries.iter().any(|entry| &entry.key == key));
         true
@@ -642,6 +683,8 @@ impl MessageList {
             self.invalidate_where(|_| true);
             self.measure_visible(now, cx);
         }
+
+        self.prepare_fade(now, window);
 
         // A placement holds until its rows are measured; then the anchor rule takes over.
         if !matches!(self.placement, Placement::Hold) && !self.core.is_empty() {
@@ -1106,7 +1149,7 @@ impl MessageList {
     /// The hover target under the pointer; a frame only when it changed.
     pub(super) fn update_hover(&mut self, position: Point<Pixels>, inside: bool, cx: &mut Context<Self>) -> bool {
         self.pointer = position;
-        let hover = if inside && !self.in_bar(position) && self.menu.is_none() {
+        let hover = if inside && !self.in_bar(position) {
             // First which row (the actions exist only on the hovered one), then what in it.
             self.locate(position).and_then(|(index, x, y)| {
                 let layout = self.core.entries[index].layout.as_ref()?;
@@ -1119,7 +1162,123 @@ impl MessageList {
             return false;
         }
         self.hover = hover;
+        self.retarget_tip(cx);
         true
+    }
+
+    /// The hover moved to another button (or off one): the pending or shown tooltip goes, and a
+    /// new one waits its delay.
+    fn retarget_tip(&mut self, cx: &mut Context<Self>) {
+        let want = self.hover.and_then(|(index, target)| {
+            let label = title_of(target)?;
+            Some((self.core.entries.get(index)?.key.clone(), target, label))
+        });
+        let same = |tip: &Tip| want.as_ref().is_some_and(|(row, target, _)| &tip.row == row && tip.target == *target);
+        if self.tip.as_ref().is_some_and(same) {
+            return;
+        }
+        if self.tip.take().is_some_and(|tip| tip.at.is_some()) {
+            cx.notify();
+        }
+        let Some((row, target, label)) = want else {
+            self.tip_suppressed = None;
+            return;
+        };
+        if self.tip_suppressed.as_ref().is_some_and(|(r, t)| r == &row && *t == target) {
+            return;
+        }
+        self.tip_suppressed = None;
+        let show = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOOLTIP_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                let pointer = this.pointer;
+                if let Some(tip) = &mut this.tip {
+                    tip.at = Some(pointer);
+                    cx.notify();
+                }
+            });
+        });
+        self.tip = Some(Tip { row, target, label: SharedString::new_static(label), at: None, view: None, _show: Some(show) });
+    }
+
+    /// The last row changed: it fades in (`isLast`: the last row of the list, unless it is our
+    /// own stored message — the echo that replaces our bubble would blink — and only a row that
+    /// opens a group, as the renderer's grouped rows have no entrance). As in the renderer this
+    /// includes the last row of a channel just opened, a jump's window, and the row before one
+    /// that was deleted.
+    fn note_last(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let Some(last) = self.core.entries.last() else {
+            self.last_key = None;
+            return;
+        };
+        if self.last_key.as_ref() == Some(&last.key) {
+            return;
+        }
+        self.last_key = Some(last.key.clone());
+        let eligible = !last.facts.grouped && !(last.message.id > 0 && last.facts.own);
+        self.fade = (eligible && !cx.reduce_motion()).then(|| (last.key.clone(), now));
+    }
+
+    /// Opacity and lift of the row fading in, if one is (0 → 1, 6 px → 0 on CSS `ease`).
+    fn fade_now(&self, now: Instant) -> Option<(usize, f32, f32)> {
+        let (key, start) = self.fade.as_ref()?;
+        let t = now.saturating_duration_since(*start).as_secs_f32() / FADE_UP.as_secs_f32();
+        if t >= 1. {
+            return None;
+        }
+        let eased = motion::EASE.y(t as f64) as f32;
+        Some((self.core.index_of(key)?, eased, FADE_UP_PX * (1. - eased)))
+    }
+
+    /// Before a frame: the fading row draws through [`Self::paint_fade`] until its entrance ends.
+    fn prepare_fade(&mut self, now: Instant, window: &mut Window) {
+        let Some((key, _)) = self.fade.clone() else { return };
+        let index = self.core.index_of(&key);
+        let running = self.fade_now(now).is_some();
+        if let Some(layout) = index.and_then(|index| self.core.entries[index].layout.as_ref()) {
+            layout.overlaid.set(running);
+        }
+        if running {
+            window.request_animation_frame();
+        } else {
+            self.fade = None;
+        }
+    }
+
+    /// The fading row's bubble, from the overlay `render` adds (whose opacity is the fade's).
+    fn paint_fade(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(style) = self.style.clone() else { return };
+        let Some((index, _, lift)) = self.fade_now(Self::now(cx)) else { return };
+        let Some(entry) = self.core.entries.get(index) else { return };
+        let Some(layout) = entry.layout.clone() else { return };
+        if !layout.overlaid.get() {
+            return;
+        }
+        let scale = style.scale;
+        let device = (self.core.top(index) * scale as f64).round() - (self.drawn.position * scale as f64).round();
+        let origin = point(self.bounds.left(), self.bounds.top() + px(device as f32 / scale + self.drawn.slide + lift));
+        let hover = self.hover.filter(|(row, _)| *row == index);
+        let can_delete_others = self.source.can_delete_others(cx);
+        let slots_filled = cx.try_global::<crate::media::ChatSlots>().is_some_and(|slots| slots.attachments.is_some());
+        let avatar = match cx.try_global::<decibell_model::Model>().map(|model| model.live.presence.avatars.clone()) {
+            Some(avatars) if !layout.grouped => avatars.read(cx).image(layout.sender()).cloned().and_then(|image| image.use_render_image(window, cx)),
+            _ => None,
+        };
+        let paint = crate::row::RowPaint {
+            hovered: hover.is_some(),
+            target: hover.map_or(Target::None, |(_, target)| target),
+            highlighted: self.highlighted == Some(entry.message.id) && entry.message.id > 0,
+            reply_target: self.reply_target == Some(entry.message.id) && entry.message.id > 0,
+            can_delete: entry.facts.can_delete(can_delete_others),
+            selection: self.selection_in(index),
+            copied: self.copied.as_ref().filter(|(key, _)| key == &entry.key).map(|(_, span)| *span),
+            code_scroll: &[],
+            avatar: avatar.as_ref(),
+            reply_avatar: None,
+            slots_filled,
+        };
+        let width = self.width;
+        window.with_content_mask(Some(ContentMask { bounds: self.bounds }), |window| layout.paint_bubble(origin, width, &paint, &style, window, cx));
     }
 
     pub(super) fn mouse_move(&mut self, event: &MouseMoveEvent, hitbox: &Hitbox, window: &mut Window, cx: &mut Context<Self>) {
@@ -1184,6 +1343,13 @@ impl MessageList {
     pub(super) fn mouse_down(&mut self, event: &MouseDownEvent, hitbox: &Hitbox, window: &mut Window, cx: &mut Context<Self>) {
         if !hitbox.is_hovered(window) {
             return;
+        }
+        // A press hides a button's tooltip until the pointer leaves the button.
+        if let Some(tip) = self.tip.take() {
+            if tip.at.is_some() {
+                cx.notify();
+            }
+            self.tip_suppressed = Some((tip.row, tip.target));
         }
         if event.button == MouseButton::Right {
             return self.context_menu(event.position, cx);
@@ -1310,16 +1476,15 @@ impl MessageList {
         }
     }
 
+    /// A right click: the sender's user menu on the name or the avatar (`MessageBubble`'s
+    /// `handleSenderContextMenu`); the renderer has no other menu on a message (the browser's own
+    /// is suppressed), so elsewhere nothing happens.
     fn context_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         let Some((index, hit)) = self.hit(position, cx) else { return };
         let entry = &self.core.entries[index];
         if hit.target == Target::Sender && entry.message.sender_uid != 0 {
             decibell_common::open_user_menu(entry.message.sender_uid, position, self.source.server(), cx);
-            return;
         }
-        self.menu = Some((position, entry.key.clone()));
-        self.hover = Some((index, Target::None));
-        cx.notify();
     }
 
     pub(super) fn scroll_wheel(&mut self, event: &ScrollEvent, hitbox: &Hitbox, window: &mut Window, cx: &mut Context<Self>) {
@@ -1454,11 +1619,12 @@ impl MessageList {
         (start < end).then_some((start, end))
     }
 
-    /// What Ctrl+C puts on the clipboard: the selection as displayed, a row after the other.
+    /// What Ctrl+C puts on the clipboard: what the Electron client's copy of the same selection
+    /// gives, a row after the other (`RowLayout::copy_text`).
     pub fn selected_text(&mut self, cx: &mut Context<Self>) -> Option<String> {
         let (anchor, focus) = self.selection.clone()?;
         let (from, to) = if (anchor.index, anchor.pos) <= (focus.index, focus.pos) { (anchor, focus) } else { (focus, anchor) };
-        let mut out = String::new();
+        let mut out = crate::row::CopyText::default();
         for index in from.index..=to.index.min(self.core.len().saturating_sub(1)) {
             // A row scrolled far away has no layout any more: its text comes from the model.
             let dropped = self.core.entries[index].layout.is_none();
@@ -1476,7 +1642,7 @@ impl MessageList {
                 self.core.entries[index].layout = None;
             }
         }
-        Some(out)
+        Some(out.finish())
     }
 
     /// Selects from `from` to `to` (row ids with a caret each): the self-tests' way in.
@@ -1532,14 +1698,18 @@ impl MessageList {
         self.editing
     }
 
-    fn pill(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn pill(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // `animate-[fadeUp_0.18s_ease_both]` as it appears (each time: the element state goes
+        // with the pill).
+        let t = motion::transition_from(window, cx, "jump-pill-in", 0., 1., PILL_IN);
         let theme = cx.theme();
         // ChatPanel's pill: the accent button idiom with the float shadow, `bottom-3 right-4`.
         div()
             .id("jump-to-present")
             .absolute()
-            .bottom_3()
+            .bottom(px(12. - FADE_UP_PX * (1. - t)))
             .right_4()
+            .opacity(t)
             .flex()
             .items_center()
             .gap_1p5()
@@ -1555,57 +1725,6 @@ impl MessageList {
             .child(Icon::new(IconName::ChatJumpPresent).size(px(14.)).color(theme.color_on_accent))
             .on_click(cx.listener(|this, _, _, cx| this.jump_to_present(cx)))
     }
-
-    fn message_menu(&self, at: Point<Pixels>, key: &RowKey, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let index = self.core.index_of(key)?;
-        let entry = &self.core.entries[index];
-        let (facts, id) = (entry.facts, entry.message.id);
-        let can_delete = self.can_delete(index, cx);
-        let close = |this: &mut Self, cx: &mut Context<Self>| {
-            this.menu = None;
-            this.hover = None;
-            cx.notify();
-        };
-        let mut menu = ContextMenu::new("message-menu", at);
-        if self.has_selection() {
-            menu = menu.entry(MenuItem::new("Copy").on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(text) = this.selected_text(cx) {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-                close(this, cx);
-            })));
-        } else if !entry.message.content.is_empty() && entry.message.decrypt_error.is_none() {
-            menu = menu.entry(MenuItem::new("Copy text").on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(index) = this.core.index_of_id(id) {
-                    let message = this.core.entries[index].message.clone();
-                    let document = decibell_richtext::parse(&message.content, &decibell_richtext::ParseOptions::default());
-                    cx.write_to_clipboard(ClipboardItem::new_string(decibell_richtext::plain::as_displayed(&document, &message.content)));
-                }
-                close(this, cx);
-            })));
-        }
-        if facts.can_reply {
-            menu = menu.entry(MenuItem::new("Reply").icon(IconName::ChatReply).on_click(cx.listener(move |this, _, _, cx| {
-                cx.emit(ListEvent::Reply(id));
-                close(this, cx);
-            })));
-        }
-        if facts.can_edit {
-            menu = menu.entry(MenuItem::new("Edit message").icon(IconName::ChatEdit).on_click(cx.listener(move |this, _, _, cx| {
-                this.start_edit(id, cx);
-                close(this, cx);
-            })));
-        }
-        if can_delete {
-            menu = menu.entry(MenuEntry::Separator).entry(MenuItem::new("Delete message").icon(IconName::ChatTrash).danger().on_click(
-                cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                    cx.emit(ListEvent::Delete { id, skip_confirm: event.modifiers().shift });
-                    close(this, cx);
-                }),
-            ));
-        }
-        Some(menu.on_dismiss(cx.listener(move |this, _, _, cx| close(this, cx))))
-    }
 }
 
 /// The registered row slots (each is told which rows are near the viewport).
@@ -1619,16 +1738,35 @@ fn chrono_now() -> i64 {
 }
 
 impl Render for MessageList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let pill = self.pill.then(|| self.pill(cx));
-        let menu = self.menu.clone().and_then(|(at, key)| self.message_menu(at, &key, cx));
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pill = self.pill.then(|| self.pill(window, cx));
+        // The tooltip of the button under the pointer, through GPUI's tooltip layer (drawn at the
+        // pointer, over everything), as `.tooltip(title_tooltip(…))` shows it on an element.
+        let tip = self.tip.as_mut().and_then(|tip| {
+            let at = tip.at?;
+            let view = tip.view.get_or_insert_with(|| title_tooltip(tip.label.clone())(window, cx)).clone();
+            Some(canvas(
+                move |_, window, _| {
+                    window.set_tooltip(AnyTooltip { view, mouse_position: at, check_visible_and_update: std::rc::Rc::new(|_, _, _| true) });
+                },
+                |_, _, _, _| {},
+            ))
+        });
+        // The last row's entrance: its bubble drawn over the list at the fade's opacity.
+        let fade = self.fade_now(Self::now(cx)).map(|(_, opacity, _)| {
+            let view = cx.entity();
+            div().absolute().top_0().left_0().size_full().opacity(opacity).child(
+                canvas(|_, _, _| {}, move |_, _, window, cx| view.update(cx, |list, cx| list.paint_fade(window, cx))).size_full(),
+            )
+        });
         div()
             .size_full()
             .relative()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .child(ListElement::new(cx.entity()))
+            .children(fade)
             .children(pill)
-            .children(menu)
+            .children(tip)
     }
 }

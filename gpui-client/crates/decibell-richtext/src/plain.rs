@@ -199,6 +199,55 @@ pub fn as_displayed_range(doc: &Document, src: &str, from: TextPos, to: TextPos)
     out
 }
 
+/// What a copy (Ctrl+C) of `[from, to)` of the rendered message puts on the clipboard in the
+/// Electron client: Chromium serialises the renderer's DOM (measured against it, the cases are
+/// in this module's tests). As [`as_displayed_range`], except:
+///
+/// - an emoji with a Twemoji SVG is dropped (`Twemoji.tsx` draws an inline `<svg>` with only an
+///   `aria-label`: no text to copy); one without (the system font draws it) copies as itself;
+/// - a code block copies its header's label first, as written in the DOM (the tag lower-cased, or
+///   `code`: the header's `uppercase` is CSS, which doesn't reach the clipboard), then a blank
+///   line, then the code (`CodeBlock.tsx`; the copy button has no text).
+///
+/// Display and inline math copy their TeX source here; Chromium copies KaTeX's rendering instead
+/// (not mirrored: see the module tests).
+pub fn as_copied_range(doc: &Document, src: &str, from: TextPos, to: TextPos) -> String {
+    let mut out = String::new();
+    let mut prev_block = false;
+    for (i, sp) in doc.spans().iter().enumerate() {
+        if i < from.span {
+            continue;
+        }
+        if i > to.span {
+            break;
+        }
+        let text = doc.text(src, sp);
+        let a = if i == from.span { from.offset.min(text.len()) } else { 0 };
+        let b = if i == to.span { to.offset.min(text.len()) } else { text.len() };
+        let atomic = !matches!(sp.kind, SpanKind::Text | SpanKind::Link { .. });
+        let covered = if atomic { a < b } else { floor_char(text, b.max(a)) > floor_char(text, a) };
+        if !covered {
+            continue;
+        }
+        let piece: std::borrow::Cow<'_, str> = match sp.kind {
+            SpanKind::Emoji { asset: Some(_) } => continue,
+            SpanKind::CodeBlock { lang } => format!("{}\n\n{text}", lang.map_or("code", |lang| lang.tag())).into(),
+            _ if atomic => text.into(),
+            _ => text[floor_char(text, a)..floor_char(text, b.max(a))].into(),
+        };
+        if piece.is_empty() {
+            continue;
+        }
+        let block = sp.is_block();
+        if (block || prev_block) && !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&piece);
+        prev_block = block;
+    }
+    out
+}
+
 fn floor_char(s: &str, mut i: usize) -> usize {
     while i > 0 && !s.is_char_boundary(i) {
         i -= 1;

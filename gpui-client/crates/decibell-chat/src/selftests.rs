@@ -394,19 +394,15 @@ async fn resize_in(h: &Harness) -> Result<()> {
 fn expected_copy(list: &MessageList, ids: &[i64], cx: &App) -> String {
     let format = decibell_model::Model::global(cx).settings.read(cx).time_format();
     let today = decibell_model::chat::time::local_day(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64));
-    let mut lines: Vec<String> = Vec::new();
+    let mut out = crate::row::CopyText::default();
     for id in ids {
         let Some((message, facts)) = list.row(*id) else { continue };
-        if !facts.grouped {
-            lines.push(decibell_common::display_name(Some(decibell_model::ServerId::from_central(1)), message.sender_uid, &message.sender, cx).to_string());
-            lines.push(decibell_model::regional::Regional::get().message_stamp(message.timestamp.unwrap_or(0), today, format));
-        }
-        if !message.content.is_empty() {
-            let document = decibell_richtext::parse(&message.content, &decibell_richtext::ParseOptions::default());
-            lines.push(decibell_richtext::plain::as_displayed(&document, &message.content));
-        }
+        let name = decibell_common::display_name(Some(decibell_model::ServerId::from_central(1)), message.sender_uid, &message.sender, cx);
+        let time = decibell_model::regional::Regional::get().message_stamp(message.timestamp.unwrap_or(0), today, format);
+        let header = (!facts.grouped).then_some((name.as_ref(), time.as_str()));
+        crate::row::whole_row_copy(header, &message, facts.edited, &mut out);
     }
-    lines.join("\n")
+    out.finish()
 }
 
 async fn selection(cx: TestCx) -> Result<()> {

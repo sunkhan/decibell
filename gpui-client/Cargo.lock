@@ -1736,9 +1736,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "decibell-chat",
+ "decibell-chat-content",
  "decibell-composer",
  "decibell-core",
- "decibell-chat-content",
  "decibell-harness",
  "decibell-home",
  "decibell-model",
