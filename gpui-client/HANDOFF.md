@@ -55,10 +55,14 @@ screens in all seven themes beside Electron's.
 | GPUI survey + hello-world numbers | done `75e9008`: `docs/gpui-notes.md`; decisions in the design record §5 |
 | Video research + prototype (`docs/video-design.md`) | in progress |
 | Theme generator + assets | done `e846392`: `crates/decibell-theme` (162 tokens × 7 themes, 12 scaled, scopes), `tools/gen-theme`, `tools/fetch-assets.mjs`, `docs/css-component-rules.md` |
-| Service crates (what Electron main did): attachments, link previews + GIFs | in progress (`crates/decibell-attachments`, `crates/decibell-unfurl`) |
-| Skeleton (workspace, patched GPUI copy, fonts, window frame, capture + self-test harness) | in progress |
+| Skeleton (workspace, patched GPUI copy, static font faces, window frame, theme gallery, capture + self-test harness, perf markers, Windows check job) | done `b120b2f`; `CONVENTIONS.md`; self-tests `boot`, `idle-frames`, `window-frame`, `themes` pass on Wayland and XWayland |
+| Text engine (`decibell-text`), component kit (in `decibell-ui`), video crate (`decibell-video`) | in progress |
+| Core follow-ups (pooled frame buffers, exact-pin connector, ring-only TLS) | in progress, worktree `.worktrees/core-followups` (branch `wip/core-followups`) |
 | Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
-| Rich-text parser (`decibell-richtext`), KaTeX-compatible layout (`decibell-tex`) | in progress |
+| Rich-text grammar (`crates/decibell-richtext`) | done `497ab53`: 0 mismatches against the renderer over 120,570 committed + 1.6M stress cases |
+| Math (`crates/decibell-tex`) | done `aa0a020`: KaTeX 0.18.4 ported; markup byte-identical on 5,070 / 5,072 formulas, glyphs within 0.05 px of Chromium; +1.1 MB binary |
+| Attachments (`crates/decibell-attachments`), link previews + GIF search (`crates/decibell-unfurl`) | done `08412dc`, `d835d32` (vectors from the real TS; stack tests) |
+| Wheel / key scrolling spec | done `0777f91`: `docs/wheel-scroll.md` (120 px per notch, ease-in-out bezier, cc's duration + retarget rules, 11 vectors) |
 | Stream playback: design + prototype | done `8c990eb`: `docs/video-design.md`, `patches/0001-gpui-external-surfaces.patch`; the real crate (`decibell-video`) not started |
 | Stream playback | not started |
 | Chat (list, rich text, selection, composer, wheel) | not started |
@@ -208,11 +212,30 @@ private session bus (`tools/perf/electron-local.sh`). Take the real baseline on 
   `e2eeLocalKey: null` is refused by napi (see §5).
 - The app re-points the `decibell://` handler at `decibell-electron-client.desktop` on every start.
 
-**GPUI hello-world at the pin** (one window, custom title bar, 400 wrapping chat rows; `docs/gpui-notes.md` §13):
-19.3 MB stripped binary (14.1 MB at `opt-level = "s"`); spawn → first frame 141–186 ms; Wayland idle: 0 frames,
-0 main-thread wakeups, 0 ms CPU over 30 s; private memory 75 MB by default, 62 MB when wgpu doesn't load the GL
-vendor libraries (59 MB at `opt-level = "s"`); GPU memory 56–60 MiB; under XWayland the main thread wakes 280×/s
-until patched.
+**The skeleton** (`decibell` showing the theme gallery; release build, window unfocused, 20 s settle + 60 s;
+startup = median of 5 warm runs; other builds were running, so startup is an upper bound):
+
+| | Wayland | XWayland |
+|---|---|---|
+| Launch → window visible / first frame | 222 ms / 225 ms | 137 ms / 210 ms |
+| Private memory (private dirty / PSS / RSS) | 78.0 MB (28.7 / 81.7 / 114.7) | 81.9 MB (29.0 / 85.7 / 118.7) |
+| CPU, % of a core | 0.005 | 0.005 |
+| Main-thread wakeups / s; frames at idle | 0.00; 0 | 0.00; 0 |
+| GPU memory; threads | 57 MB; 33 | 58 MB; 34 |
+
+- Where the 78 MB goes: NVIDIA's Vulkan driver ~37 MB, the binary's own pages 17.9 MB (file-backed, clean), heap
+  17.9 MB, other anonymous 3.3 MB. The driver's `[vkps] Update` thread wakes 4.0/s and one unnamed driver
+  thread 0.5/s; ours: 0.
+- Patches' effect: `0003` (Vulkan before GL) −20 MB private, −30 ms startup; `0004` (X11 refresh timer parks)
+  main-thread wakeups 280/s → 0 under XWayland.
+- Binary 23.5 MB stripped at `opt-level = 3` (18.2 MB, −3.3 MB memory, +10 ms startup at `"s"`: profile
+  `release-s`; decided once hot paths exist to measure).
+- **Lever not yet taken**: cosmic-text scans all installed fonts and walks them per (family, weight, style)
+  query: ~70 ms of the 225 ms to first frame. The text engine work starts with bundled faces only and loads
+  system fonts lazily for fallback.
+- Private memory counts a single-process app's own binary pages (Private_Clean), which a multi-process app
+  shares between its processes: quote private dirty and PSS beside it (Electron, same scenario: 341.7 private,
+  253.4 private dirty, 476.7 PSS).
 
 ## 5. Open items
 
