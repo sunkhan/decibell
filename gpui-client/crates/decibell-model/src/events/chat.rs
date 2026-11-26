@@ -37,6 +37,14 @@ pub(crate) fn ensure_slice(model: &Model, server: ServerId, channel: &ChannelId,
     model.chat.channels.update(cx, |c, cx| c.ensure(server, channel, own, encrypted, cx))
 }
 
+/// The channel id the slice holds (one allocation shared by its rows).
+fn slice_channel(slice: &Entity<MessageSlice>, cx: &App) -> ChannelId {
+    match slice.read(cx).kind() {
+        crate::chat::slice::SliceKind::Channel { channel, .. } => channel.clone(),
+        crate::chat::slice::SliceKind::Dm { .. } => ChannelId::default(),
+    }
+}
+
 /// `channelIsEncrypted`: the one lookup every send / edit / upload site uses.
 pub(crate) fn channel_encrypted(model: &Model, server: ServerId, channel: &str, cx: &App) -> bool {
     model
@@ -71,7 +79,7 @@ pub fn message_received(model: &Model, p: MessageReceivedPayload, cx: &mut App) 
     let server = ServerId::from_wire(&p.server_id);
     let channel: ChannelId = p.context.clone().into();
     register_keys(model, server, &p.encrypted_attachments, cx);
-    let message = Arc::new(Message::from_received(p));
+    let mut message = Message::from_received(p);
     let displayed = model.chat.channels.read(cx).is_displayed(server, &channel);
     // A channel never loaded and with no fetch in flight: its first visit loads the newest
     // page anyway, so nothing is cached for it (the slice is checked for that itself).
@@ -80,6 +88,11 @@ pub fn message_received(model: &Model, p: MessageReceivedPayload, cx: &mut App) 
         None if displayed || message.id == 0 => Some(ensure_slice(model, server, &channel, cx)),
         None => None,
     };
+    // Every row of a channel shares the slice's one copy of the channel id.
+    if let Some(slice) = &slice {
+        message.channel = slice_channel(slice, cx);
+    }
+    let message = Arc::new(message);
     let own = model.auth.read(cx).uid;
     let ours = own != 0 && message.sender_uid == own;
     if let Some(slice) = slice {
@@ -99,15 +112,20 @@ pub fn channel_history_received(model: &Model, p: ChannelHistoryReceivedPayload,
     let channel: ChannelId = p.channel_id.clone().into();
     let (around, after, before) = (p.around_id, p.after_id, p.before_id);
     let (has_more, has_more_after) = (p.has_more, p.has_more_after);
+    let slice = ensure_slice(model, server, &channel, cx);
+    let shared_channel = slice_channel(&slice, cx);
     let mut page: Vec<Arc<Message>> = Vec::with_capacity(p.messages.len());
     for m in p.messages {
         register_keys(model, server, &m.encrypted_attachments, cx);
-        page.push(Arc::new(Message::from_stored(m)));
+        let mut m = Message::from_stored(m);
+        if m.channel == shared_channel {
+            m.channel = shared_channel.clone();
+        }
+        page.push(Arc::new(m));
     }
     let own = model.auth.read(cx).uid;
     let key = WaitKey::Channel(server, channel.clone());
     let latest = before <= 0 && model.chat.history.read(cx).waiting_before_cursor(&key).is_none_or(|b| b <= 0);
-    let slice = ensure_slice(model, server, &channel, cx);
     slice.update(cx, |s, cx| {
         if around > 0 {
             // A jump window: replaces the slice.

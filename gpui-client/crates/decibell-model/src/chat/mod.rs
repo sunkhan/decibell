@@ -28,6 +28,7 @@ pub mod search;
 pub mod slice;
 pub mod slowmode;
 pub mod time;
+pub mod topic;
 pub mod viewers;
 
 use std::rc::Rc;

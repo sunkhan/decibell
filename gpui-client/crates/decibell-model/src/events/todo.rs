@@ -158,8 +158,7 @@ pub mod m2 {
 
     /// `legacyRejectionSuppressed()` (`sendPacing.ts`): a refused message was already
     /// shown through `channel_message_rejected`, so the legacy `mod_action_responded`
-    /// echo of it stays silent. Until send pacing is ported this is false, which shows
-    /// the community's refusal text as a toast.
+    /// echo of it stays silent (for 1.5 s after the typed refusal).
     pub fn legacy_rejection_suppressed(model: &Model, cx: &mut App) -> bool {
         crate::events::chat::legacy_rejection_suppressed(model, cx)
     }

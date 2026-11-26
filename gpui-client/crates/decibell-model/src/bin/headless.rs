@@ -58,9 +58,7 @@ sign-in — always comes first):
   wait-file <path>                until that file exists (a cue from a test)
 
 Exit status: 0 when every step ran, 1 when one failed or timed out, 2 for bad usage or an
-unsafe environment.
-
-";
+unsafe environment.";
 
 #[derive(Debug, Clone)]
 enum Step {
@@ -508,7 +506,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.is_empty() || raw.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}{}\n\n{}", chat::USAGE, live::USAGE);
+        println!("{USAGE}\n\n{}\n\n{}", chat::USAGE, live::USAGE);
         return ExitCode::SUCCESS;
     }
     let args = match parse(raw) {

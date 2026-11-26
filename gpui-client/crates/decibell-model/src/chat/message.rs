@@ -3,7 +3,7 @@
 //! payload and then shared: a slice holds `Arc<Message>`, an edit replaces the `Arc`, and
 //! every text is a `SharedString` (an `Arc<str>`), so reading a row never copies.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use decibell_attachments::AttachmentKind;
 use decibell_core::events::{
@@ -157,6 +157,19 @@ pub struct Edit {
     pub suppress_embeds: Option<bool>,
 }
 
+/// The empty lists most rows carry, allocated once (an empty `Arc<[T]>` still allocates
+/// its counts: two allocations a row saved).
+static NO_ATTACHMENTS: LazyLock<Arc<[Attachment]>> = LazyLock::new(|| Arc::from([]));
+static NO_PENDING: LazyLock<Arc<[SharedString]>> = LazyLock::new(|| Arc::from([]));
+static NO_KINDS: LazyLock<Arc<[AttachmentKind]>> = LazyLock::new(|| Arc::from([]));
+
+fn attachments_of(list: &[AttachmentPayload], metas: &[EncryptedAttachmentMetaPayload]) -> Arc<[Attachment]> {
+    if list.is_empty() {
+        return NO_ATTACHMENTS.clone();
+    }
+    list.iter().map(|a| Attachment::from_payload(a, metas)).collect()
+}
+
 /// One row. Channel and DM messages share it; fields a kind doesn't use stay empty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
@@ -225,8 +238,8 @@ impl Message {
             content,
             day: timestamp.map_or(0, local_day),
             timestamp,
-            attachments: Arc::from([]),
-            pending_attachments: Arc::from([]),
+            attachments: NO_ATTACHMENTS.clone(),
+            pending_attachments: NO_PENDING.clone(),
             edited_at: 0,
             reply: None,
             pending: false,
@@ -258,7 +271,7 @@ impl Message {
                 sender: SharedString::default(),
                 sender_uid: 0,
                 content: SharedString::default(),
-                attachment_kinds: Arc::from([]),
+                attachment_kinds: NO_KINDS.clone(),
             }));
         }
         m
@@ -294,7 +307,7 @@ impl Message {
         if context != "dm" {
             m.channel = context.into();
         }
-        m.attachments = attachments.iter().map(|a| Attachment::from_payload(a, &encrypted_attachments)).collect();
+        m.attachments = attachments_of(&attachments, &encrypted_attachments);
         m.edited_at = edited_at;
         m.reply = reply(reply_to, reply_to_sender, reply_to_sender_uid, reply_to_content, &reply_to_attachment_kinds);
         m.encrypted = encrypted;
@@ -329,7 +342,7 @@ impl Message {
         m.id = id.max(0);
         m.nonce = (!nonce.is_empty()).then(|| nonce.into());
         m.channel = channel_id.into();
-        m.attachments = attachments.iter().map(|a| Attachment::from_payload(a, &encrypted_attachments)).collect();
+        m.attachments = attachments_of(&attachments, &encrypted_attachments);
         m.edited_at = edited_at;
         m.reply = reply(reply_to, reply_to_sender, reply_to_sender_uid, reply_to_content, &reply_to_attachment_kinds);
         m.encrypted = encrypted;
@@ -412,10 +425,11 @@ fn reply(id: i64, sender: String, sender_uid: Uid, content: String, kinds: &[i32
             sender_uid,
             content: content.into(),
             // Wire numbers → kinds (an unknown number reads as a document).
-            attachment_kinds: kinds
-                .iter()
-                .map(|k| AttachmentKind::from_index(*k as i64).unwrap_or(AttachmentKind::Document))
-                .collect(),
+            attachment_kinds: if kinds.is_empty() {
+                NO_KINDS.clone()
+            } else {
+                kinds.iter().map(|k| AttachmentKind::from_index(*k as i64).unwrap_or(AttachmentKind::Document)).collect()
+            },
         })
     })
 }

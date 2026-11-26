@@ -564,6 +564,225 @@ ring must not re-render the voice stage; the mic meter must not touch the voice 
 from names, keyed by uid, with a keyed event; `m3::clear_server_presence(server, keep)` is called from
 four handlers here.
 
+## 15. M2: messages, DMs and what the chat views read
+
+Everything about messages (the message half of `chatStore`, `dmStore`, `historyMerge.ts`,
+`historyRequests.ts`, `sendPacing.ts`, `slowmode.ts`, `draftsStore`, `attachmentsStore`,
+`linkPreviewStore`, the search store, the small viewer stores) lives in two module trees, exposed on
+`Model` as one field each: `model.chat: ChatStores` and `model.dm: DmStores`.
+
+```
+src/chat/            mod.rs (ChatStores), message.rs, merge.rs, slice.rs (+ slice/tests.rs), cache.rs,
+                     history.rs, pacing.rs, slowmode.rs, drafts.rs, composer.rs, link_previews.rs,
+                     search.rs, viewers.rs, time.rs (local days, clocks), topic.rs (the topic field's clamp)
+src/dm/              mod.rs (DmStores, DmList), conversation.rs (the DM side of MessageSlice),
+                     read_sync.rs, tests.rs
+src/events/chat.rs   every m2 event and hook (events/chat/tests.rs: router tests); events/dm.rs
+src/actions/chat.rs  what the chat views ask for; actions/dm.rs the DM twin
+src/bin/headless/chat.rs   the headless message steps; tests/stack_chat.rs
+```
+
+### 15.1 Entities and when they notify
+
+| Entity | Owns | Renderer origin | Notifies on |
+|---|---|---|---|
+| `chat.channels: ChannelCache` | `(server, channel)` → `Entity<MessageSlice>`; the LRU of visited channels (10); the displayed channel; per-community `resync_epoch`; the outside jump request | `channelAccessOrder`, `displayedChannelKey`, `resyncEpoch`, `jumpRequest` | a slice created or dropped; `CacheEvent::Resync(server)`, `CacheEvent::JumpRequested` |
+| `MessageSlice` (one per channel, one per DM peer) | rows (`Arc<Message>`) + facts + the change log; `has_more_before/after`, `loading`, `fetched`, `resyncing`, held live rows, scroll position, pending deletes (each with its 5 s watchdog), echo watchdogs (30 s), paging guards | `messagesByChannel` and the seven per-channel maps, `heldLive`, `pendingDeletions`, the panels' `lastRequested*Ref` | any change to that one channel / conversation |
+| `chat.history: HistoryRequests` | waits on history replies (10 s each), shared newest-page loads | `historyRequests.ts` | never (nothing draws it) |
+| `chat.pacing: SendPacing` | per-community token bucket + FIFO queue; the per-community call chain; the legacy-refusal suppression | `sendPacing.ts` | never |
+| `chat.slowmode: Slowmode` | per-channel "next send allowed at" | `slowmode.ts` | `SlowmodeEvent::Changed(key)` / `Nudged(key)` |
+| `chat.drafts: Drafts` | channel and DM drafts (memory only) | `draftsStore.ts` | `DraftsEvent::Changed(key)` / `Restored(key)` |
+| `chat.composer: ComposerAttachments` | attachments in message boxes: status, progress, ids, sealed metadata, claims | `attachmentsStore.ts`, `uploadAttachment.ts` | `ComposerEvent::Changed(server, channel)` |
+| `chat.link_previews: LinkPreviewMemo` | 400 unfurls by URL (loading / done) over `decibell-unfurl` | `linkPreviewStore.ts` | `PreviewChanged(url)` |
+| `chat.search: SearchStore` | the one search: query, sort, seq, results, paging, per-community box drafts | `features/search/searchStore.ts` | search state |
+| `chat.viewer`, `media_menu`, `audio`, `video`, `video_versions`, `drag` | image viewer, image / video context menu, playing audio (+ mirrored playback state), playing video, per-attachment video cache version (`VideoCacheBumped(id)`), file drag state | `imageViewerStore`, `imageContextMenuStore`, `activeAudioStore`, `activeVideoStore`, `videoCacheVersionStore`, `uiStore.dragActive/dragHoveredKey` | their own change |
+| `dm.list: DmList` | per peer a `Conversation` (its `MessageSlice` entity, last message, its time, unread, read cursor); the open peer; the displayed peer; the DM send chain; the composer's inline send error | `dmStore.ts`, `features/dm/readSync.ts` | a conversation's sidebar facts (`DmEvent::Changed(peer)`), `ActiveChanged`, `Resync` |
+
+A message notifies its own slice only. The registry notifies when a slice is created or dropped (a
+list of channels never redraws for a message). The DM list notifies when the sidebar's facts of one
+conversation change; the rows of a conversation are its slice.
+
+### 15.2 The slice and the list view (the hot path)
+
+`MessageSlice::rows()` is the ordered window (stored rows by id, optimistic sends at the tail; DMs keep
+live arrivals where they land until a page sorts them), each row an `Arc<Message>` with a stable
+identity `Message::key()` (`RowKey::Id`, else `RowKey::Nonce`). `facts()` is parallel to it: what the
+renderer computed per row in `renderBubble`, now once per change: `grouped` (same sender, same local
+day, < 7 min, not a reply), `new_day` (day divider), `own`, `edited`, `can_edit` (channels: not a sealed
+message in a plaintext channel; DMs: opened), `can_reply`, `can_delete_own`, `others_may_delete` (with
+`RowFacts::can_delete(can_delete_others)`, `actions::chat::can_delete_others` = server-wide Manage
+Messages, as `useCanDeleteOthers`), `replies_to_me`. Text is `SharedString`; nothing is parsed here.
+
+Every change to rows or facts is logged as `RowOp`s under a revision:
+
+- `Splice { at, removed, inserted }`: at `at`, `removed` rows went and `inserted` came;
+- `Update { at }`: same identity, new content / flags / facts (an edit, a send shown as sent, the
+  next row re-grouping after a neighbour came or went).
+
+The list keeps the revision it drew and a per-row array. On the slice's notify it calls
+`changes_since(seen)`: `Changes::Ops(ops)` replays in order (splice its array with placeholders, mark
+updates dirty), after which its array is aligned 1:1 with `rows()` and every untouched entry is
+guaranteed unchanged (same `Arc`, same facts: checked by the property tests); it builds the
+placeholders and dirty entries from `rows()[i]` / `facts()[i]` and sets `seen = revision()`.
+`Changes::Reset` (the list is more than 256 ops behind, or a change reordered rows: rare, a DM page
+sorting live arrivals) means rebuild, reusing whatever it caches by `RowKey`. Costs: a live message is
+one `Splice` (plus one `Update` if the bubble after it re-groups), an older page one `Splice` at 0, the
+echo of our send one `Splice` of 1 for 1 at the bubble's place, an edit one `Update`, a trim one
+`Splice`. Wholesale changes (a merge that repairs the slice) go through a one-pass diff keyed by row
+identity.
+
+Rules for the list view, besides the replay:
+
+- **Observe the slice it shows** (`cx.observe(&slice, …)`), never the registry for rows.
+- Mount: `chat.channels.update(|c, _| c.set_displayed(Some(key)))` (it keeps its slice bounded itself);
+  unmount: `set_displayed(None)`. Leaving: `slice.set_scroll(ScrollPosition { at_bottom, anchor_id,
+  offset })`; mounting restores from `scroll()`.
+- Trims: `trim_tail(keep)` / `trim_head(keep)` when it grows past its pixel budget.
+- Paging: near the top `actions::chat::load_older`, near the bottom while `list_windowed()`
+  `load_newer`; a `false` answer → re-check edges after `history::RETRY_DELAY`. "Jump to present":
+  `jump_to_present`. Jump to a message: `jump_to_message` (`JumpStart::Loaded` → land now;
+  `Fetching(task)` → land on the commit that holds it, then `jump_landed`).
+- The panel follows `CacheEvent::Resync(server)` for the channel on screen:
+  `resync_displayed(server, channel, at_bottom)`; and takes `take_jump_request(server, channel, now)`
+  once the first page is in.
+- First visit: `open_channel(server, channel)` (loads the newest page unless `fetched`); the slice's
+  `loading` / `fetched` drive "Loading history…" and Retry (`load_latest` resolves `false`).
+
+### 15.3 Sending, and the timers
+
+`actions::chat::send_message(server, channel, text, reply_to)` → `SendOutcome`: `JumpedToPresent`
+(windowed: the draft stays), `HeldBySlowmode` (text and attachments stay, the pill shakes via
+`SlowmodeEvent::Nudged`), `Nothing`, or `Sent { nonce }` (clear the box and the reply target). The
+bubble is on screen at once (faded: `Message::pending`); queued attachments start uploading; once they
+all ended (event-driven, no polling) the message goes to the community's bucket (`chat::pacing`: 10
+burst, 2.7 / s, FIFO per community, reset when the community authenticates) and then to the core,
+after the previous send of that community (`call_in_order`). Refused (`channel_message_rejected`): the
+bubble goes, the text comes back (`Drafts::restore` + `DraftsEvent::Restored`), the reason toasts and
+a slowmode refusal corrects the window. Not echoed within 30 s: the echo watchdog asks the server
+(after-pages of 100 from `sent_after_id`, up to 5) before withdrawing; offline it waits for the
+reconnect. `send_gif`, `edit_message` (paced, not optimistic), `delete_message` (optimistic, 5 s
+watchdog), `latest_own_editable` (ArrowUp), `attach_file` / `set_draft` complete the composer. DMs:
+`actions::dm::{open_dm, open_history, load_older, load_newer, jump_to_present, jump_to_message,
+resync_displayed, send_dm, send_gif, edit_dm, delete_dm, mark_read, set_draft}`; DM sends are not paced
+but leave one after another; `mark_read` reads up to the newest loaded row and tells central 250 ms
+later.
+
+Timers, each with its reason and dropped with it: the pacer's wait for the next token (only while
+sends are queued); a history request's 10 s reply wait (only while it waits); a newest-page load's
+1 s retry delay (only between attempts); the 30 s echo watchdog (only while its bubble is pending:
+the slice drops it when the bubble settles or goes); the 5 s delete watchdog (only while the delete
+waits); mark-read's 250 ms; search's 8 s "no answer" (only while a page is awaited) and its retry
+after a "too fast" answer. Slowmode keeps no timer (the composer's pill counts down while shown:
+`Slowmode::remaining`). At rest the model holds none (measured below: 0 wakeups from it).
+
+### 15.4 What views observe
+
+| View | Observes / subscribes |
+|---|---|
+| Message list (channel) | its `MessageSlice` (observe); `Settings` for the time format; the users store's `NamesChanged` for its senders |
+| Chat panel chrome (header, pills, Retry) | its slice (flags), `CacheEvent` (resync, jump) |
+| Composer | `Drafts` (`Changed` / `Restored` for its key), `ComposerEvent` for its channel, `SlowmodeEvent` for its channel, the channel's `my_permissions` (`Channels`) |
+| Link preview card | `PreviewChanged` for its URL (request on row build when the Privacy toggle allows) |
+| Search panel | `SearchStore` (observe) |
+| DM sidebar | `DmList` (observe; `sorted()`, `total_unread()`) |
+| DM conversation | its `MessageSlice` (observe), `DmEvent::Resync` / `ActiveChanged`, `DmList::send_error` |
+| Image viewer, media menu, players, drag overlay | their own small entity |
+
+### 15.5 Where this differs from the renderer
+
+Mirrored although it looks wrong (listed, not fixed): `channel_pruned` ignores the attachment
+tombstones it carries (the renderer drops only the deleted messages; purged attachments keep showing
+until a reload); a prune or a wipe creates the channel's slice even for a channel never visited (so it
+then caches live messages up to 150); `restoreChannelDraft` counts a whitespace-only draft as "typed"
+while `restoreDmDraft` doesn't; DM mark-read sends one marker per call (the "coalesce" comment never
+coalesced); `markServerStale` keeps a channel's slice that holds only a scroll position or a flag even
+when the channel is gone; the DM composer's send error is a string from `String(err)` ("Error: …").
+
+Changed on purpose: (1) **sends and edits of a community leave one after another** (`call_in_order`):
+the core runs calls concurrently and a burst admitted at once reached the server out of order (the
+stack's 15-send burst arrived as 1, 7, 2, 3, 4, 10, … before this); the renderer intends FIFO. (2) A
+reply with no cursor echoed is the newest page **unless it answers a waiting older-page request**
+(`HistoryRequests::waiting_before_cursor`): an older server that doesn't echo `before_id` reads as 0,
+the 2026-10-28 incident. (3) Resetting the pacer on community auth refills the bucket and serves the
+sends still queued first, on that bucket (the renderer forgot the queue's bucket and let it drain on
+the old one beside the new). (4) The echo watchdog lives with its bubble and is dropped when the bubble
+settles (the renderer's timer always fired). (5) Pending deletions live in their slice: an evicted
+channel forgets them (the renderer kept the map entry and re-inserted into an evicted slice). (6) The
+DM echo check waits for central's next sign-in event-driven (`DmList::wait_for_resync`), as the
+channel one does. (7) Search's `fold` drops combining marks and maps precomposed Latin letters to their
+base without NFD (no Unicode-normalization crate in the tree); other scripts pass lower-cased.
+(8) `TimeFormat::Auto` is decided from `LC_ALL` / `LC_TIME` / `LANG` (12-hour regions), not Intl.
+
+### 15.6 Lines added to shared files
+
+`lib.rs`: `pub mod chat; pub mod dm;`, the fields `chat: chat::ChatStores` and `dm: dm::DmStores`,
+their two `…::new(cx)` lines in `Model::build`, and `model.chat.follow_navigation(&model.nav, cx);` in
+`Model::init` (the channel LRU follows `NavEvent::ChannelActivated`). `events/mod.rs` and
+`actions/mod.rs`: `pub mod chat; pub mod dm;`. `events/todo.rs`: each `m2` body is one call into
+`events::chat` / `events::dm` (and the doc of `legacy_rejection_suppressed`). `Cargo.toml`:
+`decibell-attachments`, `decibell-unfurl`, `chrono` (clock; already in GPUI's tree) and `tokio-rustls`
+(the connector type of `CoreTls`; already the core's). `bin/headless.rs`: the `mod chat` include, a
+`Step::Chat` variant and its parse / run arms, `chat` / `dm` in the dump argument count, the
+`chat | dm | search` dump arm, the usage print, `say` made `pub(crate)`.
+
+### 15.7 Needed from elsewhere
+
+- **Core**: `tls::exact_connector(fingerprint)` (side-effect free). `chat::composer::CoreTls` today
+  calls `pins::set_expected(host, port, fp)` then `tls::create_pinned_connector(host, port).0`; the
+  switch is that one body. A hook for **central's** `connection_lost` to abandon DM history waits
+  (`useDmEvents`' listener): today they end by their 10 s timeout or at the next sign-in.
+- **M3**: nothing is read from M3's stores. The E2EE status (locked / not set up) that the DM
+  composer's banner shows is M3's `e2eeStore`; after an unlock the renderer calls
+  `invalidateAllHistory`: `DmList::invalidate_all_history` is here for M3's unlock handler to call
+  (then the active conversation's `open_history`). `friends_only_dms` is a `Settings` field.
+- **The app**: a `MediaProbe` for video / audio facts at attach time (the composer probes pictures
+  only: `upload::prepare(source, None)`); the Settings → Network speed caps (`Attachments::limits()`,
+  reachable through `CoreAttachmentService::attachments()`).
+
+### 15.8 Tests and measurements
+
+`cargo test -p decibell-model`: the M2 unit tests (history merge cases, the slice under 40 random
+sequences of 400 events each checking after every step that stored ids are unique and ascending,
+bubbles sit at the tail, facts equal a fresh computation and the change log replays to exactly the
+rows; pacing, slowmode, echo / delete / search timers on GPUI's fake clock; DM unread and read-sync
+arithmetic; drafts; search supersede and retries; history waits) and the router tests
+(`events/chat/tests.rs`: events through the real queue and pump). `tests/retained.rs` counts what a
+slice retains with a counting allocator. `tests/stack_chat.rs` against the local stack:
+
+```sh
+eval "$(../tools/dev/local-stack.sh client-env)"
+DECIBELL_STACK=1 cargo test -p decibell-model --test stack_chat -- --nocapture --test-threads 1
+```
+
+It pages `#general` back four pages and opens a window around a deep id in a fresh client; sends,
+edits and deletes in `#off-topic` while a second client sees each as a live event; sends a burst of 15
+(10 at once, 5 paced, all delivered, in order); holds a second send in `#slow-lane` and delivers it once
+the window passed; sends a DM perf2 → perf3 seen unread on perf3's first device and cleared there by
+`DM_READ_SYNC` when perf3's second device reads it; searches "wayland". Every test deletes what it
+posted (and checks it against a fresh page from the server).
+
+Measured (2026-11-26, this machine, the release `decibell-headless` with `local-central`: 28.6 MB
+stripped, +3.6 MB over the foundation's 25.0 for the attachment service's image codecs and the
+unfurler, which the app links anyway). `tools/perf/measure.sh --pid … --settle 20 --duration 60 --gpu
+none --no-frames`, signed in as `perf2` with Daily Gaming connected and its roster in, then idle:
+
+| State | Private (dirty) | PSS / RSS | Threads | Wakeups / s (whose) |
+|---|---|---|---|---|
+| A: nothing opened | 15.6 MB (2.77) | 15.7 / 18.4 MB | 26 | 0.20 (`decibell-rt`: keep-alives) |
+| B: `#general` shown, its newest page (50 rows) | 15.9 MB (2.89) | 16.1 / 18.9 MB | 26 | 0.17 (same) |
+| C: all 7 text channels shown, `#general` paged to 150 rows (≈ 350 rows in 7 slices) | 16.3 MB (3.40) | 16.5 / 19.3 MB | 26 | 0.17 (same) |
+
+No thread, timer or wakeup of the model's at rest in any state (the main thread and GPUI's workers
+parked; every wakeup is the core's two keep-alives). What a slice keeps, counted exactly
+(`tests/retained.rs`, rows shaped like `#general`'s: 74 bytes of text on average, 1 in 20 with an
+attachment, 1 in 20 a reply): **340 bytes a message** requested from the allocator (about 400 with
+malloc's own overhead): the row (`Message`, 200 bytes, in its `Arc`), its text and sender as shared
+strings, its slot and facts; channel ids and empty lists are shared, never per row. A 50-row page is
+~17 KB; the cap of 10 visited channels at the background cap of 150 rows is ≤ 1,500 rows ≈ **0.6 MB**
+worst case. The process figures move more than that (B +0.13 MB, C +0.63 MB private dirty over A):
+decode buffers of the pages are freed but kept by malloc's arenas, and the core keeps per-channel
+state of its own.
+
 ## M3. Voice, streams, calls, presence, friends, E2EE, hotkeys, devices, transfers
 
 The live / people half (`src/live/`, routed from `events/todo.rs`' `m3` functions to
