@@ -71,6 +71,7 @@ pub fn screens() -> Vec<Screen> {
         screen!("voice-stage-1", "Voice: alone in Lounge (your tile, the invite / share prompt)", Scene::Stage { people: 1, streams: 0, watched: 0 }),
         screen!("voice-stage-4", "Voice: four people in Lounge, alice speaking", Scene::Stage { people: 4, streams: 0, watched: 0 }),
         screen!("voice-stage-9", "Voice: nine people, the best-fit grid", Scene::Stage { people: 9, streams: 0, watched: 0 }),
+        screen!("voice-stage-12", "Voice: twelve people (the `render-cost` self-test's stage)", Scene::Stage { people: 12, streams: 0, watched: 0 }),
         screen!("voice-stage-25", "Voice: 25 people: the size floor and \"+N more\"", Scene::Stage { people: 25, streams: 0, watched: 0 }),
         screen!("voice-stage-live", "Voice: two live streams nobody watches (posters) over the people row", Scene::Stage { people: 4, streams: 2, watched: 0 }),
         screen!("voice-stage-stream", "Voice: one stream watched in its tile, four people", Scene::Stage { people: 4, streams: 1, watched: 1 }),

@@ -4,7 +4,7 @@
 //! codec accents), the one place they are named; everything else in this crate is a token.
 
 use decibell_model::live::voice::{VideoCodec, streams::StreamInfo};
-use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label};
+use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, Spinner};
 use gpui::{App, Div, Hsla, IntoElement, SharedString, div, hsla, prelude::*, px, rgb};
 
 /// `#000` at `alpha` (`bg-black/70` …): the renderer's scrim literal.
@@ -44,6 +44,37 @@ pub fn red_400() -> Hsla {
 
 pub fn red_500() -> Hsla {
     rgb(0xef4444).into()
+}
+
+/// The stall indicator over a stream whose pictures stopped (`StreamVideoPlayer.tsx`: `absolute
+/// inset-0 bg-black/40`, a pill `rounded-md border border-white/10 bg-black/70 px-3 py-2
+/// text-[12px] font-medium text-white/90` with a 16 px warning spinner and "Reconnecting…").
+/// Takes no pointer events, as the renderer's (`pointer-events-none`): it has no handlers.
+pub fn reconnecting(cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(black(0.4))
+        .children(decibell_shell::probes::probe("stream-reconnecting"))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .rounded(theme.radius_md)
+                .border_1()
+                .border_color(white(0.1))
+                .bg(black(0.7))
+                .px_3()
+                .py_2()
+                .child(Spinner::new().size(px(16.)).color(theme.color_warning))
+                .child(Label::new("Reconnecting…").size(12.).weight(500.).color(white(0.9)).nowrap()),
+        )
 }
 
 /// `shortCodec`: the codec as the quality pill names it.

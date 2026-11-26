@@ -337,7 +337,8 @@ impl Render for StreamTile {
         let shown = display_name(d.server, owner, &owner_name, cx);
         let label: SharedString = if d.own { "Your screen".into() } else { format!("{shown}'s screen").into() };
         let thumbnail = (!d.call).then(|| model.live.voice.thumbnails.read(cx).get(owner).map(|t| t.image.clone())).flatten();
-        let has_picture = StreamStates::global(cx).read(cx).get(owner).picture.is_some();
+        let state = StreamStates::global(cx).read(cx).get(owner);
+        let (has_picture, stalled) = (state.picture.is_some(), state.stalled);
         let theme = cx.theme();
         let height = crate::layout::tile_height(d.width);
         let radius = if d.mini { theme.radius_md } else { theme.radius_lg };
@@ -359,6 +360,7 @@ impl Render for StreamTile {
                             .child(Spinner::new().size(px(32.)).color(theme.color_accent)),
                     )
                 })
+                .when(has_picture && stalled, |this| this.child(div().absolute().inset_0().rounded(radius).overflow_hidden().child(crate::scrim::reconnecting(cx))))
                 .into_any_element(),
             None => match thumbnail {
                 Some(image) => img(ImageSource::Image(image))
@@ -560,7 +562,7 @@ impl Render for StreamTile {
                         div().absolute().bottom_2().right_2().child(
                             scrim::scrim(cx)
                                 .child(Icon::new(IconName::StageEye).size(px(13.)).color(white(1.)))
-                                .child(scrim::scrim_text(d.info.watcher_count.to_string(), white(1.), cx)),
+                                .child(scrim::scrim_text(decibell_model::regional::Regional::get().group(d.info.watcher_count as u64), white(1.), cx)),
                         ),
                     )
                 })
@@ -725,7 +727,7 @@ impl Render for OverflowTile {
             .bg(theme.color_bg_light)
             .shadow(theme.shadow_raised.clone())
             .cursor_pointer()
-            .tooltip(title_tooltip(SharedString::from(format!("{count} more in {}", d.channel_name))))
+            .tooltip(title_tooltip(SharedString::from(format!("{} more in {}", decibell_model::regional::Regional::get().group(count as u64), d.channel_name))))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 let _ = &bounds;
@@ -741,7 +743,7 @@ impl Render for OverflowTile {
                     .items_baseline()
                     .gap_1()
                     .child(
-                        Label::new(SharedString::from(format!("+{count}")))
+                        Label::new(SharedString::from(format!("+{}", decibell_model::regional::Regional::get().group(count as u64))))
                             .font(FontRole::Channel)
                             .size(if d.mini { theme.scaled.text_micro } else { theme.scaled.text_member })
                             .weight(theme.palette.font_weight_emphasis)

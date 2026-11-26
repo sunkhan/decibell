@@ -33,6 +33,11 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         crate::software_codecs::selftest(),
         crate::hotkeys::selftest(),
+        SelfTest {
+            name: "render-cost",
+            about: "what one change costs in views rendered and main-thread time, with nested cached views replayed (GPUI patch 0014) and as GPUI was",
+            run: |cx| Box::pin(crate::render_cost::run(cx)),
+        },
     ]
 }
 

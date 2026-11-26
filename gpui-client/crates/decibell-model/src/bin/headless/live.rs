@@ -375,7 +375,8 @@ pub fn holds(wait: &LiveWait, model: &Model, cx: &App) -> bool {
 /// `dump codecs`: the core's encoder probe, run now (`probe_native_encoders`: what Go Live
 /// offers on this machine, each codec with its backend, FFmpeg encoder and limits;
 /// `DECIBELL_ENCODER` leaves one backend), and the codec caps the model holds (the `codecs`
-/// step loads them; they carry no backend). One line `DUMP codecs <json>`.
+/// step loads them: `encoders` with each one's backend, label and limits). One line
+/// `DUMP codecs <json>`.
 pub async fn dump_codecs(model: &Model, cx: &mut AsyncApp) -> Result<(), String> {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     let encoders: Vec<Value> = decibell_core::api::streaming::probe_native_encoders()
@@ -394,7 +395,7 @@ pub async fn dump_codecs(model: &Model, cx: &mut AsyncApp) -> Result<(), String>
     let encoders: Vec<Value> = Vec::new();
     let caps = cx.update(|cx| {
         let c = model.live.voice.codecs.read(cx);
-        json!({ "encode": c.encode, "decode": c.decode, "loaded": c.loaded })
+        json!({ "encode": c.encode, "decode": c.decode, "encoders": c.encoders, "loaded": c.loaded })
     });
     let forced = std::env::var(decibell_core::media::encoder_backend::FORCE_ENV).ok();
     crate::say(format!("DUMP codecs {}", json!({ "forced": forced, "encoders": encoders, "caps": caps })));

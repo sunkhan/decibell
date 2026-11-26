@@ -305,6 +305,10 @@ impl CallStage {
                 this.focused.is_some() && this.tiles.iter().any(|(u, _)| *u == e.uid)
             })
             .event(&model.layout, cx, |_, _| true)
+            // The focused stream's stall ("Reconnecting…").
+            .event(&crate::video_events::StreamStates::global(cx), cx, |this: &mut Self, e: &crate::video_events::StreamStateChanged| {
+                this.focused.as_ref().is_some_and(|(u, _)| *u == e.0)
+            })
             .people(cx, |this: &Self, uid| this.tiles.iter().any(|(u, _)| *u == uid));
         let mut this = Self {
             width: Rc::new(Cell::new(0.)),
@@ -466,6 +470,7 @@ impl CallStage {
             cx.background_executor().timer(crate::focus::OVERLAY_HIDE).await;
             let _ = this.update(cx, |this, cx| {
                 this.overlay = false;
+                crate::focus::rest_cursor(cx);
                 cx.notify();
             });
         }));
@@ -690,6 +695,10 @@ impl Render for CallStage {
                     .into_any_element()
             });
             let docked = dock(true, volume, cx);
+            let stalled = {
+                let state = crate::video_events::StreamStates::global(cx).read(cx).get(uid);
+                state.picture.is_some() && state.stalled
+            };
             let chips = (stage_w >= CHIPS_MIN_W).then(|| {
                 div()
                     .absolute()
@@ -743,6 +752,7 @@ impl Render for CallStage {
                 }))
                 .on_mouse_move(cx.listener(|this, _, _, cx| this.poke(cx)))
                 .child(div().size_full().child(VideoView::new(&viewer).fit(Fit::Contain)))
+                .when(stalled, |this| this.child(scrim::reconnecting(cx)))
                 .children(stats)
                 .child(
                     div()

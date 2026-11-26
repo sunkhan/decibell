@@ -36,7 +36,7 @@ use std::rc::Rc;
 
 use gpui::{App, AppContext as _, Entity};
 
-pub use codecs::{CodecCap, CodecCaps, VideoCodec};
+pub use codecs::{CodecCap, CodecCaps, DecodeReport, DecoderInfo, EncoderCap, SkippedDecoder, VideoCodec};
 pub use devices::{AudioDevices, StreamAudioApps};
 pub use rosters::{VoiceKey, VoiceRosters, VoiceUserState};
 pub use session::{Participants, VoiceSession};

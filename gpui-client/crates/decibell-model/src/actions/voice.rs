@@ -17,7 +17,7 @@ use crate::Model;
 use crate::call::call;
 use crate::error::UiError;
 use crate::ids::{ChannelId, ServerId, Uid};
-use crate::live::voice::codecs::{self, CodecCap, VideoCodec};
+use crate::live::voice::codecs::{self, CodecCap, DecodeReport, EncoderCap, VideoCodec};
 use crate::live::voice::devices::{AudioDevice, DeviceList, StreamAudioApp};
 use crate::live::voice::gain;
 use crate::live::voice::go_live::{StreamAudioMode, StreamSettings, normalize_app_id};
@@ -989,59 +989,107 @@ fn cap_values(caps: &[CodecCap]) -> Vec<api::streaming::CodecCapValue> {
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-async fn probe_encoders() -> Result<Vec<CodecCap>, UiError> {
+async fn probe_encoders() -> Result<Vec<EncoderCap>, UiError> {
     let raw = core(api::streaming::probe_native_encoders()).await?;
     Ok(raw
         .into_iter()
-        .map(|c| CodecCap {
+        .map(|c| EncoderCap {
             codec: VideoCodec::from_wire(c.codec),
             max_width: c.max_width,
             max_height: c.max_height,
             max_fps: c.max_fps,
             hardware: c.hardware,
+            backend: c.backend.into(),
+            label: c.label.into(),
+            max_pixel_rate: c.max_pixel_rate,
         })
         .collect())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-async fn probe_encoders() -> Result<Vec<CodecCap>, UiError> {
+async fn probe_encoders() -> Result<Vec<EncoderCap>, UiError> {
     Ok(Vec::new())
 }
 
 /// The re-probe after a cached boot (the cache used to live forever, so a GPU swap kept
-/// offering codecs that no longer opened): once, this long after start.
+/// offering codecs that no longer opened): once, this long after the load.
 pub const ENCODER_REPROBE_DELAY: Duration = Duration::from_secs(15);
 
-/// Probe (or read the cached) decode and encode capabilities, keep only encoders we can
-/// also decode, ship both to the core (its caps are in memory: every start), and load
-/// Settings → Codecs' toggles. `force`: Settings' "Refresh codec capabilities".
+/// Ask the decoder probe (the video crate's: a real probe, off the UI thread, kept per GPU
+/// and driver), keep its answer and ship it to the core. Returns what is advertised.
+async fn refresh_decode_caps(model: &Model, force: bool, cx: &mut AsyncApp) -> Vec<CodecCap> {
+    let probe = cx.update(|cx| model.live.voice.codecs.read(cx).decoder_probe.clone());
+    let report = match &probe {
+        Some(p) => p.probe(force).await,
+        None => DecodeReport::default(),
+    };
+    let (decode, encode) = cx.update(|cx| {
+        model.live.voice.codecs.update(cx, |c, cx| {
+            c.set_decode(report, cx);
+            // The advertised encoders follow what decodes: shipped again once they are loaded.
+            (c.decode.clone(), c.loaded.then(|| c.encode.clone()))
+        })
+    });
+    let _ = core(api::streaming::set_decoder_caps(api::streaming::SetDecoderCapsArgs { decoder_caps: cap_values(&decode) })).await;
+    if let Some(encode) = encode {
+        let _ = core(api::streaming::set_encoder_caps(api::streaming::SetEncoderCapsArgs { encoder_caps: cap_values(&encode) })).await;
+    }
+    decode
+}
+
+/// The decode capabilities alone: what the app runs once its first frame is on screen (and
+/// again when the GPU device was replaced or a decoder was given up), so a voice join
+/// advertises what was really probed. Cheap when nothing changed (the video crate keeps
+/// the answer); opens no encoder.
+pub fn load_decode_caps(cx: &mut App) {
+    let Some(model) = model(cx) else { return };
+    cx.spawn(async move |cx| {
+        refresh_decode_caps(&model, false, cx).await;
+    })
+    .detach();
+}
+
+/// Ship the decode capabilities the store holds to the core (its caps are in memory: after
+/// every start of the core). Nothing while the store has none.
+pub fn ship_decode_caps(cx: &mut App) {
+    let Some(model) = model(cx) else { return };
+    let decode = model.live.voice.codecs.read(cx).decode.clone();
+    if decode.is_empty() {
+        return;
+    }
+    fire(
+        "set_decoder_caps",
+        async move {
+            api::streaming::set_decoder_caps(api::streaming::SetDecoderCapsArgs { decoder_caps: cap_values(&decode) }).await.map(|_| ())
+        },
+        cx,
+    );
+}
+
+/// The one loader of the codec capabilities: the decode probe's answer, the encoders (the
+/// `ui.json` cache, else the core's probe, off the UI thread), the encoders we can also
+/// decode shipped to the core with the decode caps, and Settings → Codecs' toggles.
+/// `force`: Settings' "Refresh codec capabilities" (both probes run again).
+///
+/// Never at start: the encoder probe opens encoder sessions. Whoever needs the caps first
+/// calls this (the first voice session, the Go Live dialog, Settings → Codecs); callers
+/// while a load runs share it, and a forced one asked for meanwhile runs after it.
 pub fn init_codec_caps(force: bool, cx: &mut App) {
     let Some(model) = model(cx) else { return };
-    let probe = model.live.voice.codecs.read(cx).decoder_probe.clone();
-    let cached_decode: Option<Vec<CodecCap>> =
-        (!force).then(|| model.layout.read(cx).extra(codecs::DECODER_CAPS_KEY)).flatten().filter(|v: &Vec<CodecCap>| !v.is_empty());
-    let cached_encode: Option<Vec<CodecCap>> =
-        (!force).then(|| model.layout.read(cx).extra(codecs::ENCODER_CAPS_KEY)).flatten().filter(|v: &Vec<CodecCap>| !v.is_empty());
-    model.live.voice.codecs.update(cx, |c, cx| c.set_refreshing(true, cx));
+    if !model.live.voice.codecs.update(cx, |c, cx| c.begin_load(force, cx)) {
+        return;
+    }
+    let cached: Option<Vec<EncoderCap>> =
+        (!force).then(|| model.layout.read(cx).extra(codecs::ENCODER_CAPS_KEY)).flatten().filter(|v: &Vec<EncoderCap>| !v.is_empty());
+    model.layout.update(cx, |l, cx| {
+        for key in codecs::STALE_CAPS_KEYS {
+            l.set_extra::<()>(key, None, cx);
+        }
+    });
     cx.spawn(async move |cx| {
-        let decode = match cached_decode {
-            Some(caps) => caps,
-            None => {
-                let probed = match &probe {
-                    Some(p) => p.probe().await,
-                    None => Vec::new(),
-                };
-                let caps = codecs::with_h264_fallback(probed);
-                // Only a real probe is cached: without one (the headless tool) the next
-                // start asks again.
-                if probe.is_some() {
-                    cx.update(|cx| model.layout.update(cx, |l, cx| l.set_extra(codecs::DECODER_CAPS_KEY, Some(&caps), cx)));
-                }
-                caps
-            }
-        };
-        let was_cached = cached_encode.is_some();
-        let encode = match cached_encode {
+        refresh_decode_caps(&model, force, cx).await;
+        let was_cached = cached.is_some();
+        let encoders = match cached {
             Some(caps) => caps,
             None => match probe_encoders().await {
                 Ok(caps) => {
@@ -1054,21 +1102,23 @@ pub fn init_codec_caps(force: bool, cx: &mut App) {
                 }
             },
         };
-        let encode = codecs::decodable_encoders(encode, &decode);
-        let _ = core(api::streaming::set_decoder_caps(api::streaming::SetDecoderCapsArgs { decoder_caps: cap_values(&decode) })).await;
-        let _ = core(api::streaming::set_encoder_caps(api::streaming::SetEncoderCapsArgs { encoder_caps: cap_values(&encode) })).await;
         let toggles = core(api::streaming::get_codec_settings()).await;
-        cx.update(|cx| {
+        let (encode, again) = cx.update(|cx| {
             model.live.voice.codecs.update(cx, |c, cx| {
                 if let Ok(t) = &toggles {
                     c.set_toggles(t.use_av1, t.use_h265, cx);
                 }
-                c.set_caps(encode, decode, cx);
-                c.set_refreshing(false, cx);
+                c.set_encoders(encoders, cx);
+                (c.encode.clone(), c.end_load(cx))
             })
         });
+        let _ = core(api::streaming::set_encoder_caps(api::streaming::SetEncoderCapsArgs { encoder_caps: cap_values(&encode) })).await;
+        if again {
+            cx.update(|cx| init_codec_caps(true, cx));
+            return;
+        }
         if was_cached {
-            // This session keeps the caps it booted with; the next one gets the fresh probe.
+            // This session keeps the caps it loaded; the next one gets the fresh probe.
             cx.background_executor().timer(ENCODER_REPROBE_DELAY).await;
             if let Ok(fresh) = probe_encoders().await {
                 cx.update(|cx| model.layout.update(cx, |l, cx| l.set_extra(codecs::ENCODER_CAPS_KEY, Some(&fresh), cx)));

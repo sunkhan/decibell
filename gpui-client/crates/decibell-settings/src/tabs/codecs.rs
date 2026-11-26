@@ -3,19 +3,22 @@
 //! encodes and decodes.
 //!
 //! The capabilities are the model's (`live.voice.codecs`: the video crate's decode probe, the
-//! core's encode probe). Opening the tab loads them if nothing has yet (the renderer's `load()`;
-//! here the app doesn't probe at boot yet). Each encoder also says which backend encodes it
-//! ("NVENC (NVIDIA)", "Software (SVT-AV1)"), from the core's last probe
-//! (`cached_native_encoders`): the renderer's list has only "(HW)" / "(SW)".
+//! core's encode probe), loaded by its one action (`actions::voice::init_codec_caps`): opening
+//! the tab asks for them if nothing has yet (the renderer's `load()`), "Refresh" probes both
+//! again. More than the renderer's "(HW)" / "(SW)", in its layout: each encoder says which
+//! backend encodes it ("NVENC (NVIDIA)", "Software (SVT-AV1)"), each decoder which decoder its
+//! streams really get ("Vulkan Video", "NVDEC", "VA-API", "Software (dav1d)"), and under the
+//! decoders every decoder that was tried and is not used, with the reason (the owner's rule:
+//! probe, fall through in order, report which path is in use).
 
 use std::collections::HashMap;
 
 use decibell_common::Watch;
 use decibell_model::Model;
 use decibell_model::actions;
-use decibell_model::live::voice::codecs::{CodecCap, VideoCodec};
+use decibell_model::live::voice::codecs::{CodecCap, SkippedDecoder, VideoCodec};
 use decibell_ui::{ActiveTheme as _, Label, ScrollHandle};
-use gpui::{AnyElement, App, Context, IntoElement, Render, SharedString, Subscription, Task, Window, div, prelude::*};
+use gpui::{AnyElement, App, Context, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
 
 use super::TabId;
 use crate::rows::{Btn, Look, ToggleRow, card};
@@ -24,12 +27,9 @@ use crate::window::CloseLink;
 pub struct CodecsTab {
     scroll: ScrollHandle,
     close: CloseLink,
-    /// The backend that encodes each codec, as the core last probed it.
+    /// A fixture's encoder backends (screens have no probe); the model's win.
     labels: HashMap<VideoCodec, SharedString>,
-    /// A refresh was running (the backends are asked for again when it ends).
-    was_refreshing: bool,
     take_stream: bool,
-    _labels: Option<Task<()>>,
     _refresh: Subscription,
     _watch: Watch,
 }
@@ -42,59 +42,29 @@ impl CodecsTab {
             let on = s.get().take_stream_on_channel_switch;
             std::mem::replace(&mut this.take_stream, on) != on
         });
-        // Every change redraws; a refresh that just ended means the core probed again: ask
-        // for the backends again.
-        let refresh = cx.observe(&model.live.voice.codecs, |this, codecs, cx| {
-            let refreshing = codecs.read(cx).refreshing;
-            if this.was_refreshing && !refreshing {
-                this.fetch_labels(cx);
-            }
-            this.was_refreshing = refreshing;
-            cx.notify();
-        });
-        let loaded = model.live.voice.codecs.read(cx).loaded;
-        if !loaded && decibell_model::core::is_running() {
+        let refresh = cx.observe(&model.live.voice.codecs, |_, _, cx| cx.notify());
+        let (loaded, refreshing) = {
+            let codecs = model.live.voice.codecs.read(cx);
+            (codecs.loaded, codecs.refreshing)
+        };
+        if !loaded && !refreshing && decibell_model::core::is_running() {
             actions::voice::init_codec_caps(false, cx);
         }
         let staged = crate::hooks::SettingsHooks::get(cx).staged.encoder_labels.clone();
-        let mut tab = Self {
+        Self {
             scroll: ScrollHandle::new(),
             close,
             labels: staged.unwrap_or_default(),
-            was_refreshing: model.live.voice.codecs.read(cx).refreshing,
             take_stream: model.settings.read(cx).get().take_stream_on_channel_switch,
-            _labels: None,
             _refresh: refresh,
             _watch: watch,
-        };
-        tab.fetch_labels(cx);
-        tab
+        }
     }
 
     /// The fixture's backends (screens have no core to ask).
     pub fn set_labels(&mut self, labels: HashMap<VideoCodec, SharedString>, cx: &mut Context<Self>) {
         self.labels = labels;
         cx.notify();
-    }
-
-    fn fetch_labels(&mut self, cx: &mut Context<Self>) {
-        if !decibell_model::core::is_running() {
-            return;
-        }
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        {
-            self._labels = Some(cx.spawn(async move |this, cx| {
-                let Ok(caps) = decibell_core::api::streaming::cached_native_encoders().await else { return };
-                let labels: HashMap<VideoCodec, SharedString> =
-                    caps.into_iter().map(|c| (VideoCodec::from_wire(c.codec), SharedString::from(c.label))).collect();
-                let _ = this.update(cx, |this, cx| {
-                    this._labels = None;
-                    this.set_labels(labels, cx);
-                });
-            }));
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let _ = cx;
     }
 }
 
@@ -109,7 +79,17 @@ fn codec_label(codec: VideoCodec) -> &'static str {
     }
 }
 
-/// `formatCap`: "AV1 — up to 3840×2160 @ 120fps (HW)", and for an encoder the backend after it.
+/// A decoder that was tried and is not used: "H.265 / HEVC: VA-API is not used (no VA driver)".
+pub fn format_skipped(s: &SkippedDecoder) -> String {
+    if s.reason.is_empty() {
+        format!("{}: {} is not used", codec_label(s.codec), s.label)
+    } else {
+        format!("{}: {} is not used ({})", codec_label(s.codec), s.label, s.reason)
+    }
+}
+
+/// `formatCap`: "AV1 — up to 3840×2160 @ 120fps (HW)", and after it the backend that encodes
+/// it or the decoder that decodes it.
 pub fn format_cap(c: &CodecCap, backend: Option<&SharedString>) -> String {
     let base = format!(
         "{} — up to {}×{} @ {}fps{}",
@@ -133,6 +113,11 @@ impl Render for CodecsTab {
         let encode = codecs.encode.clone();
         let decode = codecs.decode.clone();
         let (loaded, refreshing) = (codecs.loaded, codecs.refreshing);
+        // Which backend encodes and which decoder decodes each codec, and what was given up.
+        let mut encoder_labels = self.labels.clone();
+        encoder_labels.extend(codecs.encoders.iter().filter(|e| !e.label.is_empty()).map(|e| (e.codec, e.label.clone())));
+        let decoder_labels: HashMap<VideoCodec, SharedString> = codecs.decoders.iter().map(|d| (d.codec, d.label.clone())).collect();
+        let skipped = codecs.skipped_decoders.clone();
         let has_av1 = encode.iter().any(|c| c.codec == VideoCodec::Av1);
         let has_h265 = encode.iter().any(|c| c.codec == VideoCodec::H265);
         let take = self.take_stream;
@@ -153,7 +138,7 @@ impl Render for CodecsTab {
         .disabled(refreshing)
         .on_click(|_, _, cx| actions::voice::init_codec_caps(true, cx));
 
-        let list = |title: &'static str, caps: &[CodecCap], labels: Option<&HashMap<VideoCodec, SharedString>>, cx: &App| {
+        let list = |title: &'static str, caps: &[CodecCap], labels: &HashMap<VideoCodec, SharedString>, skipped: &[SkippedDecoder], cx: &App| {
             let theme = cx.theme();
             card(cx)
                 .p_4()
@@ -172,10 +157,15 @@ impl Render for CodecsTab {
                         this.child(Label::new("None detected.").size(12.).color(theme.color_text_muted))
                     } else {
                         this.child(div().flex().flex_col().gap_1p5().children(caps.iter().map(|c| {
-                            let backend = labels.and_then(|l| l.get(&c.codec));
+                            let backend = labels.get(&c.codec);
                             Label::new(SharedString::from(format_cap(c, backend))).size(13.).color(theme.color_text_primary)
                         })))
                     }
+                })
+                .when(!skipped.is_empty(), |this| {
+                    this.child(div().mt_2().flex().flex_col().gap_1().children(skipped.iter().map(|s| {
+                        Label::new(SharedString::from(format_skipped(s))).size(12.).color(theme.color_text_muted)
+                    })))
                 })
                 .into_any_element()
         };
@@ -185,8 +175,8 @@ impl Render for CodecsTab {
                 .grid()
                 .grid_cols(2)
                 .gap_3()
-                .child(list("Detected encoders", &encode, Some(&self.labels), cx))
-                .child(list("Detected decoders", &decode, None, cx))
+                .child(list("Detected encoders", &encode, &encoder_labels, &[], cx))
+                .child(list("Detected decoders", &decode, &decoder_labels, &skipped, cx))
                 .into_any_element()
         });
         let theme = cx.theme();
@@ -272,5 +262,8 @@ mod tests {
             format_cap(&soft, Some(&"Software (SVT-AV1)".into())),
             "AV1 — up to 3840×2160 @ 120fps (SW) · Software (SVT-AV1)"
         );
+        assert_eq!(format_cap(&cap, Some(&"Vulkan Video".into())), "AV1 — up to 3840×2160 @ 120fps (HW) · Vulkan Video");
+        let skipped = SkippedDecoder { codec: VideoCodec::H265, label: "VA-API".into(), reason: "no VA driver for this GPU".into() };
+        assert_eq!(format_skipped(&skipped), "H.265 / HEVC: VA-API is not used (no VA driver for this GPU)");
     }
 }

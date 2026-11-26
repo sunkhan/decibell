@@ -6,6 +6,11 @@
 //! The overlays' hide timer exists only while they show; the stats overlay refreshes twice a
 //! second only while it is open (its numbers are on screen). The video itself costs one present
 //! per picture: nothing here redraws for a frame.
+//!
+//! In fullscreen the mouse cursor goes with the overlays (`cursor-none` while they are hidden):
+//! the same one-shot timer, re-armed by pointer movement only, hides it
+//! (`App::hide_cursor_until_mouse_moves`, GPUI patch `0013`), and the platform shows it again
+//! when the pointer next moves, which is also what brings the overlays back.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -44,6 +49,8 @@ pub const STATS_REFRESH: Duration = Duration::from_millis(500);
 pub struct FocusView {
     /// The stream on stage, and the viewer this view holds of it.
     shown: Option<(Uid, Viewer)>,
+    /// `watching.fullscreen` at the last look (entering it arms the overlays' timer).
+    fullscreen: bool,
     overlay: bool,
     hide_timer: Option<Task<()>>,
     volume: u8,
@@ -75,6 +82,7 @@ impl FocusView {
             .people(cx, |this: &Self, uid| this.focused() == Some(uid));
         let mut this = Self {
             shown: None,
+            fullscreen: false,
             overlay: false,
             hide_timer: None,
             volume: 100,
@@ -108,6 +116,12 @@ impl FocusView {
         let live: HashSet<Uid> =
             voice.streams.read(cx).session(connected.as_ref(), in_call).iter().map(|s| s.owner_uid).collect();
         let focused = voice.watching.read(cx).focused.filter(|u| live.contains(u));
+        // Entering fullscreen: the overlays show for their 2.5 s and then go with the cursor,
+        // also when the pointer never moves again (the button that was under it moved away).
+        let fullscreen = voice.watching.read(cx).fullscreen && focused.is_some();
+        if std::mem::replace(&mut self.fullscreen, fullscreen) != fullscreen && fullscreen {
+            self.poke(cx);
+        }
         if focused != self.focused() {
             self.shown = focused.map(|uid| (uid, crate::players::viewer(uid, cx)));
             self.sampler = StatsSampler::new();
@@ -132,7 +146,11 @@ impl FocusView {
         }
         self.hide_timer = Some(cx.spawn(async |this, cx| {
             cx.background_executor().timer(OVERLAY_HIDE).await;
-            let _ = this.update(cx, |this, cx| this.hide(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.hide(cx);
+                // The pointer rested on the video: in fullscreen the cursor goes too.
+                rest_cursor(cx);
+            });
         }));
     }
 
@@ -196,6 +214,20 @@ impl FocusView {
         }
     }
 }
+
+/// The pointer has rested over a stream for [`OVERLAY_HIDE`] and the overlays went: while the
+/// stream fills the window (`watching.fullscreen`) the mouse cursor is hidden until it moves
+/// (`StreamViewPanel.tsx`: `cursor-none` while fullscreen and the overlays are hidden).
+pub fn rest_cursor(cx: &mut App) {
+    let fullscreen = cx.try_global::<Model>().is_some_and(|m| m.live.voice.watching.read(cx).fullscreen);
+    if fullscreen {
+        cx.hide_cursor_until_mouse_moves();
+        CURSOR_RESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Times [`rest_cursor`] hid the cursor (self-tests).
+pub static CURSOR_RESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `set_stream_volume` (the global stream-audio gain).
 pub fn set_stream_volume(volume: f64, cx: &mut App) {
@@ -281,7 +313,7 @@ pub fn stats_overlay(info: &StreamInfo, viewer: &Viewer, rates: Option<StreamRat
         ("Input", format!("{} fps", rates.input_fps.round()), false),
         ("Decode", format!("{} fps", rates.decoded_fps.round()), false),
         ("Queue", stats.queue.to_string(), stats.queue > 3),
-        ("Dropped", stats.dropped.to_string(), stats.dropped > 0),
+        ("Dropped", decibell_model::regional::Regional::get().group(stats.dropped), stats.dropped > 0),
         ("Path", stats.path.map(|p| p.label().to_string()).unwrap_or_else(|| "—".into()), false),
     ];
     if let Some(encoder) = encoder.filter(|e| !e.is_empty()) {
@@ -332,7 +364,8 @@ impl Render for FocusView {
         let owner_name = user_name(uid, &info.owner_name, cx);
         let shown_name = display_name(server, uid, &owner_name, cx);
         let label: SharedString = if own { "Your screen".into() } else { format!("{shown_name}'s screen").into() };
-        let has_picture = StreamStates::global(cx).read(cx).get(uid).picture.is_some();
+        let state = StreamStates::global(cx).read(cx).get(uid);
+        let (has_picture, stalled) = (state.picture.is_some(), state.stalled);
         let encoder = own.then(|| model.live.voice.own_stream.read(cx).live().map(|l| l.encoder.clone())).flatten();
         let show_volume = !own && info.has_audio;
         // The overlays fade in 150 ms (`transition-opacity duration-150`): frames only while
@@ -384,7 +417,7 @@ impl Render for FocusView {
                 )
             })
             .when(fullscreen, |this| {
-                // `cursor-none` while the overlays are hidden: GPUI has no hidden cursor style at the pin.
+                // `cursor-none` while the overlays are hidden: `rest_cursor`, from the hide timer.
                 this.on_click(|e: &ClickEvent, _, cx| {
                     if e.click_count() == 2 {
                         set_fullscreen(false, cx)
@@ -397,6 +430,7 @@ impl Render for FocusView {
                     this.hide(cx)
                 }
             }))
+            .children(decibell_shell::probes::probe("focus-video"))
             .child(record)
             .child(keys)
             .child(
@@ -415,6 +449,7 @@ impl Render for FocusView {
                         .child(decibell_ui::Spinner::new().size(px(32.)).color(theme.color_accent)),
                 )
             })
+            .when(has_picture && stalled, |this| this.child(scrim::reconnecting(cx)))
             .when(self.stats, |this| {
                 this.child(div().absolute().left_3().top(px(56.)).child(stats_overlay(&info, &viewer, self.rates, encoder.clone(), cx)))
             })

@@ -1,34 +1,19 @@
-//! Encode capabilities for Go Live: when to probe, what the probe found (backend, label, a
-//! software encoder's pixel-rate ceiling), and which presets this machine can encode.
+//! Encode capabilities for Go Live: what the probe found (backend, label, a software encoder's
+//! pixel-rate ceiling) and which presets this machine can encode.
 //!
-//! The native encoder probe opens real encoder sessions, so it never runs at app start: the first
-//! time the Go Live dialog opens, or the first voice session starts, [`ensure_caps`] runs the
-//! model's `init_codec_caps` (decode caps, the encoder probe off the UI thread, both shipped to
-//! the core) and reads the core's cached probe with the details the model drops
-//! (`cached_native_encoders`: the backend and its label, `max_pixel_rate`).
-
-use std::sync::atomic::{AtomicBool, Ordering};
+//! The caps are the model's (`live.voice.codecs.encoders`: the core's probe with each encoder's
+//! backend, label and limits). The native encoder probe opens real encoder sessions, so it never
+//! runs at app start: the first time the Go Live dialog opens, or the first voice session starts,
+//! [`ensure_caps`] asks the model's one loader (`actions::voice::init_codec_caps`: off the UI
+//! thread, one load at a time whoever asks). [`Encoders`] mirrors the model's list for the Go
+//! Live views, and can be pinned to a fake answer by tests and screens.
 
 use decibell_model::live::voice::VideoCodec;
 use decibell_model::live::voice::go_live::{StreamResolution, StreamSettings};
 use decibell_model::{Model, actions};
-use gpui::{App, AppContext as _, Context, Entity, Global, SharedString};
+use gpui::{App, AppContext as _, Context, Entity, Global};
 
-/// One native encoder as the core probed it (`NativeEncoderCap`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EncoderCap {
-    pub codec: VideoCodec,
-    pub hardware: bool,
-    /// "nvenc", "amf", "qsv", "vaapi", "software".
-    pub backend: SharedString,
-    /// "NVENC (NVIDIA)", … "Software (SVT-AV1)".
-    pub label: SharedString,
-    pub max_width: u32,
-    pub max_height: u32,
-    pub max_fps: u32,
-    /// Software only: width × height × fps allowed; 0 = no limit beyond `max_*`.
-    pub max_pixel_rate: u32,
-}
+pub use decibell_model::live::voice::EncoderCap;
 
 #[derive(Default)]
 pub struct Encoders {
@@ -46,7 +31,27 @@ impl Encoders {
         if let Some(h) = cx.try_global::<Handle>() {
             return h.0.clone();
         }
-        let entity = cx.new(|_| Encoders::default());
+        let codecs = cx.try_global::<Model>().map(|m| m.live.voice.codecs.clone());
+        let entity = cx.new(|cx: &mut Context<Encoders>| {
+            let mut encoders = Encoders::default();
+            // The model's probe answer, now and whenever it changes (a refresh).
+            if let Some(codecs) = codecs {
+                cx.observe(&codecs, |this, codecs, cx| {
+                    let codecs = codecs.read(cx);
+                    if codecs.loaded && (!this.loaded || this.caps != codecs.encoders) {
+                        let caps = codecs.encoders.clone();
+                        this.set(caps, cx);
+                    }
+                })
+                .detach();
+                let codecs = codecs.read(cx);
+                if codecs.loaded && !codecs.encoders.is_empty() {
+                    encoders.caps = codecs.encoders.clone();
+                    encoders.loaded = true;
+                }
+            }
+            encoders
+        });
         cx.set_global(Handle(entity.clone()));
         entity
     }
@@ -104,52 +109,22 @@ impl Encoders {
     }
 }
 
-static REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// Probe the codec capabilities once per process, when first needed (see the module doc).
+/// Load the codec capabilities when first needed (see the module doc). Any number of callers:
+/// the model runs one load and none once they are loaded.
 pub fn ensure_caps(cx: &mut App) {
-    if REQUESTED.swap(true, Ordering::AcqRel) {
-        return;
+    let Some(model) = cx.try_global::<Model>().cloned() else { return };
+    {
+        let codecs = model.live.voice.codecs.read(cx);
+        if codecs.loaded || codecs.refreshing {
+            return;
+        }
     }
     if !decibell_model::core::is_running() {
-        REQUESTED.store(false, Ordering::Release);
         return;
     }
+    // The mirror exists before the answer arrives.
+    Encoders::global(cx);
     actions::voice::init_codec_caps(false, cx);
-    load_encoders(cx);
-}
-
-/// Read the core's cached probe (the process's result, its disk cache, or a probe now: all off
-/// the UI thread) into [`Encoders`].
-pub fn load_encoders(cx: &mut App) {
-    let encoders = Encoders::global(cx);
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    cx.spawn(async move |cx| {
-        let probed = decibell_core::api::streaming::cached_native_encoders().await;
-        let caps: Vec<EncoderCap> = match probed {
-            Ok(list) => list
-                .into_iter()
-                .map(|c| EncoderCap {
-                    codec: VideoCodec::from_wire(c.codec),
-                    hardware: c.hardware,
-                    backend: c.backend.into(),
-                    label: c.label.into(),
-                    max_width: c.max_width,
-                    max_height: c.max_height,
-                    max_fps: c.max_fps,
-                    max_pixel_rate: c.max_pixel_rate,
-                })
-                .collect(),
-            Err(e) => {
-                log::warn!("[voice] encoder probe: {e}");
-                Vec::new()
-            }
-        };
-        cx.update(|cx| encoders.update(cx, |e, cx| e.set(caps, cx)));
-    })
-    .detach();
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    encoders.update(cx, |e, cx| e.set(Vec::new(), cx));
 }
 
 /// Whether the model's codec store has caps yet (the Advanced codec row lists them).

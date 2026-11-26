@@ -80,8 +80,10 @@ pub fn run(args: Args) -> ExitCode {
             }
         }
     });
-    // The event loop is gone: stop the core and its runtime, bounded (a call's goodbye, the
-    // connections' close).
+    // The event loop is gone. Stream playback first: its decoder threads free their decoders
+    // through the GPU driver, which must not be running its exit handlers yet.
+    decibell_video::shutdown(Duration::from_secs(2));
+    // Then the core and its runtime, bounded (a call's goodbye, the connections' close).
     decibell_model::core::shutdown(Duration::from_secs(3));
     perf::report_frames();
     ExitCode::from(exit_code.load(Ordering::Relaxed))
@@ -104,6 +106,17 @@ fn start(
     cx: &mut App,
 ) -> Result<()> {
     decibell_ui::init(cx, args.theme.unwrap_or_default())?;
+    // Quitting with a stream on screen: its decoder threads leave before the windows and the
+    // GPU device do (and before the driver's exit handlers: `run` checks again after the loop).
+    cx.on_app_quit(|_| {
+        decibell_video::shutdown(Duration::from_secs(1));
+        async {}
+    })
+    .detach();
+    // GPUI patch 0014's way back: every cached view under a dirty one renders, as at the pin.
+    if std::env::var("DECIBELL_VIEW_REPLAY").is_ok_and(|value| value == "0") {
+        gpui::set_nested_view_replay(false);
+    }
     bind_theme_keys(cx);
 
     // `--check` runs one of the shell's checks in the signed-in app; `--selftest` runs in the
@@ -129,6 +142,8 @@ fn start(
             #[cfg(not(feature = "dev-local"))]
             let _ = login;
             let window = window::open_main(|_, cx| cx.new(decibell_shell::Shell::new).into(), cx)?;
+            // The decode capabilities are probed once the first frame is up (crate::video).
+            window.update(cx, |_, window, _| crate::video::probe_after_first_frame(window))?;
             #[cfg(feature = "dev-local")]
             crate::dev::serve_control(window.into(), cx);
             window

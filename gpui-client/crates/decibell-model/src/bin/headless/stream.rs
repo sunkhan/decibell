@@ -30,17 +30,23 @@ Streaming (test only):
   stream-file <file.dbv>          stream a .dbv recording into the connected voice channel:
                                   pre-encoded frames through the core (MLS-sealed), looped, at
                                   the file's timing; keyframe requests jump to its next keyframe
+  stream-pause                    stop sending frames (the stream stays announced: what a
+                                  watcher sees when the streamer's frames no longer arrive)
+  stream-resume                   send again, from where it stopped
   stream-stop                     end it (announced as ended)";
 
 #[derive(Debug, Clone)]
 pub enum StreamStep {
     File(PathBuf),
+    Pause(bool),
     Stop,
 }
 
 pub fn parse(arg: &str, it: &mut std::vec::IntoIter<String>) -> Result<Option<StreamStep>, String> {
     Ok(Some(match arg {
         "stream-file" => StreamStep::File(PathBuf::from(it.next().ok_or("stream-file: missing the file")?)),
+        "stream-pause" => StreamStep::Pause(true),
+        "stream-resume" => StreamStep::Pause(false),
         "stream-stop" => StreamStep::Stop,
         _ => return Ok(None),
     }))
@@ -115,6 +121,7 @@ impl Recording {
 
 struct Bot {
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     sent: Arc<AtomicU64>,
     jumps: Arc<AtomicU64>,
@@ -127,7 +134,14 @@ thread_local! {
 
 /// The feeding thread: frame `i` of a DBV1 file is due at `i / fps` (no drift), DBV2 frames at
 /// their recorded arrival; a keyframe request jumps to the next keyframe and re-bases the clock.
-fn feed(rec: Recording, stop: Arc<AtomicBool>, want_key: Arc<AtomicBool>, sent: Arc<AtomicU64>, jumps: Arc<AtomicU64>) {
+fn feed(
+    rec: Recording,
+    stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    want_key: Arc<AtomicBool>,
+    sent: Arc<AtomicU64>,
+    jumps: Arc<AtomicU64>,
+) {
     let Ok(file) = File::open(&rec.path) else { return };
     let mut file = BufReader::with_capacity(1 << 20, file);
     let mut data: Vec<u8> = Vec::with_capacity(256 << 10);
@@ -139,6 +153,17 @@ fn feed(rec: Recording, stop: Arc<AtomicBool>, want_key: Arc<AtomicBool>, sent: 
     let mut first_arrival: Option<u64> = None;
     let mut arrival_base = 0u64;
     while !stop.load(Ordering::Relaxed) {
+        if paused.load(Ordering::Acquire) {
+            // Parked until `stream-resume` (or the end); the clock starts over from there.
+            while paused.load(Ordering::Acquire) && !stop.load(Ordering::Relaxed) {
+                std::thread::park();
+            }
+            base = Instant::now();
+            played = 0;
+            first_arrival = None;
+            arrival_base = 0;
+            continue;
+        }
         if want_key.swap(false, Ordering::AcqRel) {
             // The next keyframe after this frame (wrapping to the first).
             let next = rec.frames.iter().enumerate().skip(index).find(|(_, f)| f.1).map(|(i, _)| i).unwrap_or(0);
@@ -239,6 +264,7 @@ pub async fn run(step: &StreamStep, model: &Model, cx: &mut AsyncApp) -> Result<
             };
             let started = streaming::start_screen_share(args).await.map_err(|e| format!("stream-file: {e}"))?;
             let stop = Arc::new(AtomicBool::new(false));
+            let paused = Arc::new(AtomicBool::new(false));
             let want_key = Arc::new(AtomicBool::new(false));
             let sent = Arc::new(AtomicU64::new(0));
             let jumps = Arc::new(AtomicU64::new(0));
@@ -264,10 +290,26 @@ pub async fn run(step: &StreamStep, model: &Model, cx: &mut AsyncApp) -> Result<
                 .name("decibell-streambot".into())
                 .spawn({
                     let (stop, want_key, sent, jumps) = (stop.clone(), want_key.clone(), sent.clone(), jumps.clone());
-                    move || feed(rec, stop, want_key, sent, jumps)
+                    let paused = paused.clone();
+                    move || feed(rec, stop, paused, want_key, sent, jumps)
                 })
                 .map_err(|e| format!("stream-file: {e}"))?;
-            BOT.with(|b| *b.borrow_mut() = Some(Bot { stop, thread: Some(thread), sent, jumps, _requests: requests }));
+            BOT.with(|b| *b.borrow_mut() = Some(Bot { stop, paused, thread: Some(thread), sent, jumps, _requests: requests }));
+        }
+        StreamStep::Pause(on) => {
+            let found = BOT.with(|b| {
+                let bot = b.borrow();
+                let Some(bot) = bot.as_ref() else { return false };
+                bot.paused.store(*on, Ordering::Release);
+                if let Some(thread) = &bot.thread {
+                    thread.thread().unpark();
+                }
+                true
+            });
+            if !found {
+                return Err("stream-pause / stream-resume: not streaming".into());
+            }
+            crate::say(if *on { "STREAM-PAUSED" } else { "STREAM-RESUMED" }.to_string());
         }
         StreamStep::Stop => stop(model, cx).await,
     }
@@ -279,6 +321,7 @@ pub async fn stop(model: &Model, cx: &mut AsyncApp) {
     let Some(mut bot) = BOT.with(|b| b.borrow_mut().take()) else { return };
     bot.stop.store(true, Ordering::Relaxed);
     if let Some(thread) = bot.thread.take() {
+        thread.thread().unpark();
         let _ = thread.join();
     }
     let key = cx.update(|cx| model.live.voice.session.read(cx).connected());

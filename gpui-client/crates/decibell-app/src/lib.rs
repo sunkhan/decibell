@@ -10,6 +10,7 @@
 //! - [`hotkeys`]: the focused hotkey fallback the root feeds, and its self-test.
 //! - [`registry`]: every screen and self-test of the workspace.
 //! - [`selftests`]: the app's own self-tests.
+//! - [`render_cost`]: the self-test that measures what a change costs in views rendered.
 //! - [`software_codecs`]: the self-test that the software encoder and decoders are in the binary.
 //! - [`video`]: the video crate wired to the model and the core.
 
@@ -21,6 +22,7 @@ pub mod dev;
 pub mod hotkeys;
 pub mod logging;
 pub mod registry;
+pub mod render_cost;
 pub mod root;
 pub mod selftests;
 pub mod software_codecs;

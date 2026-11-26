@@ -271,9 +271,9 @@ impl Render for HeaderStats {
                     .items_center()
                     .gap_1p5()
                     .px_2()
-                    .tooltip(title_tooltip(SharedString::from(format!("{count} in voice"))))
+                    .tooltip(title_tooltip(SharedString::from(format!("{} in voice", decibell_model::regional::Regional::get().group(count as u64)))))
                     .child(Icon::new(IconName::StageUsers).size(px(14.)).color(muted))
-                    .child(Label::new(SharedString::from(count.to_string())).font(FontRole::Meta).size(meta).color(muted)),
+                    .child(Label::new(SharedString::from(decibell_model::regional::Regional::get().group(count as u64))).font(FontRole::Meta).size(meta).color(muted)),
             )
             .when_some(self.latency, |this, ms| {
                 let tone = latency_tone(ms, cx);

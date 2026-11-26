@@ -47,6 +47,7 @@ const TESTS: &[(&str, &str)] = &[
     ("voice-golive-dialog", "the Go Live dialog opens, presets switch, software-only caps grey presets out (no capture)"),
     ("call-ring", "perf4 calls: the card rings, decline; again, answer, the call stage connects (P2P over loopback), hang up"),
     ("voice-switch", "switching voice channels shows us in the new one at once"),
+    ("voice-stall", "watching a stream on the decoder the probe found; fullscreen hides the cursor with the overlays; the streamer stops sending: Reconnecting… after 3 s, gone with the next picture"),
 ];
 
 fn about(name: &str) -> &'static str {
@@ -62,6 +63,7 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "voice-golive-dialog", about: about("voice-golive-dialog"), run: |cx| Box::pin(parent(cx, "voice-golive-dialog")) },
         SelfTest { name: "call-ring", about: about("call-ring"), run: |cx| Box::pin(parent(cx, "call-ring")) },
         SelfTest { name: "voice-switch", about: about("voice-switch"), run: |cx| Box::pin(parent(cx, "voice-switch")) },
+        SelfTest { name: "voice-stall", about: about("voice-stall"), run: |cx| Box::pin(parent(cx, "voice-stall")) },
     ]
 }
 
@@ -197,6 +199,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "voice-golive-dialog", about: "(in the app) the Go Live dialog", run: |cx| Box::pin(check_golive(cx)) },
         SelfTest { name: "call-ring", about: "(in the app) an incoming call", run: |cx| Box::pin(check_call(cx)) },
         SelfTest { name: "voice-switch", about: "(in the app) switching channels", run: |cx| Box::pin(check_switch(cx)) },
+        SelfTest { name: "voice-stall", about: "(in the app) the probed decoder, the fullscreen cursor, a stalled stream", run: |cx| Box::pin(check_stall(cx)) },
     ]
 }
 
@@ -308,13 +311,22 @@ async fn ready(cx: &TestCx) -> Result<()> {
         actions::voice::set_mute(true, cx);
         actions::voice::set_deafen(true, cx);
     })?;
-    click_probe(cx, "server-tile:1").await?;
-    wait_for(cx, Duration::from_secs(10), "Daily Gaming's channels", |cx| {
+    // The passphrase dialog (the settings feature's, open while `e2ee.passphrase` is) covers the
+    // window until it has closed and faded: a click on the server tile before that lands on its
+    // backdrop. So: wait for the form to go, then click until the navigation follows.
+    wait_for(cx, Duration::from_secs(10), "the passphrase dialog to close", |cx| model(cx).live.e2ee.read(cx).passphrase.is_none()).await?;
+    let opened = |cx: &mut App| {
         let m = model(cx);
         m.nav.read(cx).active_server == Some(daily_gaming()) && m.community(daily_gaming(), cx).is_some_and(|c| !c.channels.read(cx).list().is_empty())
-    })
-    .await?;
-    Ok(())
+    };
+    let started = Instant::now();
+    loop {
+        click_probe(cx, "server-tile:1").await?;
+        if wait_for(cx, Duration::from_secs(1), "Daily Gaming's channels", opened).await.is_ok() {
+            return Ok(());
+        }
+        ensure!(started.elapsed() < Duration::from_secs(15), "timed out after 15 s waiting for Daily Gaming's channels");
+    }
 }
 
 /// An account's uid from the stack's `accounts.json` (the stack's uids are fixed).
@@ -679,7 +691,8 @@ async fn check_watch(cx: TestCx) -> Result<()> {
         b.width,
         b.height,
         b.path.map(|p| p.label()).unwrap_or("?"),
-        b.replaced - a.replaced,
+        // Published and not yet drawn at the moment of the read: it can be one fewer at the end.
+        b.replaced as i64 - a.replaced as i64,
         b.queue,
         b.keyframe_requests,
         frames.drawn,
@@ -712,6 +725,148 @@ async fn check_watch(cx: TestCx) -> Result<()> {
     cx.sleep(Duration::from_millis(500)).await;
     cx.log(format_args!("stopped watching: decoder threads {} after {} ms, {} live textures", hub.decoder_threads(), t.as_millis(), hub.live_textures()));
     ensure!(hub.live_textures() == 0, "{} textures still alive", hub.live_textures());
+    peer.cue("stop")?;
+    if let Ok(line) = peer.wait_line(&cx, "STREAM-STOPPED", Duration::from_secs(15)).await {
+        cx.log(format_args!("the streamer: {line}"));
+    }
+    leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-stall ─────────────────────────────────────────────────────────────────────────
+
+/// One watched stream, three things the stream path owes the views:
+///
+/// 1. the decoder is the one the capability probe found (the app ran it after its first frame,
+///    in a fresh profile: no cache), and that is what the model advertises and Settings shows;
+/// 2. in fullscreen the cursor is hidden when the overlays go (2.5 s after the pointer rested),
+///    and not outside fullscreen;
+/// 3. the streamer stops sending: "Reconnecting…" over the last picture after 3 s, and the
+///    picture back when it sends again.
+async fn check_stall(cx: TestCx) -> Result<()> {
+    let Some(file) = stream_file() else {
+        cx.log("SKIP: vendor/streams/*.dbv not found above the binary");
+        return Ok(());
+    };
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    let peer_uid = account_uid(PEER)?;
+    let path = file.display().to_string();
+    let peer = Peer::start(&steps(&[
+        "voice-join", "Lounge", "wait", "mls", "ready", "stream-file", &path, "print", "streaming",
+        "wait-file", "@cue:pause", "stream-pause", "wait-file", "@cue:resume", "stream-resume",
+        "wait-file", "@cue:stop", "stream-stop", "voice-leave", "logout",
+    ]))?;
+    peer.wait_line(&cx, "STREAMING", Duration::from_secs(60)).await?;
+    wait_probe(&cx, &format!("stream-tile:{peer_uid}")).await?;
+    click_probe(&cx, &format!("stream-tile:{peer_uid}")).await?;
+    let state = move |cx: &mut App| crate::video_events::StreamStates::global(cx).read(cx).get(peer_uid);
+    wait_for(&cx, Duration::from_secs(15), "the first picture", move |cx| state(cx).picture.is_some()).await?;
+    let hub = cx.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+    let stream = hub.stream(&peer_uid.to_string());
+
+    // 1. The probe ran (off the UI thread, after the first frame) and is what is used and shown.
+    wait_for(&cx, Duration::from_secs(20), "the decode probe's answer in the model", |cx| {
+        model(cx).live.voice.codecs.read(cx).decode_probed
+    })
+    .await?;
+    let (decoders, skipped, advertised) = cx.update(|_, cx| {
+        let codecs = model(cx).live.voice.codecs.read(cx);
+        (codecs.decoders.clone(), codecs.skipped_decoders.clone(), codecs.decode.clone())
+    })?;
+    for d in &decoders {
+        cx.log(format_args!("probed: {} decodes with {} ({})", d.codec.human_name(), d.label, if d.hardware { "hardware" } else { "software" }));
+    }
+    for s in &skipped {
+        cx.log(format_args!("probed: {} with {} is not used: {}", s.codec.human_name(), s.label, s.reason));
+    }
+    ensure!(decoders.len() == 3 && decoders.iter().all(|d| d.probed), "the model holds {} probed decoders of 3", decoders.len());
+    ensure!(advertised.len() == 3, "{} codecs advertised", advertised.len());
+    let stats = stream.stats();
+    let (codec, backend) = (stats.codec.context("no codec")?, stats.backend.context("no decoder open")?);
+    let used = backend.display_name(codec);
+    let model_codec = match codec {
+        decibell_video::Codec::H264 => decibell_model::live::voice::VideoCodec::H264Hw,
+        decibell_video::Codec::Hevc => decibell_model::live::voice::VideoCodec::H265,
+        decibell_video::Codec::Av1 => decibell_model::live::voice::VideoCodec::Av1,
+    };
+    let shown = decoders.iter().find(|d| d.codec == model_codec).map(|d| d.label.clone()).context("the stream's codec is not in the probe's answer")?;
+    cx.log(format_args!("the stream ({}) is decoded with {used}; Settings → Codecs says {shown}", codec.label()));
+    ensure!(shown.as_ref() == used, "the stream is decoded with {used}, the probe said {shown}");
+    let cache = decibell_model::core::user_data_dir().context("no user data directory")?.join("video-decoders.txt");
+    ensure!(cache.is_file(), "{} was not written", cache.display());
+    cx.log(format_args!("the probe's answer is kept in {}", cache.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
+
+    // 2. The cursor goes with the overlays in fullscreen, and only there.
+    let video = wait_probe(&cx, "focus-video").await?;
+    let rests = || crate::focus::CURSOR_RESTS.load(std::sync::atomic::Ordering::Relaxed);
+    cx.mouse_move(video.center())?;
+    cx.sleep(crate::focus::OVERLAY_HIDE + Duration::from_millis(600)).await;
+    ensure!(rests() == 0, "the cursor was hidden outside fullscreen");
+    cx.update(|_, cx| model(cx).live.voice.watching.update(cx, |w, cx| w.set_fullscreen(true, cx)))?;
+    cx.sleep(Duration::from_millis(500)).await;
+    let video = probes::bounds("focus-video").context("the fullscreen video")?;
+    // The real pointer may be over the test window and move, or leave it, at any time (that
+    // re-arms or cancels the timer, as it should): a rest that was disturbed is tried again.
+    let mut moved = Instant::now();
+    for attempt in 1..=4 {
+        cx.mouse_move(video.center() + point(gpui::px(attempt as f32), gpui::px(0.)))?;
+        moved = Instant::now();
+        if wait_for(&cx, crate::focus::OVERLAY_HIDE + Duration::from_secs(1), "the cursor to be hidden", move |_| rests() >= 1).await.is_ok() {
+            break;
+        }
+        ensure!(attempt < 4, "the cursor was not hidden {} s after the pointer rested on a fullscreen stream (4 attempts)", crate::focus::OVERLAY_HIDE.as_secs_f32());
+    }
+    let visible = cx.update(|_, cx| cx.is_cursor_visible())?;
+    cx.log(format_args!(
+        "fullscreen: the cursor was hidden {:.2} s after the pointer rested (the platform says the cursor is {})",
+        moved.elapsed().as_secs_f64(),
+        if visible { "visible: the real pointer is not over this window" } else { "hidden" }
+    ));
+    ensure!(moved.elapsed() >= crate::focus::OVERLAY_HIDE - Duration::from_millis(100), "hidden too early");
+    // Movement re-arms the one timer: nothing more is hidden until the pointer rests again.
+    let before = rests();
+    cx.mouse_move(video.center() + point(gpui::px(5.), gpui::px(0.)))?;
+    cx.sleep(Duration::from_millis(1200)).await;
+    cx.mouse_move(video.center())?;
+    cx.sleep(Duration::from_millis(1200)).await;
+    ensure!(rests() == before, "the cursor was hidden while the pointer kept moving");
+    wait_for(&cx, crate::focus::OVERLAY_HIDE + Duration::from_secs(2), "the cursor to be hidden again", move |_| rests() == before + 1).await?;
+    cx.update(|_, cx| model(cx).live.voice.watching.update(cx, |w, cx| w.set_fullscreen(false, cx)))?;
+    cx.sleep(Duration::from_millis(800)).await;
+    park_pointer(&cx)?;
+
+    // 3. The streamer stops sending.
+    ensure!(!cx.update(move |_, cx| state(cx).stalled)?, "stalled while playing");
+    let frames_before = stream.stats().received;
+    peer.cue("pause")?;
+    peer.wait_line(&cx, "STREAM-PAUSED", Duration::from_secs(10)).await?;
+    let paused = Instant::now();
+    wait_for(&cx, decibell_video::STALLED_AFTER + Duration::from_secs(4), "Reconnecting…", move |cx| state(cx).stalled).await?;
+    let after = paused.elapsed();
+    cx.sleep(Duration::from_millis(300)).await;
+    ensure!(probes::bounds("stream-reconnecting").is_some(), "the Reconnecting… indicator was not drawn");
+    cx.log(format_args!(
+        "the streamer paused after {frames_before} frames: Reconnecting… {:.2} s later; {} decoder threads, the last picture still up ({:?})",
+        after.as_secs_f64(),
+        hub.decoder_threads(),
+        stream.picture_size()
+    ));
+    ensure!(after >= decibell_video::STALLED_AFTER - Duration::from_millis(300), "stalled after only {after:?}");
+    ensure!(hub.decoder_threads() == 0, "a decoder thread is still running for a stalled stream");
+    ensure!(stream.picture_size().is_some(), "the last picture is gone");
+    let resumed = Instant::now();
+    peer.cue("resume")?;
+    wait_for(&cx, Duration::from_secs(10), "the picture to come back", move |cx| !state(cx).stalled).await?;
+    cx.log(format_args!("the streamer told to send again: the picture is back within {} ms", resumed.elapsed().as_millis()));
+    peer.wait_line(&cx, "STREAM-RESUMED", Duration::from_secs(10)).await?;
+    let a = stream.stats();
+    cx.sleep(Duration::from_secs(2)).await;
+    let b = stream.stats();
+    ensure!(b.presented - a.presented > 100, "only {} pictures in the 2 s after the stall", b.presented - a.presented);
+    ensure!(!cx.update(move |_, cx| state(cx).stalled)?, "stalled again");
+
+    cx.update(|_, cx| actions::voice::stop_watching_stream(peer_uid, cx))?;
     peer.cue("stop")?;
     if let Ok(line) = peer.wait_line(&cx, "STREAM-STOPPED", Duration::from_secs(15)).await {
         cx.log(format_args!("the streamer: {line}"));

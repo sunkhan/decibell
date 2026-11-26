@@ -623,7 +623,7 @@ fn encryption_badge(e2ee: &Option<(VoiceE2eePhase, u64, u32, Vec<Uid>)>, cx: &mu
                 "Encrypted",
                 theme.color_success.opacity(0.15),
                 theme.color_success,
-                format!("End-to-end encrypted (MLS epoch {epoch}, {members} members)").into(),
+                format!("End-to-end encrypted (MLS epoch {epoch}, {} members)", decibell_model::regional::Regional::get().group(members as u64)).into(),
             )
         }
         VoiceE2eePhase::Quarantine => {

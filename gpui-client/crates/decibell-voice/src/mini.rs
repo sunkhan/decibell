@@ -317,7 +317,8 @@ impl Render for MiniPlayer {
             &SharedString::default(),
             cx,
         );
-        let has_picture = crate::video_events::StreamStates::global(cx).read(cx).get(uid).picture.is_some();
+        let state = crate::video_events::StreamStates::global(cx).read(cx).get(uid);
+        let (has_picture, stalled) = (state.picture.is_some(), state.stalled);
         let theme = cx.theme();
         // The grip sits on the corner facing the screen interior (opposite the dock).
         let (grip_icon, grip_right, grip_bottom) = match corner {
@@ -462,6 +463,9 @@ impl Render for MiniPlayer {
                         .justify_center()
                         .child(decibell_ui::Spinner::new().size(px(32.)).color(theme.color_accent)),
                 )
+            })
+            .when(has_picture && stalled, |this| {
+                this.child(div().absolute().inset_0().rounded(theme.radius_lg - px(1.)).overflow_hidden().child(crate::scrim::reconnecting(cx)))
             })
             .child(
                 div()
