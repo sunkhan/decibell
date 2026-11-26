@@ -15,13 +15,14 @@
 //! decibell_chat::invalidate_slots(cx);
 //! ```
 
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use decibell_attachments::AttachmentKind;
 use decibell_model::ServerId;
 use decibell_model::chat::Message;
-use gpui::{AnyElement, AnyView, App, AppContext as _, Entity, Global, KeyDownEvent, Window};
+use gpui::{AnyElement, AnyView, App, AppContext as _, Entity, EntityId, Global, KeyDownEvent, Window};
 
 /// What a slot is sized against.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,8 +41,22 @@ pub trait RowSlot: 'static {
     /// The slot's height for `message` (px, its own margins included); 0 draws nothing.
     fn height(&self, message: &Message, server: Option<ServerId>, space: SlotSpace, cx: &App) -> f32;
     /// The element for the reserved box (laid out at `space.width` × the height answered above).
+    /// Called in the list's prepaint for the rows on screen, every frame: keep it cheap.
     fn element(&self, message: &Arc<Message>, server: Option<ServerId>, space: SlotSpace, window: &mut Window, cx: &mut App) -> AnyElement;
+    /// The rows within `NEAR_PX` of `list`'s viewport, top to bottom, and which of them are on
+    /// screen (`visible`, indices into `near`): what the renderer had mounted. Called after a
+    /// frame in which that set (or a row in it) changed, and with an empty set when the list
+    /// goes. Start fetches for these rows here (they then arrive before the row scrolls in) and
+    /// let go of the rest; `cx.notify(list)` redraws the list when something it draws arrived.
+    fn near(&self, list: EntityId, server: Option<ServerId>, space: SlotSpace, near: &[Arc<Message>], visible: Range<usize>, cx: &mut App) {
+        let _ = (list, server, space, near, visible, cx);
+    }
 }
+
+/// Whether a message's text is hidden (a lone media link whose preview resolved to an image:
+/// `MessageBubble.tsx`' `textHidden`). Answer from state that, when it changes, also calls
+/// [`invalidate_slots`].
+pub type TextHidden = Rc<dyn Fn(&Message, Option<ServerId>, &App) -> bool>;
 
 /// The editor's `submit(text)` and `cancel()`.
 pub type SubmitEdit = Rc<dyn Fn(String, &mut Window, &mut App)>;
@@ -91,6 +106,8 @@ pub struct ChatSlots {
     pub embeds: Option<Rc<dyn RowSlot>>,
     pub editor: Option<Rc<dyn EditorSlot>>,
     pub composer: Option<ComposerBuilder>,
+    /// The lone-link rule (see [`TextHidden`]); none: the text always shows.
+    pub text_hidden: Option<TextHidden>,
     /// Bumped by [`invalidate_slots`]; lists observe it.
     pub(crate) epoch: Option<Entity<SlotEpoch>>,
 }

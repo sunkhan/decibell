@@ -1181,7 +1181,15 @@ impl RowLayout {
             }
         }
 
-        // The hover actions.
+        // The hover actions (above other crates' slot elements when those draw: the list paints
+        // them after the slots then, as the renderer's toolbar sits over the media).
+        if !paint.slots_filled {
+            self.paint_actions(origin, width, paint, style, window, cx);
+        }
+    }
+
+    /// The hover action bar (`MessageBubble.tsx`' `renderActions`).
+    pub fn paint_actions(&self, origin: Point<Pixels>, width: f32, paint: &RowPaint<'_>, style: &ChatStyle, window: &mut Window, cx: &mut App) {
         if paint.hovered {
             for (action, bounds) in self.actions(width, paint.can_delete, true, true) {
                 let over = paint.target == Target::Action(action);

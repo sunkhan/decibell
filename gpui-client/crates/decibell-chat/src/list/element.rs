@@ -129,12 +129,10 @@ impl Element for ListElement {
                 bench.phase(1);
             }
         });
-        for slot in &mut prepaint.slots {
-            slot.paint(window, cx);
-        }
-
         // Four listeners for the whole list (one boxed closure each: what GPUI needs to route
-        // an event to an element).
+        // an event to an element). Registered before the slots' elements paint, so a press an
+        // element takes (a picture, a button) can stop it reaching the list: GPUI bubbles to the
+        // last registered first.
         let view = self.view.clone();
         let target = hitbox.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
@@ -163,6 +161,15 @@ impl Element for ListElement {
                 view.update(cx, |list, cx| list.scroll_wheel(event, &target, window, cx));
             }
         });
+        if !prepaint.slots.is_empty() {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                for slot in &mut prepaint.slots {
+                    slot.paint(window, cx);
+                }
+            });
+            // The hovered row's action bar over what the slots drew.
+            self.view.update(cx, |list, cx| list.paint_hover_actions(bounds, window, cx));
+        }
         self.view.update(cx, |list, _| {
             list.stats.paint_us = started.elapsed().as_micros() as u32;
             if let Some(bench) = &mut list.bench {
@@ -191,8 +198,10 @@ impl MessageList {
         }
         let Some(style) = self.style.clone() else { return Vec::new() };
         let server = self.source.server();
-        let (bounds, width) = (self.bounds, self.width);
-        let space = SlotSpace { width, view_width: 0., view_height: 0., scale: style.scale };
+        let bounds = self.bounds;
+        // The same space `height` was asked with (the pane's size), so a slot lays out at the box
+        // it reserved.
+        let space = SlotSpace { scale: style.scale, ..self.slot_space() };
         let mut elements = Vec::new();
         for index in self.drawn.first..self.drawn.last.min(self.core.len()) {
             let entry = &self.core.entries[index];
@@ -224,6 +233,18 @@ impl MessageList {
             }
         }
         elements
+    }
+
+    /// The hovered row's action bar, painted over the slots' elements.
+    fn paint_hover_actions(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let Some(style) = self.style.clone() else { return };
+        let Some((index, target)) = self.hover else { return };
+        let Some(entry) = self.core.entries.get(index) else { return };
+        let Some(layout) = entry.layout.clone() else { return };
+        let origin = self.row_origin(index, bounds, style.scale);
+        let paint = RowPaint { hovered: true, target, can_delete: entry.facts.can_delete(self.source.can_delete_others(cx)), ..RowPaint::default() };
+        let width = self.width;
+        window.with_content_mask(Some(ContentMask { bounds }), |window| layout.paint_actions(origin, width, &paint, &style, window, cx));
     }
 
     pub(super) fn frame_paint(&mut self, bounds: Bounds<Pixels>, hitbox: &Hitbox, window: &mut Window, cx: &mut gpui::Context<Self>) {

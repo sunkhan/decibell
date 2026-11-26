@@ -27,7 +27,7 @@ use gpui::{
     Task, Window, div, point, prelude::*, px,
 };
 
-use super::core::{ListCore, OVERDRAW_PX, Placement, RETAIN_PX, Side};
+use super::core::{ListCore, NEAR_PX, OVERDRAW_PX, Placement, RETAIN_PX, Side};
 use super::element::ListElement;
 use crate::media::{SlotSpace, slot_epoch, slots};
 use crate::row::{ReplySpec, RowAction, RowLayout, RowPos, RowSpec, Target};
@@ -151,6 +151,11 @@ pub struct MessageList {
     copy_sink: Option<Rc<std::cell::RefCell<Option<String>>>>,
     last_input: Option<Instant>,
     pub(super) bench: Option<crate::bench::Recording>,
+    /// What the slots were last told is near the viewport: (near rows, visible rows, the
+    /// slice revision) — see [`crate::RowSlot::near`].
+    near_told: (usize, usize, usize, usize, u64),
+    /// This view's entity: what the slots notify when something they draw arrived.
+    list_id: gpui::EntityId,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -273,6 +278,8 @@ impl MessageList {
             copy_sink: None,
             last_input: None,
             bench: None,
+            near_told: (0, 0, 0, 0, u64::MAX),
+            list_id: cx.entity_id(),
             _subscriptions: subscriptions,
         }
     }
@@ -319,6 +326,12 @@ impl MessageList {
         self.slice.update(cx, |slice, _| slice.set_scroll(ScrollPosition { at_bottom, anchor_id, offset }));
         if !self.retained.is_empty() {
             actions::presence::release(std::mem::take(&mut self.retained), cx);
+        }
+        // The slots let go of what they fetched for this list's rows.
+        let list = self.list_id;
+        let (server, space) = (self.source.server(), self.slot_space());
+        for provider in near_providers(cx) {
+            provider.near(list, server, space, &[], 0..0, cx);
         }
     }
 
@@ -388,7 +401,7 @@ impl MessageList {
 
     // ── Measuring ──────────────────────────────────────────────────────────────────────────────
 
-    fn slot_space(&self) -> SlotSpace {
+    pub(super) fn slot_space(&self) -> SlotSpace {
         let (view_width, view_height) = match self.view_size.get() {
             (w, h) if w > 0. => (w, h),
             // No pane told us: the list's own box is the view (`COMPOSER_REST_PX` is the pane's).
@@ -434,8 +447,13 @@ impl MessageList {
         let editing = self.editing == Some(message.id) && message.id > 0;
         let space = self.slot_space();
         let registry = slots(cx);
-        let (attachments, inflight, embeds, editor) =
-            (registry.attachments.clone(), registry.inflight.clone(), registry.embeds.clone(), registry.editor.clone());
+        let (attachments, inflight, embeds, editor, text_hidden) = (
+            registry.attachments.clone(),
+            registry.inflight.clone(),
+            registry.embeds.clone(),
+            registry.editor.clone(),
+            registry.text_hidden.clone(),
+        );
         let slot_height = |slot: &Option<Rc<dyn crate::media::RowSlot>>, cx: &App| slot.as_ref().map(|slot| slot.height(&message, server, space, cx));
         let editor_height = match (&editor, editing) {
             (Some(editor), true) => editor.height(&message, space.width, space.scale, cx),
@@ -453,7 +471,7 @@ impl MessageList {
             reply,
             reply_colors,
             expanded,
-            text_hidden: false,
+            text_hidden: !editing && text_hidden.is_some_and(|hidden| hidden(&message, server, cx)),
             editing,
             editor_height,
             today: self.today,
@@ -656,6 +674,7 @@ impl MessageList {
         if moved {
             self.watch_senders(cx);
         }
+        self.tell_near(snapped, height, range.clone(), cx);
         if self.core.scroller.is_animating() || self.slide.is_some() || self.drag == Drag::Select && self.autoscrolling() {
             window.request_animation_frame();
         }
@@ -759,6 +778,30 @@ impl MessageList {
             }
             if !gone.is_empty() {
                 actions::presence::release(gone, cx);
+            }
+        });
+    }
+
+    /// The rows within `NEAR_PX` of the viewport (the renderer mounts rows that far ahead, and
+    /// their pictures start loading then) changed, or which of them are visible: the slots are
+    /// told after the frame. A plain scroll frame within the same rows costs a comparison.
+    fn tell_near(&mut self, position: f64, height: f64, visible: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        let near = self.core.rows_between(position - NEAR_PX, position + height + NEAR_PX);
+        let told = (near.start, near.end, visible.start, visible.end, self.core.seen);
+        if told == self.near_told {
+            return;
+        }
+        self.near_told = told;
+        let providers = near_providers(cx);
+        if providers.is_empty() {
+            return;
+        }
+        let messages: Vec<Arc<decibell_model::chat::Message>> = self.core.entries[near.clone()].iter().map(|entry| entry.message.clone()).collect();
+        let visible = visible.start.saturating_sub(near.start)..visible.end.saturating_sub(near.start).min(messages.len());
+        let (list, server, space) = (self.list_id, self.source.server(), self.slot_space());
+        cx.defer(move |cx| {
+            for provider in providers {
+                provider.near(list, server, space, &messages, visible.clone(), cx);
             }
         });
     }
@@ -1563,6 +1606,12 @@ impl MessageList {
         }
         Some(menu.on_dismiss(cx.listener(move |this, _, _, cx| close(this, cx))))
     }
+}
+
+/// The registered row slots (each is told which rows are near the viewport).
+fn near_providers(cx: &mut App) -> Vec<Rc<dyn crate::media::RowSlot>> {
+    let registry = slots(cx);
+    [registry.attachments.clone(), registry.inflight.clone(), registry.embeds.clone()].into_iter().flatten().collect()
 }
 
 fn chrono_now() -> i64 {
