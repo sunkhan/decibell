@@ -1,0 +1,23 @@
+# The GPUI client's desktop entry, for packaging (a later task; see README.md here). Not installed by
+# anything in this repository, and never registered on a development machine: the installed Electron
+# client owns `decibell://` there.
+#
+# - The file's name is the desktop id the app uses everywhere: the window's Wayland `app_id` and X11
+#   `WM_CLASS` are "decibell" (crates/decibell-app/src/window.rs), and the launcher progress names
+#   `application://decibell.desktop` (crates/decibell-platform/src/progress.rs). Keep the three in step.
+# - `%U`: the desktop passes a `decibell://invite/<code>` link as an argument; a running instance takes
+#   it over (crates/decibell-platform/src/instance.rs). The package's install step registers the
+#   handler with the system (`update-desktop-database`); the app itself never changes the default
+#   (Electron re-pointed it at every start: HANDOFF.md §4, Electron findings).
+[Desktop Entry]
+Type=Application
+Name=Decibell
+GenericName=Chat
+Comment=Text, voice and screen sharing with your communities
+Exec=decibell %U
+Icon=decibell
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+MimeType=x-scheme-handler/decibell;
+StartupWMClass=decibell
+StartupNotify=true

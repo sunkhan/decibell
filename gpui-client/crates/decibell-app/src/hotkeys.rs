@@ -187,6 +187,7 @@ async fn focused(cx: TestCx) -> Result<()> {
                 *field.borrow_mut() = Some(input.clone());
                 cx.new(|_| Fixture { input }).into()
             },
+            None,
             cx,
         )
     })?;

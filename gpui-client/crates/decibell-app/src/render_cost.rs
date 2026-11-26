@@ -174,7 +174,7 @@ type Build = Box<dyn FnOnce(&mut Window, &mut App) -> gpui::AnyView>;
 pub async fn run(cx: TestCx) -> Result<()> {
     let app = cx.app().clone();
     let open = |build: Build| -> Result<TestCx> {
-        let handle = app.update(|cx| window::open_main(build, cx))?;
+        let handle = app.update(|cx| window::open_main(build, None, cx))?;
         Ok(TestCx::new(app.clone(), handle.into()))
     };
     let close = |test: &TestCx| test.update(|window, _| window.remove_window());

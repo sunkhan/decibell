@@ -2,30 +2,42 @@ use anyhow::Result;
 use decibell_harness::perf;
 use decibell_ui::outer_window_size;
 use gpui::{
-    AnyView, App, AppContext as _, Bounds, Window, TitlebarOptions, WindowBounds, WindowDecorations, WindowHandle,
-    WindowOptions, px, size,
+    AnyView, App, AppContext as _, Pixels, Size, Window, TitlebarOptions, WindowDecorations, WindowHandle, WindowOptions,
+    px, size,
 };
 
 use crate::root::Root;
 
-/// Opens the main window showing what `build` makes: 1280×800, at least 800×600, our own title
-/// bar. (The renderer's `electron/main/window.ts`.)
+/// The visible size a first start opens with (`window.ts`).
+pub const DEFAULT_SIZE: Size<Pixels> = size(px(1280.), px(800.));
+/// The smallest visible size (`window.ts`' `minWidth` / `minHeight`; owner decision in CLAUDE.md).
+pub const MIN_SIZE: Size<Pixels> = size(px(800.), px(600.));
+
+/// Opens the main window showing what `build` makes: 1280×800 centred, at least 800×600, our own
+/// title bar (the renderer's `electron/main/window.ts`). `profile`: the app's, whose saved window
+/// state (`decibell_platform::window_state`) it then opens with; screens have none.
 pub fn open_main(
     build: impl FnOnce(&mut Window, &mut App) -> AnyView + 'static,
+    profile: Option<&std::path::Path>,
     cx: &mut App,
 ) -> Result<WindowHandle<Root>> {
-    cx.open_window(main_window_options(cx), move |window, cx| {
+    cx.open_window(main_window_options(profile, cx), move |window, cx| {
         perf::watch_first_frame(window);
         let content = build(window, cx);
         cx.new(|cx| Root::new(content, window, cx))
     })
 }
 
-fn main_window_options(cx: &App) -> WindowOptions {
-    let bounds = Bounds::centered(None, outer_window_size(size(px(1280.), px(800.))), cx);
+fn main_window_options(profile: Option<&std::path::Path>, cx: &App) -> WindowOptions {
+    let bounds = decibell_platform::window_state::initial_bounds(
+        profile,
+        outer_window_size(DEFAULT_SIZE),
+        outer_window_size(MIN_SIZE),
+        cx,
+    );
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(size(px(800.), px(600.))),
+        window_bounds: Some(bounds),
+        window_min_size: Some(MIN_SIZE),
         // The title is what the taskbar and window switcher show. `appears_transparent` is
         // what gives Windows our title bar instead of the system caption.
         titlebar: Some(TitlebarOptions {

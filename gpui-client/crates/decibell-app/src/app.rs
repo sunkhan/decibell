@@ -10,15 +10,14 @@
 //! native encoder probe runs when Go Live first opens or the first voice session starts
 //! (`decibell_voice::codecs::ensure_caps`), never at start.
 //!
+//! The desktop around the window (single instance, `decibell://` links, `--hotkey`, the flash on
+//! `Cue::Flash`, taskbar progress, the quit guard, window state, sleep / lock) is
+//! `decibell_platform`, installed by `boot` once the main window is open.
+//!
 //! Named TODOs for the features that own them:
-//! - TODO(audio): play `Cue::Play` / ring on `Cue::StartRing` (assets/sounds), flash on `Cue::Flash`.
+//! - TODO(audio): play `Cue::Play` / ring on `Cue::StartRing` (assets/sounds).
 //! - TODO(hotkeys): window key events → `hotkeys.key`, blur → `window_blurred` (M3.2).
 //! - TODO(devices): audio hot-plug → `devices.hotplug`.
-//! - TODO(quit-guard): ask before closing the window while `model.live.transfers.read(cx)
-//!   .uploads_in_flight() > 0` (`window.ts`' quit guard), and pause downloads on quit
-//!   (`DownloadManager::pause_all_for_quit`); show `progress()` on the taskbar once GPUI can.
-//! - TODO(single-instance): the `decibell://` handler and the single-instance socket, forwarding
-//!   links to `actions::servers::open_invite_link` and `--hotkey=` to `actions::hotkeys::inject_cli`.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -34,9 +33,9 @@ use gpui::App;
 /// Build the model (reading `ui.json` from the user data directory), apply the appearance it
 /// mirrors unless `--theme` chose one, and install the shell's glue. Synchronous: the window
 /// opens right after with the right theme.
-pub fn init_model(theme_override: Option<ThemeId>, with_core: bool, cx: &mut App) -> Model {
-    let dir = if with_core { decibell_model::core::default_user_data_dir().ok() } else { None };
-    let model = Model::init(cx, dir);
+/// `profile`: the app's (the core's user data directory); `None` for screens, which have no core.
+pub fn init_model(theme_override: Option<ThemeId>, profile: Option<std::path::PathBuf>, cx: &mut App) -> Model {
+    let model = Model::init(cx, profile);
     decibell_shell::init(cx);
     crate::registry::init_features(cx);
 
@@ -86,6 +85,7 @@ fn local_key_provider() -> Box<dyn decibell_model::local_key::LocalKeyProvider> 
 
 /// Start the core (once per process) the way the model expects, then what follows it.
 pub fn start_core(model: &Model, cx: &mut App) {
+    let user_data_dir = decibell_model::core::default_user_data_dir().ok();
     // Auto-away: the core's idle source (Wayland's ext-idle-notify, GNOME's IdleMonitor; it
     // answers "unsupported" on X11, where the app is to supply its own).
     let source = Rc::new(decibell_model::actions::presence::CoreIdleSource);
@@ -94,7 +94,7 @@ pub fn start_core(model: &Model, cx: &mut App) {
     Model::start_core(
         cx,
         CoreOptions {
-            user_data_dir: None,
+            user_data_dir,
             app_version: env!("CARGO_PKG_VERSION").into(),
             local_key: local_key_provider(),
         },
@@ -102,8 +102,7 @@ pub fn start_core(model: &Model, cx: &mut App) {
     .detach();
     // The Transfers button in the title bar (`layouts/Titlebar.tsx` shows it on every page, the
     // sign-in page too). The downloads manager is wired by the content crate once the core runs.
-    // Taskbar / dock progress and the quit guard read `model.live.transfers`' `progress()` and
-    // `uploads_in_flight()`: GPUI has no taskbar-progress API at the pin, and the window's
-    // close interception (`on_window_should_close`) is TODO(quit-guard) below.
+    // Taskbar progress and the quit guard read `model.live.transfers`' `progress()` and
+    // `uploads_in_flight()` (`decibell_platform::{progress, quit_guard}`).
     decibell_chat_content::transfers::enable_title_bar(cx);
 }

@@ -16,6 +16,12 @@ usage: decibell [options]
                         as JSON (decibell_chat::bench)
   --perf                print the first-frame time and frame counters on stderr
                         (also DECIBELL_PERF=1)
+  --hotkey=<action>     run a keybind action in the running Decibell and exit (for desktops
+                        without a shortcut service: bind this command in the window manager):
+                        toggle_mute, toggle_deafen, leave_voice, answer_call, decline_call,
+                        push_to_talk[:down|:up], push_to_mute[:down|:up]
+  decibell://invite/<code>
+                        open the invite (in the running Decibell, if there is one)
   --dbv <a.dbv[,b.dbv]> the test streams `--screen video-test` plays; --mirror shows the
                         first one a second time in a mini-player
   -h, --help
@@ -38,6 +44,11 @@ pub struct Args {
     pub bench_speed: Option<f64>,
     /// `--login <account>` (feature `dev-local`).
     pub login: Option<String>,
+    /// `decibell://…` arguments (the desktop's URL handler passes the link as one), unvalidated:
+    /// `decibell_platform::Launch` checks them as Electron's main process did.
+    pub links: Vec<String>,
+    /// `--hotkey=<action>` / `--hotkey <action>`, unvalidated.
+    pub hotkey: Option<String>,
     pub perf: bool,
     pub help: bool,
 }
@@ -71,6 +82,9 @@ impl Args {
                     if arg == "--speed" { parsed.bench_speed = Some(number) } else { parsed.bench_scroll = Some(number) }
                 }
                 "--login" => parsed.login = Some(value("--login")?),
+                "--hotkey" => parsed.hotkey = Some(value("--hotkey")?),
+                hotkey if hotkey.starts_with("--hotkey=") => parsed.hotkey = Some(hotkey["--hotkey=".len()..].to_string()),
+                link if decibell_platform::launch::is_link_argument(link) => parsed.links.push(link.to_string()),
                 "--perf" => parsed.perf = true,
                 // Read by the video-test screen itself (decibell_video::screens).
                 "--dbv" => drop(value("--dbv")?),
@@ -104,6 +118,17 @@ mod tests {
         assert_eq!(args.theme, Some(ThemeId::ConsoleSplit));
         assert_eq!(args.selftest.as_deref(), Some("boot,themes"));
         assert!(args.perf && !args.help && args.screen.is_none());
+    }
+
+    #[test]
+    fn takes_links_and_hotkeys() {
+        let args = parse(&["decibell://invite/ABCD234567", "--hotkey=push_to_talk:up"]).unwrap();
+        assert_eq!(args.links, vec!["decibell://invite/ABCD234567".to_string()]);
+        assert_eq!(args.hotkey.as_deref(), Some("push_to_talk:up"));
+        assert_eq!(parse(&["--hotkey", "toggle_mute"]).unwrap().hotkey.as_deref(), Some("toggle_mute"));
+        assert!(parse(&["--hotkey"]).unwrap_err().contains("needs a value"));
+        // The app starts as usual from its URL handler, whatever the link.
+        assert_eq!(parse(&["DECIBELL://x y"]).unwrap().links.len(), 1);
     }
 
     #[test]

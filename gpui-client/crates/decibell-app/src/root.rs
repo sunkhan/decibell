@@ -23,6 +23,8 @@ pub struct Root {
     os_title: SharedString,
     focus: FocusHandle,
     _subscriptions: [Subscription; 2],
+    /// Drawn over everything, uncached (the platform's quit question: `decibell_platform`).
+    overlay: Option<AnyView>,
 }
 
 impl Root {
@@ -35,7 +37,12 @@ impl Root {
             cx.on_focus_lost(window, |this: &mut Root, window, cx| this.focus.focus(window, cx)),
             crate::hotkeys::release_on_blur(window, cx),
         ];
-        Self { content, os_title: SharedString::default(), focus, _subscriptions: subscriptions }
+        Self { content, os_title: SharedString::default(), focus, _subscriptions: subscriptions, overlay: None }
+    }
+
+    pub fn set_overlay(&mut self, overlay: AnyView, cx: &mut Context<Self>) {
+        self.overlay = Some(overlay);
+        cx.notify();
     }
 }
 
@@ -70,7 +77,8 @@ impl Render for Root {
                         .cached(StyleRefinement::default().size_full()),
                 ),
             )
-            .child(ToastStack::new());
+            .child(ToastStack::new())
+            .children(self.overlay.clone());
         window_frame(content, window, cx)
     }
 }

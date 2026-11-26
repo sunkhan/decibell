@@ -1743,6 +1743,7 @@ dependencies = [
  "decibell-home",
  "decibell-model",
  "decibell-picture-editor",
+ "decibell-platform",
  "decibell-search",
  "decibell-server-settings",
  "decibell-servers",
@@ -2008,6 +2009,27 @@ dependencies = [
  "image",
  "log",
  "smallvec",
+]
+
+[[package]]
+name = "decibell-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-ui",
+ "futures",
+ "getrandom 0.2.16",
+ "gpui",
+ "libc",
+ "log",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows 0.61.3",
+ "zbus",
 ]
 
 [[package]]

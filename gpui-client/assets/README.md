@@ -22,6 +22,12 @@ fonts, sounds, lucide imports or inline SVG icons.
 | `sounds/` | committed | the UI sounds, byte-identical copies | `electron-client/src/assets/sounds/` | — | the project's own |
 | `twemoji/` | **gitignored**, fetched | 3,720 SVGs, `index.json`, `LICENSE-package.txt` | `@twemoji/svg` npm tarball | 15.0.0 | graphics CC-BY 4.0 (Twitter / jdecked Twemoji), package MIT |
 | `emoji-data/` | **gitignored**, fetched | `native.json` (the picker's dataset), `LICENSE` | `@emoji-mart/data` npm tarball, its package `main` | 1.2.1 (Unicode 15 set) | MIT |
+| `linux/decibell.desktop` | committed | the desktop entry packaging installs (`MimeType=x-scheme-handler/decibell`, `Exec=decibell %U`, `StartupWMClass=decibell`) | written for this client (`decibell-platform`) | — | the project's own |
+
+
+The desktop entry is never installed or registered by anything here: on a development machine the installed Electron
+client owns `decibell://`. Its id must stay `decibell` (the window's `app_id` / `WM_CLASS` and the launcher progress's
+`application://decibell.desktop`); the file's comment says what packaging does with it.
 
 CC-BY 4.0 requires attribution for the Twemoji graphics: "Twemoji by Twitter, Inc and other contributors, licensed under
 CC-BY 4.0" belongs in the client's About / licences screen, as for the renderer.
