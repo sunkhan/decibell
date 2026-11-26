@@ -3,6 +3,7 @@
 //! (`EntityInputHandler`) and is the view the field is drawn by, so an edit re-renders this
 //! view and its ancestors and nothing else.
 
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, IntoElement, KeyDownEvent, Keystroke, Pixels, Point, Render, SharedString, Subscription, Task,
-    UTF16Selection, Window, point, px, size,
+    UTF16Selection, WeakFocusHandle, Window, point, px, size,
 };
 
 use super::boundaries::{byte_to_utf16, utf16_len, utf16_to_byte};
@@ -20,6 +21,18 @@ use super::element::InputElement;
 use super::history::{EditKind, Selection};
 use super::keymap::{self, Command, Move};
 use crate::{Affinity, Engine};
+
+thread_local! {
+    /// The field that last took the focus (GPUI runs on one thread): [`text_field_focused`].
+    static FOCUSED: RefCell<Option<WeakFocusHandle>> = const { RefCell::new(None) };
+}
+
+/// Whether a text field has the keyboard focus in `window`, so that a key that types a
+/// character goes into it. The app's focused hotkey fallback asks: bare typing keys are the
+/// field's, not a keybind's.
+pub fn text_field_focused(window: &Window) -> bool {
+    FOCUSED.with(|focused| focused.borrow().as_ref().and_then(WeakFocusHandle::upgrade).is_some_and(|f| f.is_focused(window)))
+}
 
 /// Blink's caret blink interval (`LayoutTheme::CaretBlinkInterval`): half a second shown,
 /// half a second hidden.
@@ -540,6 +553,7 @@ impl InputState {
     // ---- focus and the blinking caret ----
 
     fn focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        FOCUSED.with(|focused| *focused.borrow_mut() = Some(self.focus.downgrade()));
         self.touch();
         self.sync_blink(window, cx);
         cx.emit(InputEvent::Focus);
@@ -547,6 +561,13 @@ impl InputState {
     }
 
     fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        FOCUSED.with(|focused| {
+            let mut focused = focused.borrow_mut();
+            // Another field may have taken the focus first (its `focused` ran before this).
+            if focused.as_ref().and_then(WeakFocusHandle::upgrade).is_none_or(|f| f == self.focus) {
+                *focused = None;
+            }
+        });
         self.buffer.unmark();
         self.buffer.close_undo_step();
         self.drag = None;
