@@ -149,6 +149,7 @@ impl PeerAudio {
             use ringbuf::traits::Consumer;
             while cons.try_pop().is_some() {}
         }
+        self.onset_pending = true;
     }
 
     /// Samples (at the output device rate) queued in this peer's ring and not
@@ -214,13 +215,16 @@ impl PeerAudio {
         }
     }
 
-    /// Drop any queued-but-not-yet-played samples (used when deafening or on
-    /// device hot-swap).
+    /// Drop any queued-but-not-yet-played samples (a device hot-swap: the
+    /// old stream has faded out). Playback starts over on the new stream, so
+    /// the next frame pushed fades in like a talkspurt's first: the peer may
+    /// be mid-word, and a frame at full level out of silence is a click.
     pub fn drain_ring(&mut self) {
         use ringbuf::traits::Consumer;
         if let Ok(mut cons) = self.cons.lock() {
             while cons.try_pop().is_some() {}
         }
         self.resamp_accum.clear();
+        self.onset_pending = true;
     }
 }

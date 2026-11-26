@@ -594,6 +594,10 @@ impl OutputCtl {
         self.live.store(false, std::sync::atomic::Ordering::Release);
     }
 
+    pub(crate) fn is_live(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn is_faded(&self) -> bool {
         self.faded.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -947,7 +951,8 @@ macro_rules! build_output_dispatch {
 
 /// A live output stream and the handles to its callback.
 pub struct OutputHandle {
-    pub stream: cpal::Stream,
+    /// The open stream (a `cpal::Stream`): dropping it closes the device.
+    pub(crate) stream: Box<dyn std::any::Any>,
     pub rate: u32,
     pub ctl: Arc<OutputCtl>,
     /// Where interface sounds are sent while this stream is the voice
@@ -1002,7 +1007,7 @@ pub fn build_output_stream(
         }
     };
     let stream = started(built, what, event_tx)?;
-    Some(OutputHandle { stream, rate, ctl, cues: Some(cues) })
+    Some(OutputHandle { stream: Box::new(stream), rate, ctl, cues: Some(cues) })
 }
 
 /// Stream audio only (with stereo support), for when it is routed to a
@@ -1032,7 +1037,7 @@ pub fn build_stream_output_stream(
         }
     };
     let stream = started(built, "stream output", event_tx)?;
-    Some(OutputHandle { stream, rate, ctl, cues: None })
+    Some(OutputHandle { stream: Box::new(stream), rate, ctl, cues: None })
 }
 
 fn cue_cb<T>(mix: &SharedMix<CueMix>) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)

@@ -109,6 +109,33 @@ fn main_output_changed(old: Option<Arc<cue::CueBus>>, new: &Option<OutputHandle>
     }
 }
 
+/// An output stream on its way out (the user picked another device).
+pub(crate) struct Retiring {
+    out: OutputHandle,
+    since: Instant,
+}
+
+/// Take `out` out of use without a click: its callback fades to silence
+/// over 5 ms (this waits for that: one or two callbacks, so the caller can
+/// then empty the rings the callback was reading; 60 ms at most, for a device
+/// whose callback has stopped), and the stream stays open, playing silence,
+/// until `reap_retired` closes it. Closing a stream drops what the device
+/// still had buffered, which used to cut the wave wherever it was.
+pub(crate) fn retire_output(out: OutputHandle, retiring: &mut Vec<Retiring>) {
+    out.ctl.fade_out_and_wait(0, Duration::from_millis(60));
+    retiring.push(Retiring { out, since: Instant::now() });
+}
+
+/// Close the retired streams whose device has been handed its buffer's worth
+/// of silence since the fade (so the fade itself was played), or that have
+/// had half a second (a dead device). Called every tick; nothing waits.
+pub(crate) fn reap_retired(retiring: &mut Vec<Retiring>) {
+    if retiring.is_empty() {
+        return;
+    }
+    retiring.retain(|r| r.out.ctl.silent_ms() < DEVICE_BUFFER_MS && r.since.elapsed() < Duration::from_millis(500));
+}
+
 // Per-peer state lives in `media::peer::PeerAudio`. Voice mixing happens in
 // the output audio callback which pulls from each peer's ring buffer.
 
@@ -274,6 +301,8 @@ pub fn run_audio_pipeline(
 
     // Separate stream output (None = disabled, stream mixed into main output)
     let mut stream_output: Option<OutputHandle> = None;
+    // Streams switched away from, fading out before they are closed.
+    let mut retiring: Vec<Retiring> = Vec::new();
     let mut separate_stream_enabled = false;
     let mut stream_output_device_name: Option<String> = None;
     // When separate stream output is enabled, stream audio may play on a device
@@ -538,8 +567,13 @@ pub fn run_audio_pipeline(
                 Ok(ControlMessage::SetOutputDevice(name)) => {
                     log::info!("[pipeline] Hot-swapping output device to: {:?}", name);
                     output_device_name = name.clone();
-                    let old = output_stream.take(); // drop old stream
-                    let old_cues = old.and_then(|o| o.cues);
+                    // The old stream fades out before the rings it reads are
+                    // emptied, and is closed once that has been played.
+                    let old = output_stream.take();
+                    let old_cues = old.as_ref().and_then(|o| o.cues.clone());
+                    if let Some(old) = old {
+                        retire_output(old, &mut retiring);
+                    }
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
                     stream_out.clear_accum();
@@ -567,8 +601,18 @@ pub fn run_audio_pipeline(
                     separate_stream_enabled = enabled;
                     stream_output_device_name = device.clone();
                     // Rebuild main output and stream output
-                    let old_cues = output_stream.take().and_then(|o| o.cues);
-                    stream_output = None;
+                    let old = output_stream.take();
+                    let old_cues = old.as_ref().and_then(|o| o.cues.clone());
+                    // Both fade together, then each is waited for.
+                    if let Some(s) = &stream_output {
+                        s.ctl.fade_out();
+                    }
+                    if let Some(old) = old {
+                        retire_output(old, &mut retiring);
+                    }
+                    if let Some(old) = stream_output.take() {
+                        retire_output(old, &mut retiring);
+                    }
                     // Drain ring buffers to prevent stale audio causing delay
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
@@ -603,7 +647,9 @@ pub fn run_audio_pipeline(
                     if separate_stream_enabled {
                         log::info!("[pipeline] Hot-swapping stream output device to: {:?}", name);
                         stream_output_device_name = name.clone();
-                        stream_output = None;
+                        if let Some(old) = stream_output.take() {
+                            retire_output(old, &mut retiring);
+                        }
                         // Drain stream ring buffer
                         { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                         stream_out.clear_accum();
@@ -634,6 +680,10 @@ pub fn run_audio_pipeline(
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'main,
             }
         }
+
+        // 1a. Close output streams that were switched away from, once their
+        // fade-out has been played.
+        reap_retired(&mut retiring);
 
         // 1b. Feed AEC render reference from decoded voice audio ──────────────
         // Drain the render ref ring buffer and process 10ms chunks through AEC.
@@ -1090,6 +1140,7 @@ pub fn run_audio_pipeline(
         // device handed its buffer's worth of silence before it closes.
         out.ctl.fade_out_and_wait(DEVICE_BUFFER_MS, Duration::from_millis(150));
     }
+    drop(retiring);
     drop(stream_output);
     drop(output_stream);
 }

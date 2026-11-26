@@ -124,6 +124,8 @@ pub mod stun;
 pub mod udp_recv;
 #[cfg(test)]
 pub mod voice_sim_tests;
+#[cfg(test)]
+mod click_tests;
 pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
