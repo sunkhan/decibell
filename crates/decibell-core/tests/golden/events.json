@@ -1,0 +1,1478 @@
+[
+  {
+    "name": "connection_lost",
+    "payload": {
+      "serverId": "7",
+      "serverType": "community"
+    }
+  },
+  {
+    "name": "connection_restored",
+    "payload": {
+      "serverId": null,
+      "serverType": "central"
+    }
+  },
+  {
+    "name": "login_succeeded",
+    "payload": {
+      "devices": false,
+      "renames": true,
+      "uid": 1001,
+      "username": "alice"
+    }
+  },
+  {
+    "name": "user_renamed",
+    "payload": {
+      "self": false,
+      "uid": 1002,
+      "username": "bobby"
+    }
+  },
+  {
+    "name": "avatar_changed",
+    "payload": {
+      "uid": 1002,
+      "username": "bobby",
+      "version": "c0ffee"
+    }
+  },
+  {
+    "name": "login_failed",
+    "payload": {
+      "message": "Invalid username or password"
+    }
+  },
+  {
+    "name": "register_responded",
+    "payload": {
+      "message": "Username taken",
+      "success": false
+    }
+  },
+  {
+    "name": "logged_out",
+    "payload": {
+      "reason": "signed_out"
+    }
+  },
+  {
+    "name": "logged_out",
+    "payload": {
+      "reason": null
+    }
+  },
+  {
+    "name": "devices_changed",
+    "payload": {
+      "newDevice": {
+        "address": "198.51.100.4",
+        "appVersion": "0.9.4",
+        "current": false,
+        "id": 31,
+        "lastActiveAt": 1764000000,
+        "name": "Linux",
+        "online": true,
+        "platform": "linux",
+        "signedInAt": 1763000000
+      }
+    }
+  },
+  {
+    "name": "devices_changed",
+    "payload": {
+      "newDevice": null
+    }
+  },
+  {
+    "name": "session_token_updated",
+    "payload": null
+  },
+  {
+    "name": "server_list_received",
+    "payload": {
+      "servers": [
+        {
+          "description": "Games, mostly",
+          "hostIp": "203.0.113.7",
+          "id": 7,
+          "memberCount": 42,
+          "name": "Daily Gaming",
+          "pictureVersion": "9f86d081884c7d65",
+          "port": 50052
+        },
+        {
+          "description": "Games, mostly",
+          "hostIp": "203.0.113.7",
+          "id": 8,
+          "memberCount": 42,
+          "name": "Rustaceans",
+          "pictureVersion": "9f86d081884c7d65",
+          "port": 50052
+        }
+      ]
+    }
+  },
+  {
+    "name": "memberships_received",
+    "payload": {
+      "memberships": [
+        {
+          "description": "Games, mostly",
+          "hostIp": "203.0.113.7",
+          "id": 7,
+          "memberCount": 42,
+          "name": "Daily Gaming",
+          "pictureVersion": "9f86d081884c7d65",
+          "port": 50052
+        }
+      ]
+    }
+  },
+  {
+    "name": "membership_added",
+    "payload": {
+      "description": "Games, mostly",
+      "hostIp": "203.0.113.7",
+      "id": 9,
+      "memberCount": 42,
+      "name": "Design Lab",
+      "pictureVersion": "9f86d081884c7d65",
+      "port": 50052
+    }
+  },
+  {
+    "name": "community_auth_responded",
+    "payload": {
+      "attachmentPort": 50053,
+      "channels": [
+        {
+          "categorySync": true,
+          "encrypted": true,
+          "id": "12",
+          "myPermissions": 1099511627787,
+          "name": "general",
+          "permissionsSynced": false,
+          "retentionDaysAudio": 7,
+          "retentionDaysDocument": 90,
+          "retentionDaysImage": 30,
+          "retentionDaysText": 0,
+          "retentionDaysVideo": 14,
+          "slowmodeSeconds": 5,
+          "topic": "Say hi",
+          "type": "text",
+          "voiceBitrateKbps": 64
+        },
+        {
+          "categorySync": true,
+          "encrypted": true,
+          "id": "13",
+          "myPermissions": 1099511627787,
+          "name": "general",
+          "permissionsSynced": false,
+          "retentionDaysAudio": 7,
+          "retentionDaysDocument": 90,
+          "retentionDaysImage": 30,
+          "retentionDaysText": 0,
+          "retentionDaysVideo": 14,
+          "slowmodeSeconds": 5,
+          "topic": "Say hi",
+          "type": "voice",
+          "voiceBitrateKbps": 64
+        }
+      ],
+      "errorCode": "",
+      "host": "203.0.113.7",
+      "maxAttachmentBytes": 5368709120,
+      "message": "",
+      "ownerUid": 1001,
+      "ownerUsername": "alice",
+      "port": 50052,
+      "publicListing": true,
+      "requestedServerId": "203.0.113.7:50052",
+      "serverDescription": "Games, mostly",
+      "serverId": "7",
+      "serverName": "Daily Gaming",
+      "success": true
+    }
+  },
+  {
+    "name": "message_received",
+    "payload": {
+      "attachments": [
+        {
+          "createdAt": 1764000000,
+          "durationMs": 0,
+          "encrypted": true,
+          "filename": "cat.png",
+          "height": 1080,
+          "id": 501,
+          "kind": "image",
+          "messageId": 9007199254740993,
+          "mime": "image/png",
+          "placeholder": "3OcRJYB4d3h/iIeHeEh3eIhw+j3A",
+          "position": 0,
+          "purgedAt": 0,
+          "sizeBytes": 123456,
+          "thumbnailSizeBytes": 40960,
+          "thumbnailSizesMask": 7,
+          "url": "/attachments/501",
+          "width": 1920
+        }
+      ],
+      "content": "hi",
+      "context": "12",
+      "decryptError": "locked",
+      "editedAt": 1764000200,
+      "encrypted": false,
+      "encryptedAttachments": [],
+      "id": 9007199254740993,
+      "nonce": "n-2",
+      "recipient": "",
+      "recipientUid": 0,
+      "replyTo": 0,
+      "replyToAttachmentKinds": [],
+      "replyToContent": "",
+      "replyToSender": "",
+      "replyToSenderUid": 0,
+      "sender": "alice",
+      "senderUid": 1001,
+      "serverId": "7",
+      "suppressEmbeds": false,
+      "timestamp": "1764000123"
+    }
+  },
+  {
+    "name": "channel_history_received",
+    "payload": {
+      "afterId": 0,
+      "aroundId": 0,
+      "beforeId": 600,
+      "channelId": "12",
+      "hasMore": true,
+      "hasMoreAfter": false,
+      "messages": [
+        {
+          "attachments": [
+            {
+              "createdAt": 1764000000,
+              "durationMs": 0,
+              "encrypted": true,
+              "filename": "cat.png",
+              "height": 1080,
+              "id": 501,
+              "kind": "image",
+              "messageId": 9007199254740993,
+              "mime": "image/png",
+              "placeholder": "3OcRJYB4d3h/iIeHeEh3eIhw+j3A",
+              "position": 0,
+              "purgedAt": 0,
+              "sizeBytes": 123456,
+              "thumbnailSizeBytes": 40960,
+              "thumbnailSizesMask": 7,
+              "url": "/attachments/501",
+              "width": 1920
+            }
+          ],
+          "channelId": "12",
+          "content": "hello \"world\" — ünïcode ✓",
+          "decryptError": "",
+          "editedAt": 0,
+          "encrypted": true,
+          "encryptedAttachments": [
+            {
+              "chunkBytes": 65536,
+              "durationMs": 61000,
+              "filename": "secret.mp4",
+              "height": 720,
+              "id": 501,
+              "keyB64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+              "mime": "video/mp4",
+              "placeholder": "",
+              "sizeBytes": 9876543,
+              "thumbnailSizesMask": 3,
+              "width": 1280
+            }
+          ],
+          "id": 9007199254740993,
+          "nonce": "n-1",
+          "replyTo": 77,
+          "replyToAttachmentKinds": [
+            1,
+            3
+          ],
+          "replyToContent": "earlier",
+          "replyToSender": "bob",
+          "replyToSenderUid": -3,
+          "sender": "alice",
+          "senderUid": 1001,
+          "suppressEmbeds": true,
+          "timestamp": 1764000123
+        }
+      ],
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "channel_pruned",
+    "payload": {
+      "channelId": "12",
+      "deletedMessageIds": [
+        1,
+        9007199254740993
+      ],
+      "purgedAttachments": [
+        {
+          "attachmentId": 501,
+          "purgedAt": 1764000999
+        }
+      ],
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "channel_updated",
+    "payload": {
+      "channel": {
+        "categorySync": true,
+        "encrypted": true,
+        "id": "12",
+        "myPermissions": 1099511627787,
+        "name": "general",
+        "permissionsSynced": false,
+        "retentionDaysAudio": 7,
+        "retentionDaysDocument": 90,
+        "retentionDaysImage": 30,
+        "retentionDaysText": 0,
+        "retentionDaysVideo": 14,
+        "slowmodeSeconds": 5,
+        "topic": "Say hi",
+        "type": "text",
+        "voiceBitrateKbps": 64
+      },
+      "message": "",
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "channel_updated",
+    "payload": {
+      "channel": null,
+      "message": "Missing permission",
+      "serverId": "7",
+      "success": false
+    }
+  },
+  {
+    "name": "channel_wipe_responded",
+    "payload": {
+      "channelId": "12",
+      "deletedAttachmentCount": 12,
+      "deletedMessageCount": 10000,
+      "message": "",
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "channel_wiped",
+    "payload": {
+      "channelId": "12",
+      "serverId": "7",
+      "wipedAt": 1764001000,
+      "wipedBy": "alice",
+      "wipedByUid": 1001
+    }
+  },
+  {
+    "name": "user_list_updated",
+    "payload": {
+      "avatars": [
+        {
+          "uid": 1003,
+          "version": "abc"
+        }
+      ],
+      "covered": [
+        1002,
+        1003
+      ],
+      "users": [
+        {
+          "avatarVersion": "",
+          "status": "dnd",
+          "statusEmoji": "🎮",
+          "statusText": "busy",
+          "uid": 1002,
+          "username": "bob"
+        }
+      ]
+    }
+  },
+  {
+    "name": "presence_delta",
+    "payload": {
+      "avatarVersion": "abc",
+      "online": true,
+      "status": "away",
+      "statusEmoji": "",
+      "statusText": "",
+      "uid": 1002,
+      "username": "bob"
+    }
+  },
+  {
+    "name": "own_presence",
+    "payload": {
+      "accountIdle": false,
+      "dmFriendsOnly": true,
+      "status": "invisible",
+      "statusClearIn": 3599.5,
+      "statusEmoji": "☕",
+      "statusText": "brb",
+      "supported": true
+    }
+  },
+  {
+    "name": "friend_list_received",
+    "payload": {
+      "friends": [
+        {
+          "avatarVersion": "",
+          "status": "pending_incoming",
+          "uid": 1002,
+          "username": "bob"
+        }
+      ]
+    }
+  },
+  {
+    "name": "friend_action_responded",
+    "payload": {
+      "message": "Friend request sent",
+      "success": true
+    }
+  },
+  {
+    "name": "member_list_received",
+    "payload": {
+      "extra": [
+        {
+          "isOnline": true,
+          "isOwner": false,
+          "joinedAt": 1700000000,
+          "nickname": "Al",
+          "roleIds": [
+            2,
+            5
+          ],
+          "timedOutUntil": 0,
+          "uid": -3,
+          "username": "legacy"
+        }
+      ],
+      "firstPage": true,
+      "hasMore": false,
+      "lookupUids": [],
+      "members": [
+        {
+          "isOnline": true,
+          "isOwner": false,
+          "joinedAt": 1700000000,
+          "nickname": "Al",
+          "roleIds": [
+            2,
+            5
+          ],
+          "timedOutUntil": 0,
+          "uid": 1001,
+          "username": "alice"
+        }
+      ],
+      "message": "",
+      "nextAfter": "",
+      "onlineComplete": true,
+      "onlineCount": 1,
+      "revision": 18446744073709551615,
+      "serverId": "7",
+      "success": true,
+      "totalMembers": 3
+    }
+  },
+  {
+    "name": "mod_action_responded",
+    "payload": {
+      "action": "ban",
+      "message": "",
+      "serverId": "7",
+      "success": true,
+      "uid": 1666,
+      "username": "mallory"
+    }
+  },
+  {
+    "name": "channel_message_rejected",
+    "payload": {
+      "channelId": "12",
+      "nonce": "n-3",
+      "reason": "slowmode",
+      "retryAfterSeconds": 4,
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "membership_revoked",
+    "payload": {
+      "action": "ban",
+      "actor": "alice",
+      "actorUid": 1001,
+      "expiresAt": 0,
+      "reason": "spam",
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "role_list_received",
+    "payload": {
+      "message": "",
+      "roles": [
+        {
+          "color": 16746496,
+          "id": 5,
+          "isDefault": false,
+          "manageEachOther": true,
+          "memberCount": 4,
+          "name": "Moderator",
+          "permissions": 1099511627787,
+          "position": 3
+        },
+        {
+          "color": 16746496,
+          "id": 1,
+          "isDefault": false,
+          "manageEachOther": true,
+          "memberCount": 4,
+          "name": "Moderator",
+          "permissions": 1099511627787,
+          "position": 3
+        }
+      ],
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "member_upsert",
+    "payload": {
+      "member": {
+        "isOnline": true,
+        "isOwner": false,
+        "joinedAt": 1700000000,
+        "nickname": "Al",
+        "roleIds": [
+          2,
+          5
+        ],
+        "timedOutUntil": 0,
+        "uid": 1002,
+        "username": "bob"
+      },
+      "onlineCount": 2,
+      "revision": 18,
+      "serverId": "7",
+      "totalMembers": 3
+    }
+  },
+  {
+    "name": "member_remove",
+    "payload": {
+      "onlineCount": 1,
+      "revision": 19,
+      "serverId": "7",
+      "totalMembers": 2,
+      "uid": 1002,
+      "username": "bob"
+    }
+  },
+  {
+    "name": "ban_list_received",
+    "payload": {
+      "entries": [
+        {
+          "bannedAt": 1764000000,
+          "bannedBy": "alice",
+          "bannedByUid": 1001,
+          "expiresAt": 1764600000,
+          "reason": "spam",
+          "uid": 1666,
+          "username": "mallory"
+        }
+      ],
+      "message": "",
+      "revision": 3,
+      "serverId": "7",
+      "success": true,
+      "truncated": false
+    }
+  },
+  {
+    "name": "server_meta_updated",
+    "payload": {
+      "ownerUid": 1001,
+      "ownerUsername": "alice",
+      "publicListing": false,
+      "serverDescription": "Games, mostly",
+      "serverId": "7",
+      "serverName": "Daily Gaming"
+    }
+  },
+  {
+    "name": "server_update_responded",
+    "payload": {
+      "message": "Name too long",
+      "serverId": "7",
+      "success": false
+    }
+  },
+  {
+    "name": "audit_log_received",
+    "payload": {
+      "entries": [
+        {
+          "action": "role_update",
+          "actor": "alice",
+          "actorUid": 1001,
+          "channelId": "",
+          "details": "{\"color\":1}",
+          "id": 88,
+          "target": "bob",
+          "targetUid": 1002,
+          "timestamp": 1764000000
+        }
+      ],
+      "hasMore": true,
+      "message": "",
+      "seq": 4,
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "member_search_received",
+    "payload": {
+      "firstPage": true,
+      "hasMore": false,
+      "members": [
+        {
+          "isOnline": true,
+          "isOwner": false,
+          "joinedAt": 1700000000,
+          "nickname": "Al",
+          "roleIds": [
+            2,
+            5
+          ],
+          "timedOutUntil": 0,
+          "uid": 1002,
+          "username": "bob"
+        }
+      ],
+      "message": "",
+      "nextAfter": "bob",
+      "seq": 9,
+      "serverId": "7",
+      "success": true,
+      "totalMatches": 1
+    }
+  },
+  {
+    "name": "message_search_received",
+    "payload": {
+      "firstPage": true,
+      "hasMore": true,
+      "message": "",
+      "messages": [
+        {
+          "attachments": [
+            {
+              "createdAt": 1764000000,
+              "durationMs": 0,
+              "encrypted": true,
+              "filename": "cat.png",
+              "height": 1080,
+              "id": 501,
+              "kind": "image",
+              "messageId": 9007199254740993,
+              "mime": "image/png",
+              "placeholder": "3OcRJYB4d3h/iIeHeEh3eIhw+j3A",
+              "position": 0,
+              "purgedAt": 0,
+              "sizeBytes": 123456,
+              "thumbnailSizeBytes": 40960,
+              "thumbnailSizesMask": 7,
+              "url": "/attachments/501",
+              "width": 1920
+            }
+          ],
+          "channelId": "12",
+          "content": "hello \"world\" — ünïcode ✓",
+          "decryptError": "",
+          "editedAt": 0,
+          "encrypted": true,
+          "encryptedAttachments": [
+            {
+              "chunkBytes": 65536,
+              "durationMs": 61000,
+              "filename": "secret.mp4",
+              "height": 720,
+              "id": 501,
+              "keyB64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+              "mime": "video/mp4",
+              "placeholder": "",
+              "sizeBytes": 9876543,
+              "thumbnailSizesMask": 3,
+              "width": 1280
+            }
+          ],
+          "id": 42,
+          "nonce": "n-1",
+          "replyTo": 77,
+          "replyToAttachmentKinds": [
+            1,
+            3
+          ],
+          "replyToContent": "earlier",
+          "replyToSender": "bob",
+          "replyToSenderUid": -3,
+          "sender": "alice",
+          "senderUid": 1001,
+          "suppressEmbeds": true,
+          "timestamp": 1764000123
+        }
+      ],
+      "nextCursor": 9007199254740993,
+      "nextOffset": 25,
+      "partial": true,
+      "retryAfterMs": 0,
+      "seq": 2,
+      "serverId": "7",
+      "success": true,
+      "textSkippedChannelIds": [
+        "14"
+      ],
+      "total": -1,
+      "totalCapped": false
+    }
+  },
+  {
+    "name": "storage_info_received",
+    "payload": {
+      "attachmentCount": 12,
+      "attachmentsBytes": 5000000,
+      "byChannel": [
+        {
+          "bytes": 5000000,
+          "channelId": "12",
+          "count": 12
+        }
+      ],
+      "byKind": [
+        {
+          "bytes": 4000000,
+          "count": 10,
+          "kind": 1
+        }
+      ],
+      "databaseBytes": 1048576,
+      "largest": [
+        {
+          "attachmentId": 501,
+          "channelId": "12",
+          "filename": "cat.png",
+          "kind": 1,
+          "sizeBytes": 123456
+        }
+      ],
+      "message": "",
+      "minFreeBytes": 1073741824,
+      "serverId": "7",
+      "success": true,
+      "thumbnailsBytes": 400000,
+      "volumeAvailableBytes": 1000000000000,
+      "volumeTotalBytes": 2000398934016
+    }
+  },
+  {
+    "name": "voice_force_notify",
+    "payload": {
+      "action": "moved",
+      "actor": "alice",
+      "actorUid": 1001,
+      "channelId": "13",
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "channel_overwrites_received",
+    "payload": {
+      "channelId": "12",
+      "message": "",
+      "overwrites": [
+        {
+          "allow": 1099511627787,
+          "channelId": "12",
+          "deny": 9223372036854775808,
+          "targetId": "bob",
+          "targetType": "member",
+          "targetUid": 1002
+        }
+      ],
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "role_action_responded",
+    "payload": {
+      "action": "update",
+      "message": "",
+      "role": {
+        "color": 16746496,
+        "id": 5,
+        "isDefault": false,
+        "manageEachOther": true,
+        "memberCount": 4,
+        "name": "Moderator",
+        "permissions": 1099511627787,
+        "position": 3
+      },
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "role_action_responded",
+    "payload": {
+      "action": "delete",
+      "message": "Role is above yours",
+      "role": null,
+      "serverId": "7",
+      "success": false
+    }
+  },
+  {
+    "name": "channel_list_updated",
+    "payload": {
+      "channels": [
+        {
+          "categorySync": true,
+          "encrypted": true,
+          "id": "11",
+          "myPermissions": 1099511627787,
+          "name": "general",
+          "permissionsSynced": false,
+          "retentionDaysAudio": 7,
+          "retentionDaysDocument": 90,
+          "retentionDaysImage": 30,
+          "retentionDaysText": 0,
+          "retentionDaysVideo": 14,
+          "slowmodeSeconds": 5,
+          "topic": "Say hi",
+          "type": "category",
+          "voiceBitrateKbps": 64
+        },
+        {
+          "categorySync": true,
+          "encrypted": true,
+          "id": "12",
+          "myPermissions": 1099511627787,
+          "name": "general",
+          "permissionsSynced": false,
+          "retentionDaysAudio": 7,
+          "retentionDaysDocument": 90,
+          "retentionDaysImage": 30,
+          "retentionDaysText": 0,
+          "retentionDaysVideo": 14,
+          "slowmodeSeconds": 5,
+          "topic": "Say hi",
+          "type": "text",
+          "voiceBitrateKbps": 64
+        }
+      ],
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "channel_action_responded",
+    "payload": {
+      "action": "create",
+      "channel": {
+        "categorySync": true,
+        "encrypted": true,
+        "id": "15",
+        "myPermissions": 1099511627787,
+        "name": "general",
+        "permissionsSynced": false,
+        "retentionDaysAudio": 7,
+        "retentionDaysDocument": 90,
+        "retentionDaysImage": 30,
+        "retentionDaysText": 0,
+        "retentionDaysVideo": 14,
+        "slowmodeSeconds": 5,
+        "topic": "Say hi",
+        "type": "text",
+        "voiceBitrateKbps": 64
+      },
+      "message": "",
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "channel_action_responded",
+    "payload": {
+      "action": "create",
+      "channel": null,
+      "message": "Too many channels",
+      "serverId": "7",
+      "success": false
+    }
+  },
+  {
+    "name": "invite_list_received",
+    "payload": {
+      "invites": [
+        {
+          "code": "AbC123",
+          "createdAt": 1764000000,
+          "createdBy": "alice",
+          "createdByUid": 1001,
+          "expiresAt": 0,
+          "forUid": 1002,
+          "forUser": "bob",
+          "maxUses": 0,
+          "uses": 2
+        }
+      ],
+      "message": "",
+      "serverId": "7",
+      "success": true,
+      "truncated": true
+    }
+  },
+  {
+    "name": "invite_create_responded",
+    "payload": {
+      "alreadyMember": false,
+      "invite": {
+        "code": "AbC123",
+        "createdAt": 1764000000,
+        "createdBy": "alice",
+        "createdByUid": 1001,
+        "expiresAt": 0,
+        "forUid": 1002,
+        "forUser": "bob",
+        "maxUses": 0,
+        "uses": 2
+      },
+      "message": "",
+      "requestId": 3,
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "invite_create_responded",
+    "payload": {
+      "alreadyMember": true,
+      "invite": null,
+      "message": "Already a member",
+      "requestId": 4,
+      "serverId": "7",
+      "success": false
+    }
+  },
+  {
+    "name": "invite_revoke_responded",
+    "payload": {
+      "code": "AbC123",
+      "message": "",
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "voice_presence_updated",
+    "payload": {
+      "channelId": "13",
+      "participantUids": [
+        1001,
+        1002
+      ],
+      "participants": [
+        "alice",
+        "bob"
+      ],
+      "serverId": "7",
+      "userCapabilities": [
+        {
+          "decode": [
+            {
+              "codec": 1,
+              "maxFps": 60,
+              "maxHeight": 1080,
+              "maxWidth": 1920
+            },
+            {
+              "codec": 4,
+              "maxFps": 30,
+              "maxHeight": 4320,
+              "maxWidth": 7680
+            }
+          ],
+          "encode": [
+            {
+              "codec": 3,
+              "maxFps": 60,
+              "maxHeight": 2160,
+              "maxWidth": 3840
+            }
+          ]
+        },
+        {
+          "decode": [],
+          "encode": []
+        }
+      ],
+      "userStates": [
+        {
+          "isDeafened": false,
+          "isMuted": true,
+          "isServerDeafened": false,
+          "isServerMuted": false,
+          "isSuppressed": true,
+          "uid": 1001,
+          "username": "alice"
+        }
+      ]
+    }
+  },
+  {
+    "name": "voice_state_changed",
+    "payload": {
+      "isDeafened": false,
+      "isMuted": true
+    }
+  },
+  {
+    "name": "hotkey_action",
+    "payload": {
+      "action": "push_to_talk",
+      "pressed": true
+    }
+  },
+  {
+    "name": "hotkeys_status",
+    "payload": {
+      "backend": "portal",
+      "canConfigure": true,
+      "detail": null,
+      "failed": [
+        "deafen"
+      ],
+      "focusedFallback": false,
+      "mouse": true,
+      "registered": [],
+      "state": "active",
+      "triggers": {
+        "mute": "<Control>m",
+        "ptt": "Mouse4"
+      }
+    }
+  },
+  {
+    "name": "voice_user_speaking",
+    "payload": {
+      "speaking": true,
+      "uid": 0
+    }
+  },
+  {
+    "name": "voice_user_state_changed",
+    "payload": {
+      "isDeafened": true,
+      "isMuted": false,
+      "uid": 1002
+    }
+  },
+  {
+    "name": "voice_input_level",
+    "payload": {
+      "db": -42.70000076293945
+    }
+  },
+  {
+    "name": "voice_ping_updated",
+    "payload": {
+      "latencyMs": 23
+    }
+  },
+  {
+    "name": "voice_connection_stats",
+    "payload": {
+      "latencyMs": 23,
+      "packetLossPct": 0.10000000149011612
+    }
+  },
+  {
+    "name": "voice_connection_stats",
+    "payload": {
+      "latencyMs": null,
+      "packetLossPct": 0.0
+    }
+  },
+  {
+    "name": "voice_error",
+    "payload": {
+      "message": "No input device"
+    }
+  },
+  {
+    "name": "stream_presence_updated",
+    "payload": {
+      "channelId": "13",
+      "serverId": "7",
+      "streams": [
+        {
+          "currentCodec": 3,
+          "enforcedCodec": 0,
+          "fps": 60,
+          "hasAudio": true,
+          "ownerUid": 1001,
+          "ownerUsername": "alice",
+          "resolutionHeight": 1440,
+          "resolutionWidth": 2560,
+          "streamId": "1001_screen",
+          "watcherCount": 2
+        }
+      ]
+    }
+  },
+  {
+    "name": "stream_codec_changed",
+    "payload": {
+      "channelId": "13",
+      "newCodec": 1,
+      "newFps": 30,
+      "newHeight": 1080,
+      "newWidth": 1920,
+      "reason": 2,
+      "streamerUid": 1001,
+      "streamerUsername": "alice"
+    }
+  },
+  {
+    "name": "stream_gpu_fallback",
+    "payload": {
+      "error": "NVENC unavailable"
+    }
+  },
+  {
+    "name": "stream_capture_ended",
+    "payload": null
+  },
+  {
+    "name": "keyframe_requested",
+    "payload": null
+  },
+  {
+    "name": "native_stream_failed",
+    "payload": "encoder panicked: boom"
+  },
+  {
+    "name": "caps_refreshed",
+    "payload": null
+  },
+  {
+    "name": "dm_conversations_received",
+    "payload": {
+      "conversations": [
+        {
+          "decryptError": "no_key",
+          "encrypted": true,
+          "lastMessageContent": "see you",
+          "lastMessageId": 9007199254740993,
+          "lastMessageSender": "bob",
+          "lastMessageSenderUid": 1002,
+          "lastTimestamp": 1764000300,
+          "peer": "bob",
+          "peerUid": 1002,
+          "unreadCount": 3
+        }
+      ]
+    }
+  },
+  {
+    "name": "dm_history_received",
+    "payload": {
+      "afterId": 0,
+      "aroundId": 900,
+      "beforeId": 0,
+      "hasMore": false,
+      "hasMoreAfter": true,
+      "messages": [
+        {
+          "content": "yo",
+          "decryptError": "",
+          "editedAt": 0,
+          "encrypted": true,
+          "id": 900,
+          "replyTo": 899,
+          "replyToContent": "hey",
+          "replyToSender": "alice",
+          "replyToSenderUid": 1001,
+          "sender": "bob",
+          "senderUid": 1002,
+          "timestamp": 1764000301
+        }
+      ],
+      "peer": "bob",
+      "peerUid": 1002
+    }
+  },
+  {
+    "name": "dm_read_synced",
+    "payload": {
+      "peerUid": 1002,
+      "upToId": 9007199254740993
+    }
+  },
+  {
+    "name": "dm_message_delete_responded",
+    "payload": {
+      "message": "",
+      "messageId": 900,
+      "peer": "bob",
+      "peerUid": 1002,
+      "success": true
+    }
+  },
+  {
+    "name": "dm_message_deleted",
+    "payload": {
+      "deletedAt": 1764000400,
+      "messageId": 900,
+      "peer": "bob",
+      "peerUid": 1002
+    }
+  },
+  {
+    "name": "channel_message_delete_responded",
+    "payload": {
+      "channelId": "12",
+      "message": "Not yours",
+      "messageId": 9007199254740993,
+      "serverId": "7",
+      "success": false
+    }
+  },
+  {
+    "name": "channel_message_deleted",
+    "payload": {
+      "channelId": "12",
+      "deletedAt": 1764000401,
+      "deletedBy": "alice",
+      "deletedByUid": 1001,
+      "messageId": 9007199254740993,
+      "serverId": "7"
+    }
+  },
+  {
+    "name": "dm_message_edit_responded",
+    "payload": {
+      "message": "",
+      "messageId": 900,
+      "peer": "bob",
+      "peerUid": 1002,
+      "success": true
+    }
+  },
+  {
+    "name": "dm_message_edited",
+    "payload": {
+      "content": "yo!",
+      "decryptError": "",
+      "editedAt": 1764000402,
+      "encrypted": true,
+      "messageId": 900,
+      "peer": "bob",
+      "peerUid": 1002
+    }
+  },
+  {
+    "name": "e2ee_status_changed",
+    "payload": {
+      "fingerprint": "05 12 99 41",
+      "keyId": 3,
+      "status": "ready",
+      "supported": true
+    }
+  },
+  {
+    "name": "e2ee_peer_changed",
+    "payload": {
+      "fingerprint": "77 12 03 88",
+      "keyId": 5,
+      "uid": 1002,
+      "username": "bob"
+    }
+  },
+  {
+    "name": "voice_e2ee_state",
+    "payload": {
+      "channelId": "13",
+      "epoch": 18446744073709551614,
+      "members": 2,
+      "serverId": "7",
+      "state": "ready",
+      "unverified": [
+        "1002"
+      ]
+    }
+  },
+  {
+    "name": "channel_message_edit_responded",
+    "payload": {
+      "channelId": "12",
+      "message": "",
+      "messageId": 9007199254740993,
+      "serverId": "7",
+      "success": true
+    }
+  },
+  {
+    "name": "channel_message_edited",
+    "payload": {
+      "channelId": "12",
+      "content": "edited",
+      "decryptError": "",
+      "editedAt": 1764000403,
+      "editor": "alice",
+      "editorUid": 1001,
+      "encrypted": true,
+      "encryptedAttachments": [
+        {
+          "chunkBytes": 65536,
+          "durationMs": 61000,
+          "filename": "secret.mp4",
+          "height": 720,
+          "id": 501,
+          "keyB64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+          "mime": "video/mp4",
+          "placeholder": "",
+          "sizeBytes": 9876543,
+          "thumbnailSizesMask": 3,
+          "width": 1280
+        }
+      ],
+      "messageId": 9007199254740993,
+      "serverId": "7",
+      "suppressEmbeds": false
+    }
+  },
+  {
+    "name": "server_picture_update_responded",
+    "payload": {
+      "message": "",
+      "serverId": "7",
+      "success": true,
+      "version": "d1e8"
+    }
+  },
+  {
+    "name": "server_picture_received",
+    "payload": {
+      "data": "data:image/png;base64,iVBORw0K",
+      "serverId": 7,
+      "version": "d1e8"
+    }
+  },
+  {
+    "name": "server_picture_changed",
+    "payload": {
+      "serverId": 7,
+      "version": ""
+    }
+  },
+  {
+    "name": "call_signal",
+    "payload": {
+      "callId": "c-9",
+      "candidates": [
+        {
+          "ip": "198.51.100.9",
+          "kind": "SRFLX",
+          "port": 40123,
+          "socket": "VOICE"
+        }
+      ],
+      "from": "bob",
+      "fromUid": 1002,
+      "keyId": 7,
+      "kind": "INVITE",
+      "pubKey": "cHVia2V5",
+      "pubKeySig": "c2ln",
+      "stream": {
+        "codec": 3,
+        "fps": 60,
+        "hasAudio": true,
+        "height": 1080,
+        "width": 1920
+      },
+      "timestamp": 1764000456,
+      "to": "alice"
+    }
+  },
+  {
+    "name": "call_signal",
+    "payload": {
+      "callId": "c-9",
+      "candidates": [],
+      "from": "bob",
+      "fromUid": 1002,
+      "keyId": 0,
+      "kind": "HANGUP",
+      "pubKey": null,
+      "pubKeySig": null,
+      "stream": null,
+      "timestamp": 1764000456,
+      "to": "alice"
+    }
+  },
+  {
+    "name": "call_connected",
+    "payload": {
+      "callId": "c-9",
+      "path": "srflx",
+      "rttMs": 12.345,
+      "verified": true
+    }
+  },
+  {
+    "name": "call_failed",
+    "payload": {
+      "callId": "c-9",
+      "detail": "punch timed out",
+      "reason": "no_path"
+    }
+  },
+  {
+    "name": "call_dropped",
+    "payload": {
+      "callId": "c-9",
+      "reason": "timeout"
+    }
+  }
+]

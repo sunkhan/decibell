@@ -21,6 +21,11 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod golden_tests;
+#[cfg(test)]
+pub mod testing;
+
 /// Where events go. Implemented by the host: the Electron addon's napi sink
 /// (three ThreadsafeFunctions). Every method is called from core threads —
 /// tokio workers, network receivers, the voice / video receive threads,
