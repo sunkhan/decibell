@@ -251,6 +251,7 @@ pub fn run_audio_pipeline(
         &host,
         initial_input_device.as_deref(),
         Arc::clone(&capture_prod),
+        None,
     ) {
         Some((s, rate)) => (Some(s), rate),
         None => {
@@ -519,7 +520,7 @@ pub fn run_audio_pipeline(
                     input_stream_opt = None; // drop old stream
                     { let mut g = capture_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     chain.clear_capture();
-                    match build_input_stream(&host, name.as_deref(), Arc::clone(&capture_prod)) {
+                    match build_input_stream(&host, name.as_deref(), Arc::clone(&capture_prod), None) {
                         Some((stream, rate)) => {
                             input_stream_opt = Some(stream);
                             chain.set_input_rate(rate);

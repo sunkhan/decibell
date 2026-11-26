@@ -40,6 +40,7 @@ pub mod debug_dump;
 pub mod stream_dump;
 pub mod jitter;
 pub mod media_socket;
+pub mod mic_test;
 pub mod packet;
 pub mod peer;
 pub mod source_id;
@@ -337,6 +338,9 @@ impl VoiceEngine {
         initial_output_device: Option<String>,
         ring: Option<frame_crypto::SharedKeyRing>,
     ) -> Result<Self, String> {
+        // This session takes the microphone: a mic test outside voice ends
+        // before the pipeline opens it.
+        mic_test::voice_session_started();
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let ring_audio = ring.clone();
@@ -386,7 +390,10 @@ impl VoiceEngine {
                     )));
                 }
             })
-            .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
+            .map_err(|e| {
+                mic_test::voice_session_ended();
+                format!("Failed to spawn audio thread: {}", e)
+            })?;
 
         // The video receive thread starts when it is first needed (a watch,
         // a stream sent on this media socket), or now for a P2P call.
@@ -477,6 +484,7 @@ impl VoiceEngine {
         let _ = self.control_tx.send(ControlMessage::Shutdown);
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
+            mic_test::voice_session_ended();
         }
         // Stop the video recv thread for good (flag, wake, join) and drop
         // its event sender, so the bridge below can end. Receive errors

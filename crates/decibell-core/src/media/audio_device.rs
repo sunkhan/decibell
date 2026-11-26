@@ -443,6 +443,7 @@ macro_rules! build_with_buffer_fallback {
 fn input_capture_cb<T>(
     in_ch: u16,
     cap_prod: Arc<std::sync::Mutex<HeapProd<i16>>>,
+    wake: Option<std::thread::Thread>,
 ) -> impl FnMut(&[T], &cpal::InputCallbackInfo)
 where
     T: SizedSample,
@@ -466,6 +467,10 @@ where
                 let _ = prod.try_push((mono * 32767.0).clamp(-32768.0, 32767.0) as i16);
             }
         }
+        drop(prod);
+        if let Some(t) = &wake {
+            t.unpark();
+        }
     }
 }
 
@@ -477,15 +482,16 @@ fn build_input_stream_fmt(
     fmt: cpal::SampleFormat,
     in_ch: u16,
     cap_prod: Arc<std::sync::Mutex<HeapProd<i16>>>,
+    wake: Option<std::thread::Thread>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     use cpal::SampleFormat as F;
     match fmt {
-        F::I16 => device.build_input_stream(cfg, input_capture_cb::<i16>(in_ch, cap_prod), capture_stream_err, None),
-        F::U16 => device.build_input_stream(cfg, input_capture_cb::<u16>(in_ch, cap_prod), capture_stream_err, None),
-        F::I32 => device.build_input_stream(cfg, input_capture_cb::<i32>(in_ch, cap_prod), capture_stream_err, None),
+        F::I16 => device.build_input_stream(cfg, input_capture_cb::<i16>(in_ch, cap_prod, wake), capture_stream_err, None),
+        F::U16 => device.build_input_stream(cfg, input_capture_cb::<u16>(in_ch, cap_prod, wake), capture_stream_err, None),
+        F::I32 => device.build_input_stream(cfg, input_capture_cb::<i32>(in_ch, cap_prod, wake), capture_stream_err, None),
         // F32 and any other format: use the f32 path (the common case, and the
         // safest best-effort fallback for exotic formats).
-        _ => device.build_input_stream(cfg, input_capture_cb::<f32>(in_ch, cap_prod), capture_stream_err, None),
+        _ => device.build_input_stream(cfg, input_capture_cb::<f32>(in_ch, cap_prod, wake), capture_stream_err, None),
     }
 }
 
@@ -497,10 +503,13 @@ fn build_input_stream_fmt(
 ///
 /// The callback does NO resampling — just downmixes to mono and converts to i16.
 /// Resampling from device rate → 48kHz happens in the main pipeline loop.
+/// `wake`: a thread to unpark after each callback (the microphone test sleeps
+/// until there are samples; the voice pipeline has its own tick and passes None).
 pub fn build_input_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
     capture_prod: Arc<std::sync::Mutex<HeapProd<i16>>>,
+    wake: Option<std::thread::Thread>,
 ) -> Option<(cpal::Stream, u32)> {
     let _open = device_open_lock();
     let input_device = resolve_capture_device(host, device_name)?;
@@ -508,7 +517,7 @@ pub fn build_input_stream(
     let input_sample_rate = input_cfg.sample_rate.0;
 
     let built = build_with_buffer_fallback!(input_cfg, "Capture",
-        build_input_stream_fmt(&input_device, input_cfg, fmt, in_ch, Arc::clone(&capture_prod)));
+        build_input_stream_fmt(&input_device, input_cfg, fmt, in_ch, Arc::clone(&capture_prod), wake.clone()));
     match built {
         Ok(stream) => {
             if let Err(e) = stream.play() {
