@@ -49,7 +49,6 @@ screens in all seven themes beside Electron's.
 | Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle `rt`) | done `a67554d` + `79b7eba`: 132 functions in 16 areas returning `CoreError`, structs defined once in core (optional `napi` feature), every async api fn awaitable from any executor; Linux bar passed (tsc 0, napi build with `index.js` identical and `index.d.ts` identical in content, 340 core tests, `smoke-load.cjs`, `smoke-stack.cjs` signing in against the local stack); Windows Native Check run 45808677484 green |
 | Client state model, foundation (`crates/decibell-model`, `docs/model.md`) | done `7b45b47`: core handle (2-worker runtime), one-wake-per-burst pump (10,000 events from 8 threads = 5 wakes), router over all 85 events, stores for auth / users / navigation / servers / communities / roster / permissions / settings, `decibell-headless`; 65 tests incl. stack tests |
 | State model, chat half (messages, DMs, pacing, slowmode, drafts, search) and live half (voice, streams, calls, presence, friends, e2ee, hotkeys, devices, transfers) | in progress, worktrees `.worktrees/model-chat` (`wip/model-chat`) and `.worktrees/model-live` (`wip/model-live`) |
-| Core split step 5 (pooled receive path) | not started (with stream playback) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
 | Linux measurement tools | done `5285180`: `tools/perf/measure.sh`, `startup.sh`, `winctl.sh`, `install-size.sh` (README has the Linux section) |
 | Electron baseline on this machine (Linux) | runner being built (`tools/perf/electron-local.sh`, `scenarios.sh`); the full run needs a quiet machine |
@@ -58,7 +57,7 @@ screens in all seven themes beside Electron's.
 | Theme generator + assets | done `e846392`: `crates/decibell-theme` (162 tokens × 7 themes, 12 scaled, scopes), `tools/gen-theme`, `tools/fetch-assets.mjs`, `docs/css-component-rules.md` |
 | Skeleton (workspace, patched GPUI copy, static font faces, window frame, theme gallery, capture + self-test harness, perf markers, Windows check job) | done `b120b2f`; `CONVENTIONS.md`; self-tests `boot`, `idle-frames`, `window-frame`, `themes` pass on Wayland and XWayland |
 | Text engine (`decibell-text`), component kit (in `decibell-ui`), video crate (`decibell-video`) | in progress |
-| Core follow-ups (pooled frame buffers, exact-pin connector, ring-only TLS) | in progress, worktree `.worktrees/core-followups` (branch `wip/core-followups`) |
+| Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
 | Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
 | Rich-text grammar (`crates/decibell-richtext`) | done `497ab53`: 0 mismatches against the renderer over 120,570 committed + 1.6M stress cases |
 | Math (`crates/decibell-tex`) | done `aa0a020`: KaTeX 0.18.4 ported; markup byte-identical on 5,070 / 5,072 formulas, glyphs within 0.05 px of Chromium; +1.1 MB binary |
@@ -259,11 +258,17 @@ the attachment tests read git-ignored `*.key` / `*.crt` files (they generate the
   convert JavaScript value Null into rust type String on InitOptions.e2eeLocalKey`. Fix: `?? undefined`.
 - Core's `Cargo.lock` must be re-seeded when core's dependencies change (recipe in `CLAUDE.md`); CI checks
   `--locked`.
-- **zbus features clash between the core and GPUI** (found by the model work): the core enables `zbus` with
-  `tokio`, GPUI's dependencies use it with `async-io`; cargo unifies them and GPUI's D-Bus calls (portal settings,
-  file chooser, keychain, logind) then panic outside a tokio context. Until the core's zbus runtime is a feature
-  (in progress on `wip/core-followups`), `decibell_model::core::prepare` enters the tokio context on GPUI's
-  worker threads as a workaround; build the app with `-p decibell-app`, not `--workspace`.
+- **zbus features**: every crate of this client depends on the core with `default-features = false, features =
+  ["zbus-async-io"]` (GPUI's own dependencies use zbus on async-io; the core's default `zbus-tokio` is the
+  Electron addon's). With both on, zbus picks tokio and GPUI's D-Bus calls panic outside a tokio context: check
+  `cargo tree -e features -i zbus` shows no `tokio`. `decibell_model::core::prepare` (the earlier workaround) can
+  go when the app's boot is wired. Keep `blocking` at 1.6.x in the lockfile (1.7.0 keeps an idle pool thread
+  waking every 500 ms).
+- **Voice receive path allocates per packet** (~5 allocations per voice packet per talking peer; the core
+  follow-up measured it and left a plan in its notes: fixed datagram slots on the existing ring, peers keyed by
+  the 32-byte sender id, in-place open, preallocated Opus slots). Not done; do it if voice CPU / wakeups need it.
+- `media::watch_stream_add` and `events::set_stream_frame_sink` update their sets by load-clone-store: two
+  concurrent writers can lose an update (found by the core follow-up's tests; production code unchanged).
 - **A cached view goes stale unless it observes what it reads** (`docs/model.md` §4): GPUI re-renders a cached
   view only when that view itself is notified.
 - **Community server bug (for `main`, not changed here)**: the first page of the member list returns the
@@ -274,6 +279,11 @@ the attachment tests read git-ignored `*.key` / `*.crt` files (they generate the
 
 Things only the owner can do; nothing here blocks the rest.
 
+- **Watch a stream in the Electron client built from this branch before it merges to `main`.** The core's video
+  receive path was reworked for this client (frames reach the napi sink directly from the receive thread, one
+  hop fewer; the Linux self-preview moves its buffer instead of copying; reassembly and FEC no longer copy
+  fragments twice). Electron's bar and the allocation tests pass and frames are byte-identical in tests, but no
+  one has watched a real stream through it yet. Also the decision list in `docs/electron-quirks.md`.
 - **Decide the active-tile glow's behaviour.** In Electron it breathes forever (2.4 s opacity cycle) and costs
   ~15 % of a core on Linux while the window is visible. This client breathes it only while the window is
   focused, at a capped frame rate, presenting without re-rendering; unfocused it rests. Say if it should
