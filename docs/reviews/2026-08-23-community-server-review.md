@@ -5011,3 +5011,109 @@ remote audio in flight would have made it ~3/s, capture-driven wakes ~50/s in B)
 Those change when samples are produced or handed to a device: device restart latency (PipeWire suspends an idle
 node after ~5 s; HDMI / Bluetooth / USB wake), OS microphone indicators, Bluetooth profile switching, and the
 2026-08-21 ring-starvation lesson.
+
+### Feature + fixes: the core's audio for the native client, and the voice path's click audit (2026-11-26, branch `wip/core-audio`)
+
+Four things in `crates/decibell-core`, shared with the Electron addon (which exports none of the new API and
+whose renderer keeps its own Web Audio sounds, `getUserMedia` meter and `devicechange`): interface sounds, the
+microphone test outside voice, device-change notifications, and the twelve click sources of the 2026-11-26
+audit (`gpui-client/HANDOFF.md` §5), each reproduced in a sample-exact test and fixed at its cause, or shown
+not to be one. Owner's rule: any change to audible output needs such a test **and** a two-person listening
+test; the listening list is in `gpui-client/HANDOFF.md` §6. Nothing changes timing, pacing, buffer sizes or
+when samples flow.
+
+**Structure first (no behaviour change, `1d52677`).** The capture path (`media/capture_chain.rs`:
+`CaptureChain` = resample, 20 ms frames, AEC / AGC, RNNoise; `TxGate` = hysteresis, hang, pre-roll, fade tail),
+the stream-audio drain (`drain_peer_stream`, `StreamOut`) and the output callbacks (`audio_device.rs`
+`OutputMix` / `StreamMix`, whose `render` is the callback's whole body) became types, so the mic test shares
+the voice capture path and tests drive the real mixes without a device. `mix_tests::the_mix_is_unchanged_at_rest`
+holds the mix bit for bit to the old formula (mono, stereo, voice only, 6 channels).
+
+**Interface sounds** (`media/cue.rs`, `api::audio::{load_sound, play_sound, start_ring, stop_ring}`). A `Sound`
+is PCM from one of the renderer's twelve WAVE files (`electron-client/src/assets/sounds`, the same files the
+native client ships), played at unity gain as the renderer's `AudioBufferSourceNode → destination`; sounds
+overlap by summing. While a voice or call output stream is live they are **one more term of that stream's
+mix** (a `CueVoices` owned by the callback, fed through an SPSC command ring; no lock, no allocation, no free
+on the audio thread): never a second device stream, never a restart. Otherwise a short-lived stream
+(`decibell-cue`) opens on the device the caller names (None = the OS default, where the renderer's
+`AudioContext` plays), and closes itself once the callback has written 250 ms of silence after the last sound
+(counted by the callback; the thread sleeps parked meanwhile). The ring loops inside the callback (buffer end
+into buffer start, as `loop = true`), with nothing timed per repeat; `stop_ring` is a 5 ms fade where the
+renderer's `stop()` cuts. A ring follows the output: onto the voice mix when a session starts, back to its own
+stream when it ends. Ten files are 48 kHz and play sample for sample on a 48 kHz device
+(`each_file_plays_sample_for_sample`: every file starts and ends within 4 LSB of zero; peaks −3.1 to −14.8
+dBFS, all under the output limiter's −2.5 dBFS knee, so the voice mix adds them unchanged:
+`a_sound_is_added_to_the_voice_mix`); `call_ring` and `call_end` are 44.1 kHz and are resampled once with the
+voice path's sinc resampler (`resampling_keeps_time_and_pitch`: a 440 Hz tone lands within −50 dB of the ideal;
+this resampler's output has no leading delay to trim, which the test pins). Cost out of voice: the stream's
+open, measured into a PipeWire null sink through the pulse PCM at load average 10
+(`open_latency_into_a_null_sink`, ignored by default): 171 ms the first time, 91–113 ms after, plus the
+device's own buffer; a sound that follows within 250 ms reuses the open stream. The alternative is a stream
+kept open (what Chromium's `AudioContext` does after its first sound): no latency, device-clock wakeups at
+idle; not done.
+A session's end now lets a sound in its mix finish (the "disconnect" sound of that very leave; bounded at 3 s)
+with voice and stream audio faded out, then fades the stream (5 ms) and hands the device its buffer's worth of
+silence before closing it: closing a stream mid-signal drops what the device had buffered. **Electron sees
+this** as a leave that ends in a 5 ms fade instead of a cut, and an engine stop ~45 ms longer on its own
+thread (`closing_an_output_fades_it_out`).
+
+**Microphone test outside voice** (`media/mic_test.rs`, `api::audio::{start_mic_test, stop_mic_test}`): the
+chosen input through `CaptureChain` with the user's AEC / NS / AGC switches, no output stream, the level of
+every third 20 ms frame to a callback (RMS dB, −96 = silence: `voice_input_level`'s figure and cadence). One
+thread (`decibell-mic-test`) while a test runs, asleep until the capture callback has queued samples
+(`build_input_stream` takes an optional thread to unpark; the voice pipeline passes none); `stop` joins it.
+Refused while a `VoiceEngine` exists, ended when one starts (before the pipeline opens the microphone). The
+renderer's test meters Chromium's own processed capture (`getUserMedia({audio: true})`); this one meters what
+a voice session would send, as the in-voice meter does. Tests on a fake input: a −20 dBFS tone reads −23.0 dB
+at 48 and 44.1 kHz, silence −96, steady noise −25.5 dB raw and −84.1 dB with noise suppression.
+
+**Device changes** (`media/device_watch.rs`, `api::audio::watch_devices`, the payload-less event
+`audio_devices_changed`, 87 events): ref-counted; while watched, a PipeWire registry listener
+(`decibell-audio-devices`, asleep in PipeWire's loop; objects present at connect are not changes) reports
+`Audio/Sink`, `Audio/Source`, `Audio/Duplex` nodes coming and going; without PipeWire, `pactl subscribe`'s
+stream. Windows: `IMMNotificationClient`; macOS: CoreAudio property listeners (three functions declared by
+hand, no new dependency). `default_device_watch` (the live session's "Default" follower on Windows / macOS)
+now sleeps until the same notification instead of looking once a second, and still compares identities, so a
+notification per role moves a stream once; it polls only if registration fails. Linux needs no follower
+(PipeWire moves unpinned streams). `a_null_sink_appearing_and_going_is_reported` (ignored by default) ran
+against the desktop's PipeWire: one event on add, one on remove, none at rest. The Windows and macOS code is
+compiled by nothing here.
+
+**The click audit.** `media/click_tests.rs` runs the real receive path (`on_voice_datagram`,
+`drain_peer_voice` / `drain_peer_stream`), the real `OutputMix` on a device thread that renders when told to,
+and the real capture chain and gate, with a 190 Hz tone whose level swings at 3 Hz as the talker (a steady tone
+is coded as background noise after 800 ms: Opus DTX), and bounds the largest sample-to-sample step by the
+tone's own slope (0.0053 of full scale; limit 0.0134). Each test failed before its fix:
+
+| Audit | What clicked | Before (largest step) | Fix | Commit |
+|---|---|---|---|---|
+| 1 output device switched mid-speech | stream closed mid-wave, next frame at full level | 0.141 (4,615 LSB) | the old stream fades 5 ms in its callback, stays open on silence until that was played (`retire_output` / `reap_retired`, checked each tick, nothing waits beyond the fade), the peers' next frame fades in (`drain_ring` sets the onset) | `db9629f` |
+| 2 deafen / undeafen mid-speech | the ring ran out mid-wave; full level out of silence | 0.141 | `OutputCtl::set_voice`: the callback ramps the voices 5 ms; the first frame after undeafen fades in | `818d7c9` |
+| 3 per-user volume | gain stepped at the frame boundary | 0.096 | ramps across the frame from the gain last played (`PeerAudio::played_gain`) | `7226504` |
+| 7 callback can't take the stream-audio lock | a silent period, voices included | 0.041 | voices and sounds play on, stream audio sits the period out; the 5 s diagnostics read the ring from the producer's side; a voice-device switch no longer empties stream audio that plays on a separate device | `0b0dbcc` |
+| 8 ten lost frames reset the jitter buffer | **not a click** (held by `a_run_of_lost_frames_resets_without_a_step`); but the concealment's fade was one gain per frame | 0.023 at every underrun | the fade ramps inside each frame | `6af1c3e` |
+| 9 stream audio | spliced when 60 ms over target; no onset fade; a stall's concealment unfaded | 0.162 | the first frame fades in (start, after a pause, on a new device), concealment fades as voice's, cut frames are crossfaded into the next (`crossfade_in`, 10 ms) | `4ed66d1` |
+| (found) late burst of voice | speech cut past 200 ms over target was spliced | 0.148 | the same crossfade | `78e926a` |
+| (found) late packets resume | full level straight after a faded concealment frame | 0.026 | ramps back up from the concealment's level (`concealed_level`) | `63a5045` |
+| 4 microphone switched mid-word | the new device's signal butted against the old (gate stayed open, pre-roll kept) | 0.179 | `TxGate::cut`: one silence-flagged frame ends the talkspurt before the old device closes (the listener fades its last voice frame), the new device opens a new one, faded in | `98e91fc` |
+| 5 AEC / NS / AGC toggled mid-word | processors rebuilt: level jumped | 0.0073 against a signal whose own largest step was 0.0013 | one frame crossfades the old processor to the new (warmed up on the frame before: the gain controller steps its gain 5 ms into its first audio); setting what is set rebuilds nothing; a noise-suppression change no longer rebuilds the echo canceller and gain control, and between two "on" levels changes nothing (`a_noise_suppression_level_change_restarts_nothing`: sample-identical) | `98e91fc` |
+| 10 push-to-talk press; mute mid-word | the press is clean (10 ms fade-in, held by test). The release / mute was not: the listener faded the last voice frame to zero, then played the sender's tail from full level | 0.041 | the flagged tail plays as silence once the listener has faded the last voice frame (`talkspurt_faded`); the tail frames after a mute stay processed (`wants_processing`) | `98e91fc` |
+| 6 pull estimate across a device switch | a longer-period device starved until the next 2 s look: 65 of 70 callbacks short | zeros spliced | the estimate starts over with the new stream (`output_device_changed`), as for a fresh session | `99a08d0` |
+| 12 allocation per capture frame | not a click; 4 of ours per frame | — | reused buffers: 0 (48 and 44.1 kHz, with noise suppression too); the `aec3` crate still allocates ~134 times a frame with AEC or AGC on; checksum test: same samples | `d4f6066` |
+| 11 a device open blocks the audio loop | listeners get a gap, then a burst | — | **not changed**: see below | — |
+
+Not changed, and why. **11**: `cpal::Stream` is built on the audio thread, and the open (≈90 ms here, more on
+Bluetooth) stops capture frames being sent meanwhile. Moving opens to their own thread means the streams live
+on a thread that only owns devices, i.e. a change in who produces and consumes when; that is a pacing change
+and needs the owner's say. Audit 4's flagged frame at least makes the listener end the talkspurt cleanly
+instead of concealing. **6, the rest**: a device whose period is over 30 ms (some Bluetooth) is still short
+until the first 2 s look, on a switch and on a fresh join alike; taking the first observed pull at once would
+fix both and is a buffering change (the ring is held deeper sooner): proposed, not made. **4, the rest**: a new
+microphone still restarts the echo canceller (its echo path is new either way; ~1 s to converge). A deafen
+toggled twice within 30 ms can still meet its own leftover ring audio. Pre-existing and left: a mono output
+device pops only one sample per frame of a stereo stream ring (plays at half speed; `OutputMix`, noted in
+review).
+
+Bar: core `cargo test --lib` 469 passed (436 before; 10 ignored, three of them new and run by hand against
+PipeWire null sinks, all removed); addon build with `index.js` / `index.d.ts` unchanged, smoke load, its unit
+test, the renderer's typecheck; golden events + one. Unrun: everything `cfg(windows)` / macOS.

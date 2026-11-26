@@ -652,6 +652,21 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   reachable from those tests behind a `#[cfg(not(test))]` wrapper with a no-op twin. `crates/decibell-core`
   has no napi symbols: its tests install the recording sink (`events::testing::install_recording_sink`)
   and read what they emitted with `take_own_events` (or `take_events` for a spawned thread's).
+- **Audio tests and the audio path** (2026-11-26, `crates/decibell-core/src/media/click_tests.rs`):
+  - a steady tone is not a talker: after ~800 ms Opus's voice detector calls it background noise and stops
+    coding it (DTX; the level drops to a third and wanders). Test signals swing in level (the tests' `talker`).
+  - closing a `cpal::Stream` drops what the device still had buffered: fade in the callback first, hand the
+    device its buffer's worth of silence, then close (`OutputCtl`, `retire_output`).
+  - anything that scales a frame by one gain (a volume, a concealment's fade) steps at the frame boundary by
+    that gain's change times the wave's value: ramp inside the frame from the gain the last frame ended at.
+  - the listener fades the last voice frame itself when the flagged tail is already buffered behind it; the
+    tail must then play as silence (`talkspurt_faded`), or it jumps back up out of the fade.
+  - a new `aec3` processor steps its gain 5 ms into its first audio: warm it up on the frame before and
+    crossfade from the old one (`CaptureChain::process`). The crate allocates ~134 times a frame.
+  - `rubato::SincFixedOut`'s output starts at the input's first instant: `output_delay()` is not something to
+    trim (`cue::tests::resampling_keeps_time_and_pitch` pins it).
+  - on Linux a device is chosen through the process environment (`PULSE_SINK` / `PULSE_SOURCE`): every stream
+    open takes `audio_device::DEVICE_OPEN`, since the cue stream and the mic test open from other threads.
 - **No CPU↔GPU sync in capture loops.** A per-send staging `Map` waited out the game's GPU queue and
   held a 60 fps DXGI share at ~32 fps. Keep capture / composite fully asynchronous on the GPU
   (`cursor_gpu.rs`); readbacks only on the encoder thread at low rate. The tell is a large `send_max` in

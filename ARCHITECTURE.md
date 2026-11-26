@@ -680,6 +680,13 @@ and the runtime handle):
   fingerprint)` accepts only that sha256 and never reads or writes the store, so it works before or
   without `set_boot`: a native client's attachment HTTPS (port 8085, TLS 1.2 only) pinned to the
   `cert_fingerprint` central reports. Both fail a mismatch with the same `CERT_MISMATCH:<host>:<port>:<seen>`.
+- **Audio a client can ask for outside the voice flow** (`api::audio`, 2026-11-26; plain Rust, not exported
+  by the addon): interface sounds (`load_sound` / `play_sound` / `start_ring` / `stop_ring`: mixed into the
+  live voice output's callback, else on a short-lived stream that closes itself; `media/cue.rs`), the
+  microphone test outside voice (`start_mic_test` / `stop_mic_test`: the voice capture chain with no output
+  stream, a level callback; `media/mic_test.rs`), and `watch_devices(bool)`, which turns on the
+  `audio_devices_changed` event from the platform's notifications (`media/device_watch.rs`). Electron's
+  renderer does all three with Chromium.
 - **Commands are `decibell_core::api`** (step 3): 132 functions, one module per area with the addon's
   names (auth 7, call 6, channels 15, community 23, devices 3, dm 5, e2ee 6, friends 3, hotkeys 6,
   messaging 1, presence 5, servers 11, settings 4, stream_audio 2, streaming 18, voice 17), plus
