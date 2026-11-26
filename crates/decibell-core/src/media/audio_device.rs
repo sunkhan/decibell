@@ -9,6 +9,7 @@ use rubato::{SincFixedOut, SincInterpolationParameters, SincInterpolationType, W
 
 use super::codec::SAMPLE_RATE;
 use super::peer::PeerOutput;
+use super::cue::{CueBus, CueMix, CueVoices};
 use super::pipeline::VoiceEvent;
 
 /// Shared peer list used by the output callback. Swapped atomically by the
@@ -123,6 +124,17 @@ pub fn get_default_device(host: &cpal::Host, input: bool) -> Option<cpal::Device
         );
     }
     Some(picked)
+}
+
+/// Held while a stream is opened. On Linux a device is chosen through the
+/// process environment (PULSE_SINK / PULSE_SOURCE, below), and streams are
+/// opened from more than one thread (the voice pipeline, the interface
+/// sounds' stream, the microphone test): one at a time, so each opens on the
+/// device it set.
+static DEVICE_OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn device_open_lock() -> std::sync::MutexGuard<'static, ()> {
+    DEVICE_OPEN.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ── Linux: route a stored device selection through PulseAudio / PipeWire ──────
@@ -490,6 +502,7 @@ pub fn build_input_stream(
     device_name: Option<&str>,
     capture_prod: Arc<std::sync::Mutex<HeapProd<i16>>>,
 ) -> Option<(cpal::Stream, u32)> {
+    let _open = device_open_lock();
     let input_device = resolve_capture_device(host, device_name)?;
     let (input_cfg, in_ch, fmt) = input_config(&input_device);
     let input_sample_rate = input_cfg.sample_rate.0;
@@ -529,10 +542,123 @@ fn pop_voice_sum(guards: &mut [std::sync::MutexGuard<HeapCons<i16>>]) -> i32 {
     sum
 }
 
+/// What the pipeline tells a live output stream's callback, and what the
+/// callback reports back. Each switch is a 5 ms linear gain ramp inside the
+/// callback, so nothing the pipeline does to a stream is a step in what the
+/// device plays.
+pub struct OutputCtl {
+    /// Voice and stream audio play (false once the session is ending and
+    /// only the interface sounds still playing are let finish).
+    program_on: std::sync::atomic::AtomicBool,
+    /// The stream is in use. False: everything fades out, then the callback
+    /// writes silence and leaves the rings alone (the stream is about to be
+    /// closed; closing it mid-signal would cut the waveform).
+    live: std::sync::atomic::AtomicBool,
+    /// The fade to silence is complete.
+    faded: std::sync::atomic::AtomicBool,
+    /// Frames of silence written since.
+    silent_frames: std::sync::atomic::AtomicU64,
+    /// The pipeline thread: woken when the fade completes.
+    waiter: std::thread::Thread,
+    rate: u32,
+}
+
+impl OutputCtl {
+    pub(crate) fn new(rate: u32) -> Arc<Self> {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+        Arc::new(OutputCtl {
+            program_on: AtomicBool::new(true),
+            live: AtomicBool::new(true),
+            faded: AtomicBool::new(false),
+            silent_frames: AtomicU64::new(0),
+            waiter: std::thread::current(),
+            rate,
+        })
+    }
+
+    pub fn set_program(&self, on: bool) {
+        self.program_on.store(on, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Start the fade to silence. One way: a stream is closed after it.
+    pub fn fade_out(&self) {
+        self.live.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_faded(&self) -> bool {
+        self.faded.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Milliseconds of silence the device has been handed since the fade.
+    pub fn silent_ms(&self) -> u64 {
+        self.silent_frames.load(std::sync::atomic::Ordering::Acquire) * 1000 / self.rate.max(1) as u64
+    }
+
+    /// Fade out and wait for the callback to report it (it takes 5 ms of
+    /// audio, so one or two callbacks), then for `flush_ms` of silence to be
+    /// handed to the device, at most `max` altogether (a device whose callback
+    /// has stopped never reports). Called on the thread that built the stream.
+    pub fn fade_out_and_wait(&self, flush_ms: u64, max: std::time::Duration) {
+        self.fade_out();
+        let deadline = Instant::now() + max;
+        while !(self.is_faded() && self.silent_ms() >= flush_ms) {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            std::thread::park_timeout(deadline - now);
+        }
+    }
+
+    #[inline]
+    fn note_silence(&self, frames: usize) {
+        use std::sync::atomic::Ordering::{AcqRel, Release};
+        let before = self.silent_frames.fetch_add(frames as u64, AcqRel);
+        if !self.faded.swap(true, Release) {
+            self.waiter.unpark();
+        }
+        // Wake the waiter again as each further 10 ms of silence goes out
+        // (it may be waiting for the device's buffer to play out).
+        let step = (self.rate as u64 / 100).max(1);
+        if before / step != (before + frames as u64) / step {
+            self.waiter.unpark();
+        }
+    }
+}
+
+/// The callback's own gain state for an `OutputCtl`.
+struct Gains {
+    program: f32,
+    master: f32,
+    /// Per-frame step of a 5 ms ramp.
+    step: f32,
+}
+
+impl Gains {
+    fn new(rate: u32) -> Self {
+        Gains { program: 1.0, master: 1.0, step: 200.0 / rate.max(1) as f32 }
+    }
+    #[inline]
+    fn approach(g: &mut f32, target: f32, step: f32) {
+        if *g < target {
+            *g = (*g + step).min(target);
+        } else if *g > target {
+            *g = (*g - step).max(target);
+        }
+    }
+}
+
+/// `x` (an i16-scale sum) at gain `g`; exactly `x` at unity.
+#[inline]
+fn scaled(x: i32, g: f32) -> i32 {
+    if g == 1.0 { x } else { (x as f32 * g) as i32 }
+}
+
 /// The main output's mix, one device callback at a time: every peer's voice
-/// ring summed, plus stream audio when it plays on this device (`stream`),
-/// soft-limited and converted to the device's format. Held by the callback;
-/// `render` is the callback's whole body, so tests drive it without a device.
+/// ring summed, plus stream audio when it plays on this device (`stream`)
+/// and the interface sounds (`cues`), soft-limited and converted to the
+/// device's format. Held by the callback; `render` is the callback's whole
+/// body, so tests drive it without a device.
 pub(crate) struct OutputMix {
     n: usize,
     peers: PeerList,
@@ -540,6 +666,9 @@ pub(crate) struct OutputMix {
     /// output (stream audio on a separate device).
     stream: Option<(Arc<std::sync::Mutex<HeapCons<i16>>>, Arc<std::sync::atomic::AtomicBool>)>,
     pull_stats: Arc<OutputPullStats>,
+    ctl: Arc<OutputCtl>,
+    gains: Gains,
+    cues: CueVoices,
 }
 
 impl OutputMix {
@@ -548,19 +677,34 @@ impl OutputMix {
         peers: PeerList,
         stream: Option<(Arc<std::sync::Mutex<HeapCons<i16>>>, Arc<std::sync::atomic::AtomicBool>)>,
         pull_stats: Arc<OutputPullStats>,
+        ctl: Arc<OutputCtl>,
+        cues: CueVoices,
     ) -> Self {
         // `max(1)` guards against a 0-channel device reaching `chunks_exact_mut`.
-        OutputMix { n: out_ch.max(1) as usize, peers, stream, pull_stats }
+        let gains = Gains::new(ctl.rate);
+        OutputMix { n: out_ch.max(1) as usize, peers, stream, pull_stats, ctl, gains, cues }
     }
 
     pub(crate) fn render<T>(&mut self, data: &mut [T])
     where
         T: SizedSample + FromSample<f32>,
     {
+        use std::sync::atomic::Ordering::Acquire;
         let n = self.n;
         let pull_stats = &self.pull_stats;
         let frames = data.len() / n;
         pull_stats.record(frames);
+        self.cues.begin();
+        let target_program = if self.ctl.program_on.load(Acquire) { 1.0 } else { 0.0 };
+        let target_master = if self.ctl.live.load(Acquire) { 1.0 } else { 0.0 };
+        if self.gains.master == 0.0 && target_master == 0.0 {
+            // Faded out and about to be closed: silence, rings untouched.
+            let silence = T::from_sample(0.0f32);
+            for sample in data.iter_mut() { *sample = silence; }
+            self.ctl.note_silence(frames);
+            self.cues.end(frames);
+            return;
+        }
         let peer_snapshot = self.peers.load();
         // Stack-inline for the typical ≤8-peer channel so the real-time output
         // callback does no heap allocation (only a >8-peer channel spills to the
@@ -574,56 +718,62 @@ impl OutputMix {
             pull_stats.note_short();
         }
 
-        let Some((stream_cons_out, pb_stream_stereo)) = &self.stream else {
-            // Voice only.
-            for frame in data.chunks_exact_mut(n) {
-                let v = pop_voice_sum(&mut voice_guards);
-                let m = soft_clip(v as f32 / 32768.0);
-                pull_stats.tap_push(m);
-                let out = T::from_sample(m);
-                for ch in frame.iter_mut() { *ch = out; }
-            }
-            return;
+        let mut stream_guard = match &self.stream {
+            None => None,
+            Some((stream_cons_out, _)) => match stream_cons_out.try_lock() {
+                Ok(g) => Some(g),
+                Err(_) => {
+                    drop(voice_guards);
+                    let silence = T::from_sample(0.0f32);
+                    for sample in data.iter_mut() { *sample = silence; }
+                    self.cues.end(frames);
+                    return;
+                }
+            },
         };
+        let stereo = n >= 2
+            && self.stream.as_ref().is_some_and(|(_, flag)| flag.load(std::sync::atomic::Ordering::Relaxed));
 
-        let Ok(mut stream_guard) = stream_cons_out.try_lock() else {
-            drop(voice_guards);
-            let silence = T::from_sample(0.0f32);
-            for sample in data.iter_mut() { *sample = silence; }
-            return;
-        };
-
-        if n == 1 {
-            for sample in data.iter_mut() {
-                let v = pop_voice_sum(&mut voice_guards);
-                let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                let m = soft_clip((v + s) as f32 / 32768.0);
-                pull_stats.tap_push(m);
-                *sample = T::from_sample(m);
-            }
-        } else {
-            for frame in data.chunks_exact_mut(n) {
-                let v = pop_voice_sum(&mut voice_guards);
-                if pb_stream_stereo.load(std::sync::atomic::Ordering::Relaxed) && n >= 2 {
-                    let sl = stream_guard.try_pop().unwrap_or(0) as i32;
-                    let sr = stream_guard.try_pop().unwrap_or(0) as i32;
-                    let ml = soft_clip((v + sl) as f32 / 32768.0);
-                    let mr = soft_clip((v + sr) as f32 / 32768.0);
+        let step = self.gains.step;
+        for frame in data.chunks_exact_mut(n) {
+            Gains::approach(&mut self.gains.program, target_program, step);
+            Gains::approach(&mut self.gains.master, target_master, step);
+            let (gp, gm) = (self.gains.program, self.gains.master);
+            let v = scaled(pop_voice_sum(&mut voice_guards), gp);
+            let c = self.cues.sample();
+            match (&mut stream_guard, stereo) {
+                (Some(g), true) => {
+                    let sl = scaled(g.try_pop().unwrap_or(0) as i32, gp);
+                    let sr = scaled(g.try_pop().unwrap_or(0) as i32, gp);
+                    let mut ml = soft_clip((v + sl + c) as f32 / 32768.0);
+                    let mut mr = soft_clip((v + sr + c) as f32 / 32768.0);
+                    if gm != 1.0 {
+                        ml *= gm;
+                        mr *= gm;
+                    }
                     pull_stats.tap_push((ml + mr) * 0.5);
                     let left = T::from_sample(ml);
                     let right = T::from_sample(mr);
                     frame[0] = left;
                     frame[1] = right;
                     for ch in &mut frame[2..] { *ch = left; }
-                } else {
-                    let s = stream_guard.try_pop().unwrap_or(0) as i32;
-                    let m = soft_clip((v + s) as f32 / 32768.0);
+                }
+                (g, _) => {
+                    let s = match g {
+                        Some(g) => scaled(g.try_pop().unwrap_or(0) as i32, gp),
+                        None => 0,
+                    };
+                    let mut m = soft_clip((v + s + c) as f32 / 32768.0);
+                    if gm != 1.0 {
+                        m *= gm;
+                    }
                     pull_stats.tap_push(m);
                     let mixed = T::from_sample(m);
                     for ch in frame.iter_mut() { *ch = mixed; }
                 }
             }
         }
+        self.cues.end(frames);
     }
 }
 
@@ -642,6 +792,8 @@ pub(crate) struct StreamMix {
     stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
     pb_stereo: Arc<std::sync::atomic::AtomicBool>,
     pull_stats: Arc<OutputPullStats>,
+    ctl: Arc<OutputCtl>,
+    gains: Gains,
 }
 
 impl StreamMix {
@@ -650,8 +802,10 @@ impl StreamMix {
         stream_cons_out: Arc<std::sync::Mutex<HeapCons<i16>>>,
         pb_stereo: Arc<std::sync::atomic::AtomicBool>,
         pull_stats: Arc<OutputPullStats>,
+        ctl: Arc<OutputCtl>,
     ) -> Self {
-        StreamMix { n: out_ch.max(1) as usize, stream_cons_out, pb_stereo, pull_stats }
+        let gains = Gains::new(ctl.rate);
+        StreamMix { n: out_ch.max(1) as usize, stream_cons_out, pb_stereo, pull_stats, ctl, gains }
     }
 
     pub(crate) fn render<T>(&mut self, data: &mut [T])
@@ -660,28 +814,46 @@ impl StreamMix {
     {
         let n = self.n;
         self.pull_stats.record(data.len() / n);
+        // The stream is being closed (a device switch, the session's end):
+        // a 5 ms fade, then silence with the ring left alone.
+        let target_master = if self.ctl.live.load(std::sync::atomic::Ordering::Acquire) { 1.0 } else { 0.0 };
+        if self.gains.master == 0.0 && target_master == 0.0 {
+            let silence = T::from_sample(0.0f32);
+            for sample in data.iter_mut() { *sample = silence; }
+            self.ctl.note_silence(data.len() / n);
+            return;
+        }
         let Ok(mut guard) = self.stream_cons_out.try_lock() else {
             let silence = T::from_sample(0.0f32);
             for sample in data.iter_mut() { *sample = silence; }
             return;
         };
         let is_stereo = self.pb_stereo.load(std::sync::atomic::Ordering::Relaxed);
+        let step = self.gains.step;
+        // Exactly the ring's sample at unity gain.
+        let gain = |g: &mut Gains| {
+            Gains::approach(&mut g.master, target_master, step);
+            g.master
+        };
+        let at = |s: f32, g: f32| if g == 1.0 { s } else { s * g };
         if n == 1 {
             for sample in data.iter_mut() {
+                let g = gain(&mut self.gains);
                 let s = guard.try_pop().unwrap_or(0) as f32 / 32768.0;
                 if is_stereo { let _ = guard.try_pop(); }
-                *sample = T::from_sample(s);
+                *sample = T::from_sample(at(s, g));
             }
         } else {
             for frame in data.chunks_exact_mut(n) {
+                let g = gain(&mut self.gains);
                 if is_stereo && n >= 2 {
-                    let sl = T::from_sample(guard.try_pop().unwrap_or(0) as f32 / 32768.0);
-                    let sr = T::from_sample(guard.try_pop().unwrap_or(0) as f32 / 32768.0);
+                    let sl = T::from_sample(at(guard.try_pop().unwrap_or(0) as f32 / 32768.0, g));
+                    let sr = T::from_sample(at(guard.try_pop().unwrap_or(0) as f32 / 32768.0, g));
                     frame[0] = sl;
                     frame[1] = sr;
                     for ch in &mut frame[2..] { *ch = sl; }
                 } else {
-                    let s = T::from_sample(guard.try_pop().unwrap_or(0) as f32 / 32768.0);
+                    let s = T::from_sample(at(guard.try_pop().unwrap_or(0) as f32 / 32768.0, g));
                     for ch in frame.iter_mut() { *ch = s; }
                 }
             }
@@ -762,92 +934,70 @@ macro_rules! build_output_dispatch {
     }};
 }
 
-// ── Output stream builder ────────────────────────────────────────────────────
+// ── Output stream builders ───────────────────────────────────────────────────
 
-/// Build a CPAL output (playback) stream that mixes voice + stream audio from
-/// their respective ring buffer consumers. The ring buffers carry i16 samples
-/// at the output device's native rate — all resampling happens in the main loop.
+/// A live output stream and the handles to its callback.
+pub struct OutputHandle {
+    pub stream: cpal::Stream,
+    pub rate: u32,
+    pub ctl: Arc<OutputCtl>,
+    /// Where interface sounds are sent while this stream is the voice
+    /// output; None for the stream-audio-only output.
+    pub(crate) cues: Option<Arc<CueBus>>,
+}
+
+/// The device's buffer as we ask for it (`preferred_buffer_frames`), in ms:
+/// how much silence follows a fade-out before a stream is closed, so the
+/// fade itself has been played.
+pub(crate) const DEVICE_BUFFER_MS: u64 = 40;
+
+fn started(stream: cpal::Stream, what: &str, event_tx: &std::sync::mpsc::Sender<VoiceEvent>) -> Option<cpal::Stream> {
+    if let Err(e) = stream.play() {
+        let _ = event_tx.send(VoiceEvent::Error(format!("Failed to start {}: {}", what, e)));
+        return None;
+    }
+    Some(stream)
+}
+
+/// The main output: voice, interface sounds, and stream audio too when
+/// `stream` is given (else it plays on a separate device). The ring buffers
+/// carry i16 samples at the output device's native rate — all resampling
+/// happens in the main loop. Built in the device's native sample format (see
+/// build_output_dispatch!): the mix sums each peer's ring as i32, adds stream
+/// audio, soft-limits, and converts to the device format.
 pub fn build_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
     peers: PeerList,
-    stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
-    stream_stereo: Arc<std::sync::atomic::AtomicBool>,
-    _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
+    stream: Option<(Arc<std::sync::Mutex<HeapCons<i16>>>, Arc<std::sync::atomic::AtomicBool>)>,
     pull_stats: Arc<OutputPullStats>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
-) -> Option<(cpal::Stream, u32, u16)> {
+) -> Option<OutputHandle> {
+    let label = if stream.is_some() { "Output" } else { "Voice output" };
+    let what = if stream.is_some() { "output stream" } else { "voice output stream" };
+    let _open = device_open_lock();
     let output_device = resolve_playback_device(host, device_name)?;
-    let (stream_config, out_ch, fmt) = output_config(&output_device, "Output");
-    let output_sample_rate = stream_config.sample_rate.0;
-
-    // Build in the device's native sample format (see build_output_dispatch!).
-    // Mixing sums each peer's ring as i32, adds stream audio, soft-limits, and
-    // converts to the device format.
-    let mix = SharedMix::new(OutputMix::new(out_ch, peers, Some((stream_cons, stream_stereo)), pull_stats));
-    let stream = match build_with_buffer_fallback!(stream_config, "Output", build_output_dispatch!(
+    let (stream_config, out_ch, fmt) = output_config(&output_device, label);
+    let rate = stream_config.sample_rate.0;
+    let ctl = OutputCtl::new(rate);
+    let (cues, voices) = CueBus::new(rate, std::thread::current(), u64::MAX);
+    let mix = SharedMix::new(OutputMix::new(out_ch, peers, stream, pull_stats, Arc::clone(&ctl), voices));
+    let built = match build_with_buffer_fallback!(stream_config, label, build_output_dispatch!(
         &output_device, stream_config, fmt,
         output_mix_cb(&mix)
     )) {
         Ok(s) => s,
         Err(e) => {
-            let _ = event_tx.send(VoiceEvent::Error(format!(
-                "Failed to build output stream: {}", e
-            )));
+            let _ = event_tx.send(VoiceEvent::Error(format!("Failed to build {}: {}", what, e)));
             return None;
         }
     };
-    if let Err(e) = stream.play() {
-        let _ = event_tx.send(VoiceEvent::Error(format!(
-            "Failed to start output stream: {}", e
-        )));
-        return None;
-    }
-
-    Some((stream, output_sample_rate, out_ch))
+    let stream = started(built, what, event_tx)?;
+    Some(OutputHandle { stream, rate, ctl, cues: Some(cues) })
 }
 
-// ── Voice-only output stream builder ─────────────────────────────────────────
-
-/// Build a CPAL output stream that plays only voice audio (no stream mixing).
-/// Used when stream audio is routed to a separate device.
-/// Ring buffer carries i16 at device native rate — no callback resampling.
-pub fn build_voice_output_stream(
-    host: &cpal::Host,
-    device_name: Option<&str>,
-    peers: PeerList,
-    _render_ref_prod: Arc<std::sync::Mutex<HeapProd<f32>>>,
-    pull_stats: Arc<OutputPullStats>,
-    event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
-) -> Option<(cpal::Stream, u32, u16)> {
-    let output_device = resolve_playback_device(host, device_name)?;
-    let (stream_config, out_ch, fmt) = output_config(&output_device, "Voice output");
-    let output_sample_rate = stream_config.sample_rate.0;
-
-    let mix = SharedMix::new(OutputMix::new(out_ch, peers, None, pull_stats));
-    let stream = match build_with_buffer_fallback!(stream_config, "Voice output", build_output_dispatch!(
-        &output_device, stream_config, fmt,
-        output_mix_cb(&mix)
-    )) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = event_tx.send(VoiceEvent::Error(format!("Failed to build voice output stream: {}", e)));
-            return None;
-        }
-    };
-    if let Err(e) = stream.play() {
-        let _ = event_tx.send(VoiceEvent::Error(format!("Failed to start voice output stream: {}", e)));
-        return None;
-    }
-
-    Some((stream, output_sample_rate, out_ch))
-}
-
-// ── Stream-only output stream builder ────────────────────────────────────────
-
-/// Build a CPAL output stream that plays only stream audio (with stereo support).
-/// Used when stream audio is routed to a separate device.
-/// Ring buffer carries i16 at device native rate — no callback resampling.
+/// Stream audio only (with stereo support), for when it is routed to a
+/// separate device. Ring buffer carries i16 at device native rate.
 pub fn build_stream_output_stream(
     host: &cpal::Host,
     device_name: Option<&str>,
@@ -855,13 +1005,14 @@ pub fn build_stream_output_stream(
     stream_stereo: Arc<std::sync::atomic::AtomicBool>,
     pull_stats: Arc<OutputPullStats>,
     event_tx: &std::sync::mpsc::Sender<VoiceEvent>,
-) -> Option<(cpal::Stream, u32, u16)> {
+) -> Option<OutputHandle> {
+    let _open = device_open_lock();
     let output_device = resolve_playback_device(host, device_name)?;
     let (stream_config, out_ch, fmt) = output_config(&output_device, "Stream output");
-    let output_sample_rate = stream_config.sample_rate.0;
-
-    let mix = SharedMix::new(StreamMix::new(out_ch, stream_cons, stream_stereo, pull_stats));
-    let stream = match build_with_buffer_fallback!(stream_config, "Stream output", build_output_dispatch!(
+    let rate = stream_config.sample_rate.0;
+    let ctl = OutputCtl::new(rate);
+    let mix = SharedMix::new(StreamMix::new(out_ch, stream_cons, stream_stereo, pull_stats, Arc::clone(&ctl)));
+    let built = match build_with_buffer_fallback!(stream_config, "Stream output", build_output_dispatch!(
         &output_device, stream_config, fmt,
         stream_only_cb(&mix)
     )) {
@@ -871,10 +1022,200 @@ pub fn build_stream_output_stream(
             return None;
         }
     };
-    if let Err(e) = stream.play() {
-        let _ = event_tx.send(VoiceEvent::Error(format!("Failed to start stream output: {}", e)));
-        return None;
+    let stream = started(built, "stream output", event_tx)?;
+    Some(OutputHandle { stream, rate, ctl, cues: None })
+}
+
+fn cue_cb<T>(mix: &SharedMix<CueMix>) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo)
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let mut mix = mix.take();
+    move |data: &mut [T], _: &cpal::OutputCallbackInfo| mix.render(data)
+}
+
+/// The interface sounds' own stream, for when no voice output is live
+/// (cue.rs). `make(rate, channels)` builds its mix.
+pub(crate) fn build_cue_output_stream(
+    host: &cpal::Host,
+    device_name: Option<&str>,
+    make: Box<dyn FnOnce(u32, u16) -> CueMix + Send>,
+) -> Option<cpal::Stream> {
+    let _open = device_open_lock();
+    let output_device = resolve_playback_device(host, device_name)?;
+    let (stream_config, out_ch, fmt) = output_config(&output_device, "Sounds output");
+    let mix = SharedMix::new(make(stream_config.sample_rate.0, out_ch));
+    let built = build_with_buffer_fallback!(stream_config, "Sounds output", build_output_dispatch!(
+        &output_device, stream_config, fmt,
+        cue_cb(&mix)
+    ));
+    match built {
+        Ok(stream) => match stream.play() {
+            Ok(()) => Some(stream),
+            Err(e) => {
+                log::warn!("[cue] failed to start the sounds output: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            log::warn!("[cue] failed to build the sounds output: {}", e);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod mix_tests {
+    //! The output mixes driven as the device would drive them, without one.
+    use super::*;
+    use crate::media::cue::tests::file;
+    use ringbuf::{traits::Split, HeapRb};
+    use std::sync::atomic::AtomicBool;
+
+    pub(crate) struct Rig {
+        pub mix: OutputMix,
+        pub ctl: Arc<OutputCtl>,
+        pub cues: Arc<CueBus>,
+        pub voice: HeapProd<i16>,
+        pub stream: HeapProd<i16>,
+        pub stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
+        pub stereo: Arc<AtomicBool>,
+        pub pull: Arc<OutputPullStats>,
     }
 
-    Some((stream, output_sample_rate, out_ch))
+    /// A main output at 48 kHz with one peer and (if `with_stream`) stream
+    /// audio in its mix.
+    pub(crate) fn rig(channels: u16, with_stream: bool) -> Rig {
+        let (voice, vcons) = HeapRb::<i16>::new(48_000 * 4).split();
+        let (stream, scons) = HeapRb::<i16>::new(48_000 * 4).split();
+        let peers: PeerList = Arc::new(ArcSwap::from_pointee(vec![PeerOutput {
+            username: "101".into(),
+            cons: Arc::new(std::sync::Mutex::new(vcons)),
+        }]));
+        let stream_cons = Arc::new(std::sync::Mutex::new(scons));
+        let stereo = Arc::new(AtomicBool::new(false));
+        let ctl = OutputCtl::new(48_000);
+        let (cues, voices) = CueBus::new(48_000, std::thread::current(), u64::MAX);
+        let pull = Arc::new(OutputPullStats::new(None));
+        let mix = OutputMix::new(
+            channels,
+            peers,
+            with_stream.then(|| (Arc::clone(&stream_cons), Arc::clone(&stereo))),
+            Arc::clone(&pull),
+            Arc::clone(&ctl),
+            voices,
+        );
+        Rig { mix, ctl, cues, voice, stream, stream_cons, stereo, pull }
+    }
+
+    pub(crate) fn tone(freq: f64, amp: f64, n: usize) -> Vec<i16> {
+        (0..n).map(|i| ((2.0 * std::f64::consts::PI * freq * i as f64 / 48_000.0).sin() * amp) as i16).collect()
+    }
+
+    /// Render `frames` frames in 10 ms callbacks; channel 0 (and 1).
+    pub(crate) fn render(mix: &mut OutputMix, channels: usize, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        let mut buf = vec![0f32; channels * 480];
+        let mut left = frames;
+        while left > 0 {
+            let n = left.min(480);
+            mix.render(&mut buf[..channels * n]);
+            for f in buf[..channels * n].chunks_exact(channels) {
+                l.push(f[0]);
+                r.push(f[channels - 1]);
+            }
+            left -= n;
+        }
+        (l, r)
+    }
+
+    /// The largest step between neighbouring samples.
+    pub(crate) fn max_step(x: &[f32]) -> f32 {
+        x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
+    /// With no interface sound playing and nothing fading, the mix is what
+    /// the callbacks computed before they had either: voice plus stream audio
+    /// through the limiter, bit for bit (mono, stereo with a mono and with a
+    /// stereo stream, voice only).
+    #[test]
+    fn the_mix_is_unchanged_at_rest() {
+        let v = tone(180.0, 9_000.0, 4_800);
+        let s = tone(410.0, 21_000.0, 9_600);
+        for (channels, with_stream, stereo) in [(1, true, false), (2, true, false), (2, true, true), (2, false, false), (6, true, true)] {
+            let mut rig = rig(channels, with_stream);
+            rig.stereo.store(stereo, std::sync::atomic::Ordering::Relaxed);
+            rig.voice.push_slice(&v);
+            rig.stream.push_slice(&s);
+            let (l, r) = render(&mut rig.mix, channels as usize, 4_800);
+            for i in 0..4_800 {
+                let vi = v[i] as i32;
+                let (want_l, want_r) = if !with_stream {
+                    let m = soft_clip(vi as f32 / 32768.0);
+                    (m, m)
+                } else if stereo {
+                    (soft_clip((vi + s[2 * i] as i32) as f32 / 32768.0), soft_clip((vi + s[2 * i + 1] as i32) as f32 / 32768.0))
+                } else {
+                    let m = soft_clip((vi + s[i] as i32) as f32 / 32768.0);
+                    (m, m)
+                };
+                // Past stereo, the other channels repeat the left one.
+                let want_last = if channels > 2 { want_l } else { want_r };
+                assert_eq!((l[i], r[i]), (want_l, want_last), "{channels} ch, stream {with_stream}, stereo {stereo}, frame {i}");
+            }
+        }
+    }
+
+    /// In voice an interface sound is one more term of the sum the limiter
+    /// sees: the peer's voice goes on exactly as it was, with the file's
+    /// samples added while the sound plays.
+    #[test]
+    fn a_sound_is_added_to_the_voice_mix() {
+        let mut rig = rig(2, true);
+        let v = tone(180.0, 4_000.0, 48_000);
+        rig.voice.push_slice(&v);
+        let (before, _) = render(&mut rig.mix, 2, 960);
+        let sound = file("user_join");
+        let pcm = sound.at_rate(48_000);
+        crate::media::cue::tests::play_on(&rig.cues, &sound);
+        let (during, _) = render(&mut rig.mix, 2, pcm.len() + 960);
+        for i in 0..960 {
+            assert_eq!(before[i], v[i] as f32 / 32768.0);
+        }
+        for i in 0..pcm.len() + 960 {
+            let c = pcm.get(i).copied().unwrap_or(0) as i32;
+            assert_eq!(during[i], soft_clip((v[960 + i] as i32 + c) as f32 / 32768.0), "frame {i}");
+        }
+        assert_eq!(rig.cues.busy(), 0);
+    }
+
+    /// A stream that is about to be closed: everything fades to silence over
+    /// 5 ms (no step larger than the tone's own slope plus the ramp's), the
+    /// callback then writes silence, leaves the rings alone and reports how
+    /// much silence the device got.
+    #[test]
+    fn closing_an_output_fades_it_out() {
+        let mut rig = rig(2, true);
+        let amp = 12_000.0;
+        rig.voice.push_slice(&tone(300.0, amp, 48_000));
+        let (a, _) = render(&mut rig.mix, 2, 4_800);
+        rig.ctl.fade_out();
+        assert!(!rig.ctl.is_faded());
+        let (b, _) = render(&mut rig.mix, 2, 4_800);
+        let all: Vec<f32> = a.iter().chain(&b).copied().collect();
+        // The tone's largest step, plus the 240-sample ramp's share.
+        let slope = (amp as f32 / 32768.0) * (2.0 * std::f32::consts::PI * 300.0 / 48_000.0);
+        let bound = slope + (amp as f32 / 32768.0) / 240.0 + 2.0 / 32768.0;
+        assert!(max_step(&all) <= bound, "step {} > {}", max_step(&all), bound);
+        assert!(b[..200].iter().any(|&s| s != 0.0), "still fading");
+        assert!(b[241..].iter().all(|&s| s == 0.0), "silent 5 ms after the fade began");
+        assert!(rig.ctl.is_faded());
+        // 4,800 frames rendered since: the fade's 480-frame callback, then
+        // nine of silence.
+        assert_eq!(rig.ctl.silent_ms(), 90);
+        // The ring is left alone once silent: 480 frames taken by the fade's
+        // callback, none after.
+        use ringbuf::traits::Observer;
+        assert_eq!(rig.voice.occupied_len(), 48_000 - 4_800 - 480);
+    }
 }

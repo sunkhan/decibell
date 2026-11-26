@@ -7,8 +7,9 @@ use rubato::Resampler;
 
 use super::audio_device::{
     make_sinc_resampler, build_input_stream, build_output_stream,
-    build_voice_output_stream, build_stream_output_stream, OutputPullStats, PeerList,
+    build_stream_output_stream, OutputHandle, OutputPullStats, PeerList, DEVICE_BUFFER_MS,
 };
+use super::cue;
 use super::jitter::Frame;
 use super::media_socket::MediaSocket;
 use super::debug_dump::AudioDump;
@@ -93,6 +94,20 @@ const FLAG_DEAFENED: u8 = 0x02;
 /// to keep keepalive cadence out of their jitter estimate. Older clients
 /// ignore the bit (they only test the two above) — wire-compatible.
 pub const FLAG_SILENCE: u8 = 0x04;
+
+/// The main output was replaced (or first built, or lost): interface sounds
+/// go to the new one's mix. `old` is the replaced output's bus; with no new
+/// output they play on a stream of their own again.
+fn main_output_changed(old: Option<Arc<cue::CueBus>>, new: &Option<OutputHandle>) {
+    match new.as_ref().and_then(|o| o.cues.as_ref()) {
+        Some(bus) => cue::register_live(bus),
+        None => {
+            if let Some(old) = &old {
+                cue::retire_live(old);
+            }
+        }
+    }
+}
 
 // Per-peer state lives in `media::peer::PeerAudio`. Voice mixing happens in
 // the output audio callback which pulls from each peer's ring buffer.
@@ -202,13 +217,14 @@ pub fn run_audio_pipeline(
         &host,
         initial_output_device.as_deref(),
         Arc::clone(&peers),
-        Arc::clone(&stream_cons),
-        Arc::clone(&stream_stereo),
-        Arc::clone(&render_ref_prod),
+        Some((Arc::clone(&stream_cons), Arc::clone(&stream_stereo))),
         Arc::clone(&main_pull),
         &event_tx,
     ) {
-        Some((stream, rate, _ch)) => (Some(stream), rate),
+        Some(out) => {
+            let rate = out.rate;
+            (Some(out), rate)
+        }
         None => {
             // Stay alive in a degraded "no output" state instead of
             // killing the pipeline thread. The user might still be
@@ -227,6 +243,8 @@ pub fn run_audio_pipeline(
             (None, SAMPLE_RATE)
         }
     };
+    // Interface sounds play in this output's mix while it is live (cue.rs).
+    main_output_changed(None, &output_stream);
 
     // ── Build input (capture) stream ──────────────────────────────────────────
     let (mut input_stream_opt, input_sample_rate): (Option<cpal::Stream>, u32) = match build_input_stream(
@@ -254,7 +272,7 @@ pub fn run_audio_pipeline(
     let mut stream_out = StreamOut::new(output_sample_rate);
 
     // Separate stream output (None = disabled, stream mixed into main output)
-    let mut stream_output: Option<cpal::Stream> = None;
+    let mut stream_output: Option<OutputHandle> = None;
     let mut separate_stream_enabled = false;
     let mut stream_output_device_name: Option<String> = None;
     // When separate stream output is enabled, stream audio may play on a device
@@ -519,27 +537,20 @@ pub fn run_audio_pipeline(
                 Ok(ControlMessage::SetOutputDevice(name)) => {
                     log::info!("[pipeline] Hot-swapping output device to: {:?}", name);
                     output_device_name = name.clone();
-                    output_stream = None; // drop old stream
+                    let old = output_stream.take(); // drop old stream
+                    let old_cues = old.and_then(|o| o.cues);
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
                     stream_out.clear_accum();
-                    if separate_stream_enabled {
-                        match build_voice_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
-                            Some((stream, rate, _ch)) => {
-                                output_sample_rate = rate;
-                                output_stream = Some(stream);
-                            }
-                            None => log::info!("[pipeline] Warning: no output device after hot-swap"),
+                    let stream_here = (!separate_stream_enabled).then(|| (Arc::clone(&stream_cons), Arc::clone(&stream_stereo)));
+                    match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), stream_here, Arc::clone(&main_pull), &event_tx) {
+                        Some(out) => {
+                            output_sample_rate = out.rate;
+                            output_stream = Some(out);
                         }
-                    } else {
-                        match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
-                            Some((stream, rate, _ch)) => {
-                                output_sample_rate = rate;
-                                output_stream = Some(stream);
-                            }
-                            None => log::info!("[pipeline] Warning: no output device after hot-swap"),
-                        }
+                        None => log::info!("[pipeline] Warning: no output device after hot-swap"),
                     }
+                    main_output_changed(old_cues, &output_stream);
                     // Update every peer's resampler for the new output rate.
                     for peer in remote_peers.values_mut() {
                         peer.set_output_rate(output_sample_rate);
@@ -555,7 +566,7 @@ pub fn run_audio_pipeline(
                     separate_stream_enabled = enabled;
                     stream_output_device_name = device.clone();
                     // Rebuild main output and stream output
-                    output_stream = None;
+                    let old_cues = output_stream.take().and_then(|o| o.cues);
                     stream_output = None;
                     // Drain ring buffers to prevent stale audio causing delay
                     { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
@@ -563,23 +574,24 @@ pub fn run_audio_pipeline(
                     stream_out.clear_accum();
                     if enabled {
                         // Main output: voice-only, on the device the user chose
-                        if let Some((stream, rate, _ch)) = build_voice_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
-                            output_sample_rate = rate;
-                            output_stream = Some(stream);
+                        if let Some(out) = build_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), None, Arc::clone(&main_pull), &event_tx) {
+                            output_sample_rate = out.rate;
+                            output_stream = Some(out);
                         }
                         // Stream output: stream-only on separate device (may have different rate)
-                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, device.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
-                            stream_output_sample_rate = rate;
-                            stream_output = Some(stream);
+                        if let Some(out) = build_stream_output_stream(&host, device.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
+                            stream_output_sample_rate = out.rate;
+                            stream_output = Some(out);
                         }
                     } else {
                         // Back to mixed mode — stream plays on same device as voice
-                        if let Some((stream, rate, _ch)) = build_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&render_ref_prod), Arc::clone(&main_pull), &event_tx) {
-                            output_sample_rate = rate;
-                            stream_output_sample_rate = rate;
-                            output_stream = Some(stream);
+                        if let Some(out) = build_output_stream(&host, output_device_name.as_deref(), Arc::clone(&peers), Some((Arc::clone(&stream_cons), Arc::clone(&stream_stereo))), Arc::clone(&main_pull), &event_tx) {
+                            output_sample_rate = out.rate;
+                            stream_output_sample_rate = out.rate;
+                            output_stream = Some(out);
                         }
                     }
+                    main_output_changed(old_cues, &output_stream);
                     // Update every peer's resampler for the new voice output rate.
                     for peer in remote_peers.values_mut() {
                         peer.set_output_rate(output_sample_rate);
@@ -594,11 +606,11 @@ pub fn run_audio_pipeline(
                         // Drain stream ring buffer
                         { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
                         stream_out.clear_accum();
-                        if let Some((stream, rate, _ch)) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
-                            stream_output_sample_rate = rate;
-                            stream_output = Some(stream);
+                        if let Some(out) = build_stream_output_stream(&host, name.as_deref(), Arc::clone(&stream_cons), Arc::clone(&stream_stereo), Arc::clone(&stream_pull), &event_tx) {
+                            stream_output_sample_rate = out.rate;
                             // Rebuild stream resampler for the new device rate
-                            stream_out.set_rate(rate);
+                            stream_out.set_rate(out.rate);
+                            stream_output = Some(out);
                         }
                     }
                 }
@@ -1040,7 +1052,16 @@ pub fn run_audio_pipeline(
         }
     }
 
-    // Streams are dropped here, which stops CPAL.
+    // The microphone closes first (the OS's indicator goes out at once).
+    drop(input_stream_opt);
+    // Voice and stream audio fade out (5 ms, in the callbacks) instead of
+    // being cut when the streams close.
+    if let Some(out) = &output_stream {
+        out.ctl.set_program(false);
+    }
+    if let Some(out) = &stream_output {
+        out.ctl.fade_out();
+    }
     // Signal the voice recv thread to exit and join it before letting
     // the audio thread return. Without the stop flag and the wake the recv
     // loop would sit in its wait until the next packet (silent channels
@@ -1049,9 +1070,27 @@ pub fn run_audio_pipeline(
     drop(stop_recv); // sets the flag and wakes the read
     drop(audio_pkt_rx);
     let _ = voice_recv_handle.join();
-    drop(stream_output);    // Option<cpal::Stream> — separate stream output
-    drop(output_stream);    // Option<cpal::Stream>
-    drop(input_stream_opt); // Option<cpal::Stream>
+    if let Some(out) = &output_stream {
+        // Interface sounds playing in this output's mix (the "disconnect"
+        // sound of this very leave) finish on it: later ones play elsewhere,
+        // the ring moves. The callback wakes this thread as each ends.
+        if let Some(bus) = &out.cues {
+            cue::retire_live(bus);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while bus.busy() > 0 {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::park_timeout(deadline - now);
+            }
+        }
+        // Then the stream itself: faded (already silent, normally) and the
+        // device handed its buffer's worth of silence before it closes.
+        out.ctl.fade_out_and_wait(DEVICE_BUFFER_MS, Duration::from_millis(150));
+    }
+    drop(stream_output);
+    drop(output_stream);
 }
 
 // ── Voice receive, per datagram and per peer ────────────────────────────────

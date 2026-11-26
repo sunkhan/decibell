@@ -32,6 +32,7 @@ pub mod capture_audio_pipewire;
 pub mod capture_audio_wasapi;
 pub mod caps;
 pub mod codec;
+pub mod cue;
 pub mod codec_selection;
 pub mod debug_dump;
 // DECIBELL_STREAM_DUMP: watched streams to .dbv files for the Qt client's spike (the `stream-dump` feature).

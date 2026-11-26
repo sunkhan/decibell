@@ -20,6 +20,7 @@
 //! The `pub(crate)` functions are the core's own call-outs (central's and the
 //! community's routers run them on the runtime).
 
+pub mod audio;
 pub mod auth;
 pub mod call;
 pub mod channels;
