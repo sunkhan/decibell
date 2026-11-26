@@ -12,9 +12,9 @@ Electron client it is compared with.
 This record replaces the Qt design (`2026-11-07-qt-native-client-design.md`) as the plan of record. What of that
 design still holds, unchanged, is listed in §1; the rest of this document is what GPUI changes.
 
-Status: §2–§4 are decided. §5 (GPUI facts) and §7 (video) are filled in from the source survey and the video
-prototype as they land (`gpui-client/docs/gpui-notes.md`, `gpui-client/docs/video-design.md`); the running state
-of the work is `gpui-client/HANDOFF.md`, the checklist `gpui-client/PARITY.md`.
+Status: §2–§6 are decided (§5 from the source survey, `gpui-client/docs/gpui-notes.md`). §7 (video) is filled in
+from the video prototype as it lands (`gpui-client/docs/video-design.md`); the running state of the work is
+`gpui-client/HANDOFF.md`, the checklist `gpui-client/PARITY.md`.
 
 ---
 
@@ -122,16 +122,24 @@ directory and depend on the core by path.
 
 ## 5. GPUI at the pin
 
-Filled from the source survey (`gpui-client/docs/gpui-notes.md`, every claim with a path and line at the pin).
-The questions that shape the design, each answered there and summarised here once known:
+From the source survey (`gpui-client/docs/gpui-notes.md`: every claim there carries a path and line at the pin,
+and §13 has the hello-world measurements on this machine). What it decides:
 
-- what draws a frame and what wakes at idle on Wayland, X11 and Windows;
-- the text system's reach: variable-font axes (Inter `opsz`, Mona Sans `wght` / `wdth`), fractional sizes,
-  hit-testing and ranges for selection, inline images for Twemoji;
-- lists: measured heights and what a prepend does to the viewport (we expect to write our own list element);
-- text input: GPUI has an input-handler protocol but no text field of its own; ours or a non-GPL crate;
-- capture: rendering a window to a PNG without showing it;
-- which default features and in-tree crates can be left out.
+| Fact at the pin | Decision |
+|---|---|
+| GPUI is split into `gpui`, `gpui_platform`, `gpui_linux` (Wayland + X11), `gpui_wgpu` (the Linux renderer), `gpui_windows` (DirectX 11 + DirectWrite); all Apache-2.0. crates.io's `gpui` is 13 months old and unusable. 562 crates in the Linux build, none GPL-only. | Depend by **path** on a patched copy of the pinned checkout (`gpui-client/vendor/gpui-src`, made by `tools/fetch-gpui.sh` from the pristine clone + `patches/*.patch`), `default-features = false`, with Zed's `[patch.crates-io]` lines and its lockfile subset. |
+| **Idle**: draws only on demand. Wayland: 0 frames, 0 main-thread wakeups, 0 ms CPU over 30 s (measured). X11: a refresh-rate timer wakes the main thread every vblank while the window is visible (280/s here), drawing nothing. Windows: a vsync thread wakes every vblank and invalidates every window. | Patches: X11 timer only while there is frame demand; Windows vsync thread parked while nothing is dirty (compile-checked here, run by the owner). |
+| **Memory**: on NVIDIA the floor is the driver. Hello-world with 400 chat rows: 162 MB RSS / 75 MB private by default; wgpu also probing EGL / GL loads every GL vendor library. Without that: 110 MB RSS / 62 MB private (59 at `opt-level = "s"`), of which the app's heap is under 20 MB. | Patch: enumerate GL only when no Vulkan adapter works. The memory target is counted as private memory (`Private_Clean + Private_Dirty`), the analogue of the Windows figure the ratios were set on; RSS and PSS are logged beside it. |
+| A `notify()` on a displayed view redraws the whole window, re-running `render` for every view that is not cached; a cached view whose state did not change replays last frame's paint. | One cached view per pane (server bar, channel list, message list, member list, composer, each overlay), stores that notify per key, so typing or a caret blink re-renders one small view. |
+| Unfocused windows are capped at ~30 fps by default; after a burst of input GPUI keeps presenting for 1 s. | `inactive_frame_interval: None` (streams are watched in unfocused windows). The 1 s tail is measured; patched only if it shows. |
+| **Text**: cosmic-text + swash on Linux, DirectWrite on Windows. No variable-font axes (Linux rasterises the default instance), no letter-spacing, no inline elements in text, colour emoji only from a font named `NotoColorEmoji`, no selection across text blocks; a fallback glyph shifts the paragraph's baseline; trailing spaces don't hang at a wrap. `shape_line` / `shape_text` give glyphs and positions without painting. | **Static font instances** generated from the variable files (Inter at optical size 14 per weight used; Mona Sans per weight at widths 100 / 112.5 / 125), so both platforms get exact faces with no patch. **Our own text elements** (`decibell-text`) on top of GPUI's shaping: line breaking as Chromium does it, letter-spacing, inline Twemoji boxes, backgrounds for code chips, hit-testing and selection ranges, painted glyph by glyph. GPUI's built-in text elements are not used for app text. |
+| `list()` anchors on (item, offset) and measures only rows it lays out; no smooth scrolling; the wheel can be taken in the capture phase and the offset driven per frame. | **Our own message-list element** with exact row heights from `decibell-text` (cached by identity, content version and width) and the anchor model of §6.3; our own wheel animation. |
+| Text input: only the IME protocol (`EntityInputHandler`) and an example. `gpui-component` (Apache-2.0) builds against the pin but costs +10.4 MB of binary and an idle 2 Hz thread. | **Our own input** (single-line field and the multi-line composer) on `decibell-text` + the input-handler protocol; no component kit. |
+| Images: `img()` caches never evict; an animated image re-renders its view every frame. SVGs rasterise into the atlas at draw size and tint. | Our own byte-bounded image cache painting `RenderImage`s we decode at drawn size (freed with `drop_image`); GIFs advance on their own frame timer only while visible. |
+| Capture: `HeadlessAppContext` + `capture_screenshot` renders a window to a PNG with no display on Linux (verified); not on Windows. | Captures come from a `decibell-capture` binary built with GPUI's `test-support`; the shipping binary doesn't carry it. |
+| Platform gaps: no tray, no single-instance or URL-scheme handling on Linux / Windows (`on_open_urls` never fires), `request_attention` is a no-op on Wayland, no idle / lock signal. | Built in the client: a single-instance socket that forwards `decibell://` links, the xdg-activation attention request (a small patch), the core's `system_idle.rs`. |
+| Threads: main, one `Worker-N` per CPU (parked), a timer thread, zbus / smol threads for portal settings and logind; none wakes at idle. The NVIDIA driver's `[vkps] Update` thread wakes 4×/s by itself. | Reported beside our own threads, as the target says. Worker count capped only if it measures. |
+| Startup of the hello-world: 141–186 ms from spawn to first frame (warm). | Leaves room for the core's start; measured per phase. |
 
 ## 6. Architecture of the client
 
