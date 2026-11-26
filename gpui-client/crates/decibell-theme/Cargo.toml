@@ -1,0 +1,8 @@
+[package]
+name = "decibell-theme"
+version = "0.1.0"
+edition = "2021"
+description = "Decibell's design tokens for the native client, generated from the Electron renderer's globals.css"
+publish = false
+
+[dependencies]
