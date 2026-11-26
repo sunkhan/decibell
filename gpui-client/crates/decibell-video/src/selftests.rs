@@ -16,7 +16,10 @@ use gpui::{
 
 use crate::codec::{Codec, CodecSupport, DecodeBackend, DecodePath};
 use crate::dbv::{FeedOptions, Feeder};
-use crate::hub::{Fault, HubCallbacks, STALLED_AFTER, Stream, StreamEvent, VideoHub};
+use crate::hub::{
+    EncodedFrame, Fault, HubCallbacks, STALLED_AFTER, Stream, StreamEvent, VideoHub,
+};
+use crate::packet::Packet;
 use crate::screens::{Playback, Tile, file_label, stats_line};
 use crate::stats::StreamStats;
 use crate::view::Fit;
@@ -83,7 +86,115 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "a present for a new picture reuses the frame the renderer kept: same pixels, no scene writes",
             run: |cx| Box::pin(fast_path(cx)),
         },
+        SelfTest {
+            name: "video-probe",
+            about: "needs no stream files: the capability probe from nothing, then the frame compiled into the binary decoded, published and drawn in a window for each codec, on the decoder the probe found and in software",
+            run: |cx| Box::pin(probe_and_draw(cx)),
+        },
     ]
+}
+
+/// The whole path with what is compiled into the binary: on a machine without the test
+/// streams (a CI runner, a first run on new hardware) this still opens every decoder the probe
+/// settles on, uploads or copies a picture into slot textures, reads a row back and has the
+/// renderer draw the surface.
+async fn probe_and_draw(cx: TestCx) -> Result<()> {
+    let hub = cx.app().update(VideoHub::global);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    hub.reprobe_capabilities(move |result| {
+        let _ = sender.send(result);
+    });
+    let started = Instant::now();
+    let support = loop {
+        if let Ok(result) = receiver.try_recv() {
+            break result;
+        }
+        ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the capability probe did not finish"
+        );
+        cx.sleep(Duration::from_millis(20)).await;
+    };
+    log_skipped(&cx, &hub);
+    for codec in &support {
+        cx.log(format_args!(
+            "{}: {}{}",
+            codec.codec.label(),
+            codec
+                .backend
+                .map_or("no decoder", |backend| backend.display_name(codec.codec)),
+            if codec.probed { " (decoded the test frame)" } else { "" },
+        ));
+        ensure!(
+            codec.path.is_some(),
+            "nothing decodes {} on this machine, not even software",
+            codec.codec.label()
+        );
+    }
+    for codec in &support {
+        let Some(found) = codec.backend else { continue };
+        let mut orders = vec![found];
+        if found != DecodeBackend::Software {
+            orders.push(DecodeBackend::Software);
+        }
+        for backend in orders {
+            let _forced = ForcedOrder::new(&hub, &[backend]);
+            let key = format!("selftest-probe-{}-{}", codec.codec.label(), backend.label());
+            let label = PathBuf::from(format!("{} test frame", codec.codec.label()));
+            let stage = Stage::open(&cx, std::slice::from_ref(&key), &[label], false)?;
+            let stream = stage.streams[0].clone();
+            let shown = async {
+                // The view registers the window it is painted in with its first frame.
+                cx.sleep(Duration::from_millis(300)).await;
+                hub.push(
+                    &key,
+                    EncodedFrame {
+                        codec: codec.codec.wire(),
+                        keyframe: true,
+                        timestamp: 0,
+                        data: Packet::from(crate::probe::keyframe(codec.codec).to_vec()),
+                        description: None,
+                        discontinuity: false,
+                    },
+                );
+                // Where the renderer draws surfaces the picture must reach a frame; elsewhere
+                // it is decoded and counted.
+                let drawn = cfg!(gpu);
+                stage
+                    .wait(
+                        "the test frame to be decoded and drawn",
+                        Duration::from_secs(15),
+                        || {
+                            let stats = stream.stats();
+                            if drawn {
+                                stats.presented >= 1
+                            } else {
+                                stats.decoded >= 1
+                            }
+                        },
+                    )
+                    .await?;
+                let stats = stream.stats();
+                cx.log(format_args!(
+                    "{} with {}: {}",
+                    codec.codec.label(),
+                    backend.label(),
+                    stats_line(&hub, &stream)
+                ));
+                ensure!(
+                    stats.backend == Some(backend),
+                    "decoded with {:?}, not {backend:?} ({})",
+                    stats.backend,
+                    stats.fallback_reason.as_deref().unwrap_or("no failure recorded")
+                );
+                Ok(())
+            }
+            .await;
+            stage.close()?;
+            shown?;
+        }
+    }
+    Ok(())
 }
 
 /// Forces a decoder order for a test and puts back what was forced before (the environment's
@@ -462,7 +573,7 @@ async fn play_codecs(
             // and of a burst only the newest picture reaches the screen.
             let burst = match expect {
                 DecodeBackend::Nvdec | DecodeBackend::Vaapi => 40,
-                DecodeBackend::VulkanVideo | DecodeBackend::Software => 0,
+                DecodeBackend::VulkanVideo | DecodeBackend::D3d11va | DecodeBackend::Software => 0,
             };
             ensure_all_presented(
                 cx,
@@ -867,7 +978,7 @@ async fn two(cx: TestCx) -> Result<()> {
 async fn usable_hardware(cx: &TestCx, hub: &VideoHub, codec: Codec) -> Result<Vec<DecodeBackend>> {
     let mut usable = Vec::new();
     for backend in DecodeBackend::ALL {
-        if backend == DecodeBackend::Software {
+        if backend == DecodeBackend::Software || !backend.built_here() {
             continue;
         }
         let _forced = ForcedOrder::new(hub, &[backend]);

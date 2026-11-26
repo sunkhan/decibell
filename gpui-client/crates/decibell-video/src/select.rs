@@ -2,12 +2,12 @@
 //!
 //! The platform says which decoders the machine could use, best first ([`Order`]; on Linux:
 //! Vulkan Video on the renderer's device, then NVDEC on NVIDIA or VA-API elsewhere, then
-//! software). A stream's decoder is the first of them that opens and decodes. One that fails to
+//! software; on Windows: D3D11VA on the renderer's device, then software). A stream's decoder is the first of them that opens and decodes. One that fails to
 //! open, or fails within its first [`FIRST_FRAMES`] pictures, is not tried again for that codec
 //! for the rest of the session, by any stream: the reason is kept ([`Selector::report`]) and
 //! logged once. A decoder that fails later only loses the stream it failed on.
 //!
-//! `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` (or a comma-separated list) replaces
+//! `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|d3d11va|software` (or a comma-separated list) replaces
 //! the order: exactly those decoders are tried, nothing else, software included. For tests and
 //! for checking one path on a machine. `DECIBELL_VIDEO=software` is the older spelling of
 //! `DECIBELL_VIDEO_DECODER=software` (and also leaves the renderer's device alone).
@@ -25,19 +25,19 @@ pub(crate) const FIRST_FRAMES: u64 = 30;
 /// Decoders to try, in order. At most one of each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Order {
-    list: [DecodeBackend; 4],
+    list: [DecodeBackend; DecodeBackend::ALL.len()],
     len: usize,
 }
 
 impl Order {
     pub const SOFTWARE: Order = Order {
-        list: [DecodeBackend::Software; 4],
+        list: [DecodeBackend::Software; DecodeBackend::ALL.len()],
         len: 1,
     };
 
     pub fn new(backends: &[DecodeBackend]) -> Order {
         let mut order = Order {
-            list: [DecodeBackend::Software; 4],
+            list: [DecodeBackend::Software; DecodeBackend::ALL.len()],
             len: 0,
         };
         for &backend in backends {
@@ -69,7 +69,7 @@ pub(crate) fn forced_by_environment() -> Option<Order> {
         match Order::parse(&names) {
             Some(order) => return Some(order),
             None => log::warn!(
-                "video: DECIBELL_VIDEO_DECODER={names:?} is not vulkan, nvdec, vaapi or software (or a list of them); ignored"
+                "video: DECIBELL_VIDEO_DECODER={names:?} is not vulkan, nvdec, vaapi, d3d11va or software (or a list of them); ignored"
             ),
         }
     }
@@ -81,7 +81,7 @@ pub(crate) fn forced_by_environment() -> Option<Order> {
 #[derive(Default)]
 pub(crate) struct Selector {
     /// Why a decoder is not tried for a codec any more, by `[codec][backend]`.
-    skipped: Mutex<[[Option<Arc<str>>; 4]; Codec::EVERY.len()]>,
+    skipped: Mutex<[[Option<Arc<str>>; DecodeBackend::ALL.len()]; Codec::EVERY.len()]>,
     forced: Mutex<Option<Order>>,
 }
 

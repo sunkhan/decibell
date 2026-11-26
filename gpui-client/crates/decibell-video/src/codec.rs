@@ -97,15 +97,19 @@ pub enum DecodeBackend {
     Nvdec,
     /// VA-API (AMD, Intel), its surfaces imported as DMA-BUFs into the renderer's device.
     Vaapi,
+    /// Direct3D 11 Video Acceleration on the renderer's own device (Windows: every vendor's
+    /// hardware decoder), one GPU copy into the renderer's textures.
+    D3d11va,
     /// FFmpeg's software decoders / dav1d, one upload per picture.
     Software,
 }
 
 impl DecodeBackend {
-    pub const ALL: [DecodeBackend; 4] = [
+    pub const ALL: [DecodeBackend; 5] = [
         DecodeBackend::VulkanVideo,
         DecodeBackend::Nvdec,
         DecodeBackend::Vaapi,
+        DecodeBackend::D3d11va,
         DecodeBackend::Software,
     ];
 
@@ -116,23 +120,36 @@ impl DecodeBackend {
         }
     }
 
+    /// Whether this build has the decoder at all (the Vulkan, CUDA and VA-API ones are Linux's,
+    /// D3D11VA is Windows'). One that is not built fails to open with a reason like any other.
+    pub fn built_here(self) -> bool {
+        match self {
+            DecodeBackend::VulkanVideo | DecodeBackend::Nvdec | DecodeBackend::Vaapi => cfg!(vk),
+            DecodeBackend::D3d11va => cfg!(d3d),
+            DecodeBackend::Software => true,
+        }
+    }
+
     /// The name `DECIBELL_VIDEO_DECODER` takes and the stats print.
     pub fn label(self) -> &'static str {
         match self {
             DecodeBackend::VulkanVideo => "vulkan",
             DecodeBackend::Nvdec => "nvdec",
             DecodeBackend::Vaapi => "vaapi",
+            DecodeBackend::D3d11va => "d3d11va",
             DecodeBackend::Software => "software",
         }
     }
 
     /// What the client shows for this decoder of `codec` (Settings → Codecs, the stats
-    /// overlay): "Vulkan Video", "NVDEC", "VA-API", "Software (dav1d)" / "Software (FFmpeg)".
+    /// overlay): "Vulkan Video", "NVDEC", "VA-API", "D3D11VA", "Software (dav1d)" /
+    /// "Software (FFmpeg)".
     pub fn display_name(self, codec: Codec) -> &'static str {
         match (self, codec) {
             (DecodeBackend::VulkanVideo, _) => "Vulkan Video",
             (DecodeBackend::Nvdec, _) => "NVDEC",
             (DecodeBackend::Vaapi, _) => "VA-API",
+            (DecodeBackend::D3d11va, _) => "D3D11VA",
             (DecodeBackend::Software, Codec::Av1) => "Software (dav1d)",
             (DecodeBackend::Software, _) => "Software (FFmpeg)",
         }

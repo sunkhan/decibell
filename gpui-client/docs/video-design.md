@@ -41,7 +41,8 @@ of streams, on every GPU vendor: Vulkan Video on the renderer's device (§1), th
 | `VaapiDecoder`, `VaDevice` | `linux/vaapi.rs`, `linux/drm.c` | VA-API surfaces exported as DMA-BUFs, imported into the renderer's device and copied into slots (§0.3b). |
 | `Order`, `Selector` | `select.rs` | Which decoder a stream gets, what was given up and why (§0.5). |
 | the probe | `probe.rs`, `probe/keyframe.*` | The capabilities to advertise, from decoding a test frame on each decoder (§0.5). |
-| `CpuBackend` | `cpu.rs` | Software decode into a counting sink: Windows today, and the unit tests. |
+| `WindowsBackend`, `D3d11vaDecoder`, `D3d11Uploader` | `windows/` | Windows: D3D11VA on the renderer's Direct3D 11 device, one GPU copy into slots; software pictures into slots (§8). |
+| `CpuBackend` | `cpu.rs` | Software decode into a counting sink: the unit tests, and a platform without a backend. |
 | `dbv::{StreamFile, Feeder}` | `dbv.rs` | `.dbv` test streams and a thread that replays one into a hub. |
 | screen `video-test`, six self-tests | `screens.rs`, `selftests.rs` | §0.9. |
 
@@ -886,52 +887,103 @@ survey to measure.
 
 ## 8. Windows and macOS
 
-**Windows: what exists and what the follow-up task must do.** `decibell-video` compiles for Windows without
-`gpui_wgpu`, ash or the C shim (`cfg(vk)` is Linux only; `cargo check -p decibell-video --features no-gpu`
-type-checks that configuration on Linux; the Windows build itself runs only in the Windows Native Check job
-and has not run yet): the hub, the queue, the stats and FFmpeg software decode all run, on `CpuBackend`, whose
-uploader counts pictures and draws nothing, and `VideoView` paints its backdrop only. That is the
-"unimplemented on this platform → software" decision: nothing pretends to be hardware decode
-(`capabilities()` reports `Software`). The follow-up task patches `gpui_windows` and adds a Windows backend:
+**Windows: D3D11VA on gpui_windows' own Direct3D 11 device, then software** (`src/windows/`, GPUI patch
+`0020`). Written on Linux, type-checked for the Windows target (`tools/win-check.sh`) and compiled by the Windows
+Native Check; run so far only on that job's runner, which has no GPU (WARP: the software path, the read-back and
+the surface draw through the `video-probe` self-test). **No hardware decode has run yet**: the owner's checks are
+`docs/windows-owner-checks.md`. The crate above the backend is the same code as on Linux: `hub.rs`, `queue.rs`,
+`select.rs`, `probe.rs`, `stats.rs`, `decode.rs` and `view.rs` name the renderer's surface types through one alias
+module (`crate::surface`: `gpui_wgpu`'s under `cfg(vk)`, `gpui_windows`' under `cfg(d3d)`; `cfg(gpu)` is either).
 
-1. **`gpui_windows` (a patch like `0001` + `0005`, DirectX renderer only):**
-   `D3d11Surface` with `set_frame(Arc<D3d11SurfaceFrame>, tag: u64)`, `clear()`, `set_draw_observer`,
-   `picture_size()` and a crate-private `acquire(&ID3D11Device)` (the exact shape of `WgpuSurface`);
-   `D3d11SurfaceFrame { texture: ID3D11Texture2D, array_slice: u32, size: (u32, u32), color: SurfaceColor,
-   device: ID3D11Device, in_use }`; `D3d11SurfaceView { surface, fit: SurfaceFit }`; `draw_surfaces` filled in
-   (below); accessors `shared_devices() -> Option<DirectXDevices>` (device + immediate context, replaced after
-   a device removal) and a `device_context_lock()` the renderer takes around its frame.
-2. **A `windows` module in this crate implementing `decode::Backend`** (the trait is the whole interface:
-   `open`, `ready`, `simulate_device_loss`, `support`, `live_textures`, `collect`): `open` returns a
-   `PictureDecoder` that is `FfDecoder` with `AV_HWDEVICE_TYPE_D3D11VA` on GPUI's device and publishes the
-   decoded texture slice itself (no copy, below), or `SoftwareDecoder` with an `Uploader` that writes two plane
-   textures (`UpdateSubresource`, or a mapped dynamic texture) and publishes them as a frame.
-   `StreamTarget` gains the `D3d11Surface` under `cfg(windows)`, and `Viewer::surface_view` / `VideoView` the
-   matching `paint_external_surface` call. Nothing else in the crate changes: `hub.rs`, `queue.rs`, `stats.rs`,
-   `decode.rs`, `view.rs` are already platform-neutral.
+| Piece | File | What |
+|---|---|---|
+| `D3d11Surface`, `D3d11SurfaceFrame`, `D3d11SurfaceView`, `shared_devices()`, `D3d11ContextGuard` | GPUI patch `0020` | The twin of `WgpuSurface` & co.; the renderer's device and immediate context; the context's critical section held for a sequence |
+| `WindowsBackend`, `GpuDevice` | `windows/mod.rs` | The order (`d3d11va, software`), the driver's decoder profile list, FFmpeg's `AVHWDeviceContext` around the renderer's device, device identity and loss |
+| `SlotRing`, `read_luma_row` | `windows/slots.rs` | Five slots per stream and size: an `NV12` texture with `R8` / `R8G8` plane views (hardware) or an `R8` + `R8G8` texture pair (software); one row read back through a staging texture |
+| `D3d11vaDecoder` | `windows/d3d11va.rs` | `h264` / `hevc` / `av1` with FFmpeg's `d3d11va` hwaccels, then `CopySubresourceRegion` of the decoded array slice into a slot |
+| `D3d11Uploader` | `windows/upload.rs` | Software pictures: `UpdateSubresource` × 2 into a slot |
 
-The renderer side (design; the Qt spike proved the decode half on this hardware). gpui_windows renders with Direct3D 11: one
-`ID3D11Device` + immediate context in `DirectXDevices` (`crates/gpui_windows/src/directx_devices.rs:39-43`, created
-with `D3D11_CREATE_DEVICE_BGRA_SUPPORT` only, `:145-170`), a `B8G8R8A8_UNORM` composition swap chain
-(`directx_renderer.rs:28`, `:1346`), and `draw_surfaces` is an empty function (`:845`). The matching change:
+**The life of a frame** (hardware; compare §0.3): steps 1–4 are the shared code. Then, on the decoder thread:
 
-- `gpui_windows::D3d11Surface` / `D3d11SurfaceFrame { texture: ID3D11Texture2D, array_slice: u32, color, in_use }`,
-  the D3D twin of `WgpuSurface`; `PaintSurface.source` downcasts to it in `draw_surfaces`.
-- Draw: two shader resource views on the NV12 texture slice (`DXGI_FORMAT_R8_UNORM` and `R8G8_UNORM` planes,
-  `Texture2DArray` view with `FirstArraySlice = array_slice`), cached per (texture, slice); a surface pipeline in
-  `shaders.hlsl` with the same parameters as the WGSL one; one draw per surface.
-- Decode: FFmpeg D3D11VA with `AVD3D11VADeviceContext.device` = GPUI's device (an accessor like
-  `shared_context()`), `AVD3D11VAFramesContext.BindFlags |= D3D11_BIND_SHADER_RESOURCE`. The immediate context is
-  then used from two threads: turn on `ID3D10Multithread::SetMultithreadProtected` (FFmpeg does it for a device
-  it is given without lock callbacks) or give FFmpeg lock callbacks that the renderer also takes around its
-  frame, the D3D twin of `device_queue_lock`.
-- **No copy is needed on Windows.** D3D11 has no image layouts, and a decoded surface that is still referenced
-  is simply not reused by FFmpeg's pool: the frame the renderer samples is an `AVFrame` reference held in
-  `in_use`. If a driver refuses `BIND_DECODER | BIND_SHADER_RESOURCE` textures, fall back to what the Qt spike
-  did and measured (video processor blit NV12 to BGRA at drawn size into a texture GPUI samples as one plane):
-  1440p120 at 5.7-7.8 % of a core on this hardware.
-- `Window::paint_external_surface`, `ExternalSurface`, `request_present` and the element code are shared with
-  Linux as they are (the core half of the patch is already not Linux-specific).
+| Step | Work | Lock | Alloc | Copy |
+|---|---|---|---|---|
+| 5 | `avcodec_send_packet`: FFmpeg's hwaccel fills the DXVA buffers and submits (`DecoderBeginFrame` … `SubmitDecoderBuffers`, `DecoderEndFrame`) | the context's critical section, through FFmpeg's `lock` / `unlock` callbacks (ours: `ID3D11Multithread::Enter` / `Leave`) | FFmpeg's (`AVBuffer` + ref for the packet, a pool reference for the frame) | the slice data into the driver's bitstream buffer (FFmpeg's, one pass) |
+| 6 | `avcodec_receive_frame`: an `AV_PIX_FMT_D3D11` frame: `data[0]` the decoder's `NV12` array texture (`BIND_DECODER`, coded size aligned to 16 or 128), `data[1]` the slice | | 0 of ours | 0 |
+| 7 | a free slot (`Arc::strong_count == 1`); `CopySubresourceRegion(slot, 0, …, texture, slice, box = the picture rounded up to even)` | the same critical section, for the one call | 0 | 1 on the GPU |
+| 8 | `D3d11Surface::set_frame(slot.frame.clone(), serial)`, counters, `PresentSignal::notify` | surface mutex | 0 | 0 |
+
+The decoder thread does not wait for the GPU anywhere. That is the difference from the Vulkan paths, and it is
+sound because of how Direct3D 11 orders work, which is also the answer to "when is a published picture complete":
+
+- **One command stream.** The device has one immediate context and every call on it, from any thread, is appended
+  to one ordered stream that the GPU executes in order. The decode (step 5), the copy (step 7) and every draw are
+  on that stream. `set_frame` runs after the copy call has returned, so a draw that can see the new picture is
+  issued later than the copy and executes after it, which in turn executes after the decode whose output it reads.
+  No fence, query or `Flush` is needed for correctness, and none is made: the renderer's `Present` flushes the
+  stream. (The read-back for tests does wait: `Map` of a staging texture blocks until everything before it ran.)
+- **A slot is written only when nothing can still sample its old picture.** The renderer holds a slot's frame only
+  while it issues a frame's draws; once the count is back to one, a copy into the slot is issued after those draws
+  and so runs after them. Five slots, as on Linux: newest + one being drawn + one to write, with spares.
+- **Two threads on one context.** (1) gpui_windows creates the device multithread-protected, so each context call
+  takes the context's critical section. (2) Sequences take the same section for their length: the renderer around
+  each frame (upload, draws, `Present`), FFmpeg around each decode submission, we around the copy, the upload and
+  the read-back. A decode submission is therefore never interleaved with a frame's draws, nor the other way
+  round. Decode and copy calls neither read nor change pipeline state, so nothing the renderer bound is disturbed
+  between its frames.
+
+**What allocates per frame in steady state:** nothing of ours (slots, frames and views are made once per picture
+size; the calls take stack structs). FFmpeg allocates its packet buffer wrapper and frame references as on every
+path. On the UI thread a present rewrites gpui_windows' instance buffers (`Map` with discard, no heap) and one
+144-byte constant buffer per surface; the Direct3D renderer has no kept-frame path (§4.1 is wgpu only), which is
+a cost to measure on Windows before deciding whether to port it.
+
+**Why a copy when Direct3D could sample the decoder's texture** (the first design in this section said "no copy
+is needed"): sampling needs the decoder's array texture created `BIND_DECODER | BIND_SHADER_RESOURCE`, which is
+the combination drivers are known to refuse or mis-decode into on some GPUs, the pool would have to grow by
+every picture the renderer still shows, and views would be per slice. A copy into an ordinary sampled `NV12`
+texture works wherever the decoder works, costs 1.5 bytes per pixel on the GPU, and keeps the slot protocol and
+the renderer's side identical to Linux. If a measurement on an integrated GPU says the copy matters, the
+zero-copy variant is a change inside `d3d11va.rs`.
+
+**The software path** (`upload.rs`): FFmpeg / dav1d decode on up to four threads; luma goes to an `R8` texture and
+chroma, interleaved (a scratch buffer when the decoder gave planar U and V), to an `R8G8` texture with
+`UpdateSubresource`, which copies the bytes during the call (the one CPU copy) and takes its place in the same
+ordered stream. `R8` / `R8G8` textures exist on every Direct3D 11 device, so software needs neither a video
+device nor `NV12` sampling.
+
+**Order, forcing, failures** are `select.rs` unchanged: `WindowsBackend::order` is `d3d11va, software` (software
+alone while there is no device), `DECIBELL_VIDEO_DECODER=d3d11va|software` replaces it, a decoder that does not
+open or fails in its first 30 pictures is given up for the codec for the session with its reason
+(`skipped_decoders()`, Settings → Codecs), one that fails later only for that stream, each with
+`StreamEvent::BackendFailed` / `FellBackToSoftware`. What makes D3D11VA not open, each with its own message:
+FFmpeg built without it; a device with no `ID3D11VideoDevice` (WARP, Remote Desktop's basic driver); the DXVA
+profile for the codec missing from the driver's list (`D3D11_DECODER_PROFILE_H264_VLD_NOFGT`,
+`_HEVC_VLD_MAIN`, `_AV1_VLD_PROFILE0`) or not outputting `NV12`; a GPU that cannot create a sampled `NV12`
+texture; FFmpeg's own decoder creation failing (a picture larger than the driver takes).
+
+**The probe** is `probe.rs` unchanged: it opens the real decoder for each codec in order, decodes the compiled-in
+keyframe, reads row 180 back from the slot texture (`read_luma_row`) and compares it with the test picture.
+`support()` (the answer before the probe has run) is the driver's profile list. The result is kept per
+`device_key`: the adapter's vendor and device id and its user-mode driver version.
+
+**Device removal** (`DXGI_ERROR_DEVICE_REMOVED` / `_RESET`: a driver update, a GPU reset, an adapter unplugged).
+gpui_windows recovers by itself: its vsync thread sees `GetDeviceRemovedReason`, creates new devices and has
+every window rebuild its renderer on them. We notice through `GpuDevice::lost()` (the device says it was removed,
+or `shared_devices()` is another device), checked before every decode and after every failure: the decoder, its
+slots and (with the last decoder) FFmpeg's device context are dropped, the surface cleared,
+`StreamEvent::DeviceLost`, a present requested (which also wakes a parked vsync thread, patch `0021`, so that it
+looks at the device); frames are shed until `shared_devices()` is a live device again, then the next keyframe
+opens a decoder on it. A picture of the old device is never drawn by a renderer on the new one
+(`D3d11Surface::acquire` compares devices). `gpui_windows::simulate_device_loss()` runs the same path on request
+(`video-recover`).
+
+**Self-tests on Windows.** `video-probe` needs no files (the probe from nothing, then the compiled-in frame of
+each codec decoded, published and drawn in a window, on the probed decoder and in software). `video-hw`,
+`video-sw`, `video-idle`, `video-two`, `video-switch`, `video-order`, `video-recover`, `video-starve` and
+`video-stall` run as on Linux given the test streams (`vendor/streams`, made on Linux by
+`tools/streamgen/make-streams.sh`: copy the folder, or set `DECIBELL_VIDEO_STREAMS`); what they cannot do there
+is compare the window's pixels (the Direct3D renderer has no frame capture), so colours are checked by eye.
+`video-nvdec`, `video-vaapi` and `video-fastpath` skip.
 
 **macOS** needs nothing new: `paint_surface` takes a `CVPixelBuffer` (what VideoToolbox decodes into) and Metal
 draws it (`metal_renderer.rs:1237`). Its limits today: full-range 4:2:0 bi-planar only, no corner radii, and no
@@ -1026,8 +1078,8 @@ only `--enable-filter=scale`. What the new prefix has beyond the old one, listed
 | | VA-API + DMA-BUF fallback (Intel media driver) | expected: yes / yes / yes on current GPUs | as AMD; additionally unverified: `R8` / `R8G8` images over a Y-tiled / 4-tiled NV12 buffer at a plane offset |
 | Linux, two GPUs | the decoders of the GPU the window is drawn with, never the other one | | by design (§0.3b): no cross-GPU copy path; not run (no such machine) |
 | Linux, any GPU or none (GL backend, llvmpipe, old drivers) | software: FFmpeg H.264 / HEVC, dav1d | yes / yes / yes | **built**; 1080p60 fine, 1440p120 see §11.4 |
-| Windows, NVIDIA / AMD / Intel | D3D11VA on gpui_windows' device, no copy | yes / yes / yes (per GPU generation) | designed (§8); decode half proven by the Qt spike on NVIDIA |
-| Windows, no hardware decoder | software, `UpdateSubresource` into two plane textures | yes / yes / yes | designed |
+| Windows, NVIDIA / AMD / Intel | D3D11VA on gpui_windows' device, one GPU copy into a slot | yes / yes / yes (per GPU generation) | written and compiled, not run on a GPU (§8); decode half proven by the Qt spike on NVIDIA |
+| Windows, no hardware decoder | software, `UpdateSubresource` into two plane textures | yes / yes / yes | written; run on the CI runner's WARP device (`video-probe`) once the first run reports |
 | macOS | VideoToolbox into `CVPixelBuffer`, GPUI's existing `paint_surface` | yes / yes / AV1 on M3+ (dav1d otherwise) | GPUI side exists |
 
 Which path a machine gets is decided at run time, per codec, in this order: Vulkan Video (the hook found a

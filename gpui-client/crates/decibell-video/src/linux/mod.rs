@@ -835,6 +835,9 @@ impl Backend for LinuxBackend {
                     target,
                 )?))
             }
+            DecodeBackend::D3d11va => Err(DecodeError::decoder(
+                "D3D11VA decode is not built for this platform",
+            )),
             DecodeBackend::Software => {
                 let uploader: Box<dyn crate::decode::Uploader> =
                     if std::env::var("DECIBELL_VIDEO_UPLOAD").is_ok_and(|value| value == "wgpu") {
@@ -899,6 +902,7 @@ impl Backend for LinuxBackend {
                 device.has_extension(EXTERNAL_MEMORY_DMA_BUF)
                     && device.has_extension(IMAGE_DRM_FORMAT_MODIFIER),
             ),
+            DecodeBackend::D3d11va => CodecSupport::none(codec),
             DecodeBackend::Software => software_support(codec),
         }
     }

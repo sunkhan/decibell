@@ -81,7 +81,7 @@ impl RenderOnce for VideoView {
                     window.paint_quad(fill(bounds, backdrop).corner_radii(self.corner_radii));
                 }
                 self.viewer.shown_in(window.window_handle());
-                #[cfg(vk)]
+                #[cfg(gpu)]
                 window.paint_external_surface(
                     bounds,
                     self.corner_radii,

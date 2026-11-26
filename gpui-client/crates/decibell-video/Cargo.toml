@@ -13,8 +13,8 @@ publish.workspace = true
 
 [features]
 # Compile the platform-neutral half only (hub, queue, software decode into a counting sink): what
-# Windows builds until gpui_windows draws surfaces. On Linux it exists to type-check that
-# configuration: `cargo check -p decibell-video --features no-gpu`.
+# a platform without a backend builds (macOS), and what the unit tests of the neutral half can
+# be checked with anywhere: `cargo check -p decibell-video --features no-gpu`.
 no-gpu = []
 # The glue to `decibell-core` (`VideoHub::push_frame`, `From<FrameBuf> for Packet`,
 # `enable_frame_pool`). The app turns it on; without it the crate does not build the core.
@@ -39,6 +39,10 @@ ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avco
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec"] }
+
+# The Direct3D 11 renderer whose device video is decoded on, and (re-exported) its `windows`.
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows.workspace = true
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 cc = "1"

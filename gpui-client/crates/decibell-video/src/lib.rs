@@ -54,12 +54,16 @@
 //! NVIDIA and VA-API on AMD and Intel; software only when no hardware decoder works. Which one
 //! a stream got is in its [`StreamStats`] (`backend`, and `fallback_reason` when it is not the
 //! first choice); [`VideoHub::probe_capabilities`] finds out by decoding what to advertise.
-//! `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` forces one. Windows: compiles; decodes
-//! in software into a counting sink until `gpui_windows` draws surfaces (`video-design.md` §8).
+//! `DECIBELL_VIDEO_DECODER=vulkan|nvdec|vaapi|software` forces one.
+//!
+//! Windows: D3D11VA (every vendor's hardware decoder) on GPUI's own Direct3D 11 device, one
+//! GPU copy of the decoded slice into the stream's slot textures; software when the driver has
+//! no decoder for the codec or it fails. `DECIBELL_VIDEO_DECODER=d3d11va|software` forces one.
+//! Written on Linux and compiled, not yet run on a GPU (`video-design.md` §8).
 
 // Without the Vulkan backend (Windows, `no-gpu`) the GPU-facing half of the shared code has
 // no user yet.
-#![cfg_attr(not(vk), allow(dead_code))]
+#![cfg_attr(not(gpu), allow(dead_code))]
 
 mod codec;
 #[cfg(feature = "core")]
@@ -79,6 +83,23 @@ mod selftests;
 mod stats;
 mod timed;
 mod view;
+#[cfg(d3d)]
+mod windows;
+
+/// The renderer's surface types under one name: what an element paints and a decoder publishes
+/// to. `gpui_wgpu`'s on Linux, `gpui_windows`' (GPUI patch `0020`, the same shape) on Windows.
+#[cfg(vk)]
+pub(crate) mod surface {
+    pub(crate) use gpui_wgpu::{
+        SurfaceFit, WgpuSurface as Surface, WgpuSurfaceView as SurfaceView,
+    };
+}
+#[cfg(d3d)]
+pub(crate) mod surface {
+    pub(crate) use gpui_windows::{
+        D3d11Surface as Surface, D3d11SurfaceView as SurfaceView, SurfaceFit,
+    };
+}
 
 pub use codec::{Codec, CodecSupport, DecodeBackend, DecodePath, SkippedBackend};
 #[cfg(feature = "core")]
@@ -105,7 +126,9 @@ mod platform {
     pub(crate) fn backend() -> Arc<dyn Backend> {
         #[cfg(vk)]
         return Arc::new(crate::linux::LinuxBackend::new());
-        #[cfg(not(vk))]
+        #[cfg(d3d)]
+        return Arc::new(crate::windows::WindowsBackend::new());
+        #[cfg(not(gpu))]
         Arc::new(crate::cpu::CpuBackend::default())
     }
 }

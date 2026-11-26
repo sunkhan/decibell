@@ -45,6 +45,7 @@ publish = false
 gpui = { path = "vendor/gpui-src/crates/gpui", default-features = false }
 gpui_platform = { path = "vendor/gpui-src/crates/gpui_platform", default-features = false, features = ["wayland", "x11"] }
 gpui_wgpu = { path = "vendor/gpui-src/crates/gpui_wgpu" }
+gpui_windows = { path = "vendor/gpui-src/crates/gpui_windows", default-features = false }
 decibell-theme = { path = "crates/decibell-theme" }
 decibell-harness = { path = "crates/decibell-harness" }
 decibell-ui = { path = "crates/decibell-ui" }

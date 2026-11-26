@@ -4,16 +4,27 @@
 //! `AVDRMFrameDescriptor`) and CUDA's own (through nv-codec-headers' run-time loader, which the
 //! prefix installs), so their layout comes from the headers of the FFmpeg that is linked and
 //! not from hand-written Rust. Other platforms compile no C.
-//! Also sets `cfg(vk)`.
+//! Also sets `cfg(vk)`, `cfg(d3d)` and `cfg(gpu)`.
 
 fn main() {
     // `cfg(vk)`: the Vulkan backend (Linux, unless the `no-gpu` feature asks for the neutral half
     // alone).
+    // `cfg(d3d)`: the Direct3D 11 backend (Windows, likewise). `cfg(gpu)`: either.
     println!("cargo::rustc-check-cfg=cfg(vk)");
-    let linux = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
-    let vk = linux && std::env::var_os("CARGO_FEATURE_NO_GPU").is_none();
+    println!("cargo::rustc-check-cfg=cfg(d3d)");
+    println!("cargo::rustc-check-cfg=cfg(gpu)");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let no_gpu = std::env::var_os("CARGO_FEATURE_NO_GPU").is_some();
+    let linux = target_os == "linux";
+    let vk = linux && !no_gpu;
     if vk {
         println!("cargo::rustc-cfg=vk");
+    }
+    if target_os == "windows" && !no_gpu {
+        println!("cargo::rustc-cfg=d3d");
+    }
+    if (linux || target_os == "windows") && !no_gpu {
+        println!("cargo::rustc-cfg=gpu");
     }
     #[cfg(target_os = "linux")]
     {

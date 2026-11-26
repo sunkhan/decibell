@@ -130,8 +130,8 @@ pub enum Fault {
 
 /// Where a stream's pictures go.
 pub(crate) struct StreamTarget {
-    #[cfg(vk)]
-    pub surface: Arc<gpui_wgpu::WgpuSurface>,
+    #[cfg(gpu)]
+    pub surface: Arc<crate::surface::Surface>,
     pub counters: Arc<Counters>,
     /// A timed stream (`timed.rs`): its decoders give pictures out in presentation order.
     reorder: AtomicBool,
@@ -141,8 +141,8 @@ impl StreamTarget {
     /// A target nothing displays: where the capability probe decodes its test frames.
     pub(crate) fn detached() -> StreamTarget {
         StreamTarget {
-            #[cfg(vk)]
-            surface: gpui_wgpu::WgpuSurface::new(),
+            #[cfg(gpu)]
+            surface: crate::surface::Surface::new(),
             counters: Arc::new(Counters::new()),
             reorder: AtomicBool::new(false),
         }
@@ -158,7 +158,7 @@ impl StreamTarget {
     }
 
     pub(crate) fn clear(&self) {
-        #[cfg(vk)]
+        #[cfg(gpu)]
         self.surface.clear();
     }
 }
@@ -428,9 +428,9 @@ impl VideoHub {
             .or_insert_with(|| {
                 let counters = Arc::new(Counters::new());
                 let target = StreamTarget {
-                    #[cfg(vk)]
+                    #[cfg(gpu)]
                     surface: {
-                        let surface = gpui_wgpu::WgpuSurface::new();
+                        let surface = crate::surface::Surface::new();
                         let counters = counters.clone();
                         surface.set_draw_observer(Box::new(move |serial| {
                             counters.frame_presented(serial)
@@ -1147,7 +1147,7 @@ impl Stream {
             inner: Arc::new(ViewerInner {
                 stream: self.clone(),
                 id,
-                #[cfg(vk)]
+                #[cfg(gpu)]
                 views: Default::default(),
             }),
         }
@@ -1162,9 +1162,9 @@ impl Stream {
 
     /// The newest picture's size, when there is one.
     pub fn picture_size(&self) -> Option<(u32, u32)> {
-        #[cfg(vk)]
+        #[cfg(gpu)]
         return self.shared.target.surface.picture_size();
-        #[cfg(not(vk))]
+        #[cfg(not(gpu))]
         None
     }
 
@@ -1229,8 +1229,8 @@ struct ViewerInner {
     stream: Stream,
     id: u64,
     /// What the view paints, one per fit, made on first use.
-    #[cfg(vk)]
-    views: [std::sync::OnceLock<Arc<gpui_wgpu::WgpuSurfaceView>>; 3],
+    #[cfg(gpu)]
+    views: [std::sync::OnceLock<Arc<crate::surface::SurfaceView>>; 3],
 }
 
 impl Viewer {
@@ -1249,16 +1249,17 @@ impl Viewer {
         }
     }
 
-    #[cfg(vk)]
-    pub(crate) fn surface_view(&self, fit: crate::Fit) -> Arc<gpui_wgpu::WgpuSurfaceView> {
+    #[cfg(gpu)]
+    pub(crate) fn surface_view(&self, fit: crate::Fit) -> Arc<crate::surface::SurfaceView> {
+        use crate::surface::SurfaceFit;
         let (index, fit) = match fit {
-            crate::Fit::Contain => (0, gpui_wgpu::SurfaceFit::Contain),
-            crate::Fit::Cover => (1, gpui_wgpu::SurfaceFit::Cover),
-            crate::Fit::Fill => (2, gpui_wgpu::SurfaceFit::Fill),
+            crate::Fit::Contain => (0, SurfaceFit::Contain),
+            crate::Fit::Cover => (1, SurfaceFit::Cover),
+            crate::Fit::Fill => (2, SurfaceFit::Fill),
         };
         self.inner.views[index]
             .get_or_init(|| {
-                Arc::new(gpui_wgpu::WgpuSurfaceView {
+                Arc::new(crate::surface::SurfaceView {
                     surface: self.inner.stream.shared.target.surface.clone(),
                     fit,
                 })
