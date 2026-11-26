@@ -286,7 +286,7 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 59 | `stream_codec_changed` | `events/voice.rs` |
 | 60 | `stream_gpu_fallback` | `events/voice.rs` (no emitter in the core today) |
 | 61 | `stream_capture_ended` | `events/voice.rs` |
-| 62 | `keyframe_requested` | `events/voice.rs` |
+| 62 | `keyframe_requested` | `events/voice.rs`; answers (a stream fed pre-encoded frames, the headless `stream-file`, forces its own keyframes) |
 | 63 | `native_stream_failed` | `events/voice.rs` |
 | 64 | `caps_refreshed` | `events/voice.rs` (no emitter in the core today) |
 | 65 | `dm_conversations_received` | `events/dm.rs`; dir: central |
@@ -369,7 +369,8 @@ account and communities (`login <account>`, `logout`, `wait booted | logged-in |
 <community> | roster <community> | online / offline <community> <user>`, `open-server`, `open-channel`, `idle
 <seconds>`, `print`, `wait-file`), messages (`history`, `send`, `edit`, `delete`, `dm-*`, `search`, `wait-*`: §15),
 live (`voice-join`, `mute` / `deafen`, `status`, `friends`, `e2ee-ready`, `call`, `watch`, `wait voice | mls |
-presence | call …`: §M3), and the dumps. Each `dump` prints one line `DUMP <what> <json>`; **`dump all`** prints
+presence | call …`: §M3), the test-only streamer (`stream-file <file.dbv>` / `stream-stop`: a `.dbv` recording into
+the voice channel through `send_video_frame`; `tools/perf/streambot.sh`), and the dumps. Each `dump` prints one line `DUMP <what> <json>`; **`dump all`** prints
 every dump that applies in the current state (the account stores, the open community's channels / roles / roster,
 the open channel's permissions and messages, the open DM, search, every live store), one line each, a dump that
 can't be made carrying `{"error": …}`. The last line is `DONE` or `FAILED …`. **`dump codecs`** needs no sign-in:
@@ -828,7 +829,7 @@ small views each show one key, the entity emits a keyed event they filter on.
 | `voice.thumbnails` | posters as `Arc<gpui::Image>` (encoded JPEG; GPUI decodes when drawn) + version | a poster (~15 s per stream) while the voice view retains them | `ThumbnailChanged(uid)` | stream tiles (subscribe) |
 | `voice.watching` | watched streams, focused, mini player, window fullscreen | user actions | — | stage, mini player, **the app** (applies `fullscreen` to the window) |
 | `voice.stream_views` | how many views draw each stream | never notifies | — | — (`actions::voice::show_stream` / `hide_stream` switch the core's frame sink: the video hub receives only what is displayed) |
-| `voice.own_stream` | idle / starting / live (codec, size, fps, audio, where), the Go Live error, cursor option, Windows source | Go Live, stop, failures | — | user panel, Go Live dialog |
+| `voice.own_stream` | idle / starting / live (codec as started, size, fps, audio, where, the encoder's label from `StartScreenShareResult.encoder`), the Go Live error, cursor option, Windows source | Go Live, stop, failures | — | user panel, Go Live dialog |
 | `voice.devices`, `voice.stream_audio_apps`, `voice.codecs` | audio device lists; stream-audio apps; codec toggles and caps | a refresh that changed something, a toggle | — | Settings → Audio / Codecs, the Go Live picker |
 | `calls` (`Calls`) | the call state machine; the 45 s ring timer (only while ringing) | a handful of transitions per call | `ShowConversation(uid)` (accepting lands on the caller's DM: **M2's DM store subscribes**) | DM header, call stage, incoming card |
 | `presence.statuses` (`Presence`) | watched users' statuses + who central answered for | a watched user's change; a whole subscription answer is one batch | `PresenceChanged(uids)` | a dot / avatar (one person) subscribes and filters; a member list observes |

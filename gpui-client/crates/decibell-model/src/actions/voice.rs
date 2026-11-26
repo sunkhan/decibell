@@ -888,11 +888,17 @@ pub fn go_live(cx: &mut App) {
         match result {
             Ok(size) if current => {
                 let live = LiveStream {
-                    codec,
+                    // What the stream really encodes in: the requested codec, unless an
+                    // unenforced start fell through to another encoder (the core reports it).
+                    codec: match VideoCodec::from_wire(size.codec as i32) {
+                        VideoCodec::Unknown => codec,
+                        started => started,
+                    },
                     width: size.width,
                     height: size.height,
                     fps,
                     has_audio: share_audio,
+                    encoder: size.encoder.into(),
                     server: key.as_ref().map(|k| k.0),
                     channel: key.as_ref().map(|k| k.1.clone()),
                 };

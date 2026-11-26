@@ -397,6 +397,9 @@ pub struct LiveStream {
     pub height: u32,
     pub fps: u32,
     pub has_audio: bool,
+    /// The native encoder in use, as the core names it (`StartScreenShareResult.encoder`:
+    /// "NVENC (NVIDIA)", … "Software (SVT-AV1)"); empty when it didn't say.
+    pub encoder: SharedString,
     /// The community channel it is announced in (none in a DM call). A stream taken
     /// along on a switch moves with us.
     pub server: Option<ServerId>,

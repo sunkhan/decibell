@@ -155,7 +155,13 @@ pub fn route(model: &Model, event: CoreEvent, cx: &mut App) {
         E::StreamCodecChanged(p) => todo::m3::stream_codec_changed(model, &p, cx),
         E::StreamGpuFallback(p) => todo::m3::stream_gpu_fallback(model, &p, cx),
         E::StreamCaptureEnded => todo::m3::stream_capture_ended(model, cx),
-        E::KeyframeRequested => todo::m3::keyframe_requested(model, cx),
+        E::KeyframeRequested => {
+            todo::m3::keyframe_requested(model, cx);
+            // Also to listeners: a stream fed with pre-encoded frames (`send_video_frame`, the
+            // headless stream-from-file step) forces its keyframes itself, as the renderer's
+            // WebCodecs path did.
+            answer(model, E::KeyframeRequested, cx);
+        }
         E::NativeStreamFailed(p) => todo::m3::native_stream_failed(model, &p, cx),
         E::CapsRefreshed => todo::m3::caps_refreshed(model, cx),
 

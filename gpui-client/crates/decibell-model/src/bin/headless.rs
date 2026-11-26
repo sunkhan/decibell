@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 #[path = "headless/chat.rs"]
 mod chat;
 
+// The test-only streamer (`stream-file`: a .dbv recording into a voice channel).
+#[path = "headless/stream.rs"]
+mod stream;
+
 use decibell_model::local_key::{FixedKey, KeychainKey, LocalKey, LocalKeyProvider};
 use decibell_model::stores::community::{ChannelKind, Community};
 use decibell_model::stores::permissions::perm;
@@ -65,7 +69,7 @@ Dumps (each prints one line `DUMP <what> <json>`):
   dump channels <community> | roles <community> | roster <community>
   dump permissions <community> <channel>
   dump chat <channel> | dm <user> | search
-  dump voice | presence | own | friends | e2ee | call | transfers | devices | hotkeys | cues
+  dump voice | presence | own | friends | e2ee | call | transfers | devices | hotkeys | cues | streambot
   dump codecs                     the core's encoder probe, run now (each codec's backend, FFmpeg
                                   encoder and limits; DECIBELL_ENCODER leaves one backend), and the
                                   codec caps the model holds (the `codecs` step loads them); not
@@ -82,7 +86,7 @@ Exit status: 0 when every step ran, 1 when one failed or timed out, 2 for bad us
 unsafe environment.";
 
 fn usage() -> String {
-    format!("{USAGE}\n\n{}\n\n{}\n\n{DUMPS}", chat::USAGE, live::USAGE)
+    format!("{USAGE}\n\n{}\n\n{}\n\n{}\n\n{DUMPS}", chat::USAGE, live::USAGE, stream::USAGE)
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +102,7 @@ enum Step {
     WaitFile(PathBuf),
     Chat(chat::ChatStep),
     Live(live::LiveStep),
+    Stream(stream::StreamStep),
 }
 
 #[derive(Debug, Clone)]
@@ -177,9 +182,12 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
                 Step::Dump(parts)
             }
             cmd if chat::is_step(cmd) => Step::Chat(chat::parse(cmd, &mut it)?),
-            other => match live::parse(other, &mut it)? {
-                Some(step) => Step::Live(step),
-                None => return Err(format!("unknown step or option {other:?}")),
+            other => match stream::parse(other, &mut it)? {
+                Some(step) => Step::Stream(step),
+                None => match live::parse(other, &mut it)? {
+                    Some(step) => Step::Live(step),
+                    None => return Err(format!("unknown step or option {other:?}")),
+                },
             },
         };
         out.steps.push(step);
@@ -466,6 +474,7 @@ fn dump(parts: &[String], model: &Model, cx: &App) -> Result<Value, String> {
             })
         }
         "chat" | "dm" | "search" => chat::dump(parts, model, cx)?,
+        "streambot" => stream::dump(),
         other => return live::dump(other, model, cx).ok_or(format!("dump: unknown store {other:?}")),
     })
 }
@@ -562,6 +571,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
         Step::Print(text) => say(format!("MARK {text}")),
         Step::Chat(step) => chat::run(step, model, timeout, cx).await?,
         Step::Live(step) => live::run(step, model, timeout, cx).await?,
+        Step::Stream(step) => stream::run(step, model, cx).await?,
         Step::WaitFile(path) => {
             let started = Instant::now();
             while !path.exists() {
@@ -621,6 +631,8 @@ fn main() -> ExitCode {
                     Ok(())
                 }
                 .await;
+                // A stream from a file ends with the script (announced as ended).
+                stream::stop(&model, cx).await;
                 match outcome {
                     Ok(()) => say("DONE".to_string()),
                     Err(e) => {
