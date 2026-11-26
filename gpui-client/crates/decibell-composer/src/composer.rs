@@ -980,7 +980,8 @@ impl Render for Composer {
                 let over = this.card_bounds.get().contains(&event.event.position);
                 this.drag_moved(over, cx);
             }))
-            .children(send_error.map(|error| div().px_4().child(Label::new(error).size(12.).color(theme.color_error))))
+            // `px-4 text-xs text-error`: 12 px on Tailwind's 16 px line.
+            .children(send_error.map(|error| div().px_4().child(Label::new(error).size(12.).line_height(16.).color(theme.color_error))))
             .child(div().px_3().py_2().child(card))
             .when(dragging, |this| this.child(drop_catcher(window, cx)))
             .into_any_element()
