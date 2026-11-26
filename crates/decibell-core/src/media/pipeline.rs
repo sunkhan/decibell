@@ -574,9 +574,12 @@ pub fn run_audio_pipeline(
                     if let Some(old) = old {
                         retire_output(old, &mut retiring);
                     }
-                    { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
+                    // Stream audio on its own device plays on untouched.
+                    if !separate_stream_enabled {
+                        { let mut g = stream_cons.lock().unwrap(); while g.try_pop().is_some() {} }
+                        stream_out.clear_accum();
+                    }
                     for peer in remote_peers.values_mut() { peer.drain_ring(); }
-                    stream_out.clear_accum();
                     let stream_here = (!separate_stream_enabled).then(|| (Arc::clone(&stream_cons), Arc::clone(&stream_stereo)));
                     match build_output_stream(&host, name.as_deref(), Arc::clone(&peers), stream_here, Arc::clone(&main_pull), &event_tx) {
                         Some(out) => {
@@ -1089,7 +1092,9 @@ pub fn run_audio_pipeline(
         static DIAG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let iter_num = DIAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if iter_num % 1000 == 999 { // ~every 5s (5ms per iter)
-            let stream_fill = if let Ok(c) = stream_cons.try_lock() { c.occupied_len() } else { 0 };
+            // Read on the producer's side: the consumer's lock is the output
+            // callback's, and taking it here could make a callback miss it.
+            let stream_fill = stream_prod.lock().map(|p| p.occupied_len()).unwrap_or(0);
             let recv_drop_total = recv_drops.load(std::sync::atomic::Ordering::Relaxed);
             let peer_stats: Vec<String> = remote_peers.values().map(|p| { let n = &p.name;
                 format!("{}(j={:.1}ms tgt={} buf={} ring={} plc={} exp={} under={} drop={})",

@@ -399,3 +399,23 @@ fn a_volume_change_mid_speech_is_a_ramp() {
     assert!(step <= limit, "volume drag: a step of {:.4} ({:.0} of 32768) at sample {at}; limit {:.4}", step, step * 32768.0, limit);
     assert!(heard[heard.len() - 9_600..].iter().any(|s| s.abs() > 0.2), "ends at the last gain (1.5)");
 }
+
+/// Audit 7: the output callback finding the stream-audio ring's lock taken
+/// (the pipeline's own look at it). It used to write a whole period of
+/// silence, voices included; the voices now play on and only stream audio
+/// sits that period out.
+#[test]
+fn a_busy_stream_audio_lock_does_not_silence_the_voices() {
+    for at in 60..65 {
+        let mut rx = Rx::new();
+        rx.run(at);
+        rx.feed(true);
+        {
+            let _held = rx.stream_cons.lock().unwrap();
+            rx.device.callback();
+        }
+        rx.device.callback();
+        rx.run(20);
+        assert_clean(&rx.heard(), 1.0, &format!("lock held at step {at}"));
+    }
+}

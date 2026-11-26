@@ -741,18 +741,13 @@ impl OutputMix {
             pull_stats.note_short();
         }
 
+        // The stream-audio ring's lock is the pipeline's for an instant now
+        // and then (it empties the ring on a device switch): stream audio
+        // sits this period out, the voices and sounds play on. Writing the
+        // whole period as silence, as before, cut every voice mid-wave.
         let mut stream_guard = match &self.stream {
             None => None,
-            Some((stream_cons_out, _)) => match stream_cons_out.try_lock() {
-                Ok(g) => Some(g),
-                Err(_) => {
-                    drop(voice_guards);
-                    let silence = T::from_sample(0.0f32);
-                    for sample in data.iter_mut() { *sample = silence; }
-                    self.cues.end(frames);
-                    return;
-                }
-            },
+            Some((stream_cons_out, _)) => stream_cons_out.try_lock().ok(),
         };
         let stereo = n >= 2
             && self.stream.as_ref().is_some_and(|(_, flag)| flag.load(std::sync::atomic::Ordering::Relaxed));
