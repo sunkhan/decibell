@@ -1,0 +1,38 @@
+[package]
+name = "decibell-composer"
+description = "The message composer: the input with its live preview strip, the emoji and GIF pickers, attachments, replies, slowmode, drafts, the code / math panels, and the inline editor of a sent message"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# The screens and the self-tests' fixture side: the chat crate's seeded model (no network), and
+# a canned GIF provider. The app turns it on, as it does the chat crate's.
+fixtures = ["decibell-chat/fixtures", "decibell-shell/fixtures", "dep:image", "dep:serde_json"]
+
+[dependencies]
+gpui.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-text.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-chat.workspace = true
+decibell-shell.workspace = true
+decibell-richtext = { path = "../decibell-richtext" }
+decibell-attachments = { path = "../decibell-attachments" }
+decibell-unfurl = { path = "../decibell-unfurl" }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+bytes = "1"
+# The screens' and self-tests' generated pictures (the version decibell-attachments uses).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+# The self-tests read the local stack's accounts.json.
+serde_json = { version = "1", optional = true }
+
+[build-dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

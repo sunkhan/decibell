@@ -1736,6 +1736,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "decibell-chat",
+ "decibell-composer",
  "decibell-core",
  "decibell-harness",
  "decibell-model",
@@ -1813,6 +1814,29 @@ dependencies = [
  "decibell-theme",
  "decibell-ui",
  "gpui",
+]
+
+[[package]]
+name = "decibell-composer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "decibell-attachments",
+ "decibell-chat",
+ "decibell-common",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-richtext",
+ "decibell-shell",
+ "decibell-text",
+ "decibell-ui",
+ "decibell-unfurl",
+ "futures",
+ "gpui",
+ "image",
+ "log",
+ "serde_json",
 ]
 
 [[package]]
