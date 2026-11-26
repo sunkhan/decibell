@@ -638,6 +638,12 @@ and the runtime handle):
   watched stream allocates nothing per frame in steady state (asserted by a counting allocator in
   `video_recv.rs`'s tests). The Electron addon never enables it: each frame is then a plain `Vec`, as
   before, and `FrameBuf::into_vec` hands that allocation to V8 without a copy.
+- **TLS helpers** (`net/tls.rs`, ring provider, TLS 1.3 and 1.2): `create_pinned_connector(host, port)`
+  is the connections' verifier over the pins store (§2.4: TOFU or central's fingerprint, the accepted
+  certificate recorded in `cert_pins.json`; needs `state::set_boot`). `exact_connector(host, port,
+  fingerprint)` accepts only that sha256 and never reads or writes the store, so it works before or
+  without `set_boot`: a native client's attachment HTTPS (port 8085, TLS 1.2 only) pinned to the
+  `cert_fingerprint` central reports. Both fail a mismatch with the same `CERT_MISMATCH:<host>:<port>:<seen>`.
 - **Commands are `decibell_core::api`** (step 3): 132 functions, one module per area with the addon's
   names (auth 7, call 6, channels 15, community 23, devices 3, dm 5, e2ee 6, friends 3, hotkeys 6,
   messaging 1, presence 5, servers 11, settings 4, stream_audio 2, streaming 18, voice 17), plus
@@ -677,7 +683,7 @@ What the Electron side does today that a native client must replace:
 | Video **decode** + render (remote and self-preview) | Renderer, WebCodecs `VideoDecoder` (`StreamVideoPlayer.tsx`) | Needs a decoder: Media Foundation / D3D11VA on Windows (or FFmpeg hwaccel), rendering into a GPU texture. Native already hands over whole, decrypted, Annex B / OBU frames. |
 | Encode **fallback** + macOS encode | Renderer, WebCodecs `VideoEncoder` | Windows / Linux native paths already exist; macOS would need VideoToolbox. |
 | Capture source list | Electron `desktopCapturer` | Enumerate monitors / windows (DXGI outputs, `EnumWindows`) and produce the same ids. |
-| Attachment upload | Renderer (`uploadAttachment.ts`: init / PATCH / complete / thumbnails, pacing); native only returns `{host, port, jwt, maxBytes, certFingerprint}` (`get_attachment_target`) | HTTP client with the pinned cert (§4.2). |
+| Attachment upload | Renderer (`uploadAttachment.ts`: init / PATCH / complete / thumbnails, pacing); native only returns `{host, port, jwt, maxBytes, certFingerprint}` (`get_attachment_target`) | HTTP client with the pinned cert (§4.2; `net::tls::exact_connector`). |
 | Attachment download, Range playback, save-as, Transfers | Electron main (`protocol.ts`, `mediaServer.ts`, `netFetch.ts`, `downloads.ts`, `downloadPacer.ts`) | Same HTTP client. |
 | Attachment encryption | Renderer encrypts (`features/chat/attachmentCrypto.ts`, WebCrypto); main decrypts (`electron/main/attachmentCrypto.ts`, `attachmentFetch.ts`) | Re-implement the 64 KiB AES-256-GCM chunk format byte-for-byte (or move it into native). |
 | Upload thumbnails + ThumbHash, image decode, EXIF orientation | Renderer (canvas, `thumbhash.ts`) | Image crate + a ThumbHash port. |

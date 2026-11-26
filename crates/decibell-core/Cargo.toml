@@ -190,6 +190,9 @@ jpeg-encoder = "0.6"
 # which the codec_selection unit tests use to fake the wall clock.
 # Not pulled in by `features = ["full"]`; opt-in only.
 tokio = { version = "1", features = ["full", "test-util"] }
+# net/tls.rs: the self-signed certificate of the exact-pin connector's
+# loopback test (ring, as everywhere else; no aws-lc-rs).
+rcgen = { version = "0.14", default-features = false, features = ["ring", "crypto"] }
 
 [build-dependencies]
 prost-build = "0.13"

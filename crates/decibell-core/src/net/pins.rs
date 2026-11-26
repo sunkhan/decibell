@@ -132,3 +132,11 @@ pub fn retrust(host: &str, port: u16) {
     s.retrust.insert(k);
     persist(&s);
 }
+
+/// Test-only: what the in-memory store holds for `key` (a pin or a
+/// central-reported fingerprint), without loading anything from disk.
+#[cfg(test)]
+pub(crate) fn peek(key: &str) -> Option<String> {
+    let s = store().lock().unwrap();
+    s.pins.get(key).or_else(|| s.expected.get(key)).cloned()
+}
