@@ -4,7 +4,10 @@
 //! discontinuities ("pops") at the receiver output.
 //!
 //! The sender gate and the receiver drain loop are re-implemented here in
-//! miniature, mirroring pipeline.rs. Keep them in sync when that changes.
+//! miniature, mirroring pipeline.rs as it was when the pacing was designed
+//! (2026-08): this file is about pacing policies. The edge shaping added since
+//! (ramps, crossfades, the faded tail's handling) is tested on the real code
+//! in `click_tests.rs`, not mirrored here.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
