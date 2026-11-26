@@ -69,6 +69,8 @@ screens in all seven themes beside Electron's.
 | Chat content (attachments, link / invite embeds, image viewer, Transfers panel) | in progress, worktree `.worktrees/chat-content` (`wip/chat-content`) |
 | Composer, emoji / GIF pickers, inline editor (`decibell-composer`) | in progress, worktree `.worktrees/composer` (`wip/composer`) |
 | DMs, friends, profile popup / modal, custom status, user menu (`decibell-home`) | in progress, worktree `.worktrees/home` (`wip/home`) |
+| Server Settings, Channel Settings, picture editor (`decibell-server-settings`, `decibell-picture-editor`) | in progress, worktree `.worktrees/server-settings` (`wip/server-settings`) |
+| Regional formats (`decibell_model::regional`: dates, times of day and counts follow the system's settings; English words) | done `1d2e9e1` (owner decision 2026-11-26 in CLAUDE.md): chat stamps, day dividers, member counts, ban expiry; 42 stamp cases equal the renderer's under en-US; self-test `regional` reads the drawn labels under four environments; Windows path compiled only. **Sweep each crate that merges later** with the grep in CONVENTIONS "Regional formats" |
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
 | Video, part 2: NVDEC and VAAPI hardware fallbacks, decoder selection by real probe, present-only fast path in the renderer | in progress, worktree `.worktrees/video2` (`wip/video2`) |
 | Core: voice / media plane without polling | done `344068e`..`5840094` (Electron's bar passed on the merged tree: 419 core tests; Windows check run 45855500083 green): UDP receive loops block instead of polling at 1 ms, the video receive thread exists only while a stream is watched or sent, a talking peer allocates nothing per packet (PCM sample-identical in tests), `FrameBuf` keeps FFmpeg's padding, system idle as an event on Wayland. **No audio stream or processing is paused** (owner rule). In a voice channel alone and muted: 1,380 → 766 wakeups/s; what remains is the device clock and the 5 ms audio tick |
@@ -103,7 +105,7 @@ linked (all git-excluded through `.git/info/exclude`).
 | Worktree / branch | Work |
 |---|---|
 | `.worktrees/core-quality` / `wip/core-quality` | encoder quality: HEVC undershoot, tuning, colour signalling (core) |
-| `.worktrees/regional` / `wip/regional` | dates, times and numbers in the system's regional formats (`decibell_model::regional`; owner decision in CLAUDE.md) |
+| `.worktrees/server-settings` / `wip/server-settings` | Server Settings and Channel Settings windows, the picture editor |
 | `.worktrees/video2` / `wip/video2` | NVDEC / VAAPI decode, probe-based selection, renderer fast path |
 | `.worktrees/voice` / `wip/voice` | voice view, streams UI, calls, stream bot |
 | `.worktrees/settings` / `wip/settings` | settings window, passphrase dialog |
