@@ -21,7 +21,11 @@ name = "decibell_core"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-rustls = "0.26"
+# One crypto provider in the tree: ring (installed in api::lifecycle::init and
+# used explicitly by net/tls.rs). tokio-rustls' default features would add
+# aws-lc-rs (a C library build) for nothing; tls12 (the community attachment
+# server is TLS 1.2 only) and rustls' logging are kept as before.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pki-types = "1"
 prost = "0.13"

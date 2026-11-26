@@ -638,7 +638,8 @@ and the runtime handle):
   watched stream allocates nothing per frame in steady state (asserted by a counting allocator in
   `video_recv.rs`'s tests). The Electron addon never enables it: each frame is then a plain `Vec`, as
   before, and `FrameBuf::into_vec` hands that allocation to V8 without a copy.
-- **TLS helpers** (`net/tls.rs`, ring provider, TLS 1.3 and 1.2): `create_pinned_connector(host, port)`
+- **TLS helpers** (`net/tls.rs`, TLS 1.3 and 1.2 on ring, the tree's only crypto provider: `tokio-rustls`
+  is built without its aws-lc-rs default): `create_pinned_connector(host, port)`
   is the connections' verifier over the pins store (§2.4: TOFU or central's fingerprint, the accepted
   certificate recorded in `cert_pins.json`; needs `state::set_boot`). `exact_connector(host, port,
   fingerprint)` accepts only that sha256 and never reads or writes the store, so it works before or
