@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use decibell_common::{AvatarDot, UserAvatar, Watch, presence_of};
 use decibell_model::dm::Conversation;
+use decibell_model::regional::Regional;
 use decibell_model::stores::navigation::ActiveView;
 use decibell_model::{Model, Uid, actions};
 use decibell_ui::{ActiveTheme as _, FontRole, Label, ScrollArea, title_tooltip};
@@ -49,7 +50,7 @@ fn next_label_change(then_ms: i64, now_ms: i64) -> i64 {
 
 /// `9` → "9", `120` → "99+".
 fn unread_label(unread: i64) -> SharedString {
-    if unread > 99 { "99+".into() } else { unread.to_string().into() }
+    if unread > 99 { "99+".into() } else { Regional::get().group_signed(unread).into() }
 }
 
 fn name_of(conversation: &Conversation, cx: &gpui::App) -> SharedString {

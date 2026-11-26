@@ -15,6 +15,7 @@ use std::sync::Arc;
 use decibell_attachments::AttachmentKind;
 use decibell_highlight::Language;
 use decibell_model::chat::{DecryptError, Message, RowFacts};
+use decibell_model::regional::{Date, Regional};
 use decibell_model::stores::settings::TimeFormat;
 use decibell_model::{ServerId, Uid};
 use decibell_richtext::{Document, ParseOptions, SpanKind};
@@ -238,49 +239,10 @@ fn darker(color: Hsla) -> Hsla {
     rgba.into()
 }
 
-/// The header's time (`formatTimestamp`): the clock today, "Yesterday, at …", else the date.
-/// Dates are written the en-US way (`M/D/YYYY`), which is what `Intl.DateTimeFormat()` gives the
-/// renderer on an English system; other locales are not carried here.
-pub fn format_timestamp(secs: i64, today: i32, format: TimeFormat) -> String {
-    use decibell_model::chat::time::{format_clock, local_day};
-    let clock = format_clock(secs, format);
-    let day = local_day(secs);
-    if day == today {
-        return clock;
-    }
-    if day == day_before(today) {
-        return format!("Yesterday, at {clock}");
-    }
-    format!("{}/{}/{}, at {clock}", day / 100 % 100, day % 100, day / 10000)
-}
-
-fn day_before(day: i32) -> i32 {
-    let (y, m, d) = (day / 10000, day / 100 % 100, day % 100);
-    if d > 1 {
-        return day - 1;
-    }
-    let (y, m) = if m > 1 { (y, m - 1) } else { (y - 1, 12) };
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let days = match m {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
-    y * 10000 + m * 100 + days
-}
-
-/// The day divider's label: `weekday: long, year, month: long, day` in en-US.
-pub fn format_day(day: i32) -> String {
-    const MONTHS: [&str; 12] =
-        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    let (y, m, d) = (day / 10000, day / 100 % 100, day % 100);
-    // Sakamoto's day of the week.
-    const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    let yy = if m < 3 { y - 1 } else { y };
-    let weekday = (yy + yy / 4 - yy / 100 + yy / 400 + T[(m.clamp(1, 12) - 1) as usize] + d).rem_euclid(7);
-    format!("{}, {} {d}, {y}", DAYS[weekday as usize], MONTHS[(m.clamp(1, 12) - 1) as usize])
+/// The day divider's label (`DAY_FMT`: the renderer's `{ weekday: "long", year, month: "long", day }`):
+/// "Saturday, November 7, 2026" in the system's field order, from a yyyymmdd day ("" for 0).
+pub fn day_label(day: i32) -> String {
+    Date::from_day_number(day).map_or_else(String::new, |date| Regional::get().long_date(date))
 }
 
 fn decrypt_error_text(error: &DecryptError) -> &'static str {
@@ -342,7 +304,7 @@ impl RowLayout {
             engine.label_layout(text, text_style, wrapping, max, scale)
         };
 
-        let divider = facts.new_day.then(|| label(&format_day(message.day), &style.day, Wrapping::NOWRAP, f32::INFINITY));
+        let divider = facts.new_day.then(|| label(&day_label(message.day), &style.day, Wrapping::NOWRAP, f32::INFINITY));
         let mut y = match &divider {
             Some(layout) => DIVIDER_PAD_TOP + layout.height() + DIVIDER_PAD_BOTTOM,
             None => 0.,
@@ -414,12 +376,14 @@ impl RowLayout {
         let (mut header_baseline, mut header_height) = (0.0f32, 0.0f32);
         if grouped {
             if let Some(secs) = message.timestamp {
-                let clock = decibell_model::chat::time::format_clock_compact(secs, spec.time_format);
+                // `formatClockCompact`: the clock without AM / PM.
+                let clock = Regional::get().clock_compact(secs, spec.time_format);
                 time = Some(label(&clock, &style.hover_time, Wrapping::NOWRAP, f32::INFINITY));
             }
         } else {
             let name_layout = label(&spec.display_name, &style.name, Wrapping::NOWRAP, f32::INFINITY);
-            let stamp = message.timestamp.map(|secs| format_timestamp(secs, spec.today, spec.time_format)).unwrap_or_default();
+            // `formatTimestamp`: the time today, "Yesterday, at …", else the short date and the time.
+            let stamp = message.timestamp.map(|secs| Regional::get().message_stamp(secs, spec.today, spec.time_format)).unwrap_or_default();
             let time_layout = label(&stamp, &style.time, Wrapping::NOWRAP, f32::INFINITY);
             header_baseline = name_layout.first_baseline().max(time_layout.first_baseline());
             let below = (name_layout.height() - name_layout.first_baseline()).max(time_layout.height() - time_layout.first_baseline());
@@ -595,6 +559,16 @@ impl RowLayout {
             Body::Rich { layout, .. } => Some(layout),
             _ => None,
         }
+    }
+
+    /// The text the row draws for its day divider and for its time (the header's, or a grouped
+    /// row's hover time), as laid out.
+    pub fn divider_text(&self) -> Option<&str> {
+        self.divider.as_ref().map(|layout| layout.paragraph().text())
+    }
+
+    pub fn time_text(&self) -> Option<&str> {
+        self.time.as_ref().map(|layout| layout.paragraph().text())
     }
 
     /// The box of slot `index` (attachments, inflight, embeds) in the row, when it is not empty.
@@ -1332,12 +1306,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dates_as_the_renderer_writes_them() {
-        assert_eq!(format_day(20_261_107), "Saturday, November 7, 2026");
-        assert_eq!(format_day(20_240_229), "Thursday, February 29, 2024");
-        assert_eq!(day_before(20_260_301), 20_260_228);
-        assert_eq!(day_before(20_240_301), 20_240_229);
-        assert_eq!(day_before(20_260_101), 20_251_231);
+    fn attachment_kinds_as_the_renderer_writes_them() {
+        // Dates and times: `decibell_model::regional`'s tests (against the renderer's strings).
+        assert_eq!(day_label(0), "");
         assert_eq!(kind_label(&[AttachmentKind::Image]), "Image");
         assert_eq!(kind_label(&[AttachmentKind::Video, AttachmentKind::Video]), "2 Videos");
         assert_eq!(kind_label(&[AttachmentKind::Video, AttachmentKind::Image, AttachmentKind::Audio]), "3 Attachments");

@@ -156,9 +156,13 @@ size (the composer is another crate's), so the list has the same 696 px in both.
 | `pairs.mjs` | the comparison page (Node, no deps, ImageMagick 7) |
 | `typecheck.sh` | tsc with the renderer's options; its config lives in `.work/` under a non-default name |
 | `pages/` | one file per screen |
+| `pages/regional-stamps.tsx` | not a screen: the renderer's message times (`MessageBubble` / `DayDivider`) for a table of times, written to `crates/decibell-model/src/regional/renderer_stamps.json` (its header says how) |
 
 ## Gotchas (from electron-client/HANDOFF.md §5 "UI preview harness" and this harness)
 
+- **Dates, times and counts are en-US**: `run.sh` exports `LC_ALL=en_US.UTF-8`, because the renderer's `Intl`
+  takes ICU's default locale from LC_ALL / LC_MESSAGES / LANG (`--lang` doesn't change it); the GPUI captures
+  pin `Regional::en_us()` to match. Running `shoot.cjs` by hand: set it yourself.
 - Absolute paths everywhere: a relative out dir plus a `cd` once wrote the bundle elsewhere and a stale
   one kept loading. Don't put a `tsconfig.json` in the work dir or the harness (Vite then follows its
   references and fails on a missing `tsconfig.node.json`).

@@ -25,5 +25,10 @@ done
 
 [[ $build == 1 ]] && "$HERE/build.sh"
 
+# The renderer's `Intl` takes ICU's default locale, which on Linux comes from LC_ALL, else
+# LC_MESSAGES, else LANG (never LC_TIME, and not `--lang`): pin en-US whatever this machine's
+# locale, as the GPUI captures pin `Regional::en_us()`, so both sides draw the same dates, times
+# and counts. ICU reads only the name: the locale needn't be installed.
+export LC_ALL=en_US.UTF-8
 # A throwaway profile under the gitignored work dir (shoot.cjs sets the same path).
 exec "$ELECTRON" "$HERE/shoot.cjs" --user-data-dir="$HERE/.work/profile" "${args[@]}"

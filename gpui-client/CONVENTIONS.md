@@ -295,6 +295,39 @@ in short:
   allocations per frame), the fixtures in `fixture.rs` (the 10,000-message channel of `tools/dev/fixture.py`,
   generated bit for bit, and a hand-written one).
 
+## Regional formats (`decibell_model::regional`)
+
+Owner instruction (2026-11-26): the UI's language stays English; **dates, times of day and numbers follow
+the system's regional settings** (Linux / macOS: the locale `LC_ALL`, else `LC_TIME` / `LC_NUMERIC`, else
+`LANG` names, read through `newlocale` + `nl_langinfo_l`; Windows: the user's format settings with their
+overrides). The Electron client formats by its UI language instead (`docs/electron-quirks.md` #11).
+
+- **Never format a date, a time of day or a count by hand**: `Regional::get()` (read once, cached; an atomic
+  load per call). The renderer's helpers map one to one: `formatTimestamp` → `message_stamp(secs, today,
+  pref)`; `formatClock` / `formatClockCompact` → `clock` / `clock_compact` (or `time(h, m, pref)`);
+  `formatFullDateTime` → `full_date_time`; `formatDateTime` → `date_time`; `Intl.DateTimeFormat()` /
+  `toLocaleDateString()` → `short_date(Date)`; `{ day, month: "short", year }` → `medium_date`; the day divider
+  → `long_date`; `{ month, day }` → `month_day`; the date picker → `month_year`, `first_weekday()`,
+  `weekday_narrow`; `n.toLocaleString()` → `group(n)` / `group_signed`; `formatAgo` → `relative(then, now)`. The
+  module doc has the whole table.
+- Unix seconds → the local wall clock only through `regional::local(secs)` (`chrono::Local`: the system zone,
+  DST); a message's day as yyyymmdd through `chat::time::local_day`.
+- A time of day takes the user's setting: `model.settings.read(cx).time_format()` (`Auto` = the system's 12 /
+  24 hours). A view that bakes a time into a layout watches the settings store and rebuilds (the message list
+  does).
+- Words are the app's (English): `weekday_name`, `month_name`, `MONTHS`, "Yesterday, at", AM / PM. Compose
+  phrases around the module's pieces (`format!("Until {}", regional.date_time(…))`), never around digits.
+  Durations are not dates (call timers, the DM list's "5m", slowmode countdowns): write them as the renderer
+  does. Decimal measurements (sizes "18.4 MB", dB) still follow the renderer's `toFixed` ("."); `decimal(f, n)`
+  exists for when the owner wants them regional.
+- **Tests and captures**: unit tests use explicit instances (`Regional::en_us()`, `Regional::neutral()`,
+  `Regional::from_posix(Posix { … })`, `from_windows(…)`), never the global. Anything compared with Electron
+  pins en-US: `let before = Regional::pin(Some(Regional::en_us()));` … `Regional::pin(before);` (the capture
+  tool for its whole run, `chat-rows` for its own); `tools/electron-captures/run.sh` runs Electron with `LC_ALL=en_US.UTF-8` (the renderer's
+  `Intl` takes ICU's locale from LC_ALL / LC_MESSAGES / LANG, not from `--lang`).
+  Views keep what they built: pin before they build.
+- The check for leftovers in a crate (test code aside): `rg -n '\{:0?2\}|"(AM|PM)"|January|"Jan"|"Monday"|"Sunday"|chrono::Local|Local\.timestamp|localtime|\b(count|len\(\)|total|n)\.to_string\(\)' crates/<crate>/src`.
+
 ## GPUI gotchas met so far
 
 (`docs/gpui-notes.md` §12 has the survey's list; these were hit while building the skeleton.)

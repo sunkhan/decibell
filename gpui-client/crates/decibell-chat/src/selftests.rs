@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, ensure};
 use decibell_harness::{Frames, SelfTest, TestCx};
+use decibell_model::regional::Regional;
 use decibell_ui::scroll::{ScrollAnimator, ScrollKind};
 use decibell_ui::{ActiveTheme as _, FontRole, TitleBar, focus_navigation, outer_window_size, window_frame};
 use gpui::{
@@ -28,6 +29,16 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "chat-scroll-spec", about: "wheel notches and keys through the real element follow docs/wheel-scroll.md's model", run: |cx| Box::pin(scroll_spec(cx)) },
         SelfTest { name: "chat-rows", about: "every row's top and height on both fixture channels (written to $DECIBELL_CHAT_ROWS_DIR for the Electron comparison)", run: |cx| Box::pin(rows(cx)) },
         SelfTest { name: "chat-idle", about: "a channel open and at rest draws no frame for 10 s", run: |cx| Box::pin(idle(cx)) },
+        SelfTest {
+            name: "regional",
+            about: "dates, times and counts follow the system's regional settings: the app as children under LC_TIME=de_DE / C, LC_ALL=en_US and the owner's mix, a header time, a day divider and the member count read back",
+            run: |cx| Box::pin(regional(cx)),
+        },
+        SelfTest {
+            name: "regional-read",
+            about: "(the regional test's child; --screen main-server) prints a header time, a day divider and the member list's count as drawn",
+            run: |cx| Box::pin(regional_read(cx)),
+        },
     ]
 }
 
@@ -388,7 +399,7 @@ fn expected_copy(list: &MessageList, ids: &[i64], cx: &App) -> String {
         let Some((message, facts)) = list.row(*id) else { continue };
         if !facts.grouped {
             lines.push(decibell_common::display_name(Some(decibell_model::ServerId::from_central(1)), message.sender_uid, &message.sender, cx).to_string());
-            lines.push(crate::row::format_timestamp(message.timestamp.unwrap_or(0), today, format));
+            lines.push(decibell_model::regional::Regional::get().message_stamp(message.timestamp.unwrap_or(0), today, format));
         }
         if !message.content.is_empty() {
             let document = decibell_richtext::parse(&message.content, &decibell_richtext::ParseOptions::default());
@@ -644,7 +655,17 @@ async fn idle_in(h: &Harness) -> Result<()> {
 /// Dumps (id, top, height) of every row of both fixture channels as the list lays them out in a
 /// 1280 px window: `tools/electron-captures/chat-rows.mjs` compares them with the Electron
 /// client's `offsetTop`s for the same fixture.
+///
+/// The regional formats are pinned to en-US for the run (the Electron capture's run.sh pins
+/// en-US too): the header times then read the same in both clients.
 async fn rows(cx: TestCx) -> Result<()> {
+    let before = Regional::pin(Some(Regional::en_us()));
+    let result = rows_in(&cx).await;
+    Regional::pin(before);
+    result
+}
+
+async fn rows_in(cx: &TestCx) -> Result<()> {
     for (name, which) in [("chat-fixture", Which::General), ("chat-features", Which::Features)] {
         let h = Harness::open_pages(cx.app(), which, 3)?;
         let dump = async {
@@ -667,5 +688,186 @@ async fn rows(cx: TestCx) -> Result<()> {
             std::fs::write(std::path::Path::new(&dir).join(format!("{name}-rows.json")), serde_json::to_vec_pretty(&json)?)?;
         }
     }
+    Ok(())
+}
+
+// ── Regional formats ─────────────────────────────────────────────────────────────────────────
+
+/// One environment the `regional` test starts the app under, and what it must draw there.
+struct RegionalCase {
+    name: &'static str,
+    env: &'static [(&'static str, &'static str)],
+    /// The header time of a message at that local time (not today or yesterday).
+    stamp: fn(&decibell_model::regional::LocalTime) -> String,
+    day_first: bool,
+    online: &'static str,
+}
+
+/// Starts the app as a child (`--screen main-server --selftest regional-read`) under each case's
+/// locale variables (LC_ALL, LC_TIME, LC_NUMERIC and LANG replaced, the rest of the environment
+/// kept) and checks what the child drew: a header time and a day divider of the chat fixture, the
+/// member list's count after the roster said 1,234 online. Expectations are written here by hand
+/// from glibc's data for each locale.
+async fn regional(cx: TestCx) -> Result<()> {
+    use decibell_model::regional::LocalTime;
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    fn de(t: &LocalTime) -> String {
+        format!("{:02}.{:02}.{}, at {:02}:{:02}", t.date.day, t.date.month, t.date.year, t.hour, t.minute)
+    }
+    fn neutral(t: &LocalTime) -> String {
+        format!("{} {} {}, at {:02}:{:02}", t.date.day, MONTHS[t.date.month as usize - 1], t.date.year, t.hour, t.minute)
+    }
+    fn en_us(t: &LocalTime) -> String {
+        let hour = if t.hour.is_multiple_of(12) { 12 } else { t.hour % 12 };
+        format!("{:02}/{:02}/{}, at {hour}:{:02} {}", t.date.month, t.date.day, t.date.year, t.minute, if t.hour < 12 { "AM" } else { "PM" })
+    }
+    let cases = [
+        RegionalCase { name: "LC_TIME=de_DE.UTF-8", env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "de_DE.UTF-8"), ("LC_NUMERIC", "de_DE.UTF-8")], stamp: de, day_first: true, online: "ONLINE — 1.234" },
+        RegionalCase { name: "LC_TIME=C", env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "C"), ("LC_NUMERIC", "C")], stamp: neutral, day_first: true, online: "ONLINE — 1234" },
+        RegionalCase { name: "LC_ALL=en_US.UTF-8", env: &[("LC_ALL", "en_US.UTF-8")], stamp: en_us, day_first: false, online: "ONLINE — 1,234" },
+        RegionalCase {
+            name: "the owner's: LANG=en_US.UTF-8 LC_TIME=C LC_NUMERIC=de_DE.UTF-8",
+            env: &[("LANG", "en_US.UTF-8"), ("LC_TIME", "C"), ("LC_NUMERIC", "de_DE.UTF-8")],
+            stamp: neutral,
+            day_first: true,
+            online: "ONLINE — 1.234",
+        },
+    ];
+    // The per-row cost in this (release) build: the header time of a message from last week, as a
+    // list lays out a row (the zone conversion through chrono's `Local`, then the formatting).
+    {
+        use std::hint::black_box;
+        let regional = Regional::get();
+        let base = 1_794_072_600i64;
+        let today = decibell_model::chat::time::local_day(base);
+        let n = 1_000_000;
+        let started = Instant::now();
+        let mut bytes = 0usize;
+        for i in 0..n {
+            bytes += black_box(regional.message_stamp(black_box(base - 6 * 86_400 - i % 50_000), today, decibell_model::stores::settings::TimeFormat::Auto)).len();
+        }
+        let stamp = started.elapsed().as_nanos() as f64 / n as f64;
+        let at = decibell_model::regional::local(base - 6 * 86_400).context("a local time")?;
+        let day = decibell_model::regional::Date::from_day_number(today).context("today")?;
+        let started = Instant::now();
+        for _ in 0..n {
+            bytes += black_box(regional.message_stamp_at(black_box(at), day, decibell_model::stores::settings::TimeFormat::Auto)).len();
+        }
+        let format = started.elapsed().as_nanos() as f64 / n as f64;
+        let started = Instant::now();
+        for i in 0..n {
+            bytes += black_box(regional.group(black_box(1_000 + i as u64))).len();
+        }
+        let group = started.elapsed().as_nanos() as f64 / n as f64;
+        cx.log(format_args!("cost per call: message_stamp {stamp:.0} ns (formatting alone {format:.0} ns, the rest is chrono's zone conversion); group {group:.0} ns [{bytes}]"));
+        ensure!(stamp < 2_000., "message_stamp costs {stamp:.0} ns a call");
+    }
+    let exe = std::env::current_exe()?;
+    for case in &cases {
+        let mut command = std::process::Command::new(&exe);
+        command.args(["--screen", "main-server", "--selftest", "regional-read"]);
+        for name in ["LC_ALL", "LC_TIME", "LC_NUMERIC", "LANG"] {
+            command.env_remove(name);
+        }
+        command.envs(case.env.iter().copied()).env("DECIBELL_TEST_PROBES", "1").env_remove("DECIBELL_PERF");
+        let output = cx.app().background_executor().spawn(async move { command.output() }).await.context("starting the app")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("{}: the child failed ({}):\n{stdout}\n{stderr}", case.name, output.status);
+        }
+        let line = |key: &str| stdout.lines().find_map(|l| l.strip_prefix("regional-read: ")?.strip_prefix(key)?.strip_prefix(' ').map(str::to_string));
+        let timed = |key: &str| -> Result<(LocalTime, String)> {
+            let text = line(key).with_context(|| format!("{}: the child printed no {key}:\n{stdout}", case.name))?;
+            let (secs, shown) = text.split_once(' ').context("a time and a text")?;
+            let secs: i64 = secs.parse()?;
+            Ok((decibell_model::regional::local(secs).context("a local time")?, shown.to_string()))
+        };
+        let (at, stamp) = timed("stamp")?;
+        let expected = (case.stamp)(&at);
+        ensure!(stamp == expected, "{}: the header time reads {stamp:?}, expected {expected:?}", case.name);
+        let (day, divider) = timed("divider")?;
+        let weekday = decibell_model::regional::weekday_name(day.date.weekday());
+        let month = decibell_model::regional::month_name(day.date.month);
+        let expected = if case.day_first {
+            format!("{weekday}, {} {month} {}", day.date.day, day.date.year)
+        } else {
+            format!("{weekday}, {month} {}, {}", day.date.day, day.date.year)
+        };
+        ensure!(divider == expected, "{}: the day divider reads {divider:?}, expected {expected:?}", case.name);
+        let online = line("members").with_context(|| format!("{}: the child printed no member count:\n{stdout}", case.name))?;
+        ensure!(online == case.online, "{}: the member list's header reads {online:?}, expected {:?}", case.name, case.online);
+        cx.log(format_args!("{}: {stamp:?} · {divider:?} · {online:?}", case.name));
+    }
+    Ok(())
+}
+
+/// The child of [`regional`]: what this process draws under its environment. The chat fixture's
+/// newest header time and a day divider (built from the rows the list lays out), then, when the
+/// window shows the shell's fixture (`--screen main-server`, probes on), the member list's Online
+/// header after the roster says 1,234 online.
+async fn regional_read(cx: TestCx) -> Result<()> {
+    cx.log(format_args!("regional formats: {}", Regional::get().origin()));
+    let h = Harness::open(&cx, Which::Features)?;
+    let read = async {
+        h.rest().await?;
+        let ids = h.with(|list, _| list.row_ids())?;
+        let (mut stamp, mut divider) = (None, None);
+        for id in ids.iter().rev() {
+            let Some((message, facts)) = h.with(|list, _| list.row(*id))? else { continue };
+            let Some(secs) = message.timestamp else { continue };
+            if (stamp.is_none() && !facts.grouped) || (divider.is_none() && facts.new_day) {
+                let (day, time) = h.with(|list, cx| list.row_labels(*id, cx))?.context("the row's labels")?;
+                if stamp.is_none() && !facts.grouped {
+                    stamp = time.map(|time| (secs, time));
+                }
+                if divider.is_none() && facts.new_day {
+                    divider = day.map(|day| (secs, day));
+                }
+            }
+            if stamp.is_some() && divider.is_some() {
+                break;
+            }
+        }
+        anyhow::Ok((stamp.context("no row with a header time")?, divider.context("no row with a day divider")?))
+    }
+    .await;
+    h.close();
+    let ((stamp_at, stamp), (divider_at, divider)) = read?;
+    println!("regional-read: stamp {stamp_at} {stamp}");
+    println!("regional-read: divider {divider_at} {divider}");
+    cx.log(format_args!("header time {stamp:?}, day divider {divider:?}"));
+
+    if !decibell_shell::probes::enabled() || cx.update(|_, cx| cx.try_global::<decibell_model::Model>().is_none())? {
+        cx.log("no member list here (the parent runs this with --screen main-server and DECIBELL_TEST_PROBES=1)");
+        return Ok(());
+    }
+    let server = decibell_model::ServerId::from_central(decibell_shell::fixture::DAILY_GAMING);
+    let started = Instant::now();
+    while decibell_shell::probes::text_of("members-header:online").is_none() {
+        ensure!(started.elapsed() < Duration::from_secs(10), "the member list's header never drew");
+        cx.sleep(Duration::from_millis(50)).await;
+    }
+    // A delta from the community: 1,234 online of 13,579.
+    let applied = cx.update(|_, cx| {
+        let community = decibell_model::Model::global(cx).community(server, cx)?;
+        community.roster.update(cx, |roster, cx| {
+            let revision = roster.meta()?.revision;
+            let member = roster.members().values().next()?.clone();
+            let counts = decibell_model::stores::community::RosterCounts { online_count: 1234, total_members: 13_579 };
+            Some(roster.upsert(member, revision + 1, counts, cx))
+        })
+    })?;
+    ensure!(applied == Some(true), "the roster took no delta");
+    let started = Instant::now();
+    let online = loop {
+        if let Some(text) = decibell_shell::probes::text_of("members-header:online").filter(|t| t.contains("234")) {
+            break text;
+        }
+        ensure!(started.elapsed() < Duration::from_secs(10), "the member list's header never showed the new count");
+        cx.sleep(Duration::from_millis(50)).await;
+    };
+    println!("regional-read: members {online}");
+    cx.log(format_args!("member list header {online:?}"));
     Ok(())
 }

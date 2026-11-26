@@ -295,6 +295,12 @@ target/release/decibell & ../tools/perf/winctl.sh unfocus $!
 - **The local stack** moves the servers' hard-coded ports with an `LD_PRELOAD` shim (`tools/dev/bindshim.c`),
   so the server code is untouched. The community e2e suite wants 0.0.0.0:8082–8085: run it with the stack down
   or in its own network namespace (`tools/dev/README.md`).
+- **Regional formats** (owner, 2026-11-26): dates, times of day and counts follow the system's regional
+  settings with the app's English words, never en-US or the UI language as in Electron:
+  `decibell_model::regional` (CONVENTIONS "Regional formats"). C / POSIX is no preference (7 Nov 2026,
+  14:32, Monday first, no grouping); glibc's `en_US` zero-pads (11/07/2026) where Electron's ICU writes
+  11/7/2026. Captures and the `chat-rows` comparison pin en-US (`Regional::pin`; Electron through `run.sh`'s
+  `LC_ALL=en_US.UTF-8`: its `Intl` follows LC_ALL / LC_MESSAGES / LANG, never `--lang` or LC_TIME).
 - **A client build reaches the live central unless** it is a debug build or has the `local-central` feature
   **and** `DECIBELL_CENTRAL=host:port` is set (a value without `:port` falls back silently). Check the address
   before typing a password.

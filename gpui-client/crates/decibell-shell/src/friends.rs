@@ -7,6 +7,7 @@
 
 use decibell_common::{AvatarDot, BoundsCell, StatusMessageText, UserAvatar, Watch, open_profile_at, open_user_menu, presence_of};
 use decibell_model::live::friends::{Friend, FriendAction, FriendStatus};
+use decibell_model::regional::Regional;
 use decibell_model::{Model, Uid, actions};
 use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, ScrollArea, TextField, title_tooltip};
 use gpui::{
@@ -125,7 +126,7 @@ fn segment(
                     .rounded(t.radius_sm)
                     .bg(bg)
                     .px_1p5()
-                    .child(Label::new(SharedString::from(count.to_string())).font(FontRole::Meta).size(text_micro).color(fg)),
+                    .child(Label::new(SharedString::from(Regional::get().group(count as u64))).font(FontRole::Meta).size(text_micro).color(fg)),
             )
         })
 }
@@ -355,7 +356,7 @@ impl Render for FriendsPage {
                         )
                         .child(
                             div().opacity(0.75).child(
-                                Label::new(SharedString::from(items.len().to_string()))
+                                Label::new(SharedString::from(Regional::get().group(items.len() as u64)))
                                     .font(FontRole::Section)
                                     .size(text_section)
                                     .line_height(text_section)

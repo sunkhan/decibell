@@ -29,7 +29,7 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Clock style for times of day (Settings → Appearance → Time format).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeFormat {
-    /// Follows the app's language.
+    /// Follows the system's regional setting (`regional`).
     #[default]
     Auto,
     H12,

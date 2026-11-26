@@ -139,6 +139,9 @@ fn capture(args: &Args) -> anyhow::Result<()> {
     use decibell_ui::{Assets, Theme};
     use gpui::{AnyWindowHandle, AppContext as _, HeadlessAppContext, px, size};
 
+    // Dates, times and counts in en-US whatever this machine's regional settings: the captures
+    // pair with the Electron renderer's, which `tools/electron-captures/run.sh` pins to en-US.
+    decibell_model::regional::Regional::pin(Some(decibell_model::regional::Regional::en_us()));
     let screen = registry::screen(&args.screen)?;
     if let Some(dir) = &args.out_dir {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

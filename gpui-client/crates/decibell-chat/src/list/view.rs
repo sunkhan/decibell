@@ -923,6 +923,29 @@ impl MessageList {
         self.core.entries[self.drawn.first.min(self.core.len())..self.drawn.last.min(self.core.len())].iter().map(|entry| entry.message.id).collect()
     }
 
+    /// What row `id` draws as its day divider and its time (the header's, or a grouped row's hover
+    /// time), built now if it isn't laid out: the `regional` self-test reads them.
+    pub fn row_labels(&mut self, id: i64, cx: &mut Context<Self>) -> Option<(Option<String>, Option<String>)> {
+        let index = self.core.index_of_id(id)?;
+        let built = self.core.entries[index].layout.is_none();
+        if built {
+            self.build_row(index, cx);
+        }
+        let layout = self.core.entries[index].layout.as_ref()?;
+        let labels = (layout.divider_text().map(str::to_string), layout.time_text().map(str::to_string));
+        if built {
+            // As `row_tops`: the row is measured now; its layout is built again when it shows.
+            self.core.entries[index].layout = None;
+            self.core.heights_changed(false, Self::now(cx));
+        }
+        Some(labels)
+    }
+
+    /// Ids of every row the list holds, oldest first.
+    pub fn row_ids(&self) -> Vec<i64> {
+        self.core.entries.iter().map(|entry| entry.message.id).collect()
+    }
+
     /// A row's message and facts.
     pub fn row(&self, id: i64) -> Option<(Arc<decibell_model::chat::Message>, decibell_model::chat::RowFacts)> {
         let entry = &self.core.entries[self.core.index_of_id(id)?];

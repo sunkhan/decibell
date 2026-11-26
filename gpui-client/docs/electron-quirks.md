@@ -21,6 +21,7 @@ the owner decides: keep it in both clients, fix it in both, or let the native cl
 | 8 | Reading a link's preview downloads up to 3 MiB of any body, including videos and direct images | `linkPreview.ts` | **Differs**: stops once the header that decides the result has arrived |
 | 9 | Numbered equations (`\\tag`-less `equation` / `align`) count across the whole page in Chromium, so one message's formulas continue another's numbering | KaTeX's CSS counter | **Differs**: numbering restarts in each formula |
 | 10 | TeX nested more than 100 levels deep | KaTeX renders it | **Differs**: shown as raw TeX (a bound so a pasted bomb can't overflow the stack) |
+| 11 | Dates, times and counts are formatted by the language, not the regional formats: `Intl` / `toLocale*String(undefined, …)` take ICU's default locale, which on Linux comes from LC_ALL, else LC_MESSAGES, else LANG (measured in Electron 33; LC_TIME / LC_NUMERIC and `--lang` change nothing), so English with German formats still reads 11/7/2026, 2:32 PM, 1,234 | `lib/timeFormat.ts`, `MessageBubble.tsx` `DATE_FMT` / `DAY_FMT`, `DatePicker.tsx`, every `toLocaleString()` | **Differs**, by owner instruction (2026-11-26): the system's regional formats (Linux / macOS: the `LC_TIME` / `LC_NUMERIC` locale; Windows: the user's format settings) with the app's English words, C / POSIX as no preference (`decibell_model::regional`, CONVENTIONS "Regional formats") |
 
 ## Bugs in the Electron client itself (for `main`; not changed by this work)
 

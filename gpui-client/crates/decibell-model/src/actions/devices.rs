@@ -41,7 +41,7 @@ pub fn sign_out(ids: Vec<i64>, all_others: bool, cx: &mut App) {
                 let body = if r.signed_out == 1 {
                     "1 other device was signed out.".to_string()
                 } else {
-                    format!("{} other devices were signed out.", r.signed_out)
+                    format!("{} other devices were signed out.", crate::regional::Regional::get().group(r.signed_out as u64))
                 };
                 t.success("Signed out", Some(body.into()), cx);
             }
@@ -78,7 +78,7 @@ pub fn change_password(current: String, new: String, repeat: String, cx: &mut Ap
             let body: Option<SharedString> = match r.signed_out {
                 0 => None,
                 1 => Some("1 other device was signed out.".into()),
-                n => Some(format!("{n} other devices were signed out.").into()),
+                n => Some(format!("{} other devices were signed out.", crate::regional::Regional::get().group(n as u64)).into()),
             };
             model.toasts.update(cx, |t, cx| t.success("Password changed", body, cx));
             model.live.devices.update(cx, |d, cx| d.set_password(None, cx));

@@ -44,6 +44,9 @@ for (const t of opts.themes) if (!THEMES.includes(t)) console.warn(`[shoot] unkn
 
 const dpr = process.env.CAPTURE_DPR || "1";
 app.commandLine.appendSwitch("force-device-scale-factor", dpr);
+// en-US as the UI language (`navigator.language`). `Intl`'s default locale is ICU's, from the
+// environment: run.sh pins it (LC_ALL=en_US.UTF-8), as the GPUI captures pin `Regional::en_us()`.
+app.commandLine.appendSwitch("lang", "en-US");
 // Text is LCD-subpixel antialiased by default (fontconfig's rgba, as in the real app on this
 // machine); CAPTURE_GRAYSCALE_TEXT=1 renders grayscale text, for diffs against grayscale GPUI text.
 if (process.env.CAPTURE_GRAYSCALE_TEXT === "1") app.commandLine.appendSwitch("disable-lcd-text");

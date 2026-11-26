@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use decibell_common::{AvatarDot, BoundsCell, StatusMessageText, UserAvatar, Watch, open_profile_beside, open_user_menu, presence_of};
 use decibell_model::live::presence::{DisplayStatus, OwnStatus};
+use decibell_model::regional::Regional;
 use decibell_model::stores::community::{Community, Member, RosterMeta};
 use decibell_model::{Model, ServerId, Uid};
 use decibell_ui::{ActiveTheme as _, FontRole, Label, RowHeights, ScrollArea, ScrollHandle};
@@ -188,10 +189,11 @@ impl Render for MembersList {
     }
 }
 
-/// `ONLINE — 1,234` (`toLocaleString()`: en-US grouping).
+/// `ONLINE — 1,234` (`toLocaleString()`): the count grouped as the system's regional settings say.
 fn header(online: bool, count: i64, cx: &App) -> AnyElement {
     let theme = cx.theme();
-    let text: SharedString = format!("{} — {}", if online { "ONLINE" } else { "OFFLINE" }, group_thousands(count)).into();
+    let text: SharedString = format!("{} — {}", if online { "ONLINE" } else { "OFFLINE" }, Regional::get().group_signed(count)).into();
+    crate::probes::text(if online { "members-header:online" } else { "members-header:offline" }, &text);
     div()
         .size_full()
         .flex()
@@ -208,18 +210,6 @@ fn header(online: bool, count: i64, cx: &App) -> AnyElement {
                 .color(theme.color_text_muted),
         )
         .into_any_element()
-}
-
-pub fn group_thousands(n: i64) -> String {
-    let digits = n.unsigned_abs().to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    if n < 0 { format!("-{out}") } else { out }
 }
 
 fn loading_row(busy: bool, community: Option<Community>, cx: &App) -> AnyElement {
@@ -346,8 +336,8 @@ mod tests {
         assert_eq!(member_row_height(1.), 48.);
         assert_eq!(member_row_height(0.85), 41.);
         assert_eq!(member_row_height(1.15), 55.);
-        assert_eq!(group_thousands(298), "298");
-        assert_eq!(group_thousands(1234), "1,234");
-        assert_eq!(group_thousands(1_234_567), "1,234,567");
+        // The header's count: `decibell_model::regional` (its tests cover the groupings).
+        let en_us = decibell_model::regional::Regional::en_us();
+        assert_eq!((en_us.group_signed(298), en_us.group_signed(1_234_567)), ("298".to_string(), "1,234,567".to_string()));
     }
 }

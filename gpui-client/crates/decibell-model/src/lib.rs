@@ -28,6 +28,7 @@ pub mod invite_link;
 pub mod live;
 pub mod local_key;
 pub mod pump;
+pub mod regional;
 pub mod save_echo;
 pub mod stores;
 

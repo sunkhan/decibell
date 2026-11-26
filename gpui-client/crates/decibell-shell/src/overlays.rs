@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use decibell_common::Watch;
+use decibell_model::regional::Regional;
 use decibell_model::stores::navigation::ActiveView;
 use decibell_model::stores::overlays::modal;
 use decibell_model::stores::toasts::Severity;
@@ -228,7 +229,9 @@ impl Render for RevokedNoticeOverlay {
         let line = |text: String, color| div().mt_0p5().child(Label::new(SharedString::from(text)).size(12.).line_height(16.).color(color));
         let ban_line = (notice.action == "ban").then(|| {
             if notice.expires_at > 0 {
-                line(format!("Until {}", format_unix(notice.expires_at)), t.color_text_muted)
+                // `formatDateTime` in the local zone and the user's clock: "Until Nov 7, 2026, 2:32 PM".
+                let format = model.settings.read(cx).time_format();
+                line(format!("Until {}", Regional::get().date_time(notice.expires_at, format)), t.color_text_muted)
             } else {
                 line("This ban is permanent.".into(), t.color_text_muted)
             }
@@ -285,25 +288,6 @@ impl Render for RevokedNoticeOverlay {
         .with_priority(10)
         .into_any_element()
     }
-}
-
-/// A ban's end as the renderer's `formatDateTime` reads in 24-hour time: `YYYY-MM-DD HH:MM` (UTC
-/// here; the renderer uses the local zone and the user's time format).
-fn format_unix(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    // Civil from days (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, rem % 3600 / 60)
 }
 
 /// The model's toasts (pushed by event handlers) shown in the kit's toast stack: each new one is
@@ -365,10 +349,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fingerprints_and_dates_read_like_the_renderer() {
+    fn fingerprints_read_like_the_renderer() {
+        // A ban's end: `Regional::date_time` (decibell_model::regional's tests).
         assert_eq!(pretty_fingerprint("ab12cd"), "AB:12:CD");
         assert_eq!(pretty_fingerprint("abc"), "AB:C");
-        assert_eq!(format_unix(0), "1970-01-01 00:00");
-        assert_eq!(format_unix(1_798_761_600), "2027-01-01 00:00");
     }
 }

@@ -18,6 +18,7 @@ pub fn enabled() -> bool {
 thread_local! {
     static BOUNDS: RefCell<HashMap<SharedString, Bounds<Pixels>>> = RefCell::new(HashMap::new());
     static FLAGS: RefCell<HashMap<&'static str, bool>> = RefCell::new(HashMap::new());
+    static TEXTS: RefCell<HashMap<&'static str, SharedString>> = RefCell::new(HashMap::new());
 }
 
 /// A child for an element (positioned `relative()`) whose bounds a test needs, when probes are on.
@@ -48,6 +49,18 @@ pub fn flag(key: &'static str, on: bool) {
 /// The bounds `key` was last laid out at.
 pub fn bounds(key: &str) -> Option<Bounds<Pixels>> {
     BOUNDS.with(|b| b.borrow().get(key).copied())
+}
+
+/// Record the text a view last drew under `key` (a label a test reads back).
+pub fn text(key: &'static str, text: &SharedString) {
+    if enabled() {
+        TEXTS.with(|t| t.borrow_mut().insert(key, text.clone()));
+    }
+}
+
+/// What [`text`] recorded under `key`.
+pub fn text_of(key: &str) -> Option<SharedString> {
+    TEXTS.with(|t| t.borrow().get(key).cloned())
 }
 
 pub fn flag_set(key: &str) -> bool {
