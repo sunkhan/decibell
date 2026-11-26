@@ -1,0 +1,272 @@
+diff --git a/crates/gpui_windows/src/direct_manipulation.rs b/crates/gpui_windows/src/direct_manipulation.rs
+index 4ad4cc7..4533ea2 100644
+--- a/crates/gpui_windows/src/direct_manipulation.rs
++++ b/crates/gpui_windows/src/direct_manipulation.rs
+@@ -26,6 +26,8 @@ pub(crate) struct DirectManipulationHandler {
+     window: HWND,
+     scale_factor: Rc<Cell<f32>>,
+     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
++    /// The touchpad contact handed to the viewport last, while it may still be down.
++    contact: Cell<Option<u32>>,
+ }
+ 
+ impl DirectManipulationHandler {
+@@ -86,6 +88,7 @@ impl DirectManipulationHandler {
+                 window,
+                 scale_factor,
+                 pending_events,
++                contact: Cell::new(None),
+             })
+         }
+     }
+@@ -101,10 +104,36 @@ impl DirectManipulationHandler {
+             if GetPointerType(pointer_id, &mut pointer_type).is_ok() && pointer_type == PT_TOUCHPAD
+             {
+                 self.viewport.SetContact(pointer_id).log_err();
++                self.contact.set(Some(pointer_id));
+             }
+         }
+     }
+ 
++    /// Whether a gesture is under way or may begin without another message reaching the
++    /// window: the viewport is running or coasting, or the touchpad contact it was given is
++    /// still down. While this holds, [`Self::update`] must keep being called once per frame.
++    pub fn is_active(&self) -> bool {
++        unsafe {
++            if self
++                .viewport
++                .GetStatus()
++                .is_ok_and(|status| status == DIRECTMANIPULATION_RUNNING || status == DIRECTMANIPULATION_INERTIA)
++            {
++                return true;
++            }
++            let Some(pointer_id) = self.contact.get() else {
++                return false;
++            };
++            let mut info = POINTER_INFO::default();
++            let down = GetPointerInfo(pointer_id, &mut info).is_ok()
++                && (info.pointerFlags.0 & (POINTER_FLAG_INRANGE.0 | POINTER_FLAG_INCONTACT.0)) != 0;
++            if !down {
++                self.contact.set(None);
++            }
++            down
++        }
++    }
++
+     pub fn update(&self) {
+         unsafe {
+             self.update_manager.Update(None).log_err();
+diff --git a/crates/gpui_windows/src/directx_surface.rs b/crates/gpui_windows/src/directx_surface.rs
+index c990326..7e67ac6 100644
+--- a/crates/gpui_windows/src/directx_surface.rs
++++ b/crates/gpui_windows/src/directx_surface.rs
+@@ -88,11 +88,11 @@ pub(crate) fn set_shared_devices(devices: Option<D3d11Devices>) {
+ 
+ /// Makes the platform abandon its device and create another at the next vertical blank,
+ /// exactly as after a real device removal. For testing what an application built on the
+-/// device does when it is replaced. The caller then asks a window for a frame
+-/// (`Window::request_present`) so that the vsync thread runs.
++/// device does when it is replaced.
+ pub fn simulate_device_loss() {
+     log::warn!("Direct3D device marked lost on request");
+     SIMULATED_DEVICE_LOSS.store(true, Ordering::Release);
++    crate::request_vsync();
+ }
+ 
+ pub(crate) fn take_simulated_device_loss() -> bool {
+diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
+index 9434038..d0727ed 100644
+--- a/crates/gpui_windows/src/events.rs
++++ b/crates/gpui_windows/src/events.rs
+@@ -269,6 +269,8 @@ impl WindowsWindowInner {
+             self.state
+                 .invalidate_devices
+                 .store(true, std::sync::atomic::Ordering::Release);
++            // The vsync thread recreates the devices; it may be parked.
++            request_vsync();
+         }
+         if let Some(mut callback) = self.state.callbacks.resize.take() {
+             callback(new_logical_size, scale_factor);
+@@ -1375,6 +1377,7 @@ impl WindowsWindowInner {
+ 
+     fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
+         self.state.direct_manipulation.on_pointer_hit_test(wparam);
++        request_vsync();
+         None
+     }
+ 
+@@ -1385,6 +1388,8 @@ impl WindowsWindowInner {
+             if force_render {
+                 self.state.force_render_pending.set(true);
+             }
++            // The deferred frame is requested again at the next blank.
++            request_vsync();
+             // Validate the region so a nested message pump doesn't keep
+             // re-dispatching WM_PAINT for the still-invalid region in a busy
+             // loop until the in-progress draw unwinds. The vsync thread
+@@ -1399,6 +1404,12 @@ impl WindowsWindowInner {
+         self.state.direct_manipulation.update();
+ 
+         let events = self.state.direct_manipulation.drain_events();
++        // Direct Manipulation delivers a touchpad gesture's updates (inertia included) only
++        // from `update`, which runs here: a gesture needs a frame request per blank for as
++        // long as it lasts, whether or not anything is drawn.
++        if !events.is_empty() || self.state.direct_manipulation.is_active() {
++            request_vsync();
++        }
+         if !events.is_empty() {
+             if let Some(mut func) = self.state.callbacks.input.take() {
+                 for event in events {
+@@ -1413,6 +1424,8 @@ impl WindowsWindowInner {
+             // Re-enable drawing after a device loss recovery. The forced render
+             // will rebuild the scene with fresh atlas textures.
+             self.state.renderer.borrow_mut().mark_drawable();
++            // GPUI defers a forced render that arrives while it is drawing: ask again.
++            request_vsync();
+         }
+         let (signal_at, signal_source) = self.state.frame_signal.take().map_or(
+             (None, FrameRequestSource::NativeCallback),
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index bcd4b69..90e6ce0 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -425,6 +425,7 @@ impl WindowsPlatform {
+             // Not joined: the thread can be sending this thread a message. It exits after its
+             // next vsync, and drops its reference to the devices then.
+             stop.store(true, Ordering::Release);
++            request_vsync();
+         }
+         self.inner.state.directx_devices.borrow_mut().take();
+         crate::set_shared_devices(None);
+@@ -446,7 +447,15 @@ impl WindowsPlatform {
+             .name("VSyncProvider".to_owned())
+             .spawn(move || {
+                 let vsync_provider = VSyncProvider::new();
++                register_vsync_thread();
+                 loop {
++                    // Nothing asked for a frame since the last blank: sleep until something
++                    // does (`request_vsync`), instead of waking this thread and the main
++                    // thread at the refresh rate to find nothing to draw.
++                    wait_for_frame_demand(&stop);
++                    if stop.load(Ordering::Acquire) {
++                        break;
++                    }
+                     let signal_source = vsync_provider.wait_for_vsync();
+                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
+                     if stop.load(Ordering::Acquire) {
+@@ -765,6 +774,8 @@ impl Platform for WindowsPlatform {
+         }
+         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
+         let handle = window.get_raw_handle();
++        // A new window's first frame.
++        request_vsync();
+         self.raw_window_handles.write().push(TrackedWindow {
+             handle: handle.into(),
+             frame_signal: window.state.frame_signal.clone(),
+@@ -1473,6 +1484,7 @@ impl Drop for WindowsPlatform {
+     fn drop(&mut self) {
+         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
+             stop.store(true, Ordering::Release);
++            request_vsync();
+         }
+         unsafe {
+             if let Some(notification) = self.suspend_resume_notification.borrow_mut().take() {
+diff --git a/crates/gpui_windows/src/vsync.rs b/crates/gpui_windows/src/vsync.rs
+index 5121c41..af29a7e 100644
+--- a/crates/gpui_windows/src/vsync.rs
++++ b/crates/gpui_windows/src/vsync.rs
+@@ -1,5 +1,8 @@
+ use std::{
+-    sync::LazyLock,
++    sync::{
++        LazyLock,
++        atomic::{AtomicBool, Ordering},
++    },
+     time::{Duration, Instant},
+ };
+ 
+@@ -20,6 +23,52 @@ static QPC_TICKS_PER_SECOND: LazyLock<u64> = LazyLock::new(|| {
+     frequency as u64
+ });
+ 
++/// Whether a window wants a frame request at the next vertical blank. The vsync thread takes
++/// it each turn: set, it waits for the blank and invalidates the windows (`WM_PAINT` is their
++/// frame request); unset, it parks until [`request_vsync`]. Starts set, for the first frame.
++static FRAME_DEMAND: AtomicBool = AtomicBool::new(true);
++/// The vsync thread is parked (or about to park): `request_vsync` must unpark it.
++static VSYNC_PARKED: AtomicBool = AtomicBool::new(false);
++static VSYNC_THREAD: parking_lot::Mutex<Option<std::thread::Thread>> =
++    parking_lot::Mutex::new(None);
++
++/// Asks for a frame request at the next vertical blank, from any thread. This is what keeps
++/// the vsync thread running: without a call per blank it parks, and a window with nothing to
++/// draw then costs no wakeup at all (neither the thread's nor the `WM_PAINT` it posts).
++pub(crate) fn request_vsync() {
++    FRAME_DEMAND.store(true, Ordering::SeqCst);
++    if VSYNC_PARKED.load(Ordering::SeqCst)
++        && let Some(thread) = VSYNC_THREAD.lock().as_ref()
++    {
++        thread.unpark();
++    }
++}
++
++/// Called by the vsync thread when it starts.
++pub(crate) fn register_vsync_thread() {
++    *VSYNC_THREAD.lock() = Some(std::thread::current());
++    FRAME_DEMAND.store(true, Ordering::SeqCst);
++}
++
++/// Called by the vsync thread at the top of each turn. Returns once a frame was asked for
++/// since the last turn, sleeping until then if none was. A return is not a promise of demand
++/// when `stop` is set (the caller checks it).
++pub(crate) fn wait_for_frame_demand(stop: &AtomicBool) {
++    while !FRAME_DEMAND.swap(false, Ordering::SeqCst) {
++        if stop.load(Ordering::Acquire) {
++            return;
++        }
++        VSYNC_PARKED.store(true, Ordering::SeqCst);
++        // Checked again after raising the flag: a request made before the flag was visible
++        // did not unpark, but its demand is; one made after it unparks (the token is kept if
++        // we are not parked yet).
++        if !FRAME_DEMAND.load(Ordering::SeqCst) && !stop.load(Ordering::Acquire) {
++            std::thread::park();
++        }
++        VSYNC_PARKED.store(false, Ordering::SeqCst);
++    }
++}
++
+ const VSYNC_INTERVAL_THRESHOLD: Duration = Duration::from_millis(1);
+ const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_666); // ~60Hz
+ 
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 3418138..217b20d 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -1034,6 +1034,10 @@ impl PlatformWindow for WindowsWindow {
+     }
+ 
+     fn draw(&self, scene: &Scene) {
++        // A presented frame can be followed by another without a `schedule_frame` (presenting
++        // after high-rate input, recovery from a lost device): keep the vsync thread for one
++        // more blank.
++        request_vsync();
+         self.state
+             .renderer
+             .borrow_mut()
+@@ -1049,6 +1053,16 @@ impl PlatformWindow for WindowsWindow {
+             .render_to_image(scene, self.state.background_appearance.get())
+     }
+ 
++    // The vsync thread parks when no window asks for a frame (`vsync.rs`): GPUI's two ways
++    // of asking both restart it.
++    fn schedule_frame(&self) {
++        request_vsync();
++    }
++
++    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
++        Some(Rc::new(request_vsync))
++    }
++
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         self.state.renderer.borrow().sprite_atlas()
+     }
