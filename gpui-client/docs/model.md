@@ -214,7 +214,7 @@ drawn); `load_more()` pages (the sidebar calls it when `member_window::near_load
 a missing member up (50 ms batches of ≤ 200, once per generation, 3 tries 1.5 s apart). The window
 arithmetic of the sidebar is `stores/member_window.rs`, roster order `stores/roster_order.rs`.
 
-## 6. The 85 events
+## 6. The 86 events
 
 `events::route` matches every `CoreEvent` variant with no wildcard, and so does `events::users::directory`
 (the users directory sees each event first). Since the two halves landed every variant has a handler: the M2
@@ -310,6 +310,7 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 83 | `call_connected` | `events/calls.rs` |
 | 84 | `call_failed` | `events/calls.rs` |
 | 85 | `call_dropped` | `events/calls.rs` |
+| 86 | `system_idle_changed` | ignored (only after `api::presence::subscribe_system_idle`, not called yet: auto-away still asks `system_idle_state`) |
 | — | `stream_thumbnail` (the sink's own method) | `events/voice.rs` (`todo::m3::stream_thumbnail`) |
 | — | `stream_frame`, `stream_frame_sink_removed` | `StreamFrameSink`, off the UI thread (the video crate) |
 

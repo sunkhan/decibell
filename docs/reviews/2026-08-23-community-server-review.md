@@ -4979,3 +4979,12 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   still at the front of its allocation). `FrameBuf::has_padding` / `with_padding` expose it; `From<Vec>` buffers
   (the Linux encoder's self-preview) have none. `into_vec` still returns exactly the frame, the same allocation
   for an unpooled buffer (Electron's napi pointer test).
+- **System idle as an event.** `system_idle` could only be asked (`system_idle_state`, which the GPUI model asks on a
+  timer). `api::presence::subscribe_system_idle` makes the Wayland ext-idle-notify watcher emit
+  `system_idle_changed {idle, thresholdSeconds}` on each idled / resumed (true where that source exists; false:
+  keep asking, as on GNOME, X11, Windows, macOS; screen lock stays a query). The watcher thread slept in
+  `poll` with a 1 s timeout only to notice a threshold change; a pipe wakes it now (no timeout). Electron never
+  subscribes (its renderer ignores unknown event names anyway); golden sample added, the model routes it to
+  nothing yet (86 events). Not done: an audio-device-list event (Linux has no hot-plug watcher to surface:
+  PipeWire moves streams itself; it would be a PipeWire registry listener, `IMMNotificationClient` on Windows,
+  a CoreAudio property listener on macOS, which would also replace `default_device_watch`'s 1 s poll there).

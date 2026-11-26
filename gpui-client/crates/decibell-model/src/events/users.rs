@@ -99,6 +99,7 @@ pub fn directory(model: &Model, event: &CoreEvent, cx: &mut App) {
         | E::ChannelWipeResponded(_)
         | E::ChannelWiped(_)
         | E::OwnPresence(_)
+        | E::SystemIdleChanged(_)
         | E::FriendActionResponded(_)
         | E::ModActionResponded(_)
         | E::ChannelMessageRejected(_)

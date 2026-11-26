@@ -256,6 +256,9 @@ pub const CHANNEL_WIPED: &str = "channel_wiped";
 pub const USER_LIST_UPDATED: &str = "user_list_updated";
 pub const PRESENCE_DELTA: &str = "presence_delta";
 pub const OWN_PRESENCE: &str = "own_presence";
+/// The system went idle past the subscribed threshold, or input resumed
+/// (`system_idle::subscribe`; Wayland's ext-idle-notify).
+pub const SYSTEM_IDLE_CHANGED: &str = "system_idle_changed";
 pub const FRIEND_LIST_RECEIVED: &str = "friend_list_received";
 pub const FRIEND_ACTION_RESPONDED: &str = "friend_action_responded";
 pub const MEMBER_LIST_RECEIVED: &str = "member_list_received";
@@ -1558,6 +1561,18 @@ pub fn emit_voice_user_state_changed(uid: i64, is_muted: bool, is_deafened: bool
             is_deafened,
         },
     ));
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemIdleChangedPayload {
+    /// True: no input for `threshold_seconds`; false: input resumed.
+    pub idle: bool,
+    pub threshold_seconds: u32,
+}
+
+pub fn emit_system_idle_changed(idle: bool, threshold_seconds: u32) {
+    emit(CoreEvent::SystemIdleChanged(SystemIdleChangedPayload { idle, threshold_seconds }));
 }
 
 pub fn emit_voice_input_level(db: f32) {

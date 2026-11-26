@@ -135,6 +135,8 @@ core_events! {
     PresenceDelta(PresenceDeltaPayload) => PRESENCE_DELTA;
     /// Our own status, from the sign-in reply or OWN_PRESENCE (any device's change).
     OwnPresence(OwnPresencePayload) => OWN_PRESENCE;
+    /// The system went idle past the subscribed threshold / input resumed (`system_idle::subscribe`; only after a client subscribed: Electron never does).
+    SystemIdleChanged(SystemIdleChangedPayload) => SYSTEM_IDLE_CHANGED;
     /// The account's friend list (incl. pending and blocked).
     FriendListReceived(FriendListReceivedPayload) => FRIEND_LIST_RECEIVED;
     /// Central answered a friend action.

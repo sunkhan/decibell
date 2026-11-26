@@ -15,6 +15,11 @@
 //!
 //! X11 sessions, Windows and macOS answer "unsupported" and the renderer
 //! falls back to powerMonitor, which works there.
+//!
+//! [`subscribe`] turns the Wayland watcher's transitions into events
+//! (`CoreEvent::SystemIdleChanged`), so a client needn't ask [`state`] on a
+//! timer: the watcher thread sleeps until the compositor says idle / resumed
+//! or it is replaced (a pipe wakes it; no poll timeout).
 
 /// "idle" | "active" | "locked" | "unsupported" for a threshold in seconds.
 #[cfg(not(target_os = "linux"))]
@@ -22,8 +27,17 @@ pub fn state(_threshold_secs: u32) -> &'static str {
     "unsupported"
 }
 
+/// Emit `SystemIdleChanged` on every idle / resumed transition past
+/// `threshold_secs`. True when events will come (a Wayland compositor with
+/// ext-idle-notify); false: keep asking [`state`] (GNOME, X11, Windows,
+/// macOS). Screen lock is not an event: `state` still reports it.
+#[cfg(not(target_os = "linux"))]
+pub fn subscribe(_threshold_secs: u32) -> bool {
+    false
+}
+
 #[cfg(target_os = "linux")]
-pub use linux::state;
+pub use linux::{state, subscribe};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -99,11 +113,31 @@ mod linux {
         threshold_secs: u32,
         idle: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
+        /// Wakes the thread out of its poll to see `stop`.
+        wake: std::io::PipeWriter,
+    }
+
+    impl Watch {
+        fn end(&mut self) {
+            use std::io::Write;
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.wake.write(&[1]);
+        }
     }
 
     static WATCH: Mutex<Option<Watch>> = Mutex::new(None);
     /// The compositor offers no ext-idle-notify (e.g. GNOME): stop trying.
     static NO_NOTIFIER: AtomicBool = AtomicBool::new(false);
+    /// A client subscribed: transitions are emitted as events.
+    static EMIT: AtomicBool = AtomicBool::new(false);
+
+    pub fn subscribe(threshold_secs: u32) -> bool {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return false;
+        }
+        EMIT.store(true, Ordering::Relaxed);
+        wayland_idle(threshold_secs.max(1)).is_some()
+    }
 
     fn wayland_idle(threshold_secs: u32) -> Option<bool> {
         if NO_NOTIFIER.load(Ordering::Relaxed) {
@@ -114,23 +148,26 @@ mod linux {
             if w.threshold_secs == threshold_secs && !w.stop.load(Ordering::Relaxed) {
                 return Some(w.idle.load(Ordering::Relaxed));
             }
-            w.stop.store(true, Ordering::Relaxed);
         }
-        *watch = None;
+        if let Some(mut w) = watch.take() {
+            w.end();
+        }
 
         let idle = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
+        let (wake_rx, wake) = std::io::pipe().ok()?;
         let (ready_tx, ready_rx) = mpsc::channel::<bool>();
         {
             let (idle, stop) = (idle.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("system-idle".into())
-                .spawn(move || run(threshold_secs, idle, stop.clone(), ready_tx))
+                .spawn(move || run(threshold_secs, idle, stop.clone(), wake_rx, ready_tx))
                 .ok()?;
         }
+        let mut w = Watch { threshold_secs, idle: idle.clone(), stop, wake };
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(true) => {
-                *watch = Some(Watch { threshold_secs, idle: idle.clone(), stop });
+                *watch = Some(w);
                 Some(idle.load(Ordering::Relaxed))
             }
             Ok(false) => {
@@ -138,7 +175,7 @@ mod linux {
                 None
             }
             Err(_) => {
-                stop.store(true, Ordering::Relaxed);
+                w.end();
                 None
             }
         }
@@ -146,12 +183,14 @@ mod linux {
 
     struct IdleState {
         idle: Arc<AtomicBool>,
+        threshold_secs: u32,
     }
 
     fn run(
         threshold_secs: u32,
         idle: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
+        wake: std::io::PipeReader,
         ready: mpsc::Sender<bool>,
     ) {
         let setup = || -> Result<_, String> {
@@ -180,24 +219,23 @@ mod linux {
                 return;
             }
         };
-        let mut st = IdleState { idle };
+        let mut st = IdleState { idle, threshold_secs };
         let _ = ready.send(true);
 
-        // Poll with a timeout instead of blocking_dispatch, so a threshold
-        // change (stop) ends this thread within a second.
+        // Sleep until the compositor sends something or the pipe says stop
+        // (a threshold change replaces this thread): no poll timeout.
         while !stop.load(Ordering::Relaxed) {
             if queue.dispatch_pending(&mut st).is_err() || conn.flush().is_err() {
                 break;
             }
             let Some(guard) = queue.prepare_read() else { continue };
-            let mut pfd = libc::pollfd {
-                fd: guard.connection_fd().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: one valid pollfd for the duration of the call.
-            let ready_fds = unsafe { libc::poll(&mut pfd, 1, 1000) };
-            if ready_fds > 0 {
+            let mut pfds = [
+                libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            ];
+            // SAFETY: two valid pollfds for the duration of the call.
+            let ready_fds = unsafe { libc::poll(pfds.as_mut_ptr(), 2, -1) };
+            if ready_fds > 0 && pfds[0].revents != 0 {
                 if guard.read().is_err() {
                     break;
                 }
@@ -259,11 +297,36 @@ mod linux {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            match event {
-                ext_idle_notification_v1::Event::Idled => state.idle.store(true, Ordering::Relaxed),
-                ext_idle_notification_v1::Event::Resumed => state.idle.store(false, Ordering::Relaxed),
-                _ => {}
+            let idle = match event {
+                ext_idle_notification_v1::Event::Idled => true,
+                ext_idle_notification_v1::Event::Resumed => false,
+                _ => return,
+            };
+            if state.idle.swap(idle, Ordering::Relaxed) != idle && EMIT.load(Ordering::Relaxed) {
+                crate::events::emit_system_idle_changed(idle, state.threshold_secs);
             }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    /// Where there is a Wayland session with ext-idle-notify (the dev box's
+    /// KWin) a subscription starts the watcher and answers at once, and a
+    /// threshold change replaces the watcher without waiting on a poll
+    /// timeout; anywhere else it says "keep asking". No idle period is
+    /// waited for (that would need minutes without input).
+    #[test]
+    fn subscribe_answers_and_replaces_its_watcher_promptly() {
+        let t0 = std::time::Instant::now();
+        let first = super::subscribe(3600);
+        let again = super::subscribe(3600);
+        assert_eq!(first, again);
+        let replaced = super::subscribe(3601);
+        assert_eq!(first, replaced);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(3), "{:?}", t0.elapsed());
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            assert!(!first);
         }
     }
 }

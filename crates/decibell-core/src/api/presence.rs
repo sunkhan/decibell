@@ -141,6 +141,21 @@ pub async fn system_idle_state(args: SystemIdleArgs) -> Result<String, CoreError
     .await
 }
 
+/// Events instead of asking `system_idle_state` on a timer: true when
+/// `SystemIdleChanged` will come for this threshold (Wayland with
+/// ext-idle-notify), false where the state must still be asked for (it also
+/// reports screen lock, which has no event). For a native client; the
+/// Electron renderer keeps asking.
+pub async fn subscribe_system_idle(args: SystemIdleArgs) -> Result<bool, CoreError> {
+    crate::rt::run(async move {
+        let threshold = args.threshold_seconds.max(1);
+        crate::rt::spawn_blocking(move || crate::system_idle::subscribe(threshold))
+            .await
+            .map_err(|e| CoreError::other(e.to_string()))
+    })
+    .await
+}
+
 #[cfg_attr(feature = "napi", napi_derive::napi(object))]
 pub struct SetIdleArgs {
     pub idle: bool,

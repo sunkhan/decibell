@@ -4,7 +4,7 @@
 //! (`useAuthEvents`), `servers.rs` (`useServerEvents`), `connection.rs`
 //! (`useCentralConnectionStatus`), `users.rs` (`userDirectory.ts`); `todo.rs` lists what
 //! the features still to be ported will take, as empty functions with the renderer file
-//! each one ports. **Both matches (here and in `users.rs`) name all 85 variants with no
+//! each one ports. **Both matches (here and in `users.rs`) name all 86 variants with no
 //! wildcard**: a new core event doesn't compile until someone decides where it goes.
 //!
 //! Called by the pump for each item of a batch, inside one `App::update`
@@ -92,6 +92,9 @@ pub fn route(model: &Model, event: CoreEvent, cx: &mut App) {
         E::UserListUpdated(p) => todo::m3::user_list_updated(model, &p, cx),
         E::PresenceDelta(p) => todo::m3::presence_delta(model, &p, cx),
         E::OwnPresence(p) => todo::m3::own_presence(model, &p, cx),
+        // Comes only after `api::presence::subscribe_system_idle`, which the
+        // model doesn't call yet (auto-away still asks `system_idle_state`).
+        E::SystemIdleChanged(_) => {}
         E::FriendListReceived(p) => todo::m3::friend_list_received(model, &p, cx),
         E::FriendActionResponded(p) => todo::m3::friend_action_responded(model, &p, cx),
 

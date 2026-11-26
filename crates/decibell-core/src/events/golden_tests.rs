@@ -617,6 +617,7 @@ fn emit_samples() {
     emit_voice_user_speaking(0, true);
     emit_voice_user_state_changed(1002, false, true);
     emit_voice_input_level(-42.7);
+    emit_system_idle_changed(true, 600);
     emit_voice_ping_updated(23);
     emit_voice_connection_stats(Some(23), 0.1);
     emit_voice_connection_stats(None, 0.0);
@@ -887,6 +888,9 @@ const NOT_LISTENED: &[&str] = &[
     // Electron main reads it (electron/main/addon.ts refreshes the
     // attachment targets); it reaches the renderer too, unheard.
     "session_token_updated",
+    // Only after `system_idle::subscribe`, which the native client calls;
+    // Electron polls `system_idle_state` and never subscribes.
+    "system_idle_changed",
 ];
 
 /// The renderer's listeners (the committed list) against the core's event

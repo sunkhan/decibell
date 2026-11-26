@@ -1114,6 +1114,13 @@
     }
   },
   {
+    "name": "system_idle_changed",
+    "payload": {
+      "idle": true,
+      "thresholdSeconds": 600
+    }
+  },
+  {
     "name": "voice_ping_updated",
     "payload": {
       "latencyMs": 23
