@@ -1415,6 +1415,7 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
                 peer.flush_tail();
             }
             peer.onset_pending = true;
+            peer.concealed_level = 1.0; // what comes next fades in from silence
             // Nothing to play: cold, the sender paused (gate tail /
             // keepalive), or an underrun's PLC expansion ran out.
             if !peer.voice_underrun_logged && peer.voice_jitter.underruns > 0 {
@@ -1493,6 +1494,19 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
             let n = pcm.len() as f32;
             for (i, s) in pcm.iter_mut().enumerate() {
                 let g = from + (to - from) * ((i + 1) as f32 / n);
+                *s = (*s as f32 * g) as i16;
+            }
+            peer.concealed_level = to;
+        } else if peer.concealed_level < 1.0 {
+            // The late packet came: playback resumes from the level the
+            // concealment had faded to, back up across this frame. At full
+            // level straight after a faded frame it stepped by the
+            // difference.
+            let from = peer.concealed_level;
+            peer.concealed_level = 1.0;
+            let n = pcm.len() as f32;
+            for (i, s) in pcm.iter_mut().enumerate() {
+                let g = from + (1.0 - from) * ((i + 1) as f32 / n);
                 *s = (*s as f32 * g) as i16;
             }
         }
@@ -1677,6 +1691,7 @@ pub(crate) fn drain_peer_stream(peer: &mut PeerAudio, cx: &mut StreamDrain<'_>) 
             if frame == Frame::Idle {
                 // Nothing to play: what comes next starts from silence.
                 peer.stream_onset_pending = true;
+                peer.stream_concealed_level = 1.0;
                 if !stream_ring_paced { peer.stream_drain_time = drain_now; }
                 break;
             }
@@ -1703,6 +1718,17 @@ pub(crate) fn drain_peer_stream(peer: &mut PeerAudio, cx: &mut StreamDrain<'_>) 
                 let n = STEREO_FRAME_SIZE as f32;
                 for (i, lr) in pcm.chunks_exact_mut(2).enumerate() {
                     let g = from + (to - from) * ((i + 1) as f32 / n);
+                    lr[0] = (lr[0] as f32 * g) as i16;
+                    lr[1] = (lr[1] as f32 * g) as i16;
+                }
+                peer.stream_concealed_level = to;
+            } else if peer.stream_concealed_level < 1.0 {
+                // Resumed: back up from the concealment's level (see voice).
+                let from = peer.stream_concealed_level;
+                peer.stream_concealed_level = 1.0;
+                let n = STEREO_FRAME_SIZE as f32;
+                for (i, lr) in pcm.chunks_exact_mut(2).enumerate() {
+                    let g = from + (1.0 - from) * ((i + 1) as f32 / n);
                     lr[0] = (lr[0] as f32 * g) as i16;
                     lr[1] = (lr[1] as f32 * g) as i16;
                 }

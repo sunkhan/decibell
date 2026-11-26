@@ -586,3 +586,36 @@ fn a_late_burst_of_voice_is_cut_down_without_a_step() {
         assert_clean(&heard, 1.0, &format!("voice stall of {len} from step {from}"));
     }
 }
+
+/// A short stall (the packets are late, not lost): the receiver conceals,
+/// fading, and the late packets then resume playback. The first real frame
+/// ramps back up from the level the concealment had faded to; at full level
+/// straight after a faded frame it was a step.
+#[test]
+fn late_packets_resume_from_the_concealment_without_a_step() {
+    let mut concealed = 0;
+    // Around a peak of the talker's level (steps 84 to 92).
+    for from in [83usize, 84, 85, 86] {
+        for stall in 2..=6usize {
+            let mut rx = Rx::new();
+            let mut held: Vec<usize> = Vec::new();
+            for _ in 0..140 {
+                let step = rx.step;
+                if (from..from + stall).contains(&step) {
+                    held.push(step);
+                    rx.tick(false);
+                    continue;
+                }
+                for seq in held.drain(..) {
+                    rx.late(seq);
+                }
+                rx.tick(true);
+            }
+            concealed += rx.peer().voice_jitter.expand_frames;
+            let expansions = rx.peer().voice_jitter.expand_frames;
+            println!("stall {stall} from {from}: {expansions} expansions, largest step {:.4} (limit {:.4})", max_step(&rx.heard()).0, clean_step(1.0));
+            assert_clean(&rx.heard(), 1.0, &format!("stall of {stall} from step {from}"));
+        }
+    }
+    assert!(concealed > 20, "the longer stalls were concealed ({concealed} frames)");
+}
