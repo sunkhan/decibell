@@ -49,9 +49,13 @@ if ! command -v nasm >/dev/null 2>&1; then
   ASM_FLAG="--disable-x86asm"
 fi
 
-# Minimal LGPL build: only the encoders + scaler we use. No --enable-gpl
+# Minimal LGPL build: only the encoders + scalers we use. No --enable-gpl
 # (no libx264), so the resulting binary stays LGPL — there is no software
-# encode fallback on Linux (hardware-only: NVENC/VAAPI).
+# encode fallback in this prefix (hardware-only: NVENC/VAAPI; a machine
+# without either uses the renderer's WebCodecs encoder). scale_vaapi is the
+# VAAPI path's BGRA -> NV12 conversion on the GPU (crates/decibell-core/
+# src/media/encoder_vaapi.rs); what each client's prefix needs is listed in
+# crates/decibell-core/tools/ffmpeg-encoders.md.
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
 ./configure \
   --prefix="$PREFIX" \
@@ -69,7 +73,7 @@ PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
   --enable-vaapi \
   --enable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi \
   --enable-hwaccel=h264_vaapi,hevc_vaapi,av1_vaapi \
-  --enable-filter=scale \
+  --enable-filter=scale,scale_vaapi \
   --enable-protocol=file
 
 make -j"$(nproc)"
