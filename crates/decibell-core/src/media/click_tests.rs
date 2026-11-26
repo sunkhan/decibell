@@ -376,3 +376,26 @@ fn deafen_and_undeafen_mid_speech_are_ramps() {
         assert_clean(&heard, 1.0, &format!("deafen at step {at}"));
     }
 }
+
+/// Audit 3: a user's volume dragged while they talk. The gain used to step
+/// at a 20 ms frame boundary ("zipper" noise: a step of the wave's value
+/// times the change); it now ramps across the frame.
+#[test]
+fn a_volume_change_mid_speech_is_a_ramp() {
+    let mut rx = Rx::new();
+    rx.run(40);
+    // A drag: a new gain every few frames, down to a quarter and up to 1.5.
+    let gains = [0.8, 0.55, 0.25, 0.4, 0.9, 1.2, 1.5, 1.1, 0.6, 1.0, 0.3, 1.5];
+    for (i, g) in gains.iter().enumerate() {
+        rx.user_volumes.insert(PEER.to_string(), *g);
+        rx.run(2 + i % 3);
+    }
+    rx.run(20);
+    let heard = rx.heard();
+    // The ramp's own step on top of the wave's: the gain change spread over
+    // a frame, times the wave's peak.
+    let (step, at) = max_step(&heard);
+    let limit = clean_step(1.5) + 1.25 * (TONE_AMP as f32 / 32768.0) / FRAME_SIZE as f32;
+    assert!(step <= limit, "volume drag: a step of {:.4} ({:.0} of 32768) at sample {at}; limit {:.4}", step, step * 32768.0, limit);
+    assert!(heard[heard.len() - 9_600..].iter().any(|s| s.abs() > 0.2), "ends at the last gain (1.5)");
+}

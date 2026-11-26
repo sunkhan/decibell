@@ -62,6 +62,9 @@ pub struct PeerAudio {
     /// empty ring gets a short fade-in so a talkspurt never starts with a
     /// step from digital silence (a 20ms VAD gate opens mid-waveform).
     pub onset_pending: bool,
+    /// The per-user volume the last played frame ended at (None before the
+    /// first): a change ramps from it across the next frame.
+    pub played_gain: Option<f32>,
     /// Last (muted, deafened) forwarded to the UI — used to emit the state
     /// event only when it changes rather than on every audio packet.
     pub last_reported_state: Option<(bool, bool)>,
@@ -110,6 +113,7 @@ impl PeerAudio {
             last_silent_tick: now,
             render_fifo: VecDeque::new(),
             onset_pending: true,
+            played_gain: None,
             last_reported_state: None,
             stream_audio_decoder: None,
             stream_jitter: JitterBuffer::new(),

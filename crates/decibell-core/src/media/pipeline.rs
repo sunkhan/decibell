@@ -1504,8 +1504,21 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
         if !cx.deafened {
             let gain = cx.user_volumes.get(peer.name.as_str()).copied().unwrap_or(1.0);
             let mut f32_frame = [0.0f32; FRAME_SIZE];
-            for (i, &s) in pcm.iter().enumerate() {
-                f32_frame[i] = (s as f32 / 32768.0) * gain;
+            // A changed volume ramps across this frame from the gain the
+            // last one was played at: a step at the frame boundary is a click
+            // per change ("zipper" noise while the slider is dragged).
+            let from = peer.played_gain.unwrap_or(gain);
+            peer.played_gain = Some(gain);
+            if from == gain {
+                for (i, &s) in pcm.iter().enumerate() {
+                    f32_frame[i] = (s as f32 / 32768.0) * gain;
+                }
+            } else {
+                let n = FRAME_SIZE as f32;
+                for (i, &s) in pcm.iter().enumerate() {
+                    let g = from + (gain - from) * ((i + 1) as f32 / n);
+                    f32_frame[i] = (s as f32 / 32768.0) * g;
+                }
             }
             // Talkspurt onset into an empty ring: the sender's VAD
             // gate opened on a 20ms frame boundary, so the waveform
