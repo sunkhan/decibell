@@ -23,6 +23,8 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0017-wayland-request-attention.patch` | `Window::request_attention` on Wayland: an xdg-activation token that names no input, used at once; the compositor marks the window as demanding attention (it never grants focus for such a token). Nothing while the window is active. | The taskbar flash on an incoming call (`FEATURES.md` §9): Wayland's `request_attention` did nothing. |
 | `0018-gpui-activate-with-token.patch` | `Window::activate_window_with_token(token)` (`PlatformWindow::activate_with_token`, defaulting to `activate`): on Wayland, activates with an activation token another process got from the desktop. | A second start of the app hands its `XDG_ACTIVATION_TOKEN` to the running instance, which then may take the focus (single instance). |
 | `0019-windows-clipboard-bitmap.patch` | A picture written to the Windows clipboard also goes out as a `CF_DIB` (32-bit, bottom-up, from the decoded picture), beside the registered "PNG" / "GIF" / "JFIF" formats GPUI wrote. | Programs that paste only bitmaps (Paint, older Office, most native editors) got nothing from "Copy image": GPUI wrote no bitmap format. Windows makes `CF_BITMAP` / `CF_DIBV5` from the `CF_DIB`. |
+| `0020-windows-external-surfaces.patch` | The Direct3D 11 renderer (gpui_windows) draws external surfaces: the twin of `0001` + `0005` with the same shape (`D3d11Surface`, `D3d11SurfaceFrame`, `D3d11SurfaceView`, `SurfaceFit`, `SurfaceColor`), a surface pipeline in `shaders.hlsl`, the renderer's device handed out (`shared_devices()`) and created multithread-protected, the renderer holding the immediate context for each frame, `simulate_device_loss()`. | Watching a stream on Windows: until this patch `draw_surfaces` was an empty function and a decoder had no way to the renderer's device. |
+| `0021-windows-park-vsync-thread.patch` | The Windows vsync thread sleeps while no window asks for a frame, and `PlatformWindow::schedule_frame` / `frame_waker` (which gpui_windows left as no-ops) wake it. | At the pin the thread woke at every vertical blank for as long as the app ran and invalidated every window, so the main thread woke at the refresh rate too, to find nothing to draw: two wakeups per refresh per second at rest (120 at 60 Hz, 560 at 280 Hz) against a target of ≤ 30. The X11 twin is `0004`. |
 
 ## How the patches are applied
 
@@ -707,3 +709,93 @@ before trusting the result.
 `gpui_windows` (Direct3D 11) still ignores surfaces; the matching change, and the interface `decibell-video`
 expects from it, is in `video-design.md` §8.
 `gpui_apple` needs nothing: `Window::paint_surface` with a `CVPixelBuffer` already works there.
+
+## 0020: external surfaces in the Direct3D 11 renderer
+
+`crates/gpui_windows/src/directx_surface.rs` (new, 300 lines), `directx_renderer.rs` +257, `shaders.hlsl` +79,
+`directx_devices.rs` +24, `platform.rs` +2, `gpui_windows.rs` +5, `build.rs` +1. gpui_windows only: the core half
+of `0001` (`PaintSurface::source`, `Window::paint_external_surface`, `Window::request_present`) and the frame
+counters of `0002` were never Linux-specific. **Written on Linux and never run on a GPU**: type-checked for
+`x86_64-pc-windows-msvc` (`tools/win-check.sh`), the HLSL compiled with Wine's `d3dcompiler_47`
+(`tools/win-check.sh --shaders`), then by the Windows Native Check (fxc in its release check, and the `video-probe`
+self-test on the runner's WARP device).
+
+- **The types** are `wgpu_surface.rs` with Direct3D's objects: `D3d11SurfacePlanes { luma, chroma:
+  ID3D11ShaderResourceView, size, texture_size }` (views of an `NV12` texture's two planes, or of an `R8` and an
+  `R8G8` texture; the picture is the texture's top-left part because an `NV12` texture has even dimensions),
+  `D3d11SurfaceFrame { planes, color, device, in_use }`, `D3d11Surface` (`set_frame(frame, tag)`, `clear`,
+  `set_draw_observer`, `picture_size`, `pictures_drawn`, `draws`; the renderer's `acquire(&device)` refuses a
+  picture of another device), `D3d11SurfaceView { surface, fit }`. `SurfaceColor` / `SurfaceMatrix` / `SurfaceFit`
+  are copies of gpui_wgpu's (gpui_windows cannot depend on it); a client names them through one alias module.
+- **Drawing.** `draw_surfaces` resolves each scene surface to its source's newest picture when the frame is drawn,
+  fits it (`fit_surface`, the function of `0005`), writes one 144-byte constant buffer (`SurfaceParams`, slot
+  `b2`) and issues one 4-vertex draw with the planes at `t4` / `t5` and a clamping linear sampler at `s1`: slots no
+  other pipeline of the renderer uses, so nothing has to be bound again. The views are unbound after the batch (a
+  bound view keeps its texture alive). The shader is the WGSL one in HLSL: content mask in the vertex stage, the
+  up-to-4×4-tap box filter for minified pictures, the Y'CbCr matrix from the picture's colour description, corner
+  radii around the painted bounds, straight alpha out (the renderer's blend state, as its sprites).
+- **The device.** `shared_devices() -> Option<D3d11Devices { adapter, device, context }>` is set wherever
+  gpui_windows creates its device (start-up and after a device removal) and cleared when the platform goes
+  headless. There is no device hook: a Direct3D 11 device needs nothing added for video
+  (`D3D11_CREATE_DEVICE_VIDEO_SUPPORT` only makes creation fail on pre-WDDM 1.2 drivers). What it does need is
+  **multithread protection**, turned on at creation (`ID3D11Multithread::SetMultithreadProtected`), before anything
+  can call the context without it: every context call then takes the context's critical section.
+- **One lock.** `D3d11ContextGuard` enters that critical section (`ID3D11Multithread::Enter`, recursive) for a
+  sequence of calls. The renderer holds it around each frame (`draw`: upload, draws, `Present`); FFmpeg's D3D11VA
+  decoders hold it around each decode submission when the application's lock callbacks enter it, and so do the
+  application's own copies (`crates/decibell-video/src/windows/mod.rs`). A frame and a decode submission are never
+  interleaved. Cost: a decoder thread waits while a frame is drawn and presented, and the main thread while a
+  decode is submitted, each well under a millisecond of CPU.
+- **Ordering instead of waiting.** The renderer holds its reference to a picture only while it issues the frame's
+  draws: Direct3D 11 runs a context's commands in the order issued, so a write to the planes issued afterwards is
+  executed after the draw that sampled them, and a draw issued after a picture was published samples the finished
+  picture. No `on_submitted_work_done`, no fence (compare `0001`, where Vulkan queues have no order between them).
+- **Device removal.** gpui_windows already recovers (its vsync thread sees `GetDeviceRemovedReason`, creates
+  devices, every window rebuilds its renderer: the surface pipeline with it). `simulate_device_loss()` makes the
+  same happen on request, for tests.
+- **Not in it** (compare `0007`): the Direct3D renderer does not keep the frame it built. A present of an unchanged
+  scene maps and rewrites its instance buffers (`upload_scene_buffers`), as gpui_windows always did; measure
+  before porting `0007`'s retained frames. Nor is there a frame capture for tests.
+
+Upstream: as `0001` + `0005`, which this completes for the third renderer.
+
+## 0021: the Windows vsync thread parks when idle
+
+`crates/gpui_windows/src/vsync.rs` +55, `platform.rs` +14, `events.rs` +20, `window.rs` +14,
+`direct_manipulation.rs` +28, `directx_surface.rs` +1. **Reasoned from the source, never run on a desktop** (the
+Windows Native Check samples the threads' context switches on its runner: `idle.log`).
+
+What woke at rest, at the pin (`platform.rs`, `begin_vsync_thread`): a thread named `VSyncProvider` blocks in
+`DwmFlush` until each vertical blank, then calls `RedrawWindow(.., RDW_INVALIDATE)` on every window; the
+resulting `WM_PAINT` wakes the main thread, whose `draw_window` asks GPUI for a frame, and GPUI answers that
+nothing is dirty. Per second at rest: one wakeup of each thread per refresh, whether or not anything changed.
+Nothing else in gpui_windows is periodic: the message loop blocks in `GetMessageW`, the dispatcher's timers are
+one-shot thread-pool timers, the size / move timer exists only inside the modal loop.
+
+The patch gives the thread a demand flag (`vsync.rs`: `request_vsync`, `wait_for_frame_demand`):
+
+- The thread takes the flag at the top of each turn. Set: it waits for the blank and invalidates the windows as
+  before. Unset: it parks (`std::thread::park`) until `request_vsync` unparks it. Raising the "parked" flag and
+  re-reading the demand flag before parking, both `SeqCst`, closes the window between the check and the park.
+- Demand is set by: `PlatformWindow::schedule_frame` and the invalidator's `frame_waker` (now implemented for
+  Windows: GPUI's two ways of saying a window wants a frame — a view was notified, a present was requested, a
+  next-frame callback was queued, a throttled frame has to be retried, a scene animation runs); every drawn frame
+  (one more blank: presenting after high-rate input and recovery follow a frame without a new request, the rule of
+  `0004`); a frame request that arrived while a draw was on the stack; a forced render; a new window; a failed
+  swap chain resize (the thread recreates the devices); `simulate_device_loss`; stopping the thread.
+- **Touchpad gestures.** Direct Manipulation delivers a precision touchpad's pan and its inertia only from
+  `IDirectManipulationUpdateManager::Update`, which gpui_windows calls from `draw_window`, i.e. once per blank,
+  and a gesture sends the window no message of its own after the first hit test. So the thread is kept running
+  while the viewport is `RUNNING` or `INERTIA`, or the contact given to it is still down
+  (`DirectManipulationHandler::is_active`: `GetStatus`, and `GetPointerInfo` of the contact).
+- Demand is process-wide, not per window: the tick invalidates every window, as before. A window that had no
+  demand answers "nothing to draw" on a main thread that is awake anyway.
+
+What parking defers, and why that is acceptable: the per-blank `GetDeviceRemovedReason` check (a removal is found
+at the next frame anything asks for; the video crate asks for a present when a decoder reports the device gone)
+and the per-blank visibility check that reports cloaking (a window moved to another virtual desktop gets no
+message; its `WindowVisibility` is corrected at the next frame). `WM_PAINT` from the system (uncovering, resizing)
+never came from this thread and is unchanged.
+
+Expected at rest: 0 wakeups of `VSyncProvider` and of the main thread from this path. Upstream: yes; macOS
+(`metal_frames.wake()`) and Wayland already work this way, and GPUI's core already calls both hooks.
