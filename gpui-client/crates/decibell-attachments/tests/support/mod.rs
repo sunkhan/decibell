@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use base64::Engine as _;
 use decibell_attachments::{AttachmentTarget, Attachments, PinnedTls};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -25,19 +24,28 @@ pub fn sha256_hex(b: &[u8]) -> String {
     Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn pem_der(pem: &str) -> Vec<u8> {
-    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-    base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+/// The mock server's certificate and key: self-signed, generated once per test process (no key
+/// file in the repository). A child process that talks to its parent's mock gets the parent's
+/// fingerprint through `DBA_FP` (tests/bigfile.rs).
+fn cert_der() -> &'static (Vec<u8>, Vec<u8>) {
+    static CERT: std::sync::OnceLock<(Vec<u8>, Vec<u8>)> = std::sync::OnceLock::new();
+    CERT.get_or_init(|| {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        (cert.der().to_vec(), key.serialize_der())
+    })
 }
 
 pub fn test_cert() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
-    let cert = pem_der(include_str!("test-server.crt"));
-    let key = pem_der(include_str!("test-server.key"));
-    (CertificateDer::from(cert), PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))
+    let (cert, key) = cert_der();
+    (CertificateDer::from(cert.clone()), PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.clone())))
 }
 
 pub fn test_cert_fingerprint() -> String {
-    sha256_hex(test_cert().0.as_ref())
+    std::env::var("DBA_FP").unwrap_or_else(|_| sha256_hex(&cert_der().0))
 }
 
 /// Exact-pin verifier with core's contract (`CERT_MISMATCH:host:port:fp`). TEST ONLY: the app

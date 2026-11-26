@@ -1785,6 +1785,7 @@ dependencies = [
  "hyper-util",
  "image",
  "log",
+ "rcgen",
  "serde",
  "serde_json",
  "sha2 0.10.9",

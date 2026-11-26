@@ -57,6 +57,7 @@ fn big_sealed_transfer_streams() {
                 .env("DBA_PORT", mock.addr.port().to_string())
                 .env("DBA_DIR", &dir)
                 .env("DBA_SHA", &digest)
+                .env("DBA_FP", test_cert_fingerprint())
                 .output()
                 .unwrap()
         })
