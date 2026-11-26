@@ -189,7 +189,9 @@ fn start(
         (Mode::App, app) => {
             let app = app.context("the app's profile was not claimed")?;
             let model = crate::app::init_model(args.theme, Some(app.profile.clone()), cx);
-            crate::app::start_core(&model, cx);
+            // `--check`: a self-test's signed-in child; its sounds never reach the real output.
+            let cues = crate::audio::CueOutput::from_env(args.check.is_some());
+            crate::app::start_core(&model, cues, cx);
             #[cfg(feature = "dev-local")]
             {
                 crate::dev::print_markers(cx);

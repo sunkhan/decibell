@@ -18,6 +18,7 @@
 
 pub mod app;
 pub mod args;
+pub mod audio;
 pub mod boot;
 pub mod joins;
 pub mod copy_image;

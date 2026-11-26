@@ -3,8 +3,8 @@
 //!
 //! Wired now: the model and the core (keychain-backed at-rest key), the appearance from
 //! `ui.json` and then `config.json`, the shell's registry and toast mirror, the idle source,
-//! a subscriber for the sound / attention cues (silent until the audio layer exists), and in
-//! development builds (`dev-local`) `--login` and the perf control pipe.
+//! the interface sounds and the microphone test ([`crate::audio`]: the model's cues played by
+//! the core), and in development builds (`dev-local`) `--login` and the perf control pipe.
 //!
 //! The video crate's glue (frames, keyframes, frame sinks, decode caps) is [`crate::video`]; the
 //! native encoder probe runs when Go Live first opens or the first voice session starts
@@ -15,14 +15,11 @@
 //! `decibell_platform`, installed by `boot` once the main window is open.
 //!
 //! Named TODOs for the features that own them:
-//! - TODO(audio): play `Cue::Play` / ring on `Cue::StartRing` (assets/sounds).
 //! - TODO(hotkeys): window key events → `hotkeys.key`, blur → `window_blurred` (M3.2).
-//! - TODO(devices): audio hot-plug → `devices.hotplug`.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use decibell_model::live::Cue;
 use decibell_model::local_key::KeychainKey;
 use decibell_model::stores::settings::SettingsEvent;
 use decibell_model::{CoreOptions, Model};
@@ -65,9 +62,6 @@ pub fn init_model(theme_override: Option<ThemeId>, profile: Option<std::path::Pa
         apply(Some(id), text, row, cx);
     })
     .detach();
-
-    // Sounds and attention: the audio layer is a later feature's (TODO(audio) above).
-    cx.subscribe(&model.live.cues, |_, cue: &Cue, _| log::debug!("[cues] {cue:?} (no audio layer yet)")).detach();
     model
 }
 
@@ -84,13 +78,17 @@ fn local_key_provider() -> Box<dyn decibell_model::local_key::LocalKeyProvider> 
 }
 
 /// Start the core (once per process) the way the model expects, then what follows it.
-pub fn start_core(model: &Model, cx: &mut App) {
+/// `cues`: where the interface sounds may play (a self-test's check never reaches the real
+/// output device: [`crate::audio::CueOutput`]).
+pub fn start_core(model: &Model, cues: crate::audio::CueOutput, cx: &mut App) {
     let user_data_dir = decibell_model::core::default_user_data_dir().ok();
     // Auto-away: the platform's idle source (Windows: GetLastInputInfo; elsewhere the core's:
     // Wayland's ext-idle-notify, GNOME's IdleMonitor, "unsupported" on X11).
     let source = decibell_platform::idle::source();
     model.live.presence.auto_away.update(cx, |a, cx| a.set_source(source, cx));
     crate::video::install(model, cx);
+    // The interface sounds and Settings → Audio's microphone test, both the core's.
+    crate::audio::install(model, cues, cx);
     Model::start_core(
         cx,
         CoreOptions {
