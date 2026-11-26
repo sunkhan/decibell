@@ -673,3 +673,64 @@ panel's popovers, the incoming call) and the user panel's voice controls (`regis
   passphrase `decibell-m3-test-passphrase`), everyone muted and deafened before joining. The headless `stream-file`
   step and `tools/perf/streambot.sh` stream `.dbv` recordings into a channel through the real path.
   `DECIBELL_VOICE_TRACE=1` logs every render of the voice views (which view drew a frame).
+
+## Search and channel header (`decibell-search`)
+
+The text channel header's search box and the results panel (`features/search/`, spec
+`docs/superpowers/specs/2026-10-14-message-search-design.md`). The header itself is the shell's
+(`server_pane.rs`: `#`, name, the E2EE badge, the topic in `tracking-normal`, the members toggle, then the
+244 px search slot with `ml-4`, centred over the 260 px members column); `decibell_search::init(cx)` fills
+`Slot::HeaderSearch` with [`SearchBox`] and `Slot::RightPanel` with [`RightPanel`], and binds Ctrl+F / ⌘F
+(`FocusSearch` → the store's focus nonce → the box that is drawn).
+
+- **The search is the model's** (`decibell_model::chat::search::SearchStore`: request, supersede by `seq`,
+  refusals retried after `retry_after_ms` up to three times, the 8 s "no answer", paging, the per-community
+  drafts). The views only read it and call `run` / `set_sort` / `load_more` / `retry_search` / `close` /
+  `set_jumped`; `actions::chat::go_to_message` is Jump. **Nothing about a search is stored on the device**:
+  the drafts live in the store's memory, nothing goes to `ui.json` (`search-nothing-stored` greps the profile).
+- **The grammar** (`tokens.rs`: `trailing_token`, `resolve_token`, `chip_tokens`, `on_text`, …; `menu.rs`: the
+  menu's rows; `calendar.rs`; `highlight.rs`) is the renderer's, checked against the real TypeScript:
+  `tools/electron-captures/pages/search-grammar.tsx` runs `searchTokens.ts`, `searchQuery.ts`, `highlight.tsx`
+  and `DatePicker` on a table of inputs into `src/renderer_grammar.json`, which `tests/renderer_grammar.rs`
+  compares with the ports and the model's (`fold`, `search_words`, `parse_day`, `with_filter`,
+  `to_search_args`). Known difference: the model's `fold` maps stroked Latin letters (Đ, Ł, Ø…) to their
+  base and keeps Greek accents; the renderer (NFD) keeps đ, ł, ø and drops the accents (`FOLD_DIFFERS`).
+- **The box** is a cached view: a key re-renders it and its field (`InputState`, one line, `line-height:
+  normal` from the face's rounded ascent + descent, as Chromium centres an `<input>`'s text). Chips are
+  elements before the field in a row that scrolls sideways (`overflow-x`) with the box's ground fading over
+  a cut-off chip; Backspace at the field's start removes the last chip. Its keys run in the capture phase
+  (`capture_key_down`, and `capture_action` for Tab / Shift+Tab, which `decibell_ui` binds to focus moves),
+  so the field never sees Escape, Enter, the arrows in a picker. The menu is `deferred`, right-aligned 6 px
+  under the box, never takes the focus (`capture_any_mouse_down` + `prevent_default`); a press outside the
+  box and its menu blurs the field (`on_mouse_down_out`), as a page's click does. `from:` asks the server's
+  member search (`search_members`, 250 ms debounce, seqs apart from other member searches) for offline
+  members past the loaded roster.
+- **The results** ([`ResultsView`], cached, alive only while the panel shows: closing drops it and its rows)
+  are a windowed `ScrollArea`: every result's card height is computed when its page arrives (one paragraph
+  layout at the column's width, then dropped; `result_row::card_height`), only the rows on screen keep their
+  bodies. Heights reproduce the CSS: the scrollbar's 10 px decide the width (`max_offset` of the last frame),
+  a channel heading's `mt-3` collapses with the card above's `mb-1.5`. A body is one `decibell-text`
+  paragraph built from the message's rich-text document with the matched words as `<mark>` chips
+  (`bg-accent-mid text-text-bright rounded-sm`), `line-clamp-6`; file names are marked too (`runs::Runs`, a
+  label of several styled runs). The next page is asked for when the end is 400 px away (the renderer's
+  sentinel). Below 1024 px (`is_narrow`) the panel floats 360 px wide over the chat; Jump closes it there.
+- **Differences from the renderer** (listed, not hidden): no `tabular-nums` (decibell-text has no font
+  features); result bodies draw code blocks and display maths as monospace text in the paragraph; media
+  tiles are the placeholder (dark tile, or the kind's icon when the renderer has no source) until the
+  attachments crate draws pictures here; the disabled "Relevant" segment has no title tooltip (the kit's
+  `Segment` has none); Escape closes the panel when the focus is nowhere, in the panel or on the message list
+  (GPUI can't tell whether the focused element is a text field, which the renderer exempts); menu text of
+  13 px sits up to 1 px higher than Chromium's (line boxes of 19.5 px).
+- **GPUI at the pin re-renders every cached view under a dirty one**: a key dirties the views up to the root,
+  so typing in the box lays the message list out again (`search-typing-cost` fails on that count until GPUI
+  patch 0013, "keep nested view caches", is in; frames per key are 1 either way).
+- **Screens** (`header-text`, `header-encrypted`, `header-long-topic`, `search-box-empty`, `search-box-suggest`
+  (`-from`, `-in`, `-has`), `search-box-chips`, `date-picker`, `search-results`, `-empty`, `-refused`,
+  `-narrow` at `--size 900x700`) are the shell on the chat fixture plus `decibell_search::fixture` (a store
+  whose sender goes nowhere: `SearchStore::set_sender`; the answer routed through the real router; "today"
+  pinned with `format::PinnedToday`). `decibell-search-fixture <dir>` exports them for the Electron pages
+  (`pages/_search.tsx`: the same events, the draft, the search and its answer, `Date` pinned to the same day).
+- **Self-tests** (`search-*`, `header-members-toggle`) run the app as a child signed in as perf1 against the
+  local stack, read-only, pacing searches to the community's bucket (6, then 1 a second). Probes inside
+  padded elements go through `crate::probe` (the shell's canvas has no insets: in a padded flex container
+  it would sit after the padding).
