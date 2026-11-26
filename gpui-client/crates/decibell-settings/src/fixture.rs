@@ -27,6 +27,9 @@ use crate::tabs::TabId;
 pub const NOW: i64 = 1_764_000_000;
 const DAY: i64 = 86_400;
 
+/// The OS Downloads folder the screens show.
+pub const DOWNLOADS: &str = "/home/perf1/Downloads";
+
 pub const FINGERPRINT: &str = "K7QM 2XRD 5FTA LW4E HB3N P6CZ U7VY D2GS 5JMR TQ7K XE4W 3NAF";
 
 /// What a screen shows.
@@ -176,8 +179,9 @@ pub fn apply(stage: Stage, cx: &mut App) -> Model {
         h.staged = Staged {
             open_rename: stage == Stage::Rename,
             record_first: stage == Stage::KeybindsRecording,
-            meter_level: Some(-28.),
+            meter_level: None,
             encoder_labels: Some(encoder_labels()),
+            downloads_default: Some(DOWNLOADS.into()),
         };
     });
 
@@ -289,6 +293,6 @@ pub fn json(stage: Stage) -> serde_json::Value {
             Stage::Password => "password",
             _ => "",
         },
-        "downloadsDefault": crate::tabs::network::default_download_dir().display().to_string(),
+        "downloadsDefault": DOWNLOADS,
     })
 }

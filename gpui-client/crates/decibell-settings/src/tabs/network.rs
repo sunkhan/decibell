@@ -199,7 +199,11 @@ impl NetworkTab {
             upload,
             download,
             nudge: 0,
-            default_dir: default_download_dir().display().to_string(),
+            default_dir: crate::hooks::SettingsHooks::get(cx)
+                .staged
+                .downloads_default
+                .clone()
+                .unwrap_or_else(|| default_download_dir().display().to_string()),
             _subscriptions: subscriptions,
             _watch: watch,
         }

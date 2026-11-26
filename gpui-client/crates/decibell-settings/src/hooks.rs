@@ -47,6 +47,8 @@ pub struct Staged {
     pub record_first: bool,
     pub meter_level: Option<f32>,
     pub encoder_labels: Option<std::collections::HashMap<decibell_model::live::voice::codecs::VideoCodec, SharedString>>,
+    /// The OS Downloads folder as the screens show it (not this machine's).
+    pub downloads_default: Option<String>,
 }
 
 /// Installed by [`crate::init`] (and by the screens) if the app hasn't yet.
