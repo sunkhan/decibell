@@ -192,7 +192,8 @@ stack in an isolated profile (GPUI design §3), never `/opt/Decibell`, which sig
 instance, crashpad included (`--database=<profile>/…`), carries the profile path, so match on it:
 
 ```sh
-P="$HOME/.cache/decibell-dev/electron-profile"        # electron-local.sh's profile (DECIBELL_DEV_DIR)
+P="$HOME/.cache/decibell-dev/electron-profile/user-data"   # electron-local.sh's --user-data-dir (not the profile
+                                                         # root: its throwaway keyring daemon carries that path)
 tools/perf/electron-local.sh run && tools/perf/electron-local.sh open '<server>' '<channel>'
 tools/perf/winctl.sh unfocus "$(tools/perf/electron-local.sh pid)"
 tools/perf/measure.sh --match "$P" --settle 120 --duration 300 --focus-log --label "electron <ver> idle channel, linux"
@@ -215,6 +216,66 @@ processes, 80 threads, a page that updates a counter once a second), unfocused: 
 (private dirty 89, PSS 283, VmRSS 709 of which shmem 37), 188 context switches / s, wakeups own 51 / s + NVIDIA
 unnamed 130 + `[vk…]` 4, frames 1.00 / s; startup visible 657 ms median (639–678). kcalc visible 55.6 ms (Wayland),
 glxgears 47.6 ms (XWayland). `/opt/Decibell` 416.8 MB apparent, 80 files.
+
+### Taking the client baseline (`scenarios.sh`)
+
+```sh
+tools/dev/local-stack.sh up                       # set up + seeded once (tools/dev/README.md); `status` to check
+tools/perf/electron-local.sh build                # first time ~4 min (release addon), then seconds
+tools/perf/electron-local.sh run && tools/perf/electron-local.sh signin    # first time only (saved sign-in)
+tools/perf/scenarios.sh electron all              # ~24 min; results/electron-baseline.md
+tools/dev/local-stack.sh down
+```
+
+`scenarios.sh <client> <scenario|all> [--quick]` runs, for any client with a `clients/<client>.sh` (the hooks:
+launch, ready, goto-home, goto-channel, minimize, stop, …; `clients/electron.sh` documents them, `clients/gpui.sh` is the
+stub): `install-size` (the installed app, measured only, and the build), `startup` (1 discarded + 5 warm runs with
+the saved sign-in, from Home), `idle-home` (window focused), `idle-channel` (Daily Gaming #general, the 10k-message
+fixture, opened through CDP so nothing has keyboard focus; the desktop focused with `winctl unfocus`, the client
+visible: the headline), `idle-channel-hidden` (the same, minimized), `scroll` (`electron-scroll.mjs`: 1000 px/s for
+6 s, ×3, window activated, missed vsyncs against the refresh of the output the window is on). Each idle scenario
+places the window at 1280×800 in the centre of the primary output, settles 120 s and takes 300 samples at 1 s with
+`--focus-log --include-compositor`. Every scenario writes `results/<client>-<scenario>-<time>/` (the tool's output +
+`scenario.json`: placement, focus mode, the client's display server, machine facts, the load at the start); the
+table goes to `results/<client>-baseline.md`. `--quick` (15 s settle, 30 samples, 2 startup runs, 1 scroll run; ~4
+min, `-quick` suffixes, `results/<client>-baseline-quick.md`) is for checking the pipeline, not for numbers;
+`scenarios.sh <client> table` rebuilds the table from the newest results.
+
+**Quiet machine**: no compile, download, update, video, game or animated page running; nothing that opens windows
+(a test that spawns windows takes focus and covers the client; the focus log shows it as `focused` < 100 % on
+idle-home or as another `active_class`); don't use the mouse or keyboard while it runs (idle-home and scroll activate
+the client, idle-channel focuses the desktop). The runner warns when the 1-minute load average is above 2 at the
+start of a scenario and records the busiest processes. Rough durations: startup 1 min, each idle scenario 7.5 min,
+scroll 1 min.
+
+**What `electron-local.sh` isolates** (header of the script for details): a git worktree of the current commit at
+`~/.cache/decibell-dev/electron-baseline` (`build --ref <commit>` moves it; node_modules and the static FFmpeg are
+symlinked from the main tree; own `CARGO_TARGET_DIR`), packaged with `electron-builder --linux dir` exactly as shipped
+(asar, unpacked addon) minus `sentry.json` / `gifs.json` / `package-type`; the profile in
+`~/.cache/decibell-dev/electron-profile/` (`user-data/` = `--user-data-dir`: Chromium profile, `config.json` with the
+saved sign-in, `cert_pins.json`, `e2ee/`; `keyring/`: a throwaway gnome-keyring on a private session bus, so
+safeStorage never reaches the desktop's KWallet / keyring); `xdg-settings` shimmed (the app re-registers the
+`decibell://` handler on every start). Before every launch it proves the addon honours `DECIBELL_CENTRAL` (loads it
+in an empty network namespace with a listener on 127.0.0.1:18080), and after it checks the sockets (central
+127.0.0.1:18080, nothing to the live address; a wrong pin for the live central in `cert_pins.json` would stop a
+sign-in there anyway). `stop` reports whether the owner's profile, keyrings or `mimeapps.list` changed.
+
+**Not comparable to the installed app, by construction**: the installed `/opt/Decibell` also runs Sentry (DSN baked:
+main + renderer SDKs), checks GitHub for updates 5 s after load (`resources/package-type` = deb), and keeps its
+safeStorage key in KWallet; this build has none of that and uses libsecret on a private bus (no portal, a11y or
+notification services there). The idle and scroll scenarios run with a CDP port open (no client attached while
+measuring); startup runs without. Electron 33 runs through **XWayland** (the app's `ozone-platform-hint=auto` switch
+comes too late; the shipped `.desktop` passes no flags), so composition goes through Xwayland and Chromium sees no
+occlusion: a covered window keeps drawing. Electron itself contacts Google: the component updater
+(`update.googleapis.com`, castlabs' Widevine component) within the first second of every launch, and the
+spellchecker downloads `en-US-10-1.bdic` once per new profile.
+
+**The breathing glow**: the active server tile's `ActiveTileGlow` is an infinite opacity animation, composited but
+still one frame per vsync, so with a channel open and the window visible the client draws at the panel's refresh
+(quick run: ~275 frames / s, ~15 % of one core at 280 Hz). On Windows a covered window is hidden by Chromium's
+occlusion tracking and stops drawing. The Windows baseline's idle-channel run (0.58 %, "another window focused")
+can only have had the client covered (a visible client would have drawn the glow at 279 Hz), so its Linux
+counterpart is `idle-channel-hidden`; `idle-channel` is what a visible, unfocused client costs on Linux.
 
 ## Who wakes up
 
