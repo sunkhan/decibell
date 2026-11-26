@@ -1068,6 +1068,26 @@ impl MessageList {
         Some(point(self.bounds.left() + px(x + line.width * fraction), self.bounds.top() + px(row_y + y + line.height / 2.)))
     }
 
+    /// The window position of the middle of row `id`'s hover action (shown while the row is
+    /// hovered), for pointer-driven tests.
+    pub fn action_point(&self, id: i64, action: RowAction, cx: &App) -> Option<Point<Pixels>> {
+        let index = self.core.index_of_id(id)?;
+        let layout = self.core.entries[index].layout.as_ref()?;
+        let (_, [x, y, w, h]) = layout.actions(self.width, self.can_delete(index, cx), true, true).find(|(a, _)| *a == action)?;
+        let row_y = self.row_screen_y(id)?;
+        Some(point(self.bounds.left() + px(x + w / 2.), self.bounds.top() + px(row_y + y + h / 2.)))
+    }
+
+    /// The `title=` tooltip showing now.
+    pub fn tooltip(&self) -> Option<SharedString> {
+        self.tip.as_ref().filter(|tip| tip.at.is_some()).map(|tip| tip.label.clone())
+    }
+
+    /// The row whose entrance is running, by id.
+    pub fn fading(&self, cx: &App) -> Option<i64> {
+        self.fade_now(Self::now(cx)).map(|(index, ..)| self.core.entries[index].message.id)
+    }
+
     pub fn scroll_range(&self) -> (f64, f64) {
         self.core.scroller.range()
     }

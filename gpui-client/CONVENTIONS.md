@@ -297,7 +297,8 @@ in short:
   `decibell --check chat-live --login perf2`: `#general` paged back 2,000 messages by scrolling, 0 px per page,
   a jump, the present), the check `chat-copy` (`DECIBELL_COPY=<channel>:<from>[@offset]:<to>[@offset]`, compared
   with `DECIBELL_COPY_EXPECT`, a file of the Electron client's clipboard for the same selection) and the
-  `scroll` verb of the dev control pipe (`tools/perf/scenarios.sh gpui scroll`).
+  `scroll` verb of the dev control pipe (`tools/perf/scenarios.sh gpui scroll`). `chat-hover` (fixture): a hover
+  action's tooltip after its delay, no menu on a right click, the last row's entrance ending in idle.
 - **Copy** is what the Electron client's clipboard holds for the same selection (`RowLayout::copy_text`,
   `CopyText`, `decibell_richtext::plain::as_copied_range`; pinned by unit tests to strings read back from its
   clipboard): `user-select: none` parts (avatar, quoted reply, day divider, a grouped row's hover time) copy

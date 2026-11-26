@@ -1541,7 +1541,10 @@ mod tests {
         Arc::new(message)
     }
 
-    fn copy(rows: &[(Option<(&str, &str)>, Arc<Message>, bool)]) -> String {
+    /// A row of a copy: (name, time) of a row that opens a group, the message, "(edited)".
+    type CopyRow<'a> = (Option<(&'a str, &'a str)>, Arc<Message>, bool);
+
+    fn copy(rows: &[CopyRow<'_>]) -> String {
         let mut out = CopyText::default();
         for (header, message, edited) in rows {
             whole_row_copy(*header, message, *edited, &mut out);

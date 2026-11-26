@@ -287,3 +287,32 @@ impl Document {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn copied(src: &str) -> String {
+        let doc = crate::parse(src, &crate::ParseOptions::default());
+        as_copied_range(&doc, src, TextPos { span: 0, offset: 0 }, TextPos { span: doc.spans().len(), offset: 0 })
+    }
+
+    /// Strings read back from the Electron client's clipboard after copying these messages
+    /// (the local stack's `#general` 9431, 9433, 9439, 9441).
+    #[test]
+    fn copies_as_the_electron_clipboard_holds_them() {
+        assert_eq!(copied("How wow `fps=120` how lobby"), "How wow fps=120 how lobby");
+        assert_eq!(
+            copied("Win why queue frame tamam what:\n```sh\ncargo test --lib\nnpx napi build --platform\n```"),
+            "Win why queue frame tamam what:\nsh\n\ncargo test --lib\nnpx napi build --platform"
+        );
+        // Twemoji draws an inline SVG with no text: the emoji copies nothing.
+        assert_eq!(copied("🎮😂"), "");
+        assert_eq!(copied("Voice when 🎮"), "Voice when ");
+        // A fence without a tag the code block knows: its header says "code".
+        assert_eq!(copied("```\nplain\n```"), "code\n\nplain");
+        // As displayed keeps the emoji (previews, reply snippets).
+        let src = "Voice when 🎮";
+        assert_eq!(as_displayed(&crate::parse(src, &crate::ParseOptions::default()), src), "Voice when 🎮");
+    }
+}

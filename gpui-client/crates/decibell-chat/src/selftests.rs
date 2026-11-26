@@ -39,6 +39,7 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "(the regional test's child; --screen main-server) prints a header time, a day divider and the member list's count as drawn",
             run: |cx| Box::pin(regional_read(cx)),
         },
+        SelfTest { name: "chat-hover", about: "an action's title shows after 500 ms and goes with the pointer; a right click on a message opens no menu; a live last row fades up in 300 ms, then nothing draws", run: |cx| Box::pin(hover(cx)) },
         crate::live::selftest(),
     ]
 }
@@ -597,6 +598,69 @@ async fn scroll_spec_in(h: &Harness) -> Result<()> {
         source: Default::default(),
     }))?;
     ensure!(h.with(|list, cx| (list.scroll_position(cx), list.is_animating()))? == (before - 37., false), "a precise delta moves at once, unanimated");
+    Ok(())
+}
+
+async fn hover(cx: TestCx) -> Result<()> {
+    let h = Harness::open(&cx, Which::General)?;
+    let result = hover_in(&h).await;
+    h.close();
+    result
+}
+
+async fn hover_in(h: &Harness) -> Result<()> {
+    h.rest().await?;
+    // A row on screen that can be replied to: hover it, then its Reply button.
+    let id = h.with(|list, _| list.visible_ids().into_iter().rev().find(|id| *id > 0 && list.body_point(*id, 0.5).is_some()))?.context("a row with text on screen")?;
+    h.mouse_move(h.with(|list, _| list.body_point(id, 0.5))?.context("its body")?, false)?;
+    h.rest().await?;
+    let reply = h.with(|list, cx| list.action_point(id, crate::row::RowAction::Reply, cx))?.context("the Reply action")?;
+    h.mouse_move(reply, false)?;
+    let started = Instant::now();
+    h.cx.sleep(Duration::from_millis(350)).await;
+    ensure!(h.with(|list, _| list.tooltip())?.is_none(), "the tooltip waits its delay");
+    let mut shown = None;
+    while started.elapsed() < Duration::from_secs(2) {
+        if let Some(label) = h.with(|list, _| list.tooltip())? {
+            shown = Some((label, started.elapsed()));
+            break;
+        }
+        h.cx.sleep(Duration::from_millis(10)).await;
+    }
+    let (label, after) = shown.context("no tooltip on the Reply action")?;
+    ensure!(label.as_ref() == "Reply" && after >= Duration::from_millis(480), "the Reply action's title, after 500 ms: {label:?} after {after:?}");
+    h.cx.log(format_args!("\"{label}\" after {} ms", after.as_millis()));
+    // The pointer back on the body: the tooltip goes.
+    h.mouse_move(h.with(|list, _| list.body_point(id, 0.5))?.context("its body")?, false)?;
+    h.rest().await?;
+    ensure!(h.with(|list, _| list.tooltip())?.is_none(), "the tooltip goes with the pointer");
+
+    // A right click on the text: no menu of the list's own (the renderer has none).
+    let body = h.with(|list, _| list.body_point(id, 0.5))?.context("its body")?;
+    h.input(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position: body, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }))?;
+    h.input(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position: body, modifiers: Modifiers::default(), click_count: 1 }))?;
+    h.rest().await?;
+    let menu = h.cx.update(|_, cx| decibell_model::Model::global(cx).overlays.read(cx).context_menu.is_some())?;
+    ensure!(!menu, "a right click on a message's text opens no menu");
+
+    // A message arriving at the bottom fades up, and then nothing draws.
+    h.with(|list, cx| list.jump_to_present(cx))?;
+    h.rest().await?;
+    h.mouse_move(point(px(1.), px(1.)), false)?;
+    h.rest().await?;
+    let before = h.cx.frames()?;
+    h.live(30_000, "a live message at the bottom fades up")?;
+    h.cx.sleep(Duration::from_millis(60)).await;
+    ensure!(h.with(|list, cx| list.fading(cx))? == Some(30_000), "the new last row fades up");
+    h.cx.sleep(Duration::from_millis(400)).await;
+    ensure!(h.with(|list, cx| list.fading(cx))?.is_none(), "the entrance ends");
+    let during = h.cx.frames()?.since(before);
+    h.rest().await?;
+    let settled = h.cx.frames()?;
+    h.cx.sleep(Duration::from_secs(1)).await;
+    let after = h.cx.frames()?.since(settled);
+    h.cx.log(format_args!("the entrance: {} frames drawn; then {} in 1 s", during.drawn, after.drawn));
+    ensure!(during.drawn >= 3 && after.drawn == 0, "the entrance draws while it runs, then nothing ({} then {})", during.drawn, after.drawn);
     Ok(())
 }
 

@@ -76,6 +76,46 @@ fn stack() -> Result<Option<Stack>> {
     Ok(reachable.then_some(Stack { central, password }))
 }
 
+/// A private session bus with nothing on it, for as long as it is held: the child's at-rest key
+/// then can't reach the desktop's keyring (a throwaway profile would leave an item there).
+struct EmptyBus {
+    pid: u32,
+    address: String,
+}
+
+impl EmptyBus {
+    fn start(dir: &std::path::Path) -> Result<EmptyBus> {
+        let socket = dir.join("bus");
+        let config = dir.join("bus.conf");
+        std::fs::write(
+            &config,
+            format!(
+                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><type>session</type><listen>unix:path={}</listen>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>"#,
+                socket.display()
+            ),
+        )?;
+        let out = Command::new("dbus-daemon")
+            .arg(format!("--config-file={}", config.display()))
+            .args(["--fork", "--print-pid=1", "--print-address=1"])
+            .output()
+            .context("starting dbus-daemon")?;
+        ensure!(out.status.success(), "dbus-daemon: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        let address = lines.next().context("dbus-daemon printed no address")?.to_string();
+        let pid = lines.next().and_then(|l| l.trim().parse().ok()).context("dbus-daemon printed no pid")?;
+        Ok(EmptyBus { pid, address })
+    }
+}
+
+impl Drop for EmptyBus {
+    fn drop(&mut self) {
+        let _ = Command::new("kill").arg(self.pid.to_string()).status();
+    }
+}
+
 async fn parent(cx: TestCx) -> Result<()> {
     let Some(stack) = stack()? else {
         cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
@@ -83,15 +123,20 @@ async fn parent(cx: TestCx) -> Result<()> {
     };
     let profile = std::env::temp_dir().join(format!("decibell-chat-live-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&profile);
-    std::fs::create_dir_all(&profile)?;
-    let result = run_child(&cx, &stack, &profile).await;
+    std::fs::create_dir_all(profile.join("bus"))?;
+    let result = match EmptyBus::start(&profile.join("bus")) {
+        Ok(bus) => run_child(&cx, &stack, &profile.join("profile"), &bus.address).await,
+        Err(e) => Err(e),
+    };
     let _ = std::fs::remove_dir_all(&profile);
     result
 }
 
-async fn run_child(cx: &TestCx, stack: &Stack, profile: &std::path::Path) -> Result<()> {
+async fn run_child(cx: &TestCx, stack: &Stack, profile: &std::path::Path, bus: &str) -> Result<()> {
+    std::fs::create_dir_all(profile)?;
     let mut child = Command::new(std::env::current_exe()?)
         .args(["--check", "chat-live", "--login", ACCOUNT])
+        .env("DBUS_SESSION_BUS_ADDRESS", bus)
         .env("DECIBELL_USER_DATA_DIR", profile)
         .env("DECIBELL_CENTRAL", &stack.central)
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
@@ -206,15 +251,17 @@ impl Live<'_> {
         bail!("the list never measured its rows")
     }
 
-    /// Until every row is measured, nothing animates and drawing stopped.
+    /// Until every row is measured and nothing scrolls, and a frame later (it draws what was
+    /// measured). Not "until drawing stops": the signed-in app may keep drawing for reasons of
+    /// its own (pictures arriving, presence), which says nothing about the list.
     async fn rest(&self) -> Result<()> {
-        for _ in 0..400 {
-            self.cx.settle().await?;
-            if self.with(|list, _| list.rows_unmeasured() == 0 && !list.is_animating())? {
-                return Ok(());
-            }
+        self.measured().await?;
+        let before = self.cx.frames()?;
+        let started = Instant::now();
+        while self.cx.frames()?.since(before).drawn == 0 && started.elapsed() < Duration::from_millis(500) {
+            self.cx.sleep(Duration::from_millis(16)).await;
         }
-        bail!("the list never came to rest")
+        self.measured().await
     }
 
     /// The first fully visible row and its screen y.
