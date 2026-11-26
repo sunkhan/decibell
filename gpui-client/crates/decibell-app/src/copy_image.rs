@@ -100,20 +100,45 @@ impl Kept {
         }
     }
 
-    /// Puts it back and reads it again; the answer says how.
-    fn restore(&self) -> Result<String> {
-        let how = match &self.0 {
-            Some((kind, bytes)) if kind.starts_with("text/") || kind == "UTF8_STRING" => {
-                let text = String::from_utf8_lossy(bytes).to_string();
-                // Klipper serves what it sets: no process stays behind for it.
-                let klipper = have("qdbus6")
-                    && run("qdbus6", &["org.kde.klipper", "/klipper", "org.kde.klipper.klipper.setClipboardContents", &text], None)
-                        .is_ok_and(|(ok, _)| ok);
-                if !klipper {
-                    run("wl-copy", &["--type", kind], Some(bytes))?;
-                }
-                if klipper { "Klipper" } else { "wl-copy" }
+    /// Whether the clipboard holds this again.
+    fn holds(&self) -> Result<bool> {
+        let now = Kept::read()?;
+        Ok(match (&self.0, &now.0) {
+            (Some((_, a)), Some((_, b))) => a == b,
+            (None, None) => true,
+            (None, Some((_, b))) => b.is_empty(),
+            _ => false,
+        })
+    }
+
+    fn wait_holds(&self, limit: Duration) -> Result<bool> {
+        let started = Instant::now();
+        loop {
+            if self.holds()? {
+                return Ok(true);
             }
+            if started.elapsed() > limit {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Puts it back and reads it again; the answer says how. Klipper first for text (it serves
+    /// what it sets: no process stays behind), else, or when that didn't take (Klipper may ignore
+    /// a text equal to its newest entry while the selection is another client's), `wl-copy`.
+    fn restore(&self) -> Result<String> {
+        if let Some((kind, bytes)) = &self.0
+            && (kind.starts_with("text/") || kind == "UTF8_STRING")
+            && have("qdbus6")
+        {
+            let text = String::from_utf8_lossy(bytes).to_string();
+            let set = run("qdbus6", &["org.kde.klipper", "/klipper", "org.kde.klipper.klipper.setClipboardContents", &text], None).is_ok_and(|(ok, _)| ok);
+            if set && self.wait_holds(Duration::from_millis(1500))? {
+                return Ok("Klipper".into());
+            }
+        }
+        let how = match &self.0 {
             Some((kind, bytes)) => {
                 run("wl-copy", &["--type", kind], Some(bytes))?;
                 "wl-copy"
@@ -123,24 +148,8 @@ impl Kept {
                 "wl-copy --clear"
             }
         };
-        // Read back (the new owner answers within a moment).
-        let started = Instant::now();
-        loop {
-            let now = Kept::read()?;
-            let same = match (&self.0, &now.0) {
-                (Some((_, a)), Some((_, b))) => a == b,
-                (None, None) => true,
-                (None, Some((_, b))) => b.is_empty(),
-                _ => false,
-            };
-            if same {
-                return Ok(how.to_string());
-            }
-            if started.elapsed() > Duration::from_secs(3) {
-                bail!("the clipboard reads {} after putting back {}", now.describe(), self.describe());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        ensure!(self.wait_holds(Duration::from_secs(3))?, "the clipboard reads {} after putting back {}", Kept::read()?.describe(), self.describe());
+        Ok(how.to_string())
     }
 }
 
@@ -170,10 +179,16 @@ async fn parent(cx: TestCx) -> Result<()> {
     let kept = Kept::read()?;
     cx.log(format_args!("the clipboard held: {}", kept.describe()));
     let result = sessions(&cx, &dir).await;
+    // Every copying child has ended (its selection with it): let the compositor see it go.
+    cx.sleep(Duration::from_millis(300)).await;
     let restored = kept.restore();
     let _ = std::fs::remove_dir_all(&dir);
+    match (&result, &restored) {
+        (_, Ok(how)) => cx.log(format_args!("the clipboard is as it was ({}, through {how})", kept.describe())),
+        (_, Err(e)) => cx.log(format_args!("PUTTING THE CLIPBOARD BACK FAILED: {e:#} (it held {})", kept.describe())),
+    }
     result?;
-    cx.log(format_args!("the clipboard is as it was ({}, through {})", kept.describe(), restored?));
+    restored?;
     Ok(())
 }
 
@@ -225,9 +240,22 @@ async fn sessions(cx: &TestCx, dir: &Path) -> Result<()> {
         })?;
         let outcome = async {
             for (id, name, _) in PICTURES {
+                // The child's window takes the focus (as a click on "Copy image" gives it), then copies.
+                if let Some(winctl) = &winctl {
+                    let _ = Command::new(winctl).args(["activate", &child.id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                }
+                std::fs::write(files.join(format!("go-{id}")), b"")?;
                 let wanted = format!("copy-image: copied {id}");
                 let started = Instant::now();
+                let mut asked = Instant::now();
                 loop {
+                    // The window may not have been up yet: ask again now and then until it copies.
+                    if asked.elapsed() > Duration::from_secs(2)
+                        && let Some(winctl) = &winctl
+                    {
+                        let _ = Command::new(winctl).args(["activate", &child.id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                        asked = Instant::now();
+                    }
                     if let Ok(line) = lines.try_recv() {
                         if line == wanted {
                             break;
@@ -343,17 +371,18 @@ async fn child(cx: TestCx) -> Result<()> {
         let original = original.context("held")?.map_err(|e| anyhow::anyhow!("{e}"))?;
         std::fs::write(files.join(format!("original-{id}")), &original)?;
         // A copy is a click in our window: it has the keyboard focus then (Wayland gives the
-        // selection only to the focused client). KWin may not focus a window started from a shell.
-        if !cx.update(|window, _| window.is_window_active())? {
-            if let Some(winctl) = std::env::current_exe()?.ancestors().map(|d| d.join("tools/perf/winctl.sh")).find(|p| p.exists()) {
-                let _ = Command::new(winctl).args(["activate", &std::process::id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status();
-            }
-            let started = Instant::now();
-            while !cx.update(|window, _| window.is_window_active())? {
-                ensure!(started.elapsed() < Duration::from_secs(5), "{name}: the window never got the focus");
-                cx.sleep(Duration::from_millis(50)).await;
-            }
-            cx.log(format_args!("{name}: the window took the focus to copy"));
+        // selection only to the focused client). The parent focuses this window (KWin may not
+        // focus a window started from a shell), then says go.
+        let go = files.join(format!("go-{id}"));
+        let started = Instant::now();
+        while !go.exists() {
+            ensure!(started.elapsed() < Duration::from_secs(60), "{name}: the parent never said go");
+            cx.sleep(Duration::from_millis(50)).await;
+        }
+        let started = Instant::now();
+        while !cx.update(|window, _| window.is_window_active())? {
+            ensure!(started.elapsed() < Duration::from_secs(10), "{name}: the window doesn't have the focus");
+            cx.sleep(Duration::from_millis(50)).await;
         }
         let target = if id == 0 {
             Target { server: None, attachment_id: None, filename: name.into(), mime: Some(mime.into()), url: Some(NOISE_URL.into()), page_url: None }
