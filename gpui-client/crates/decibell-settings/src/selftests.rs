@@ -994,7 +994,18 @@ fn modifier(cx: &TestCx, evdev: u16, pressed: bool, after: Modifiers) -> Result<
     cx.modifier_key(KeyCode::Evdev(evdev), pressed, after)
 }
 
+/// Draw what is pending now. A window in the background (this one, most of the time) draws only
+/// when GPUI dispatches a key event, which draws first; a click on the frame from before the last
+/// change (a binding's new id) would reach that frame's handlers. A modifiers event that names no
+/// key changes nothing else.
+fn draw_pending(cx: &TestCx) -> Result<()> {
+    cx.update(|window, cx| {
+        window.dispatch_event(PlatformInput::ModifiersChanged(gpui::ModifiersChangedEvent::default()), cx);
+    })
+}
+
 fn mouse(cx: &TestCx, button: MouseButton, at: gpui::Point<Pixels>, modifiers: Modifiers) -> Result<()> {
+    cx.mouse_move(at)?;
     cx.update(move |window, cx| {
         window.dispatch_event(
             PlatformInput::MouseDown(gpui::MouseDownEvent { button, position: at, modifiers, click_count: 1, first_mouse: false }),
@@ -1062,6 +1073,7 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
         ("tr", "the key labelled i (dotted)", "i", 40, "Quote"),
     ];
     for (layout, what, typed, evdev, code) in cases {
+        draw_pending(&cx)?;
         click_probe(&cx, "keybind-record:1").await?;
         wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
         modifier(&cx, CONTROL_L, true, ctrl)?;
@@ -1076,6 +1088,7 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
         cx.log(format_args!("{layout}: Ctrl + Shift + {what} (types {typed:?}, evdev {evdev}) → Control + Shift + {code}"));
     }
     // Modifiers alone: complete as the last one is released, sides kept.
+    draw_pending(&cx)?;
     click_probe(&cx, "keybind-record:1").await?;
     wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
     let shift = Modifiers::shift();
@@ -1088,10 +1101,14 @@ async fn check_keybinds(cx: TestCx) -> Result<()> {
     })
     .await?;
     cx.log("right Shift + left Ctrl, released: [\"ControlLeft\", \"ShiftRight\"]");
-    // A mouse side button with a modifier held.
+    // A mouse side button with a modifier held, pressed over the row. (Where to press is read
+    // first: the window going to the background cancels a recording, as the renderer's blur
+    // does, and the desktop may move the focus whenever this test yields; from the click that
+    // starts the recording to the last event nothing here yields.)
+    draw_pending(&cx)?;
+    let at = wait_probe(&cx, "keybind-record:1").await?.center();
     click_probe(&cx, "keybind-record:1").await?;
     wait_for(&cx, Duration::from_secs(3), "the row to record again", move |cx| recording(cx)).await?;
-    let at = wait_probe(&cx, "keybind-record:1").await?.center();
     modifier(&cx, SHIFT_L, true, shift)?;
     mouse(&cx, MouseButton::Navigate(gpui::NavigationDirection::Back), at, shift)?;
     modifier(&cx, SHIFT_L, false, Modifiers::default())?;
@@ -1176,10 +1193,15 @@ async fn check_shake(cx: TestCx) -> Result<()> {
     click_probe(&cx, "rate-up-custom").await?;
     retype(&cx, "12.5")?;
     ensure!(cx.update(move |_, cx| draft(cx))?, "the typed value isn't a draft");
-    step(&cx, "Esc with a draft", async |cx| cx.keystroke("escape").map(|_| ()), move |cx| nudges(cx) == 1).await?;
-    ensure!(cx.update(|_, cx| settings_open(cx))?, "Esc closed the window over a draft");
-    ensure!(cx.update(move |_, cx| upload(cx))? == 0, "Esc applied the draft");
+    // Esc at once: the box applies what it holds when it loses the focus, and the desktop may take
+    // the focus from this window whenever the test yields (the renderer's blur did the same).
+    cx.keystroke("escape")?;
+    let (shaken, open, applied) = cx.update(move |_, cx| (nudges(cx), settings_open(cx), upload(cx)))?;
+    ensure!(open, "Esc closed the window over a draft");
+    ensure!(shaken == 1, "Esc with a draft didn't shake the save bar ({shaken})");
+    ensure!(applied == 0, "Esc applied the draft");
     cx.log("Esc with a typed value shook the save bar; the window stayed, nothing applied");
+    cx.settle().await?;
     // The save bar's Reset drops it: Esc closes.
     cx.update(move |_, cx| {
         if let Some(n) = network(cx) {
@@ -1192,10 +1214,17 @@ async fn check_shake(cx: TestCx) -> Result<()> {
     open_on(&cx, TabId::Network).await?;
     click_probe(&cx, "rate-up-custom").await?;
     retype(&cx, "12.5")?;
-    step(&cx, "another tab with a typed value", async |cx| click_probe(cx, "settings-tab:account").await, move |cx| {
-        shown_tab(cx) == Some(TabId::Account)
-    })
-    .await?;
+    // Press and release as a hand does, with a frame between them: GPUI moves the focus on the
+    // press but tells the box it lost it (blur: apply) only when it draws the next frame, and the
+    // release is what opens the tab.
+    draw_pending(&cx)?;
+    let tab = wait_probe(&cx, "settings-tab:account").await?.center();
+    cx.mouse_down(tab, 1, Modifiers::default())?;
+    draw_pending(&cx)?;
+    cx.mouse_up(tab)?;
+    park(&cx)?;
+    let switched = wait_for(&cx, Duration::from_secs(3), "the Account tab", move |cx| shown_tab(cx) == Some(TabId::Account)).await.is_ok();
+    ensure!(switched, "a press on another tab with a typed value didn't open it");
     let applied = cx.update(move |_, cx| upload(cx))?;
     cx.log(format_args!("a press on another tab applied the typed value first ({applied} B/s), then the tab opened"));
     ensure!(applied == (12.5 * 1024. * 1024.) as u64, "the press elsewhere didn't apply the typed value");
