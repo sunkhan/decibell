@@ -412,6 +412,37 @@ pool) is copied once into a padded buffer of ours, as before (20 KB per frame at
 stand-in and with the linked core's own buffers (`cargo test -p decibell-video --features core`); against the
 core of this branch, which has no padding yet, the copy is still taken.
 
+### 0.11 Timed streams: a file instead of a live stream (`timed.rs`)
+
+Attachment playback (`crates/decibell-media`, `docs/media-design.md`) decodes and draws its video with this
+crate: the same decoders in the same order, the same slots, `Viewer` / `VideoView` and presenter. What a file
+needs differently is opt-in per stream (`Stream::set_timing(Some(timing))`); a live stream runs none of it.
+
+| | Live stream | Timed stream |
+|---|---|---|
+| When a decoded picture is published | at once | when `Timing::admit(epoch, pts)` returns: the decoder thread calls it with each picture's presentation time before copying it into a slot, and the player blocks it there until the picture is due on its clock (a timed condition-variable wait: **one wake per picture, no polling**), then says `Show` or `Skip` (decoded on the way to a seek target, late, or nothing on screen shows the video) |
+| A full queue | sheds, gates on a keyframe, asks the streamer | `Stream::push_timed` hands the packet back (`TimedPush::Full`); the queue is `TIMED_DEPTH` = 3 packets; nothing is shed |
+| Decoder | low-delay (a packet in, its picture out) | reorders (B-frames: `AV_CODEC_FLAG_LOW_DELAY` is not set), pictures come out in presentation order with their own `pts` (`FfDecoder::frame_pts`) |
+| A seek | — | packets carry an **epoch**; the first packet of a new one must be a keyframe and the decoder is flushed in place before it (`PictureDecoder::flush`: `avcodec_flush_buffers` on all four decoders; no reopen, so no CUDA context or session is made again) |
+| The end | — | an empty packet (`TimedFrame::end`) drains the pictures held for reordering |
+| No packet for 3 s | `Stalled`, a keyframe request, the thread leaves | `Timing::idle()` decides: the thread leaves and frees the decoder (the last picture stays), or waits on (`Popped::Quiet` / `FrameQueue::leave`) |
+| Keyframe requests, frame-sink interest, events | the hub's callbacks (the core) | `Timing::keyframe_needed` / `Timing::event`: the core never hears of a timed stream |
+| Configuration record | the frame's own `Vec` | one `Arc<[u8]>` shared by every packet (`queue::Description`) |
+| Codecs | H.264, HEVC, AV1 | those, and `Codec::Vp8` / `Codec::Vp9` in software only (`Codec::has_hardware_path`; never probed or advertised: `Codec::ALL` is still the three stream codecs) |
+
+Changes to shared code, all additive: `FrameCx::admit` (a no-op returning true for live streams) called by the
+four decoders between `receive` and their hand-over; `FfDecoder::open`'s `reorder` flag (false for live
+streams: the same context as before) read from `StreamTarget::reorder`; `Item::epoch` (0 for live streams, whose
+`Decoding::epoch` therefore never changes); the `timing` checks in `request_keyframe`, `event`, `stalled`, the
+viewer's interest calls and `shutdown` (a paused file's decoder thread is waiting for its clock and is told to
+leave). The live path's tests and self-tests are unchanged and pass (`cargo test -p decibell-video`: 37 + 2;
+`video-*` in HANDOFF §4).
+
+A paused file: the decoder thread is parked inside `admit` with the next picture decoded, so a resume shows it
+without a keyframe; the decoder session and its five slots stay. While nothing on screen shows the video
+(`Player::set_visible(false)`) pictures are still decoded, paced by the clock, and skipped before the slot copy:
+no picture is published and no present is requested.
+
 ## 1. Decision
 
 **Primary (Linux): FFmpeg's Vulkan Video hwaccel on the `VkDevice` GPUI renders with**, option (a) of the

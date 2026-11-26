@@ -677,6 +677,44 @@ window is open, and draws the view it returns (the quit question) over the windo
   `check_profile` refuses `~/.config/decibell` even when `DECIBELL_USER_DATA_DIR` names it (the app exits 2, the core
   refuses to start, `decibell-headless` refuses in any build). Self-tests still give every child its own temporary
   profile.
+## Media playback (`decibell-media`, `decibell-chat-content/src/playback.rs`)
+
+Video and audio attachments played in their cards (`docs/media-design.md`: the renderer's rules, the codec
+matrix, the engine, the no-pop rule and its tests).
+
+- **The engine has no GPUI in it**: `decibell_media::Player::open(Open { source, video: Some(hub), key, output,
+  start_at, play, volume, muted, on_change })`, then `play` / `pause` / `toggle` / `seek(micros)` /
+  `set_volume(v, muted)` / `set_visible(bool)`, `status()` (phase, duration, the picture's size and decoder),
+  `position()`, `viewer()` for a `VideoView`. Dropping it fades the sound out and closes everything. `on_change`
+  is called from its threads: send into one channel and read `status()` on the UI thread
+  (`Playback::refresh`), never one task per call.
+- **Who owns players**: `playback::Playback` (a global entity), one video and one audio, following
+  `model.chat.video.active` / `chat.audio.active`. A view never holds a `Player`. To start something, set the
+  active attachment (`crate::player::play_video` / `play_audio`); to stop, set it to `None`.
+- **Where bytes come from**: `MediaReader::blocking()` behind the player's AVIO (range reads, sealed files
+  opened in memory). Never a temp file, never a URL handed to FFmpeg. Fixtures and self-tests replace it with
+  `Playback::set_source_provider`.
+- **Sound is its own stream on the system's default output** (`decibell_media::system_output()`), as the
+  renderer's media elements play on Chromium's default sink. Never route it through the voice engine, its
+  mixer or its device streams, and never touch those to play a file.
+- **No pops is a property of `render.rs`, kept by its tests**: whatever is handed to a device is
+  `sample × shape(envelope) × volume` with both slewed. Anything that would start, stop, skip or re-level
+  sound goes through the renderer's controls (`set_playing`, `set_gate`, `set_volume`, a new epoch through
+  `Feed::begin`), never around them; a new transition gets a sample-exact test there and a line in HANDOFF §6
+  for the owner's ear.
+- **Frames**: a picture is a present of the kept scene (the video crate), never a render. The list redraws for
+  the controls only: `Playback`'s 250 ms tick runs while a running time is on screen (the audio card's row
+  drawn, the video's controls shown), and stops otherwise. The video's controls hide 3 s after the pointer
+  rests; with them hidden a playing video costs the list 0 frames (`media-video-play`).
+- **Tests are inaudible**: unit tests render into `TestOutput::recording` (every sample kept, with the instant
+  it "played"); self-tests and measurements run with `DECIBELL_MEDIA_OUTPUT=null` (a thread that pulls blocks
+  in real time and discards them; `fixture_parent` sets it). Nothing in a test opens the sound card.
+- **Test media** are synthetic and committed (`crates/decibell-media/tests/assets`, `make.py`): a barcode of
+  the frame number and a click track. A new container or codec in the matrix gets a file there, a row in
+  `every_file_of_the_matrix_plays_to_its_end`, its components in `tools/build-ffmpeg.sh` **and** in
+  `decibell-app/build.rs`'s lists, and a line in `media-design.md` §2 saying that Chromium plays it.
+- Self-tests `media-idle`, `media-video-play`, `media-audio-play`, `media-persist` (the content fixture's
+  `#clips` channel, memory sources; `DECIBELL_MEDIA_CLIP=<file>` makes the video cards play that file).
 
 ## GPUI gotchas met so far
 

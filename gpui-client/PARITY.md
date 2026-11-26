@@ -92,7 +92,7 @@ system_idle.rs state.rs`, `electron-client/native/src/` for `commands/`), `C/` =
 | 6.4 | GIFs | not started | | `R/features/chat/GifPicker.tsx`, `M/gifs.ts` |
 | 6.5 | Link previews | not started | | `M/linkPreview.ts`, `R/features/chat/LinkEmbeds.tsx` |
 | 6.6 | Attachments | not started | | `R/features/chat/uploadAttachment.ts`, `AttachmentList.tsx`, `C/attachment_http.cpp` |
-| 6.7 | Media playback | not started | | `R/features/chat/PersistentVideoLayer.tsx`, `PersistentAudioLayer.tsx` |
+| 6.7 | Media playback | built, not yet matched against captures (`docs/media-design.md` §1 lists what follows the renderer and §8 what is missing: the controls' fade, the last-frame poster, 10-bit video, rotation) | `decibell-media`, `decibell-chat-content/src/playback.rs` | `R/features/chat/PersistentVideoLayer.tsx`, `PersistentAudioLayer.tsx` |
 | 6.8 | Image viewer | not started | | `R/features/chat/imageViewer/`, `ImageViewer.tsx` |
 | 6.9 | Transfers panel | not started | | `R/features/transfers/`, `M/downloads.ts`, `M/downloadPacer.ts`; spec `2026-10-04-transfers-panel-design.md` |
 | 6.10 | Edit / delete | not started | | spec `2026-05-15-message-deletion-design.md` |
