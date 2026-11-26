@@ -100,6 +100,7 @@ impl UserPanel {
 /// `PanelButton`: 32 × 32 `rounded-sm`, danger `bg-error/15 text-error hover:bg-error/25`, active
 /// `bg-accent-soft text-accent-bright`, else `text-text-secondary hover:bg-surface-hover
 /// hover:text-text-primary`.
+#[allow(clippy::too_many_arguments)] // the renderer's PanelButton props, one per argument
 fn panel_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
     id: &'static str,
     icon: IconName,
