@@ -33,7 +33,11 @@ pub struct Root {
 impl Root {
     pub fn new(content: AnyView, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        focus.focus(window, cx);
+        // Unless the content focused something of its own while it was built (a test window's
+        // field), the root starts with the focus.
+        if window.focused(cx).is_none() {
+            focus.focus(window, cx);
+        }
         let subscriptions = [
             // A focused element went away (a pane, a closed dialog that had nothing to give the
             // focus back to): the root takes it again.

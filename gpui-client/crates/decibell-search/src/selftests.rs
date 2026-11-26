@@ -956,36 +956,43 @@ async fn check_typing_cost(cx: TestCx) -> Result<()> {
     focus_box(&cx).await?;
     clear_box(&cx).await?;
     let list_frames = || -> Result<u64> { cx.update(|_, cx| decibell_chat::shown_list(cx).map_or(0, |l| l.read(cx).stats.frames)) };
-    cx.settle().await.ok();
-    let list_before = list_frames()?;
-    let mut per_key = Vec::new();
-    for key in ["w", "a", "y", "l", "a", "n", "d"] {
-        // Between the caret's blinks: a key moves the next blink half a second on.
-        let mut counted = None;
-        for _ in 0..3 {
-            cx.sleep(Duration::from_millis(60)).await;
-            let before = cx.frames()?;
-            cx.type_text(key)?;
-            cx.sleep(Duration::from_millis(120)).await;
-            let drawn = cx.frames()?.since(before).drawn;
-            if drawn <= 1 {
+    let events = || -> Result<u64> { cx.update(|_, cx| model(cx).pump_stats().events) };
+    // The stack is shared: other clients of perf1 and of the channel (presence, a message, a
+    // roster change) reach the list through the core and may redraw it legitimately. A try in
+    // which the list drew counts only when no core event arrived meanwhile; three tries.
+    let mut last = String::new();
+    for attempt in 1..=3 {
+        cx.settle().await.ok();
+        let (list_before, events_before) = (list_frames()?, events()?);
+        let mut per_key = Vec::new();
+        for key in ["w", "a", "y", "l", "a", "n", "d"] {
+            // Between the caret's blinks: a key moves the next blink half a second on.
+            let mut counted = None;
+            for _ in 0..3 {
+                cx.sleep(Duration::from_millis(60)).await;
+                let before = cx.frames()?;
+                cx.type_text(key)?;
+                cx.sleep(Duration::from_millis(120)).await;
+                let drawn = cx.frames()?.since(before).drawn;
+                if drawn <= 1 {
+                    counted = Some(drawn);
+                    break;
+                }
                 counted = Some(drawn);
-                break;
             }
-            counted = Some(drawn);
+            per_key.push(counted.unwrap_or(0));
         }
-        per_key.push(counted.unwrap_or(0));
+        let (list_drew, arrived) = (list_frames()? - list_before, events()? - events_before);
+        cx.log(format_args!("try {attempt}: frames per key {per_key:?}; the message list drew {list_drew} times meanwhile; {arrived} core events arrived"));
+        ensure!(per_key.iter().all(|f| *f == 1), "a key drew {per_key:?} frames");
+        clear_box(&cx).await?;
+        if list_drew == 0 {
+            return Ok(());
+        }
+        // GPUI patch 0014 replays clean cached views under a dirty one: a key in the box must not
+        // lay the list out again.
+        ensure!(arrived > 0, "the message list drew {list_drew} times while typing in the box, with no core event to redraw it");
+        last = format!("the message list drew {list_drew} times while typing; {arrived} core events from the shared stack arrived meanwhile");
     }
-    let list_after = list_frames()?;
-    cx.log(format_args!("frames per key: {per_key:?}; the message list drew {} times meanwhile", list_after - list_before));
-    ensure!(per_key.iter().all(|f| *f == 1), "a key drew {per_key:?} frames");
-    // GPUI at the pin re-renders every cached view under a dirty one (a key dirties the views up to
-    // the root): the list then lays out again although nothing in it changed. GPUI patch 0013
-    // ("keep nested view caches") keeps the caches; with it the list doesn't draw.
-    ensure!(
-        list_after == list_before,
-        "the message list drew {} times while typing in the box (GPUI re-renders nested cached views without patch 0013)",
-        list_after - list_before
-    );
-    Ok(())
+    bail!("three tries disturbed by the shared stack ({last})")
 }

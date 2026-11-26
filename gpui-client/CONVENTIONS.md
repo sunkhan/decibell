@@ -782,13 +782,12 @@ What a released build does on its own and how it is packed: `PACKAGING.md`.
    callback after a present (the compositor's frame callback on Wayland).
 10. Monospace faces of one family share every metric GPUI exposes; only their outlines tell the weights
     apart (the font tests rasterise an `m`).
-11. **A dirty cached view re-renders every cached view inside it.** `prepaint_view` / `paint_view`
+11. **At the pin, a dirty cached view re-renders every cached view inside it.** `prepaint_view` / `paint_view`
     (`crates/gpui/src/view.rs:562`, `:632` at the pin) set `window.refreshing` while a dirty view re-renders, and
     `refreshing` defeats every nested cache. A notify marks all ancestors dirty, so a key typed in the composer
-    re-renders the chat pane, which re-renders the message list beside it (measured, `composer-typing-cost`: 44
-    list frames for 43 keys; the list's frame then costs ~0.7 ms in a debug build). Not setting `refreshing` there
-    (two lines) gave 0 list frames for 43 keys and halved the key → frame time, with `chat-*`, `shell-navigate`,
-    `shell-idle`, `idle-frames` and `themes` passing; not applied (it changes caching for every view).
+    re-rendered the chat pane and the message list beside it (`composer-typing-cost`: 44 list frames for 43 keys).
+    GPUI patch 0014 replays the clean ones: 0 list frames for 43 keys in the composer and for a key in the search
+    box (`composer-typing-cost`, `search-typing-cost`; `render-cost` has the views per change).
 12. `img(…)` animates a GIF only when it has an `.id(…)` and only while the window is active.
 13. With nothing focused, GPUI dispatches key and modifier events to the window's root dispatch node only
     (the root view's element, above every listener a view can register). The app's `Root` therefore holds
@@ -953,9 +952,9 @@ The text channel header's search box and the results panel (`features/search/`, 
   `Segment` has none); Escape closes the panel when the focus is nowhere, in the panel or on the message list
   (GPUI can't tell whether the focused element is a text field, which the renderer exempts); menu text of
   13 px sits up to 1 px higher than Chromium's (line boxes of 19.5 px).
-- **GPUI at the pin re-renders every cached view under a dirty one**: a key dirties the views up to the root,
-  so typing in the box lays the message list out again (`search-typing-cost` fails on that count until GPUI
-  patch 0013, "keep nested view caches", is in; frames per key are 1 either way).
+- **A key in the box dirties the views up to the root**; GPUI patch 0014 replays the clean ones, so the message
+  list doesn't lay out again (`search-typing-cost`: one frame per key, 0 list frames; a try in which a core event
+  from the shared stack redrew the list is repeated).
 - **Screens** (`header-text`, `header-encrypted`, `header-long-topic`, `search-box-empty`, `search-box-suggest`
   (`-from`, `-in`, `-has`), `search-box-chips`, `date-picker`, `search-results`, `-empty`, `-refused`,
   `-narrow` at `--size 900x700`) are the shell on the chat fixture plus `decibell_search::fixture` (a store
