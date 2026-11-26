@@ -1808,6 +1808,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "decibell-chat-content"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "decibell-attachments",
+ "decibell-chat",
+ "decibell-common",
+ "decibell-core",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-richtext",
+ "decibell-shell",
+ "decibell-text",
+ "decibell-theme",
+ "decibell-ui",
+ "decibell-unfurl",
+ "futures",
+ "gif",
+ "gpui",
+ "image",
+ "image-webp",
+ "log",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "decibell-common"
 version = "0.1.0"
 dependencies = [

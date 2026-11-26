@@ -1,0 +1,48 @@
+[package]
+name = "decibell-chat-content"
+description = "What messages contain: image / file attachments through a byte-bounded picture pipeline, link previews, invite cards, the image viewer and the Transfers panel"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# The content fixtures (a channel with every attachment kind, embeds and invites, pictures
+# generated in memory and served by a fake fetcher), the screens and the self-tests.
+fixtures = ["dep:decibell-core", "decibell-chat/fixtures", "decibell-shell/fixtures", "dep:serde_json"]
+# Development builds' self-tests: remote pictures and link previews may come from 127.0.0.0/8
+# (a local fixture server). Never in a shipped build.
+loopback = ["decibell-unfurl/loopback"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-text.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-shell.workspace = true
+decibell-chat.workspace = true
+decibell-attachments = { path = "../decibell-attachments" }
+decibell-unfurl = { path = "../decibell-unfurl" }
+decibell-richtext = { path = "../decibell-richtext" }
+# Only for the payload types of the core's events (the fixtures). zbus on async-io, as every
+# crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"], optional = true }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+bytes = "1"
+base64 = "0.22"
+url = "2.5"
+# The decoders GPUI and the attachments crate already link (no new codec crates): JPEG / PNG /
+# WebP / BMP stills through `image`, GIF frames through `gif` (the crate `image` uses), animated
+# WebP through `image-webp`.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+gif = "0.14"
+image-webp = "0.2"
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

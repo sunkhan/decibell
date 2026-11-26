@@ -47,6 +47,12 @@ impl LinkPreviewMemo {
         LinkPreviewMemo { entries: HashMap::new(), order: VecDeque::new(), unfurler, inflight: HashMap::new() }
     }
 
+    /// Replaces how unfurls run (development self-tests point it at a loopback fixture
+    /// server). Entries already loaded stay.
+    pub fn set_unfurler(&mut self, unfurler: Unfurler) {
+        self.unfurler = unfurler;
+    }
+
     pub fn get(&self, url: &str) -> Option<&PreviewEntry> {
         self.entries.get(url)
     }

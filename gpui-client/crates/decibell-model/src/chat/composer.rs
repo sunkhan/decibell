@@ -417,6 +417,16 @@ impl CoreAttachmentService {
         SERVICE.get().cloned()
     }
 
+    /// Runs `f` on the core's runtime with the process's `Attachments`, creating it if no
+    /// target was set yet (the downloads manager and the picture fetches need it before any
+    /// community authenticated). Dropped when the core isn't running.
+    pub fn with_attachments(f: impl FnOnce(Arc<Attachments>) + Send + 'static) {
+        crate::core::spawn_detached(async move {
+            let svc = SERVICE.get_or_init(|| Attachments::new(Arc::new(CoreTls), tokio::runtime::Handle::current())).clone();
+            f(svc);
+        });
+    }
+
     fn send(&self, op: Op) {
         let mut ops = self.ops.lock().unwrap_or_else(|e| e.into_inner());
         if ops.as_ref().is_none_or(|tx| tx.is_closed()) {
