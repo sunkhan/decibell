@@ -19,6 +19,8 @@ the owner decides: keep it in both clients, fix it in both, or let the native cl
 | 6 | A failed attachment upload chunk is re-sent at the same offset, which can turn a half-written chunk into a run of 409s; abandoned uploads wait for the server's hourly sweep | `uploadAttachment.ts` | **Differs**: realigns with a `HEAD`, deletes abandoned uploads, retries the init rate limit |
 | 7 | A sealed thumbnail fails to open when the server serves a different size than the one asked for (the nonce names the size) | `attachmentFetch.ts` | **Differs**: tries the other sizes |
 | 8 | Reading a link's preview downloads up to 3 MiB of any body, including videos and direct images | `linkPreview.ts` | **Differs**: stops once the header that decides the result has arrived |
+| 9 | Numbered equations (`\\tag`-less `equation` / `align`) count across the whole page in Chromium, so one message's formulas continue another's numbering | KaTeX's CSS counter | **Differs**: numbering restarts in each formula |
+| 10 | TeX nested more than 100 levels deep | KaTeX renders it | **Differs**: shown as raw TeX (a bound so a pasted bomb can't overflow the stack) |
 
 ## Bugs in the Electron client itself (for `main`; not changed by this work)
 
