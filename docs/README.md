@@ -62,7 +62,8 @@ deltas); **partly** = some of it shipped; **history** = superseded or never buil
 | `2026-10-18-roster-paging-design.md` | live |
 | `2026-10-19-devices-and-password-design.md` | live |
 | `2026-10-28-picture-editor-design.md` | live |
-| `2026-11-07-qt-native-client-design.md` | approved, not built: the native Qt 6 Quick + Rust client (core split, zero-copy video, theming, spike plan, Electron baseline) |
+| `2026-11-07-qt-native-client-design.md` | set aside for GPUI (owner, 2026-11-26); its targets (§3), core split (§6), threads (§7) and replacement table (§10) still hold: the native Qt 6 Quick + Rust client (core split, zero-copy video, theming, spike plan, Electron baseline) |
+| `2026-11-26-gpui-native-client-design.md` | in progress on the `gpui-client` branch: the native GPUI client (decision, what carries over from the Qt design, targets, architecture, order of work) |
 
 `superpowers/plans/` holds the step-by-step implementation plans for the 2026-03 … 2026-05 specs (same
 names). They're history: useful for why code is shaped the way it is, never as a to-do list. The
@@ -80,7 +81,7 @@ names). They're history: useful for why code is shaped the way it is, never as a
 | `2026-08-21-community-server-review.md` | history: the findings behind fix batches 13–19 and permissions v2 / v3; superseded by the running log |
 | `2026-08-23-community-server-review.md` | **the running feature log** (see above) |
 | `2026-10-17-pre-1.0-review.md` | §1 all fixed (2026-10-18); §2–§6 not started |
-| `2026-11-07-qt-client-spike-report.md` | the Qt client spike's Windows half, measured against Electron: awaiting the owner's go / no-go (on the `qt-spike` branch) |
+| `2026-11-07-qt-client-spike-report.md` | the Qt client spike's Windows half, measured against Electron (on the `qt-spike` branch); the owner chose GPUI instead (2026-11-26), the measurements and tools stay in use |
 
 Elsewhere: `../CODE_REVIEW.md` (2026-07 whole-codebase review, history), `../design_handoff_theme_switcher/`
 (the five-palette theme hand-off, implemented in 0.6.10, since restyled), `../tauri-rebuild-prompt.md`

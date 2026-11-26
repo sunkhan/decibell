@@ -11,14 +11,21 @@ deeper docs are linked at the bottom.
 | Community server (one per hosted community) | `src/community/` | C++20, Boost.Asio single io_context/thread, SQLite (WAL) |
 | Central server (accounts, DMs, friends, community index) | `src/server/` | C++20, Boost.Asio, Postgres via libpqxx, Ed25519 JWTs |
 | Client | `electron-client/` | Electron; React + zustand + Tailwind v4 renderer; Rust napi-rs native backend (`electron-client/native/`, tokio, prost) |
+| Native client (in progress, branch `gpui-client`) | `gpui-client/` | Rust + GPUI (Zed's UI framework, pinned commit) over the shared core; replaces Electron once it reaches parity |
 | Wire contract | `proto/messages.proto` | Shared by C++ (protoc) and Rust (prost via `native/build.rs`) |
 | Community e2e harness | `src/community/tests/` | Standalone build + Python black-box tests (see its README) |
 | Central e2e + load harness | `src/server/tests/` | Standalone build against a bundled PostgreSQL 16 + Python tests, `load.py` (see its README) |
 
 `tauri-client/` and `src/client/` are the retired Tauri-era client — don't build on them.
-A native desktop client (GPUI, developed on Windows) is being explored; `ARCHITECTURE.md` §7.3 maps
-what of `electron-client/native/` it can reuse and what the Electron side does that it would have to
-replace, and `docs/FEATURES.md` is the parity checklist.
+**The native client is GPUI, not Qt** (owner, 2026-11-26): `gpui-client/`, built on the `gpui-client`
+branch for full parity with the Electron client, which keeps shipping and stays the reference for every
+behaviour until then. Read `gpui-client/HANDOFF.md` when resuming it; the design record is
+`docs/superpowers/specs/2026-11-26-gpui-native-client-design.md`, the parity checklist
+`gpui-client/PARITY.md` (one row per `docs/FEATURES.md` row). `qt-client/` is the set-aside Qt spike:
+its measurements, tools (`tools/perf/`) and the toolkit-neutral parts of its design (targets, core
+split, threads, what replaces Electron's services) still hold, but don't build on its code.
+`ARCHITECTURE.md` §7.3 maps what the shared core gives a client and what Electron's side did that a
+native client replaces.
 `.github/workflows/release.yml` is the dead Tauri workflow (fires on `v*` tags); the live
 one is `electron-release.yml` on `ev*` tags.
 
@@ -117,6 +124,17 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   that combo no longer reaches other apps (as on X11); push to talk / mute stay `GetAsyncKeyState`-polled every 20 ms
   and still reach apps; bare typing keys, mouse buttons and modifier-only combos stay polled. Design:
   `docs/superpowers/specs/2026-10-10-global-hotkeys-design.md`.
+- **Native client: GPUI, judged by resources first** (owner, 2026-11-26; design
+  `docs/superpowers/specs/2026-11-26-gpui-native-client-design.md`). The point of leaving Electron is a
+  leaner client: far less RAM, and low CPU, GPU, wakeups, startup time and install size. Every design
+  choice in `gpui-client/` is judged by those, measured with `tools/perf/` against the Electron client
+  on the same machine (targets: the Qt design's §3 ratios). No polling timers, no frames rendered while
+  nothing changes, no per-frame allocation or copy on hot paths; a feature that breaks a target isn't
+  done. GPUI is pinned to one Zed commit (`gpui-client/GPUI_PIN`, patches in `gpui-client/patches/`):
+  read its source instead of trusting memory, and never copy from Zed's other crates (mostly GPL).
+  Protocol, media and crypto stay in `crates/decibell-core`, shared with the Electron addon; anything
+  touching it must pass Electron's whole bar too. The client is tested against the local stack
+  (`tools/dev/local-stack.sh`) with test accounts, never the owner's account or the live servers.
 - **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
   `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native
   what holds sockets, speaks the wire, hooks the voice capture loop (AEC / AGC / NS) or owns files. The
@@ -399,6 +417,11 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
 - `electron-client/HANDOFF.md` — canonical Electron client hand-off: release history, gotchas (§5),
   building on Linux and Windows (§6), open items and pending live tests (§7). Read when resuming client work.
 - `electron-client/PACKAGING.md` — packaging, CI, AUR.
+- `gpui-client/HANDOFF.md` — the native GPUI client's hand-off: build, architecture, gotchas, measurements,
+  what needs the owner; `gpui-client/PARITY.md` — its parity checklist; `gpui-client/docs/` — notes on
+  the pinned GPUI and the video path.
+- `tools/dev/README.md` — the local test stack (central + communities + seeded test accounts);
+  `tools/perf/README.md` — the measurement harness.
 - `docs/README.md` — index of the design records (`docs/superpowers/specs/`) and reviews.
 - `src/community/tests/README.md`, `src/server/tests/README.md` — e2e harness usage.
 - `docs/reviews/2026-08-23-community-server-review.md` — review findings + everything shipped since, with rationale.
