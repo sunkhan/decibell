@@ -966,7 +966,8 @@ async fn check_invites(cx: TestCx) -> Result<()> {
     wait_for(&cx, Duration::from_secs(10), "the list", move |cx| !invites(cx).is_empty()).await?;
     // What an earlier run of these tests may have left: carol's 5-use, one-hour invites, and the
     // personal invites the invite-friends test's throwaway inviter made (`sv…a` → `sv…b`; earlier
-    // runs named them `t…a` → `t…b`).
+    // runs named them `t…a` → `t…b`). The list names a creator by the member's current name, so
+    // an inviter that is no longer a member shows none: the throwaway recipient is enough then.
     let me = cx.update(|_, cx| model(cx).auth.read(cx).uid)?;
     let throwaway = |name: &str, tag: char| {
         let hex = |s: &str| s.bytes().all(|b| b.is_ascii_hexdigit());
@@ -978,7 +979,7 @@ async fn check_invites(cx: TestCx) -> Result<()> {
             .iter()
             .filter(|i| {
                 (i.created_by_uid == me && i.max_uses == 5 && i.expires_at - i.created_at == 3600)
-                    || (throwaway(&i.created_by, 'a') && throwaway(&i.for_user, 'b'))
+                    || ((i.created_by.is_empty() || throwaway(&i.created_by, 'a')) && throwaway(&i.for_user, 'b'))
             })
             .map(|i| i.code.to_string())
             .collect()
