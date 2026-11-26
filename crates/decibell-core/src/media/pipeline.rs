@@ -681,6 +681,12 @@ pub fn run_audio_pipeline(
             }
         }
 
+        // Deafened: the output callback ramps the voices down (and back up)
+        // instead of the rings just running out mid-wave.
+        if let Some(out) = &output_stream {
+            out.ctl.set_voice(!deafened);
+        }
+
         // 1a. Close output streams that were switched away from, once their
         // fade-out has been played.
         reap_retired(&mut retiring);
@@ -1528,6 +1534,11 @@ pub(crate) fn drain_peer_voice(peer: &mut PeerAudio, cx: &mut VoiceDrain<'_>) {
                 peer.render_fifo.push_back(f32_frame);
             }
             peer.push_voice_frame(&f32_frame);
+        } else {
+            // Nothing is played while deafened: the first frame after it
+            // starts playback again and fades in like a talkspurt's first
+            // (the peer may be mid-word).
+            peer.onset_pending = true;
         }
     }
 }

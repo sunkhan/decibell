@@ -556,6 +556,8 @@ fn pop_voice_sum(guards: &mut [std::sync::MutexGuard<HeapCons<i16>>]) -> i32 {
 /// callback, so nothing the pipeline does to a stream is a step in what the
 /// device plays.
 pub struct OutputCtl {
+    /// Voice plays (false while deafened).
+    voice_on: std::sync::atomic::AtomicBool,
     /// Voice and stream audio play (false once the session is ending and
     /// only the interface sounds still playing are let finish).
     program_on: std::sync::atomic::AtomicBool,
@@ -576,6 +578,7 @@ impl OutputCtl {
     pub(crate) fn new(rate: u32) -> Arc<Self> {
         use std::sync::atomic::{AtomicBool, AtomicU64};
         Arc::new(OutputCtl {
+            voice_on: AtomicBool::new(true),
             program_on: AtomicBool::new(true),
             live: AtomicBool::new(true),
             faded: AtomicBool::new(false),
@@ -583,6 +586,11 @@ impl OutputCtl {
             waiter: std::thread::current(),
             rate,
         })
+    }
+
+    /// Deafen (false) / undeafen: the voices' sum ramps over 5 ms.
+    pub fn set_voice(&self, on: bool) {
+        self.voice_on.store(on, std::sync::atomic::Ordering::Release);
     }
 
     pub fn set_program(&self, on: bool) {
@@ -641,6 +649,7 @@ impl OutputCtl {
 
 /// The callback's own gain state for an `OutputCtl`.
 struct Gains {
+    voice: f32,
     program: f32,
     master: f32,
     /// Per-frame step of a 5 ms ramp.
@@ -649,7 +658,7 @@ struct Gains {
 
 impl Gains {
     fn new(rate: u32) -> Self {
-        Gains { program: 1.0, master: 1.0, step: 200.0 / rate.max(1) as f32 }
+        Gains { voice: 1.0, program: 1.0, master: 1.0, step: 200.0 / rate.max(1) as f32 }
     }
     #[inline]
     fn approach(g: &mut f32, target: f32, step: f32) {
@@ -708,6 +717,7 @@ impl OutputMix {
         let frames = data.len() / n;
         pull_stats.record(frames);
         self.cues.begin();
+        let target_voice = if self.ctl.voice_on.load(Acquire) { 1.0 } else { 0.0 };
         let target_program = if self.ctl.program_on.load(Acquire) { 1.0 } else { 0.0 };
         let target_master = if self.ctl.live.load(Acquire) { 1.0 } else { 0.0 };
         if self.gains.master == 0.0 && target_master == 0.0 {
@@ -749,10 +759,11 @@ impl OutputMix {
 
         let step = self.gains.step;
         for frame in data.chunks_exact_mut(n) {
+            Gains::approach(&mut self.gains.voice, target_voice, step);
             Gains::approach(&mut self.gains.program, target_program, step);
             Gains::approach(&mut self.gains.master, target_master, step);
             let (gp, gm) = (self.gains.program, self.gains.master);
-            let v = scaled(pop_voice_sum(&mut voice_guards), gp);
+            let v = scaled(pop_voice_sum(&mut voice_guards), self.gains.voice * gp);
             let c = self.cues.sample();
             match (&mut stream_guard, stereo) {
                 (Some(g), true) => {

@@ -292,6 +292,15 @@ impl Rx {
         self.heard.extend(std::iter::repeat(0.0).take(480));
     }
 
+    /// Deafen / undeafen, as the pipeline applies it: frames are decoded
+    /// (for the speaking ring) but not played, and the output is told.
+    pub(crate) fn set_deafen(&mut self, deafened: bool) {
+        self.deafened = deafened;
+        if let Some(out) = &self.out {
+            out.ctl.set_voice(!deafened);
+        }
+    }
+
     /// Everything heard, the current device's part included.
     pub(crate) fn heard(&self) -> Vec<f32> {
         let mut all = self.heard.clone();
@@ -341,5 +350,29 @@ fn switching_the_output_device_mid_speech_fades_out_and_in() {
         assert!(tail.iter().any(|s| s.abs() > 0.15), "the tone plays on the new device");
         assert_clean(&heard, 1.0, &format!("device switch at step {at}"));
         assert!(rx.retiring.is_empty(), "the old stream was closed");
+    }
+}
+
+/// Audit 2: deafen and undeafen while someone talks. Deafening ramps the
+/// voices down in the output callback (before, what was queued played out
+/// and stopped mid-wave); undeafening starts the peer's next frame with the
+/// talkspurt fade-in (before, at full level out of silence).
+#[test]
+fn deafen_and_undeafen_mid_speech_are_ramps() {
+    for at in 60..65 {
+        let mut rx = Rx::new();
+        rx.run(at);
+        rx.feed(true);
+        rx.set_deafen(true);
+        rx.device.callback();
+        rx.device.callback();
+        rx.run(30);
+        let deaf = rx.heard();
+        assert!(deaf[deaf.len() - 20 * 960..].iter().all(|&s| s == 0.0), "silent while deafened");
+        rx.set_deafen(false);
+        rx.run(40);
+        let heard = rx.heard();
+        assert!(heard[heard.len() - 9_600..].iter().any(|s| s.abs() > 0.15), "the voice is back");
+        assert_clean(&heard, 1.0, &format!("deafen at step {at}"));
     }
 }
