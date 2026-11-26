@@ -21,6 +21,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0015-linux-clipboard-images.patch` | Linux clipboard writes carry pictures: Wayland offers each image entry under its own type (`image/png`, …) and text types only when there is text, and serves whichever type is asked for, writing large pieces without blocking; X11 owns the selection with every entry, under its type, and hands contents larger than 1 MiB out in `INCR` pieces (also to a clipboard manager taking them at quit); a window with the keyboard focus but no press yet may take the Wayland selection (the focus event's serial, as Qt does). | "Copy image" on Linux (owner request, 2026-11-26): GPUI only ever offered text on Wayland and X11. |
 | `0016-keyring-label.patch` | Credentials are stored, read and deleted under the label `Decibell` (Secret Service, Linux) and the target `Decibell:url=…` (Credential Manager, Windows) instead of Zed's `zed-github-account` / `zed:url=…`. | A shipped client's at-rest key would have shown up in the user's keyring manager under Zed's name. |
 | `0017-wayland-request-attention.patch` | `Window::request_attention` on Wayland: an xdg-activation token that names no input, used at once; the compositor marks the window as demanding attention (it never grants focus for such a token). Nothing while the window is active. | The taskbar flash on an incoming call (`FEATURES.md` §9): Wayland's `request_attention` did nothing. |
+| `0018-gpui-activate-with-token.patch` | `Window::activate_window_with_token(token)` (`PlatformWindow::activate_with_token`, defaulting to `activate`): on Wayland, activates with an activation token another process got from the desktop. | A second start of the app hands its `XDG_ACTIVATION_TOKEN` to the running instance, which then may take the focus (single instance). |
 
 ## How the patches are applied
 
@@ -622,6 +623,17 @@ with it: a compositor never grants focus for such a token and marks the window a
 `XdgActivationV1Integration` refuses it and calls `demandAttention`; Mutter shows "… is ready"). KWin clears the state
 when the window is activated. X11 already set the urgency hint and Windows `FlashWindowEx`. Evidence: the `attention`
 self-test reads KWin's `demandsAttention` for the ringing window (`HANDOFF.md` §1). Upstream: yes.
+
+## 0018: activating with a forwarded token
+
+`gpui/src/platform.rs` (+8), `gpui/src/window.rs` (+6), `gpui_linux/src/linux/wayland/window.rs` (+11).
+`Window::activate_window_with_token(token)` and `PlatformWindow::activate_with_token` (default: `activate`). Wayland:
+`xdg_activation_v1.activate(token, surface)` with the token a second launch of the app got from the desktop
+(`XDG_ACTIVATION_TOKEN`, set by the launcher, the browser handing over a link, …) and handed to the running instance:
+with it the compositor gives the running window the focus, where its own request without recent input would only mark
+it. X11, Windows: `activate` (`_NET_ACTIVE_WINDOW`; `SetForegroundWindow`, which the second start allows with
+`AllowSetForegroundWindow`). GPUI had no way to use a token from another process (`gpui-notes.md` §2.9). Upstream:
+yes (any single-instance application on Wayland needs it).
 
 ## Considered and not patched
 

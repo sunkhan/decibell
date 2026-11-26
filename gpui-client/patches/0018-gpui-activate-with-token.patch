@@ -1,0 +1,58 @@
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index ae10f6d..87a321a 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -1334,6 +1334,14 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+         answers: &[PromptButton],
+     ) -> Option<oneshot::Receiver<usize>>;
+     fn activate(&self);
++    /// Activates the window with an activation token another process obtained from the desktop
++    /// (Wayland's `XDG_ACTIVATION_TOKEN`, handed over by a second launch of the application), which
++    /// lets it take the focus where a request of its own would only ask for attention. Platforms
++    /// without such tokens activate as `activate` does.
++    fn activate_with_token(&self, token: &str) {
++        let _ = token;
++        self.activate();
++    }
+     /// Requests that the operating system draw attention to this window.
+     fn request_attention(&self) {}
+     fn is_active(&self) -> bool;
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 6316217..f6a43d9 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -7340,6 +7340,12 @@ impl Window {
+         self.platform_window.activate();
+     }
+ 
++    /// Like [`Window::activate_window`], with an activation token another process got from the
++    /// desktop (Wayland's `XDG_ACTIVATION_TOKEN` of a second launch, forwarded to this one).
++    pub fn activate_window_with_token(&self, token: &str) {
++        self.platform_window.activate_with_token(token);
++    }
++
+     /// Requests that the operating system draw attention to this window.
+     pub fn request_attention(&self) {
+         self.platform_window.request_attention();
+diff --git a/crates/gpui_linux/src/linux/wayland/window.rs b/crates/gpui_linux/src/linux/wayland/window.rs
+index ad910b5..7884509 100644
+--- a/crates/gpui_linux/src/linux/wayland/window.rs
++++ b/crates/gpui_linux/src/linux/wayland/window.rs
+@@ -1912,6 +1912,17 @@ impl PlatformWindow for WaylandWindow {
+         }
+     }
+ 
++    fn activate_with_token(&self, token: &str) {
++        let state = self.borrow();
++        match &state.globals.activation {
++            Some(activation) => activation.activate(token.to_owned(), &state.surface),
++            None => {
++                drop(state);
++                self.activate();
++            }
++        }
++    }
++
+     /// An activation request with a token that names no input: the compositor never grants focus
+     /// for it and marks the window as demanding attention instead (KWin and Mutter flash its
+     /// taskbar entry until it is activated). Nothing while the window is active.
