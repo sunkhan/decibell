@@ -1,0 +1,44 @@
+[package]
+name = "decibell-search"
+description = "Message search and the text channel header's search box: the box with its filter chips, suggestion menu and date picker, the results panel in the right-panel slot with jump-to-message"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# The deterministic search state the screens are drawn from (the shell's and the chat's fixtures
+# plus a seeded search store), its JSON export for the Electron captures, and the screens.
+fixtures = ["decibell-shell/fixtures", "decibell-chat/fixtures", "dep:serde_json"]
+
+[[bin]]
+name = "decibell-search-fixture"
+path = "src/bin/search-fixture.rs"
+required-features = ["fixtures"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-text.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-shell.workspace = true
+decibell-chat.workspace = true
+decibell-richtext = { path = "../decibell-richtext" }
+decibell-attachments = { path = "../decibell-attachments" }
+# The member lookup of `from:` (`search_members`) and the event payloads of the fixtures. zbus on
+# async-io, as every crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+# The search days (`decibell_model::chat::search::Day` is chrono's `NaiveDate`); already the model's.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# `\p{L}`, `\p{N}`, `\p{M}` of the renderer's highlighter (already in the tree through GPUI).
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+serde_json = "1"

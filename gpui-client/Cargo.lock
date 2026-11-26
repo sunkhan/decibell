@@ -1743,6 +1743,7 @@ dependencies = [
  "decibell-home",
  "decibell-model",
  "decibell-picture-editor",
+ "decibell-search",
  "decibell-server-settings",
  "decibell-settings",
  "decibell-shell",
@@ -2016,6 +2017,30 @@ dependencies = [
  "idna",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "decibell-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "decibell-attachments",
+ "decibell-chat",
+ "decibell-common",
+ "decibell-core",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-richtext",
+ "decibell-shell",
+ "decibell-text",
+ "decibell-theme",
+ "decibell-ui",
+ "futures",
+ "gpui",
+ "log",
+ "serde_json",
+ "unicode-properties",
 ]
 
 [[package]]
