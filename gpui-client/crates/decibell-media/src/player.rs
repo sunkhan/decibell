@@ -116,6 +116,8 @@ pub struct Open {
     pub on_change: Box<dyn Fn() + Send + Sync>,
 }
 
+type PresentedHook = Box<dyn Fn(i64, Instant) + Send>;
+
 #[derive(Clone, Copy)]
 struct Mono {
     pts: i64,
@@ -173,7 +175,7 @@ struct Inner {
     seeks: AtomicU64,
     streams_opened: AtomicU64,
     /// Tests: every shown picture's media time and the instant it was handed over.
-    presented: Mutex<Option<Box<dyn Fn(i64, Instant) + Send>>>,
+    presented: Mutex<Option<PresentedHook>>,
 }
 
 impl Inner {
@@ -1047,7 +1049,7 @@ impl Control {
     /// Reads one packet if what it may turn into has somewhere to go.
     fn read(&mut self) -> Result<bool, String> {
         if self.at_end {
-            return Ok(self.drain_audio()?);
+            return self.drain_audio();
         }
         if self.stash.len() >= VIDEO_STASH {
             return Ok(false);

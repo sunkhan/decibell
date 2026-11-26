@@ -356,7 +356,7 @@ impl Renderer {
         let step = 1.0 / self.ramp;
         let mut consumed = false;
 
-        for frame in out.chunks_exact_mut(CHANNELS) {
+        for frame in out.as_chunks_mut::<CHANNELS>().0 {
             if flushing && self.envelope == 0.0 {
                 // The old position is silent: leave it.
                 read = start;
@@ -373,13 +373,10 @@ impl Renderer {
             // The way down from here takes `envelope × ramp` samples: once no more are left,
             // it must have started.
             let tail = remaining as f32 <= (self.envelope * self.ramp).ceil();
-            let target = if !wanted || flushing || tail || self.epoch == 0 {
-                0.0
-            } else if self.envelope == 0.0 && remaining < self.rebuffer && end == NO_END {
-                0.0
-            } else {
-                1.0
-            };
+            // From silence it starts only with enough buffered to be worth starting (or the
+            // end of the file in sight).
+            let starved = self.envelope == 0.0 && remaining < self.rebuffer && end == NO_END;
+            let target = if !wanted || flushing || tail || self.epoch == 0 || starved { 0.0 } else { 1.0 };
             if target > self.envelope {
                 self.envelope = (self.envelope + step).min(1.0);
             } else if target < self.envelope {
@@ -441,10 +438,8 @@ impl Renderer {
             notes |= note::ROOM;
         }
         let idle = self.envelope == 0.0 && !flushing && (!wanted || self.drained);
-        if idle && self.silent_frames >= self.settle {
-            if !shared.quiet.swap(true, RELAXED) {
-                notes |= note::QUIET;
-            }
+        if idle && self.silent_frames >= self.settle && !shared.quiet.swap(true, RELAXED) {
+            notes |= note::QUIET;
         }
         if notes != 0 {
             shared.note(notes);
@@ -620,7 +615,7 @@ mod tests {
         rig.run(30, Some(24_000));
         assert_smooth(&rig, "seek");
         let after = &rig.out[before..];
-        assert!(after.iter().any(|&x| x == 0.0), "silent between the two positions");
+        assert!(after.contains(&0.0), "silent between the two positions");
         assert_eq!(*after.last().unwrap(), -1.0, "the new position at full level");
         let zero = after.iter().position(|&x| x == 0.0).unwrap();
         assert!(zero <= 482, "the old position is gone within 10 ms: {zero}");

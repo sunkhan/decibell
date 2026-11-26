@@ -475,3 +475,30 @@ fn a_loop_and_play_at_the_end_start_again() {
     wait_for("the whole file again", LIMIT, || presented.lock().len() >= before + 45);
     wait_phase(&player, Phase::Ended, LIMIT);
 }
+
+#[test]
+fn a_paused_video_holds_its_picture_and_resumes_on_the_next_one() {
+    let hub = VideoHub::headless();
+    let (output, _) = TestOutput::recording(RATE, 30);
+    let player = open_bytes(asset("sync60.mp4"), Some(&hub), "pause", output.clone(), true);
+    let presented = collect_presented(&player);
+    wait_for("a second of it", LIMIT, || player.position() >= 1_000_000);
+    player.pause();
+    std::thread::sleep(Duration::from_millis(100));
+    let (count, last) = {
+        let presented = presented.lock();
+        (presented.len(), presented.last().unwrap().0)
+    };
+    // Long enough for the device to close and for the hub's three-second idle rule to matter.
+    std::thread::sleep(Duration::from_millis(4000));
+    assert_eq!(presented.lock().len(), count, "pictures while paused");
+    assert_eq!(output.live.load(Ordering::Relaxed), 0, "the device is closed while paused");
+    let position = player.position();
+    player.play();
+    wait_for("pictures after the resume", LIMIT, || presented.lock().len() >= count + 25);
+    let presented = presented.lock();
+    assert_eq!(presented[count].0, last + 40_000, "the picture after the pause is the next one");
+    assert!(presented[count..].windows(2).all(|pair| pair[1].0 == pair[0].0 + 40_000), "none skipped or repeated");
+    assert!((position - last).abs() <= 60_000, "paused at {position}, the last picture was {last}");
+    assert_eq!(player.stats().seeks, 0, "a resume needs no seek");
+}

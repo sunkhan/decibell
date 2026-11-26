@@ -170,10 +170,10 @@ impl AudioDecoder {
                 if self.scratch.len() < capacity * CHANNELS {
                     self.scratch.resize(capacity * CHANNELS, 0.0);
                 }
-                let mut out = self.scratch.as_mut_ptr().cast::<u8>();
+                let out = self.scratch.as_mut_ptr().cast::<u8>();
                 let converted = ff::swr_convert(
                     self.resampler,
-                    &mut out,
+                    &out,
                     capacity as c_int,
                     (*frame).extended_data.cast::<*const u8>(),
                     samples,

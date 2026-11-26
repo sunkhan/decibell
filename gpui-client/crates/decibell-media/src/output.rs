@@ -84,7 +84,7 @@ fn fill<T: Copy>(
         Some(mut renderer) => renderer.render(stereo, plays_at),
         None => stereo.fill(0.0),
     }
-    for (frame, out) in stereo.chunks_exact(CHANNELS).zip(data.chunks_exact_mut(channels)) {
+    for (frame, out) in stereo.as_chunks::<CHANNELS>().0.iter().zip(data.chunks_exact_mut(channels)) {
         match channels {
             1 => out[0] = convert((frame[0] + frame[1]) * 0.5),
             _ => {
@@ -197,6 +197,9 @@ impl Recording {
     }
 }
 
+/// A test stream's failure flag and the player's callback for it.
+type Unplug = (Arc<AtomicBool>, Arc<dyn Fn() + Send + Sync>);
+
 /// An output with no device behind it: a thread that pulls 10 ms blocks in real time, as a
 /// sound card would, and either keeps them (the tests' sink: sample-exact checks of what would
 /// have been heard) or throws them away (`DECIBELL_MEDIA_OUTPUT=null`: self-tests and
@@ -209,7 +212,7 @@ pub struct TestOutput {
     /// Streams open now.
     pub live: Arc<std::sync::atomic::AtomicU32>,
     /// The open stream's "device was unplugged" switch.
-    unplug: Mutex<Option<(Arc<AtomicBool>, Arc<dyn Fn() + Send + Sync>)>>,
+    unplug: Mutex<Option<Unplug>>,
 }
 
 impl TestOutput {

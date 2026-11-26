@@ -51,8 +51,6 @@ pub struct VideoTrack {
 pub struct AudioTrack {
     /// FFmpeg's name of the codec ("aac", "opus").
     pub codec: String,
-    pub sample_rate: u32,
-    pub channels: u32,
     pub(crate) index: c_int,
     pub(crate) time_base: ff::AVRational,
 }
@@ -253,8 +251,6 @@ impl Demuxer {
                     (*stream).discard = ff::AVDiscard::AVDISCARD_DEFAULT;
                     this.audio = Some(AudioTrack {
                         codec: codec_name(id),
-                        sample_rate: (*parameters).sample_rate.max(0) as u32,
-                        channels: (*parameters).ch_layout.nb_channels.max(0) as u32,
                         index: index as c_int,
                         time_base: (*stream).time_base,
                     });
