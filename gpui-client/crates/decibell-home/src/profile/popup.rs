@@ -258,7 +258,26 @@ impl ProfilePopup {
                                         ProfilePopup::join_and_watch(uid, server, channel.clone(), cx)
                                     })
                                 })
-                                .child(div().absolute().inset_0().bg(gradient))
+                                // `animate-pulse` under the poster: only while there is none (the
+                                // renderer's pulses beneath a loaded one too, unseen).
+                                .child({
+                                    let placeholder = div().absolute().inset_0().bg(gradient);
+                                    if self.thumbnail.is_none() && !cx.reduce_motion() {
+                                        placeholder
+                                            .with_animation(
+                                                ("popup-stream-pulse", self.opened),
+                                                Animation::new(Duration::from_secs(2)).repeat(),
+                                                |el, t| {
+                                                    // opacity 1 → 0.5 → 1, cubic-bezier(0.4, 0, 0.6, 1).
+                                                    let e = decibell_ui::motion::CubicBezier::new(0.4, 0., 0.6, 1.).y(f64::from(if t < 0.5 { t * 2. } else { 2. - t * 2. })) as f32;
+                                                    el.opacity(1. - 0.5 * e)
+                                                },
+                                            )
+                                            .into_any_element()
+                                    } else {
+                                        placeholder.into_any_element()
+                                    }
+                                })
                                 // The renderer's `CodecBadge` sits right of a zero-size box at the
                                 // preview's top-left and is clipped away: it never shows (mirrored).
                                 .children(self.thumbnail.clone().map(|image| {
