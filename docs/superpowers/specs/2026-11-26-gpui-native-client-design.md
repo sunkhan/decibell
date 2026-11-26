@@ -83,6 +83,14 @@ Targets (the Qt design's §3 ratios; the absolute figure is the ratio applied to
 
 Every phase logs its numbers against these. A feature that breaks one isn't done.
 
+**The GPU driver's memory** (owner, 2026-11-26). On NVIDIA's proprietary driver any process with a Vulkan
+swap chain carries tens of MB of the driver's own private memory (the GPUI hello-world: 62 MB private in all,
+under 20 MB of it the app's heap). Using the GPU matters more than that overhead, so hardware rendering and
+decode are never traded away for it. The memory row is reported as the total first; if the total is over
+the target, the driver's share is measured (a minimal Vulkan window on the same driver and session, same
+tool) and reported beside it, and the row is judged on the remainder, as the wakeup row already sets driver
+threads aside. Electron's figure is reported the same way (its GPU process carries the same driver).
+
 What the client does to meet them, as rules of the code:
 
 - **No polling.** A timer exists only for a named, live reason (slowmode countdown, 45 s ring, auto-away

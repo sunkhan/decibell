@@ -26,6 +26,9 @@ startup time and install size; every design choice is judged by those.
 - Resources: `tools/perf/measure.sh`; Electron measured on this machine first; the Qt design's §3 ratios hold in
   every phase and the numbers are logged here (§4). No polling timers, no frames rendered at idle, no per-frame
   allocation or copy on hot paths. A feature that breaks a target isn't done.
+- **RAM and the GPU driver** (owner, 2026-11-26): keep the GPU; the driver's own memory (~60 MB of any Vulkan
+  process on NVIDIA) doesn't fail the RAM target. Report total private memory first; if it is over, report the
+  driver's share (a minimal Vulkan window, same tool) beside it and judge the row on what is ours.
 - Linux is finished in this session; Windows code must compile (Windows Native Check on the branch); what only
   the owner can do goes in §6 and is not waited on.
 - A parity row is done only when it was run, with a self-test where possible.

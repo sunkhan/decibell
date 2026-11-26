@@ -140,7 +140,12 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   choice in `gpui-client/` is judged by those, measured with `tools/perf/` against the Electron client
   on the same machine (targets: the Qt design's §3 ratios). No polling timers, no frames rendered while
   nothing changes, no per-frame allocation or copy on hot paths; a feature that breaks a target isn't
-  done. GPUI is pinned to one Zed commit (`gpui-client/GPUI_PIN`, patches in `gpui-client/patches/`):
+  done. **The GPU driver's own memory doesn't fail the RAM target** (owner, 2026-11-26: using the GPU
+  matters more than the ~60 MB a Vulkan driver costs any process on NVIDIA): the target stays ≤ 1/3 of
+  Electron's idle private memory and the total is always reported first; if the total is over, the
+  driver's share (measured with a minimal Vulkan window on the same driver) is reported beside it and
+  the row is judged on what is ours, as the wakeup target already does with driver threads. Never drop
+  hardware rendering or decode to save that memory. GPUI is pinned to one Zed commit (`gpui-client/GPUI_PIN`, patches in `gpui-client/patches/`):
   read its source instead of trusting memory, and never copy from Zed's other crates (mostly GPL).
   Protocol, media and crypto stay in `crates/decibell-core`, shared with the Electron addon; anything
   touching it must pass Electron's whole bar too. The client is tested against the local stack
