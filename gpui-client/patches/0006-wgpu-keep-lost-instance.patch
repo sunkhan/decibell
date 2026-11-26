@@ -1,0 +1,21 @@
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index 5240ee7..e3b0d1f 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -2452,7 +2452,15 @@ impl WgpuRenderer {
+ 
+             // Drop old resources to release Arc<Device>/Arc<Queue> and GPU resources
+             self.state = RendererState::Released;
+-            *gpu_context.borrow_mut() = None;
++            if let Some(lost) = gpu_context.borrow_mut().take() {
++                // The lost context's instance is never destroyed. Other windows still render
++                // with it until their next frame; when the last of them let go,
++                // vkDestroyInstance ran while the new instance was in use, and NVIDIA's driver
++                // (620.73) then crashed in the new instance's next
++                // vkGetPhysicalDeviceSurfaceSupportKHR (a null call inside the driver). One
++                // leaked instance per device loss.
++                std::mem::forget(lost.instance.clone());
++            }
+ 
+             // Wait briefly for the GPU driver to stabilize, then try to
+             // recreate the context without software renderers. If this fails

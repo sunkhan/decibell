@@ -1,0 +1,48 @@
+[package]
+name = "decibell-video"
+description = "Stream playback: hardware video decode into textures GPUI draws without a CPU copy, software decode as the fallback"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Design reference: gpui-client/docs/video-design.md.
+#
+# FFmpeg comes from the client's own static prefix on Linux (tools/build-ffmpeg.sh ->
+# vendor/ffmpeg; .cargo/config.toml points pkg-config at it) and from vcpkg on Windows, exactly
+# as crates/decibell-core links it: one FFmpeg in the binary for decode and encode.
+
+[features]
+# Compile the platform-neutral half only (hub, queue, software decode into a counting sink): what
+# Windows builds until gpui_windows draws surfaces. On Linux it exists to type-check that
+# configuration: `cargo check -p decibell-video --features no-gpu`.
+no-gpu = []
+# The glue to `decibell-core` (`VideoHub::push_frame`, `From<FrameBuf> for Packet`,
+# `enable_frame_pool`). The app turns it on; without it the crate does not build the core.
+core = ["dep:decibell-core"]
+
+[dependencies]
+gpui.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+parking_lot = "0.12"
+# The same line as decibell-model's, so the core's features do not diverge.
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_wgpu.workspace = true
+ash = "0.38"
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "static"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec"] }
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[[test]]
+name = "alloc"
+path = "tests/alloc.rs"

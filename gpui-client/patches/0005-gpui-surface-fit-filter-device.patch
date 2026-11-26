@@ -1,0 +1,332 @@
+diff --git a/crates/gpui_wgpu/src/shaders.wgsl b/crates/gpui_wgpu/src/shaders.wgsl
+index cb48f5b..23cd269 100644
+--- a/crates/gpui_wgpu/src/shaders.wgsl
++++ b/crates/gpui_wgpu/src/shaders.wgsl
+@@ -1473,6 +1473,10 @@ struct SurfaceParams {
+     // Offset of the chroma samples, in texture coordinates.
+     chroma_offset: vec2<f32>,
+     pad: vec2<f32>,
++    // The bounds the corner radii round (`bounds` is the fitted picture inside them).
++    clip_bounds: Bounds,
++    // The part of the picture shown in `bounds`: origin and size in texture coordinates.
++    uv_rect: vec4<f32>,
+ }
+ 
+ @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
+@@ -1492,22 +1496,36 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
+     var out = SurfaceVarying();
+     let clipped = clip_to_mask(unit_vertex, surface_locals.bounds, surface_locals.content_mask);
+     out.position = to_device_position_impl(clipped.position);
+-    // The whole texture is shown in the unclipped bounds, so sample at the vertex's position within them.
+-    out.texture_position = clipped.unit_vertex;
++    // `uv_rect` of the texture is shown in the unclipped bounds, so sample at the vertex's position within them.
++    out.texture_position = surface_locals.uv_rect.xy + clipped.unit_vertex * surface_locals.uv_rect.zw;
+     return out;
+ }
+ 
+ @fragment
+ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
+-    let y_cb_cr = vec4<f32>(
+-        textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r,
+-        textureSampleLevel(t_cb_cr, s_surface, input.texture_position + surface_locals.chroma_offset, 0.0).rg,
+-        1.0);
++    // One output pixel covers `footprint` of the texture. Bilinear sampling is right up to two
++    // texels per pixel; a picture drawn smaller than that (a 1440p stream in a 320 px tile) would
++    // alias, so the footprint is averaged over a grid of up to 4x4 bilinear taps (8x8 texels).
++    // At full size and above this is one tap, as before.
++    let footprint = surface_locals.uv_rect.zw / max(surface_locals.bounds.size, vec2<f32>(1.0));
++    let texels = footprint * vec2<f32>(textureDimensions(t_y));
++    let taps = vec2<i32>(clamp(ceil(texels * 0.5), vec2<f32>(1.0), vec2<f32>(4.0)));
++    var sum = vec3<f32>(0.0);
++    for (var j = 0; j < taps.y; j++) {
++        for (var i = 0; i < taps.x; i++) {
++            let offset = (vec2<f32>(f32(i), f32(j)) + 0.5) / vec2<f32>(taps) - 0.5;
++            let position = input.texture_position + offset * footprint;
++            sum += vec3<f32>(
++                textureSampleLevel(t_y, s_surface, position, 0.0).r,
++                textureSampleLevel(t_cb_cr, s_surface, position + surface_locals.chroma_offset, 0.0).rg);
++        }
++    }
++    let y_cb_cr = vec4<f32>(sum / f32(taps.x * taps.y), 1.0);
+     // The targets hold gamma-encoded colour (see fs_quad), and so does video: no transfer function here.
+     let rgb = saturate(vec3<f32>(
+         dot(surface_locals.ycbcr_to_r, y_cb_cr),
+         dot(surface_locals.ycbcr_to_g, y_cb_cr),
+         dot(surface_locals.ycbcr_to_b, y_cb_cr)));
+-    let distance = quad_sdf(input.position.xy, surface_locals.bounds, surface_locals.corner_radii);
++    let distance = quad_sdf(input.position.xy, surface_locals.clip_bounds, surface_locals.corner_radii);
+     return blend_color(vec4<f32>(rgb, 1.0), saturate(0.5 - distance));
+ }
+diff --git a/crates/gpui_wgpu/src/wgpu_context.rs b/crates/gpui_wgpu/src/wgpu_context.rs
+index 2e0dd43..ef9eee0 100644
+--- a/crates/gpui_wgpu/src/wgpu_context.rs
++++ b/crates/gpui_wgpu/src/wgpu_context.rs
+@@ -57,6 +57,14 @@ impl DeviceErrorState {
+         self.lost.load(Ordering::Relaxed)
+     }
+ 
++    /// Marks the device lost although the driver did not say so: the renderer then abandons it
++    /// and creates a new one on its next frame, exactly as after a real loss. For testing what
++    /// an application built on the device does when it is replaced.
++    pub fn simulate_device_loss(&self) {
++        log::warn!("wgpu device marked lost on request");
++        self.lost.store(true, Ordering::Relaxed);
++    }
++
+     fn record(&self, error: String) {
+         let mut last_error = self.last_error.lock();
+         last_error.0 = last_error.0.wrapping_add(1);
+@@ -910,6 +918,11 @@ impl WgpuContext {
+         self.errors.device_lost()
+     }
+ 
++    /// See [`DeviceErrorState::simulate_device_loss`].
++    pub fn simulate_device_loss(&self) {
++        self.errors.simulate_device_loss()
++    }
++
+     /// The device-wide error state, shared with renderers on this device.
+     pub fn errors(&self) -> &Arc<DeviceErrorState> {
+         &self.errors
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index 16930f7..5240ee7 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -1,6 +1,6 @@
+ use crate::{
+-    CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurface, WgpuSurfaceFrame,
+-    WgpuSurfacePlanes,
++    CompositorGpuHint, DeviceErrorState, SurfaceFit, WgpuAtlas, WgpuContext, WgpuSurface,
++    WgpuSurfaceFrame, WgpuSurfacePlanes, WgpuSurfaceView,
+ };
+ use anyhow::{Context as _, Result};
+ use bytemuck::{Pod, Zeroable};
+@@ -116,6 +116,52 @@ struct SurfaceParams {
+     ycbcr_to_rgb: [[f32; 4]; 3],
+     chroma_offset: [f32; 2],
+     pad: [f32; 2],
++    /// What the corner radii round: the bounds the element painted (`bounds` is the fitted
++    /// picture inside them).
++    clip_bounds: PodBounds,
++    /// The part of the picture shown in `bounds`: origin and size in texture coordinates.
++    uv_rect: [f32; 4],
++}
++
++/// Where a picture of `picture` pixels goes in `bounds` (device pixels) and which part of it is
++/// shown: the fitted bounds, snapped to whole pixels, and the texture rectangle.
++fn fit_surface(bounds: PodBounds, picture: [f32; 2], fit: SurfaceFit) -> (PodBounds, [f32; 4]) {
++    let [width, height] = bounds.size;
++    if width <= 0.0 || height <= 0.0 {
++        return (bounds, [0.0, 0.0, 1.0, 1.0]);
++    }
++    let scale = [width / picture[0], height / picture[1]];
++    match fit {
++        SurfaceFit::Fill => (bounds, [0.0, 0.0, 1.0, 1.0]),
++        SurfaceFit::Contain => {
++            let scale = scale[0].min(scale[1]);
++            let size = [
++                (picture[0] * scale).round().clamp(1.0, width),
++                (picture[1] * scale).round().clamp(1.0, height),
++            ];
++            let origin = [
++                bounds.origin[0] + ((width - size[0]) / 2.0).round(),
++                bounds.origin[1] + ((height - size[1]) / 2.0).round(),
++            ];
++            (PodBounds { origin, size }, [0.0, 0.0, 1.0, 1.0])
++        }
++        SurfaceFit::Cover => {
++            let scale = scale[0].max(scale[1]);
++            let shown = [
++                (width / (picture[0] * scale)).min(1.0),
++                (height / (picture[1] * scale)).min(1.0),
++            ];
++            (
++                bounds,
++                [
++                    (1.0 - shown[0]) / 2.0,
++                    (1.0 - shown[1]) / 2.0,
++                    shown[0],
++                    shown[1],
++                ],
++            )
++        }
++    }
+ }
+ 
+ /// The bind group of one set of surface planes, kept for as long as the application keeps the
+@@ -1379,12 +1425,14 @@ impl WgpuRendererCore {
+         }
+ 
+         for (index, surface) in scene.surfaces.iter().enumerate() {
+-            let Some(frame) = surface
+-                .source
+-                .0
+-                .downcast_ref::<WgpuSurface>()
+-                .and_then(WgpuSurface::acquire)
+-            else {
++            let (source, fit) = match surface.source.0.downcast_ref::<WgpuSurfaceView>() {
++                Some(view) => (Some(&*view.surface), view.fit),
++                None => (
++                    surface.source.0.downcast_ref::<WgpuSurface>(),
++                    SurfaceFit::Fill,
++                ),
++            };
++            let Some(frame) = source.and_then(|source| source.acquire(&resources.device)) else {
+                 prepared.push(None);
+                 continue;
+             };
+@@ -1446,8 +1494,14 @@ impl WgpuRendererCore {
+ 
+             let chroma_size = frame.planes.chroma.texture().size();
+             let radii = &surface.corner_radii;
++            let luma_size = frame.planes.luma.texture().size();
++            let (fitted_bounds, uv_rect) = fit_surface(
++                surface.bounds.into(),
++                [luma_size.width.max(1) as f32, luma_size.height.max(1) as f32],
++                fit,
++            );
+             let params = SurfaceParams {
+-                bounds: surface.bounds.into(),
++                bounds: fitted_bounds,
+                 content_mask: surface.content_mask.bounds.into(),
+                 corner_radii: [
+                     radii.top_left.0,
+@@ -1461,6 +1515,8 @@ impl WgpuRendererCore {
+                     frame.color.chroma_offset[1] / chroma_size.height.max(1) as f32,
+                 ],
+                 pad: [0.0; 2],
++                clip_bounds: surface.bounds.into(),
++                uv_rect,
+             };
+             let params_offset = stride * index as u64;
+             resources.queue.write_buffer(
+diff --git a/crates/gpui_wgpu/src/wgpu_surface.rs b/crates/gpui_wgpu/src/wgpu_surface.rs
+index 3bd563b..4dec6f9 100644
+--- a/crates/gpui_wgpu/src/wgpu_surface.rs
++++ b/crates/gpui_wgpu/src/wgpu_surface.rs
+@@ -89,22 +89,54 @@ impl SurfaceColor {
+ }
+ 
+ /// One picture, ready to be sampled: every write to its planes has completed.
++///
++/// A decoder that cycles through a fixed set of planes can keep one `Arc<WgpuSurfaceFrame>` per
++/// set and publish it again and again: the set is free to be written when the decoder holds the
++/// only reference (`Arc::strong_count == 1`), so a picture costs no allocation.
+ pub struct WgpuSurfaceFrame {
+     pub planes: Arc<WgpuSurfacePlanes>,
+     pub color: SurfaceColor,
+-    /// Dropped once no scene shows the picture and every submission sampling it has finished on
+-    /// the GPU. A decoder puts a token here to learn when it may overwrite the planes.
++    /// The device the planes live on. A renderer on another device (the one created after a
++    /// device loss) draws nothing for this picture instead of binding foreign textures.
++    pub device: wgpu::Device,
++    /// Dropped with the frame: once no scene shows the picture and every submission sampling it
++    /// has finished on the GPU. For owners that make a frame per picture.
+     pub in_use: Option<Box<dyn Any + Send + Sync>>,
+ }
+ 
++/// How a picture is placed in the bounds an element painted (CSS `object-fit`). The renderer
++/// applies it when it draws, from the size of the picture it draws: a stream that changes
++/// resolution keeps its fit without the element being painted again.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum SurfaceFit {
++    /// Stretch to the bounds.
++    #[default]
++    Fill,
++    /// The whole picture, centred, bars left over (the element paints what is behind them).
++    Contain,
++    /// Fill the bounds, cropping the picture's overflow equally on both sides.
++    Cover,
++}
++
++/// A [`WgpuSurface`] with a fit: what an element wraps in a `gpui::ExternalSurface` when it wants
++/// something other than [`SurfaceFit::Fill`]. Corner radii round the painted bounds (the element's
++/// box), not the fitted picture.
++pub struct WgpuSurfaceView {
++    pub surface: Arc<WgpuSurface>,
++    pub fit: SurfaceFit,
++}
++
+ /// A place in the scene that shows the newest picture it was given.
+ #[derive(Default)]
+ pub struct WgpuSurface {
+-    /// The newest picture and its sequence number (1-based count of pictures set).
+-    latest: Mutex<(u64, Option<Arc<WgpuSurfaceFrame>>)>,
++    /// The newest picture, its sequence number (1-based count of pictures set) and the tag it
++    /// was set with.
++    latest: Mutex<(u64, u64, Option<Arc<WgpuSurfaceFrame>>)>,
+     last_drawn: AtomicU64,
+     pictures_drawn: AtomicU64,
+     draws: AtomicU64,
++    /// Called with a picture's tag the first time a rendered frame draws it.
++    observer: std::sync::OnceLock<Box<dyn Fn(u64) + Send + Sync>>,
+ }
+ 
+ impl WgpuSurface {
+@@ -114,15 +146,36 @@ impl WgpuSurface {
+ 
+     /// Replaces the picture. Callable from any thread; the caller then asks the window that
+     /// shows the surface for a present (`Window::request_present`, on the main thread).
+-    pub fn set_frame(&self, frame: Arc<WgpuSurfaceFrame>) {
+-        let mut latest = self.latest.lock();
+-        latest.0 += 1;
+-        latest.1 = Some(frame);
++    /// `tag` is the caller's own number for the picture, handed to the draw observer.
++    pub fn set_frame(&self, frame: Arc<WgpuSurfaceFrame>, tag: u64) {
++        let previous = {
++            let mut latest = self.latest.lock();
++            latest.0 += 1;
++            latest.1 = tag;
++            latest.2.replace(frame)
++        };
++        // Released outside the lock: the last reference frees GPU objects.
++        drop(previous);
+     }
+ 
+     /// Stops showing a picture (the surface draws nothing).
+     pub fn clear(&self) {
+-        self.latest.lock().1 = None;
++        let previous = self.latest.lock().2.take();
++        drop(previous);
++    }
++
++    /// Installs the function called (on the render thread, with the picture's tag) the first
++    /// time a rendered frame draws each picture: the "presented" timestamp of a video frame.
++    /// It must be cheap and must not block. Once per surface; a second call returns false.
++    pub fn set_draw_observer(&self, observer: Box<dyn Fn(u64) + Send + Sync>) -> bool {
++        self.observer.set(observer).is_ok()
++    }
++
++    /// The size in pixels of the newest picture's luma plane.
++    pub fn picture_size(&self) -> Option<(u32, u32)> {
++        let latest = self.latest.lock();
++        let size = latest.2.as_ref()?.planes.luma.texture().size();
++        Some((size.width, size.height))
+     }
+ 
+     /// How many distinct pictures reached a rendered frame.
+@@ -136,14 +189,21 @@ impl WgpuSurface {
+     }
+ 
+     /// The picture to draw now. Called by the renderer once per surface per frame.
+-    pub(crate) fn acquire(&self) -> Option<Arc<WgpuSurfaceFrame>> {
+-        let (sequence, frame) = {
++    /// `None` when there is no picture or it lives on another device than `device`.
++    pub(crate) fn acquire(&self, device: &wgpu::Device) -> Option<Arc<WgpuSurfaceFrame>> {
++        let (sequence, tag, frame) = {
+             let latest = self.latest.lock();
+-            (latest.0, latest.1.clone()?)
++            (latest.0, latest.1, latest.2.clone()?)
+         };
++        if frame.device != *device {
++            return None;
++        }
+         self.draws.fetch_add(1, Ordering::Relaxed);
+         if self.last_drawn.swap(sequence, Ordering::Relaxed) != sequence {
+             self.pictures_drawn.fetch_add(1, Ordering::Relaxed);
++            if let Some(observer) = self.observer.get() {
++                observer(tag);
++            }
+         }
+         Some(frame)
+     }

@@ -1965,6 +1965,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "decibell-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ash",
+ "cc",
+ "decibell-core",
+ "decibell-harness",
+ "decibell-ui",
+ "ffmpeg-sys-next",
+ "futures",
+ "gpui",
+ "gpui_wgpu",
+ "log",
+ "parking_lot",
+ "pkg-config",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
