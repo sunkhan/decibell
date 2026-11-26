@@ -73,6 +73,10 @@ pub mod encoder_linux;
 // VAAPI input (upload + GPU convert) for AMD / Intel on Linux.
 #[cfg(target_os = "linux")]
 mod encoder_vaapi;
+// Synthetic-frame encoder harness: every backend's output checked and
+// decoded (tests only).
+#[cfg(all(test, target_os = "linux"))]
+mod encoder_harness;
 // The harnesses' synthetic screen and output checks (tests only).
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod encoder_checks;
