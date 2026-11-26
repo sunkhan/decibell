@@ -160,6 +160,9 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
                 CoreError::other("Must be in a voice channel or call to share screen")
             })?;
             let media_socket = voice.media_socket();
+            // Our watchers' keyframe requests come in on the session's video
+            // receive thread, which runs while this demand is held.
+            let recv_demand = voice.video_recv_demand();
             // Stream audio rides the voice UDP socket — receivers demux by
             // packet type (STREAM_AUDIO = 6) in the main voice pipeline.
             // Grabbed alongside media_socket so we don't have to re-borrow
@@ -208,7 +211,8 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
             #[allow(unused_mut)]
             let mut size = (args.width, args.height);
 
-            let mut engine = VideoEngine::start(media_socket, sender_id, self_key, mls_ring.clone());
+            let mut engine =
+                VideoEngine::start(media_socket, sender_id, self_key, mls_ring.clone(), Some(recv_demand));
             engine.set_frame_rate(args.fps);
             let session_id = engine.session_id();
             // Remember where the stream is announced so a later stop without
@@ -681,6 +685,7 @@ pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> Result<(),
                 .ok_or_else(|| CoreError::other("Not in a voice channel"))?;
             let media_socket = voice.media_socket();
             let voice_socket = voice.voice_socket();
+            let recv_demand = voice.video_recv_demand();
             // The new channel's group: its epoch keys seal the stream from here
             // on (nothing is sent until its first epoch lands). Never fall back
             // to the old group's keys, or to plaintext.
@@ -699,7 +704,7 @@ pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> Result<(),
             // force a keyframe so the new channel's watchers get an IDR
             // immediately.
             if let Some(video) = s.video_engine.as_ref() {
-                video.retarget(media_socket, Some(ring.clone()));
+                video.retarget(media_socket, Some(ring.clone()), recv_demand);
                 // Native-encode paths force their own keyframe; the renderer forces
                 // one for the WebCodecs path.
                 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -853,11 +858,13 @@ pub struct WatchStreamArgs {
 pub async fn watch_stream(args: WatchStreamArgs) -> Result<(), CoreError> {
     crate::rt::run(async move {
         // Record the watch so the video receive thread forwards this streamer's
-        // frames (it drops frames for un-watched senders).
+        // frames (it drops frames for un-watched senders). The session's first
+        // watch starts that thread, which pings the relay at once.
         crate::media::watch_stream_add(&args.target_uid.to_string());
         let state_arc = state::shared();
-        let (write_tx, data) = {
+        let (write_tx, data, bound) = {
             let s = state_arc.lock().await;
+            let bound = s.voice_engine.as_ref().and_then(|v| v.video_path_bound());
             let client = s.communities.get(&args.server_id).ok_or_else(|| {
                 CoreError::other(format!(
                     "Not connected to community {}",
@@ -876,8 +883,17 @@ pub async fn watch_stream(args: WatchStreamArgs) -> Result<(), CoreError> {
                 }),
                 None,
             );
-            (tx, pkt)
+            (tx, pkt, bound)
         };
+
+        // Ask for the stream once the relay has bound our media endpoint
+        // (its echo of the thread's first PING; immediate when the thread
+        // already ran), so the keyframe the server requests for us isn't
+        // relayed to an endpoint it hasn't bound. Bounded: a lost round trip
+        // costs at most this, then the request goes anyway.
+        if let Some(mut bound) = bound {
+            let _ = tokio::time::timeout(WATCH_BIND_WAIT, bound.wait_for(|b| *b)).await;
+        }
 
         match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
             Ok(Ok(())) => Ok(()),
@@ -887,6 +903,9 @@ pub async fn watch_stream(args: WatchStreamArgs) -> Result<(), CoreError> {
     })
     .await
 }
+
+/// How long `watch_stream` waits for the relay to bind our media endpoint.
+const WATCH_BIND_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[cfg_attr(feature = "napi", napi_derive::napi(object))]
 pub struct StopWatchingArgs {

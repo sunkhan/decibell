@@ -497,7 +497,10 @@ cookie; at most one per session per socket per 250 ms, only in reply to a datagr
 lives 10 s and is single-use), and only a `BIND_ECHO` (type 11, the UDP key in bytes 1–32, the cookie)
 from that address binds it. Until then the relay sends that session nothing on that socket. PINGs are
 echoed only to the bound endpoint. The client answers challenges inside its socket wrapper and pings at
-once on joining, then every 500 ms until the first echo; a NAT rebinding re-binds on the next datagram.
+once, then every 500 ms until the first echo: the voice socket on joining; the media socket when its
+receive thread starts (the session's first watch or stream; a P2P call's whole length), and
+`watch_stream` sends the watch request once that PING's echo shows the endpoint bound (at most 1 s). A NAT
+rebinding re-binds on the next datagram.
 
 ### 6.3 Packet layouts
 
@@ -611,7 +614,9 @@ The shipping client is `electron-client/`. Its internals, gotchas and open items
   STREAM_AUDIO on the voice socket.
 - **Watching**: native receive thread reassembles frames (FEC, NACK, keyframe requests) and decrypts
   them, then hands whole encoded frames to the renderer, which decodes with WebCodecs `VideoDecoder` into
-  a canvas (self-preview too).
+  a canvas (self-preview too). The thread (`video_recv_host.rs`) runs only while the session watches a
+  stream or sends one (a streamer's watchers' keyframe requests arrive on it), and for the whole of a P2P
+  call (its PINGs keep the punched media path open); a voice session with neither has no such thread.
 - **Thumbnails**: native paths encode JPEGs on a worker (`thumb_encode.rs`); the WebCodecs path sends a
   renderer-made JPEG (`send_stream_thumbnail`).
 - **Renderer-side audio**: the mic test outside a call and UI sounds (`src/utils/sounds.ts`) use Web

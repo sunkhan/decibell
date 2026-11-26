@@ -122,9 +122,15 @@ pub fn is_stream_frame_sink(username: &str) -> bool {
     stream_frame_sinks().load().contains(username)
 }
 
+/// Writers of STREAM_FRAME_SINKS hold this: each is a load-clone-store, so two
+/// at once (subscribe / unsubscribe from different threads) could lose one's
+/// change. Readers stay lock-free.
+static STREAM_FRAME_SINKS_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Add / remove `username` as a frame sink. Writers are rare (subscribe /
 /// unsubscribe), so the copy-on-write clone is fine.
 pub fn set_stream_frame_sink(username: &str, enabled: bool) {
+    let _w = STREAM_FRAME_SINKS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let sinks = stream_frame_sinks();
     let cur = sinks.load();
     if cur.contains(username) == enabled {
@@ -146,6 +152,7 @@ pub fn set_stream_frame_sink(username: &str, enabled: bool) {
 
 /// Drop every sink (renderer (re)load: its subscribers are gone).
 pub fn clear_stream_frame_sinks() {
+    let _w = STREAM_FRAME_SINKS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     stream_frame_sinks().store(std::sync::Arc::new(std::collections::HashSet::new()));
 }
 

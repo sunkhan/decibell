@@ -304,13 +304,9 @@ mod tests {
         )
     }
 
-    /// Watch `key` and put it on screen. Both sets are updated by load,
-    /// clone, store, so two tests adding keys at once could lose one: the
-    /// lock serialises this module's tests (nothing else in the binary
-    /// writes them).
+    /// Watch `key` and put it on screen. (Both sets' writers serialise
+    /// themselves: concurrent tests can't lose each other's keys.)
     fn watch(key: &str) {
-        static SETS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = SETS.lock().unwrap_or_else(|e| e.into_inner());
         events::testing::install_recording_sink();
         crate::media::watch_stream_add(key);
         events::set_stream_frame_sink(key, true);

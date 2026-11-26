@@ -120,6 +120,8 @@ pub mod video_packet;
 pub mod video_pipeline;
 pub mod video_receiver;
 mod video_recv;
+mod video_recv_host;
+pub use video_recv_host::VideoRecvDemand;
 pub mod voice_gate;
 pub mod default_device_watch;
 pub mod frame_crypto;
@@ -164,31 +166,54 @@ fn watched_streams() -> &'static arc_swap::ArcSwap<std::collections::HashSet<Str
         .get_or_init(|| arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new()))
 }
 
-/// Mark a remote streamer as watched (frames for them are forwarded to JS).
-pub fn watch_stream_add(username: &str) {
+/// Writers of WATCHED_STREAMS hold this: each is a load-clone-store, so two at
+/// once could lose one's change (readers stay lock-free). It also orders the
+/// video receive threads' start / stop (`video_recv_host`) after the changes
+/// that caused them.
+static WATCH_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Apply `change` (true when it changed the set) and let every live voice
+/// session start or stop its video receive thread to match.
+fn update_watched(change: impl FnOnce(&mut std::collections::HashSet<String>) -> bool) {
+    let _w = WATCH_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let cur = watched_streams().load();
-    if cur.contains(username) {
+    let mut next = (**cur).clone();
+    if !change(&mut next) {
         return;
     }
-    let mut next = (**cur).clone();
-    next.insert(username.to_string());
     watched_streams().store(Arc::new(next));
+    video_recv_host::reconcile_all();
 }
 
-/// Stop forwarding a streamer's frames.
-pub fn watch_stream_remove(username: &str) {
-    let cur = watched_streams().load();
-    if !cur.contains(username) {
+fn anything_watched() -> bool {
+    !watched_streams().load().is_empty()
+}
+
+/// Mark a remote streamer as watched (frames for them are forwarded to JS).
+/// The first watch of a session starts its video receive thread.
+pub fn watch_stream_add(username: &str) {
+    if watched_streams().load().contains(username) {
         return;
     }
-    let mut next = (**cur).clone();
-    next.remove(username);
-    watched_streams().store(Arc::new(next));
+    update_watched(|set| set.insert(username.to_string()));
+}
+
+/// Stop forwarding a streamer's frames. The last one stops the session's
+/// video receive thread (unless it streams).
+pub fn watch_stream_remove(username: &str) {
+    if !watched_streams().load().contains(username) {
+        return;
+    }
+    update_watched(|set| set.remove(username));
 }
 
 /// Drop all watches (voice session ended / switched channels).
 pub fn watched_streams_clear() {
-    watched_streams().store(Arc::new(std::collections::HashSet::new()));
+    update_watched(|set| {
+        let had = !set.is_empty();
+        set.clear();
+        had
+    });
 }
 
 pub(crate) fn is_watched(username: &str) -> bool {
@@ -203,17 +228,12 @@ pub(crate) fn is_watched(username: &str) -> bool {
 /// shared event channel.
 pub struct VoiceEngine {
     audio_thread: Option<JoinHandle<()>>,
-    video_recv_thread: Option<JoinHandle<()>>,
     event_bridge: Option<tokio::task::JoinHandle<()>>,
     control_tx: mpsc::Sender<ControlMessage>,
-    /// Stop flag for the video receive thread, and the waker that ends its
-    /// wait (it sleeps until a datagram or its next timed job). The audio
-    /// thread is driven by mpsc ControlMessage::Shutdown, but the video recv
-    /// loop has no exit condition but these — without them `.join()` on stop
-    /// would block indefinitely, leaving Electron's process hanging in the
-    /// background after window close.
-    video_recv_stop: Arc<AtomicBool>,
-    video_recv_waker: Arc<udp_recv::Waker>,
+    /// The video receive thread: it runs only while a stream is watched or
+    /// sent in this session, or for the whole of a P2P call
+    /// (`video_recv_host`). Shut down (stopped, woken, joined) in `stop`.
+    video_recv: Arc<video_recv_host::VideoRecvHost>,
     voice_socket: Arc<MediaSocket>,
     media_socket: Arc<MediaSocket>,
     sender_id: String,
@@ -361,52 +381,21 @@ impl VoiceEngine {
             })
             .map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
 
-        // Monotonic epoch for stream-frame presentation timestamps (see
-        // video_recv.rs).
-        let video_ts_epoch = std::time::Instant::now();
-        let video_recv_stop = Arc::new(AtomicBool::new(false));
-        let video_recv_stop_thread = video_recv_stop.clone();
-        let video_recv_waker = Arc::new(
-            udp_recv::Waker::new().map_err(|e| format!("Video receive waker: {}", e))?,
+        // The video receive thread starts when it is first needed (a watch,
+        // a stream sent on this media socket), or now for a P2P call.
+        // Monotonic epoch for its stream-frame presentation timestamps (see
+        // video_recv.rs), kept across its restarts.
+        let video_recv = video_recv_host::VideoRecvHost::start(
+            video_recv_host::VideoRecvParams {
+                socket: media_socket.clone(),
+                sender_id: sender_id.clone(),
+                ring: ring_video,
+                ts_epoch: std::time::Instant::now(),
+                always: media_socket.is_sealed(),
+            },
+            event_tx_video,
+            Box::new(anything_watched),
         );
-        let video_recv_waker_thread = video_recv_waker.clone();
-        let media_socket_for_video_recv = media_socket.clone();
-        let sender_id_for_video = sender_id.clone();
-        let video_recv_thread = thread::Builder::new()
-            .name("decibell-video-recv".to_string())
-            .spawn(move || {
-                // Guard the receive loop like the audio/encoder threads. It
-                // processes fully untrusted network input but was previously
-                // unguarded: a panic here (crafted packet, future invariant
-                // change) would unwind and silently kill video for every
-                // watched stream with no error and no restart. Catch it and
-                // surface an actionable message instead.
-                let panic_tx = event_tx_video.clone();
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_video_recv_thread(
-                        media_socket_for_video_recv,
-                        sender_id_for_video,
-                        event_tx_video,
-                        video_recv_stop_thread,
-                        video_recv_waker_thread,
-                        ring_video,
-                        video_ts_epoch,
-                    );
-                }));
-                if let Err(e) = outcome {
-                    let msg = e
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| e.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "unknown error".to_string());
-                    log::error!("[video-recv] thread panicked: {}", msg);
-                    let _ = panic_tx.send(VoiceEvent::Error(format!(
-                        "Video receive crashed ({}) — screen share playback stopped",
-                        msg
-                    )));
-                }
-            })
-            .map_err(|e| format!("Failed to spawn video recv thread: {}", e))?;
 
         // Voice event bridge (video frames go from the receive thread straight
         // to the event sink). Runs on Tokio's blocking pool so it
@@ -458,11 +447,9 @@ impl VoiceEngine {
 
         Ok(VoiceEngine {
             audio_thread: Some(audio_thread),
-            video_recv_thread: Some(video_recv_thread),
             event_bridge: Some(event_bridge),
             control_tx,
-            video_recv_stop,
-            video_recv_waker,
+            video_recv,
             voice_socket,
             media_socket,
             sender_id,
@@ -484,14 +471,10 @@ impl VoiceEngine {
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
         }
-        // Signal the video recv thread to exit and wake it out of its wait.
-        // Without this the join below would block indefinitely: receive
-        // errors never end the loop (review A2), only this flag does.
-        self.video_recv_stop.store(true, Ordering::Relaxed);
-        self.video_recv_waker.wake();
-        if let Some(handle) = self.video_recv_thread.take() {
-            let _ = handle.join();
-        }
+        // Stop the video recv thread for good (flag, wake, join) and drop
+        // its event sender, so the bridge below can end. Receive errors
+        // never end that loop (review A2), only its stop flag does.
+        self.video_recv.shut_down();
         if let Some(handle) = self.event_bridge.take() {
             handle.abort();
         }
@@ -585,6 +568,20 @@ impl VoiceEngine {
         self.voice_socket.clone()
     }
 
+    /// Keep this session's video receive thread running while a stream is
+    /// sent on its media socket (the `VideoEngine` holds it): it brings the
+    /// watchers' keyframe requests and answers the relay's bind challenges.
+    pub fn video_recv_demand(&self) -> VideoRecvDemand {
+        self.video_recv.demand()
+    }
+
+    /// While the video receive thread runs: becomes true once the relay
+    /// echoed its media PING, i.e. bound our media endpoint. `watch_stream`
+    /// waits for it (bounded) before asking for a stream.
+    pub fn video_path_bound(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.video_recv.bound()
+    }
+
     pub fn media_socket(&self) -> Arc<MediaSocket> {
         self.media_socket.clone()
     }
@@ -619,6 +616,7 @@ fn run_video_recv_thread(
     waker: Arc<udp_recv::Waker>,
     ring: Option<frame_crypto::SharedKeyRing>,
     ts_epoch: std::time::Instant,
+    bound: tokio::sync::watch::Sender<bool>,
 ) {
     use std::time::{Duration, Instant};
     use udp_recv::Ready;
@@ -738,7 +736,12 @@ fn run_video_recv_thread(
                     // endpoint, so from here on the 3 s cadence will do.
                     // (Bind challenges are answered inside MediaSocket,
                     // which hands this loop an empty read for them.)
-                    video_recv::Control::PingEcho => media_ping_answered = true,
+                    video_recv::Control::PingEcho => {
+                        if !media_ping_answered {
+                            media_ping_answered = true;
+                            bound.send_replace(true);
+                        }
+                    }
                     video_recv::Control::None => {}
                 }
             }
@@ -770,6 +773,10 @@ pub struct VideoEngine {
     /// native thumbnail sender where to post, so a stream carried into
     /// another channel posts there.
     announce_target: AnnounceTarget,
+    /// Keeps the voice session's video receive thread running while we
+    /// stream (watchers' keyframe requests come in on it). Swapped for the
+    /// new session's on a channel move (`retarget`).
+    recv_demand: std::sync::Mutex<Option<VideoRecvDemand>>,
     /// JS-side encoder may emit an `EncodedFrame` self-preview pump too
     /// — but the local self-preview is just the raw VideoFrame painted
     /// to a canvas in the StreamCapture component, so the receive-side
@@ -892,6 +899,7 @@ impl VideoEngine {
         sender_id: String,
         self_username: String,
         ring: Option<frame_crypto::SharedKeyRing>,
+        recv_demand: Option<VideoRecvDemand>,
     ) -> Self {
         let sender = Arc::new(video_pipeline::VideoSender::new(socket, sender_id, ring));
         // Publish the sender to the hot-path slot so `send_video_frame`
@@ -904,6 +912,7 @@ impl VideoEngine {
             self_username,
             session_id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             announce_target: AnnounceTarget::default(),
+            recv_demand: std::sync::Mutex::new(recv_demand),
             _phantom: std::marker::PhantomData,
             #[cfg(target_os = "windows")]
             win_capture: None,
@@ -927,8 +936,21 @@ impl VideoEngine {
     /// channel: the new VoiceEngine has a fresh media socket and the channel
     /// its own group, and swapping both here re-routes outgoing frames
     /// without tearing down (and re-prompting) the capture pipeline.
-    pub fn retarget(&self, socket: Arc<MediaSocket>, ring: Option<frame_crypto::SharedKeyRing>) {
+    /// `recv_demand` is the new session's: its video receive thread starts
+    /// (watchers' keyframe requests), the old session's is let go.
+    pub fn retarget(
+        &self,
+        socket: Arc<MediaSocket>,
+        ring: Option<frame_crypto::SharedKeyRing>,
+        recv_demand: VideoRecvDemand,
+    ) {
         self.sender.retarget(socket, ring);
+        let old = self
+            .recv_demand
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(recv_demand);
+        drop(old);
     }
 
     pub fn session_id(&self) -> u64 {
@@ -1519,6 +1541,53 @@ pub fn configure_udp_socket(socket: &UdpSocket) {
 }
 
 #[cfg(test)]
+mod watch_set_tests {
+    use super::*;
+
+    /// The watch set and the frame-sink set were updated by load, clone,
+    /// store: two writers at once could each store a set without the other's
+    /// change. Many threads adding and then removing their own keys at once
+    /// must leave every addition visible, then every removal.
+    #[test]
+    fn concurrent_writers_never_lose_an_update() {
+        let keys = |t: usize| (0..40).map(move |i| format!("race-{t}-{i}"));
+        let run = |add: bool| {
+            let threads: Vec<_> = (0..8)
+                .map(|t| {
+                    std::thread::spawn(move || {
+                        for k in keys(t) {
+                            if add {
+                                watch_stream_add(&k);
+                                events::set_stream_frame_sink(&k, true);
+                            } else {
+                                watch_stream_remove(&k);
+                                events::set_stream_frame_sink(&k, false);
+                            }
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+        };
+        run(true);
+        for t in 0..8 {
+            for k in keys(t) {
+                assert!(is_watched(&k), "{k} lost from the watch set");
+                assert!(events::is_stream_frame_sink(&k), "{k} lost from the frame sinks");
+            }
+        }
+        run(false);
+        for t in 0..8 {
+            for k in keys(t) {
+                assert!(!is_watched(&k) && !events::is_stream_frame_sink(&k), "{k} still there");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod media_key_tests {
     use super::media_uid;
 
@@ -1559,7 +1628,8 @@ mod video_recv_tests {
         let waker = Arc::new(udp_recv::Waker::new().unwrap());
         let handle = {
             let (socket, stop, waker) = (socket.clone(), stop.clone(), waker.clone());
-            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, waker, None, Instant::now()))
+            let (bound, _) = tokio::sync::watch::channel(false);
+            thread::spawn(move || run_video_recv_thread(socket, "7".into(), event_tx, stop, waker, None, Instant::now(), bound))
         };
         for _ in 0..20 {
             let _ = socket.send(b"\x05ping");

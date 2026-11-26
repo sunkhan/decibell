@@ -4944,3 +4944,12 @@ native client: no polling timers. Per item (scenario A = alone and muted, on the
   fires. The two event bridges blocked in `recv_timeout(50 ms)` (20 wakeups/s on a runtime thread); they block in
   `recv` and end when their senders are gone. Result: voice-recv 0.3/s, video-recv 0.7/s, `decibell-rt`
   24.7 → 5.2/s; the process 1,380 → 767 wakeups/s (the rest: the device clocks and `decibell-audio`).
+- **The video receive thread runs only when it has a use** (`media/video_recv_host.rs`). It existed for every voice
+  session though nobody streamed. Now it starts on the session's first watch (`watch_stream_add`) or when a
+  `VideoEngine` streams on its media socket (it holds a `VideoRecvDemand`: watchers' keyframe requests arrive
+  on that thread), stops with the last of them, and runs for the whole of a P2P call (its PINGs keep the
+  punched media path open; the peer's are reflected). A started thread pings the relay at once, and
+  `watch_stream` sends `WATCH_STREAM_REQ` once the PING's echo shows our media endpoint bound (at most 1 s), so
+  the keyframe the server requests for a new watcher isn't relayed to an endpoint it hasn't bound. Watch-set
+  and frame-sink writers had a lost-update race (load-clone-store from several threads); both now serialise
+  their writers. Scenario A: no `decibell-video-recv` thread (38 → 37 threads).
