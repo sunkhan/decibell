@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 
 use futures::channel::mpsc::UnboundedSender;
-use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
     HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
@@ -34,7 +34,8 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 /// The window's HWND (GPUI's window implements `HasWindowHandle` with a `Win32` handle).
 pub fn hwnd(window: &gpui::Window) -> Option<HWND> {
-    match window.window_handle().ok()?.as_raw() {
+    // The trait's method by name: `Window::window_handle` is GPUI's own (an `AnyWindowHandle`).
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut core::ffi::c_void)),
         _ => None,
     }
