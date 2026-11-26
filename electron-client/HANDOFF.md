@@ -668,6 +668,30 @@ Each of these cost a debugging round; most were recorded in the owner's Claude m
   per call); FFmpeg 8.0 cannot derive a QSV frames context from a fixed D3D11 pool of render-target
   textures (the texture list is still empty at derive time): Quick Sync uses a dynamic pool; FFmpeg 8.1
   turns that fixed pool into a texture array, which is why vcpkg stays pinned (`ffmpeg-encoders.md`).
+- **Encoder quality** (2026-11-26, the same design record, "Quality"; measured with
+  `cargo test --release --lib quality_bench -- --ignored --nocapture` in `crates/decibell-core`, the scratch
+  FFmpeg prefix): what the NVENC settings are and why, each found by measuring.
+  **`delay`**: FFmpeg's nvenc holds a packet until `nb_surfaces - 1` (3) frames are queued (`output_ready`
+  in `nvenc.c`), so every NVENC stream on both OSes ran two frames late (67 ms at 30 fps, 400 ms at 5 fps);
+  `delay=0` up to 1080p60's pixel rate, `delay=2` (one frame) above it, where the waiting call would not
+  fit the frame interval. Slides over H.264 was worse: `preset=p7 tune=hq` brought a 28-frame look-ahead,
+  over five seconds at 5 fps, which `delay=0` leaves no room for (FFmpeg logs "Lookahead not enabled"
+  when such a stream opens: expected). **`multipass=fullres`** (a first pass inside the same call): single-pass
+  low-delay rate control left HEVC at 56 to 88% of its bitrate on text, overshot the buffer on keyframes
+  and ran AV1 21 to 29% over on noisy video. **H.264 is `rc=vbr` with the peak at the target**: in CBR
+  h264_nvenc pads every frame with filler NAL units, so a still screen uploaded its whole bitrate.
+  **The rate buffer** is 133 ms at least for NVENC H.264 / HEVC (four frames at 60 fps was 67 ms);
+  av1_nvenc keeps four frames (with more its two-pass rate control ran 61% over on noisy 1080p60).
+  **Periodic keyframes every 10 s** (`STREAM_KEYFRAME_SECS`; it was 2 s on Linux, 4 s on Windows): a
+  keyframe has to fit the buffer, so on a still screen of text it drops from 52 dB to 19 to 24 dB and
+  takes 0.6 s to recover, a visible pulse; viewers ask for keyframes when they need one. **Colour**: with
+  BGRA input NVENC converts with BT.601 and FFmpeg writes BT.470BG into the bitstream whatever is asked;
+  the description is now complete (primaries and transfer too), because a decoder may ignore a partial
+  one and assume BT.709. `tile_columns` / `tile_rows` on av1_nvenc were never applied (the options are
+  spelled `tile-columns` / `tile-rows`). Tried and left out, by measurement: spatial / temporal AQ, p6 /
+  p7 presets, `tune=hq` (same bitstream once B-frames and look-ahead are off), `cbr_padding`, buffers
+  over 133 ms (better on text, larger bursts: the owner's call). `DECIBELL_NVENC_OPTS=key=value:…` lays
+  options over the block for a measurement.
 - **zbus bodies need their real signature.** Deserializing `oa(sa{sv})` into `(OwnedObjectPath, Value)`
   fails as `SignatureMismatch` and the handler silently never fires; use concrete types and unit-test
   with `zbus::Message::signal(..).build(&body)` round trips.

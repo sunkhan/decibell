@@ -119,6 +119,67 @@ with `no codec could be opened`, which is the correct answer for that build.
 Then the real thing: a Go Live with `DECIBELL_ENCODER=qsv` (or `amf`) set for the client; the
 log says `[stream] encoding H264Hw with Quick Sync (Intel)`.
 
+## Quality: the same table on your hardware
+
+The checks above say a backend works. This says how good its picture is, and it is where NVENC's
+settings came from (design record, "Quality": the table for the RTX 4080 is there to compare
+with). One command, Linux, about 25 minutes for everything a GPU encodes:
+
+```sh
+cd crates/decibell-core
+PKG_CONFIG_PATH=~/.cache/decibell-dev/ffmpeg-enc/prefix/lib/pkgconfig CARGO_TARGET_DIR=target-enc \
+  DECIBELL_ENCODER=vaapi cargo test --release --lib quality_bench -- --ignored --nocapture
+# a quick first look (2 minutes): two kinds of content, one size
+PKG_CONFIG_PATH=~/.cache/decibell-dev/ffmpeg-enc/prefix/lib/pkgconfig CARGO_TARGET_DIR=target-enc \
+  DECIBELL_ENCODER=vaapi DECIBELL_BENCH_SCENES=text,desktop DECIBELL_BENCH_ROWS=1280x720@30:3000 \
+  cargo test --release --lib quality_bench -- --ignored --nocapture
+# colours: every backend must return the RGB it was given, under the matrix its bitstream declares
+PKG_CONFIG_PATH=~/.cache/decibell-dev/ffmpeg-enc/prefix/lib/pkgconfig CARGO_TARGET_DIR=target-enc \
+  DECIBELL_ENCODER=vaapi cargo test --lib forced_backend_colours -- --ignored --nocapture
+```
+
+It encodes five generated kinds of screen content (a scrolling code editor, a still desktop with
+a clock and a line being typed, slides, a game-like scene, grainy video; nothing of your screen
+is captured) at the Go Live presets' sizes and bitrates, in real time, and prints one row each:
+
+```
+scene   | size      fps  target | codec | kbps mean (min..max)      | key x  p99 x  key s | call p50/p99  | lat p50/p99   | late | PSNR-Y  PSNR-C  SSIM   worst  after key | colour
+text    | 1280x720   30    3000 | hevc  |   2979 (  2755..  3118) |   3.0    2.6   0.10 |  3.50/5.31   |  3.50/5.31   |    0 |  40.27   40.58  0.9964  25.58      0.00  | 5/1/1/1
+```
+
+What to read, and what NVENC does on the development machine:
+
+| Column | Good | A problem |
+|---|---|---|
+| kbps mean | within a few percent of the target on `text`, `game`, `video`; far under it on `desktop` and `slides` (nothing moves, nothing to send) | over the target; or at the target on `desktop` / `slides` (the encoder is padding: filler data, as `h264_nvenc` did in CBR); or far under it on `text` with a low PSNR (rate control gives bits away, as `hevc_nvenc` did in a single pass) |
+| min..max | the busiest second no more than the target plus the buffer (13% for NVENC H.264 / HEVC; NVENC measured at most 10%) | a busiest second 20% or more over: the buffer is not being kept |
+| key s | at most 0.17 (the 133 ms buffer plus the frame's own share) | much larger: keyframes overshoot the buffer and leave as one burst of datagrams |
+| lat, late | lat about the call time and late 0 (NVENC above 1080p60's pixel rate: every frame late by one, on purpose) | late on every row, or lat of two frame intervals and more: the encoder holds frames back (NVENC held two until `delay=0`); every held frame is a frame interval of delay |
+| worst against PSNR-Y | the worst frame is a keyframe or a full-picture change, 10 to 20 dB under the run on still text | a worst frame that low on `game` or `video`, or on many frames: with `DECIBELL_BENCH_TRACE=1` every compared frame's size and PSNR is printed |
+| colour | `1/1/1/1` (BT.709; NVENC's BGRA path: `5/1/1/1`, BT.601, which is what it converts with) | a `2` (unspecified) anywhere: a decoder has to guess |
+
+`DECIBELL_BENCH_DUMP=/some/dir` also writes four decoded frames per row next to their source
+(`.ppm`: the frame before a keyframe, the keyframe, the one after, one mid-GOP). Look at them:
+the small print and the coloured words on the keyframe are where an encoder shows. A stream's
+periodic keyframe comes every 10 s, so a 6 s row holds only its first: `DECIBELL_BENCH_GOP=2`
+puts one every 2 s (the `after key` column then reads the half second after each), and
+`DECIBELL_BENCH_SECONDS=12` shows a stream's own.
+
+The settings to compare if a backend does badly (none of them could be run here; names from
+FFmpeg's `amfenc_*.c`, `qsvenc*.c`, `vaapi_encode*.c`):
+
+| NVENC, measured | AMF (Windows) | Quick Sync (Windows) | VAAPI (Linux) |
+|---|---|---|---|
+| `delay=0`: no held frames | usage `lowlatency` / `latency` already; check the `late` idea by watching for a one-frame lag | `async_depth=1` (set) | `async_depth=1` (set) |
+| `multipass=fullres`: a first pass sizes each frame | `preencode=1` (pre-encode assisted rate control) | `extbrc=1` with `low_delay_brc=1`; `look_ahead` stays 0 | none in FFmpeg; radeonsi's pre-encode is a bit of `compression_level` |
+| H.264 `rc=vbr` with the peak at the target: no filler | `filler_data` is off by default; `enforce_hrd=true` is set, check a still screen's bitrate | CBR pads by design: raise `maxrate` a hair above the bitrate to get VBR and compare | `rc_mode=VBR` (second in the ladder already) against `CBR` on a still screen |
+| buffer 133 ms (`rc_buffer_size`) | the same field | the same field; `max_frame_size_i` bounds a keyframe directly | the same field (HRD) |
+| preset: p4 to p7 within 0.3 dB | `quality` `speed` / `balanced` / `quality`; `vbaq=1` (H.264 / HEVC) | `preset` `veryfast` .. `medium` | `compression_level` (meaning differs per driver) |
+| a keyframe every 10 s (shared: all backends have it now) | | | |
+
+The Windows harness has no quality bench (it needs the Linux encode path); on Windows the check
+is a Go Live watched from a second client, with the scenes listed in the design record.
+
 ## The probe
 
 What the client will pick on a machine, without streaming:
