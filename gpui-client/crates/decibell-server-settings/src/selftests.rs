@@ -6,9 +6,11 @@
 //! They need a binary built with `dev-local`, refuse to run unless `DECIBELL_CENTRAL` is loopback,
 //! and skip, saying so, when the stack is down. Other agents test against the same communities at
 //! the same time, so a test changes only what it creates — a role and channels named `st-<pid>…`,
-//! a throwaway account `st<pid>` registered for the test and joined with the seeded invite — and
-//! deletes them afterwards (a cleanup child runs whatever happened); the one seeded value it
-//! touches, Daily Gaming's description, is changed and put back inside one test.
+//! a throwaway account `stsettings` (registered by the first run, reused after) joined with the
+//! seeded invite — and deletes them afterwards (a cleanup child runs whatever happened); the one
+//! seeded value it touches, Daily Gaming's description, is changed and put back inside one test.
+//! The tests that change a roster (the throwaway joins, is banned, is kicked) run in Design Lab as
+//! its owner carol: other tests count Daily Gaming's members.
 //!
 //! **In this process** (fixture model, no network): the picture editor, the rail below 1024 px,
 //! and idleness (no frame at rest on any tab; a closed window drops its state).
@@ -45,9 +47,14 @@ use crate::server::roles::Selected;
 use crate::server::{ServerSettingsWindow, Tab, TabId, visible_tabs};
 
 const DAILY_GAMING: i32 = 1;
+/// Where the roster-changing tests run (owner carol).
+const DESIGN_LAB: i32 = 3;
 
+/// The community a check works in: Daily Gaming, or what the parent chose
+/// (`DECIBELL_ST_SERVER`).
 fn daily_gaming() -> ServerId {
-    ServerId::from_central(DAILY_GAMING)
+    let id = std::env::var("DECIBELL_ST_SERVER").ok().and_then(|s| s.parse().ok()).unwrap_or(DAILY_GAMING);
+    ServerId::from_central(id)
 }
 
 /// `st-<pid>`: everything a test creates is named from it.
@@ -122,13 +129,21 @@ pub fn selftests() -> Vec<SelfTest> {
 struct Stack {
     central: String,
     password: String,
-    /// Daily Gaming's seeded invite and where it is.
+    /// The community's seeded invite and where it is.
     invite: String,
     host: String,
     port: u16,
+    /// The community the children work in, and its owner (who signs in for them).
+    server: i32,
+    owner: String,
 }
 
 fn stack() -> Result<Option<Stack>> {
+    stack_for(DAILY_GAMING)
+}
+
+/// The stack, with `server`'s invite.
+fn stack_for(server: i32) -> Result<Option<Stack>> {
     let dev = std::env::var_os("DECIBELL_DEV_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/decibell-dev"));
@@ -142,8 +157,9 @@ fn stack() -> Result<Option<Stack>> {
     let password = json["password"].as_str().context("accounts.json has no password")?.to_string();
     let community = json["communities"]
         .as_array()
-        .and_then(|c| c.iter().find(|c| c["server_id"].as_i64() == Some(DAILY_GAMING as i64)))
-        .context("accounts.json has no Daily Gaming")?;
+        .and_then(|c| c.iter().find(|c| c["server_id"].as_i64() == Some(server as i64)))
+        .with_context(|| format!("accounts.json has no community {server}"))?;
+    let server_id = server;
     let reachable = central
         .parse::<std::net::SocketAddr>()
         .ok()
@@ -154,6 +170,8 @@ fn stack() -> Result<Option<Stack>> {
         invite: community["invite"].as_str().unwrap_or_default().to_string(),
         host: community["host"].as_str().unwrap_or_default().to_string(),
         port: community["port"].as_u64().unwrap_or(0) as u16,
+        server: server_id,
+        owner: community["owner"].as_str().unwrap_or("alice").to_string(),
     }))
 }
 
@@ -198,6 +216,7 @@ async fn run_child(cx: &TestCx, check: &str, login: Option<&str>, stack: &Stack,
         .env("DECIBELL_ST_INVITE", &stack.invite)
         .env("DECIBELL_ST_HOST", &stack.host)
         .env("DECIBELL_ST_PORT", stack.port.to_string())
+        .env("DECIBELL_ST_SERVER", stack.server.to_string())
         .env("DECIBELL_TEST_PROBES", "1")
         .env_remove("DECIBELL_PERF")
         .stdout(Stdio::piped())
@@ -253,7 +272,7 @@ async fn parent(cx: TestCx, check: &'static str, cleanup: bool) -> Result<()> {
         skip_down(&cx);
         return Ok(());
     };
-    let result = run_child(&cx, check, Some("alice"), &stack, &[]).await;
+    let result = run_child(&cx, check, Some(stack.owner.as_str()), &stack, &[]).await;
     if cleanup && !matches!(result, Ok(Child::NoDevLogin)) {
         clean_up(&cx, &stack, None).await;
     }
@@ -268,7 +287,7 @@ async fn parent(cx: TestCx, check: &'static str, cleanup: bool) -> Result<()> {
 
 async fn clean_up(cx: &TestCx, stack: &Stack, throwaway: Option<&str>) {
     let env: Vec<(&str, String)> = throwaway.map(|u| vec![("DECIBELL_ST_USER", u.to_string())]).unwrap_or_default();
-    if let Err(e) = run_child(cx, "settings-cleanup", Some("alice"), stack, &env).await {
+    if let Err(e) = run_child(cx, "settings-cleanup", Some(stack.owner.as_str()), stack, &env).await {
         cx.log(format_args!("cleanup failed: {e:#}"));
     }
 }
@@ -287,13 +306,13 @@ async fn parent_open(cx: TestCx) -> Result<()> {
 }
 
 /// The throwaway account's name. One account, registered by the first run that needs it and
-/// reused after (central limits sign-ups per address); every test takes it out of Daily Gaming
+/// reused after (central limits sign-ups per address); every test takes it out of the community
 /// again, and each child signs out, so central forgets its device.
 fn throwaway() -> String {
     "stsettings".to_string()
 }
 
-/// Sign the throwaway in (registering it first if it doesn't exist yet) and join Daily Gaming with
+/// Sign the throwaway in (registering it first if it doesn't exist yet) and join the community with
 /// it (a child without `--login`).
 async fn join_throwaway(cx: &TestCx, stack: &Stack, user: &str) -> Result<()> {
     run_child(cx, "settings-throwaway", None, stack, &[("DECIBELL_ST_USER", user.to_string()), ("DECIBELL_ST_PHASE", "join".into())]).await?;
@@ -301,14 +320,14 @@ async fn join_throwaway(cx: &TestCx, stack: &Stack, user: &str) -> Result<()> {
 }
 
 async fn parent_bans(cx: TestCx) -> Result<()> {
-    let Some(stack) = stack()? else {
+    let Some(stack) = stack_for(DESIGN_LAB)? else {
         skip_down(&cx);
         return Ok(());
     };
     let user = throwaway();
     let result = async {
         join_throwaway(&cx, &stack, &user).await?;
-        run_child(&cx, "bans-live", Some("alice"), &stack, &[("DECIBELL_ST_USER", user.clone())]).await
+        run_child(&cx, "bans-live", Some(stack.owner.as_str()), &stack, &[("DECIBELL_ST_USER", user.clone())]).await
     }
     .await;
     if !matches!(result, Ok(Child::NoDevLogin)) {
@@ -324,7 +343,7 @@ async fn parent_bans(cx: TestCx) -> Result<()> {
 }
 
 async fn parent_channel(cx: TestCx) -> Result<()> {
-    let Some(stack) = stack()? else {
+    let Some(stack) = stack_for(DESIGN_LAB)? else {
         skip_down(&cx);
         return Ok(());
     };
@@ -340,11 +359,11 @@ async fn parent_channel(cx: TestCx) -> Result<()> {
     };
     let result = async {
         join_throwaway(&cx, &stack, &user).await?;
-        if let Child::NoDevLogin = run_child(&cx, "channel-settings-echo", Some("alice"), &stack, &env("setup")).await? {
+        if let Child::NoDevLogin = run_child(&cx, "channel-settings-echo", Some(stack.owner.as_str()), &stack, &env("setup")).await? {
             return Ok(Child::NoDevLogin);
         }
         run_child(&cx, "settings-throwaway", None, &stack, &env("send")).await?;
-        run_child(&cx, "channel-settings-echo", Some("alice"), &stack, &env("finish")).await
+        run_child(&cx, "channel-settings-echo", Some(stack.owner.as_str()), &stack, &env("finish")).await
     }
     .await;
     if !matches!(result, Ok(Child::NoDevLogin)) {
@@ -396,9 +415,9 @@ fn model(cx: &App) -> Model {
 async fn signed_in(cx: &TestCx) -> Result<()> {
     let t = wait_for(cx, Duration::from_secs(30), "the sign-in", |cx| model(cx).auth.read(cx).is_authenticated).await?;
     cx.log(format_args!("signed in after {} ms", t.as_millis()));
-    wait_for(cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
+    wait_for(cx, Duration::from_secs(30), "the community to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
     // The community's first pushes (channels, roles, our own member row).
-    wait_for(cx, Duration::from_secs(15), "Daily Gaming's channels and roles", |cx| {
+    wait_for(cx, Duration::from_secs(15), "the community's channels and roles", |cx| {
         model(cx).community(daily_gaming(), cx).is_some_and(|c| !c.channels.read(cx).list().is_empty() && !c.roles.read(cx).list().is_empty())
     })
     .await?;
@@ -466,7 +485,7 @@ async fn send(cx: &TestCx, request: Request) -> Result<()> {
     }
 }
 
-/// Daily Gaming open and its Server Settings with it, on `tab`.
+/// The community open and its Server Settings with it, on `tab`.
 async fn open_settings(cx: &TestCx, tab: TabId) -> Result<(Entity<ServerSettingsWindow>, Tab)> {
     cx.update(|_, cx| {
         let m = model(cx);
@@ -1075,7 +1094,7 @@ async fn check_category(cx: TestCx) -> Result<()> {
     Ok(())
 }
 
-/// The throwaway account's side: `join` registers it and joins Daily Gaming; `send` signs in
+/// The throwaway account's side: `join` registers it and joins the community; `send` signs in
 /// and tries to post where its role may not.
 async fn check_throwaway(cx: TestCx) -> Result<()> {
     let user = std::env::var("DECIBELL_ST_USER").context("DECIBELL_ST_USER")?;
@@ -1118,7 +1137,7 @@ async fn throwaway_phase(cx: &TestCx, user: &str, phase: &str) -> Result<()> {
         // Still a member (a run that ended before its cleanup): nothing to join.
         let member = wait_for(&cx, Duration::from_secs(3), "a membership", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await.is_ok();
         if member {
-            cx.log(format_args!("{user} is already in Daily Gaming"));
+            cx.log(format_args!("{user} is already a member"));
             return Ok(());
         }
         let host = std::env::var("DECIBELL_ST_HOST").context("DECIBELL_ST_HOST")?;
@@ -1133,20 +1152,20 @@ async fn throwaway_phase(cx: &TestCx, user: &str, phase: &str) -> Result<()> {
                 }
             })
         })?;
-        wait_for(&cx, Duration::from_secs(20), "Daily Gaming to accept the invite", |cx| {
+        wait_for(&cx, Duration::from_secs(20), "the community to accept the invite", |cx| {
             failed.borrow().is_some() || model(cx).connections.read(cx).is_connected(daily_gaming())
         })
         .await?;
         if let Some(e) = failed.borrow().clone() {
             bail!("joining with the invite: {e}");
         }
-        cx.log(format_args!("{user} joined Daily Gaming"));
+        cx.log(format_args!("{user} joined the community ({})", daily_gaming().wire()));
         return Ok(());
     }
     // `send`: the overwrite denies our role Send Messages in the test channel.
     let state_file = PathBuf::from(std::env::var("DECIBELL_ST_STATE").context("DECIBELL_ST_STATE")?);
     let state = ChannelState::read(&state_file)?;
-    wait_for(&cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
+    wait_for(&cx, Duration::from_secs(30), "the community to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
     let channel = state.channel.clone();
     wait_for(&cx, Duration::from_secs(10), "the test channel", |cx| channel_of(cx, &channel).is_some()).await?;
     let can_send = cx.update(|_, cx| model(cx).channel_permission(daily_gaming(), &channel, perm::SEND_MESSAGES, cx))?;
@@ -1170,7 +1189,7 @@ async fn throwaway_phase(cx: &TestCx, user: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete everything named after this run's tag; take the throwaway out of Daily Gaming.
+/// Delete everything named after this run's tag; take the throwaway out of the community.
 async fn check_cleanup(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     let name = tag();
@@ -1202,7 +1221,7 @@ async fn check_cleanup(cx: TestCx) -> Result<()> {
         let member = cx.update(|_, cx| search.read(cx).members.iter().find(|m| m.username == user.as_str()).cloned())?;
         if let Some(m) = member {
             send(&cx, Request::KickMember { server: daily_gaming(), username: user.clone(), uid: m.uid, reason: "settings self-test cleanup".into() }).await?;
-            cx.log(format_args!("cleanup: {user} taken out of Daily Gaming"));
+            cx.log(format_args!("cleanup: {user} taken out of the community"));
         }
         // A ban left by a failed bans-live.
         let banned = cx.update(|_, cx| model(cx).community(daily_gaming(), cx).and_then(|c| c.moderation.read(cx).bans.iter().find(|b| b.username == user.as_str()).map(|b| b.uid)))?;
