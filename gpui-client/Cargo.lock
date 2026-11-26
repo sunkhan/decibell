@@ -1745,6 +1745,7 @@ dependencies = [
  "decibell-picture-editor",
  "decibell-search",
  "decibell-server-settings",
+ "decibell-servers",
  "decibell-settings",
  "decibell-shell",
  "decibell-text",
@@ -2063,6 +2064,27 @@ dependencies = [
  "log",
  "serde_json",
  "smallvec",
+]
+
+[[package]]
+name = "decibell-servers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "decibell-chat",
+ "decibell-common",
+ "decibell-core",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-shell",
+ "decibell-text",
+ "decibell-theme",
+ "decibell-ui",
+ "futures",
+ "gpui",
+ "log",
+ "serde_json",
 ]
 
 [[package]]

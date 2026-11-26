@@ -25,6 +25,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_server_settings::screens());
     screens.extend(decibell_picture_editor::screens());
     screens.extend(decibell_search::screens());
+    screens.extend(decibell_servers::screens());
     screens
 }
 
@@ -44,6 +45,7 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_chat_content::transfers::selftests());
     tests.extend(decibell_server_settings::selftests());
     tests.extend(decibell_search::selftests());
+    tests.extend(decibell_servers::selftests());
     tests
 }
 
@@ -61,6 +63,7 @@ pub fn init_features(cx: &mut gpui::App) {
     decibell_chat_content::init(cx);
     decibell_server_settings::init(cx);
     decibell_search::init(cx);
+    decibell_servers::init(cx);
     join_features(cx);
     // "Type anywhere to compose" with nothing focused (an app-level keystroke interceptor).
     decibell_composer::install_type_to_focus(cx);
@@ -136,6 +139,7 @@ pub fn checks() -> Vec<SelfTest> {
     checks.extend(decibell_chat_content::transfers::checks());
     checks.extend(decibell_server_settings::checks());
     checks.extend(decibell_search::checks());
+    checks.extend(decibell_servers::checks());
     checks
 }
 
