@@ -236,6 +236,61 @@ opens):
   (`decibell_shell::checks()`; a binary with `dev-local`), with its own profile and `DECIBELL_TEST_PROBES=1`,
   which makes `crate::probes::probe(key)` record where elements are so the check can click them.
 
+## Chat (`decibell-chat`)
+
+The message list and the pane around it. `crates/decibell-chat/src/list/core.rs` (module doc) is the design;
+in short:
+
+- **`MessageList`** is one view whose `render` returns one custom element. Rows are not elements: each row is a
+  `RowLayout` (`row.rs`) built once from its message, facts and the theme (`ChatStyle`, resolved once per theme /
+  text size / window scale), holding its exact height (Blink's, in 1/64 px), the body's `RichLayout`, the
+  header's label layouts and the boxes of its slots; a frame paints the rows that meet the viewport from those
+  with `paint_quad` / `Layout::paint` / `RichLayout::paint`. A frame in which only the offset changes builds
+  nothing, lays nothing out and shapes nothing.
+- **Coordinates and the anchor.** Every row has a top in content coordinates (an f64 that is never
+  renormalised) and the scroll position is a number in the same space; a row is drawn at
+  `round(top × scale) − round(position × scale)`. Whenever rows or heights change, tops are recomputed outward
+  from the first row in the viewport, whose own top is kept: a page spliced in above gets tops below the old
+  minimum and changes neither the anchor's top nor the position, so nothing on screen can move. Don't add a
+  "scroll correction" anywhere: change what `ListCore::apply` / `heights_changed` anchor on instead.
+- **Measuring.** Rows in and around the viewport are measured in `prepaint` before anything is painted; the rest
+  of the slice's window in slices of ≤ 1.5 ms on idle turns of the main thread, nearest the viewport first, an
+  estimate (the mean of the measured rows) standing in meanwhile. A late exact height moves only rows on the far
+  side of it from the anchor.
+- **The model does the rest**: rows come from the slice's change log (`changes_since`), pages from
+  `ListSource::load_older` / `load_newer` when the position is within 800 px of an end, trims from
+  `MessageSlice::trim_head` / `trim_tail` with the renderer's pixel rule (the list passes `keep`, computed from
+  pixel distances; nothing trims by row count alone).
+- **Open the chat pane on a channel**: `cx.new(|cx| ChatPane::new(server, channel, window, cx))`, or
+  `ChatPane::for_active_channel(window, cx)` for the shell's slot (it follows the navigation):
+  `decibell_shell::register_pane(cx, Slot::Chat, |window, cx| cx.new(|cx| decibell_chat::ChatPane::for_active_channel(window, cx)).into())`.
+  A DM pane gives `MessageList::new` its own `ListSource` (a slice plus `load_older`, `jump_to_message`, `edit`,
+  `delete`, …: `source.rs`); `ChannelSource` is the channel one.
+- **Slots other crates fill** (`media.rs`; all optional, the list reserves the same box and draws a neutral
+  placeholder until then). Register once at start-up: `decibell_chat::slots(cx).attachments = Some(Rc::new(…))`.
+  - `attachments`, `inflight`, `embeds`: a `RowSlot`: `height(&Message, server, SlotSpace, &App) -> f32` (final
+    for those inputs, its own `mt-1` included; 0 = nothing) and `element(&Arc<Message>, server, SlotSpace,
+    window, cx) -> AnyElement`, laid out at the reserved box. `SlotSpace` carries the content column's width and
+    the chat view's size (`chatViewSize`). When an answer may have changed (a link preview resolved, an upload
+    ended) call `decibell_chat::invalidate_slots(cx)`: the rows are measured again around the anchor.
+  - `editor`: an `EditorSlot` (`height(&Message, width, &App)`, `element(&Arc<Message>, width, submit, cancel,
+    window, cx)`): the inline editor of `MessageList::start_edit`. Until `decibell-text`'s `TextArea` fills it the
+    list draws the field as a still and Escape cancels.
+  - `composer`: `Rc<dyn Fn(ServerId, ChannelId, &mut Window, &mut App) -> AnyView>`, drawn under the list by
+    `ChatPane`. The list tells the pane what the composer needs through `ListEvent::Reply(id)`; the composer
+    shows the rail with `MessageList::set_reply_target`.
+  - `ListEvent::OpenMedia(message id)` is the click on a media placeholder (the image viewer's), `OpenLink(url)`
+    a link (`ChatPane` hands it to `cx.open_url`; invite links open the join confirmation themselves).
+- **CSS that the row layout reproduces by hand** (found by comparing every row's `offsetTop` with the Electron
+  client, `tools/electron-captures/chat-rows.mjs`): a block (code, display math) first in a body collapses its
+  top margin with the body's `mt-0.5`; two blocks in a row share one margin; a block last in a body collapses
+  its bottom margin with the `mt-1` of the slot under it; a code block's horizontal bar adds 10 px to its
+  height and a collapsed one's vertical bar takes 10 px of its width.
+- Screens `chat-fixture` / `chat-features`, self-tests `chat-*`, the benchmark `decibell --bench-scroll <s>`
+  (and `cargo run --release -p decibell-chat --features fixtures --example chat_bench`, which also counts
+  allocations per frame), the fixtures in `fixture.rs` (the 10,000-message channel of `tools/dev/fixture.py`,
+  generated bit for bit, and a hand-written one).
+
 ## GPUI gotchas met so far
 
 (`docs/gpui-notes.md` §12 has the survey's list; these were hit while building the skeleton.)

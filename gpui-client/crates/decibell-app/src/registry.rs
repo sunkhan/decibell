@@ -15,6 +15,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_text_gallery::screens());
     screens.extend(decibell_video::screens());
     screens.extend(decibell_shell::screens());
+    screens.extend(decibell_chat::screens());
     screens
 }
 
@@ -24,13 +25,16 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_ui::selftests());
     tests.extend(decibell_video::selftests());
     tests.extend(decibell_shell::selftests());
+    tests.extend(decibell_chat::selftests());
     tests
 }
 
 /// Each feature crate's `init(cx)`: what it plugs into the shell (`decibell_shell::register_pane`,
 /// `register_overlay`, `register_channel_menu`). Called once at start-up, after the model, before
 /// the window opens (app and screens alike).
-pub fn init_features(_cx: &mut gpui::App) {}
+pub fn init_features(cx: &mut gpui::App) {
+    decibell_chat::init(cx);
+}
 
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the
 /// app that way in a child process, with its own profile).

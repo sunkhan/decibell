@@ -37,6 +37,7 @@ decibell-text-gallery = { path = "../decibell-text/gallery" }
 decibell-video.workspace = true
 decibell-model.workspace = true
 decibell-shell = { workspace = true, features = ["fixtures"] }
+decibell-chat = { workspace = true, features = ["fixtures"] }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true

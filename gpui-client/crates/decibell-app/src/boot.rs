@@ -107,6 +107,8 @@ fn start(
     // default screen's window (the shell's own tests start the app in child processes).
     let mode = match (&args.screen, &args.selftest) {
         (Some(name), _) => Mode::Screen(name.clone()),
+        // The scroll benchmark opens its own window, as a self-test does.
+        (None, None) if args.bench_scroll.is_some() => Mode::Screen(registry::DEFAULT_SCREEN.into()),
         (None, Some(_)) => Mode::Screen(registry::DEFAULT_SCREEN.into()),
         (None, None) => Mode::App,
     };
@@ -141,6 +143,21 @@ fn start(
         (Some(selection), None) => Some((registry::selftests(), selection.clone())),
         (None, None) => None,
     };
+    if let Some(seconds) = args.bench_scroll {
+        let speeds = args.bench_speed.map_or(vec![1000., 3000.], |speed| vec![speed]);
+        cx.spawn(async move |cx| {
+            match decibell_chat::bench::run(cx.clone(), seconds, &speeds, None).await {
+                Ok(report) => println!("{report:#}"),
+                Err(error) => {
+                    eprintln!("decibell: {error:#}");
+                    exit_code.store(1, Ordering::Relaxed);
+                }
+            }
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
+        return Ok(());
+    }
     if let Some((tests, selection)) = tests {
         cx.spawn(async move |cx| {
             let test_cx = TestCx::new(cx.clone(), window.into());

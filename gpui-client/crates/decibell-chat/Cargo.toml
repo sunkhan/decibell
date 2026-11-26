@@ -1,0 +1,49 @@
+[package]
+name = "decibell-chat"
+description = "The message list: an exact-height, anchor-based custom element over a model slice, its rows, selection across rows, and the chat pane"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The fixtures' JSON for the Electron capture pages.
+[[bin]]
+name = "decibell-chat-fixture"
+path = "src/bin/fixture.rs"
+required-features = ["fixtures"]
+
+[[example]]
+name = "chat_bench"
+required-features = ["fixtures"]
+
+[features]
+# The deterministic chat fixtures (the 10k-message channel of tools/dev/fixture.py and a
+# hand-written channel with every row type) fed through the model's router, their JSON export
+# for the Electron captures, the screens, the self-tests and the scroll benchmark.
+fixtures = ["dep:decibell-core", "decibell-shell/fixtures"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-text.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-richtext = { path = "../decibell-richtext" }
+decibell-highlight = { path = "../decibell-highlight" }
+decibell-attachments = { path = "../decibell-attachments" }
+# Only for the payload types of the core's events (the fixtures). zbus on async-io, as every
+# crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"], optional = true }
+# The pane registry (`init`), and with `fixtures` the shell's fixture: the signed-in model the
+# chat fixtures add their channels to.
+decibell-shell.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+serde_json = "1"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+# The benchmark example opens a real window.
+gpui_platform.workspace = true
