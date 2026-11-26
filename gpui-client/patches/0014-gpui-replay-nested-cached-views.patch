@@ -1,0 +1,288 @@
+diff --git a/crates/gpui/src/text_system/line_layout.rs b/crates/gpui/src/text_system/line_layout.rs
+index 1b9ccc4..f624017 100644
+--- a/crates/gpui/src/text_system/line_layout.rs
++++ b/crates/gpui/src/text_system/line_layout.rs
+@@ -524,6 +524,18 @@ pub(crate) struct LineLayoutIndex {
+     wrapped_lines_index: usize,
+ }
+ 
++impl LineLayoutIndex {
++    /// What was at `from` in the previous frame is at `to` in this one: moves this index,
++    /// which lies at or after `from`, by the same distance.
++    pub(crate) fn rebase(&mut self, from: &Self, to: &Self) {
++        self.lines_index = self.lines_index + to.lines_index - from.lines_index;
++        self.wrapped_lines_index =
++            self.wrapped_lines_index + to.wrapped_lines_index - from.wrapped_lines_index;
++        // The font generation stays the one the range was recorded under: after a change
++        // of it nothing was replayed, and `reuse_layouts` refuses the range for good.
++    }
++}
++
+ impl LineLayoutCache {
+     pub fn new(
+         platform_text_system: Arc<dyn PlatformTextSystem>,
+diff --git a/crates/gpui/src/view.rs b/crates/gpui/src/view.rs
+index 733373a..3dcceea 100644
+--- a/crates/gpui/src/view.rs
++++ b/crates/gpui/src/view.rs
+@@ -312,20 +312,68 @@ impl<V: View> ViewElement<V> {
+     }
+ }
+ 
+-struct ViewElementState {
++/// Cached views ([`AnyView::cached`]) rendered, and replayed from their cache, by every
++/// window of this process since it started: what a frame cost in views.
++pub static CACHED_VIEWS_RENDERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// See [`CACHED_VIEWS_RENDERED`].
++pub static CACHED_VIEWS_REPLAYED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++static NESTED_VIEW_REPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++
++/// Whether a clean cached view nested in a cached view that renders is replayed from its
++/// own cache (the default) or rendered with it, as GPUI did before: for measuring the
++/// difference, and a way back if a replay ever misbehaves.
++pub fn set_nested_view_replay(enabled: bool) {
++    NESTED_VIEW_REPLAY.store(enabled, std::sync::atomic::Ordering::Relaxed);
++}
++
++pub(crate) struct ViewElementState {
+     prepaint_range: Range<PrepaintStateIndex>,
+     paint_range: Range<PaintIndex>,
++    /// The frames (`Window::frames_drawn` while they were drawn) whose arrays the two
++    /// ranges index. A range can be replayed only from the frame before the one being
++    /// drawn; it stays current while the view is drawn or replayed in every frame, also
++    /// inside a replayed ancestor ([`Self::rebase_prepaint`]).
++    prepaint_frame: u64,
++    paint_frame: u64,
+     cache_key: ViewElementCacheKey,
+     /// The entities the view accessed while it was last drawn, in any phase,
+     /// restored when its prepaint is reused so the window stays subscribed.
+     accessed_entities: FxHashSet<EntityId>,
+ }
+ 
++impl ViewElementState {
++    /// An ancestor's prepaint that contains this view's was replayed in frame `frame`:
++    /// what was at `from` in the previous frame is at `to` in this one.
++    pub(crate) fn rebase_prepaint(
++        &mut self,
++        from: &PrepaintStateIndex,
++        to: &PrepaintStateIndex,
++        frame: u64,
++    ) {
++        if self.prepaint_frame + 1 == frame {
++            self.prepaint_range.start.rebase(from, to);
++            self.prepaint_range.end.rebase(from, to);
++            self.prepaint_frame = frame;
++        }
++    }
++
++    /// The same for an ancestor's replayed paint.
++    pub(crate) fn rebase_paint(&mut self, from: &PaintIndex, to: &PaintIndex, frame: u64) {
++        if self.paint_frame + 1 == frame {
++            self.paint_range.start.rebase(from, to);
++            self.paint_range.end.rebase(from, to);
++            self.paint_frame = frame;
++        }
++    }
++}
++
+ struct ViewElementCacheKey {
+     bounds: Bounds<Pixels>,
+     content_mask: ContentMask<Pixels>,
+     text_style: TextStyle,
+     opacity: f32,
++    rem_size: Pixels,
+ }
+ 
+ #[cfg(not(gpui_hot_reload))]
+@@ -538,10 +586,17 @@ fn prepaint_view(
+                 let content_mask = window.content_mask();
+                 let text_style = window.text_style();
+                 let opacity = window.element_opacity();
++                let rem_size = window.rem_size();
++                let frame = window.frames_drawn();
+ 
+                 // Opacity is compared by bits so that a NaN opacity still matches itself
+-                // and the view keeps using its cache.
++                // and the view keeps using its cache. The ranges must index the frame
++                // that was drawn last: a view that was not drawn or replayed in it (or
++                // was prepainted in it without being painted) is rendered again.
+                 if let Some(mut element_state) = element_state
++                    && element_state.prepaint_frame + 1 == frame
++                    && element_state.paint_frame + 1 == frame
++                    && element_state.cache_key.rem_size == rem_size
+                     && element_state.cache_key.bounds == bounds
+                     && element_state.cache_key.content_mask == content_mask
+                     && element_state.cache_key.text_style == text_style
+@@ -555,11 +610,19 @@ fn prepaint_view(
+                         .extend_accessed(element_state.accessed_entities.iter().copied());
+                     let prepaint_end = window.prepaint_index();
+                     element_state.prepaint_range = prepaint_start..prepaint_end;
++                    element_state.prepaint_frame = frame;
++                    CACHED_VIEWS_REPLAYED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+ 
+                     return (None, element_state);
+                 }
+ 
+-                let refreshing = mem::replace(&mut window.refreshing, true);
++                // The cached views inside this one are not forced to render with it: each
++                // is replayed if its own key and ranges hold (a clean view nested in a
++                // dirty one). `Window::refresh` still renders everything.
++                let force_nested = !NESTED_VIEW_REPLAY.load(std::sync::atomic::Ordering::Relaxed);
++                let refreshing = window.refreshing;
++                window.refreshing |= force_nested;
++                CACHED_VIEWS_RENDERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                 let prepaint_start = window.prepaint_index();
+                 let (element, accessed_entities) = cx.detect_accessed_entities(|cx| {
+                     let mut element = render(window, cx);
+@@ -577,11 +640,15 @@ fn prepaint_view(
+                         accessed_entities,
+                         prepaint_range: prepaint_start..prepaint_end,
+                         paint_range: PaintIndex::default()..PaintIndex::default(),
++                        prepaint_frame: frame,
++                        // Set when it is painted.
++                        paint_frame: u64::MAX - 1,
+                         cache_key: ViewElementCacheKey {
+                             bounds,
+                             content_mask,
+                             text_style,
+                             opacity,
++                            rem_size,
+                         },
+                     },
+                 )
+@@ -644,6 +711,7 @@ fn paint_view(
+ 
+                     let paint_end = window.paint_index();
+                     element_state.paint_range = paint_start..paint_end;
++                    element_state.paint_frame = window.frames_drawn();
+ 
+                     ((), element_state)
+                 },
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 6316217..586c7f1 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -1102,6 +1102,71 @@ pub(crate) struct PaintIndex {
+     line_layout_index: LineLayoutIndex,
+ }
+ 
++impl PrepaintStateIndex {
++    /// What was at `from` in the previous frame is at `to` in the one being drawn: moves
++    /// this index, which lies inside the replayed range, by the same distance. (A replay
++    /// copies every list's slice in order, one entry for one.)
++    pub(crate) fn rebase(&mut self, from: &Self, to: &Self) {
++        let moved = |index: &mut usize, from: usize, to: usize| *index = *index + to - from;
++        moved(&mut self.hitboxes_index, from.hitboxes_index, to.hitboxes_index);
++        moved(&mut self.tooltips_index, from.tooltips_index, to.tooltips_index);
++        moved(
++            &mut self.deferred_draws_index,
++            from.deferred_draws_index,
++            to.deferred_draws_index,
++        );
++        moved(
++            &mut self.dispatch_tree_index,
++            from.dispatch_tree_index,
++            to.dispatch_tree_index,
++        );
++        moved(
++            &mut self.accessed_element_states_index,
++            from.accessed_element_states_index,
++            to.accessed_element_states_index,
++        );
++        self.line_layout_index
++            .rebase(&from.line_layout_index, &to.line_layout_index);
++    }
++}
++
++impl PaintIndex {
++    /// See [`PrepaintStateIndex::rebase`].
++    pub(crate) fn rebase(&mut self, from: &Self, to: &Self) {
++        let moved = |index: &mut usize, from: usize, to: usize| *index = *index + to - from;
++        moved(&mut self.scene_index, from.scene_index, to.scene_index);
++        #[cfg(any(test, feature = "test-support"))]
++        moved(
++            &mut self.debug_bounds_index,
++            from.debug_bounds_index,
++            to.debug_bounds_index,
++        );
++        moved(
++            &mut self.mouse_listeners_index,
++            from.mouse_listeners_index,
++            to.mouse_listeners_index,
++        );
++        moved(
++            &mut self.input_handlers_index,
++            from.input_handlers_index,
++            to.input_handlers_index,
++        );
++        moved(
++            &mut self.cursor_styles_index,
++            from.cursor_styles_index,
++            to.cursor_styles_index,
++        );
++        moved(
++            &mut self.accessed_element_states_index,
++            from.accessed_element_states_index,
++            to.accessed_element_states_index,
++        );
++        moved(&mut self.tab_handle_index, from.tab_handle_index, to.tab_handle_index);
++        self.line_layout_index
++            .rebase(&from.line_layout_index, &to.line_layout_index);
++    }
++}
++
+ impl Frame {
+     #[cfg(any(test, feature = "test-support"))]
+     pub(crate) fn record_debug_bounds(&mut self, selector: String, bounds: Bounds<Pixels>) {
+@@ -4461,7 +4526,37 @@ impl Window {
+         }
+     }
+ 
++    /// The cached views whose state was accessed in `states` of the previous frame (the
++    /// views drawn inside a range that is being replayed) are not visited in this frame,
++    /// so the ranges they keep would still index the previous frame after it: `rebase`
++    /// moves each to where its content lands in this one. A view that was already visited
++    /// in this frame has its state in the next frame's map and is left alone.
++    fn rebase_replayed_views(
++        &mut self,
++        states: Range<usize>,
++        rebase: impl Fn(&mut crate::view::ViewElementState),
++    ) {
++        let view_state = TypeId::of::<crate::view::ViewElementState>();
++        let frame = &mut self.rendered_frame;
++        for key in &frame.accessed_element_states[states] {
++            if key.1 == view_state
++                && let Some(state) = frame.element_states.get_mut(key)
++                && let Some(Some(state)) = state
++                    .inner
++                    .downcast_mut::<Option<crate::view::ViewElementState>>()
++            {
++                rebase(state);
++            }
++        }
++    }
++
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
++        let landed = self.prepaint_index();
++        let frame = self.frames_drawn;
++        self.rebase_replayed_views(
++            range.start.accessed_element_states_index..range.end.accessed_element_states_index,
++            |view| view.rebase_prepaint(&range.start, &landed, frame),
++        );
+         self.next_frame.hitboxes.extend(
+             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                 .iter()
+@@ -4528,6 +4623,12 @@ impl Window {
+     }
+ 
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
++        let landed = self.paint_index();
++        let frame = self.frames_drawn;
++        self.rebase_replayed_views(
++            range.start.accessed_element_states_index..range.end.accessed_element_states_index,
++            |view| view.rebase_paint(&range.start, &landed, frame),
++        );
+         // Cached elements still exist in the frame even when their paint methods don't run.
+         #[cfg(any(test, feature = "test-support"))]
+         for (selector, bounds) in &self.rendered_frame.debug_bounds_records

@@ -17,6 +17,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0011-linux-deferred-system-fonts.patch` | On Linux the text system starts with an empty font database (`CosmicTextSystem::new_with_deferred_system_fonts`) and indexes the installed fonts only if a family is requested that no added font provides. | Indexing 1,095 installed faces and walking that index for every new (family, weight, style) cost about 85 ms of the time to the first frame; the client names only its bundled families, and `decibell-text` adds a fallback font when a character needs one. |
 | `0012-gpui-physical-key-codes.patch` | Key events carry the physical key: `KeyDownEvent::code` / `KeyUpEvent::code` (`KeyCode::Evdev(n)` on Linux, `KeyCode::Windows(scan)` on Windows, `Unknown` elsewhere and for simulated keystrokes), and `ModifiersChangedEvent::key` names the modifier key that went down or up. | Hotkey bindings name keys by position (`KeyboardEvent.code`); GPUI's `Keystroke` has only the character the layout types, so a recorder built on it saved the wrong key on every non-US keyboard (`HANDOFF.md` §5, now closed). |
 | `0013-gpui-hide-cursor-until-mouse-moves.patch` | `App::hide_cursor_until_mouse_moves()`: the public door to what the pinned GPUI already does on every platform when a key is typed (the cursor hidden until the pointer next moves). | A stream shown full screen hides the cursor once the pointer has rested, as the renderer's `cursor-none` does; GPUI has no hidden `CursorStyle`, and it does not need one. |
+| `0014-gpui-replay-nested-cached-views.patch` | A clean cached view nested in a cached view that renders is replayed from its own cache instead of rendering with it: views record which frame their replay ranges index, a replayed range moves the ranges of the views inside it, the cache key gains the rem size; counters (`gpui::CACHED_VIEWS_RENDERED` / `_REPLAYED`) and a switch back (`gpui::set_nested_view_replay`). | At the pin every notify renders every cached view under the topmost dirty one, which in this client is the whole window (the content is one cached view): a speaking ring on a 12-tile stage rendered 18 views (5 now), a typed key the message list above the field. Measured below. |
 
 ## How the patches are applied
 
@@ -444,6 +445,113 @@ pointer under Wayland and XWayland the owner should see the cursor go and come b
 here.
 
 **Upstream.** Trivially: a public method for something public behaviour already depends on.
+
+## 0014: clean cached views nested in a dirty one are replayed
+
+**What the pin does.** `AnyView::cached` keeps what a view prepainted and painted and replays it while the
+view is clean and its key (bounds, content mask, inherited text style, opacity) holds. But when a cached
+view renders, `prepaint_view` sets `window.refreshing` for the duration, and a view checks `!refreshing`
+before replaying: **every cached view inside a cached view that renders, renders too**. And a notify
+marks the view's ancestors dirty with it (`Window::mark_view_dirty` walks the view path), so the topmost
+cached view of the window renders on every change. In this client that is the content under the title bar
+(`Root` draws it `.cached`): any change anywhere rendered every view of the window. Caching views paid
+only for frames the title bar or a toast caused.
+
+**Why the pin does it: the replay ranges go stale.** What a view replays are index ranges into the
+previous frame's lists (`PrepaintStateIndex`: hitboxes, tooltips, deferred draws, dispatch-tree nodes,
+accessed element states, line layouts; `PaintIndex`: scene operations, mouse listeners, input handlers,
+cursor styles, tab stops, …), written into the view's element state when it is drawn or replayed. A view
+inside a cached ancestor that is replayed **whole** is not visited that frame: its content is copied along
+at new indices, but its own ranges still name the frame before. If the ancestor then renders and the
+nested view replays, it copies whatever sits at the old indices. Forcing the subtree to render is the
+blunt way never to read a stale range. (Simply not forcing it, the obvious two-line change, panics in
+`key_dispatch.rs`, "node 35 was not part of the reused subtree 26..30", as soon as something drawn
+*before* a replayed ancestor changed its number of hitboxes between two frames; without a focused element
+it silently replays other views' hitboxes, listeners and paint. The test below does exactly that.)
+
+**What the patch does.**
+
+1. *A range knows its frame.* `ViewElementState` gains `prepaint_frame` / `paint_frame`: the window's
+   `frames_drawn` (patch `0002`) while the range was written. A view replays only if both are the previous
+   frame's; anything else renders. So a stale range can cost a render, never a wrong replay: a view that was
+   not drawn last frame, one that was prepainted and not painted (`Window::transact`'s discarded attempts,
+   which at the pin replay ranges of the discarded attempt), one whose state was written this very frame.
+2. *A replayed range takes the views inside it along.* `Window::reuse_prepaint` / `reuse_paint` already
+   walk the range's accessed element states to keep them alive; for the states that are a view's
+   (`TypeId` of `ViewElementState`) they now move its ranges by the distance the content moved
+   (`PrepaintStateIndex::rebase` / `PaintIndex::rebase`: every list is copied slice for slice, one entry for
+   one, so one offset per list is exact) and stamp them with this frame. Views nested at any depth are in
+   the range; views inside a deferred draw are in the deferred draw's own range, replayed (and rebased) in
+   the deferred pass. A state already taken this frame is not in the previous frame's map and is left alone.
+3. *The subtree is no longer forced.* `prepaint_view` leaves `window.refreshing` as it found it;
+   `Window::refresh()` (theme, scale, window focus, the keyboard / pointer modality) still renders
+   everything. `paint_view` is untouched: paint replays exactly the views prepaint replayed.
+4. *The key gains the rem size* (`Window::with_rem_size` can override it for a subtree: a parent that
+   rendered with another one must not find its children's old layout).
+5. `gpui::set_nested_view_replay(false)` restores the pin's behaviour (the client: `DECIBELL_VIEW_REPLAY=0`),
+   `CACHED_VIEWS_RENDERED` / `CACHED_VIEWS_REPLAYED` count, process-wide.
+
+**What a replayed nested view assumes about the parent that rendered, and why it holds.** Nothing new:
+a cached view under a parent that renders is how GPUI is used wherever the parent is *not* cached (the
+window's root view renders every frame with its cached children replayed: Zed's panes under its workspace).
+The patch makes a cached parent behave like that one.
+
+| What the replay carries | Depends on, in the parent's new frame | Held by |
+|---|---|---|
+| layout, scene (quads, text, sprites), debug bounds | absolute bounds, content mask, inherited text style, opacity, rem size | the cache key: any of them changed → renders |
+| hitboxes, mouse listeners, cursor styles, tooltips | the same; z-order is the order they are pushed in | pushed at the view's place in the parent's fresh order |
+| dispatch-tree nodes (key contexts, action handlers, focus) | the parent's node they hang under | `DispatchTree::reuse_subtree` re-parents under the current node, and reports whether the focused node is inside (`next_frame.focus`) |
+| the focused element's input handler | focus | taken from the previous frame with the range |
+| deferred draws (popovers) | their own ranges | the deferred pass replays and rebases them |
+| element states under the view | the global element id path | a changed path finds no state: the view renders |
+| the entities the view read | the window's subscriptions | `accessed_entities`, restored on replay, as at the pin (and now also collected into the rendering parent's set, which is a superset of what it had) |
+| line layouts | the font generation | kept per range; a new generation refuses the range (the pin's rule) |
+
+Not in the key, at the pin and now: an image cache the parent provides (`with_image_cache`). A parent that
+swaps it keeps the child's old images until the child renders; nothing in the client does that.
+
+**Evidence.** `crates/decibell-harness/tests/nested_cached_views.rs` (GPUI's test window; `cargo test -p
+decibell-harness`), four tests on a root with a side column and a row of three leaves, each leaf a cached
+view with a click listener, a focus handle with a key context and an action, an input handler and a
+deferred popover:
+
+| | pin (patches to `0013`) | pin + the two-line change | `0014` |
+|---|---|---|---|
+| a clean view nested in a dirty one is replayed, and clicks, the focused action, typed text and the popover work | **fails**: the leaves render | passes | passes |
+| the row is replayed whole while the side column grows or shrinks before it, then renders with clean leaves: every leaf's click, action, input and paint are its own (6 rounds, both orders, both in one frame) | fails (renders) | **panics** in `key_dispatch.rs` | passes |
+| a leaf the row moved, clipped (two masks) or gave another text colour renders; left alone it is replayed; `Window::refresh` renders all | fails | passes | passes |
+| a leaf that left the tree for a frame renders when it comes back | fails | passes | passes |
+
+**Measured** (`decibell --selftest render-cost`, release build, one binary with the switch both ways, three
+alternating passes of 20–30 changes each; main-thread CPU per change includes the event and the whole
+frame; 2026-11-26, load average 6.0 falling to 3.7):
+
+| One change | Views rendered, as the pin | With `0014`: rendered / replayed | Main-thread µs per change: pin → `0014` |
+|---|---|---|---|
+| A speaking ring on a 12-tile voice stage (server bar, channel list with rosters, user panel around it) | 18.2 | 5.0 / 13.0 | 2,653 → 2,087 (−21 %) |
+| A speaking ring in the channel list's voice roster, a text channel open with its member list | 9.5 | 3.0 / 3.0 | 2,624 → 1,662 (−37 %) |
+| A key typed in a field under the 10,000-message channel's list (the chat pane's shape; the composer is not in this tree) | 3.0 | 2.0 / 1.0 | 941 → 873 (−7 %) |
+| A message arriving in that list | 3.0 | 2.0 / 1.0 | 1,021 → 977 (−4 %) |
+
+What renders now is the path from the window's content to the view that changed (content, main layout, pane,
+stage, tile: 5; content, list host, field: 2); what is replayed are the path's clean children, and the views
+inside those are not visited at all (the second row: 9.5 views became 3 rendered and 3 replayed). The time
+saved is those views' `render`, layout and paint; the rest of a frame (the path's own work, the scene to the
+renderer) is unchanged, so the gain is largest where the neighbours are many or heavy. The fixture's message
+list renders in about 70 µs; the composer work measured 0.3–2.6 ms per list render in the real pane, which is
+what a typed key no longer pays there (its `composer-typing-cost` self-test is the number to take after the
+merge).
+
+**Not covered.** The gain is views not rendered; a view that renders still lays out and paints its own
+elements, and GPUI still marks every ancestor of a dirty view dirty, so the path from the window's content
+down to the changed view renders (2–5 views here). Zed's own crates were not built against the patch (the
+client does not build them).
+
+**Files.** `gpui/src/view.rs` (+71 / −3), `gpui/src/window.rs` (+101), `gpui/src/text_system/line_layout.rs`
+(+12).
+
+**Upstream.** The stale-range hazard and the fix are GPUI's own; a version for upstream would drop the
+switch and keep the counters behind `test-support`.
 
 ## Considered and not patched
 

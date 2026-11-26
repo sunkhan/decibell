@@ -12,3 +12,7 @@ futures.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[dev-dependencies]
+# tests/nested_cached_views.rs drives GPUI's test window (patches/0014).
+gpui = { workspace = true, features = ["test-support"] }
