@@ -32,9 +32,11 @@ static DEVICE_LIMIT_NOTIFIED: AtomicBool = AtomicBool::new(false);
 
 /// Where central is. A debug build (`npm run dev`, `napi build` without
 /// `--release`) takes `DECIBELL_CENTRAL=host:port` instead, to run against a
-/// local central (e.g. the e2e harness's); release builds compile it out.
+/// local central (e.g. the e2e harness's); release builds compile it out,
+/// unless built with the `local-central` feature (optimised test and
+/// measurement builds against the local stack; never a shipped build).
 fn central_addr() -> (String, u16) {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "local-central"))]
     if let Some((host, port)) = std::env::var("DECIBELL_CENTRAL")
         .ok()
         .and_then(|v| v.rsplit_once(':').and_then(|(h, p)| Some((h.to_string(), p.parse().ok()?))))

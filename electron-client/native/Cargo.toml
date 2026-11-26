@@ -191,3 +191,6 @@ codegen-units = 1
 # DECIBELL_STREAM_DUMP (src/media/stream_dump.rs): record watched streams to .dbv files for the Qt client's video
 # spike. Off in every shipped build; opt in with `npx napi build --platform --release --features stream-dump`.
 stream-dump = []
+# DECIBELL_CENTRAL=host:port in an optimised build (src/net/central.rs), for tests and measurements against the
+# local servers of src/server/tests + src/community/tests. Off in every shipped build.
+local-central = []
