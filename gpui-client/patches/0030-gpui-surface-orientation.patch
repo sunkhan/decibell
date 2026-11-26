@@ -1,0 +1,451 @@
+diff --git a/crates/gpui_wgpu/src/shaders.wgsl b/crates/gpui_wgpu/src/shaders.wgsl
+index 23cd269..fc19c25 100644
+--- a/crates/gpui_wgpu/src/shaders.wgsl
++++ b/crates/gpui_wgpu/src/shaders.wgsl
+@@ -1472,7 +1472,9 @@ struct SurfaceParams {
+     ycbcr_to_b: vec4<f32>,
+     // Offset of the chroma samples, in texture coordinates.
+     chroma_offset: vec2<f32>,
+-    pad: vec2<f32>,
++    // How the picture is turned (SurfaceOrientation's bits: 1 mirror x, 2 mirror y, 4 transpose).
++    orientation: f32,
++    pad: f32,
+     // The bounds the corner radii round (`bounds` is the fitted picture inside them).
+     clip_bounds: Bounds,
+     // The part of the picture shown in `bounds`: origin and size in texture coordinates.
+@@ -1489,6 +1491,21 @@ struct SurfaceVarying {
+     @location(0) texture_position: vec2<f32>,
+ }
+ 
++// The point of the stored picture drawn at `p` of the turned one (both 0..1).
++fn surface_orient(p: vec2<f32>, orientation: u32) -> vec2<f32> {
++    var q = p;
++    if ((orientation & 4u) != 0u) {
++        q = q.yx;
++    }
++    if ((orientation & 1u) != 0u) {
++        q.x = 1.0 - q.x;
++    }
++    if ((orientation & 2u) != 0u) {
++        q.y = 1.0 - q.y;
++    }
++    return q;
++}
++
+ @vertex
+ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
+     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+@@ -1497,7 +1514,8 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
+     let clipped = clip_to_mask(unit_vertex, surface_locals.bounds, surface_locals.content_mask);
+     out.position = to_device_position_impl(clipped.position);
+     // `uv_rect` of the texture is shown in the unclipped bounds, so sample at the vertex's position within them.
+-    out.texture_position = surface_locals.uv_rect.xy + clipped.unit_vertex * surface_locals.uv_rect.zw;
++    out.texture_position = surface_locals.uv_rect.xy
++        + surface_orient(clipped.unit_vertex, u32(surface_locals.orientation)) * surface_locals.uv_rect.zw;
+     return out;
+ }
+ 
+@@ -1507,7 +1525,12 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
+     // texels per pixel; a picture drawn smaller than that (a 1440p stream in a 320 px tile) would
+     // alias, so the footprint is averaged over a grid of up to 4x4 bilinear taps (8x8 texels).
+     // At full size and above this is one tap, as before.
+-    let footprint = surface_locals.uv_rect.zw / max(surface_locals.bounds.size, vec2<f32>(1.0));
++    var drawn_size = max(surface_locals.bounds.size, vec2<f32>(1.0));
++    if ((u32(surface_locals.orientation) & 4u) != 0u) {
++        // A transposed picture: the texture's x runs along the bounds' y.
++        drawn_size = drawn_size.yx;
++    }
++    let footprint = surface_locals.uv_rect.zw / drawn_size;
+     let texels = footprint * vec2<f32>(textureDimensions(t_y));
+     let taps = vec2<i32>(clamp(ceil(texels * 0.5), vec2<f32>(1.0), vec2<f32>(4.0)));
+     var sum = vec3<f32>(0.0);
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index 1f430ed..178b92e 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -1,5 +1,6 @@
+ use crate::{
+-    CompositorGpuHint, DeviceErrorState, SurfaceFit, WgpuAtlas, WgpuContext, WgpuSurface,
++    CompositorGpuHint, DeviceErrorState, SurfaceFit, SurfaceOrientation, WgpuAtlas, WgpuContext,
++    WgpuSurface,
+     WgpuSurfaceFrame, WgpuSurfacePlanes, WgpuSurfaceView,
+ };
+ use anyhow::{Context as _, Result};
+@@ -115,7 +116,9 @@ struct SurfaceParams {
+     corner_radii: [f32; 4],
+     ycbcr_to_rgb: [[f32; 4]; 3],
+     chroma_offset: [f32; 2],
+-    pad: [f32; 2],
++    /// A `SurfaceOrientation`'s bits, as a number.
++    orientation: f32,
++    pad: f32,
+     /// What the corner radii round: the bounds the element painted (`bounds` is the fitted
+     /// picture inside them).
+     clip_bounds: PodBounds,
+@@ -123,9 +126,31 @@ struct SurfaceParams {
+     uv_rect: [f32; 4],
+ }
+ 
+-/// Where a picture of `picture` pixels goes in `bounds` (device pixels) and which part of it is
+-/// shown: the fitted bounds, snapped to whole pixels, and the texture rectangle.
+-fn fit_surface(bounds: PodBounds, picture: [f32; 2], fit: SurfaceFit) -> (PodBounds, [f32; 4]) {
++/// Where a picture stored as `stored` pixels and drawn turned by `orientation` goes in `bounds`
++/// (device pixels) and which part of it is shown: the fitted bounds, snapped to whole pixels,
++/// and the rectangle of the stored texture.
++fn fit_surface(
++    bounds: PodBounds,
++    stored: [f32; 2],
++    orientation: SurfaceOrientation,
++    fit: SurfaceFit,
++) -> (PodBounds, [f32; 4]) {
++    let picture = if orientation.transposes() {
++        [stored[1], stored[0]]
++    } else {
++        stored
++    };
++    let (fitted, [x, y, w, h]) = fit_drawn(bounds, picture, fit);
++    // The shown part is centred, so mirroring leaves it where it is; a transposed picture's
++    // texture axes are the drawn picture's, exchanged.
++    if orientation.transposes() {
++        (fitted, [y, x, h, w])
++    } else {
++        (fitted, [x, y, w, h])
++    }
++}
++
++fn fit_drawn(bounds: PodBounds, picture: [f32; 2], fit: SurfaceFit) -> (PodBounds, [f32; 4]) {
+     let [width, height] = bounds.size;
+     if width <= 0.0 || height <= 0.0 {
+         return (bounds, [0.0, 0.0, 1.0, 1.0]);
+@@ -1572,6 +1597,7 @@ impl WgpuRendererCore {
+                     SurfaceFit::Fill,
+                 ),
+             };
++            let orientation = source.map(WgpuSurface::orientation).unwrap_or_default();
+             let Some(frame) = source.and_then(|source| source.acquire(&resources.device)) else {
+                 prepared.push(None);
+                 continue;
+@@ -1638,6 +1664,7 @@ impl WgpuRendererCore {
+             let (fitted_bounds, uv_rect) = fit_surface(
+                 surface.bounds.into(),
+                 [luma_size.width.max(1) as f32, luma_size.height.max(1) as f32],
++                orientation,
+                 fit,
+             );
+             let params = SurfaceParams {
+@@ -1654,7 +1681,8 @@ impl WgpuRendererCore {
+                     frame.color.chroma_offset[0] / chroma_size.width.max(1) as f32,
+                     frame.color.chroma_offset[1] / chroma_size.height.max(1) as f32,
+                 ],
+-                pad: [0.0; 2],
++                orientation: orientation.0 as f32,
++                pad: 0.0,
+                 clip_bounds: surface.bounds.into(),
+                 uv_rect,
+             };
+diff --git a/crates/gpui_wgpu/src/wgpu_surface.rs b/crates/gpui_wgpu/src/wgpu_surface.rs
+index 4dec6f9..ce3f819 100644
+--- a/crates/gpui_wgpu/src/wgpu_surface.rs
++++ b/crates/gpui_wgpu/src/wgpu_surface.rs
+@@ -9,7 +9,7 @@
+ use parking_lot::Mutex;
+ use std::any::Any;
+ use std::sync::Arc;
+-use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+ 
+ /// The two plane textures of a 4:2:0 picture, on the renderer's device: luma (one channel) and
+ /// interleaved chroma (two channels, half size). Views of ordinary `R8Unorm` / `Rg8Unorm`
+@@ -118,6 +118,39 @@ pub enum SurfaceFit {
+     Cover,
+ }
+ 
++/// How a surface's pictures are turned when they are drawn: what a video file's display matrix
++/// asks for (a phone's portrait video is stored on its side). Applied in the surface's draw (the
++/// texture coordinates), never by copying pixels; the fit works on the turned size.
++///
++/// The value is three bits: with `p` a point of the drawn picture (0..1, y down), the stored
++/// picture is sampled at `p` with x and y exchanged if [`Self::TRANSPOSE`] is set, then with x
++/// mirrored if [`Self::FLIP_X`] and y mirrored if [`Self::FLIP_Y`].
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
++pub struct SurfaceOrientation(pub u8);
++
++impl SurfaceOrientation {
++    pub const FLIP_X: u8 = 1;
++    pub const FLIP_Y: u8 = 2;
++    pub const TRANSPOSE: u8 = 4;
++
++    pub const IDENTITY: Self = Self(0);
++    /// The stored picture is drawn turned a quarter clockwise.
++    pub const ROTATE_90: Self = Self(Self::TRANSPOSE | Self::FLIP_Y);
++    pub const ROTATE_180: Self = Self(Self::FLIP_X | Self::FLIP_Y);
++    /// The stored picture is drawn turned a quarter counter-clockwise.
++    pub const ROTATE_270: Self = Self(Self::TRANSPOSE | Self::FLIP_X);
++
++    /// Whether the drawn picture's width is the stored picture's height.
++    pub fn transposes(self) -> bool {
++        self.0 & Self::TRANSPOSE != 0
++    }
++
++    /// The drawn size of a picture stored as `size`.
++    pub fn apply(self, size: (u32, u32)) -> (u32, u32) {
++        if self.transposes() { (size.1, size.0) } else { size }
++    }
++}
++
+ /// A [`WgpuSurface`] with a fit: what an element wraps in a `gpui::ExternalSurface` when it wants
+ /// something other than [`SurfaceFit::Fill`]. Corner radii round the painted bounds (the element's
+ /// box), not the fitted picture.
+@@ -132,6 +165,8 @@ pub struct WgpuSurface {
+     /// The newest picture, its sequence number (1-based count of pictures set) and the tag it
+     /// was set with.
+     latest: Mutex<(u64, u64, Option<Arc<WgpuSurfaceFrame>>)>,
++    /// A [`SurfaceOrientation`]: how every picture of this surface is turned when drawn.
++    orientation: AtomicU8,
+     last_drawn: AtomicU64,
+     pictures_drawn: AtomicU64,
+     draws: AtomicU64,
+@@ -171,7 +206,22 @@ impl WgpuSurface {
+         self.observer.set(observer).is_ok()
+     }
+ 
+-    /// The size in pixels of the newest picture's luma plane.
++    /// Turns the surface's pictures from now on (the next draw). Callable from any thread; the
++    /// caller asks for a present if a picture is on screen.
++    pub fn set_orientation(&self, orientation: SurfaceOrientation) {
++        self.orientation.store(orientation.0, Ordering::Relaxed);
++    }
++
++    pub fn orientation(&self) -> SurfaceOrientation {
++        SurfaceOrientation(self.orientation.load(Ordering::Relaxed))
++    }
++
++    /// The size the newest picture is drawn at: its stored size, turned.
++    pub fn display_size(&self) -> Option<(u32, u32)> {
++        self.picture_size().map(|size| self.orientation().apply(size))
++    }
++
++    /// The size in pixels of the newest picture's luma plane (as stored).
+     pub fn picture_size(&self) -> Option<(u32, u32)> {
+         let latest = self.latest.lock();
+         let size = latest.2.as_ref()?.planes.luma.texture().size();
+diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
+index 917d84b..5abb9db 100644
+--- a/crates/gpui_windows/src/directx_renderer.rs
++++ b/crates/gpui_windows/src/directx_renderer.rs
+@@ -869,12 +869,13 @@ impl DirectXRenderer {
+                     SurfaceFit::Fill,
+                 ),
+             };
++            let orientation = source.map(D3d11Surface::orientation).unwrap_or_default();
+             let Some(frame) = source.and_then(|source| source.acquire(&devices.device)) else {
+                 continue;
+             };
+             self.pipelines
+                 .surfaces
+-                .draw(&devices.device_context, surface, &frame, fit)?;
++                .draw(&devices.device_context, surface, &frame, fit, orientation)?;
+             drew = true;
+             // `frame` is released here: the draw is issued, and anything written to its planes
+             // from now on is executed after it.
+@@ -1386,12 +1387,36 @@ struct SurfaceParams {
+     chroma_offset: [f32; 2],
+     /// The luma texture's size in texels.
+     texture_size: [f32; 2],
++    /// A `SurfaceOrientation`'s bits, as a number; then padding to a whole `float4`.
++    orientation: f32,
++    pad: [f32; 3],
+ }
+ 
+ /// Where a picture of `picture` pixels goes in `bounds` (origin and size in device pixels) and
+ /// which part of it is shown (origin and size, as fractions of the picture): the fitted bounds,
+ /// snapped to whole pixels, and the picture rectangle.
+-fn fit_surface(bounds: [f32; 4], picture: [f32; 2], fit: SurfaceFit) -> ([f32; 4], [f32; 4]) {
++fn fit_surface(
++    bounds: [f32; 4],
++    stored: [f32; 2],
++    orientation: SurfaceOrientation,
++    fit: SurfaceFit,
++) -> ([f32; 4], [f32; 4]) {
++    // The picture is drawn turned: fitted by its turned size; the shown part, which is centred,
++    // goes back to the stored picture's axes.
++    let picture = if orientation.transposes() {
++        [stored[1], stored[0]]
++    } else {
++        stored
++    };
++    let (fitted, [x, y, w, h]) = fit_drawn(bounds, picture, fit);
++    if orientation.transposes() {
++        (fitted, [y, x, h, w])
++    } else {
++        (fitted, [x, y, w, h])
++    }
++}
++
++fn fit_drawn(bounds: [f32; 4], picture: [f32; 2], fit: SurfaceFit) -> ([f32; 4], [f32; 4]) {
+     let [x, y, width, height] = bounds;
+     if width <= 0.0 || height <= 0.0 {
+         return (bounds, [0.0, 0.0, 1.0, 1.0]);
+@@ -1496,6 +1521,7 @@ impl SurfacePipeline {
+         surface: &PaintSurface,
+         frame: &D3d11SurfaceFrame,
+         fit: SurfaceFit,
++        orientation: SurfaceOrientation,
+     ) -> Result<()> {
+         let planes = &frame.planes;
+         let picture = [planes.size.0.max(1) as f32, planes.size.1.max(1) as f32];
+@@ -1509,7 +1535,7 @@ impl SurfacePipeline {
+             surface.bounds.size.width.0,
+             surface.bounds.size.height.0,
+         ];
+-        let (bounds, shown) = fit_surface(painted, picture, fit);
++        let (bounds, shown) = fit_surface(painted, picture, orientation, fit);
+         // From fractions of the picture to texture coordinates (the picture is the texture's
+         // top-left part).
+         let picture_in_texture = [picture[0] / texture[0], picture[1] / texture[1]];
+@@ -1544,6 +1570,8 @@ impl SurfacePipeline {
+                 frame.color.chroma_offset[1] / chroma_texels[1],
+             ],
+             texture_size: texture,
++            orientation: orientation.0 as f32,
++            pad: [0.0; 3],
+         };
+         let params_buffer = self
+             .params_buffer
+diff --git a/crates/gpui_windows/src/directx_surface.rs b/crates/gpui_windows/src/directx_surface.rs
+index 7e67ac6..5769bee 100644
+--- a/crates/gpui_windows/src/directx_surface.rs
++++ b/crates/gpui_windows/src/directx_surface.rs
+@@ -212,6 +212,39 @@ pub enum SurfaceFit {
+     Cover,
+ }
+ 
++/// How a surface's pictures are turned when they are drawn: what a video file's display matrix
++/// asks for (a phone's portrait video is stored on its side). Applied in the surface's draw (the
++/// texture coordinates), never by copying pixels; the fit works on the turned size.
++///
++/// The value is three bits: with `p` a point of the drawn picture (0..1, y down), the stored
++/// picture is sampled at `p` with x and y exchanged if [`Self::TRANSPOSE`] is set, then with x
++/// mirrored if [`Self::FLIP_X`] and y mirrored if [`Self::FLIP_Y`].
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
++pub struct SurfaceOrientation(pub u8);
++
++impl SurfaceOrientation {
++    pub const FLIP_X: u8 = 1;
++    pub const FLIP_Y: u8 = 2;
++    pub const TRANSPOSE: u8 = 4;
++
++    pub const IDENTITY: Self = Self(0);
++    /// The stored picture is drawn turned a quarter clockwise.
++    pub const ROTATE_90: Self = Self(Self::TRANSPOSE | Self::FLIP_Y);
++    pub const ROTATE_180: Self = Self(Self::FLIP_X | Self::FLIP_Y);
++    /// The stored picture is drawn turned a quarter counter-clockwise.
++    pub const ROTATE_270: Self = Self(Self::TRANSPOSE | Self::FLIP_X);
++
++    /// Whether the drawn picture's width is the stored picture's height.
++    pub fn transposes(self) -> bool {
++        self.0 & Self::TRANSPOSE != 0
++    }
++
++    /// The drawn size of a picture stored as `size`.
++    pub fn apply(self, size: (u32, u32)) -> (u32, u32) {
++        if self.transposes() { (size.1, size.0) } else { size }
++    }
++}
++
+ /// A [`D3d11Surface`] with a fit: what an element wraps in a `gpui::ExternalSurface` when it
+ /// wants something other than [`SurfaceFit::Fill`]. Corner radii round the painted bounds (the
+ /// element's box), not the fitted picture.
+@@ -226,6 +259,8 @@ pub struct D3d11Surface {
+     /// The newest picture, its sequence number (1-based count of pictures set) and the tag it
+     /// was set with.
+     latest: Mutex<(u64, u64, Option<Arc<D3d11SurfaceFrame>>)>,
++    /// A [`SurfaceOrientation`]: how every picture of this surface is turned when drawn.
++    orientation: std::sync::atomic::AtomicU8,
+     last_drawn: AtomicU64,
+     pictures_drawn: AtomicU64,
+     draws: AtomicU64,
+@@ -265,7 +300,22 @@ impl D3d11Surface {
+         self.observer.set(observer).is_ok()
+     }
+ 
+-    /// The size in pixels of the newest picture.
++    /// Turns the surface's pictures from now on (the next draw). Callable from any thread; the
++    /// caller asks for a present if a picture is on screen.
++    pub fn set_orientation(&self, orientation: SurfaceOrientation) {
++        self.orientation.store(orientation.0, Ordering::Relaxed);
++    }
++
++    pub fn orientation(&self) -> SurfaceOrientation {
++        SurfaceOrientation(self.orientation.load(Ordering::Relaxed))
++    }
++
++    /// The size the newest picture is drawn at: its stored size, turned.
++    pub fn display_size(&self) -> Option<(u32, u32)> {
++        self.picture_size().map(|size| self.orientation().apply(size))
++    }
++
++    /// The size in pixels of the newest picture (as stored).
+     pub fn picture_size(&self) -> Option<(u32, u32)> {
+         let latest = self.latest.lock();
+         Some(latest.2.as_ref()?.planes.size)
+diff --git a/crates/gpui_windows/src/shaders.hlsl b/crates/gpui_windows/src/shaders.hlsl
+index 4fb4c74..f98da71 100644
+--- a/crates/gpui_windows/src/shaders.hlsl
++++ b/crates/gpui_windows/src/shaders.hlsl
+@@ -1395,6 +1395,9 @@ cbuffer SurfaceParams: register(b2) {
+     float2 surface_chroma_offset;
+     // The luma texture's size in texels.
+     float2 surface_texture_size;
++    // How the picture is turned (SurfaceOrientation's bits: 1 mirror x, 2 mirror y, 4 transpose).
++    float surface_orientation;
++    float3 surface_pad;
+ };
+ 
+ Texture2D<float4> t_surface_y: register(t4);
+@@ -1406,6 +1409,21 @@ struct SurfaceFragmentInput {
+     float2 texture_position: TEXCOORD0;
+ };
+ 
++// The point of the stored picture drawn at `p` of the turned one (both 0..1).
++float2 surface_orient(float2 p, uint orientation) {
++    float2 q = p;
++    if ((orientation & 4u) != 0u) {
++        q = q.yx;
++    }
++    if ((orientation & 1u) != 0u) {
++        q.x = 1.0 - q.x;
++    }
++    if ((orientation & 2u) != 0u) {
++        q.y = 1.0 - q.y;
++    }
++    return q;
++}
++
+ SurfaceFragmentInput surface_vertex(uint vertex_id: SV_VertexID) {
+     float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+     ClippedVertex vertex = clip_to_mask(unit_vertex, surface_bounds, surface_content_mask);
+@@ -1413,7 +1431,8 @@ SurfaceFragmentInput surface_vertex(uint vertex_id: SV_VertexID) {
+     SurfaceFragmentInput output;
+     output.position = to_device_position_impl(vertex.position);
+     // `surface_uv_rect` of the texture is shown in the unclipped bounds.
+-    output.texture_position = surface_uv_rect.xy + vertex.unit_vertex * surface_uv_rect.zw;
++    output.texture_position = surface_uv_rect.xy
++        + surface_orient(vertex.unit_vertex, uint(surface_orientation)) * surface_uv_rect.zw;
+     return output;
+ }
+ 
+@@ -1422,7 +1441,12 @@ float4 surface_fragment(SurfaceFragmentInput input): SV_Target {
+     // texels per pixel; a picture drawn smaller than that (a 1440p stream in a 320 px tile)
+     // would alias, so the footprint is averaged over a grid of up to 4x4 bilinear taps (8x8
+     // texels). At full size and above this is one tap.
+-    float2 footprint = surface_uv_rect.zw / max(surface_bounds.size, float2(1.0, 1.0));
++    float2 drawn_size = max(surface_bounds.size, float2(1.0, 1.0));
++    if ((uint(surface_orientation) & 4u) != 0u) {
++        // A transposed picture: the texture's x runs along the bounds' y.
++        drawn_size = drawn_size.yx;
++    }
++    float2 footprint = surface_uv_rect.zw / drawn_size;
+     float2 texels = footprint * surface_texture_size;
+     int2 taps = int2(clamp(ceil(texels * 0.5), float2(1.0, 1.0), float2(4.0, 4.0)));
+     // The picture is the texture's top-left part: never sample past its last texel centre.

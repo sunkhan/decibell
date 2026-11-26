@@ -25,6 +25,9 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0019-windows-clipboard-bitmap.patch` | A picture written to the Windows clipboard also goes out as a `CF_DIB` (32-bit, bottom-up, from the decoded picture), beside the registered "PNG" / "GIF" / "JFIF" formats GPUI wrote. | Programs that paste only bitmaps (Paint, older Office, most native editors) got nothing from "Copy image": GPUI wrote no bitmap format. Windows makes `CF_BITMAP` / `CF_DIBV5` from the `CF_DIB`. |
 | `0020-windows-external-surfaces.patch` | The Direct3D 11 renderer (gpui_windows) draws external surfaces: the twin of `0001` + `0005` with the same shape (`D3d11Surface`, `D3d11SurfaceFrame`, `D3d11SurfaceView`, `SurfaceFit`, `SurfaceColor`), a surface pipeline in `shaders.hlsl`, the renderer's device handed out (`shared_devices()`) and created multithread-protected, the renderer holding the immediate context for each frame, `simulate_device_loss()`. | Watching a stream on Windows: until this patch `draw_surfaces` was an empty function and a decoder had no way to the renderer's device. |
 | `0021-windows-park-vsync-thread.patch` | The Windows vsync thread sleeps while no window asks for a frame, and `PlatformWindow::schedule_frame` / `frame_waker` (which gpui_windows left as no-ops) wake it. | At the pin the thread woke at every vertical blank for as long as the app ran and invalidated every window, so the main thread woke at the refresh rate too, to find nothing to draw: two wakeups per refresh per second at rest (120 at 60 Hz, 560 at 280 Hz) against a target of ≤ 30. The X11 twin is `0004`. |
+| `0030-gpui-surface-orientation.patch` | A surface has an orientation (`WgpuSurface::set_orientation` / `D3d11Surface::set_orientation`, `SurfaceOrientation`: mirror x, mirror y, transpose): both renderers turn the texture coordinates in the surface's vertex shader, fit the picture by its turned size (`display_size()`) and average the minified footprint along the turned axes. In gpui_wgpu **and** gpui_windows (`shaders.wgsl`, `shaders.hlsl`). | A video file with a display matrix (a phone's portrait recording is stored on its side) was drawn as stored. Turning it in the draw costs nothing per picture: no pixel is copied and no slot changes. |
+| `0031-gpui-surface-depth-transfer.patch` | `SurfaceColor` gains `depth` (8, or 10 / 12 with the code in the high bits of 16-bit plane textures) and `transfer` (`SurfaceTransfer`: SDR, PQ, HLG, BT.2020 SDR); the Y'CbCr matrix is scaled for the depth (8-bit numbers unchanged, bit for bit); the surface fragment shaders bring PQ / HLG / BT.2020 pictures to the SDR target (`surface_to_sdr`, both renderers); the wgpu device asks for `TEXTURE_FORMAT_16BIT_NORM` when the adapter has it. | 10-bit video files (HEVC Main 10, AV1, VP9 profile 2), which Chromium plays, need `R16` / `RG16` planes to keep their depth, and HDR files drawn through the SDR matrix alone come out washed out. |
+| `0032-gpui-surface-latest-frame.patch` | `WgpuSurface::latest_frame()` / `D3d11Surface::latest_frame()`: the newest picture's `Arc`, for showing it in another surface. | A played video's card shows the frame it stopped on (the renderer's canvas capture): the client keeps the slot the last picture is in and draws it from a surface of its own (`decibell_video::Still`), with no read-back and no copy. |
 
 ## How the patches are applied
 
@@ -799,3 +802,31 @@ never came from this thread and is unchanged.
 
 Expected at rest: 0 wakeups of `VSyncProvider` and of the main thread from this path. Upstream: yes; macOS
 (`metal_frames.wake()`) and Wayland already work this way, and GPUI's core already calls both hooks.
+
+## 0030: a surface's orientation
+
+`SurfaceOrientation(u8)`: bit 1 mirrors x, bit 2 mirrors y, bit 4 transposes (applied in that order to the
+point of the drawn picture to get the point of the stored one: `surface_orient` in both shaders). The four
+rotations are `IDENTITY`, `ROTATE_90` (4 | 2), `ROTATE_180` (1 | 2), `ROTATE_270` (4 | 1). It belongs to the
+surface, not to a picture: `set_orientation` is an atomic store from any thread, read when the renderer
+prepares the surface, so a decoder never knows about it and the slots are the stored size. `fit_surface` fits
+the turned size and hands the stored texture's rectangle back (a centred crop survives mirroring; a transposed
+one has its axes exchanged). wgpu: the number rides in what was padding of `SurfaceParams` (no layout change).
+Direct3D: `SurfaceParams` grows by one `float4` (`surface_orientation`, then `surface_transfer` from `0031`,
+then padding), field for field in `directx_renderer.rs` and `shaders.hlsl`. `decibell_video::Orientation` reads
+a display matrix into the three bits (unit-tested); self-test `media-rotation` reads the window's frame back.
+The Direct3D half is compiled (`tools/win-check.sh`), not run.
+
+## 0031: depth and transfer of a surface's pictures
+
+- **Depth.** `ycbcr_to_rgb_rows` scales by the code range of `depth`: an 8-bit plane holds the code, a deeper
+  one holds it in the high bits of 16 (what P010 and a `G10X6_B10X6R10X6` image's planes are, so a hardware
+  decoder's plane is copied as it is). `depth == 8` takes the old constants unchanged.
+- **Transfer.** After the matrix, `surface_to_sdr` for anything but `Sdr`: PQ's EOTF (or HLG's inverse OETF and
+  the 1000-nit OOTF, gamma 1.2) to linear light with 1.0 = 203 nits; BT.2020 to BT.709 primaries; the
+  highlight curve `x (1 + x / peak²) / (1 + x)` on the largest channel with a 1000-nit peak (the form Chromium
+  uses for HDR on an SDR screen; the file's mastering metadata is not read); sRGB encoding. `Bt2020Sdr` only
+  converts the primaries (gamma 2.4 both ways). An approximation, listed for the owner's eye in HANDOFF §6.
+- **16-bit normalised textures** are a wgpu feature (`TEXTURE_FORMAT_16BIT_NORM`): requested when the adapter
+  has it; `decibell-video` asks the device and falls back to the 8 most significant bits without it. Direct3D
+  needs no feature for `R16_UNORM` / `R16G16_UNORM`.

@@ -1,0 +1,36 @@
+diff --git a/crates/gpui_wgpu/src/wgpu_surface.rs b/crates/gpui_wgpu/src/wgpu_surface.rs
+index 0ccbc7e..ed55feb 100644
+--- a/crates/gpui_wgpu/src/wgpu_surface.rs
++++ b/crates/gpui_wgpu/src/wgpu_surface.rs
+@@ -244,6 +244,13 @@ impl WgpuSurface {
+         drop(previous);
+     }
+ 
++    /// The newest picture, if there is one: for keeping it on screen in another surface after
++    /// this one's source is gone (a played video's last picture as its card's poster). Holding
++    /// it keeps its planes alive.
++    pub fn latest_frame(&self) -> Option<Arc<WgpuSurfaceFrame>> {
++        self.latest.lock().2.clone()
++    }
++
+     /// Stops showing a picture (the surface draws nothing).
+     pub fn clear(&self) {
+         let previous = self.latest.lock().2.take();
+diff --git a/crates/gpui_windows/src/directx_surface.rs b/crates/gpui_windows/src/directx_surface.rs
+index 3f283ba..54d1049 100644
+--- a/crates/gpui_windows/src/directx_surface.rs
++++ b/crates/gpui_windows/src/directx_surface.rs
+@@ -338,6 +338,13 @@ impl D3d11Surface {
+         drop(previous);
+     }
+ 
++    /// The newest picture, if there is one: for keeping it on screen in another surface after
++    /// this one's source is gone (a played video's last picture as its card's poster). Holding
++    /// it keeps its planes alive.
++    pub fn latest_frame(&self) -> Option<Arc<D3d11SurfaceFrame>> {
++        self.latest.lock().2.clone()
++    }
++
+     /// Stops showing a picture (the surface draws nothing).
+     pub fn clear(&self) {
+         let previous = self.latest.lock().2.take();

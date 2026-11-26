@@ -104,6 +104,8 @@ CONFIGURE_FLAGS=(
   --enable-demuxer=mov,matroska,ogg,mp3,wav,flac,aac
   --enable-parser=vp8,vp9,aac,mpegaudio,opus,vorbis,flac
   --enable-decoder=vp8,vp9
+  # VP9 on the GPU (the commonest WebM codec; files only, never a stream's codec). VP8 stays software.
+  --enable-hwaccel=vp9_vulkan,vp9_nvdec,vp9_vaapi
   --enable-decoder=aac,mp3float,opus,vorbis,flac
   --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw
 )
@@ -242,6 +244,7 @@ grep -q '^#define FFMPEG_LICENSE "LGPL version 2.1 or later"$' config.h \
 # And it has what both halves of the client open by name.
 for component in H264_DECODER HEVC_DECODER AV1_DECODER LIBDAV1D_DECODER \
     H264_VULKAN_HWACCEL HEVC_VULKAN_HWACCEL AV1_VULKAN_HWACCEL \
+    VP9_VULKAN_HWACCEL VP9_NVDEC_HWACCEL VP9_VAAPI_HWACCEL \
     H264_NVENC_ENCODER HEVC_NVENC_ENCODER AV1_NVENC_ENCODER \
     H264_VAAPI_ENCODER HEVC_VAAPI_ENCODER AV1_VAAPI_ENCODER LIBSVTAV1_ENCODER \
     SCALE_FILTER SCALE_VAAPI_FILTER \
