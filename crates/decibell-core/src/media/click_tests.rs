@@ -23,7 +23,8 @@ use super::cue::CueBus;
 use super::packet::UdpAudioPacket;
 use super::peer::PeerAudio;
 use super::pipeline::{
-    drain_peer_voice, on_voice_datagram, peer_key, reap_retired, retire_output, PeerKey, Retiring, VoiceDrain, VoiceRx,
+    drain_peer_voice, low_water_samples, on_voice_datagram, output_device_changed, peer_key, reap_retired, retire_output,
+    PeerKey, Retiring, VoiceDrain, VoiceRx,
 };
 
 pub(crate) const TONE_HZ: f64 = 190.0;
@@ -69,6 +70,7 @@ pub(crate) struct Device {
     /// Channel 0 of everything the device was handed.
     pub played: Arc<Mutex<Vec<f32>>>,
     closed: Arc<AtomicBool>,
+    pub stats: Arc<OutputPullStats>,
 }
 
 /// The stream of a `Device`, as an `OutputHandle` holds it: dropping it
@@ -96,14 +98,15 @@ impl Device {
     ) -> (OutputHandle, Device) {
         let ctl = OutputCtl::new(48_000);
         let (cues, voices) = CueBus::new(48_000, std::thread::current(), u64::MAX);
-        let mut mix = OutputMix::new(2, Arc::clone(peers), stream, Arc::new(OutputPullStats::new(None)), Arc::clone(&ctl), voices);
+        let stats = Arc::new(OutputPullStats::new(None));
+        let mut mix = OutputMix::new(2, Arc::clone(peers), stream, Arc::clone(&stats), Arc::clone(&ctl), voices);
         let (tx, rx) = mpsc::channel::<usize>();
         let (ack_tx, ack) = mpsc::channel::<()>();
         let played = Arc::new(Mutex::new(Vec::new()));
         let (stop, closed) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (played_t, stop_t, ctl_t) = (Arc::clone(&played), Arc::clone(&stop), Arc::clone(&ctl));
         let thread = std::thread::spawn(move || {
-            let mut buf = [0f32; 2 * 480];
+            let mut buf = [0f32; 2 * 2048];
             let mut render = |frames: usize| {
                 mix.render(&mut buf[..2 * frames]);
                 played_t.lock().unwrap().extend(buf[..2 * frames].chunks_exact(2).map(|f| f[0]));
@@ -123,16 +126,21 @@ impl Device {
         let stream = DeviceStream { stop, closed: Arc::clone(&closed), thread: Some(thread) };
         (
             OutputHandle { stream: Box::new(stream), rate: 48_000, ctl, cues: Some(cues) },
-            Device { tx: Some(tx), ack, played, closed },
+            Device { tx: Some(tx), ack, played, closed, stats },
         )
     }
 
     /// One 10 ms callback.
     pub(crate) fn callback(&self) {
+        self.callback_of(480);
+    }
+
+    /// One callback of `frames` frames.
+    pub(crate) fn callback_of(&self, frames: usize) {
         if self.closed.load(Ordering::Acquire) {
             return;
         }
-        if self.tx.as_ref().unwrap().send(480).is_ok() {
+        if self.tx.as_ref().unwrap().send(frames).is_ok() {
             let _ = self.ack.recv_timeout(Duration::from_secs(2));
         }
     }
@@ -156,6 +164,12 @@ pub(crate) struct Rx {
     pub retiring: Vec<Retiring>,
     pub user_volumes: HashMap<String, f32>,
     pub deafened: bool,
+    /// Frames the device pulls per callback, and frames it is owed.
+    pub pull: usize,
+    due: usize,
+    /// The pipeline's estimate of that pull (0 until first observed), read
+    /// from the device's statistics every 2 s as the pipeline does.
+    pub pull_frames: usize,
     enc: OpusEncoder,
     sent: Vec<Vec<u8>>,
     seq: u16,
@@ -187,6 +201,9 @@ impl Rx {
             retiring: Vec::new(),
             user_volumes: HashMap::new(),
             deafened: false,
+            pull: 480,
+            due: 0,
+            pull_frames: 0,
             enc: OpusEncoder::new(64_000).unwrap(),
             sent: Vec::new(),
             seq: 0,
@@ -251,7 +268,7 @@ impl Rx {
     /// what is due, and the device pulls 20 ms.
     pub(crate) fn play_step(&mut self) {
         let now = self.now();
-        let low_water = 480 + 480;
+        let low_water = low_water_samples(self.pull_frames, 48_000, 1);
         for peer in self.peers.values_mut() {
             drain_peer_voice(peer, &mut VoiceDrain {
                 now,
@@ -265,8 +282,7 @@ impl Rx {
                 dump: None,
             });
         }
-        self.device.callback();
-        self.device.callback();
+        self.device_clock();
         self.step += 1;
     }
 
@@ -282,9 +298,24 @@ impl Rx {
     /// `deliver`: whether this step's packet arrives.
     pub(crate) fn tick(&mut self, deliver: bool) {
         self.feed(deliver);
-        self.device.callback();
-        self.device.callback();
+        self.device_clock();
         reap_retired(&mut self.retiring);
+    }
+
+    /// 20 ms of the device's clock: the callbacks that fall due.
+    pub(crate) fn device_clock(&mut self) {
+        self.due += 960;
+        while self.due >= self.pull {
+            self.device.callback_of(self.pull);
+            self.due -= self.pull;
+        }
+        // The pipeline's 2 s look at what the device pulls.
+        if self.step % 100 == 0 {
+            let m = self.device.stats.take_recent_max();
+            if m > 0 {
+                self.pull_frames = m;
+            }
+        }
     }
 
     /// The pipeline's half of a step: the packet in, due frames decoded into
@@ -300,8 +331,7 @@ impl Rx {
                 self.list.store(Arc::new(snapshot));
             }
         }
-        // The low-water mark of a 10 ms pull: pull + one tick of margin.
-        let low_water = 480 + 480;
+        let low_water = low_water_samples(self.pull_frames, 48_000, 1);
         for peer in self.peers.values_mut() {
             drain_peer_voice(peer, &mut VoiceDrain {
                 now,
@@ -338,6 +368,8 @@ impl Rx {
         }
         let (out, device) = Device::open(&self.list, Some((Arc::clone(&self.stream_cons), Arc::clone(&self.stream_stereo))));
         self.out = Some(out);
+        output_device_changed(&mut self.pull_frames, &device.stats);
+        self.due = 0;
         let old = std::mem::replace(&mut self.device, device);
         // The old device plays on until the pipeline closes it.
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -901,4 +933,25 @@ fn a_noise_suppression_level_change_restarts_nothing() {
         rx.heard()
     };
     assert!(run(false) == run(true), "the level change altered the signal");
+}
+
+/// Audit 6: the pull estimate across a device switch. The ring's low-water
+/// mark follows what the device pulls per callback, observed every 2 s; a
+/// switch to a device with a longer period (10 ms → 21 ms here) kept the old
+/// device's figure until the next look, so callbacks found the ring short
+/// and zeros were spliced into speech. The estimate now starts over with the
+/// new stream (the 20 ms assumption of a fresh session).
+#[test]
+fn a_device_with_a_longer_period_is_not_starved_after_the_switch() {
+    for at in [120usize, 123, 127] {
+        let mut rx = Rx::new();
+        rx.run(at);
+        assert_eq!(rx.pull_frames, 480, "the first device's pull was observed");
+        rx.pull = 1024;
+        rx.switch_output_device();
+        rx.run(70); // before the next 2 s look
+        let short = rx.device.stats.short_pulls();
+        assert_eq!(short, 0, "switch at step {at}: {short} callbacks found the ring short");
+        assert_clean(&rx.heard(), 1.0, &format!("switch to a 1024-frame device at step {at}"));
+    }
 }

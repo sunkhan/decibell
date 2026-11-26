@@ -310,6 +310,16 @@ impl OutputPullStats {
     fn note_short(&self) {
         self.short_pulls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+    /// A new stream reports here from now: forget the old one's pulls, and
+    /// skip the new one's first (priming) pull as at start.
+    pub fn reset(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.callbacks.store(0, Relaxed);
+        self.recent_max_frames.store(0, Relaxed);
+        self.max_gap_us.store(0, Relaxed);
+        self.last_cb_ns.store(0, Relaxed);
+    }
+
     /// Largest pull (in device frames) since the previous call; 0 if none.
     pub fn take_recent_max(&self) -> usize {
         self.recent_max_frames.swap(0, std::sync::atomic::Ordering::Relaxed)

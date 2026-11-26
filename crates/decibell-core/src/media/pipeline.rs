@@ -109,6 +109,25 @@ fn main_output_changed(old: Option<Arc<cue::CueBus>>, new: &Option<OutputHandle>
     }
 }
 
+/// The level a playback ring is kept above: the device's observed
+/// per-callback pull plus one loop tick of margin; until a pull has been
+/// observed (`pull_frames` 0) assume 20 ms.
+pub(crate) fn low_water_samples(pull_frames: usize, rate: u32, channels: usize) -> usize {
+    let pull = if pull_frames > 0 { pull_frames } else { (rate / 50) as usize };
+    (pull + (rate / 100) as usize) * channels
+}
+
+/// A new output stream replaced the one `pull_frames` was observed on: the
+/// estimate starts over, as for a fresh session (20 ms assumed until this
+/// stream's own pull is observed, its first priming pull not counted). The
+/// old device's figure is wrong for the new one in either direction: too
+/// small starves the ring (zeros spliced into speech until the next 2 s
+/// look), too large holds latency.
+pub(crate) fn output_device_changed(pull_frames: &mut usize, stats: &super::audio_device::OutputPullStats) {
+    *pull_frames = 0;
+    stats.reset();
+}
+
 /// An output stream on its way out (the user picked another device).
 pub(crate) struct Retiring {
     out: OutputHandle,
@@ -377,10 +396,6 @@ pub fn run_audio_pipeline(
     let mut stream_pull_frames: usize = 0;
     let mut last_pull_sample = Instant::now();
     let pull_sample_interval = Duration::from_secs(2);
-    fn low_water_samples(pull_frames: usize, rate: u32, channels: usize) -> usize {
-        let pull = if pull_frames > 0 { pull_frames } else { (rate / 50) as usize };
-        (pull + (rate / 100) as usize) * channels
-    }
     // Frames a cold start must hold beyond the jitter target so that, once
     // the ring is primed, the jitter buffer still holds `target`. The ring
     // sits anywhere in [low_water - pull, low_water + frame) between ticks,
@@ -609,6 +624,7 @@ pub fn run_audio_pipeline(
                         None => log::info!("[pipeline] Warning: no output device after hot-swap"),
                     }
                     main_output_changed(old_cues, &output_stream);
+                    output_device_changed(&mut main_pull_frames, &main_pull);
                     // Update every peer's resampler for the new output rate.
                     for peer in remote_peers.values_mut() {
                         peer.set_output_rate(output_sample_rate);
@@ -660,6 +676,8 @@ pub fn run_audio_pipeline(
                         }
                     }
                     main_output_changed(old_cues, &output_stream);
+                    output_device_changed(&mut main_pull_frames, &main_pull);
+                    output_device_changed(&mut stream_pull_frames, &stream_pull);
                     // Update every peer's resampler for the new voice output rate.
                     for peer in remote_peers.values_mut() {
                         peer.set_output_rate(output_sample_rate);
@@ -681,6 +699,7 @@ pub fn run_audio_pipeline(
                             // Rebuild stream resampler for the new device rate
                             stream_out.set_rate(out.rate);
                             stream_output = Some(out);
+                            output_device_changed(&mut stream_pull_frames, &stream_pull);
                         }
                     }
                 }
