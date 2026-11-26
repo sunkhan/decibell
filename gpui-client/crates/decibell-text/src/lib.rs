@@ -14,7 +14,6 @@ mod style;
 
 mod code;
 mod emoji;
-pub mod input;
 mod label;
 mod math;
 mod rich;
