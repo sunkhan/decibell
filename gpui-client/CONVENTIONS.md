@@ -294,6 +294,46 @@ in short:
   (and `cargo run --release -p decibell-chat --features fixtures --example chat_bench`, which also counts
   allocations per frame), the fixtures in `fixture.rs` (the 10,000-message channel of `tools/dev/fixture.py`,
   generated bit for bit, and a hand-written one).
+- **Slot API changes for the composer**: `ComposerBuilder` is `Fn(ServerId, ChannelId, &Entity<MessageList>, &mut
+  Window, &mut App) -> ComposerParts { view, type_to_focus }` (the composer follows the list's `ListEvent::Reply`
+  and calls `start_edit`; the pane's key listener hands keys that reach it from the list, or with nothing focused,
+  to `type_to_focus`), and `EditorSlot::height(&Message, width, scale, &App)`.
+
+## Composer (`decibell-composer`)
+
+What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor. `decibell_composer::init(cx)`
+(after the chat crate's, in `registry::init_features`) fills the chat crate's `composer` and `editor` slots.
+
+- **One `Composer` view per chat pane**, generic over where it sends: `Composer::new(Rc<dyn ComposerTarget>,
+  Some(list), window, cx)`. `ChannelTarget { server, channel }` is the channel pane's (registered by `init`);
+  **the DM pane** builds `DmTarget { peer }` itself and hosts the same view under its list (drawn uncached: the
+  card sizes itself), with `Composer::type_to_focus_hook(&composer)` in its key listener. `ComposerTarget` is the
+  seam (send / send_gif / set_draft / latest_own_editable / attach / gate / send_error / what to observe); the
+  `Variant` picks the renderer's differences (the DM card has no attach button and no slowmode, `rounded-sm`
+  buttons, the inline send error above the card).
+- **Drafts** live in the model (`model.chat.drafts`): the composer loads its key's draft when it is built (one
+  composer per channel visit) and writes every change; a refused send's `DraftsEvent::Restored` puts the text back.
+- **Sending** goes through the model's actions (`send_message` / `send_gif` / `send_dm`): the box clears and the
+  reply ends only on `SendOutcome::Sent`; a slowmode hold keeps the text and shakes the pill (`SlowmodeEvent::Nudged`).
+- **Popups anchor in the same frame**: `panel::Above` fills the box it is put in (position the box `relative`) and
+  places its child above it, left or right edge aligned, laid out at the child's own size. Boxes remembered from
+  the last frame (`track_bounds`) are only for hit tests and self-tests; an absolute child without insets sits at
+  its static position, not on its parent: give such canvases `inset_0()`.
+- **Picker memory**: the emoji dataset is static data (`build.rs` from `assets/emoji-data/native.json`); the
+  picker rasterises Twemoji into its own two-generation cache (~4 MB cap) and gives every image back
+  (`drop_image`) when it closes; GIF previews are fetched only for tiles near the viewport and their decoded frames
+  and atlas tiles are released on close. Close through `Composer::close_picker(window, cx)` (it needs the window)
+  and never from inside a picker update (`Picker::close` defers it).
+- **Timers**: the slowmode countdown ticks on the wait's whole-second boundaries only while a window runs; the
+  timed-out notice once a second while timed out; the GIF debounce only while a query waits; the drop pulse only
+  while a file drag is over the window. Nothing at rest (`composer-idle`: 0 frames blurred).
+- **GIF key**: `GIF_API_KEY` (+ `GIF_API_PROVIDER`), else `resources/gifs.json` beside the executable (what a
+  packaged install ships), else, in a dev checkout, `electron-client/resources/gifs.json` found above the
+  executable (`gifs::key_file_candidates`). Never printed.
+- Screens `composer-*`, `emoji-picker*`, `gif-picker*`, `code-panel`, `math-panel`, `inline-editor` (Electron twins
+  in `tools/electron-captures/pages/`); self-tests of the same names run against the local stack as `perf2` in a
+  child app (`--check`), posting only in `#off-topic` / `#slow-lane` and deleting what they post (waiting for the
+  server's confirmation, not the optimistic removal).
 
 ## Regional formats (`decibell_model::regional`)
 
@@ -394,6 +434,14 @@ avatar editor subscribes and opens over Settings).
    callback after a present (the compositor's frame callback on Wayland).
 10. Monospace faces of one family share every metric GPUI exposes; only their outlines tell the weights
     apart (the font tests rasterise an `m`).
+11. **A dirty cached view re-renders every cached view inside it.** `prepaint_view` / `paint_view`
+    (`crates/gpui/src/view.rs:562`, `:632` at the pin) set `window.refreshing` while a dirty view re-renders, and
+    `refreshing` defeats every nested cache. A notify marks all ancestors dirty, so a key typed in the composer
+    re-renders the chat pane, which re-renders the message list beside it (measured, `composer-typing-cost`: 44
+    list frames for 43 keys; the list's frame then costs ~0.7 ms in a debug build). Not setting `refreshing` there
+    (two lines) gave 0 list frames for 43 keys and halved the key → frame time, with `chat-*`, `shell-navigate`,
+    `shell-idle`, `idle-frames` and `themes` passing; not applied (it changes caching for every view).
+12. `img(…)` animates a GIF only when it has an `.id(…)` and only while the window is active.
 
 ## Voice (`decibell-voice`)
 
