@@ -1,0 +1,37 @@
+[package]
+name = "decibell-attachments"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Attachment upload / download / decryption / Range reads / downloads manager for the native client (what Electron's renderer + main process did)"
+
+# Plain Rust + tokio, no GPUI types. Versions follow what decibell-core and the pinned Zed
+# already use (tokio-rustls 0.26 / rustls 0.23 / aes-gcm 0.10 / image 0.25), so the client
+# binary links one copy of each. TLS trust is not decided here: the app hands in a connector
+# built on core's pinning verifier (see `PinnedTls`).
+
+[dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
+bytes = "1"
+getrandom = "0.2"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+# Only the codecs an upload needs to read (a subset of the Zed pin's list, so no extra codec
+# crates); JPEG is also the thumbnail encoder.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "sync", "fs", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+sha2 = "0.10"
+serde_json = "1"
