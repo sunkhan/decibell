@@ -1,17 +1,19 @@
 use anyhow::Result;
-use decibell_harness::{Screen, perf};
+use decibell_harness::perf;
 use decibell_ui::outer_window_size;
 use gpui::{
-    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowHandle,
+    AnyView, App, AppContext as _, Bounds, Window, TitlebarOptions, WindowBounds, WindowDecorations, WindowHandle,
     WindowOptions, px, size,
 };
 
 use crate::root::Root;
 
-/// Opens the main window showing `screen`: 1280×800, at least 800×600, our own title bar.
-/// (The renderer's `electron/main/window.ts`.)
-pub fn open_main(screen: &Screen, cx: &mut App) -> Result<WindowHandle<Root>> {
-    let build = screen.build;
+/// Opens the main window showing what `build` makes: 1280×800, at least 800×600, our own title
+/// bar. (The renderer's `electron/main/window.ts`.)
+pub fn open_main(
+    build: impl FnOnce(&mut Window, &mut App) -> AnyView + 'static,
+    cx: &mut App,
+) -> Result<WindowHandle<Root>> {
     cx.open_window(main_window_options(cx), move |window, cx| {
         perf::watch_first_frame(window);
         let content = build(window, cx);

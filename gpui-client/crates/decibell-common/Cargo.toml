@@ -1,0 +1,15 @@
+[package]
+name = "decibell-common"
+description = "Model-aware widgets every feature uses: the user avatar, display names, status messages, the user menu and profile openers, and the helpers that keep a cached view in step with the stores it reads"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-ui.workspace = true
+decibell-model.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

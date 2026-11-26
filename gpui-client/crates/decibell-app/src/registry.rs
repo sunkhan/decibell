@@ -5,13 +5,16 @@
 use anyhow::{Result, anyhow};
 use decibell_harness::{Screen, SelfTest};
 
-/// What the window shows without `--screen`. The app shell takes the gallery's place here.
+/// What the self-tests' window shows without `--screen` (the app itself, without `--selftest`,
+/// shows the shell: `decibell_shell::Shell`).
 pub const DEFAULT_SCREEN: &str = "gallery";
 
 pub fn screens() -> Vec<Screen> {
     let mut screens = Vec::new();
     screens.extend(decibell_ui::screens());
     screens.extend(decibell_text_gallery::screens());
+    screens.extend(decibell_video::screens());
+    screens.extend(decibell_shell::screens());
     screens
 }
 
@@ -19,7 +22,20 @@ pub fn selftests() -> Vec<SelfTest> {
     let mut tests = Vec::new();
     tests.extend(crate::selftests::selftests());
     tests.extend(decibell_ui::selftests());
+    tests.extend(decibell_video::selftests());
+    tests.extend(decibell_shell::selftests());
     tests
+}
+
+/// Each feature crate's `init(cx)`: what it plugs into the shell (`decibell_shell::register_pane`,
+/// `register_overlay`, `register_channel_menu`). Called once at start-up, after the model, before
+/// the window opens (app and screens alike).
+pub fn init_features(_cx: &mut gpui::App) {}
+
+/// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the
+/// app that way in a child process, with its own profile).
+pub fn checks() -> Vec<SelfTest> {
+    decibell_shell::checks()
 }
 
 pub fn screen(name: &str) -> Result<Screen> {

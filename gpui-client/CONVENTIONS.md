@@ -191,6 +191,51 @@ per burst of events. The `idle-frames` self-test fails the build's bar when a sc
 - Self-tests open a real window on the session's display (GPUI cannot hide a window on Linux) and leave the
   theme and state as they found them. A capture never opens one.
 
+## Shell (`decibell-shell`, `decibell-common`)
+
+The app's content under the title bar is `decibell_shell::Shell`: nothing until the core has read the
+configuration, then the sign-in page (`AuthView`) or the main layout (`MainView`: banner, `ServerBar`, the
+rounded workspace with the sidebar group — `ChannelSidebar` or `ConversationSidebar` with the floating
+`UserPanel` — and the pane for the active view). Every part is its own cached view. Feature crates plug in
+through `decibell_shell`, once, from their `init(cx)` (called by `decibell-app`'s boot before the window
+opens):
+
+- **A pane**: `register_pane(cx, Slot::Chat, |window, cx| cx.new(|cx| ChatPanel::new(window, cx)).into())`.
+  Slots: `Home` (default: the Friends page), `Dm`, `Chat` (under the channel header, left of the right
+  panel), `RightPanel` (default: `MembersList` while the members panel is on; a registered one decides
+  itself, e.g. search results or `cx.new(MembersList::new)`), `HeaderSearch` (244 px at the header's end),
+  `Voice`, `Browse` (the whole workspace, no sidebar), `DmList` (default: the shell's rows from `dm.list`),
+  `UnreadDms` (default: the shell's tiles). A pane is built when its place first shows, dropped when it
+  goes (React's mount / unmount), drawn `.cached(…)`: it must watch what it reads. Unregistered places show
+  `Placeholder` (the slot's name).
+- **An overlay** (a modal, popup, menu over the main layout): `register_overlay(cx, |window, cx| …)`; it
+  lives while signed in and decides from the model when it is open (`model.overlays` is where the shell's
+  openers put requests: `decibell_common::open_user_menu`, `open_profile_beside`, `Overlays::open_modal`).
+- **A context-menu entry** on the channel list: `register_channel_menu(cx, |target: &ChannelMenuTarget, cx|
+  vec![MenuEntry::from(MenuItem::new("Mark as read").on_click(…))])`, appended after the shell's own.
+- **A dialog the shell asks for**: `ShellRequests::entity(cx)` (observe it): `create_channel` (the channel
+  list's create actions), `leave` (the shell draws that confirmation itself).
+- **People**: draw avatars with `decibell_common::UserAvatar` (picture or letter, the status dot, and while
+  drawn the presence interest and the picture fetch), names with `display_name(server, uid, &fallback, cx)` /
+  `user_name`, custom statuses with `StatusMessageText`. Never draw a uid; "Unknown user" is the fallback.
+- **Keep a cached view current** with `decibell_common::Watch`, listing every store `render` reads, once,
+  in `new`: `.store(&e, cx)` (every notify), `.store_if(&e, cx, |this, e, cx| changed)` (compare the part
+  shown, e.g. the navigation's view), `.event(&e, cx, |this, ev| this.shows(ev.key))` (keyed events),
+  `.people(cx, |this, uid| this.shows(uid))` (names, pictures, statuses, messages). A community's own
+  entities (channels, roster) change with the active community: re-subscribe when it changes (see
+  `ChannelSidebar::follow`).
+- **A cached view is laid out at the size its parent gives it** (GPUI makes it a leaf node from the
+  `.cached(style)` and lays the view out as a root inside): give it an explicit size (`size_full` in a sized
+  box, a fixed width), and make the view's own root `size_full` / `w_full`, never `flex_1` (as a root it
+  would shrink to its content). A view that must size itself (a registered `RightPanel`) is drawn uncached.
+- **GPUI redraws the whole window, every view, when the window's focus changes** (measured):
+  idle measurements count those; the shell's checks retry a disturbed window (`shell-idle`).
+- **Colours in a render that also needs `&mut cx`**: `crate::ink::chrome(cx)` / `base(cx)` (a `Copy`
+  snapshot with `Tokens`' field names; shadows are read from `cx.theme()` where drawn).
+- **Self-tests that need a signed-in app** run it as a child: `decibell --check <name> --login perf1`
+  (`decibell_shell::checks()`; a binary with `dev-local`), with its own profile and `DECIBELL_TEST_PROBES=1`,
+  which makes `crate::probes::probe(key)` record where elements are so the check can click them.
+
 ## GPUI gotchas met so far
 
 (`docs/gpui-notes.md` §12 has the survey's list; these were hit while building the skeleton.)

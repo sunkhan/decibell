@@ -85,6 +85,40 @@ most of the difference.
 settings tabs) and returns them from `setup()`; `icons/extract.sh` runs it and writes
 `gpui-client/assets/icons/<group>/<name>.svg` (`icons/extract.mjs`). Add a component there to add an icon.
 
+## The shell pages (`main-server`, `main-server-narrow`, `main-home`, `auth`, `auth-register`)
+
+`main-*` render the renderer's real `MainLayout` with App.tsx's event hooks and feed them the GPUI shell's
+fixture (`crates/decibell-shell/src/fixture.rs`): the same core events, as the addon would deliver them,
+through the bridge's `listen` (`pages/_shell.tsx` keeps the handlers), then the fixture's navigation.
+Regenerate the JSON after changing the fixture:
+
+```sh
+cargo run -p decibell-shell --features fixtures --bin decibell-shell-fixture -- tools/electron-captures/pages/fixtures
+cargo run -p decibell-app --features capture --bin decibell-capture -- --screen main-server --all-themes --out-dir <gpui>
+# main-server-narrow: --size 900x700 into another dir, files renamed main-server-narrow-<theme>.png
+CAPTURE_GRAYSCALE_TEXT=1 tools/electron-captures/run.sh --pages main-server,main-server-narrow,main-home,auth,auth-register
+node tools/electron-captures/pairs.mjs --gpui <gpui> --electron target/electron-captures
+```
+
+## The chat pages (`chat-fixture`, `chat-features`)
+
+They render the renderer's real `ChatPanel` (so `RealMessageList`, `MessageBubble` and everything under
+them) on the GPUI chat fixtures (`crates/decibell-chat/src/fixture.rs`: the 10,000-message channel of
+`tools/dev/fixture.py`, its 150 newest rows; and a hand-written channel with every row type), replayed
+like the shell's (`pages/_chat.tsx`). `setup()` returns every row's `offsetTop` / `offsetHeight` and
+fractional box, and what `Selection.toString()` gives for a selection across five rows.
+`chat-rows.mjs` compares the rows with the GPUI list's own dump, by message id:
+
+```sh
+cargo run -p decibell-chat --features fixtures --bin decibell-chat-fixture -- tools/electron-captures/pages/fixtures
+CAPTURE_GRAYSCALE_TEXT=1 tools/electron-captures/run.sh --pages chat-fixture,chat-features --out <electron>
+DECIBELL_CHAT_ROWS_DIR=<gpui> decibell --theme <theme> --selftest chat-rows     # per theme
+node tools/electron-captures/chat-rows.mjs <gpui> <electron> <theme>             # exits 1 on a height difference
+```
+
+The composer in the Electron capture is the real one; the GPUI screens draw an empty card of its resting
+size (the composer is another crate's), so the list has the same 696 px in both.
+
 ## Conventions
 
 - **Viewport** 1280 × 768 CSS px at DPR 1 = the GPUI window's content area. `export const size` overrides

@@ -1,0 +1,374 @@
+//! The overlays that belong to the shell: the certificate-changed prompt
+//! (`components/CertMismatchModal.tsx`, over the sign-in page too), the leave-server confirmation
+//! (`components/LeaveServerConfirmModal.tsx`), the kicked / banned notice
+//! (`features/servers/MembershipRevokedToast.tsx`), and the mirror of the model's toasts into
+//! the kit's toast stack.
+
+use std::collections::HashMap;
+
+use decibell_common::Watch;
+use decibell_model::stores::navigation::ActiveView;
+use decibell_model::stores::overlays::modal;
+use decibell_model::stores::toasts::Severity;
+use decibell_model::{Model, actions};
+use decibell_ui::{
+    ActiveTheme as _, Button, ButtonVariant, CloseRequest, ConfirmModal, FontRole, Icon, IconName, Label, Modal,
+    Toast, ToastId, Toasts,
+};
+use gpui::{App, ClickEvent, Context, IntoElement, Render, SharedString, Subscription, Window, deferred, div, prelude::*, px};
+
+use crate::requests::ShellRequests;
+
+/// `sha256-hex` → `AB:CD:…` (`fingerprint.replace(/(.{2})(?=.)/g, "$1:").toUpperCase()`).
+pub fn pretty_fingerprint(hex: &str) -> String {
+    let mut out = String::with_capacity(hex.len() * 3 / 2);
+    for (i, c) in hex.chars().enumerate() {
+        if i > 0 && i % 2 == 0 {
+            out.push(':');
+        }
+        out.extend(c.to_uppercase());
+    }
+    out
+}
+
+/// "Certificate changed": refusing is the safe default; "Trust new certificate" re-pins and runs
+/// what was refused again.
+pub struct CertMismatchOverlay {
+    busy: bool,
+    _watch: Watch,
+}
+
+impl CertMismatchOverlay {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let model = Model::global(cx).clone();
+        let mut watch = Watch::new();
+        watch.store(&model.overlays, cx);
+        Self { busy: false, _watch: watch }
+    }
+}
+
+impl Render for CertMismatchOverlay {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let model = Model::global(cx).clone();
+        let notice = model.overlays.read(cx).cert_mismatch.clone();
+        let open = notice.is_some();
+        let t = crate::ink::base(cx);
+        let shadow = cx.theme().shadow_modal.clone();
+        let close = {
+            let overlays = model.overlays.clone();
+            move |cx: &mut App| overlays.update(cx, |o, cx| o.set_cert_mismatch(None, cx))
+        };
+        let card = notice.map(|notice| {
+            let cert = notice.cert.clone();
+            let retry = notice.retry.clone();
+            let mono = cx.theme().font(FontRole::Mono);
+            let _ = mono;
+            div()
+                .occlude()
+                .w_full()
+                .max_w(px(448.))
+                .rounded(t.radius_xl)
+                .border_1()
+                .border_color(t.color_error.opacity(0.5))
+                .bg(t.color_bg_secondary)
+                .p_6()
+                .shadow(shadow)
+                .child(div().mb_2().child(Label::new("Certificate changed").font(FontRole::Display).size(16.).weight(600.).color(t.color_text_bright)))
+                .child(
+                    div()
+                        .child(
+                            Label::new(SharedString::from(format!("{}:{}", cert.host, cert.port)))
+                                .font(FontRole::Mono)
+                                .size(13.)
+                                .color(t.color_text_primary),
+                        )
+                        .child(
+                            Label::new(
+                                "presented a TLS certificate that doesn't match the one this client trusts for it. That \
+                                 happens when the operator re-generated their certificate — or when someone is intercepting \
+                                 the connection.",
+                            )
+                            .size(13.)
+                            .line_height(13. * 1.55)
+                            .color(t.color_text_secondary),
+                        ),
+                )
+                .child(div().mt_3().child(Label::new("PRESENTED FINGERPRINT (SHA-256)").size(11.).weight(600.).tracking(0.07).color(t.color_text_muted)))
+                .child(
+                    div().mt_1().child(
+                        Label::new(SharedString::from(pretty_fingerprint(&cert.fingerprint)))
+                            .font(FontRole::Mono)
+                            .size(11.)
+                            .color(t.color_text_secondary),
+                    ),
+                )
+                .child(
+                    div().mt_3().child(
+                        Label::new("Only continue if the server operator confirms this fingerprint.")
+                            .size(12.)
+                            .line_height(18.)
+                            .color(t.color_text_muted),
+                    ),
+                )
+                .child(
+                    div()
+                        .mt_5()
+                        .flex()
+                        .gap_2p5()
+                        .child(div().flex_1().child(Button::new("cert-cancel", "Cancel").variant(ButtonVariant::Secondary).full_width().on_click({
+                            let close = close.clone();
+                            move |_: &ClickEvent, _, cx| close(cx)
+                        })))
+                        .child(
+                            div().flex_1().child(
+                                Button::new("cert-trust", if self.busy { "Working…" } else { "Trust new certificate" })
+                                    .variant(ButtonVariant::Danger)
+                                    .full_width()
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.busy = true;
+                                        cx.notify();
+                                        actions::servers::trust_certificate(cert.clone(), retry.clone(), cx);
+                                    })),
+                            ),
+                        ),
+                )
+        });
+        if !open {
+            self.busy = false;
+        }
+        Modal::new("cert-mismatch", open)
+            .on_close(move |_: &CloseRequest, _, cx| close(cx))
+            .children(card)
+    }
+}
+
+/// "Leave <server>? You will need a new invite to rejoin."
+pub struct LeaveServerOverlay {
+    _watch: Watch,
+}
+
+impl LeaveServerOverlay {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let model = Model::global(cx).clone();
+        let mut watch = Watch::new();
+        watch.store(&model.overlays, cx).store(&ShellRequests::entity(cx), cx);
+        Self { _watch: watch }
+    }
+}
+
+impl Render for LeaveServerOverlay {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let model = Model::global(cx).clone();
+        let requests = ShellRequests::entity(cx);
+        let pending = requests.read(cx).leave.clone();
+        let open = model.overlays.read(cx).is_open(modal::LEAVE_SERVER_CONFIRM) && pending.is_some();
+        let name = pending.as_ref().map(|(_, name)| name.clone()).unwrap_or_default();
+        let close = {
+            let overlays = model.overlays.clone();
+            move |cx: &mut App| overlays.update(cx, |o, cx| o.close_modal(cx))
+        };
+        ConfirmModal::new("leave-server", open, "Leave server", "Leave")
+            .message(SharedString::from(format!("Leave {name}? You will need a new invite to rejoin.")))
+            .on_cancel({
+                let close = close.clone();
+                move |_: &ClickEvent, _, cx| close(cx)
+            })
+            .on_confirm(move |_: &ClickEvent, _, cx| {
+                let model = Model::global(cx).clone();
+                let requests = ShellRequests::entity(cx);
+                if let Some((server, _)) = requests.read(cx).leave.clone() {
+                    actions::servers::leave(server, cx);
+                    model.connections.update(cx, |c, cx| {
+                        c.remove_connected(server, cx);
+                        c.remove_pending(server, cx);
+                    });
+                    model.nav.update(cx, |nav, cx| {
+                        nav.set_active_server(None, cx);
+                        nav.set_active_channel(None, cx);
+                        nav.set_active_view(ActiveView::Home, cx);
+                    });
+                    requests.update(cx, |r, cx| {
+                        r.leave = None;
+                        cx.notify();
+                    });
+                }
+                close(cx);
+            })
+    }
+}
+
+/// "You have been banned from …": 8 s at the top of the window (the model clears it).
+pub struct RevokedNoticeOverlay {
+    _watch: Watch,
+}
+
+impl RevokedNoticeOverlay {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let model = Model::global(cx).clone();
+        let mut watch = Watch::new();
+        watch.store(&model.overlays, cx);
+        Self { _watch: watch }
+    }
+}
+
+impl Render for RevokedNoticeOverlay {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let model = Model::global(cx).clone();
+        let Some(notice) = model.overlays.read(cx).membership_revocation.clone() else { return div().into_any_element() };
+        let t = crate::ink::base(cx);
+        let shadow = cx.theme().shadow_modal.clone();
+        let server_name = model
+            .community(notice.server, cx)
+            .map(|c| c.meta.read(cx).name.clone())
+            .filter(|n| !n.is_empty())
+            .or_else(|| model.servers.read(cx).get(notice.server).map(|s| s.name.clone()))
+            .unwrap_or_else(|| notice.server.wire().into());
+        let headline = decibell_model::live::revocation_headline(&notice.action, &server_name);
+        let line = |text: String, color| div().mt_0p5().child(Label::new(SharedString::from(text)).size(12.).line_height(16.).color(color));
+        let ban_line = (notice.action == "ban").then(|| {
+            if notice.expires_at > 0 {
+                line(format!("Until {}", format_unix(notice.expires_at)), t.color_text_muted)
+            } else {
+                line("This ban is permanent.".into(), t.color_text_muted)
+            }
+        });
+        let overlays = model.overlays.clone();
+        deferred(
+            div().absolute().top_6().left_0().right_0().flex().justify_center().child(
+                div()
+                    .id("revoked-notice")
+                    .occlude()
+                    .flex()
+                    .w_full()
+                    .max_w(px(448.))
+                    .items_start()
+                    .gap_3()
+                    .rounded(t.radius_lg)
+                    .border_1()
+                    .border_color(t.color_error.opacity(0.5))
+                    .bg(t.color_bg_secondary)
+                    .p_4()
+                    .shadow(shadow)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .size_8()
+                            .items_center()
+                            .justify_center()
+                            .rounded(t.radius_md)
+                            .bg(t.color_error.opacity(0.15))
+                            .child(Icon::new(IconName::AlertCircle).size(px(16.)).stroke_width(2.5).color(t.color_error)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Label::new(SharedString::from(headline)).size(14.).line_height(20.).weight(600.).color(t.color_text_bright))
+                            .when(!notice.actor.is_empty(), |this| this.child(line(format!("By {}", notice.actor), t.color_text_secondary)))
+                            .when(!notice.reason.is_empty(), |this| this.child(line(format!("Reason: {}", notice.reason), t.color_text_muted)))
+                            .children(ban_line),
+                    )
+                    .child(
+                        div()
+                            .id("revoked-close")
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(move |_: &ClickEvent, _, cx| overlays.update(cx, |o, cx| o.set_membership_revocation(None, cx)))
+                            .child(Icon::new(IconName::Close).size(px(14.)).color(t.color_text_muted)),
+                    ),
+            ),
+        )
+        .with_priority(10)
+        .into_any_element()
+    }
+}
+
+/// A ban's end as the renderer's `formatDateTime` reads in 24-hour time: `YYYY-MM-DD HH:MM` (UTC
+/// here; the renderer uses the local zone and the user's time format).
+fn format_unix(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Civil from days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, rem % 3600 / 60)
+}
+
+/// The model's toasts (pushed by event handlers) shown in the kit's toast stack: each new one is
+/// pushed there with its lifetime and action, and taken down when the model drops it.
+pub struct ToastMirror {
+    shown: HashMap<u64, ToastId>,
+    _subscription: Subscription,
+}
+
+impl ToastMirror {
+    pub fn install(cx: &mut App) -> gpui::Entity<ToastMirror> {
+        use gpui::AppContext as _;
+        cx.new(|cx| {
+            let model = Model::global(cx).clone();
+            ToastMirror { shown: HashMap::new(), _subscription: cx.observe(&model.toasts, |this: &mut ToastMirror, toasts, cx| this.sync(&toasts, cx)) }
+        })
+    }
+
+    fn sync(&mut self, toasts: &gpui::Entity<decibell_model::stores::toasts::Toasts>, cx: &mut Context<Self>) {
+        let current: Vec<(u64, Toast)> = toasts
+            .read(cx)
+            .toasts()
+            .iter()
+            .filter(|t| !self.shown.contains_key(&t.id))
+            .map(|t| {
+                let mut toast = match t.severity {
+                    Severity::Error => Toast::error(t.title.clone()),
+                    Severity::Warning => Toast::warning(t.title.clone()),
+                    Severity::Info => Toast::info(t.title.clone()),
+                    Severity::Success => Toast::success(t.title.clone()),
+                }
+                .duration(t.duration);
+                if let Some(body) = &t.body {
+                    toast = toast.body(body.clone());
+                }
+                if let Some(action) = &t.action {
+                    let run = action.run.clone();
+                    toast = toast.action(action.label.clone(), move |_, cx| run(cx));
+                }
+                (t.id, toast)
+            })
+            .collect();
+        let live: Vec<u64> = toasts.read(cx).toasts().iter().map(|t| t.id).collect();
+        for (id, toast) in current {
+            let shown = Toasts::push(cx, toast);
+            self.shown.insert(id, shown);
+        }
+        let gone: Vec<u64> = self.shown.keys().copied().filter(|id| !live.contains(id)).collect();
+        for id in gone {
+            if let Some(shown) = self.shown.remove(&id) {
+                Toasts::dismiss(cx, shown);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprints_and_dates_read_like_the_renderer() {
+        assert_eq!(pretty_fingerprint("ab12cd"), "AB:12:CD");
+        assert_eq!(pretty_fingerprint("abc"), "AB:C");
+        assert_eq!(format_unix(0), "1970-01-01 00:00");
+        assert_eq!(format_unix(1_798_761_600), "2027-01-01 00:00");
+    }
+}

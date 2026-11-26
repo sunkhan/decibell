@@ -22,6 +22,10 @@ required-features = ["capture"]
 
 [features]
 capture = ["gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu", "dep:image"]
+# Development, tests, captures and measurements only — never the shipped binary: honours
+# DECIBELL_CENTRAL (the local test stack) and enables `--login`, the stdout markers and the
+# perf control pipe (src/dev.rs).
+dev-local = ["decibell-model/local-central", "dep:serde_json"]
 
 [dependencies]
 gpui.workspace = true
@@ -30,10 +34,14 @@ decibell-theme.workspace = true
 decibell-harness.workspace = true
 decibell-ui.workspace = true
 decibell-text-gallery = { path = "../decibell-text/gallery" }
+decibell-video.workspace = true
+decibell-model.workspace = true
+decibell-shell = { workspace = true, features = ["fixtures"] }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_wgpu = { workspace = true, optional = true }

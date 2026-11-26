@@ -10,8 +10,11 @@
 //! - [`registry`]: every screen and self-test of the workspace.
 //! - [`selftests`]: the app's own self-tests.
 
+pub mod app;
 pub mod args;
 pub mod boot;
+#[cfg(feature = "dev-local")]
+pub mod dev;
 pub mod logging;
 pub mod registry;
 pub mod root;
