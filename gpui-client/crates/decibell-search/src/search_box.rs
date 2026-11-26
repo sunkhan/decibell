@@ -78,6 +78,16 @@ pub struct SearchBox {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The box drawn last, while it lives (the self-tests read and type into it).
+pub struct ShownBox(pub gpui::WeakEntity<SearchBox>);
+
+impl gpui::Global for ShownBox {}
+
+/// The box that is drawn, if any.
+pub fn shown_box(cx: &App) -> Option<Entity<SearchBox>> {
+    cx.try_global::<ShownBox>().and_then(|shown| shown.0.upgrade())
+}
+
 // Search messages (Ctrl+F / ⌘F): focuses the box from anywhere in the server view.
 gpui::actions!(decibell_search, [FocusSearch]);
 
@@ -136,6 +146,7 @@ impl SearchBox {
             _subscriptions: subscriptions,
         };
         this.follow(cx);
+        cx.set_global(ShownBox(cx.weak_entity()));
         // The screens' box takes the focus once it is drawn (a capture can't click).
         #[cfg(feature = "fixtures")]
         if cx.has_global::<crate::fixture::FocusOnMount>() {
@@ -628,6 +639,11 @@ impl SearchBox {
     pub fn rows(&self) -> &[Row] {
         &self.rows
     }
+
+    /// The member lookup of a `from:` runs.
+    pub fn looking_up(&self) -> bool {
+        self.lookup.is_some()
+    }
 }
 
 fn send_lookup(server: ServerId, query: String, seq: u32, cx: &mut App) {
@@ -764,8 +780,10 @@ impl Render for SearchBox {
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.color_surface_hover))
                     .group("search-clear")
+                    .relative()
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.clear(window, cx)))
+                    .children(crate::probe("search-clear"))
                     .child(
                         Icon::new(IconName::SettingsX)
                             .size(px(12.))
@@ -784,10 +802,12 @@ impl Render for SearchBox {
                     .child(Icon::new(IconName::SettingsSearch).size(px(14.)).color(theme.color_text_muted))
                     .into_any_element()
             })
-            .children(decibell_shell::probes::probe("search-box"));
+            .children(crate::probe("search-box"));
 
         let engine = decibell_text::Engine::global(cx);
         let menu = self.menu.then(|| self.render_menu(&engine, window, cx));
+        decibell_shell::probes::flag("search-box-focused", self.focused);
+        decibell_shell::probes::flag("search-menu-open", self.menu);
         // Chromium centres the 32 px box in the header's 47 px at 7.5 and draws it from 8.
         div().relative().size_full().flex().items_start().pt(px(BOX_TOP)).child(box_).children(menu)
     }

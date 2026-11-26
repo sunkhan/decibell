@@ -42,6 +42,16 @@ const BAR: f32 = 10.;
 /// The sentinel's `rootMargin: "400px 0px"`: the next page is asked for this near the end.
 const LOAD_AHEAD: f32 = 400.;
 
+/// The panel drawn last, while it lives (the self-tests check it is dropped when closed).
+pub struct ShownResults(pub WeakEntity<ResultsView>);
+
+impl gpui::Global for ShownResults {}
+
+/// The results view that is drawn, if any.
+pub fn shown_results(cx: &App) -> Option<gpui::Entity<ResultsView>> {
+    cx.try_global::<ShownResults>().and_then(|shown| shown.0.upgrade())
+}
+
 /// Whether the window is narrow enough for the panel to float (`max-lg:`).
 pub fn is_narrow(window: &Window, cx: &App) -> bool {
     f32::from(visible_window_bounds(window, cx).size.width) < decibell_theme::tailwind::BREAKPOINT_LG
@@ -131,6 +141,8 @@ pub struct ResultsView {
     focus: FocusHandle,
     /// A page asked for since the last one arrived (the sentinel fires once per page).
     asked: bool,
+    /// Renders so far (the self-tests: the panel at rest draws nothing).
+    renders: u64,
     _watch: Watch,
     _subscriptions: Vec<Subscription>,
 }
@@ -172,6 +184,7 @@ impl ResultsView {
             }
         }));
         let seen = Snapshot::of(model.chat.search.read(cx));
+        cx.set_global(ShownResults(cx.weak_entity()));
         Self {
             focus: cx.focus_handle(),
             model,
@@ -186,6 +199,7 @@ impl ResultsView {
             highlighter: None,
             query_seq: 0,
             asked: false,
+            renders: 0,
             _watch: watch,
             _subscriptions: subscriptions,
         }
@@ -213,6 +227,11 @@ impl ResultsView {
 
     pub fn server(&self) -> ServerId {
         self.server
+    }
+
+    /// How many times the panel rendered.
+    pub fn renders(&self) -> u64 {
+        self.renders
     }
 
     pub fn scroll_handle(&self) -> &ScrollHandle {
@@ -354,6 +373,7 @@ fn card_height(message: &Message, highlight: Option<&Highlighter>, column: f32, 
 
 impl Render for ResultsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
         let narrow = is_narrow(window, cx);
         let style = self.style(window, cx);
         let ink = Ink::of(cx.theme());
@@ -418,12 +438,13 @@ impl Render for ResultsView {
                     .tooltip(title_tooltip("Close (Esc)"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
                     .child(Icon::new(IconName::SettingsX).size(px(16.)).color(ink.muted).group_hover("search-close", ink.secondary))
-                    .children(decibell_shell::probes::probe("search-close")),
+                    .children(crate::probe("search-close")),
             );
 
         let panel = if narrow { FLOATING_WIDTH } else { PANEL_WIDTH };
         let mut notices = Vec::new();
         // The server names them only when text was searched (words, inside words, or has: link).
+        decibell_shell::probes::text("search-skipped", &skipped.iter().map(|n| n.as_ref()).collect::<Vec<_>>().join(",").into());
         if !skipped.is_empty() {
             notices.push(notice(IconName::ChatLock, skipped_notice(&skipped, &ink, cx), &ink));
         }
@@ -453,7 +474,7 @@ impl Render for ResultsView {
                         this.model.chat.search.update(cx, |s, cx| s.retry_search(cx));
                     }))
                     .child(Label::new("Try again").size(13.).weight(600.).color(ink.on_accent).nowrap())
-                    .children(decibell_shell::probes::probe("search-retry"))
+                    .children(crate::probe("search-retry"))
                     .into_any_element();
                 empty(IconName::SettingsAlert, "Search didn't work", error.as_deref().unwrap_or("Something went wrong."), Some(retry), &ink, cx)
             }
@@ -476,7 +497,7 @@ impl Render for ResultsView {
             .child(header)
             .children(notices)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .children(decibell_shell::probes::probe("search-results"))
+            .children(crate::probe("search-results"))
     }
 }
 
@@ -1003,7 +1024,7 @@ fn result_card(message: &Arc<Message>, rows: &Rc<Rows>, ink: &Ink, window: &mut 
                 .py_0p5()
                 .child(Label::new("Jump").size(12.).weight(600.).color(ink.secondary).nowrap()),
         )
-        .children(decibell_shell::probes::probe(format!("search-result:{id}")));
+        .children(crate::probe(format!("search-result:{id}")));
     let _ = model;
     div().px_2().pb(px(result_row::CARD_GAP)).child(card).into_any_element()
 }

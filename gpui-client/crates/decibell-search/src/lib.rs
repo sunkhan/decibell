@@ -33,8 +33,16 @@ mod selftests;
 pub mod tokens;
 
 pub use panel::RightPanel;
-pub use results::{FLOATING_WIDTH, PANEL_WIDTH, ResultsView, is_narrow};
-pub use search_box::{FocusSearch, SearchBox};
+pub use results::{FLOATING_WIDTH, PANEL_WIDTH, ResultsView, is_narrow, shown_results};
+pub use search_box::{FocusSearch, SearchBox, shown_box};
+
+/// The shell's test probe for an element (`decibell_shell::probes`), pinned to the element's
+/// padding box: the shell's canvas has no insets, so in a padded flex container it would sit at
+/// its static position (after the padding).
+pub(crate) fn probe(key: impl Into<gpui::SharedString>) -> Option<impl gpui::IntoElement> {
+    use gpui::{ParentElement as _, Styled as _};
+    decibell_shell::probes::probe(key).map(|canvas| gpui::div().absolute().top_0().left_0().size_full().child(canvas))
+}
 
 /// Once at start-up (the app's `registry::init_features`): the box in the header, the results in
 /// the right panel, Ctrl+F (⌘F) from anywhere.
