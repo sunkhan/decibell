@@ -209,6 +209,13 @@ pub fn jump_to_message(peer: Uid, id: i64, cx: &mut App) -> Option<crate::action
     })))
 }
 
+/// The list landed on the jump target (`handleJumpLanded`: `pendingJumpIdRef = null`).
+pub fn jump_landed(peer: Uid, cx: &mut App) {
+    if let Some(slice) = model(cx).and_then(|m| slice_of(&m, peer, cx)) {
+        slice.update(cx, |s, _| s.pending_jump = None);
+    }
+}
+
 /// After central signed us in again, the conversation on screen catches up (`DmChatPanel`'s
 /// resync effect). `at_bottom`: the list's live position.
 pub fn resync_displayed(peer: Uid, at_bottom: bool, cx: &mut App) {
