@@ -1,0 +1,431 @@
+//! The pieces the tabs repeat: the uppercase section label, the card, the toggle row, and the
+//! buttons and text links whose classes the kit's variants don't cover (each documents the TSX
+//! classes it draws; the kit's `Button` is used wherever a variant matches exactly).
+
+use std::rc::Rc;
+
+use decibell_ui::motion::{self, Transition, mix};
+use decibell_ui::{ActiveTheme as _, Label, Switch};
+use gpui::{
+    App, ClickEvent, ElementId, Hsla, IntoElement, Pixels, RenderOnce, SharedString, Window, div, prelude::*, px,
+};
+
+type Click = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// `mb-2.5 pl-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-text-muted` (the
+/// tabs' own `SectionLabel`; Appearance's has no `pl-0.5`: `inset = false`).
+pub fn section_label(text: &'static str, inset: bool, cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    div()
+        .mb_2p5()
+        .when(inset, |this| this.pl_0p5())
+        .child(
+            Label::new(SharedString::from(text.to_uppercase()))
+                .size(11.)
+                .weight(600.)
+                .tracking(0.07)
+                .color(theme.color_text_muted),
+        )
+}
+
+/// `rounded-md border border-border-divider bg-bg-light`.
+pub fn card(cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    div()
+        .rounded(theme.radius_md)
+        .border_1()
+        .border_color(theme.color_border_divider)
+        .bg(theme.color_bg_light)
+}
+
+/// The hover state behind a `transition-colors` (the kit's own is private): 0 → 1 while the
+/// pointer is over `id`, over Tailwind's 150 ms. Frames only while it moves.
+pub fn hover(window: &mut Window, cx: &mut App, id: &ElementId) -> (f32, impl Fn(&bool, &mut Window, &mut App) + 'static) {
+    let state = window.use_keyed_state((id.clone(), "hover"), cx, |_, _| false);
+    let hovered = *state.read(cx);
+    let progress = motion::transition_flag(window, cx, (id.clone(), "hover-t"), hovered, Transition::TAILWIND);
+    let listener = move |on: &bool, _: &mut Window, cx: &mut App| {
+        state.update(cx, |state, cx| {
+            if *state != *on {
+                *state = *on;
+                cx.notify();
+            }
+        })
+    };
+    (progress, listener)
+}
+
+/// The settings toggle row (`ToggleRow` / `ToggleSwitch` in Privacy, Audio, Codecs,
+/// DownloadsSettings): `flex items-center justify-between rounded-md border border-border-divider
+/// bg-bg-light px-4 py-3.5 transition-colors hover:bg-bg-lighter`, the title `text-[14px]
+/// font-medium text-text-primary` (Codecs: `text-text-muted` while disabled), the description
+/// `mt-1 text-[12px] leading-[1.55] text-text-muted`, the switch at the right.
+#[derive(IntoElement)]
+pub struct ToggleRow {
+    id: ElementId,
+    title: SharedString,
+    description: SharedString,
+    on: bool,
+    disabled: bool,
+    on_toggle: Option<Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
+}
+
+impl ToggleRow {
+    pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>, description: impl Into<SharedString>, on: bool) -> Self {
+        Self { id: id.into(), title: title.into(), description: description.into(), on, disabled: false, on_toggle: None }
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn on_toggle(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_toggle = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for ToggleRow {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (h, listener) = hover(window, cx, &self.id);
+        let theme = cx.theme();
+        let bg = mix(theme.color_bg_light, theme.color_bg_lighter, h);
+        let title = if self.disabled { theme.color_text_muted } else { theme.color_text_primary };
+        let switch = {
+            let switch = Switch::new((self.id.clone(), "switch"), self.on).disabled(self.disabled);
+            match self.on_toggle {
+                Some(handler) => switch.on_toggle(move |on, window, cx| handler(on, window, cx)),
+                None => switch,
+            }
+        };
+        div()
+            .id(self.id)
+            .flex()
+            .items_center()
+            .justify_between()
+            .rounded(theme.radius_md)
+            .border_1()
+            .border_color(theme.color_border_divider)
+            .bg(bg)
+            .px_4()
+            .py_3p5()
+            .on_hover(listener)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pr_4()
+                    .child(Label::new(self.title).size(14.).weight(500.).color(title))
+                    .child(
+                        div().mt_1().child(
+                            Label::new(self.description).size(12.).line_height(12. * 1.55).color(theme.color_text_muted),
+                        ),
+                    ),
+            )
+            .child(switch)
+    }
+}
+
+/// The colours of a [`Btn`] at rest and hovered.
+#[derive(Clone, Copy)]
+pub struct Look {
+    pub bg: Hsla,
+    pub bg_hover: Hsla,
+    pub text: Hsla,
+    pub text_hover: Hsla,
+    pub border: Option<(Hsla, Hsla)>,
+}
+
+/// A text button with the TSX's exact padding, size, weight and radius where the kit's variants
+/// differ (see each call). Focus ring, `disabled:opacity-50`, transitions as `transition-colors`.
+#[derive(IntoElement)]
+pub struct Btn {
+    id: ElementId,
+    label: SharedString,
+    look: Look,
+    size: f32,
+    weight: f32,
+    pad: (f32, f32),
+    radius: Pixels,
+    disabled: bool,
+    /// `disabled:opacity-0` (Appearance's Reset) instead of 0.5.
+    hide_disabled: bool,
+    on_click: Option<Click>,
+}
+
+impl Btn {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>, look: Look, radius: Pixels) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            look,
+            size: 13.,
+            weight: 500.,
+            pad: (16., 8.),
+            radius,
+            disabled: false,
+            hide_disabled: false,
+            on_click: None,
+        }
+    }
+
+    /// Font size and weight.
+    pub fn text(mut self, size: f32, weight: f32) -> Self {
+        self.size = size;
+        self.weight = weight;
+        self
+    }
+
+    /// Horizontal and vertical padding, px.
+    pub fn pad(mut self, x: f32, y: f32) -> Self {
+        self.pad = (x, y);
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn hide_when_disabled(mut self) -> Self {
+        self.hide_disabled = true;
+        self
+    }
+
+    pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Btn {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (h, listener) = hover(window, cx, &self.id);
+        let focus = window
+            .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let h = if self.disabled { 0. } else { h };
+        let theme = cx.theme();
+        let ring = theme.shadow_ring.clone();
+        let look = self.look;
+        let disabled = self.disabled;
+        div()
+            .id(self.id)
+            .track_focus(&focus)
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .px(px(self.pad.0))
+            .py(px(self.pad.1))
+            .rounded(self.radius)
+            .bg(mix(look.bg, look.bg_hover, h))
+            .when_some(look.border, |this, (rest, hovered)| this.border_1().border_color(mix(rest, hovered, h)))
+            .focus_visible(move |style| style.shadow(ring))
+            .on_hover(listener)
+            .map(|this| {
+                if disabled {
+                    this.opacity(if self.hide_disabled { 0. } else { 0.5 }).cursor_default()
+                } else {
+                    this.cursor_pointer()
+                        .when_some(self.on_click, |this, handler| this.on_click(move |e, window, cx| handler(e, window, cx)))
+                }
+            })
+            .child(
+                Label::new(self.label)
+                    .size(self.size)
+                    .line_height(self.size * 1.5)
+                    .weight(self.weight)
+                    .color(mix(look.text, look.text_hover, h))
+                    .nowrap(),
+            )
+    }
+}
+
+/// An inline text button: `text-[size] <weight> <color> hover:<hover colour>`, underlined on hover
+/// when `underline` (`underline-offset-2 hover:underline`).
+#[derive(IntoElement)]
+pub struct TextLink {
+    id: ElementId,
+    label: SharedString,
+    size: f32,
+    weight: f32,
+    color: Hsla,
+    hover_color: Hsla,
+    underline: bool,
+    disabled: bool,
+    on_click: Option<Click>,
+}
+
+
+impl TextLink {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>, color: Hsla, hover_color: Hsla) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            size: 12.,
+            weight: 400.,
+            color,
+            hover_color,
+            underline: true,
+            disabled: false,
+            on_click: None,
+        }
+    }
+
+    pub fn text(mut self, size: f32, weight: f32) -> Self {
+        self.size = size;
+        self.weight = weight;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for TextLink {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = window.use_keyed_state((self.id.clone(), "hover"), cx, |_, _| false);
+        let focus = window
+            .use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let hovered = *state.read(cx) && !self.disabled;
+        let color = if hovered { self.hover_color } else { self.color };
+        let ring = cx.theme().shadow_ring.clone();
+        let radius = cx.theme().radius_sm;
+        let disabled = self.disabled;
+        div()
+            .id(self.id)
+            .track_focus(&focus)
+            .flex_none()
+            .rounded(radius)
+            .focus_visible(move |style| style.shadow(ring))
+            .on_hover(move |on, _, cx| {
+                state.update(cx, |state, cx| {
+                    if *state != *on {
+                        *state = *on;
+                        cx.notify();
+                    }
+                })
+            })
+            .map(|this| {
+                if disabled {
+                    this.opacity(0.5)
+                } else {
+                    this.cursor_pointer()
+                        .when_some(self.on_click, |this, handler| this.on_click(move |e, window, cx| handler(e, window, cx)))
+                }
+            })
+            .when(hovered && self.underline, |this| this.underline().text_decoration_color(color))
+            .child(Label::new(self.label).size(self.size).line_height(self.size * 1.5).weight(self.weight).color(color))
+    }
+}
+
+
+/// The "outline" small button of Audio and Keybinds: `rounded-sm border border-border px-3
+/// py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:border-accent/40
+/// hover:text-text-primary` (`px-2 py-0.5` for Test mic).
+pub fn outline_look(cx: &App) -> Look {
+    let theme = cx.theme();
+    Look {
+        bg: Hsla::transparent_black(),
+        bg_hover: Hsla::transparent_black(),
+        text: theme.color_text_secondary,
+        text_hover: theme.color_text_primary,
+        border: Some((theme.color_border, theme.color_accent.opacity(0.4))),
+    }
+}
+
+/// `border border-error/20 bg-error/10 text-error hover:bg-error/20` (Log Out, a device's Sign
+/// out).
+pub fn danger_soft_look(cx: &App) -> Look {
+    let theme = cx.theme();
+    Look {
+        bg: theme.color_error.opacity(0.1),
+        bg_hover: theme.color_error.opacity(0.2),
+        text: theme.color_error,
+        text_hover: theme.color_error,
+        border: Some((theme.color_error.opacity(0.2), theme.color_error.opacity(0.2))),
+    }
+}
+
+/// E2eeSection's `SecondaryButton`: `rounded-sm border border-border px-4 py-2 text-[13px]
+/// font-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary`.
+pub fn quiet_outline_look(cx: &App) -> Look {
+    let theme = cx.theme();
+    Look {
+        bg: Hsla::transparent_black(),
+        bg_hover: theme.color_surface_hover,
+        text: theme.color_text_secondary,
+        text_hover: theme.color_text_primary,
+        border: Some((theme.color_border, theme.color_border)),
+    }
+}
+
+/// `"1 minute"`, `"5 minutes"`, `"1 hour"` (`StatusMenu.tsx` `awayAfterLabel`).
+pub fn away_after_label(minutes: u32) -> String {
+    if minutes == 0 {
+        return "Never".into();
+    }
+    if minutes % 60 == 0 {
+        return if minutes == 60 { "1 hour".into() } else { format!("{} hours", minutes / 60) };
+    }
+    if minutes == 1 { "1 minute".into() } else { format!("{minutes} minutes") }
+}
+
+/// `formatAgo` (`features/transfers/format.ts`): "just now", "5 min ago", "3 h ago", "yesterday",
+/// else the local date ("Nov 20").
+pub fn format_ago(at: i64, now: i64) -> String {
+    let s = (now - at).max(0);
+    if s < 60 {
+        return "just now".into();
+    }
+    if s < 3600 {
+        return format!("{} min ago", s / 60);
+    }
+    if s < 86_400 {
+        return format!("{} h ago", s / 3600);
+    }
+    if s < 2 * 86_400 {
+        return "yesterday".into();
+    }
+    local_date(at, false)
+}
+
+/// `toLocaleDateString(undefined, { month: "short", day: "numeric" [, year: "numeric"] })` in an
+/// English locale: "Nov 20" / "Nov 20, 2026".
+pub fn local_date(at: i64, year: bool) -> String {
+    use chrono::{Local, TimeZone as _};
+    let Some(date) = Local.timestamp_opt(at, 0).single() else { return String::new() };
+    if year { date.format("%b %-d, %Y").to_string() } else { date.format("%b %-d").to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_as_the_renderer_words_them() {
+        assert_eq!(away_after_label(0), "Never");
+        assert_eq!(away_after_label(1), "1 minute");
+        assert_eq!(away_after_label(15), "15 minutes");
+        assert_eq!(away_after_label(60), "1 hour");
+        assert_eq!(away_after_label(120), "2 hours");
+        let now = 1_800_000_000;
+        assert_eq!(format_ago(now - 10, now), "just now");
+        assert_eq!(format_ago(now - 5 * 60, now), "5 min ago");
+        assert_eq!(format_ago(now - 3 * 3600, now), "3 h ago");
+        assert_eq!(format_ago(now - 30 * 3600, now), "yesterday");
+        assert_eq!(format_ago(now + 50, now), "just now", "a clock ahead of ours");
+    }
+}

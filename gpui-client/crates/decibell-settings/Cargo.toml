@@ -1,0 +1,37 @@
+[package]
+name = "decibell-settings"
+description = "Settings: the window and its tabs (account, devices, appearance, privacy, audio, keybinds, network, codecs, about), the rename and password dialogs, and the E2EE passphrase dialog"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "decibell-settings-fixture"
+path = "src/bin/settings-fixture.rs"
+required-features = ["fixtures"]
+
+[features]
+# The screens' fixture (the shell's, plus devices, E2EE states, keybinds, audio devices and codec
+# capabilities) and the screens drawn from it.
+fixtures = ["decibell-shell/fixtures"]
+
+[dependencies]
+gpui.workspace = true
+decibell-theme.workspace = true
+decibell-harness.workspace = true
+decibell-ui.workspace = true
+decibell-model.workspace = true
+decibell-common.workspace = true
+decibell-shell.workspace = true
+# The core's API types (devices, hotkey status, encoder probe) and the register call of the
+# self-tests. zbus on async-io, as every crate of this client takes the core (HANDOFF.md §5).
+decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+# Local dates ("Signed in Nov 20, 2026"); already in the tree through the model.
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

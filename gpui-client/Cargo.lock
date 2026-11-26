@@ -1739,6 +1739,7 @@ dependencies = [
  "decibell-core",
  "decibell-harness",
  "decibell-model",
+ "decibell-settings",
  "decibell-shell",
  "decibell-text-gallery",
  "decibell-theme",
@@ -1920,6 +1921,25 @@ dependencies = [
  "idna",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "decibell-settings"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "decibell-common",
+ "decibell-core",
+ "decibell-harness",
+ "decibell-model",
+ "decibell-shell",
+ "decibell-theme",
+ "decibell-ui",
+ "futures",
+ "gpui",
+ "log",
+ "serde_json",
 ]
 
 [[package]]

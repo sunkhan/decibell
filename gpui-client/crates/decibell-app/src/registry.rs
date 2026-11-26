@@ -17,6 +17,7 @@ pub fn screens() -> Vec<Screen> {
     screens.extend(decibell_shell::screens());
     screens.extend(decibell_chat::screens());
     screens.extend(decibell_voice::screens());
+    screens.extend(decibell_settings::screens());
     screens
 }
 
@@ -29,6 +30,7 @@ pub fn selftests() -> Vec<SelfTest> {
     tests.extend(decibell_shell::selftests());
     tests.extend(decibell_chat::selftests());
     tests.extend(decibell_voice::selftests());
+    tests.extend(decibell_settings::selftests());
     tests
 }
 
@@ -38,6 +40,8 @@ pub fn selftests() -> Vec<SelfTest> {
 pub fn init_features(cx: &mut gpui::App) {
     decibell_chat::init(cx);
     decibell_voice::init(cx);
+    decibell_settings::init(cx);
+    decibell_settings::SettingsHooks::set_app_version(env!("CARGO_PKG_VERSION"), cx);
 }
 
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the
@@ -45,6 +49,7 @@ pub fn init_features(cx: &mut gpui::App) {
 pub fn checks() -> Vec<SelfTest> {
     let mut checks = decibell_shell::checks();
     checks.extend(decibell_voice::checks());
+    checks.extend(decibell_settings::checks());
     checks
 }
 

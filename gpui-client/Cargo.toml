@@ -18,6 +18,7 @@ members = [
     "crates/decibell-shell",
     "crates/decibell-chat",
     "crates/decibell-voice",
+    "crates/decibell-settings",
 ]
 # Path dependencies under the workspace directory would otherwise become members: GPUI's
 # crates must keep resolving `workspace = true` against Zed's own root manifest.
@@ -45,6 +46,7 @@ decibell-common = { path = "crates/decibell-common" }
 decibell-shell = { path = "crates/decibell-shell" }
 decibell-chat = { path = "crates/decibell-chat" }
 decibell-voice = { path = "crates/decibell-voice" }
+decibell-settings = { path = "crates/decibell-settings" }
 anyhow = "1"
 futures = "0.3"
 libc = "0.2"
