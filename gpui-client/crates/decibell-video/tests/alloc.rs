@@ -58,6 +58,67 @@ fn wait_for(mut done: impl FnMut() -> bool) {
     }
 }
 
+/// Waits until the stream has published `count` pictures. The streams are fed at their own
+/// rate: a machine too busy to decode in real time sheds frames and never gets there, which is
+/// said as such.
+fn wait_published(stream: &decibell_video::Stream, count: u64) {
+    let started = Instant::now();
+    let dropped_before = stream.stats().dropped;
+    loop {
+        let stats = stream.stats();
+        if stats.published >= count {
+            return;
+        }
+        assert_eq!(
+            stats.dropped, dropped_before,
+            "frames were shed before {count} pictures were published: the machine is too busy for a paced test"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "timed out waiting for {count} pictures: {stats:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Frames per counted window, and how many windows a stream gets to show a clean one.
+const WINDOW: u64 = 100;
+const WINDOWS: u64 = 3;
+
+/// Counts the process's Rust allocations over windows of [`WINDOW`] published pictures and
+/// requires one window with none.
+///
+/// Why not "the first window": the buffers in flight are pooled (the feeder's here, the core's
+/// in the client; packet carriers), and a pool grows when more of them are in flight at once
+/// than ever before, which is a matter of how deep the queue happened to get: on a quiet
+/// machine never after the warm-up, on a busy one once or twice more (seen: one 20 KB feeder
+/// buffer in a window, at load average 20). That is a pool reaching its high-water mark, a
+/// bounded number of events, and not an allocation per frame, which would be at least
+/// [`WINDOW`] in every window. So: at most a handful in any window, and none in one of them.
+fn assert_a_clean_window(what: &str, stream: &decibell_video::Stream) {
+    let mut counts = Vec::new();
+    for _ in 0..WINDOWS {
+        let (frames_before, allocations_before) = (
+            stream.stats().published,
+            ALLOCATIONS.load(Ordering::Relaxed),
+        );
+        wait_published(stream, frames_before + WINDOW);
+        let allocations = ALLOCATIONS.load(Ordering::Relaxed) - allocations_before;
+        let frames = stream.stats().published - frames_before;
+        println!("{what}: {allocations} Rust allocations over {frames} frames");
+        // Stored after the window was read: the vector's own growth is not in a window.
+        counts.push(allocations);
+        if allocations == 0 {
+            return;
+        }
+        assert!(
+            allocations < 8,
+            "{what}: {allocations} allocations over {frames} frames"
+        );
+    }
+    panic!("{what}: no window of {WINDOW} frames without an allocation: {counts:?}");
+}
+
 #[test]
 fn no_rust_allocation_per_frame_in_the_steady_state() {
     let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -76,38 +137,25 @@ fn no_rust_allocation_per_frame_in_the_steady_state() {
         let hub = VideoHub::headless();
         let stream = hub.stream(name);
         let _viewer = stream.viewer();
-        // 200 frames at 60 fps. The first 80 warm everything up: the keyframe is the largest
+        // 400 frames at 60 fps. The first 80 warm everything up: the keyframe is the largest
         // frame, so the feeder's recycled buffers reach their final size at once.
-        let feeder = Feeder::start(
+        let mut feeder = Feeder::start(
             hub.clone(),
             name,
             &path,
             FeedOptions {
-                frames: Some(200),
+                frames: Some(80 + WINDOWS * WINDOW + 20),
                 unpaced: false,
             },
         )
         .unwrap();
-        wait_for(|| stream.stats().published >= 80);
-        let (frames_before, allocations_before) = (
-            stream.stats().published,
-            ALLOCATIONS.load(Ordering::Relaxed),
-        );
-        wait_for(|| stream.stats().published >= 180);
-        let (frames, allocations) = (
-            stream.stats().published - frames_before,
-            ALLOCATIONS.load(Ordering::Relaxed) - allocations_before,
-        );
-        wait_for(|| feeder.finished());
+        wait_published(&stream, 80);
+        assert_a_clean_window(name, &stream);
+        feeder.stop();
         let stats = stream.stats();
-        println!("{name}: {allocations} Rust allocations over {frames} frames");
         assert_eq!(
             stats.dropped, 0,
             "{name}: frames were shed, the window is not steady"
-        );
-        assert_eq!(
-            allocations, 0,
-            "{name}: {allocations} allocations over {frames} frames"
         );
         assert_eq!(decibell_video::packet_copies(), 0);
         assert_eq!(decibell_video::packet_regrows(), 0);
@@ -138,39 +186,26 @@ fn no_rust_allocation_per_frame_after_a_decoder_was_replaced() {
     let _viewer = stream.viewer();
     // The file has a keyframe every 240 frames: the decoder that fails at frame 100 is
     // replaced at frame 240.
-    let feeder = Feeder::start(
+    let mut feeder = Feeder::start(
         hub.clone(),
         "replaced",
         &path,
         FeedOptions {
-            frames: Some(440),
+            frames: Some(240 + 60 + WINDOWS * WINDOW + 20),
             unpaced: false,
         },
     )
     .unwrap();
-    wait_for(|| stream.stats().published >= 100);
+    wait_published(&stream, 100);
     stream.inject(Fault::DecodeError);
     wait_for(|| stream.stats().decoder_opens == 2);
     let reopened_at = stream.stats().published;
-    wait_for(|| stream.stats().published >= reopened_at + 60);
-    let (frames_before, allocations_before) = (
-        stream.stats().published,
-        ALLOCATIONS.load(Ordering::Relaxed),
-    );
-    wait_for(|| stream.stats().published >= frames_before + 100);
-    let (frames, allocations) = (
-        stream.stats().published - frames_before,
-        ALLOCATIONS.load(Ordering::Relaxed) - allocations_before,
-    );
-    wait_for(|| feeder.finished());
+    wait_published(&stream, reopened_at + 60);
+    assert_a_clean_window("after a replaced decoder", &stream);
+    feeder.stop();
     let stats = stream.stats();
-    println!("after a replaced decoder: {allocations} Rust allocations over {frames} frames");
     assert_eq!((stats.errors, stats.decoder_opens), (1, 2));
     assert_eq!(stats.backend, Some(DecodeBackend::Software));
-    assert_eq!(
-        allocations, 0,
-        "{allocations} allocations over {frames} frames after a decoder was replaced"
-    );
     drop(_viewer);
     wait_for(|| hub.decoder_threads() == 0);
 }

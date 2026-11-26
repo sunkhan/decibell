@@ -408,9 +408,9 @@ impl GpuDevice {
                         .is_some_and(|name| name.to_string_lossy().starts_with("renderD"))
                 })
         };
-        // The driver's own answer (VK_EXT_physical_device_drm: Mesa since 21.1, NVIDIA since
-        // the 470 series). A physical-device-level query: the extension need not be enabled
-        // on the device.
+        // The driver's own answer (VK_EXT_physical_device_drm; NVIDIA 620 has it, and so do
+        // current Mesa drivers as far as their extension lists say). A physical-device-level
+        // query: the extension need not be enabled on the device.
         if self.physical_device_has(c"VK_EXT_physical_device_drm") {
             let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
             let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);

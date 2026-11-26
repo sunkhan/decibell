@@ -113,7 +113,9 @@ unsafe impl Send for Carrier {}
 // Boxed: a carrier's address is the `opaque` FFmpeg hands back, so it must not move.
 #[allow(clippy::vec_box)]
 static CARRIERS: Mutex<Vec<Box<Carrier>>> = Mutex::new(Vec::new());
-const MAX_IDLE_CARRIERS: usize = 32;
+/// More than one stream's queue holds while a slow decoder start is caught up with
+/// (`queue::CATCH_UP`), so that such a burst does not free carriers it allocates again later.
+const MAX_IDLE_CARRIERS: usize = 96;
 static COPIES: AtomicU64 = AtomicU64::new(0);
 static REGROWS: AtomicU64 = AtomicU64::new(0);
 

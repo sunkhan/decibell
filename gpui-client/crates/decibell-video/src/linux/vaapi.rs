@@ -34,7 +34,8 @@
 //!   asked for; sampling it with linear filtering is a format feature that has to be there
 //!   per modifier and per plane format.
 //! - The copy is 1.5 bytes per pixel (663 MB/s at 1440p120): what the Vulkan Video path does
-//!   too, measured there at well under a millisecond of GPU time per picture.
+//!   too. The import is the expensive part (0.4 to 0.8 ms per surface, measured) and is done
+//!   once per surface in either design: 4 to 7 times in a 1,200-picture run.
 //!
 //! **Which GPU.** VA-API is opened on the DRM render node of the GPU the window is drawn
 //! with (`VK_EXT_physical_device_drm`, or the PCI address), never on "the default display":
@@ -191,8 +192,10 @@ pub(crate) struct VaapiDecoder {
     work: Work,
     surface: Arc<WgpuSurface>,
     pictures: u64,
-    /// Imports made (statistics: a steady stream makes one per pool surface and no more).
+    /// Imports made (statistics: a steady stream makes one per pool surface and no more), and
+    /// the time they took.
     imported: u64,
+    import_time: std::time::Duration,
     described: bool,
     _va: Arc<VaDevice>,
 }
@@ -238,6 +241,7 @@ impl VaapiDecoder {
             surface: target.surface.clone(),
             pictures: 0,
             imported: 0,
+            import_time: std::time::Duration::ZERO,
             described: false,
             _va: va,
         })
@@ -275,6 +279,7 @@ impl VaapiDecoder {
             let import = self.imports.swap_remove(oldest);
             self.destroy(import);
         }
+        let started = std::time::Instant::now();
         let device = &self.work.device;
         let (chroma_width, chroma_height) = (coded.0.div_ceil(2), coded.1.div_ceil(2));
         // Safety: the fds are the frame's DMA-BUFs, alive for this call; what is created is
@@ -308,6 +313,7 @@ impl VaapiDecoder {
             }
         };
         self.imported += 1;
+        self.import_time += started.elapsed();
         self.imports.push(Import {
             key,
             planes: [luma, chroma],
@@ -578,9 +584,10 @@ impl Drop for VaapiDecoder {
         unsafe { ff::av_frame_free(&mut self.mapped) };
         if self.pictures > 0 {
             log::info!(
-                "video: VA-API decoder closed: {} pictures, {} surface imports",
+                "video: VA-API decoder closed: {} pictures, {} surface imports ({:.2} ms in all)",
                 self.pictures,
-                self.imported
+                self.imported,
+                self.import_time.as_secs_f64() * 1000.0
             );
         }
     }
@@ -628,8 +635,8 @@ unsafe fn import_plane(
         ))
     };
     if plane.modifier == DRM_FORMAT_MOD_INVALID {
-        // Without a modifier the buffer's layout is the exporting driver's secret (radeonsi
-        // before Mesa 21's modifier support): it cannot be described to Vulkan.
+        // Without a modifier the buffer's layout is the exporting driver's secret (a driver
+        // built without DRM format modifier support): it cannot be described to Vulkan.
         return Err(unsupported(
             "the VA driver exports surfaces without a DRM format modifier",
         ));
