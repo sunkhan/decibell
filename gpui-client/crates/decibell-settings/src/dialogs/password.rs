@@ -63,6 +63,7 @@ impl PasswordOverlay {
             this.open = true;
             this.error = flow.error;
             this.busy = flow.busy;
+            this.current.update(cx, |input, cx| input.focus(window, cx));
         }
         this
     }

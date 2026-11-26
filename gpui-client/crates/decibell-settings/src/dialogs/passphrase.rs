@@ -53,6 +53,11 @@ impl PassphraseOverlay {
         });
         let subscriptions =
             vec![flow, submit_on_enter(&passphrase, Self::submit, cx), submit_on_enter(&confirm, Self::submit, cx)];
+        // Open already (the first locked report of a sign-in can come before the main layout
+        // builds its overlays): the passphrase has the focus, as the renderer's autoFocus gives it.
+        if initial.is_some() {
+            passphrase.update(cx, |input, cx| input.focus(window, cx));
+        }
         Self { flow: initial, mode, passphrase, confirm, _subscriptions: subscriptions }
     }
 
