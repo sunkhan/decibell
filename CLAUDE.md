@@ -188,6 +188,12 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   format still overrides 12 / 24 h. Never format a date, a time of day or a count by hand in
   `gpui-client/`. Electron formats by its UI language through `Intl` (Chromium ignores the OS's format
   setting) and isn't changed by this.
+- **Native client: a DM is marked read only while it is being read** (owner, 2026-11-26: "That's how
+  Discord does it"). A conversation's messages are marked read only while it is the open view, the window
+  is focused **and** its list is scrolled to the bottom. A message that arrives otherwise stays unread (row
+  badge, unread tile and, because read state syncs, on the account's other devices) until all three hold;
+  then it is marked. Electron marks an open conversation read on every arrival whatever the focus or
+  scroll position (`features/dm/DmChatPanel.tsx`) and isn't changed by this.
 - **Electron client: prefer Chromium APIs over native Rust** for renderer-side jobs (Web Audio,
   `getDisplayMedia`, WebCodecs, `mediaDevices`, `<img>` / `<video>`) so the addon stays thin; keep native
   what holds sockets, speaks the wire, hooks the voice capture loop (AEC / AGC / NS) or owns files. The
