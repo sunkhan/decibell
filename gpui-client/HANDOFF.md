@@ -243,6 +243,12 @@ connections' keep-alives), 26 threads, all named, every other thread parked.
   shares between its processes: quote private dirty and PSS beside it (Electron, same scenario: 341.7 private,
   253.4 private dirty, 476.7 PSS).
 
+**Windows compile status**: Windows Native Check run 45819750197 (`fc19cdf`) is green for both jobs: `check` (the
+addon and the core) and `gpui-client` (`fetch-gpui.sh` + `cargo check --locked --workspace --all-targets` of
+every client crate committed so far, and the capture build). Two things had to be fixed for the first client
+run: patches arrived with CRLF on a Windows checkout (`.gitattributes` now pins LF under `gpui-client/`), and
+the attachment tests read git-ignored `*.key` / `*.crt` files (they generate their certificate now).
+
 ## 5. Open items
 
 - **Every thread the client spawns gets a name.** `measure.sh` classes threads as own / driver / unnamed; NVIDIA's
