@@ -35,6 +35,8 @@ struct Shown {
     slice: Entity<MessageSlice>,
     list: Entity<MessageList>,
     composer: Option<crate::media::ComposerParts>,
+    /// The registered welcome banner, built the first time this channel shows empty.
+    welcome: Option<AnyView>,
     /// The newest-page load got no answer: Retry shows.
     failed: bool,
     _load: Option<Task<()>>,
@@ -133,7 +135,7 @@ impl ChatPane {
             })
         });
         cx.set_global(ShownList(list.downgrade()));
-        self.shown = Some(Shown { server, channel, slice, list, composer, failed: false, _load: load, _subscriptions: subscriptions });
+        self.shown = Some(Shown { server, channel, slice, list, composer, welcome: None, failed: false, _load: load, _subscriptions: subscriptions });
         self.take_jump(cx);
         cx.notify();
     }
@@ -281,11 +283,24 @@ fn welcome(server: ServerId, channel: &ChannelId, cx: &mut Context<ChatPane>) ->
 }
 
 impl Render for ChatPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (background, muted) = {
             let theme = cx.theme();
             (theme.color_bg_mid, theme.color_text_muted)
         };
+        // A registered welcome banner, built the first time this channel shows empty.
+        if let Some(shown) = self.shown.as_mut()
+            && shown.welcome.is_none()
+            && let Some(build) = slots(cx).welcome.clone()
+        {
+            let empty = {
+                let slice = shown.slice.read(cx);
+                slice.rows().is_empty() && slice.fetched && !slice.loading
+            };
+            if empty && !shown.failed {
+                shown.welcome = Some(build(shown.server, shown.channel.clone(), window, cx));
+            }
+        }
         let root = div().size_full().min_w_0().flex().flex_col().bg(background);
         let Some(shown) = &self.shown else {
             return root.child(centered().child(Label::new("Pick a channel.").size(14.).color(muted)));
@@ -314,7 +329,10 @@ impl Render for ChatPane {
                 .child(Button::new("retry-history", "Retry").on_click(cx.listener(|this, _, _, cx| this.retry(cx))))
                 .into_any_element()
         } else if rows == 0 && fetched {
-            welcome(shown.server, &shown.channel, cx).into_any_element()
+            match &shown.welcome {
+                Some(view) => centered().child(view.clone()).into_any_element(),
+                None => welcome(shown.server, &shown.channel, cx).into_any_element(),
+            }
         } else if rows == 0 {
             centered().into_any_element()
         } else {

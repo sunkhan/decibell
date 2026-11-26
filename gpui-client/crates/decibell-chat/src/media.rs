@@ -95,6 +95,10 @@ pub struct ComposerParts {
 pub type ComposerBuilder =
     Rc<dyn Fn(ServerId, decibell_model::ChannelId, &Entity<crate::MessageList>, &mut Window, &mut App) -> ComposerParts>;
 
+/// Builds what a channel nobody wrote in shows in place of the list (`WelcomeState`): drawn
+/// uncached, centred in the pane, built the first time the empty channel shows.
+pub type WelcomeBuilder = Rc<dyn Fn(ServerId, decibell_model::ChannelId, &mut Window, &mut App) -> AnyView>;
+
 /// The registered slots. Unset ones fall back to the list's own placeholders.
 #[derive(Default)]
 pub struct ChatSlots {
@@ -108,6 +112,8 @@ pub struct ChatSlots {
     pub composer: Option<ComposerBuilder>,
     /// The lone-link rule (see [`TextHidden`]); none: the text always shows.
     pub text_hidden: Option<TextHidden>,
+    /// The welcome banner (`decibell-servers`); until one is registered the pane draws its own.
+    pub welcome: Option<WelcomeBuilder>,
     /// Bumped by [`invalidate_slots`]; lists observe it.
     pub(crate) epoch: Option<Entity<SlotEpoch>>,
 }

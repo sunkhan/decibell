@@ -28,7 +28,8 @@ pub(crate) mod testing;
 
 pub use list::{ListEvent, ListStats, MessageList};
 pub use media::{
-    CancelEdit, ChatSlots, ComposerBuilder, ComposerParts, EditorSlot, RowSlot, SlotSpace, SubmitEdit, TextHidden, TypeToFocus, invalidate_slots, slots,
+    CancelEdit, ChatSlots, ComposerBuilder, ComposerParts, EditorSlot, RowSlot, SlotSpace, SubmitEdit, TextHidden, TypeToFocus, WelcomeBuilder,
+    invalidate_slots, slots,
 };
 pub use pane::ChatPane;
 pub use source::{ChannelSource, Jump, ListSource};
