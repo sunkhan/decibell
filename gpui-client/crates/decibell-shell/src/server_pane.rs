@@ -116,15 +116,26 @@ impl Render for ServerPane {
                 .child(div().mr_1p5().flex_none().child(title("#".into(), theme.color_text_muted)))
                 .child(div().min_w_0().flex_shrink(1.).child(title(name, theme.color_text_bright)))
                 .when(encrypted, |this| {
-                    // `ChannelEncryptionBadge` (the e2ee feature's): the lock, until it lands.
+                    // `ChannelEncryptionBadge`: `rounded-sm bg-success/15 px-2 py-0.5 font-channel
+                    // text-[11px] font-medium text-success`, the 11 px lock and "E2EE".
                     this.child(
-                        div()
-                            .id("channel-encrypted")
-                            .ml_2p5()
-                            .flex()
-                            .items_center()
-                            .tooltip(title_tooltip("End-to-end encrypted channel"))
-                            .child(Icon::new(IconName::ChatLock).size(px(13.)).color(theme.color_text_muted)),
+                        div().ml_2p5().flex().flex_none().items_center().child(
+                            div()
+                                .id("channel-encrypted")
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(5.))
+                                .rounded(theme.radius_sm)
+                                .bg(theme.color_success.opacity(0.15))
+                                .px_2()
+                                .py_0p5()
+                                .tooltip(title_tooltip(
+                                    "End-to-end encrypted channel — messages and attachments are sealed on members' devices; the server never holds the keys",
+                                ))
+                                .child(Icon::new(IconName::ChatLock).size(px(11.)).color(theme.color_success))
+                                .child(Label::new("E2EE").font(FontRole::Channel).size(11.).weight(500.).color(theme.color_success).nowrap()),
+                        ),
                     )
                 })
                 .when_some(topic, |this, topic| {
@@ -140,6 +151,8 @@ impl Render for ServerPane {
                                 Label::new(topic)
                                     .font(FontRole::Channel)
                                     .size(13.)
+                                    // `tracking-normal` (the header's `tracking-title` stops here).
+                                    .tracking(0.)
                                     .color(theme.color_text_muted)
                                     .truncate(),
                             ),
@@ -175,7 +188,8 @@ impl Render for ServerPane {
                         .flex_none()
                         .w(px(SEARCH_BOX_WIDTH))
                         .h_full()
-                        .ml_2()
+                        // `ml-4`: the members toggle stays 8 px clear of the members column.
+                        .ml_4()
                         .child(search.cached(StyleRefinement::default().size_full())),
                 )
         });
