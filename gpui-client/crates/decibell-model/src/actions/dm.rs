@@ -430,6 +430,22 @@ pub fn delete_dm(peer: Uid, id: i64, cx: &mut App) {
     });
 }
 
+/// Settings → Privacy's "Only friends can DM me" (`PrivacyTab.tsx` `handleToggleDms`): the
+/// account's value at central (`set_dm_privacy`) and the local copy in `config.json` (which
+/// only shows before sign-in). Its one other writer is the sign-in adopting the account's
+/// value (`events::presence::own_presence`); `Settings::friends_only_dms` is the one copy.
+pub fn set_friends_only_dms(friends_only: bool, cx: &mut App) {
+    let Some(model) = model(cx) else { return };
+    if model.settings.read(cx).get().friends_only_dms != friends_only {
+        model.settings.update(cx, |s, cx| s.change(|v| v.friends_only_dms = friends_only, cx));
+    }
+    call(cx, api::settings::set_dm_privacy(api::settings::SetDmPrivacyArgs { friends_only }), |r, _| {
+        if let Err(e) = r {
+            log::error!("set_dm_privacy: {e}");
+        }
+    });
+}
+
 /// The composer's text changed.
 pub fn set_draft(peer: Uid, text: SharedString, cx: &mut App) {
     if let Some(model) = model(cx) {

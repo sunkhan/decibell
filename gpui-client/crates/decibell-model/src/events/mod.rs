@@ -56,6 +56,7 @@ pub fn route(model: &Model, event: CoreEvent, cx: &mut App) {
         E::ConnectionLost(p) => {
             connection::lost(model, &p, cx);
             servers::connection_lost(model, &p, cx);
+            dm::connection_lost(model, &p, cx);
         }
         E::ConnectionRestored(p) => {
             connection::restored(model, &p, cx);

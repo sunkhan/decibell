@@ -25,7 +25,6 @@ use std::time::Duration;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 use crate::Model;
-use crate::ids::Uid;
 use crate::stores::navigation::ActiveView;
 use crate::stores::overlays::MembershipRevocationNotice;
 
@@ -161,13 +160,17 @@ pub fn revocation_headline(action: &str, server_name: &str) -> String {
 
 /// The OS window title (`hooks/useWindowTitle.ts`): "<community> — Decibell" in a
 /// community or voice view, "<their current name> — Decibell" in a DM with an open
-/// thread, else "Decibell". `dm` is M2's active conversation (uid and the payload name).
-pub fn window_title(model: &Model, dm: Option<(Uid, &SharedString)>, cx: &App) -> SharedString {
+/// thread (the open conversation of `dm.list`, its row's name as the fallback), else
+/// "Decibell". The app recomputes it when `nav`, `servers`, `dm.list` or the users store's
+/// `NamesChanged` fire, and sets it only when it differs.
+pub fn window_title(model: &Model, cx: &App) -> SharedString {
     let nav = model.nav.read(cx);
     match nav.active_view {
         ActiveView::Dm => {
-            if let Some((uid, fallback)) = dm {
-                let name = model.name_of(uid, fallback, cx);
+            let list = model.dm.list.read(cx);
+            if let Some(peer) = list.active_peer {
+                let fallback = list.get(peer).map(|c| c.username.clone()).unwrap_or_default();
+                let name = model.name_of(peer, &fallback, cx);
                 if !name.is_empty() {
                     return format!("{name} — Decibell").into();
                 }

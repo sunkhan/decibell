@@ -679,11 +679,12 @@ fn the_revocation_notice_lives_eight_seconds(cx: &mut TestAppContext) {
     assert_eq!(crate::live::revocation_headline("kick", "Daily Gaming"), "You have been kicked from Daily Gaming");
 }
 
-/// The OS window title follows the view.
+/// The OS window title follows the view, and in the DM view the open conversation (M2's
+/// DM list) under its current name.
 #[gpui::test]
 fn the_window_title(cx: &mut TestAppContext) {
     let model = signed_in(cx);
-    cx.read(|cx| assert_eq!(crate::live::window_title(&model, None, cx).as_ref(), "Decibell"));
+    cx.read(|cx| assert_eq!(crate::live::window_title(&model, cx).as_ref(), "Decibell"));
     deliver(
         &model,
         cx,
@@ -700,8 +701,16 @@ fn the_window_title(cx: &mut TestAppContext) {
         })],
     );
     cx.update(|cx| crate::actions::servers::open_server(gaming(), cx));
-    cx.read(|cx| assert_eq!(crate::live::window_title(&model, None, cx).as_ref(), "Daily Gaming — Decibell"));
+    cx.read(|cx| assert_eq!(crate::live::window_title(&model, cx).as_ref(), "Daily Gaming — Decibell"));
+    // The DM view with no conversation open.
     model.nav.update(cx, |n, cx| n.set_active_view(ActiveView::Dm, cx));
-    let bob: SharedString = "bob".into();
-    cx.read(|cx| assert_eq!(crate::live::window_title(&model, Some((2, &bob)), cx).as_ref(), "bob — Decibell"));
+    cx.read(|cx| assert_eq!(crate::live::window_title(&model, cx).as_ref(), "Decibell"));
+    // A conversation opened (its row's name is the fallback), then renamed by central.
+    cx.update(|cx| crate::actions::dm::open_dm(2, "bob".into(), cx));
+    cx.read(|cx| assert_eq!(crate::live::window_title(&model, cx).as_ref(), "bob — Decibell"));
+    deliver(&model, cx, [CoreEvent::UserRenamed(UserRenamedPayload { uid: 2, username: "robert".into(), is_self: false })]);
+    cx.read(|cx| assert_eq!(crate::live::window_title(&model, cx).as_ref(), "robert — Decibell"));
+    // Back in the community: its name again.
+    model.nav.update(cx, |n, cx| n.set_active_view(ActiveView::Server, cx));
+    cx.read(|cx| assert_eq!(crate::live::window_title(&model, cx).as_ref(), "Daily Gaming — Decibell"));
 }

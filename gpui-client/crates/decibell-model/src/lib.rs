@@ -16,6 +16,7 @@
 //! ```
 
 pub mod actions;
+pub mod bridge;
 pub mod call;
 pub mod chat;
 pub mod core;
@@ -95,6 +96,8 @@ impl Model {
         cx.set_global(model.clone());
         model.chat.follow_navigation(&model.nav, cx);
         live::install(&model, cx);
+        // The seams between the chat half and the live half.
+        bridge::install(&model, cx);
         // Quit: what is still inside a debounce is written now.
         cx.on_app_quit(|cx| {
             Model::flush(cx);

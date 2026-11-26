@@ -5,14 +5,17 @@
 
 use std::sync::Arc;
 
+use decibell_core::api;
 use decibell_core::events::{
-    DmConversationsReceivedPayload, DmHistoryReceivedPayload, DmMessageDeleteRespondedPayload, DmMessageDeletedPayload,
-    DmMessageEditRespondedPayload, DmMessageEditedPayload, DmReadSyncedPayload, MessageReceivedPayload,
+    ConnectionEventPayload, DmConversationsReceivedPayload, DmHistoryReceivedPayload, DmMessageDeleteRespondedPayload,
+    DmMessageDeletedPayload, DmMessageEditRespondedPayload, DmMessageEditedPayload, DmReadSyncedPayload,
+    MessageReceivedPayload,
 };
 use gpui::{App, SharedString};
 
 use crate::Model;
-use crate::chat::history::{HistoryReply, WaitKey};
+use crate::call::call;
+use crate::chat::history::{HistoryReply, Scope, WaitKey};
 use crate::chat::message::{DecryptError, Message};
 use crate::dm::PreviewInput;
 use crate::stores::navigation::ActiveView;
@@ -130,6 +133,35 @@ pub fn dm_message_edit_responded(model: &Model, p: &DmMessageEditRespondedPayloa
         let body: SharedString =
             if p.message.is_empty() { "Server rejected the request.".into() } else { p.message.clone().into() };
         model.toasts.update(cx, |t, cx| t.error("Couldn't edit message", Some(body), cx));
+    }
+}
+
+/// Central's connection dropped (`useDmEvents`' `connection_lost` listener:
+/// `abandonDmRequests()`): replies to DM history requests went down with it, so their
+/// waits end now instead of at their 10 s timeout. A community's drop is
+/// `events::chat::community_connection_lost`.
+pub fn connection_lost(model: &Model, p: &ConnectionEventPayload, cx: &mut App) {
+    if p.server_type == "central" {
+        model.chat.history.update(cx, |h, _| h.abandon(Scope::Central));
+    }
+}
+
+/// Our E2EE keys became usable (`useE2eeEvents.ts` `reloadDms`, on `E2eeEvent::BecameReady`):
+/// every sealed DM that arrived before holds a placeholder, so all loaded DM pages go
+/// (`invalidateAllHistory`), the sidebar previews are asked for again, and the open
+/// conversation reloads its newest page so its panel doesn't sit empty; the others reload
+/// when opened. As in the renderer this follows the open conversation whether or not the
+/// DM view is on screen, and a sign-in that ends "ready" asks for the previews twice (here
+/// and in `signed_in`).
+pub fn reload_after_unlock(model: &Model, cx: &mut App) {
+    model.dm.list.update(cx, |l, cx| l.invalidate_all_history(cx));
+    call(cx, api::dm::request_dm_conversations(), |r, _| {
+        if let Err(e) = r {
+            log::debug!("request_dm_conversations: {e}");
+        }
+    });
+    if let Some(peer) = model.dm.list.read(cx).active_peer {
+        crate::actions::dm::open_history(peer, cx);
     }
 }
 
