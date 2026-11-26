@@ -47,7 +47,8 @@ screens in all seven themes beside Electron's.
 | Core split step 1 (move + event sink) | done `76b77c3`: Electron's bar on Linux (tsc 0 errors, napi build with `index.d.ts` / `index.js` byte-identical, 322 + 2 tests, smoke load) and Windows Native Check run 45797141001 green |
 | Core split step 2 (typed `CoreEvent`) | on the branch `1930905` + `ebb65d2`: 85 variants, `to_json()` pinned byte-for-byte by a golden test recorded from the old path; Linux bar passed (tsc 0, napi build with `index.d.ts` / `index.js` unchanged, 327 + 2 tests, smoke); Windows Native Check run 45806591240 green (after `34f6527` fixed a Windows-only test) |
 | Core split step 3 + 4 (commands → `decibell_core::api`, `lifecycle::init`, runtime handle `rt`) | done `a67554d` + `79b7eba`: 132 functions in 16 areas returning `CoreError`, structs defined once in core (optional `napi` feature), every async api fn awaitable from any executor; Linux bar passed (tsc 0, napi build with `index.js` identical and `index.d.ts` identical in content, 340 core tests, `smoke-load.cjs`, `smoke-stack.cjs` signing in against the local stack); Windows Native Check run 45808677484 green |
-| Client state model (`crates/decibell-model`): core handle, event pump, first stores, headless driver | in progress |
+| Client state model, foundation (`crates/decibell-model`, `docs/model.md`) | done `7b45b47`: core handle (2-worker runtime), one-wake-per-burst pump (10,000 events from 8 threads = 5 wakes), router over all 85 events, stores for auth / users / navigation / servers / communities / roster / permissions / settings, `decibell-headless`; 65 tests incl. stack tests |
+| State model, chat half (messages, DMs, pacing, slowmode, drafts, search) and live half (voice, streams, calls, presence, friends, e2ee, hotkeys, devices, transfers) | in progress, worktrees `.worktrees/model-chat` (`wip/model-chat`) and `.worktrees/model-live` (`wip/model-live`) |
 | Core split step 5 (pooled receive path) | not started (with stream playback) |
 | Local test stack (`tools/dev/`) | done `e245c8f`: central 127.0.0.1:18080 + Daily Gaming / Rustaceans / Design Lab on 127.0.0.11–13, 9 test accounts, 10k-message `#general`; `tools/dev/README.md` |
 | Linux measurement tools | done `5285180`: `tools/perf/measure.sh`, `startup.sh`, `winctl.sh`, `install-size.sh` (README has the Linux section) |
@@ -230,6 +231,11 @@ startup = median of 5 warm runs; other builds were running, so startup is an upp
   main-thread wakeups 280/s → 0 under XWayland.
 - Binary 23.5 MB stripped at `opt-level = 3` (18.2 MB, −3.3 MB memory, +10 ms startup at `"s"`: profile
   `release-s`; decided once hot paths exist to measure).
+**Core + model alone** (`decibell-headless`, release, signed in as a test account with Daily Gaming connected and
+its 298-member roster loaded, 20 s settle + 60 s): **14.2 MB private** (2.6 dirty; PSS 14.2, RSS 17.0), CPU
+0.0004 % of a core, **0.17 wakeups/s** for the whole process (10 in 60 s, all on one runtime worker: the
+connections' keep-alives), 26 threads, all named, every other thread parked.
+
 - **Lever not yet taken**: cosmic-text scans all installed fonts and walks them per (family, weight, style)
   query: ~70 ms of the 225 ms to first frame. The text engine work starts with bundled faces only and loads
   system fonts lazily for fallback.
@@ -247,6 +253,16 @@ startup = median of 5 warm runs; other builds were running, so startup is an upp
   convert JavaScript value Null into rust type String on InitOptions.e2eeLocalKey`. Fix: `?? undefined`.
 - Core's `Cargo.lock` must be re-seeded when core's dependencies change (recipe in `CLAUDE.md`); CI checks
   `--locked`.
+- **zbus features clash between the core and GPUI** (found by the model work): the core enables `zbus` with
+  `tokio`, GPUI's dependencies use it with `async-io`; cargo unifies them and GPUI's D-Bus calls (portal settings,
+  file chooser, keychain, logind) then panic outside a tokio context. Until the core's zbus runtime is a feature
+  (in progress on `wip/core-followups`), `decibell_model::core::prepare` enters the tokio context on GPUI's
+  worker threads as a workaround; build the app with `-p decibell-app`, not `--workspace`.
+- **A cached view goes stale unless it observes what it reads** (`docs/model.md` §4): GPUI re-renders a cached
+  view only when that view itself is notified.
+- **Community server bug (for `main`, not changed here)**: the first page of the member list returns the
+  requester's own `role_ids` doubled when their row is already in the page (`src/community/main.cpp`); this
+  client de-duplicates on arrival.
 
 ## 6. Needs owner
 
