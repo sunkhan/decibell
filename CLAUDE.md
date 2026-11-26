@@ -194,7 +194,11 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   services) is written against the pinned sources, compiled by the Windows Native Check (which also runs
   whatever a GPU-less runner can run) and listed step by step in `gpui-client/docs/windows-owner-checks.md`.
   A Windows stub that reports "unsupported" is a missing feature, not a finished one; a parity row that
-  only compiles on Windows is "needs owner", never "done".
+  only compiles on Windows is "needs owner", never "done". **The resource targets hold on Windows as on
+  Linux** (owner, 2026-11-26: the native client ends with Electron's features and better memory, CPU,
+  wakeups, startup and install size on both): Windows gets the same measurement harness
+  (`tools/perf/windows/`), the Electron baseline is taken on the same Windows machine, and the owner runs
+  both.
 - **Native client: a DM is marked read only while it is being read** (owner, 2026-11-26: "That's how
   Discord does it"). A conversation's messages are marked read only while it is the open view, the window
   is focused **and** its list is scrolled to the bottom. A message that arrives otherwise stays unread (row
