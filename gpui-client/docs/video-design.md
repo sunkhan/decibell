@@ -135,7 +135,10 @@ cannot decode the codec the decoder is skipped.
 
 The assertion: `crates/decibell-video/tests/alloc.rs` runs the whole pipeline (feeder with recycled buffers,
 hub, queue, software decode, publish) under a counting global allocator and requires **0 Rust allocations over
-100 steady-state frames** for each codec, in every thread of the process. The GPU paths add no allocation of
+100 steady-state frames** for each codec, in every thread of the process, and again after a decoder failed and
+was replaced. (The window is the first of up to three without an allocation: on a busy machine the queue gets
+deeper once or twice after the warm-up and a pool of buffers in flight grows by one, which is a bounded event
+and not an allocation per frame; any window with eight or more fails.) The GPU paths add no allocation of
 ours by construction (one command buffer, one fence, five slots, all reused) and are counted in the real binary
 with `tools/streamgen/malloc-count.c` (§0.8).
 
