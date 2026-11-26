@@ -1,0 +1,192 @@
+{
+ "result": true,
+ "data": {
+  "data": [
+   {
+    "id": 6123456789012345,
+    "slug": "cat-cute-abc",
+    "title": "Cat Cute",
+    "type": "gif",
+    "file": {
+     "hd": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/abc/hd.webp",
+       "width": 498,
+       "height": 280
+      }
+     },
+     "md": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/abc/md.gif",
+       "width": 320,
+       "height": 180,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/abc/md.webp",
+       "width": 320,
+       "height": 180
+      }
+     },
+     "sm": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/abc/sm.gif",
+       "width": 220,
+       "height": 124,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/abc/sm.webp",
+       "width": 220,
+       "height": 124
+      }
+     },
+     "xs": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/abc/xs.gif",
+       "width": 90,
+       "height": 50,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/abc/xs.webp",
+       "width": 90,
+       "height": 50
+      }
+     }
+    }
+   },
+   {
+    "id": "str-id",
+    "title": 42,
+    "file": {
+     "md": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/def/md.webp",
+       "width": 300,
+       "height": 200
+      }
+     },
+     "xs": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/def/xs.gif",
+       "width": 90,
+       "height": 60,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/def/xs.webp",
+       "width": 90,
+       "height": 60
+      }
+     }
+    }
+   },
+   {
+    "slug": "slug-only",
+    "file": {
+     "hd": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": "480px",
+       "height": 270.5
+      }
+     }
+    }
+   },
+   {
+    "id": 7,
+    "file": {
+     "hd": {
+      "gif": {
+       "url": "http://static.klipy.com/ii/jkl/hd.gif",
+       "width": 1,
+       "height": 1
+      }
+     }
+    }
+   },
+   {
+    "id": "",
+    "slug": "never-used",
+    "file": {
+     "hd": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/mno/hd.gif",
+       "width": 1,
+       "height": 1,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/mno/hd.webp",
+       "width": 1,
+       "height": 1
+      }
+     }
+    }
+   },
+   5,
+   "string item",
+   [],
+   {
+    "id": 9,
+    "file": null
+   },
+   {
+    "id": 10,
+    "file": {
+     "hd": null,
+     "md": {
+      "gif": null
+     }
+    }
+   },
+   {
+    "id": -0.0,
+    "file": {
+     "hd": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": -5,
+       "size": 12345
+      },
+      "webp": {
+       "url": "https://static.klipy.com/ii/zero/hd.webp",
+       "width": 0,
+       "height": -5
+      }
+     }
+    }
+   },
+   {
+    "id": 1.5e+21,
+    "title": "big id",
+    "file": {
+     "hd": {
+      "gif": {
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": "0x10"
+      }
+     }
+    }
+   }
+  ],
+  "current_page": 2,
+  "per_page": 24,
+  "has_next": true
+ }
+}

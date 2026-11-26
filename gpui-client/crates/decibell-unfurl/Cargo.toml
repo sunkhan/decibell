@@ -1,0 +1,36 @@
+[package]
+name = "decibell-unfurl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Link previews (with the private-network guard) and GIF search for the native client: what Electron's main process did in linkPreview.ts / publicNet.ts / gifs.ts"
+
+# Plain Rust + tokio, no GPUI types. Versions follow decibell-core and the pinned Zed (rustls 0.23,
+# tokio-rustls 0.26, hyper 1, url 2.5, regex 1, encoding_rs 0.8, flate2 1, serde_json 1), so the
+# client binary links one copy of each: url, regex, encoding_rs, flate2, hyper and webpki-roots are
+# already in GPUI's tree. The only crate this adds to the app is brotli-decompressor (the unfurler
+# sends `Accept-Encoding: gzip, deflate, br`, as Electron's main does).
+
+[dependencies]
+brotli-decompressor = { version = "5", default-features = false, features = ["std"] }
+bytes = "1"
+encoding_rs = "0.8"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+log = "0.4"
+regex = { version = "1", default-features = false, features = ["std", "perf"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "time", "sync"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+url = "2.5"
+webpki-roots = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+# The loopback HTTPS test's self-signed certificate.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }

@@ -1,0 +1,1202 @@
+{
+ "cases": [
+  {
+   "url": "{origin}/bogus-charset.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/bogus-charset.html",
+    "siteName": "127.0.0.1",
+    "title": "Ünïcödé fallback",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/charset-late.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/charset-late.html",
+    "siteName": "127.0.0.1",
+    "title": "Late meta �",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/color-invalid.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/color-invalid.html",
+    "siteName": "127.0.0.1",
+    "title": "Invalid color",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/color-variants.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/color-variants.html",
+    "siteName": "127.0.0.1",
+    "title": "Short color",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": "#abc"
+   }
+  },
+  {
+   "url": "{origin}/cp1252-meta.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/cp1252-meta.html",
+    "siteName": "127.0.0.1",
+    "title": "Café  5",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/entities.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/entities.html",
+    "siteName": "127.0.0.1",
+    "title": "Tom & Jerry 's 😀 … &bogus; &#0; &#x110000; & end",
+    "description": "“Quoted” — €5 × 3 � ABC",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/invalid-utf8.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/invalid-utf8.html",
+    "siteName": "127.0.0.1",
+    "title": "Bad �� bytes �",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/koi8-http-equiv.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/koi8-http-equiv.html",
+    "siteName": "127.0.0.1",
+    "title": "Привет, мир",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/latin1-header.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/latin1-header.html",
+    "siteName": "127.0.0.1",
+    "title": "Header wins:  é",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/long-text.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/long-text.html",
+    "siteName": "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS…",
+    "title": "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx�…",
+    "description": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word…",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/meta-weird.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/meta-weird.html",
+    "siteName": "127.0.0.1",
+    "title": "Unquoted/value",
+    "description": "single \"quoted\" first",
+    "image": null,
+    "largeImage": true,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/no-metadata.html",
+   "preview": null
+  },
+  {
+   "url": "{origin}/oembed-404.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-404.html",
+    "siteName": "127.0.0.1",
+    "title": "oEmbed endpoint is gone",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-array.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-array.html",
+    "siteName": "127.0.0.1",
+    "title": "oEmbed answers an array",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-bad-href.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-bad-href.html",
+    "siteName": "127.0.0.1",
+    "title": "oEmbed href is not a URL",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-blank.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-blank.html",
+    "siteName": "",
+    "title": "",
+    "description": "Has a description.",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-discovery.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-discovery.html",
+    "siteName": "VideoSite",
+    "title": "oEmbed title",
+    "description": "Page description wins over author_name.",
+    "image": {
+     "url": "https://img.example.com/hq.jpg",
+     "width": 480,
+     "height": 360
+    },
+    "largeImage": true,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-not-json.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-not-json.html",
+    "siteName": "127.0.0.1",
+    "title": "oEmbed answers HTML",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-null.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-null.html",
+    "siteName": "127.0.0.1",
+    "title": "oEmbed answers null",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-partial.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-partial.html",
+    "siteName": "VideoSite",
+    "title": "OG title stays",
+    "description": "by Some Author",
+    "image": {
+     "url": "https://img.example.com/hq.jpg",
+     "width": 480,
+     "height": 360
+    },
+    "largeImage": true,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/oembed-rich-noimage.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oembed-rich-noimage.html",
+    "siteName": "127.0.0.1",
+    "title": "Rich embed",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/rel/thumb.png",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": true,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/og-full.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/og-full.html",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/probe-404.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-404.html",
+    "siteName": "127.0.0.1",
+    "title": "Image is gone",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/missing.png",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/probe-big-exif.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-big-exif.html",
+    "siteName": "127.0.0.1",
+    "title": "JPEG whose SOF is past 64 KiB",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/images/big-exif.jpg",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/probe-needed.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-needed.html",
+    "siteName": "127.0.0.1",
+    "title": "Image without declared size",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/images/a.png",
+     "width": 3,
+     "height": 2
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/probe-not-image.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-not-image.html",
+    "siteName": "127.0.0.1",
+    "title": "og:image answers HTML",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/og-full.html",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/probe-partial.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-partial.html",
+    "siteName": "127.0.0.1",
+    "title": "Only a width is declared",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/images/b.gif",
+     "width": 5,
+     "height": 4
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/probe-redirect.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-redirect.html",
+    "siteName": "127.0.0.1",
+    "title": "og:image redirects",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/redirect/to-jpeg",
+     "width": 400,
+     "height": 300
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/probe-webp.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/probe-webp.html",
+    "siteName": "127.0.0.1",
+    "title": "WebP lossless",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/images/vp8l.webp",
+     "width": 300,
+     "height": 200
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/relative-image.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/relative-image.html",
+    "siteName": "127.0.0.1",
+    "title": "Relative image",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/img/photo%20one.png?x=1#frag",
+     "width": 800,
+     "height": 600
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/replacement-charset.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/replacement-charset.html",
+    "siteName": "127.0.0.1",
+    "title": "Replacement label → UTF-8",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/secure-url-bad.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/secure-url-bad.html",
+    "siteName": "127.0.0.1",
+    "title": "A bad secure_url hides a good og:image",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/sjis-header.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/sjis-header.html",
+    "siteName": "127.0.0.1",
+    "title": "日本語のタイトル",
+    "description": "説明文",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/title-in-body.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/title-in-body.html",
+    "siteName": "127.0.0.1",
+    "title": "SVG title in body",
+    "description": "No title in head.",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/title-only.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/title-only.html",
+    "siteName": "127.0.0.1",
+    "title": "Plain <title> & a description",
+    "description": "From \"meta name=description\".",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/twitter-only.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/twitter-only.html",
+    "siteName": "127.0.0.1",
+    "title": "Only a Twitter card",
+    "description": "Described by twitter:description.",
+    "image": {
+     "url": "https://cdn.example.net/thumb.jpg",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/utf16le.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/utf16le.html",
+    "siteName": "127.0.0.1",
+    "title": "UTF-16 über",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/utf8-bom.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/utf8-bom.html",
+    "siteName": "127.0.0.1",
+    "title": "BOM ✓",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/video-og-type.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/video-og-type.html",
+    "siteName": "127.0.0.1",
+    "title": "A video page",
+    "description": null,
+    "image": null,
+    "largeImage": true,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/whitespace.html",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/whitespace.html",
+    "siteName": "127.0.0.1",
+    "title": "Spaced out title ",
+    "description": "tabs and newlines",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/xhtml",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/xhtml",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/upper-ct",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/upper-ct",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/plain",
+   "preview": null
+  },
+  {
+   "url": "{origin}/no-ct",
+   "preview": null
+  },
+  {
+   "url": "{origin}/html5-ct",
+   "preview": null
+  },
+  {
+   "url": "{origin}/gz",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/gz",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/xgz",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/xgz",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/br",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/br",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/deflate",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/deflate",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/gzip-twice",
+   "preview": null
+  },
+  {
+   "url": "{origin}/gzip-corrupt",
+   "preview": null
+  },
+  {
+   "url": "{origin}/gzip-truncated",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/gzip-truncated",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/unknown-coding",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/unknown-coding",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/empty-gzip.png",
+   "preview": null
+  },
+  {
+   "url": "{origin}/empty.png",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/empty.png",
+    "width": 0,
+    "height": 0,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/oversized",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/oversized",
+    "siteName": "127.0.0.1",
+    "title": "Big",
+    "description": null,
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/youtube-like",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/youtube-like",
+    "siteName": "127.0.0.1",
+    "title": "Found after 800 KB",
+    "description": null,
+    "image": {
+     "url": "https://{hostport}/images/a.png",
+     "width": 3,
+     "height": 2
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/images/a.png",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/a.png",
+    "width": 3,
+    "height": 2,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/b.gif",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/b.gif",
+    "width": 5,
+    "height": 4,
+    "gif": true
+   }
+  },
+  {
+   "url": "{origin}/images/vp8x.webp",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/vp8x.webp",
+    "width": 640,
+    "height": 480,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/vp8l.webp",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/vp8l.webp",
+    "width": 300,
+    "height": 200,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/vp8.webp",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/vp8.webp",
+    "width": 320,
+    "height": 240,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/small.jpg",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/small.jpg",
+    "height": 300,
+    "width": 400,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/anim-as-png",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/anim-as-png",
+    "width": 5,
+    "height": 4,
+    "gif": true
+   }
+  },
+  {
+   "url": "{origin}/images/drawing.svg",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/drawing.svg",
+    "width": 0,
+    "height": 0,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/truncated.png",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/truncated.png",
+    "width": 0,
+    "height": 0,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/upper",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/upper",
+    "width": 3,
+    "height": 2,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/images/gif-ct-png-bytes",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/gif-ct-png-bytes",
+    "width": 3,
+    "height": 2,
+    "gif": true
+   }
+  },
+  {
+   "url": "{origin}/images/octet",
+   "preview": null
+  },
+  {
+   "url": "{origin}/images/big-exif.jpg",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/big-exif.jpg",
+    "height": 1080,
+    "width": 1920,
+    "gif": false
+   }
+  },
+  {
+   "url": "{origin}/redirect/to-og",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/og-full.html",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/redirect/abs",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/twitter-only.html",
+    "siteName": "127.0.0.1",
+    "title": "Only a Twitter card",
+    "description": "Described by twitter:description.",
+    "image": {
+     "url": "https://cdn.example.net/thumb.jpg",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/redirect/relative/deeper",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/title-only.html",
+    "siteName": "127.0.0.1",
+    "title": "Plain <title> & a description",
+    "description": "From \"meta name=description\".",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/redirect/protocol-relative",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/entities.html",
+    "siteName": "127.0.0.1",
+    "title": "Tom & Jerry 's 😀 … &bogus; &#0; &#x110000; & end",
+    "description": "“Quoted” — €5 × 3 � ABC",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/redirect/chain/1",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/og-full.html",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/redirect/long/1",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/no-location",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/empty-location",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/304",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/og-full.html",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/redirect/300",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/title-only.html",
+    "siteName": "127.0.0.1",
+    "title": "Plain <title> & a description",
+    "description": "From \"meta name=description\".",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/redirect/to-private",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/to-mapped",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/to-metadata",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/to-localhost",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/to-userinfo",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/to-ftp",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/bad-location",
+   "preview": null
+  },
+  {
+   "url": "{origin}/redirect/to-image",
+   "preview": {
+    "kind": "image",
+    "url": "https://{hostport}/images/b.gif",
+    "width": 5,
+    "height": 4,
+    "gif": true
+   }
+  },
+  {
+   "url": "{origin}/redirect/latin1-location",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/caf%C3%83%C2%A9",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/status/404",
+   "preview": null
+  },
+  {
+   "url": "{origin}/status/500",
+   "preview": null
+  },
+  {
+   "url": "{origin}/status/204",
+   "preview": null
+  },
+  {
+   "url": "{origin}/status/203",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/status/203",
+    "siteName": "127.0.0.1",
+    "title": "Only a Twitter card",
+    "description": "Described by twitter:description.",
+    "image": {
+     "url": "https://cdn.example.net/thumb.jpg",
+     "width": 0,
+     "height": 0
+    },
+    "largeImage": false,
+    "color": null
+   }
+  },
+  {
+   "url": "{origin}/nothing-here",
+   "preview": null
+  },
+  {
+   "url": "{origin}/og-full.html?query=1#fragment",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/og-full.html?query=1#fragment",
+    "siteName": "Example News",
+    "title": "The Full Story",
+    "description": "Everything an OpenGraph card carries.",
+    "image": {
+     "url": "https://{hostport}/static/cover.png",
+     "width": 1200,
+     "height": 630
+    },
+    "largeImage": true,
+    "color": "#3a7bd5"
+   }
+  },
+  {
+   "url": "{origin}/oembed/video.json",
+   "preview": null
+  },
+  {
+   "url": "http://localhost:{port}/og-full.html",
+   "preview": null
+  },
+  {
+   "url": "http://user@{hostport}/og-full.html",
+   "preview": null
+  },
+  {
+   "url": "ftp://{hostport}/og-full.html",
+   "preview": null
+  },
+  {
+   "url": "not a url",
+   "preview": null
+  },
+  {
+   "url": "{origin}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "preview": null
+  },
+  {
+   "url": "  {origin}/title-only.html  ",
+   "preview": {
+    "kind": "site",
+    "url": "{origin}/title-only.html",
+    "siteName": "127.0.0.1",
+    "title": "Plain <title> & a description",
+    "description": "From \"meta name=description\".",
+    "image": null,
+    "largeImage": false,
+    "color": null
+   }
+  }
+ ],
+ "external": [
+  {
+   "url": "https://Example.com/a b",
+   "opened": "https://example.com/a%20b"
+  },
+  {
+   "url": "http://example.com",
+   "opened": "http://example.com/"
+  },
+  {
+   "url": "javascript:alert(1)",
+   "opened": null
+  },
+  {
+   "url": "file:///etc/passwd",
+   "opened": null
+  },
+  {
+   "url": "decibell://invite/ABCD",
+   "opened": null
+  },
+  {
+   "url": "mailto:a@b.c",
+   "opened": null
+  },
+  {
+   "url": "https://x.y/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "opened": null
+  },
+  {
+   "url": "https://x.y/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "opened": "https://x.y/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "url": "not a url",
+   "opened": null
+  },
+  {
+   "url": "  https://trim.me/  ",
+   "opened": "https://trim.me/"
+  },
+  {
+   "url": "HTTPS://UPPER.EXAMPLE/Path",
+   "opened": "https://upper.example/Path"
+  },
+  {
+   "url": "https://user:pw@example.com/",
+   "opened": "https://user:pw@example.com/"
+  }
+ ]
+}

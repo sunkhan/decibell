@@ -1,0 +1,4592 @@
+{
+ "searches": [
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "",
+   "pos": null,
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/trending?page=1&per_page=24&content_filter=low&format_filter=gif&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": null,
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "  cats  and dogs ",
+   "pos": "2",
+   "locale": "de_DE",
+   "unfiltered": true,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=2&per_page=24&content_filter=off&format_filter=gif&q=cats++and+dogs&locale=de",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "3"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "pos": "48",
+   "locale": "zh-Hans-CN",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=48&per_page=24&content_filter=low&format_filter=gif&q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&locale=ha",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "49"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+   "pos": "abc",
+   "locale": "fil-PH",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1&per_page=24&content_filter=low&format_filter=gif&q=%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80&locale=ph",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "q&a=1+2 / ü",
+   "pos": "-3",
+   "locale": "e",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1&per_page=24&content_filter=low&format_filter=gif&q=q%26a%3D1%2B2+%2F+%C3%BC",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "dog",
+   "pos": "1e3",
+   "locale": null,
+   "unfiltered": true,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1&per_page=24&content_filter=off&format_filter=gif&q=dog",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "dog",
+   "pos": "999999999999999999999999",
+   "locale": "en",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1e%2B24&per_page=24&content_filter=low&format_filter=gif&q=dog",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "1e+24"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "dog",
+   "pos": "0",
+   "locale": "EN-us",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1&per_page=24&content_filter=low&format_filter=gif&q=dog&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "dog",
+   "pos": "",
+   "locale": "",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=1&per_page=24&content_filter=low&format_filter=gif&q=dog",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "2"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "　trim﻿",
+   "pos": "7.9",
+   "locale": "eng-GBR",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=7&per_page=24&content_filter=low&format_filter=gif&q=trim&locale=gb",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "8"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-error-string.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "Single message"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-error-string.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "Single message"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-error-string.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "Single message"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-errors.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "Invalid API key; Rate limited"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-errors.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "Invalid API key; Rate limited"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-errors.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "Invalid API key; Rate limited"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-last.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-last.json",
+   "status": 401,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-last.json",
+   "status": 502,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-null-data.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-null-data.json",
+   "status": 401,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-null-data.json",
+   "status": 502,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-null-item.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "Cannot read properties of null (reading 'file')"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-null-item.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "Cannot read properties of null (reading 'file')"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-null-item.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "Cannot read properties of null (reading 'file')"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-result-not-bool.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-result-not-bool.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 401"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-result-not-bool.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 502"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "25"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 401,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "25"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/search?page=24&per_page=24&content_filter=low&format_filter=gif&q=cat&locale=us",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "klipy-search.json",
+   "status": 502,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "6123456789012345",
+       "title": "Cat Cute",
+       "url": "https://static.klipy.com/ii/abc/hd.gif",
+       "width": 498,
+       "height": 280,
+       "preview": "https://static.klipy.com/ii/abc/sm.gif",
+       "previewWidth": 220,
+       "previewHeight": 124
+      },
+      {
+       "id": "str-id",
+       "title": "",
+       "url": "https://static.klipy.com/ii/def/md.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://static.klipy.com/ii/def/xs.gif",
+       "previewWidth": 90,
+       "previewHeight": 60
+      },
+      {
+       "id": "slug-only",
+       "title": "",
+       "url": "https://static.klipy.com/ii/ghi/hd.gif",
+       "width": 480,
+       "height": 270.5,
+       "preview": "https://static.klipy.com/ii/ghi/hd.gif",
+       "previewWidth": 480,
+       "previewHeight": 270.5
+      },
+      {
+       "id": "0",
+       "title": "",
+       "url": "https://static.klipy.com/ii/zero/hd.gif",
+       "width": 0,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/zero/hd.gif",
+       "previewWidth": 0,
+       "previewHeight": 0
+      },
+      {
+       "id": "1.5e+21",
+       "title": "big id",
+       "url": "https://static.klipy.com/ii/big/hd.gif",
+       "width": 1e+300,
+       "height": 0,
+       "preview": "https://static.klipy.com/ii/big/hd.gif",
+       "previewWidth": 1e+300,
+       "previewHeight": 0
+      }
+     ],
+     "next": "25"
+    }
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/trending?page=1&per_page=24&content_filter=low&format_filter=gif",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "<html>Bad gateway</html>",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 502"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/trending?page=1&per_page=24&content_filter=low&format_filter=gif",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/trending?page=1&per_page=24&content_filter=low&format_filter=gif",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "null",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/trending?page=1&per_page=24&content_filter=low&format_filter=gif",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "[1,2]",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "klipy",
+   "key": "test key/é+1",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.klipy.com/api/v1/test%20key%2F%C3%A9%2B1/gifs/trending?page=1&per_page=24&content_filter=low&format_filter=gif",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "{\"meta\":{\"msg\":\"Too many\"}}",
+   "status": 429,
+   "result": {
+    "ok": false,
+    "error": "KLIPY returned HTTP 429"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "",
+   "pos": null,
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/trending?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": null,
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "  cats  and dogs ",
+   "pos": "2",
+   "locale": "de_DE",
+   "unfiltered": true,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=2&q=cats++and+dogs&lang=de",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "pos": "48",
+   "locale": "zh-Hans-CN",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=48&rating=r&q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&lang=zh",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+   "pos": "abc",
+   "locale": "fil-PH",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r&q=%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80%F0%9F%98%80&lang=fil",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "q&a=1+2 / ü",
+   "pos": "-3",
+   "locale": "e",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r&q=q%26a%3D1%2B2+%2F+%C3%BC",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "dog",
+   "pos": "1e3",
+   "locale": null,
+   "unfiltered": true,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=1&q=dog",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "dog",
+   "pos": "999999999999999999999999",
+   "locale": "en",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=1e%2B24&rating=r&q=dog&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "dog",
+   "pos": "0",
+   "locale": "EN-us",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r&q=dog&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "dog",
+   "pos": "",
+   "locale": "",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r&q=dog",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "　trim﻿",
+   "pos": "7.9",
+   "locale": "eng-GBR",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=7&rating=r&q=trim&lang=eng",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-401.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "GIPHY: Unauthorized"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-401.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "GIPHY: Unauthorized"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-401.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "GIPHY: Unauthorized"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-data-object.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-data-object.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 401"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-data-object.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 502"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-exhausted-total.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "id0",
+       "title": "t0",
+       "url": "https://media.giphy.com/0.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/0.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id1",
+       "title": "t1",
+       "url": "https://media.giphy.com/1.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/1.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id2",
+       "title": "t2",
+       "url": "https://media.giphy.com/2.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/2.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id3",
+       "title": "t3",
+       "url": "https://media.giphy.com/3.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/3.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id4",
+       "title": "t4",
+       "url": "https://media.giphy.com/4.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/4.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id5",
+       "title": "t5",
+       "url": "https://media.giphy.com/5.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/5.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id6",
+       "title": "t6",
+       "url": "https://media.giphy.com/6.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/6.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id7",
+       "title": "t7",
+       "url": "https://media.giphy.com/7.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/7.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id8",
+       "title": "t8",
+       "url": "https://media.giphy.com/8.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/8.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id9",
+       "title": "t9",
+       "url": "https://media.giphy.com/9.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/9.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id10",
+       "title": "t10",
+       "url": "https://media.giphy.com/10.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/10.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id11",
+       "title": "t11",
+       "url": "https://media.giphy.com/11.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/11.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id12",
+       "title": "t12",
+       "url": "https://media.giphy.com/12.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/12.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id13",
+       "title": "t13",
+       "url": "https://media.giphy.com/13.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/13.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id14",
+       "title": "t14",
+       "url": "https://media.giphy.com/14.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/14.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id15",
+       "title": "t15",
+       "url": "https://media.giphy.com/15.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/15.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id16",
+       "title": "t16",
+       "url": "https://media.giphy.com/16.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/16.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id17",
+       "title": "t17",
+       "url": "https://media.giphy.com/17.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/17.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id18",
+       "title": "t18",
+       "url": "https://media.giphy.com/18.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/18.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id19",
+       "title": "t19",
+       "url": "https://media.giphy.com/19.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/19.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id20",
+       "title": "t20",
+       "url": "https://media.giphy.com/20.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/20.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id21",
+       "title": "t21",
+       "url": "https://media.giphy.com/21.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/21.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id22",
+       "title": "t22",
+       "url": "https://media.giphy.com/22.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/22.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id23",
+       "title": "t23",
+       "url": "https://media.giphy.com/23.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/23.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      }
+     ],
+     "next": "48"
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-exhausted-total.json",
+   "status": 401,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "id0",
+       "title": "t0",
+       "url": "https://media.giphy.com/0.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/0.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id1",
+       "title": "t1",
+       "url": "https://media.giphy.com/1.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/1.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id2",
+       "title": "t2",
+       "url": "https://media.giphy.com/2.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/2.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id3",
+       "title": "t3",
+       "url": "https://media.giphy.com/3.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/3.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id4",
+       "title": "t4",
+       "url": "https://media.giphy.com/4.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/4.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id5",
+       "title": "t5",
+       "url": "https://media.giphy.com/5.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/5.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id6",
+       "title": "t6",
+       "url": "https://media.giphy.com/6.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/6.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id7",
+       "title": "t7",
+       "url": "https://media.giphy.com/7.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/7.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id8",
+       "title": "t8",
+       "url": "https://media.giphy.com/8.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/8.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id9",
+       "title": "t9",
+       "url": "https://media.giphy.com/9.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/9.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id10",
+       "title": "t10",
+       "url": "https://media.giphy.com/10.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/10.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id11",
+       "title": "t11",
+       "url": "https://media.giphy.com/11.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/11.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id12",
+       "title": "t12",
+       "url": "https://media.giphy.com/12.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/12.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id13",
+       "title": "t13",
+       "url": "https://media.giphy.com/13.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/13.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id14",
+       "title": "t14",
+       "url": "https://media.giphy.com/14.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/14.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id15",
+       "title": "t15",
+       "url": "https://media.giphy.com/15.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/15.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id16",
+       "title": "t16",
+       "url": "https://media.giphy.com/16.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/16.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id17",
+       "title": "t17",
+       "url": "https://media.giphy.com/17.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/17.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id18",
+       "title": "t18",
+       "url": "https://media.giphy.com/18.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/18.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id19",
+       "title": "t19",
+       "url": "https://media.giphy.com/19.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/19.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id20",
+       "title": "t20",
+       "url": "https://media.giphy.com/20.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/20.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id21",
+       "title": "t21",
+       "url": "https://media.giphy.com/21.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/21.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id22",
+       "title": "t22",
+       "url": "https://media.giphy.com/22.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/22.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id23",
+       "title": "t23",
+       "url": "https://media.giphy.com/23.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/23.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      }
+     ],
+     "next": "48"
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-exhausted-total.json",
+   "status": 502,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "id0",
+       "title": "t0",
+       "url": "https://media.giphy.com/0.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/0.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id1",
+       "title": "t1",
+       "url": "https://media.giphy.com/1.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/1.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id2",
+       "title": "t2",
+       "url": "https://media.giphy.com/2.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/2.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id3",
+       "title": "t3",
+       "url": "https://media.giphy.com/3.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/3.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id4",
+       "title": "t4",
+       "url": "https://media.giphy.com/4.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/4.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id5",
+       "title": "t5",
+       "url": "https://media.giphy.com/5.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/5.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id6",
+       "title": "t6",
+       "url": "https://media.giphy.com/6.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/6.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id7",
+       "title": "t7",
+       "url": "https://media.giphy.com/7.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/7.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id8",
+       "title": "t8",
+       "url": "https://media.giphy.com/8.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/8.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id9",
+       "title": "t9",
+       "url": "https://media.giphy.com/9.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/9.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id10",
+       "title": "t10",
+       "url": "https://media.giphy.com/10.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/10.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id11",
+       "title": "t11",
+       "url": "https://media.giphy.com/11.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/11.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id12",
+       "title": "t12",
+       "url": "https://media.giphy.com/12.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/12.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id13",
+       "title": "t13",
+       "url": "https://media.giphy.com/13.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/13.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id14",
+       "title": "t14",
+       "url": "https://media.giphy.com/14.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/14.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id15",
+       "title": "t15",
+       "url": "https://media.giphy.com/15.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/15.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id16",
+       "title": "t16",
+       "url": "https://media.giphy.com/16.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/16.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id17",
+       "title": "t17",
+       "url": "https://media.giphy.com/17.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/17.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id18",
+       "title": "t18",
+       "url": "https://media.giphy.com/18.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/18.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id19",
+       "title": "t19",
+       "url": "https://media.giphy.com/19.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/19.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id20",
+       "title": "t20",
+       "url": "https://media.giphy.com/20.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/20.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id21",
+       "title": "t21",
+       "url": "https://media.giphy.com/21.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/21.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id22",
+       "title": "t22",
+       "url": "https://media.giphy.com/22.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/22.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id23",
+       "title": "t23",
+       "url": "https://media.giphy.com/23.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/23.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      }
+     ],
+     "next": "48"
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-full-page.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "id0",
+       "title": "t0",
+       "url": "https://media.giphy.com/0.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/0.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id1",
+       "title": "t1",
+       "url": "https://media.giphy.com/1.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/1.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id2",
+       "title": "t2",
+       "url": "https://media.giphy.com/2.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/2.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id3",
+       "title": "t3",
+       "url": "https://media.giphy.com/3.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/3.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id4",
+       "title": "t4",
+       "url": "https://media.giphy.com/4.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/4.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id5",
+       "title": "t5",
+       "url": "https://media.giphy.com/5.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/5.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id6",
+       "title": "t6",
+       "url": "https://media.giphy.com/6.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/6.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id7",
+       "title": "t7",
+       "url": "https://media.giphy.com/7.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/7.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id8",
+       "title": "t8",
+       "url": "https://media.giphy.com/8.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/8.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id9",
+       "title": "t9",
+       "url": "https://media.giphy.com/9.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/9.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id10",
+       "title": "t10",
+       "url": "https://media.giphy.com/10.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/10.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id11",
+       "title": "t11",
+       "url": "https://media.giphy.com/11.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/11.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id12",
+       "title": "t12",
+       "url": "https://media.giphy.com/12.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/12.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id13",
+       "title": "t13",
+       "url": "https://media.giphy.com/13.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/13.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id14",
+       "title": "t14",
+       "url": "https://media.giphy.com/14.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/14.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id15",
+       "title": "t15",
+       "url": "https://media.giphy.com/15.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/15.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id16",
+       "title": "t16",
+       "url": "https://media.giphy.com/16.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/16.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id17",
+       "title": "t17",
+       "url": "https://media.giphy.com/17.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/17.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id18",
+       "title": "t18",
+       "url": "https://media.giphy.com/18.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/18.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id19",
+       "title": "t19",
+       "url": "https://media.giphy.com/19.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/19.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id20",
+       "title": "t20",
+       "url": "https://media.giphy.com/20.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/20.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id21",
+       "title": "t21",
+       "url": "https://media.giphy.com/21.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/21.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id22",
+       "title": "t22",
+       "url": "https://media.giphy.com/22.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/22.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id23",
+       "title": "t23",
+       "url": "https://media.giphy.com/23.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/23.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      }
+     ],
+     "next": "48"
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-full-page.json",
+   "status": 401,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "id0",
+       "title": "t0",
+       "url": "https://media.giphy.com/0.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/0.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id1",
+       "title": "t1",
+       "url": "https://media.giphy.com/1.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/1.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id2",
+       "title": "t2",
+       "url": "https://media.giphy.com/2.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/2.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id3",
+       "title": "t3",
+       "url": "https://media.giphy.com/3.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/3.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id4",
+       "title": "t4",
+       "url": "https://media.giphy.com/4.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/4.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id5",
+       "title": "t5",
+       "url": "https://media.giphy.com/5.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/5.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id6",
+       "title": "t6",
+       "url": "https://media.giphy.com/6.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/6.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id7",
+       "title": "t7",
+       "url": "https://media.giphy.com/7.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/7.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id8",
+       "title": "t8",
+       "url": "https://media.giphy.com/8.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/8.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id9",
+       "title": "t9",
+       "url": "https://media.giphy.com/9.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/9.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id10",
+       "title": "t10",
+       "url": "https://media.giphy.com/10.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/10.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id11",
+       "title": "t11",
+       "url": "https://media.giphy.com/11.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/11.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id12",
+       "title": "t12",
+       "url": "https://media.giphy.com/12.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/12.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id13",
+       "title": "t13",
+       "url": "https://media.giphy.com/13.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/13.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id14",
+       "title": "t14",
+       "url": "https://media.giphy.com/14.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/14.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id15",
+       "title": "t15",
+       "url": "https://media.giphy.com/15.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/15.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id16",
+       "title": "t16",
+       "url": "https://media.giphy.com/16.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/16.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id17",
+       "title": "t17",
+       "url": "https://media.giphy.com/17.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/17.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id18",
+       "title": "t18",
+       "url": "https://media.giphy.com/18.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/18.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id19",
+       "title": "t19",
+       "url": "https://media.giphy.com/19.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/19.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id20",
+       "title": "t20",
+       "url": "https://media.giphy.com/20.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/20.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id21",
+       "title": "t21",
+       "url": "https://media.giphy.com/21.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/21.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id22",
+       "title": "t22",
+       "url": "https://media.giphy.com/22.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/22.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id23",
+       "title": "t23",
+       "url": "https://media.giphy.com/23.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/23.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      }
+     ],
+     "next": "48"
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-full-page.json",
+   "status": 502,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "id0",
+       "title": "t0",
+       "url": "https://media.giphy.com/0.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/0.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id1",
+       "title": "t1",
+       "url": "https://media.giphy.com/1.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/1.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id2",
+       "title": "t2",
+       "url": "https://media.giphy.com/2.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/2.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id3",
+       "title": "t3",
+       "url": "https://media.giphy.com/3.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/3.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id4",
+       "title": "t4",
+       "url": "https://media.giphy.com/4.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/4.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id5",
+       "title": "t5",
+       "url": "https://media.giphy.com/5.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/5.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id6",
+       "title": "t6",
+       "url": "https://media.giphy.com/6.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/6.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id7",
+       "title": "t7",
+       "url": "https://media.giphy.com/7.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/7.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id8",
+       "title": "t8",
+       "url": "https://media.giphy.com/8.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/8.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id9",
+       "title": "t9",
+       "url": "https://media.giphy.com/9.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/9.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id10",
+       "title": "t10",
+       "url": "https://media.giphy.com/10.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/10.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id11",
+       "title": "t11",
+       "url": "https://media.giphy.com/11.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/11.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id12",
+       "title": "t12",
+       "url": "https://media.giphy.com/12.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/12.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id13",
+       "title": "t13",
+       "url": "https://media.giphy.com/13.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/13.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id14",
+       "title": "t14",
+       "url": "https://media.giphy.com/14.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/14.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id15",
+       "title": "t15",
+       "url": "https://media.giphy.com/15.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/15.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id16",
+       "title": "t16",
+       "url": "https://media.giphy.com/16.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/16.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id17",
+       "title": "t17",
+       "url": "https://media.giphy.com/17.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/17.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id18",
+       "title": "t18",
+       "url": "https://media.giphy.com/18.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/18.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id19",
+       "title": "t19",
+       "url": "https://media.giphy.com/19.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/19.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id20",
+       "title": "t20",
+       "url": "https://media.giphy.com/20.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/20.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id21",
+       "title": "t21",
+       "url": "https://media.giphy.com/21.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/21.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id22",
+       "title": "t22",
+       "url": "https://media.giphy.com/22.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/22.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      },
+      {
+       "id": "id23",
+       "title": "t23",
+       "url": "https://media.giphy.com/23.gif",
+       "width": 100,
+       "height": 100,
+       "preview": "https://media.giphy.com/23.gif",
+       "previewWidth": 100,
+       "previewHeight": 100
+      }
+     ],
+     "next": "48"
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-no-meta.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-no-meta.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 401"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-no-meta.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 502"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-null-item.json",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "Cannot read properties of null (reading 'images')"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-null-item.json",
+   "status": 401,
+   "result": {
+    "ok": false,
+    "error": "Cannot read properties of null (reading 'images')"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-null-item.json",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "Cannot read properties of null (reading 'images')"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 200,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 401,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "cat",
+   "pos": "24",
+   "locale": "en-US",
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/search?api_key=giphy+key%26%3D%3F&limit=24&offset=24&rating=r&q=cat&lang=en",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answer": "giphy-search.json",
+   "status": 502,
+   "result": {
+    "ok": true,
+    "page": {
+     "results": [
+      {
+       "id": "abc123",
+       "title": "Cat GIF",
+       "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g",
+       "width": 480,
+       "height": 270,
+       "preview": "https://media2.giphy.com/media/abc123/200w.gif?cid=x",
+       "previewWidth": 200,
+       "previewHeight": 113
+      },
+      {
+       "id": "def456",
+       "title": "alt wins",
+       "url": "https://media.giphy.com/d.gif",
+       "width": 300,
+       "height": 200,
+       "preview": "https://media.giphy.com/d.gif",
+       "previewWidth": 300,
+       "previewHeight": 200
+      },
+      {
+       "id": "ghi789",
+       "title": "",
+       "url": "https://media.giphy.com/o.gif",
+       "width": 10,
+       "height": 10,
+       "preview": "https://media.giphy.com/p.gif",
+       "previewWidth": 5,
+       "previewHeight": 5
+      }
+     ],
+     "next": null
+    }
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/trending?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "<html>Bad gateway</html>",
+   "status": 502,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 502"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/trending?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/trending?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "null",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/trending?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "[1,2]",
+   "status": 200,
+   "result": {
+    "ok": false,
+    "error": "GIPHY returned HTTP 200"
+   }
+  },
+  {
+   "provider": "giphy",
+   "key": "giphy key&=?",
+   "query": "",
+   "pos": null,
+   "locale": null,
+   "unfiltered": false,
+   "request": {
+    "url": "https://api.giphy.com/v1/gifs/trending?api_key=giphy+key%26%3D%3F&limit=24&offset=0&rating=r",
+    "headers": {
+     "Accept": "application/json"
+    },
+    "timeout": true
+   },
+   "answerText": "{\"meta\":{\"msg\":\"Too many\"}}",
+   "status": 429,
+   "result": {
+    "ok": false,
+    "error": "GIPHY: Too many"
+   }
+  }
+ ],
+ "configs": [
+  {
+   "kind": "env",
+   "envKey": " k1 ",
+   "envProvider": " GIPHY ",
+   "file": null,
+   "status": {
+    "configured": true,
+    "provider": "giphy"
+   },
+   "key": "k1",
+   "notConfigured": false
+  },
+  {
+   "kind": "env",
+   "envKey": "k2",
+   "envProvider": null,
+   "file": null,
+   "status": {
+    "configured": true,
+    "provider": "klipy"
+   },
+   "key": "k2",
+   "notConfigured": false
+  },
+  {
+   "kind": "env",
+   "envKey": "k3",
+   "envProvider": "tenor",
+   "file": null,
+   "status": {
+    "configured": true,
+    "provider": "klipy"
+   },
+   "key": "k3",
+   "notConfigured": false
+  },
+  {
+   "kind": "env",
+   "envKey": "   ",
+   "envProvider": "giphy",
+   "file": "{\"provider\":\"giphy\",\"key\":\"file-key\"}",
+   "status": {
+    "configured": true,
+    "provider": "giphy"
+   },
+   "key": "file-key",
+   "notConfigured": false
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "﻿{\"provider\":\"KLIPY\",\"key\":\"  abc  \"}",
+   "status": {
+    "configured": true,
+    "provider": "klipy"
+   },
+   "key": "abc",
+   "notConfigured": false
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "{\"provider\":\"giphy\",\"key\":\"g\"}",
+   "status": {
+    "configured": true,
+    "provider": "giphy"
+   },
+   "key": "g",
+   "notConfigured": false
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "{\"provider\":\"giphy\",\"key\":\"\"}",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "{\"provider\":\"tenor\",\"key\":\"t\"}",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "{\"provider\":\" klipy\",\"key\":\"k\"}",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "null",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "[]",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "not json",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": "{\"provider\":\"klipy\",\"key\":5}",
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  },
+  {
+   "kind": "file",
+   "envKey": null,
+   "envProvider": null,
+   "file": null,
+   "status": {
+    "configured": false,
+    "provider": null
+   },
+   "key": null,
+   "notConfigured": true
+  }
+ ],
+ "localeParts": [
+  {
+   "in": "en-US",
+   "out": {
+    "lang": "en",
+    "region": "us"
+   }
+  },
+  {
+   "in": "en",
+   "out": {
+    "lang": "en",
+    "region": null
+   }
+  },
+  {
+   "in": "e",
+   "out": {
+    "lang": null,
+    "region": null
+   }
+  },
+  {
+   "in": "eng-GBR",
+   "out": {
+    "lang": "eng",
+    "region": "gb"
+   }
+  },
+  {
+   "in": "en_gb",
+   "out": {
+    "lang": "en",
+    "region": "gb"
+   }
+  },
+  {
+   "in": "zh-Hans-CN",
+   "out": {
+    "lang": "zh",
+    "region": "ha"
+   }
+  },
+  {
+   "in": "es-419",
+   "out": {
+    "lang": "es",
+    "region": null
+   }
+  },
+  {
+   "in": "fil-PH",
+   "out": {
+    "lang": "fil",
+    "region": "ph"
+   }
+  },
+  {
+   "in": "EN-us",
+   "out": {
+    "lang": "en",
+    "region": "us"
+   }
+  },
+  {
+   "in": "",
+   "out": {
+    "lang": null,
+    "region": null
+   }
+  },
+  {
+   "in": "1en",
+   "out": {
+    "lang": null,
+    "region": null
+   }
+  },
+  {
+   "in": "en-",
+   "out": {
+    "lang": "en",
+    "region": null
+   }
+  },
+  {
+   "in": "en-U",
+   "out": {
+    "lang": "en",
+    "region": null
+   }
+  },
+  {
+   "in": "abcd-ef",
+   "out": {
+    "lang": "abc",
+    "region": null
+   }
+  }
+ ],
+ "cursorInt": [
+  {
+   "in": null,
+   "out": 5
+  },
+  {
+   "in": "",
+   "out": 5
+  },
+  {
+   "in": "0",
+   "out": 0
+  },
+  {
+   "in": "-0",
+   "out": 0
+  },
+  {
+   "in": "7",
+   "out": 7
+  },
+  {
+   "in": "7.9",
+   "out": 7
+  },
+  {
+   "in": "1e3",
+   "out": 1
+  },
+  {
+   "in": "abc",
+   "out": 5
+  },
+  {
+   "in": "-3",
+   "out": 5
+  },
+  {
+   "in": " 12",
+   "out": 12
+  },
+  {
+   "in": "999999999999999999999999",
+   "out": 1e+24
+  },
+  {
+   "in": "9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+   "out": 5
+  }
+ ]
+}

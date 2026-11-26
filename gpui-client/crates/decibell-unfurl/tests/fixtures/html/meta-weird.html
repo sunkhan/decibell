@@ -1,0 +1,18 @@
+<html><head>
+<META PROPERTY=og:title CONTENT=Unquoted/value>
+<meta content='single "quoted" first' property='og:description'>
+<meta property="" name="description" content="empty property is a key, so skipped">
+<meta name="author" content="first wins">
+<meta name="AUTHOR" content="second loses">
+<meta itemprop="name" content="from itemprop">
+<meta property="og:site_name" content="a > b">
+<metadata property="og:type" content="video">
+<meta
+   name="keywords"
+   content="multi
+line">
+<meta property="og:image:alt" content>
+<meta property=" twitter:card " content=" PLAYER ">
+<meta property="og:image" content="https://user:pw@cdn.example.com/x.png">
+<meta property="og:image:url" content="https://cdn.example.com/after-userinfo.png">
+</head></html>

@@ -1,0 +1,106 @@
+{
+ "data": [
+  {
+   "type": "gif",
+   "id": "abc123",
+   "title": "Cat GIF",
+   "alt_text": "a cat",
+   "images": {
+    "original": {
+     "height": "270",
+     "width": "480",
+     "size": "1000",
+     "url": "https://media2.giphy.com/media/abc123/giphy.gif?cid=x&rid=giphy.gif&ct=g"
+    },
+    "fixed_width": {
+     "height": "113",
+     "width": "200",
+     "size": "1000",
+     "url": "https://media2.giphy.com/media/abc123/200w.gif?cid=x"
+    },
+    "downsized": {
+     "height": "270",
+     "width": "480",
+     "size": "1000",
+     "url": "https://media2.giphy.com/media/abc123/giphy-downsized.gif"
+    },
+    "preview_gif": {
+     "height": "56",
+     "width": "100",
+     "size": "1000",
+     "url": "https://media2.giphy.com/media/abc123/giphy-preview.gif"
+    }
+   }
+  },
+  {
+   "id": "def456",
+   "title": "",
+   "alt_text": "alt wins",
+   "images": {
+    "downsized": {
+     "url": "https://media.giphy.com/d.gif",
+     "width": 300,
+     "height": "200"
+    }
+   }
+  },
+  {
+   "id": "ghi789",
+   "alt_text": 5,
+   "images": {
+    "original": {
+     "height": "10",
+     "width": "10",
+     "size": "1000",
+     "url": "https://media.giphy.com/o.gif"
+    },
+    "preview_gif": {
+     "height": "5",
+     "width": "5",
+     "size": "1000",
+     "url": "https://media.giphy.com/p.gif"
+    }
+   }
+  },
+  {
+   "id": 12345,
+   "images": {
+    "original": {
+     "height": "1",
+     "width": "1",
+     "size": "1000",
+     "url": "https://media.giphy.com/x.gif"
+    }
+   }
+  },
+  {
+   "id": "noimages"
+  },
+  {
+   "id": "nullimages",
+   "images": null
+  },
+  {
+   "id": "httponly",
+   "images": {
+    "original": {
+     "height": "1",
+     "width": "1",
+     "size": "1000",
+     "url": "http://media.giphy.com/x.gif"
+    }
+   }
+  },
+  7
+ ],
+ "pagination": {
+  "total_count": 5000,
+  "count": 24,
+  "offset": 0
+ },
+ "meta": {
+  "status": 200,
+  "msg": "OK",
+  "response_id": "r"
+ }
+}

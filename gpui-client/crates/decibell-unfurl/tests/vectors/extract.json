@@ -1,0 +1,1852 @@
+{
+ "pages": [
+  {
+   "file": "bogus-charset.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta charset=\"x-bogus\"><title>Ünïcödé fallback</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Ünïcödé fallback",
+    "oembed": null
+   }
+  },
+  {
+   "file": "charset-late.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><!--xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx--><meta charset=\"iso-8859-1\"><title>Late meta �</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Late meta �",
+    "oembed": null
+   }
+  },
+  {
+   "file": "color-invalid.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta name=\"theme-color\" content=\"rgb(1,2,3)\">\n<meta property=\"og:title\" content=\"Invalid color\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "theme-color": "rgb(1,2,3)",
+     "og:title": "Invalid color"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "color-invalid.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta name=\"theme-color\" content=\"rgb(1,2,3)\">\n<meta property=\"og:title\" content=\"Invalid color\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "theme-color": "rgb(1,2,3)",
+     "og:title": "Invalid color"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "color-variants.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta name=\"theme-color\" content=\"  #ABC  \">\n<meta property=\"og:title\" content=\"Short color\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "theme-color": "  #ABC  ",
+     "og:title": "Short color"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "color-variants.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta name=\"theme-color\" content=\"  #ABC  \">\n<meta property=\"og:title\" content=\"Short color\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "theme-color": "  #ABC  ",
+     "og:title": "Short color"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "cp1252-meta.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta charset=\"windows-1252\"><title>Café  5</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Café  5",
+    "oembed": null
+   }
+  },
+  {
+   "file": "entities.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Tom &amp; Jerry &#39;s &#x1F600; &hellip; &bogus; &#0; &#x110000; &AMP; &NbSp;end\">\n<meta property=\"og:description\" content=\"&ldquo;Quoted&rdquo; &mdash; &euro;5 &times; 3 &#xD800; &#65;&#x42;&#X43;\">\n<title>ignored</title>\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Tom & Jerry 's 😀 … &bogus; &#0; &#x110000; &  end",
+     "og:description": "“Quoted” — €5 × 3 � ABC"
+    },
+    "title": "ignored",
+    "oembed": null
+   }
+  },
+  {
+   "file": "entities.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Tom &amp; Jerry &#39;s &#x1F600; &hellip; &bogus; &#0; &#x110000; &AMP; &NbSp;end\">\n<meta property=\"og:description\" content=\"&ldquo;Quoted&rdquo; &mdash; &euro;5 &times; 3 &#xD800; &#65;&#x42;&#X43;\">\n<title>ignored</title>\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Tom & Jerry 's 😀 … &bogus; &#0; &#x110000; &  end",
+     "og:description": "“Quoted” — €5 × 3 � ABC"
+    },
+    "title": "ignored",
+    "oembed": null
+   }
+  },
+  {
+   "file": "invalid-utf8.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><title>Bad �� bytes �</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Bad �� bytes �",
+    "oembed": null
+   }
+  },
+  {
+   "file": "koi8-http-equiv.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=koi8-r\"><title>Привет, мир</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Привет, мир",
+    "oembed": null
+   }
+  },
+  {
+   "file": "latin1-header.html",
+   "contentType": "text/html; charset=iso-8859-1",
+   "decoded": "<html><head><meta charset=\"utf-8\"><title>Header wins:  é</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Header wins:  é",
+    "oembed": null
+   }
+  },
+  {
+   "file": "latin1-header.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta charset=\"utf-8\"><title>Header wins: � �</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Header wins: � �",
+    "oembed": null
+   }
+  },
+  {
+   "file": "long-text.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head><meta property=\"og:title\" content=\"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀tail\">\n<meta property=\"og:description\" content=\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word end\">\n<meta property=\"og:site_name\" content=\"SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀tail",
+     "og:description": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word end",
+     "og:site_name": "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "long-text.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta property=\"og:title\" content=\"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀tail\">\n<meta property=\"og:description\" content=\"word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word end\">\n<meta property=\"og:site_name\" content=\"SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀tail",
+     "og:description": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word end",
+     "og:site_name": "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "meta-weird.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<META PROPERTY=og:title CONTENT=Unquoted/value>\n<meta content='single \"quoted\" first' property='og:description'>\n<meta property=\"\" name=\"description\" content=\"empty property is a key, so skipped\">\n<meta name=\"author\" content=\"first wins\">\n<meta name=\"AUTHOR\" content=\"second loses\">\n<meta itemprop=\"name\" content=\"from itemprop\">\n<meta property=\"og:site_name\" content=\"a > b\">\n<metadata property=\"og:type\" content=\"video\">\n<meta\n   name=\"keywords\"\n   content=\"multi\nline\">\n<meta property=\"og:image:alt\" content>\n<meta property=\" twitter:card \" content=\" PLAYER \">\n<meta property=\"og:image\" content=\"https://user:pw@cdn.example.com/x.png\">\n<meta property=\"og:image:url\" content=\"https://cdn.example.com/after-userinfo.png\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Unquoted/value",
+     "og:description": "single \"quoted\" first",
+     "author": "first wins",
+     "name": "from itemprop",
+     "og:site_name": "",
+     "keywords": "multi\nline",
+     "og:image:alt": "",
+     "twitter:card": " PLAYER ",
+     "og:image": "https://user:pw@cdn.example.com/x.png",
+     "og:image:url": "https://cdn.example.com/after-userinfo.png"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "meta-weird.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<META PROPERTY=og:title CONTENT=Unquoted/value>\n<meta content='single \"quoted\" first' property='og:description'>\n<meta property=\"\" name=\"description\" content=\"empty property is a key, so skipped\">\n<meta name=\"author\" content=\"first wins\">\n<meta name=\"AUTHOR\" content=\"second loses\">\n<meta itemprop=\"name\" content=\"from itemprop\">\n<meta property=\"og:site_name\" content=\"a > b\">\n<metadata property=\"og:type\" content=\"video\">\n<meta\n   name=\"keywords\"\n   content=\"multi\nline\">\n<meta property=\"og:image:alt\" content>\n<meta property=\" twitter:card \" content=\" PLAYER \">\n<meta property=\"og:image\" content=\"https://user:pw@cdn.example.com/x.png\">\n<meta property=\"og:image:url\" content=\"https://cdn.example.com/after-userinfo.png\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Unquoted/value",
+     "og:description": "single \"quoted\" first",
+     "author": "first wins",
+     "name": "from itemprop",
+     "og:site_name": "",
+     "keywords": "multi\nline",
+     "og:image:alt": "",
+     "twitter:card": " PLAYER ",
+     "og:image": "https://user:pw@cdn.example.com/x.png",
+     "og:image:url": "https://cdn.example.com/after-userinfo.png"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "no-metadata.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/a.css\"></head><body>Nothing to show.</body></html>\n",
+   "page": {
+    "meta": {},
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "no-metadata.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/a.css\"></head><body>Nothing to show.</body></html>\n",
+   "page": {
+    "meta": {},
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "oembed-404.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<title>oEmbed endpoint is gone</title>\n<link type=\"application/json+oembed\" href=\"/missing.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed endpoint is gone",
+    "oembed": "/missing.json"
+   }
+  },
+  {
+   "file": "oembed-404.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<title>oEmbed endpoint is gone</title>\n<link type=\"application/json+oembed\" href=\"/missing.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed endpoint is gone",
+    "oembed": "/missing.json"
+   }
+  },
+  {
+   "file": "oembed-array.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<title>oEmbed answers an array</title>\n<link type=\"application/json+oembed\" href=\"/oembed/array.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed answers an array",
+    "oembed": "/oembed/array.json"
+   }
+  },
+  {
+   "file": "oembed-array.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<title>oEmbed answers an array</title>\n<link type=\"application/json+oembed\" href=\"/oembed/array.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed answers an array",
+    "oembed": "/oembed/array.json"
+   }
+  },
+  {
+   "file": "oembed-bad-href.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<title>oEmbed href is not a URL</title>\n<link type=\"application/json+oembed\" href=\"http://[bad\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed href is not a URL",
+    "oembed": "http://[bad"
+   }
+  },
+  {
+   "file": "oembed-bad-href.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<title>oEmbed href is not a URL</title>\n<link type=\"application/json+oembed\" href=\"http://[bad\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed href is not a URL",
+    "oembed": "http://[bad"
+   }
+  },
+  {
+   "file": "oembed-blank.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<link type=\"application/json+oembed\" href=\"/oembed/blank.json\">\n<meta property=\"og:description\" content=\"Has a description.\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:description": "Has a description."
+    },
+    "title": null,
+    "oembed": "/oembed/blank.json"
+   }
+  },
+  {
+   "file": "oembed-blank.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<link type=\"application/json+oembed\" href=\"/oembed/blank.json\">\n<meta property=\"og:description\" content=\"Has a description.\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:description": "Has a description."
+    },
+    "title": null,
+    "oembed": "/oembed/blank.json"
+   }
+  },
+  {
+   "file": "oembed-discovery.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<link rel=\"alternate\" type=\"Application/JSON+oEmbed\" href=\"/oembed/video.json?url=https%3A%2F%2Fexample.com%2Fv&amp;format=json\" title=\"oEmbed\">\n<meta name=\"description\" content=\"Page description wins over author_name.\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "description": "Page description wins over author_name."
+    },
+    "title": null,
+    "oembed": "/oembed/video.json?url=https%3A%2F%2Fexample.com%2Fv&format=json"
+   }
+  },
+  {
+   "file": "oembed-discovery.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<link rel=\"alternate\" type=\"Application/JSON+oEmbed\" href=\"/oembed/video.json?url=https%3A%2F%2Fexample.com%2Fv&amp;format=json\" title=\"oEmbed\">\n<meta name=\"description\" content=\"Page description wins over author_name.\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "description": "Page description wins over author_name."
+    },
+    "title": null,
+    "oembed": "/oembed/video.json?url=https%3A%2F%2Fexample.com%2Fv&format=json"
+   }
+  },
+  {
+   "file": "oembed-not-json.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<title>oEmbed answers HTML</title>\n<link type=\"application/json+oembed\" href=\"/og-full.html\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed answers HTML",
+    "oembed": "/og-full.html"
+   }
+  },
+  {
+   "file": "oembed-not-json.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<title>oEmbed answers HTML</title>\n<link type=\"application/json+oembed\" href=\"/og-full.html\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed answers HTML",
+    "oembed": "/og-full.html"
+   }
+  },
+  {
+   "file": "oembed-null.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<title>oEmbed answers null</title>\n<link type=\"application/json+oembed\" href=\"/oembed/null.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed answers null",
+    "oembed": "/oembed/null.json"
+   }
+  },
+  {
+   "file": "oembed-null.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<title>oEmbed answers null</title>\n<link type=\"application/json+oembed\" href=\"/oembed/null.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "oEmbed answers null",
+    "oembed": "/oembed/null.json"
+   }
+  },
+  {
+   "file": "oembed-partial.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"OG title stays\">\n<link type=\"application/json+oembed\" href=\"/oembed/video.json\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "OG title stays"
+    },
+    "title": null,
+    "oembed": "/oembed/video.json"
+   }
+  },
+  {
+   "file": "oembed-partial.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"OG title stays\">\n<link type=\"application/json+oembed\" href=\"/oembed/video.json\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "OG title stays"
+    },
+    "title": null,
+    "oembed": "/oembed/video.json"
+   }
+  },
+  {
+   "file": "oembed-rich-noimage.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<title>Page title</title>\n<link type=\"application/json+oembed\" href=\"/oembed/rich.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "Page title",
+    "oembed": "/oembed/rich.json"
+   }
+  },
+  {
+   "file": "oembed-rich-noimage.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<title>Page title</title>\n<link type=\"application/json+oembed\" href=\"/oembed/rich.json\">\n</head></html>\n",
+   "page": {
+    "meta": {},
+    "title": "Page title",
+    "oembed": "/oembed/rich.json"
+   }
+  },
+  {
+   "file": "og-full.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Fallback title (not used)</title>\n  <meta property=\"og:title\" content=\"  The Full   Story  \">\n  <meta property=\"og:description\" content=\"Everything an OpenGraph card carries.\">\n  <meta property=\"og:site_name\" content=\"Example News\">\n  <meta property=\"og:image\" content=\"/static/cover.png\">\n  <meta property=\"og:image:width\" content=\"1200\">\n  <meta property=\"og:image:height\" content=\"630\">\n  <meta name=\"twitter:card\" content=\"summary_large_image\">\n  <meta name=\"twitter:title\" content=\"Twitter title loses to OG\">\n  <meta name=\"theme-color\" content=\"#3A7BD5\">\n</head>\n<body><p>body</p></body>\n</html>\n",
+   "page": {
+    "meta": {
+     "og:title": "  The Full   Story  ",
+     "og:description": "Everything an OpenGraph card carries.",
+     "og:site_name": "Example News",
+     "og:image": "/static/cover.png",
+     "og:image:width": "1200",
+     "og:image:height": "630",
+     "twitter:card": "summary_large_image",
+     "twitter:title": "Twitter title loses to OG",
+     "theme-color": "#3A7BD5"
+    },
+    "title": "Fallback title (not used)",
+    "oembed": null
+   }
+  },
+  {
+   "file": "og-full.html",
+   "contentType": "text/html",
+   "decoded": "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Fallback title (not used)</title>\n  <meta property=\"og:title\" content=\"  The Full   Story  \">\n  <meta property=\"og:description\" content=\"Everything an OpenGraph card carries.\">\n  <meta property=\"og:site_name\" content=\"Example News\">\n  <meta property=\"og:image\" content=\"/static/cover.png\">\n  <meta property=\"og:image:width\" content=\"1200\">\n  <meta property=\"og:image:height\" content=\"630\">\n  <meta name=\"twitter:card\" content=\"summary_large_image\">\n  <meta name=\"twitter:title\" content=\"Twitter title loses to OG\">\n  <meta name=\"theme-color\" content=\"#3A7BD5\">\n</head>\n<body><p>body</p></body>\n</html>\n",
+   "page": {
+    "meta": {
+     "og:title": "  The Full   Story  ",
+     "og:description": "Everything an OpenGraph card carries.",
+     "og:site_name": "Example News",
+     "og:image": "/static/cover.png",
+     "og:image:width": "1200",
+     "og:image:height": "630",
+     "twitter:card": "summary_large_image",
+     "twitter:title": "Twitter title loses to OG",
+     "theme-color": "#3A7BD5"
+    },
+    "title": "Fallback title (not used)",
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-404.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Image is gone\">\n<meta property=\"og:image\" content=\"/missing.png\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Image is gone",
+     "og:image": "/missing.png"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-404.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Image is gone\">\n<meta property=\"og:image\" content=\"/missing.png\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Image is gone",
+     "og:image": "/missing.png"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-big-exif.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"JPEG whose SOF is past 64 KiB\">\n<meta property=\"og:image\" content=\"/images/big-exif.jpg\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "JPEG whose SOF is past 64 KiB",
+     "og:image": "/images/big-exif.jpg"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-big-exif.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"JPEG whose SOF is past 64 KiB\">\n<meta property=\"og:image\" content=\"/images/big-exif.jpg\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "JPEG whose SOF is past 64 KiB",
+     "og:image": "/images/big-exif.jpg"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-needed.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Image without declared size\">\n<meta property=\"og:image\" content=\"/images/a.png\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Image without declared size",
+     "og:image": "/images/a.png"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-needed.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Image without declared size\">\n<meta property=\"og:image\" content=\"/images/a.png\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Image without declared size",
+     "og:image": "/images/a.png"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-not-image.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"og:image answers HTML\">\n<meta property=\"og:image\" content=\"/og-full.html\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "og:image answers HTML",
+     "og:image": "/og-full.html"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-not-image.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"og:image answers HTML\">\n<meta property=\"og:image\" content=\"/og-full.html\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "og:image answers HTML",
+     "og:image": "/og-full.html"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-partial.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Only a width is declared\">\n<meta property=\"og:image\" content=\"/images/b.gif\">\n<meta property=\"og:image:width\" content=\"999\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Only a width is declared",
+     "og:image": "/images/b.gif",
+     "og:image:width": "999"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-partial.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Only a width is declared\">\n<meta property=\"og:image\" content=\"/images/b.gif\">\n<meta property=\"og:image:width\" content=\"999\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Only a width is declared",
+     "og:image": "/images/b.gif",
+     "og:image:width": "999"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-redirect.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"og:image redirects\">\n<meta property=\"og:image\" content=\"/redirect/to-jpeg\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "og:image redirects",
+     "og:image": "/redirect/to-jpeg"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-redirect.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"og:image redirects\">\n<meta property=\"og:image\" content=\"/redirect/to-jpeg\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "og:image redirects",
+     "og:image": "/redirect/to-jpeg"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-webp.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"WebP lossless\">\n<meta property=\"og:image\" content=\"/images/vp8l.webp\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "WebP lossless",
+     "og:image": "/images/vp8l.webp"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "probe-webp.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"WebP lossless\">\n<meta property=\"og:image\" content=\"/images/vp8l.webp\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "WebP lossless",
+     "og:image": "/images/vp8l.webp"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "relative-image.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Relative image\">\n<meta property=\"og:image\" content=\"  ../img/photo one.png?x=1#frag  \">\n<meta property=\"og:image:width\" content=\" 800px\">\n<meta property=\"og:image:height\" content=\"600.9\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Relative image",
+     "og:image": "  ../img/photo one.png?x=1#frag  ",
+     "og:image:width": " 800px",
+     "og:image:height": "600.9"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "relative-image.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"Relative image\">\n<meta property=\"og:image\" content=\"  ../img/photo one.png?x=1#frag  \">\n<meta property=\"og:image:width\" content=\" 800px\">\n<meta property=\"og:image:height\" content=\"600.9\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "Relative image",
+     "og:image": "  ../img/photo one.png?x=1#frag  ",
+     "og:image:width": " 800px",
+     "og:image:height": "600.9"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "replacement-charset.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta charset=\"iso-2022-kr\"><title>Replacement label → UTF-8</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "Replacement label → UTF-8",
+    "oembed": null
+   }
+  },
+  {
+   "file": "secure-url-bad.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"A bad secure_url hides a good og:image\">\n<meta property=\"og:image:secure_url\" content=\"ftp://files.example.com/a.png\">\n<meta property=\"og:image\" content=\"https://cdn.example.com/good.png\">\n<meta property=\"og:image:width\" content=\"10\">\n<meta property=\"og:image:height\" content=\"10\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "A bad secure_url hides a good og:image",
+     "og:image:secure_url": "ftp://files.example.com/a.png",
+     "og:image": "https://cdn.example.com/good.png",
+     "og:image:width": "10",
+     "og:image:height": "10"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "secure-url-bad.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:title\" content=\"A bad secure_url hides a good og:image\">\n<meta property=\"og:image:secure_url\" content=\"ftp://files.example.com/a.png\">\n<meta property=\"og:image\" content=\"https://cdn.example.com/good.png\">\n<meta property=\"og:image:width\" content=\"10\">\n<meta property=\"og:image:height\" content=\"10\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:title": "A bad secure_url hides a good og:image",
+     "og:image:secure_url": "ftp://files.example.com/a.png",
+     "og:image": "https://cdn.example.com/good.png",
+     "og:image:width": "10",
+     "og:image:height": "10"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "sjis-header.html",
+   "contentType": "text/html; charset=shift_jis",
+   "decoded": "<html><head><title>日本語のタイトル</title><meta property=\"og:description\" content=\"説明文\"></head></html>",
+   "page": {
+    "meta": {
+     "og:description": "説明文"
+    },
+    "title": "日本語のタイトル",
+    "oembed": null
+   }
+  },
+  {
+   "file": "sjis-header.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><title>���{��̃^�C�g��</title><meta property=\"og:description\" content=\"������\"></head></html>",
+   "page": {
+    "meta": {
+     "og:description": "������"
+    },
+    "title": "���{��̃^�C�g��",
+    "oembed": null
+   }
+  },
+  {
+   "file": "title-in-body.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head><meta name=\"description\" content=\"No title in head.\"></head>\n<body><svg><title>SVG title in body</title></svg></body></html>\n",
+   "page": {
+    "meta": {
+     "description": "No title in head."
+    },
+    "title": "SVG title in body",
+    "oembed": null
+   }
+  },
+  {
+   "file": "title-in-body.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><meta name=\"description\" content=\"No title in head.\"></head>\n<body><svg><title>SVG title in body</title></svg></body></html>\n",
+   "page": {
+    "meta": {
+     "description": "No title in head."
+    },
+    "title": "SVG title in body",
+    "oembed": null
+   }
+  },
+  {
+   "file": "title-only.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<TITLE lang=\"en\">\n   Plain   &lt;title&gt; &amp; a\n   description\n</TITLE>\n<meta name=\"description\" content=\"From &quot;meta name=description&quot;.\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "description": "From \"meta name=description\"."
+    },
+    "title": "Plain <title> & a description",
+    "oembed": null
+   }
+  },
+  {
+   "file": "title-only.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<TITLE lang=\"en\">\n   Plain   &lt;title&gt; &amp; a\n   description\n</TITLE>\n<meta name=\"description\" content=\"From &quot;meta name=description&quot;.\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "description": "From \"meta name=description\"."
+    },
+    "title": "Plain <title> & a description",
+    "oembed": null
+   }
+  },
+  {
+   "file": "twitter-only.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta name=\"twitter:card\" content=\"summary\">\n<meta name=\"twitter:title\" content=\"Only a Twitter card\">\n<meta name=\"twitter:description\" content=\"Described by twitter:description.\">\n<meta name=\"twitter:image:src\" content=\"http://cdn.example.net/thumb.jpg\">\n</head><body></body></html>\n",
+   "page": {
+    "meta": {
+     "twitter:card": "summary",
+     "twitter:title": "Only a Twitter card",
+     "twitter:description": "Described by twitter:description.",
+     "twitter:image:src": "http://cdn.example.net/thumb.jpg"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "twitter-only.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta name=\"twitter:card\" content=\"summary\">\n<meta name=\"twitter:title\" content=\"Only a Twitter card\">\n<meta name=\"twitter:description\" content=\"Described by twitter:description.\">\n<meta name=\"twitter:image:src\" content=\"http://cdn.example.net/thumb.jpg\">\n</head><body></body></html>\n",
+   "page": {
+    "meta": {
+     "twitter:card": "summary",
+     "twitter:title": "Only a Twitter card",
+     "twitter:description": "Described by twitter:description.",
+     "twitter:image:src": "http://cdn.example.net/thumb.jpg"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "utf16le.html",
+   "contentType": "text/html; charset=utf-16",
+   "decoded": "<html><head><title>UTF-16 über</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "UTF-16 über",
+    "oembed": null
+   }
+  },
+  {
+   "file": "utf16le.html",
+   "contentType": "text/html",
+   "decoded": "��<\u0000h\u0000t\u0000m\u0000l\u0000>\u0000<\u0000h\u0000e\u0000a\u0000d\u0000>\u0000<\u0000t\u0000i\u0000t\u0000l\u0000e\u0000>\u0000U\u0000T\u0000F\u0000-\u00001\u00006\u0000 \u0000�\u0000b\u0000e\u0000r\u0000<\u0000/\u0000t\u0000i\u0000t\u0000l\u0000e\u0000>\u0000<\u0000/\u0000h\u0000e\u0000a\u0000d\u0000>\u0000<\u0000/\u0000h\u0000t\u0000m\u0000l\u0000>\u0000",
+   "page": {
+    "meta": {},
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "utf8-bom.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><title>BOM ✓</title></head></html>",
+   "page": {
+    "meta": {},
+    "title": "BOM ✓",
+    "oembed": null
+   }
+  },
+  {
+   "file": "video-og-type.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head>\n<meta property=\"og:type\" content=\"VIDEO.other\">\n<meta property=\"og:title\" content=\"A video page\">\n<meta property=\"og:video:url\" content=\"https://example.com/v.mp4\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:type": "VIDEO.other",
+     "og:title": "A video page",
+     "og:video:url": "https://example.com/v.mp4"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "video-og-type.html",
+   "contentType": "text/html",
+   "decoded": "<html><head>\n<meta property=\"og:type\" content=\"VIDEO.other\">\n<meta property=\"og:title\" content=\"A video page\">\n<meta property=\"og:video:url\" content=\"https://example.com/v.mp4\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "og:type": "VIDEO.other",
+     "og:title": "A video page",
+     "og:video:url": "https://example.com/v.mp4"
+    },
+    "title": null,
+    "oembed": null
+   }
+  },
+  {
+   "file": "whitespace.html",
+   "contentType": "text/html; charset=utf-8",
+   "decoded": "<html><head><title>　﻿ Spaced \t\n out   title  </title>\n<meta name=\"description\" content=\"\t tabs\tand\nnewlines \r\n\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "description": "\t tabs\tand\nnewlines \r\n"
+    },
+    "title": "Spaced out title ",
+    "oembed": null
+   }
+  },
+  {
+   "file": "whitespace.html",
+   "contentType": "text/html",
+   "decoded": "<html><head><title>　﻿ Spaced \t\n out   title  </title>\n<meta name=\"description\" content=\"\t tabs\tand\nnewlines \r\n\">\n</head></html>\n",
+   "page": {
+    "meta": {
+     "description": "\t tabs\tand\nnewlines \r\n"
+    },
+    "title": "Spaced out title ",
+    "oembed": null
+   }
+  }
+ ],
+ "entities": [
+  {
+   "in": "plain",
+   "out": "plain"
+  },
+  {
+   "in": "a &amp; b",
+   "out": "a & b"
+  },
+  {
+   "in": "&AMP;&Amp;&aMp;",
+   "out": "&&&"
+  },
+  {
+   "in": "&#39;&#x27;&#X27;&#039;",
+   "out": "''''"
+  },
+  {
+   "in": "&#0;&#x0;&#-1;",
+   "out": "&#0;&#x0;&#-1;"
+  },
+  {
+   "in": "&#x10FFFF;&#x110000;&#1114112;",
+   "out": "􏿿&#x110000;&#1114112;"
+  },
+  {
+   "in": "&#xD800;&#xDFFF;&#55296;",
+   "out": "𐏿�"
+  },
+  {
+   "in": "&#99999999999999999999999;&#xFFFFFFFFFFFFFFFFFFFF;",
+   "out": "&#99999999999999999999999;&#xFFFFFFFFFFFFFFFFFFFF;"
+  },
+  {
+   "in": "&#x;&#;&;&a;&1a;",
+   "out": "&#x;&#;&;&a;&1a;"
+  },
+  {
+   "in": "&amp &lt;",
+   "out": "&amp <"
+  },
+  {
+   "in": "&nbsp;&ndash;&mdash;&hellip;&copy;&reg;&trade;&laquo;&raquo;&lsquo;&rsquo;&ldquo;&rdquo;&bull;&middot;&euro;&pound;&yen;&deg;&times;",
+   "out": " –—…©®™«»‘’“”•·€£¥°×"
+  },
+  {
+   "in": "&eacute;&apos;&quot;&gt;&lt;",
+   "out": "&eacute;'\"><"
+  },
+  {
+   "in": "&amp;amp;",
+   "out": "&amp;"
+  },
+  {
+   "in": "&#128512;&#x1f600;",
+   "out": "😀😀"
+  },
+  {
+   "in": "&#65&#66;",
+   "out": "&#65B"
+  },
+  {
+   "in": "&Kmp;",
+   "out": "&Kmp;"
+  },
+  {
+   "in": "&amſ;",
+   "out": "&amſ;"
+  }
+ ],
+ "clean": [
+  {
+   "in": "  a \n\t b ",
+   "max": 10,
+   "out": "a b"
+  },
+  {
+   "in": "abcdefghijk",
+   "max": 5,
+   "out": "abcd…"
+  },
+  {
+   "in": "abc defghijk",
+   "max": 5,
+   "out": "abc…"
+  },
+  {
+   "in": "ab😀cd",
+   "max": 4,
+   "out": "ab�…"
+  },
+  {
+   "in": "ab😀cd",
+   "max": 3,
+   "out": "ab…"
+  },
+  {
+   "in": "　﻿ x  ",
+   "max": 10,
+   "out": "x"
+  },
+  {
+   "in": "x",
+   "max": 10,
+   "out": "x"
+  },
+  {
+   "in": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "max": 200,
+   "out": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+   "in": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+   "max": 350,
+   "out": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word…"
+  },
+  {
+   "in": "a b c",
+   "max": 10,
+   "out": "a b c"
+  },
+  {
+   "in": "",
+   "max": 5,
+   "out": ""
+  }
+ ],
+ "attrs": [
+  {
+   "in": " property=\"og:title\" CONTENT='x \"y\"' data-x=1 bare name=a/b",
+   "out": {
+    "property": "og:title",
+    "content": "x \"y\"",
+    "data-x": "1",
+    "bare": "",
+    "name": "a/b"
+   }
+  },
+  {
+   "in": "a=1 a=2 B=3 b=4",
+   "out": {
+    "a": "1",
+    "b": "3"
+   }
+  },
+  {
+   "in": "x = \"spaced\"  y= 'z' ",
+   "out": {
+    "x": "spaced",
+    "y": "z"
+   }
+  },
+  {
+   "in": "\"quoted-name\"=1 ok=2",
+   "out": {
+    "1": "",
+    "quoted-name": "",
+    "ok": "2"
+   }
+  },
+  {
+   "in": "=lone",
+   "out": {
+    "lone": ""
+   }
+  },
+  {
+   "in": "k=v=w",
+   "out": {
+    "k": "v=w"
+   }
+  },
+  {
+   "in": "k=\"unterminated",
+   "out": {
+    "k": "",
+    "unterminated": ""
+   }
+  },
+  {
+   "in": "multi\nline=\"v\nw\"",
+   "out": {
+    "multi": "",
+    "line": "v\nw"
+   }
+  },
+  {
+   "in": "ä=1 ÉCOLE=2",
+   "out": {
+    "ä": "1",
+    "école": "2"
+   }
+  },
+  {
+   "in": "k=`tick`",
+   "out": {
+    "k": "",
+    "`tick`": ""
+   }
+  },
+  {
+   "in": "/ self",
+   "out": {
+    "self": ""
+   }
+  }
+ ],
+ "toInt": [
+  {
+   "in": "1200",
+   "out": 1200
+  },
+  {
+   "in": " 630px",
+   "out": 630
+  },
+  {
+   "in": "+5",
+   "out": 5
+  },
+  {
+   "in": "-5",
+   "out": 0
+  },
+  {
+   "in": "0",
+   "out": 0
+  },
+  {
+   "in": "99999",
+   "out": 99999
+  },
+  {
+   "in": "100000",
+   "out": 0
+  },
+  {
+   "in": "1e3",
+   "out": 1
+  },
+  {
+   "in": "0x10",
+   "out": 0
+  },
+  {
+   "in": "",
+   "out": 0
+  },
+  {
+   "in": "abc",
+   "out": 0
+  },
+  {
+   "in": "﻿ 7",
+   "out": 7
+  },
+  {
+   "in": "7",
+   "out": 0
+  },
+  {
+   "in": "12.9",
+   "out": 12
+  }
+ ],
+ "resolveImage": [
+  {
+   "raw": "/a.png",
+   "base": "https://example.com/dir/page",
+   "out": "https://example.com/a.png"
+  },
+  {
+   "raw": "a.png",
+   "base": "https://example.com/dir/page",
+   "out": "https://example.com/dir/a.png"
+  },
+  {
+   "raw": "../a.png",
+   "base": "https://example.com/d1/d2/p",
+   "out": "https://example.com/d1/a.png"
+  },
+  {
+   "raw": "//cdn.example.com/a.png",
+   "base": "http://example.com/",
+   "out": "https://cdn.example.com/a.png"
+  },
+  {
+   "raw": "http://cdn.example.com/a.png",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com/a.png"
+  },
+  {
+   "raw": "http://cdn.example.com:80/a.png",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com/a.png"
+  },
+  {
+   "raw": "http://cdn.example.com:443/a.png",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com/a.png"
+  },
+  {
+   "raw": "http://cdn.example.com:8080/a.png",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com:8080/a.png"
+  },
+  {
+   "raw": "ftp://cdn.example.com/a.png",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "data:image/png;base64,AAAA",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "javascript:alert(1)",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "https://user:pw@cdn.example.com/a.png",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "https://user@cdn.example.com/a.png",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "  https://cdn.example.com/a b.png  ",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com/a%20b.png"
+  },
+  {
+   "raw": " https://cdn.example.com/x.png",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com/x.png"
+  },
+  {
+   "raw": "https://cdn.example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "https://cdn.example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "http://[bad",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "",
+   "base": "https://example.com/",
+   "out": null
+  },
+  {
+   "raw": "https://ÉXAMPLE.com/ü.png",
+   "base": "https://example.com/",
+   "out": "https://xn--xample-9ua.com/%C3%BC.png"
+  },
+  {
+   "raw": "HTTP://CDN.EXAMPLE.COM/A.PNG",
+   "base": "https://example.com/",
+   "out": "https://cdn.example.com/A.PNG"
+  },
+  {
+   "raw": "/a.png",
+   "base": "http://127.0.0.1:8080/x",
+   "out": "https://127.0.0.1:8080/a.png"
+  }
+ ],
+ "validColor": [
+  {
+   "in": "#abc",
+   "out": "#abc"
+  },
+  {
+   "in": "#ABCD",
+   "out": "#abcd"
+  },
+  {
+   "in": "#a1b2c3",
+   "out": "#a1b2c3"
+  },
+  {
+   "in": "#A1B2C3D4",
+   "out": "#a1b2c3d4"
+  },
+  {
+   "in": " #abc ",
+   "out": "#abc"
+  },
+  {
+   "in": "#abcde",
+   "out": null
+  },
+  {
+   "in": "#ggg",
+   "out": null
+  },
+  {
+   "in": "abc",
+   "out": null
+  },
+  {
+   "in": "#",
+   "out": null
+  },
+  {
+   "in": "red",
+   "out": null
+  },
+  {
+   "in": "",
+   "out": null
+  },
+  {
+   "in": "#١٢٣",
+   "out": null
+  }
+ ],
+ "images": [
+  {
+   "name": "a.png",
+   "hex": "89504e470d0a1a0a0000000d49484452000000030000000208020000001216f14d0000000b49444154789c6360c00400001400017dfe1eee0000000049454e44ae426082",
+   "dims": {
+    "width": 3,
+    "height": 2
+   }
+  },
+  {
+   "name": "a.png[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "a.png[:3]",
+   "hex": "89504e",
+   "dims": null
+  },
+  {
+   "name": "a.png[:9]",
+   "hex": "89504e470d0a1a0a00",
+   "dims": null
+  },
+  {
+   "name": "a.png[:10]",
+   "hex": "89504e470d0a1a0a0000",
+   "dims": null
+  },
+  {
+   "name": "a.png[:23]",
+   "hex": "89504e470d0a1a0a0000000d4948445200000003000000",
+   "dims": null
+  },
+  {
+   "name": "a.png[:24]",
+   "hex": "89504e470d0a1a0a0000000d494844520000000300000002",
+   "dims": {
+    "width": 3,
+    "height": 2
+   }
+  },
+  {
+   "name": "a.png[:29]",
+   "hex": "89504e470d0a1a0a0000000d4948445200000003000000020802000000",
+   "dims": {
+    "width": 3,
+    "height": 2
+   }
+  },
+  {
+   "name": "a.png[:30]",
+   "hex": "89504e470d0a1a0a0000000d494844520000000300000002080200000012",
+   "dims": {
+    "width": 3,
+    "height": 2
+   }
+  },
+  {
+   "name": "anim-as-png",
+   "hex": "47494638396105000400800000000000ffffff2c00000000050004000002024401003b",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "anim-as-png[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "anim-as-png[:3]",
+   "hex": "474946",
+   "dims": null
+  },
+  {
+   "name": "anim-as-png[:9]",
+   "hex": "474946383961050004",
+   "dims": null
+  },
+  {
+   "name": "anim-as-png[:10]",
+   "hex": "47494638396105000400",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "anim-as-png[:23]",
+   "hex": "47494638396105000400800000000000ffffff2c000000",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "anim-as-png[:24]",
+   "hex": "47494638396105000400800000000000ffffff2c00000000",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "anim-as-png[:29]",
+   "hex": "47494638396105000400800000000000ffffff2c000000000500040000",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "anim-as-png[:30]",
+   "hex": "47494638396105000400800000000000ffffff2c00000000050004000002",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "b.gif",
+   "hex": "47494638396105000400800000000000ffffff2c00000000050004000002024401003b",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "b.gif[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "b.gif[:3]",
+   "hex": "474946",
+   "dims": null
+  },
+  {
+   "name": "b.gif[:9]",
+   "hex": "474946383961050004",
+   "dims": null
+  },
+  {
+   "name": "b.gif[:10]",
+   "hex": "47494638396105000400",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "b.gif[:23]",
+   "hex": "47494638396105000400800000000000ffffff2c000000",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "b.gif[:24]",
+   "hex": "47494638396105000400800000000000ffffff2c00000000",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "b.gif[:29]",
+   "hex": "47494638396105000400800000000000ffffff2c000000000500040000",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "b.gif[:30]",
+   "hex": "47494638396105000400800000000000ffffff2c00000000050004000002",
+   "dims": {
+    "width": 5,
+    "height": 4
+   }
+  },
+  {
+   "name": "drawing.svg",
+   "hex": "3c73766720786d6c6e733d22687474703a2f2f7777772e77332e6f72672f323030302f737667222077696474683d22313022206865696768743d223130222f3e",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:3]",
+   "hex": "3c7376",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:9]",
+   "hex": "3c73766720786d6c6e",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:10]",
+   "hex": "3c73766720786d6c6e73",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:23]",
+   "hex": "3c73766720786d6c6e733d22687474703a2f2f7777772e",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:24]",
+   "hex": "3c73766720786d6c6e733d22687474703a2f2f7777772e77",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:29]",
+   "hex": "3c73766720786d6c6e733d22687474703a2f2f7777772e77332e6f7267",
+   "dims": null
+  },
+  {
+   "name": "drawing.svg[:30]",
+   "hex": "3c73766720786d6c6e733d22687474703a2f2f7777772e77332e6f72672f",
+   "dims": null
+  },
+  {
+   "name": "small.jpg",
+   "hex": "ffd8ffe000104a46494600010100000100010000ffdb00040000ffc0000b08012c019001011100ffda0008010100003f0000000000000000000000000000000000ffd9",
+   "dims": {
+    "height": 300,
+    "width": 400
+   }
+  },
+  {
+   "name": "small.jpg[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:3]",
+   "hex": "ffd8ff",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:9]",
+   "hex": "ffd8ffe000104a4649",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:10]",
+   "hex": "ffd8ffe000104a464946",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:23]",
+   "hex": "ffd8ffe000104a46494600010100000100010000ffdb00",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:24]",
+   "hex": "ffd8ffe000104a46494600010100000100010000ffdb0004",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:29]",
+   "hex": "ffd8ffe000104a46494600010100000100010000ffdb00040000ffc000",
+   "dims": null
+  },
+  {
+   "name": "small.jpg[:30]",
+   "hex": "ffd8ffe000104a46494600010100000100010000ffdb00040000ffc0000b",
+   "dims": null
+  },
+  {
+   "name": "truncated.png",
+   "hex": "89504e470d0a1a0a0000000d4948445200000003",
+   "dims": null
+  },
+  {
+   "name": "truncated.png[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "truncated.png[:3]",
+   "hex": "89504e",
+   "dims": null
+  },
+  {
+   "name": "truncated.png[:9]",
+   "hex": "89504e470d0a1a0a00",
+   "dims": null
+  },
+  {
+   "name": "truncated.png[:10]",
+   "hex": "89504e470d0a1a0a0000",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp",
+   "hex": "524946461e0000005745425056503820120000001002009d012a4001f00000000000000000000000",
+   "dims": {
+    "width": 320,
+    "height": 240
+   }
+  },
+  {
+   "name": "vp8.webp[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:3]",
+   "hex": "524946",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:9]",
+   "hex": "524946461e00000057",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:10]",
+   "hex": "524946461e0000005745",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:23]",
+   "hex": "524946461e000000574542505650382012000000100200",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:24]",
+   "hex": "524946461e0000005745425056503820120000001002009d",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:29]",
+   "hex": "524946461e0000005745425056503820120000001002009d012a4001f0",
+   "dims": null
+  },
+  {
+   "name": "vp8.webp[:30]",
+   "hex": "524946461e0000005745425056503820120000001002009d012a4001f000",
+   "dims": {
+    "width": 320,
+    "height": 240
+   }
+  },
+  {
+   "name": "vp8l.webp",
+   "hex": "524946461a000000574542505650384c050000002f2bc13110000000000000000000",
+   "dims": {
+    "width": 300,
+    "height": 200
+   }
+  },
+  {
+   "name": "vp8l.webp[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:3]",
+   "hex": "524946",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:9]",
+   "hex": "524946461a00000057",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:10]",
+   "hex": "524946461a0000005745",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:23]",
+   "hex": "524946461a000000574542505650384c050000002f2bc1",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:24]",
+   "hex": "524946461a000000574542505650384c050000002f2bc131",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:29]",
+   "hex": "524946461a000000574542505650384c050000002f2bc1311000000000",
+   "dims": null
+  },
+  {
+   "name": "vp8l.webp[:30]",
+   "hex": "524946461a000000574542505650384c050000002f2bc131100000000000",
+   "dims": {
+    "width": 300,
+    "height": 200
+   }
+  },
+  {
+   "name": "vp8x.webp",
+   "hex": "524946461600000057454250565038580a000000000000007f0200df0100",
+   "dims": {
+    "width": 640,
+    "height": 480
+   }
+  },
+  {
+   "name": "vp8x.webp[:0]",
+   "hex": "",
+   "dims": null
+  },
+  {
+   "name": "vp8x.webp[:3]",
+   "hex": "524946",
+   "dims": null
+  },
+  {
+   "name": "vp8x.webp[:9]",
+   "hex": "524946461600000057",
+   "dims": null
+  },
+  {
+   "name": "vp8x.webp[:10]",
+   "hex": "52494646160000005745",
+   "dims": null
+  },
+  {
+   "name": "vp8x.webp[:23]",
+   "hex": "524946461600000057454250565038580a000000000000",
+   "dims": null
+  },
+  {
+   "name": "vp8x.webp[:24]",
+   "hex": "524946461600000057454250565038580a00000000000000",
+   "dims": null
+  },
+  {
+   "name": "vp8x.webp[:29]",
+   "hex": "524946461600000057454250565038580a000000000000007f0200df01",
+   "dims": null
+  },
+  {
+   "name": "big-exif.jpg[:65536]",
+   "generated": "big-exif:65536",
+   "dims": null
+  },
+  {
+   "name": "big-exif.jpg",
+   "generated": "big-exif",
+   "dims": {
+    "height": 1080,
+    "width": 1920
+   }
+  },
+  {
+   "name": "jpeg-fill",
+   "hex": "ffd8ffffffe000040000ff01ffd0ffc2000b08012c019003012200aabbccdd",
+   "dims": {
+    "height": 300,
+    "width": 400
+   }
+  },
+  {
+   "name": "jpeg-dht-sof3",
+   "hex": "ffd8ffc40004000000ffc3000b0800640080030122000000000000",
+   "dims": {
+    "height": 100,
+    "width": 128
+   }
+  },
+  {
+   "name": "jpeg-sos-first",
+   "hex": "ffd8ffda0004000000ffc0000b08001000200301220000000000",
+   "dims": null
+  },
+  {
+   "name": "jpeg-garbage",
+   "hex": "ffd800112233ffc0000b0800100020030122000000000000",
+   "dims": {
+    "height": 16,
+    "width": 32
+   }
+  },
+  {
+   "name": "webp-unknown-chunk",
+   "hex": "524946460000000057454250414c50480000000000000000000000000000000000000000",
+   "dims": null
+  },
+  {
+   "name": "png-huge",
+   "hex": "89504e470d0a1a0a0000000d49484452ffffffff80000000",
+   "dims": {
+    "width": 4294967295,
+    "height": 2147483648
+   }
+  },
+  {
+   "name": "gif87",
+   "hex": "474946383761ffff0100",
+   "dims": {
+    "width": 65535,
+    "height": 1
+   }
+  }
+ ]
+}

@@ -1,0 +1,1064 @@
+{
+ "isPublic": [
+  {
+   "ip": "127.0.0.1",
+   "public": false
+  },
+  {
+   "ip": "127.255.255.255",
+   "public": false
+  },
+  {
+   "ip": "0.0.0.0",
+   "public": false
+  },
+  {
+   "ip": "0.255.255.255",
+   "public": false
+  },
+  {
+   "ip": "1.0.0.0",
+   "public": true
+  },
+  {
+   "ip": "9.255.255.255",
+   "public": true
+  },
+  {
+   "ip": "10.0.0.0",
+   "public": false
+  },
+  {
+   "ip": "10.255.255.255",
+   "public": false
+  },
+  {
+   "ip": "11.0.0.0",
+   "public": true
+  },
+  {
+   "ip": "100.63.255.255",
+   "public": true
+  },
+  {
+   "ip": "100.64.0.0",
+   "public": false
+  },
+  {
+   "ip": "100.127.255.255",
+   "public": false
+  },
+  {
+   "ip": "100.128.0.0",
+   "public": true
+  },
+  {
+   "ip": "169.254.0.0",
+   "public": false
+  },
+  {
+   "ip": "169.254.169.254",
+   "public": false
+  },
+  {
+   "ip": "169.255.0.0",
+   "public": true
+  },
+  {
+   "ip": "172.15.255.255",
+   "public": true
+  },
+  {
+   "ip": "172.16.0.0",
+   "public": false
+  },
+  {
+   "ip": "172.31.255.255",
+   "public": false
+  },
+  {
+   "ip": "172.32.0.0",
+   "public": true
+  },
+  {
+   "ip": "192.0.0.0",
+   "public": false
+  },
+  {
+   "ip": "192.0.0.255",
+   "public": false
+  },
+  {
+   "ip": "192.0.1.0",
+   "public": true
+  },
+  {
+   "ip": "192.0.2.0",
+   "public": false
+  },
+  {
+   "ip": "192.0.2.255",
+   "public": false
+  },
+  {
+   "ip": "192.0.3.0",
+   "public": true
+  },
+  {
+   "ip": "192.88.99.0",
+   "public": false
+  },
+  {
+   "ip": "192.88.99.255",
+   "public": false
+  },
+  {
+   "ip": "192.88.100.0",
+   "public": true
+  },
+  {
+   "ip": "192.167.255.255",
+   "public": true
+  },
+  {
+   "ip": "192.168.0.0",
+   "public": false
+  },
+  {
+   "ip": "192.168.255.255",
+   "public": false
+  },
+  {
+   "ip": "192.169.0.0",
+   "public": true
+  },
+  {
+   "ip": "198.17.255.255",
+   "public": true
+  },
+  {
+   "ip": "198.18.0.0",
+   "public": false
+  },
+  {
+   "ip": "198.19.255.255",
+   "public": false
+  },
+  {
+   "ip": "198.20.0.0",
+   "public": true
+  },
+  {
+   "ip": "198.51.100.1",
+   "public": false
+  },
+  {
+   "ip": "198.51.101.0",
+   "public": true
+  },
+  {
+   "ip": "203.0.113.1",
+   "public": false
+  },
+  {
+   "ip": "203.0.114.0",
+   "public": true
+  },
+  {
+   "ip": "223.255.255.255",
+   "public": true
+  },
+  {
+   "ip": "224.0.0.0",
+   "public": false
+  },
+  {
+   "ip": "239.255.255.255",
+   "public": false
+  },
+  {
+   "ip": "240.0.0.0",
+   "public": false
+  },
+  {
+   "ip": "255.255.255.255",
+   "public": false
+  },
+  {
+   "ip": "8.8.8.8",
+   "public": true
+  },
+  {
+   "ip": "93.184.216.34",
+   "public": true
+  },
+  {
+   "ip": "::",
+   "public": false
+  },
+  {
+   "ip": "::1",
+   "public": false
+  },
+  {
+   "ip": "::2",
+   "public": false
+  },
+  {
+   "ip": "::7f00:1",
+   "public": false
+  },
+  {
+   "ip": "::127.0.0.1",
+   "public": false
+  },
+  {
+   "ip": "::8.8.8.8",
+   "public": false
+  },
+  {
+   "ip": "::ffff:127.0.0.1",
+   "public": false
+  },
+  {
+   "ip": "::ffff:7f00:1",
+   "public": false
+  },
+  {
+   "ip": "0:0:0:0:0:ffff:7f00:1",
+   "public": false
+  },
+  {
+   "ip": "::ffff:a9fe:a9fe",
+   "public": false
+  },
+  {
+   "ip": "::ffff:10.0.0.1",
+   "public": false
+  },
+  {
+   "ip": "::ffff:8.8.8.8",
+   "public": true
+  },
+  {
+   "ip": "::ffff:100.64.0.1",
+   "public": false
+  },
+  {
+   "ip": "::ffff:0:127.0.0.1",
+   "public": false
+  },
+  {
+   "ip": "::ffff:0:8.8.8.8",
+   "public": false
+  },
+  {
+   "ip": "::fffe:7f00:1",
+   "public": true
+  },
+  {
+   "ip": "::1:0:0:1",
+   "public": true
+  },
+  {
+   "ip": "64:ff9b::8.8.8.8",
+   "public": false
+  },
+  {
+   "ip": "64:ff9b::1:0",
+   "public": false
+  },
+  {
+   "ip": "64:ff9b:0:0:0:1::1",
+   "public": true
+  },
+  {
+   "ip": "64:ff9b:1::1",
+   "public": false
+  },
+  {
+   "ip": "64:ff9b:1:ffff::1",
+   "public": false
+  },
+  {
+   "ip": "64:ff9b:2::1",
+   "public": true
+  },
+  {
+   "ip": "100::1",
+   "public": false
+  },
+  {
+   "ip": "100::ffff:ffff:ffff:ffff",
+   "public": false
+  },
+  {
+   "ip": "100:0:0:1::",
+   "public": true
+  },
+  {
+   "ip": "2001::1",
+   "public": false
+  },
+  {
+   "ip": "2001:0:ffff::1",
+   "public": false
+  },
+  {
+   "ip": "2001:1::1",
+   "public": true
+  },
+  {
+   "ip": "2001:db8::1",
+   "public": false
+  },
+  {
+   "ip": "2001:db8:ffff::1",
+   "public": false
+  },
+  {
+   "ip": "2001:db9::1",
+   "public": true
+  },
+  {
+   "ip": "2002::1",
+   "public": false
+  },
+  {
+   "ip": "2002:7f00:1::1",
+   "public": false
+  },
+  {
+   "ip": "2002:ffff::1",
+   "public": false
+  },
+  {
+   "ip": "2003::1",
+   "public": true
+  },
+  {
+   "ip": "fbff::1",
+   "public": true
+  },
+  {
+   "ip": "fc00::1",
+   "public": false
+  },
+  {
+   "ip": "fdff:ffff::1",
+   "public": false
+  },
+  {
+   "ip": "fe00::1",
+   "public": true
+  },
+  {
+   "ip": "fe7f::1",
+   "public": true
+  },
+  {
+   "ip": "fe80::1",
+   "public": false
+  },
+  {
+   "ip": "febf::1",
+   "public": false
+  },
+  {
+   "ip": "fec0::1",
+   "public": false
+  },
+  {
+   "ip": "feff::1",
+   "public": false
+  },
+  {
+   "ip": "ff00::1",
+   "public": false
+  },
+  {
+   "ip": "ff02::1",
+   "public": false
+  },
+  {
+   "ip": "ffff::1",
+   "public": false
+  },
+  {
+   "ip": "2606:4700:4700::1111",
+   "public": true
+  },
+  {
+   "ip": "2a00:1450:4001:80b::200e",
+   "public": true
+  },
+  {
+   "ip": "fe80::1%eth0",
+   "public": false
+  },
+  {
+   "ip": "127.1",
+   "public": false
+  },
+  {
+   "ip": "0x7f000001",
+   "public": false
+  },
+  {
+   "ip": "01.2.3.4",
+   "public": false
+  },
+  {
+   "ip": "1.2.3.4.5",
+   "public": false
+  },
+  {
+   "ip": "",
+   "public": false
+  },
+  {
+   "ip": "garbage",
+   "public": false
+  },
+  {
+   "ip": "::ffff:1.2.3.4%1",
+   "public": false
+  }
+ ],
+ "assert": [
+  {
+   "url": "https://example.com/",
+   "href": "https://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://example.com./x",
+   "href": "http://example.com./x",
+   "hostname": "example.com.",
+   "result": "ok"
+  },
+  {
+   "url": "HTTP://EXAMPLE.COM:80/",
+   "href": "http://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "https://example.com:443/",
+   "href": "https://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "ftp://example.com/",
+   "href": "ftp://example.com/",
+   "hostname": "example.com",
+   "result": "scheme"
+  },
+  {
+   "url": "file:///etc/passwd",
+   "href": "file:///etc/passwd",
+   "hostname": "",
+   "result": "scheme"
+  },
+  {
+   "url": "data:text/html,hi",
+   "href": "data:text/html,hi",
+   "hostname": "",
+   "result": "scheme"
+  },
+  {
+   "url": "javascript:alert(1)",
+   "href": "javascript:alert(1)",
+   "hostname": "",
+   "result": "scheme"
+  },
+  {
+   "url": "blob:https://example.com/x",
+   "href": "blob:https://example.com/x",
+   "hostname": "",
+   "result": "scheme"
+  },
+  {
+   "url": "ws://example.com/",
+   "href": "ws://example.com/",
+   "hostname": "example.com",
+   "result": "scheme"
+  },
+  {
+   "url": "https://user@example.com/",
+   "href": "https://user@example.com/",
+   "hostname": "example.com",
+   "result": "userinfo"
+  },
+  {
+   "url": "https://:pw@example.com/",
+   "href": "https://:pw@example.com/",
+   "hostname": "example.com",
+   "result": "userinfo"
+  },
+  {
+   "url": "https://user:pw@example.com/",
+   "href": "https://user:pw@example.com/",
+   "hostname": "example.com",
+   "result": "userinfo"
+  },
+  {
+   "url": "https://@example.com/",
+   "href": "https://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://localhost/",
+   "href": "http://localhost/",
+   "hostname": "localhost",
+   "result": "host"
+  },
+  {
+   "url": "http://LOCALHOST./",
+   "href": "http://localhost./",
+   "hostname": "localhost.",
+   "result": "host"
+  },
+  {
+   "url": "http://localhost../",
+   "href": "http://localhost../",
+   "hostname": "localhost..",
+   "result": "ok"
+  },
+  {
+   "url": "http://a.b.localhost/",
+   "href": "http://a.b.localhost/",
+   "hostname": "a.b.localhost",
+   "result": "host"
+  },
+  {
+   "url": "http://printer.local/",
+   "href": "http://printer.local/",
+   "hostname": "printer.local",
+   "result": "host"
+  },
+  {
+   "url": "http://printer.local./",
+   "href": "http://printer.local./",
+   "hostname": "printer.local.",
+   "result": "host"
+  },
+  {
+   "url": "http://local/",
+   "href": "http://local/",
+   "hostname": "local",
+   "result": "host"
+  },
+  {
+   "url": "http://metadata.google.internal/",
+   "href": "http://metadata.google.internal/",
+   "hostname": "metadata.google.internal",
+   "result": "host"
+  },
+  {
+   "url": "http://box.localdomain/",
+   "href": "http://box.localdomain/",
+   "hostname": "box.localdomain",
+   "result": "host"
+  },
+  {
+   "url": "http://nas.home.arpa/",
+   "href": "http://nas.home.arpa/",
+   "hostname": "nas.home.arpa",
+   "result": "host"
+  },
+  {
+   "url": "http://home.arpa/",
+   "href": "http://home.arpa/",
+   "hostname": "home.arpa",
+   "result": "host"
+  },
+  {
+   "url": "http://xhome.arpa/",
+   "href": "http://xhome.arpa/",
+   "hostname": "xhome.arpa",
+   "result": "ok"
+  },
+  {
+   "url": "http://ｌｏｃａｌｈｏｓｔ/",
+   "href": "http://localhost/",
+   "hostname": "localhost",
+   "result": "host"
+  },
+  {
+   "url": "http://localhost%2e/",
+   "href": "http://localhost./",
+   "hostname": "localhost.",
+   "result": "host"
+  },
+  {
+   "url": "http://loc%61lhost/",
+   "href": "http://localhost/",
+   "hostname": "localhost",
+   "result": "host"
+  },
+  {
+   "url": "http://notlocalhost/",
+   "href": "http://notlocalhost/",
+   "hostname": "notlocalhost",
+   "result": "ok"
+  },
+  {
+   "url": "http://localhost.example.com/",
+   "href": "http://localhost.example.com/",
+   "hostname": "localhost.example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://xn--localhost/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://127.0.0.1/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://127.1/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://127.0.1/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://0x7f.1/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://0x7f000001/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://0X7F.0.0.1/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://2130706433/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://017700000001/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://0177.0.0.1/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://0177.0.0.01/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://127.0.0.1./",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://127.0.0.1../",
+   "href": "http://127.0.0.1../",
+   "hostname": "127.0.0.1..",
+   "result": "ok"
+  },
+  {
+   "url": "http://１２７.０.０.１/",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://0/",
+   "href": "http://0.0.0.0/",
+   "hostname": "0.0.0.0",
+   "result": "private address"
+  },
+  {
+   "url": "http://0.0.0.0/",
+   "href": "http://0.0.0.0/",
+   "hostname": "0.0.0.0",
+   "result": "private address"
+  },
+  {
+   "url": "http://00000/",
+   "href": "http://0.0.0.0/",
+   "hostname": "0.0.0.0",
+   "result": "private address"
+  },
+  {
+   "url": "http://4294967295/",
+   "href": "http://255.255.255.255/",
+   "hostname": "255.255.255.255",
+   "result": "private address"
+  },
+  {
+   "url": "http://4294967296/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://1.2.3.4.5/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://0x100000000/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://169.254.169.254/latest/meta-data/",
+   "href": "http://169.254.169.254/latest/meta-data/",
+   "hostname": "169.254.169.254",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::1]/",
+   "href": "http://[::1]/",
+   "hostname": "[::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::]/",
+   "href": "http://[::]/",
+   "hostname": "[::]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[0::1]/",
+   "href": "http://[::1]/",
+   "hostname": "[::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::ffff:127.0.0.1]/",
+   "href": "http://[::ffff:7f00:1]/",
+   "hostname": "[::ffff:7f00:1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::ffff:7f00:1]/",
+   "href": "http://[::ffff:7f00:1]/",
+   "hostname": "[::ffff:7f00:1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[0:0:0:0:0:ffff:127.0.0.1]/",
+   "href": "http://[::ffff:7f00:1]/",
+   "hostname": "[::ffff:7f00:1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::7f00:1]/",
+   "href": "http://[::7f00:1]/",
+   "hostname": "[::7f00:1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::127.0.0.1]/",
+   "href": "http://[::7f00:1]/",
+   "hostname": "[::7f00:1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::ffff:a9fe:a9fe]/",
+   "href": "http://[::ffff:a9fe:a9fe]/",
+   "hostname": "[::ffff:a9fe:a9fe]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[64:ff9b::7f00:1]/",
+   "href": "http://[64:ff9b::7f00:1]/",
+   "hostname": "[64:ff9b::7f00:1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[2002:7f00:1::]/",
+   "href": "http://[2002:7f00:1::]/",
+   "hostname": "[2002:7f00:1::]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[2001::1]/",
+   "href": "http://[2001::1]/",
+   "hostname": "[2001::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[fe80::1]/",
+   "href": "http://[fe80::1]/",
+   "hostname": "[fe80::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[fe80::1%25eth0]/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://[fd00::1]/",
+   "href": "http://[fd00::1]/",
+   "hostname": "[fd00::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[fec0::1]/",
+   "href": "http://[fec0::1]/",
+   "hostname": "[fec0::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[ff02::1]/",
+   "href": "http://[ff02::1]/",
+   "hostname": "[ff02::1]",
+   "result": "private address"
+  },
+  {
+   "url": "http://[::ffff:8.8.8.8]/",
+   "href": "http://[::ffff:808:808]/",
+   "hostname": "[::ffff:808:808]",
+   "result": "ok"
+  },
+  {
+   "url": "http://[2606:4700:4700::1111]/",
+   "href": "http://[2606:4700:4700::1111]/",
+   "hostname": "[2606:4700:4700::1111]",
+   "result": "ok"
+  },
+  {
+   "url": "http://[::1/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://8.8.8.8:22/",
+   "href": "http://8.8.8.8:22/",
+   "hostname": "8.8.8.8",
+   "result": "ok"
+  },
+  {
+   "url": "https://1.1.1.1:65535/x",
+   "href": "https://1.1.1.1:65535/x",
+   "hostname": "1.1.1.1",
+   "result": "ok"
+  },
+  {
+   "url": "http://8.8.8.8:65536/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://./",
+   "href": "http://./",
+   "hostname": ".",
+   "result": "host"
+  },
+  {
+   "url": "http://../",
+   "href": "http://../",
+   "hostname": "..",
+   "result": "ok"
+  },
+  {
+   "url": "http:///x",
+   "href": "http://x/",
+   "hostname": "x",
+   "result": "ok"
+  },
+  {
+   "url": "http://%30/",
+   "href": "http://0.0.0.0/",
+   "hostname": "0.0.0.0",
+   "result": "private address"
+  },
+  {
+   "url": "http://example.com%00/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://exa mple.com/",
+   "href": null,
+   "hostname": null,
+   "result": "Invalid URL"
+  },
+  {
+   "url": "http://example.com\\@127.0.0.1/",
+   "href": "http://example.com/@127.0.0.1/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://127.0.0.1\\@example.com/",
+   "href": "http://127.0.0.1/@example.com/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "http://example.com#@127.0.0.1/",
+   "href": "http://example.com/#@127.0.0.1/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://example.com?@127.0.0.1/",
+   "href": "http://example.com/?@127.0.0.1/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "  http://127.0.0.1/  ",
+   "href": "http://127.0.0.1/",
+   "hostname": "127.0.0.1",
+   "result": "private address"
+  },
+  {
+   "url": "\thttp://example.com/\n",
+   "href": "http://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://ex\tample.com/",
+   "href": "http://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://xn--nxasmq6b.com/",
+   "href": "http://xn--nxasmq6b.com/",
+   "hostname": "xn--nxasmq6b.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://ελληνικά.com/",
+   "href": "http://xn--hxargifdar.com/",
+   "hostname": "xn--hxargifdar.com",
+   "result": "ok"
+  },
+  {
+   "url": "http://EXAMPLE。COM/",
+   "href": "http://example.com/",
+   "hostname": "example.com",
+   "result": "ok"
+  }
+ ],
+ "joins": [
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "../d",
+   "href": "https://example.com/a/d"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "//other.example/x",
+   "href": "https://other.example/x"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "https://elsewhere/",
+   "href": "https://elsewhere/"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "?q=1",
+   "href": "https://example.com/a/b/c?q=1"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "#f",
+   "href": "https://example.com/a/b/c#f"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": " /trim ",
+   "href": "https://example.com/trim"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "http://[bad",
+   "href": null
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "\\\\back\\slash",
+   "href": "https://back/slash"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "/cafÃ©",
+   "href": "https://example.com/caf%C3%83%C2%A9"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "x y|z^{}`\"<>",
+   "href": "https://example.com/a/b/x%20y|z^%7B%7D%60%22%3C%3E"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "ftp://h/x",
+   "href": "ftp://h/x"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "HTTPS://UP.example/",
+   "href": "https://up.example/"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "//127.0.0.1:1/",
+   "href": "https://127.0.0.1:1/"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "http:relative",
+   "href": "http://relative/"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "https:/one-slash",
+   "href": "https://example.com/one-slash"
+  },
+  {
+   "base": "https://example.com/a/b/c",
+   "input": "",
+   "href": "https://example.com/a/b/c"
+  }
+ ]
+}

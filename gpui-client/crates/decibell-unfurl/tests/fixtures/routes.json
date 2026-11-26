@@ -1,0 +1,1608 @@
+{
+ "routes": {
+  "/bogus-charset.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/bogus-charset.html"
+   }
+  },
+  "/charset-late.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/charset-late.html"
+   }
+  },
+  "/color-invalid.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/color-invalid.html"
+   }
+  },
+  "/color-variants.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/color-variants.html"
+   }
+  },
+  "/cp1252-meta.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/cp1252-meta.html"
+   }
+  },
+  "/entities.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/entities.html"
+   }
+  },
+  "/invalid-utf8.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/invalid-utf8.html"
+   }
+  },
+  "/koi8-http-equiv.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/koi8-http-equiv.html"
+   }
+  },
+  "/latin1-header.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=iso-8859-1"
+    ]
+   ],
+   "body": {
+    "file": "html/latin1-header.html"
+   }
+  },
+  "/long-text.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/long-text.html"
+   }
+  },
+  "/meta-weird.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/meta-weird.html"
+   }
+  },
+  "/no-metadata.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/no-metadata.html"
+   }
+  },
+  "/oembed-404.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-404.html"
+   }
+  },
+  "/oembed-array.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-array.html"
+   }
+  },
+  "/oembed-bad-href.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-bad-href.html"
+   }
+  },
+  "/oembed-blank.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-blank.html"
+   }
+  },
+  "/oembed-discovery.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-discovery.html"
+   }
+  },
+  "/oembed-not-json.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-not-json.html"
+   }
+  },
+  "/oembed-null.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-null.html"
+   }
+  },
+  "/oembed-partial.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-partial.html"
+   }
+  },
+  "/oembed-rich-noimage.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/oembed-rich-noimage.html"
+   }
+  },
+  "/og-full.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/probe-404.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-404.html"
+   }
+  },
+  "/probe-big-exif.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-big-exif.html"
+   }
+  },
+  "/probe-needed.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-needed.html"
+   }
+  },
+  "/probe-not-image.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-not-image.html"
+   }
+  },
+  "/probe-partial.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-partial.html"
+   }
+  },
+  "/probe-redirect.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-redirect.html"
+   }
+  },
+  "/probe-webp.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/probe-webp.html"
+   }
+  },
+  "/relative-image.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/relative-image.html"
+   }
+  },
+  "/replacement-charset.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/replacement-charset.html"
+   }
+  },
+  "/secure-url-bad.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/secure-url-bad.html"
+   }
+  },
+  "/sjis-header.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=Shift_JIS"
+    ]
+   ],
+   "body": {
+    "file": "html/sjis-header.html"
+   }
+  },
+  "/title-in-body.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/title-in-body.html"
+   }
+  },
+  "/title-only.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/title-only.html"
+   }
+  },
+  "/twitter-only.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/twitter-only.html"
+   }
+  },
+  "/utf16le.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-16"
+    ]
+   ],
+   "body": {
+    "file": "html/utf16le.html"
+   }
+  },
+  "/utf8-bom.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "file": "html/utf8-bom.html"
+   }
+  },
+  "/video-og-type.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/video-og-type.html"
+   }
+  },
+  "/whitespace.html": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/whitespace.html"
+   }
+  },
+  "/xhtml": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/xhtml+xml"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/upper-ct": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "TEXT/HTML; Charset=UTF-8"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/plain": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/plain"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/no-ct": {
+   "status": 200,
+   "headers": [],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/html5-ct": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html5"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/gz": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "gzip"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.gz"
+   }
+  },
+  "/xgz": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     " X-GZIP "
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.gz"
+   }
+  },
+  "/br": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "br"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.br"
+   }
+  },
+  "/deflate": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "deflate"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.zz"
+   }
+  },
+  "/gzip-twice": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "gzip"
+    ],
+    [
+     "content-encoding",
+     "gzip"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.gz"
+   }
+  },
+  "/gzip-corrupt": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "gzip"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.bad-crc.gz"
+   }
+  },
+  "/gzip-truncated": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "gzip"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html.truncated.gz"
+   }
+  },
+  "/unknown-coding": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "content-encoding",
+     "compress"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/empty-gzip.png": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/png"
+    ],
+    [
+     "content-encoding",
+     "gzip"
+    ]
+   ],
+   "body": {
+    "text": ""
+   }
+  },
+  "/empty.png": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/png"
+    ]
+   ],
+   "body": {
+    "text": ""
+   }
+  },
+  "/oversized": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "parts": [
+     {
+      "text": "<html><head><title>Big</title><!--"
+     },
+     {
+      "repeat": "x",
+      "count": 3670016
+     },
+     {
+      "text": "--><meta property=\"og:title\" content=\"too late\"></head></html>"
+     }
+    ]
+   }
+  },
+  "/youtube-like": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "parts": [
+     {
+      "text": "<html><head><script>"
+     },
+     {
+      "repeat": "y",
+      "count": 800000
+     },
+     {
+      "text": "</script><meta property=\"og:title\" content=\"Found after 800 KB\"><meta property=\"og:image\" content=\"/images/a.png\"></head>"
+     }
+    ]
+   }
+  },
+  "/images/a.png": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/png"
+    ]
+   ],
+   "body": {
+    "file": "images/a.png"
+   }
+  },
+  "/images/b.gif": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/gif"
+    ]
+   ],
+   "body": {
+    "file": "images/b.gif"
+   }
+  },
+  "/images/vp8x.webp": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/webp"
+    ]
+   ],
+   "body": {
+    "file": "images/vp8x.webp"
+   }
+  },
+  "/images/vp8l.webp": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/webp"
+    ]
+   ],
+   "body": {
+    "file": "images/vp8l.webp"
+   }
+  },
+  "/images/vp8.webp": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/webp"
+    ]
+   ],
+   "body": {
+    "file": "images/vp8.webp"
+   }
+  },
+  "/images/small.jpg": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/jpeg"
+    ]
+   ],
+   "body": {
+    "file": "images/small.jpg"
+   }
+  },
+  "/images/anim-as-png": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/png"
+    ]
+   ],
+   "body": {
+    "file": "images/anim-as-png"
+   }
+  },
+  "/images/drawing.svg": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/svg+xml"
+    ]
+   ],
+   "body": {
+    "file": "images/drawing.svg"
+   }
+  },
+  "/images/truncated.png": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/png"
+    ]
+   ],
+   "body": {
+    "file": "images/truncated.png"
+   }
+  },
+  "/images/upper": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "IMAGE/PNG"
+    ]
+   ],
+   "body": {
+    "file": "images/a.png"
+   }
+  },
+  "/images/gif-ct-png-bytes": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/gif"
+    ]
+   ],
+   "body": {
+    "file": "images/a.png"
+   }
+  },
+  "/images/octet": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/octet-stream"
+    ]
+   ],
+   "body": {
+    "file": "images/a.png"
+   }
+  },
+  "/images/big-exif.jpg": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "image/jpeg"
+    ]
+   ],
+   "body": {
+    "parts": [
+     {
+      "hex": "ffd8ffe1ffff"
+     },
+     {
+      "repeatHex": "00",
+      "count": 65533
+     },
+     {
+      "hex": "ffe2ffff"
+     },
+     {
+      "repeatHex": "00",
+      "count": 65533
+     },
+     {
+      "hex": "ffc0000b080438078001011100"
+     },
+     {
+      "hex": "ffda0008010100003f00"
+     },
+     {
+      "repeatHex": "00",
+      "count": 32
+     },
+     {
+      "hex": "ffd9"
+     }
+    ]
+   }
+  },
+  "/redirect/to-og": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/og-full.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/abs": {
+   "status": 301,
+   "headers": [
+    [
+     "location",
+     "{origin}/twitter-only.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/relative/deeper": {
+   "status": 307,
+   "headers": [
+    [
+     "location",
+     "../../title-only.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/protocol-relative": {
+   "status": 308,
+   "headers": [
+    [
+     "location",
+     "//{hostport}/entities.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/chain/1": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/chain/2"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/chain/2": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/chain/3"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/chain/3": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/chain/4"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/chain/4": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/chain/5"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/chain/5": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/og-full.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/long/1": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/long/2"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/long/2": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/long/3"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/long/3": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/long/4"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/long/4": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/long/5"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/long/5": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/redirect/long/6"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/long/6": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/og-full.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/no-location": {
+   "status": 302,
+   "headers": [
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/empty-location": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     ""
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/304": {
+   "status": 304,
+   "headers": [
+    [
+     "location",
+     "/og-full.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/300": {
+   "status": 300,
+   "headers": [
+    [
+     "location",
+     "/title-only.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-private": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "http://10.0.0.1/"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-mapped": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "http://[::ffff:10.0.0.1]/"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-metadata": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "http://169.254.169.254/latest/meta-data/"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-localhost": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "http://localhost:{port}/og-full.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-userinfo": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "http://user:pw@{hostport}/og-full.html"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-ftp": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "ftp://{hostport}/x"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/bad-location": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "http://[bad"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-jpeg": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/images/small.jpg"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/to-image": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/images/b.gif"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/redirect/latin1-location": {
+   "status": 302,
+   "headers": [
+    [
+     "location",
+     "/caf\u00c3\u00a9"
+    ],
+    [
+     "content-type",
+     "text/html"
+    ]
+   ],
+   "body": {
+    "text": "<html><head><title>redirect body is never read</title></head></html>"
+   }
+  },
+  "/caf%C3%83%C2%A9": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/status/404": {
+   "status": 404,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/status/500": {
+   "status": 500,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/og-full.html"
+   }
+  },
+  "/status/204": {
+   "status": 204,
+   "headers": [],
+   "body": {
+    "text": ""
+   }
+  },
+  "/status/203": {
+   "status": 203,
+   "headers": [
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "html/twitter-only.html"
+   }
+  },
+  "/oembed/video.json": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/json; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "json/oembed/video.json"
+   }
+  },
+  "/oembed/rich.json": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/json; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "json/oembed/rich.json"
+   }
+  },
+  "/oembed/null.json": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/json; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "json/oembed/null.json"
+   }
+  },
+  "/oembed/array.json": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/json; charset=utf-8"
+    ]
+   ],
+   "body": {
+    "file": "json/oembed/array.json"
+   }
+  },
+  "/oembed/blank.json": {
+   "status": 200,
+   "headers": [
+    [
+     "content-type",
+     "application/json+oembed"
+    ]
+   ],
+   "body": {
+    "file": "json/oembed/blank.json"
+   }
+  }
+ },
+ "unfurl": [
+  "{origin}/bogus-charset.html",
+  "{origin}/charset-late.html",
+  "{origin}/color-invalid.html",
+  "{origin}/color-variants.html",
+  "{origin}/cp1252-meta.html",
+  "{origin}/entities.html",
+  "{origin}/invalid-utf8.html",
+  "{origin}/koi8-http-equiv.html",
+  "{origin}/latin1-header.html",
+  "{origin}/long-text.html",
+  "{origin}/meta-weird.html",
+  "{origin}/no-metadata.html",
+  "{origin}/oembed-404.html",
+  "{origin}/oembed-array.html",
+  "{origin}/oembed-bad-href.html",
+  "{origin}/oembed-blank.html",
+  "{origin}/oembed-discovery.html",
+  "{origin}/oembed-not-json.html",
+  "{origin}/oembed-null.html",
+  "{origin}/oembed-partial.html",
+  "{origin}/oembed-rich-noimage.html",
+  "{origin}/og-full.html",
+  "{origin}/probe-404.html",
+  "{origin}/probe-big-exif.html",
+  "{origin}/probe-needed.html",
+  "{origin}/probe-not-image.html",
+  "{origin}/probe-partial.html",
+  "{origin}/probe-redirect.html",
+  "{origin}/probe-webp.html",
+  "{origin}/relative-image.html",
+  "{origin}/replacement-charset.html",
+  "{origin}/secure-url-bad.html",
+  "{origin}/sjis-header.html",
+  "{origin}/title-in-body.html",
+  "{origin}/title-only.html",
+  "{origin}/twitter-only.html",
+  "{origin}/utf16le.html",
+  "{origin}/utf8-bom.html",
+  "{origin}/video-og-type.html",
+  "{origin}/whitespace.html",
+  "{origin}/xhtml",
+  "{origin}/upper-ct",
+  "{origin}/plain",
+  "{origin}/no-ct",
+  "{origin}/html5-ct",
+  "{origin}/gz",
+  "{origin}/xgz",
+  "{origin}/br",
+  "{origin}/deflate",
+  "{origin}/gzip-twice",
+  "{origin}/gzip-corrupt",
+  "{origin}/gzip-truncated",
+  "{origin}/unknown-coding",
+  "{origin}/empty-gzip.png",
+  "{origin}/empty.png",
+  "{origin}/oversized",
+  "{origin}/youtube-like",
+  "{origin}/images/a.png",
+  "{origin}/images/b.gif",
+  "{origin}/images/vp8x.webp",
+  "{origin}/images/vp8l.webp",
+  "{origin}/images/vp8.webp",
+  "{origin}/images/small.jpg",
+  "{origin}/images/anim-as-png",
+  "{origin}/images/drawing.svg",
+  "{origin}/images/truncated.png",
+  "{origin}/images/upper",
+  "{origin}/images/gif-ct-png-bytes",
+  "{origin}/images/octet",
+  "{origin}/images/big-exif.jpg",
+  "{origin}/redirect/to-og",
+  "{origin}/redirect/abs",
+  "{origin}/redirect/relative/deeper",
+  "{origin}/redirect/protocol-relative",
+  "{origin}/redirect/chain/1",
+  "{origin}/redirect/long/1",
+  "{origin}/redirect/no-location",
+  "{origin}/redirect/empty-location",
+  "{origin}/redirect/304",
+  "{origin}/redirect/300",
+  "{origin}/redirect/to-private",
+  "{origin}/redirect/to-mapped",
+  "{origin}/redirect/to-metadata",
+  "{origin}/redirect/to-localhost",
+  "{origin}/redirect/to-userinfo",
+  "{origin}/redirect/to-ftp",
+  "{origin}/redirect/bad-location",
+  "{origin}/redirect/to-image",
+  "{origin}/redirect/latin1-location",
+  "{origin}/status/404",
+  "{origin}/status/500",
+  "{origin}/status/204",
+  "{origin}/status/203",
+  "{origin}/nothing-here",
+  "{origin}/og-full.html?query=1#fragment",
+  "{origin}/oembed/video.json",
+  "http://localhost:{port}/og-full.html",
+  "http://user@{hostport}/og-full.html",
+  "ftp://{hostport}/og-full.html",
+  "not a url",
+  "{origin}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "  {origin}/title-only.html  "
+ ]
+}

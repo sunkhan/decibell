@@ -1,0 +1,263 @@
+{
+ "invites": [
+  {
+   "url": "decibell://invite/ABCDEFGHIJ",
+   "parsed": {
+    "code": "ABCDEFGHIJ"
+   },
+   "isInvite": true
+  },
+  {
+   "url": "DECIBELL://Invite/ABCDEFGHIJ/",
+   "parsed": {
+    "code": "ABCDEFGHIJ"
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/abcd",
+   "parsed": {
+    "code": "abcd"
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/abc",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "parsed": {
+    "code": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/example.com:8082/abcd1234",
+   "parsed": {
+    "code": "abcd1234",
+    "host": "example.com",
+    "port": 8082
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/[::1]:8082/abcd1234",
+   "parsed": {
+    "code": "abcd1234",
+    "host": "::1",
+    "port": 8082
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/[2001:DB8::1]:1/abcd1234",
+   "parsed": {
+    "code": "abcd1234",
+    "host": "2001:DB8::1",
+    "port": 1
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/[]:1/abcd1234",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/10.0.0.2/8082/abcd1234",
+   "parsed": {
+    "code": "abcd1234",
+    "host": "10.0.0.2",
+    "port": 8082
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/host:0/abcd1234",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/host:65535/abcd1234",
+   "parsed": {
+    "code": "abcd1234",
+    "host": "host",
+    "port": 65535
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/host:65536/abcd1234",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/host:123456/abcd1234",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/1234/5678",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/ABCD EFGH",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/ABCD\nEFGH",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/ABCD-EFGH",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "https://invite/ABCDEFGHIJ",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/ABCDEFGHIJ\n",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": " decibell://invite/ABCDEFGHIJ",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/höst:80/abcd",
+   "parsed": {
+    "code": "abcd",
+    "host": "höst",
+    "port": 80
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite/h　st:80/abcd",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/a:b:80/abcd",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/host:080/abcd1234",
+   "parsed": {
+    "code": "abcd1234",
+    "host": "host",
+    "port": 80
+   },
+   "isInvite": true
+  },
+  {
+   "url": "decibell://invite//80/abcd",
+   "parsed": null,
+   "isInvite": false
+  },
+  {
+   "url": "decibell://invite/ABCD//",
+   "parsed": null,
+   "isInvite": false
+  }
+ ],
+ "media": [
+  {
+   "href": "https://static.klipy.com/x/abc.GIF",
+   "label": "GIF",
+   "isGif": true
+  },
+  {
+   "href": "https://media.giphy.com/media/x/giphy.gif?cid=1",
+   "label": "GIF",
+   "isGif": true
+  },
+  {
+   "href": "https://x.y/a.jpeg#f",
+   "label": "Image",
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.JPG",
+   "label": "Image",
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.png",
+   "label": "Image",
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.webp",
+   "label": "Image",
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.avif",
+   "label": "Image",
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.svg",
+   "label": null,
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.gif.png",
+   "label": "Image",
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.png/",
+   "label": null,
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/%2Egif",
+   "label": null,
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a%2Egif",
+   "label": null,
+   "isGif": false
+  },
+  {
+   "href": "https://x.y/a.gif%20",
+   "label": null,
+   "isGif": false
+  },
+  {
+   "href": "not a url",
+   "label": null,
+   "isGif": false
+  },
+  {
+   "href": "decibell://invite/x.gif",
+   "label": "GIF",
+   "isGif": true
+  },
+  {
+   "href": "https://x.y/.gif",
+   "label": "GIF",
+   "isGif": true
+  }
+ ],
+ "build": "decibell://invite/XYZ123ABCD"
+}
