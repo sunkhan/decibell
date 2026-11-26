@@ -66,10 +66,16 @@ screens in all seven themes beside Electron's.
 | State model, both halves integrated | done `8ebaa28`: 176 unit tests, 16 stack tests; signed in with `#general` open and 100 users watched: 19.6 MB private, 0.17 wakeups/s; Windows check run 45833447742 green |
 | Text inputs (`decibell_text::input`: `InputState`, `TextInput`, `TextArea`; the kit's `TextField` is a working field) + GPUI patch 0012 (physical key codes on key events) | done `5d634f1` + `b374268`: Chromium's caret / word stops and undo steps (51 of 52 recorded cases identical), atoms, IME protocol, password, byte caps; hotkeys recorder and focused fallback on physical codes, tested under xkb `tr` / `de`; self-tests `input-*`, `hotkeys-layout` |
 | Message list and rows (`crates/decibell-chat`) | done `1b192c8`: one element, exact row heights, anchored by coordinates (0 px on a history page: `chat-history`), sliced measuring, selection across rows, Chromium wheel scrolling; 185 fixture rows equal Electron's heights to 1/64 px in four themes (console themes: 4 day-opening rows off by 1/32 px); scroll at 280 Hz under load: p50 3.57 / p99 4.07 ms, 2 missed of 1,680 (Electron 14); slots for attachments, embeds, editor, composer |
-| Chat content (attachments, link / invite embeds, image viewer, Transfers panel) | in progress, worktree `.worktrees/chat-content` (`wip/chat-content`) |
-| Composer, emoji / GIF pickers, inline editor (`decibell-composer`) | in progress, worktree `.worktrees/composer` (`wip/composer`) |
-| DMs, friends, profile popup / modal, custom status, user menu (`decibell-home`) | in progress, worktree `.worktrees/home` (`wip/home`) |
-| Server Settings, Channel Settings, picture editor (`decibell-server-settings`, `decibell-picture-editor`) | in progress, worktree `.worktrees/server-settings` (`wip/server-settings`) |
+| Chat content (attachments, link / invite embeds, image viewer, Transfers panel: `decibell-chat-content`) | merged (15 commits ending `d533496`): the picture pipeline (ThumbHash placeholder → decoded at the drawn size off the UI thread, byte-bounded caches, GIFs animate only while visible), attachment cards, embeds, invite cards, the viewer, Transfers; rows equal Electron's heights with content in place (`content-rows`); its ten `content-*` self-tests passed on its branch. Open: Copy image on Linux (GPUI patch, `wip/platform`), inline video / audio playback (`wip/media`) |
+| Composer, emoji / GIF pickers, code / math panels, inline editor (`decibell-composer`) | merged (nine commits ending `9e98484`'s pick): typing costs one frame per key; picker opens in 42 ms and draws nothing at rest. Open with `wip/integrate-c`: the composer in the DM pane, send pacing under latency (`composer-burst`), type-to-focus at the root; `composer-typing-cost` needs GPUI patch 0014 (merged: re-run) |
+| DMs, friends, profile popup / modal, custom status, user menu (`decibell-home`) | merged (five commits): its ten self-tests passed on its branch (49 / 49 in its full run). Open with `wip/integrate-c`: the owner's DM read rule (CLAUDE.md), one user menu with the voice entries, the emoji picker in the status dialog |
+| Server Settings, Channel Settings, picture editor (`decibell-server-settings`, `decibell-picture-editor`) | merged (five commits ending `4fae600`'s pick): every tab, saves settling on the echo, the leave guard, the editor (EXIF upright); its eleven self-tests passed on its branch. Open: the avatar caller in Settings → Account (`PictureEvent::ChangeAvatar` → `PictureEditor`), Alt+arrow role reordering |
+| Channel header + message search (`decibell-search`) | merged (ten commits ending `c90684e`'s pick): header with the E2EE badge, search box with chips / suggestions / date picker, results panel with Jump; the grammar equals the renderer's TypeScript on 108 cases; 9 of its 11 self-tests passed on its branch (`search-typing-cost` needs patch 0014: re-run; `search-idle` is sensitive to the shared stack) |
+| Servers: browse / join, invites, server menu, channel create / reorder, welcome banner (`decibell-servers`) | in progress, worktree `.worktrees/servers` (`wip/servers`) |
+| Platform: Copy image on Linux and the keyring label (GPUI patches from 0015), dev builds off the real profile, single instance, `decibell://` arguments, `--hotkey=`, attention, taskbar progress, window state (`decibell-platform`) | in progress, worktree `.worktrees/platform` (`wip/platform`) |
+| Media playback of attachments (`decibell-media`) | in progress, worktree `.worktrees/media` (`wip/media`) |
+| Core audio: interface sounds, the mic test outside voice, device changes without polling, the click audit's fixes | in progress, worktree `.worktrees/core-audio` (`wip/core-audio`) |
+| Conversations joined (`wip/integrate-c`): DM read rule, composer in DMs, one user menu, pacing, type-to-focus, regional sweep, headless `register` | in progress, worktree `.worktrees/integrate-c` |
 | Regional formats (`decibell_model::regional`: dates, times of day and counts follow the system's settings; English words) | done `1d2e9e1` (owner decision 2026-11-26 in CLAUDE.md): chat stamps, day dividers, member counts, ban expiry; 42 stamp cases equal the renderer's under en-US; self-test `regional` reads the drawn labels under four environments; Windows path compiled only. **Sweep each crate that merges later** with the grep in CONVENTIONS "Regional formats" |
 | Video crate (`crates/decibell-video`, GPUI patches 0005 / 0006, `tools/build-ffmpeg.sh`, `tools/streamgen/`) | done `a7d5232`: Vulkan Video decode of H.264 / HEVC / AV1 on GPUI's device, software fallback, device-loss recovery, `VideoView`; self-tests `video-hw`, `video-idle`, `video-two`, `video-sw`, `video-recover`, `video-switch`; numbers in §4 "Stream playback". Not yet wired into the app's registry / boot on the branch (the lines are in the main tree's working files with the shell work) |
 | Video, part 2: NVDEC and VA-API hardware fallbacks, decoder order and failure handling, a capability probe that really decodes, retained frames in the renderer (GPUI patch 0007) | done `7266df6`..`825cb99`: Vulkan Video, then NVDEC on NVIDIA / VA-API elsewhere, then software; `DECIBELL_VIDEO_DECODER` forces one; all three hardware decoders ran here for H.264 / HEVC / AV1 and match software decode pixel for pixel; 17 self-tests passed one at a time on the merged tree (load 4–11). AMD / Intel unrun: `docs/video-owner-checks.md`. Open: the probe is not called by the app yet, queue depth under a starved decoder thread, both with `wip/integrate-b` |
@@ -105,15 +111,12 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/server-settings` / `wip/server-settings` | Server Settings and Channel Settings windows, the picture editor |
-| `.worktrees/chat-content` / `wip/chat-content` | attachments, embeds, image viewer, Transfers panel |
-| `.worktrees/composer` / `wip/composer` | composer, pickers, inline editor |
-| `.worktrees/home` / `wip/home` | DMs, friends, profiles, user menu |
-| `.worktrees/integrate-a` / `wip/integrate-a` | settings integration: real inputs, recorder on physical codes, regional formats, kit gaps, model asks |
-| `.worktrees/integrate-b` / `wip/integrate-b` | video / voice integration: probe wiring, encoder caps, queue depth, stall state, cursor hiding, nested cached views, two-stream numbers |
 | `.worktrees/servers` / `wip/servers` | browse / join, invites, server menu, channel create / reorder, category-sync prompt, welcome banner |
-| `.worktrees/search` / `wip/search` | channel header, search box, date picker, results panel |
-| `.worktrees/land` / `wip/land` | the architect's landing tree: composer and home stacked on the branch head, not yet compiled |
+| `.worktrees/integrate-c` / `wip/integrate-c` | conversations joined: DM read rule, composer in DMs, one user menu, pacing, type-to-focus, headless `register` |
+| `.worktrees/platform` / `wip/platform` | GPUI patches 0015+ (clipboard image write, keyring label), single instance, links, attention, progress, window state |
+| `.worktrees/media` / `wip/media` | attachment video / audio playback; extends the shared FFmpeg prefix (every target dir then needs `cargo clean -p ffmpeg-sys-next`) |
+| `.worktrees/core-audio` / `wip/core-audio` | interface sounds, mic test, device events, click fixes (touches `crates/decibell-core`: Electron's bar + Windows check after merging) |
+| `.worktrees/land` / `wip/land` | the architect's landing tree (see below): empty of unmerged work when this was written |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
 clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
@@ -288,6 +291,31 @@ target/release/decibell & ../tools/perf/winctl.sh unfocus $!
 | `assets/fonts/static/`, `tools/gen-fonts.{sh,py}` | The static font faces GPUI loads, cut from the variable fonts in `assets/fonts/` |
 | `assets/icons/` | SVG icons, embedded by `decibell-ui`'s build script |
 | `.github/workflows/win-native-check.yml` (job `gpui-client`) | `cargo check` of this workspace on Windows; log on the `ci/win-gpui-check-log` branch |
+
+### Test runs and the owner's desktop (2026-11-26)
+
+- **The keyring.** Until `5d8e124` every run of the app with a throwaway profile stored its at-rest key in the
+  desktop keyring (606 items in one afternoon, labelled `zed-github-account` by GPUI; the owner had them removed).
+  A development build (`dev-local` or debug) now keeps the key in `<profile>/dev-local.key`
+  (`decibell_model::local_key::FileKey`); only `DECIBELL_DEV_KEYCHAIN=real` reaches the keychain, and only the
+  no-keyring self-test sets it, on its private bus. Never start the headless client with `--keychain` on the
+  session bus. The label itself is fixed by a GPUI patch in `wip/platform`.
+- **The local central's per-address limits.** 10 sign-ups per address, one more every 2 minutes
+  (`src/server/abuse_limits.hpp`), likewise sign-in attempts and connections. A development build therefore
+  connects to a loopback server from a loopback address of its own, one per process (`9b15e5a`, the core's
+  `net/connection.rs`; `DECIBELL_DEV_SHARED_SOURCE` turns it off), as central's own test harness does.
+- **Always pass `DECIBELL_USER_DATA_DIR`** to anything that starts the core: one run without it created the real
+  profile directory `~/.config/decibell` (removed; `wip/platform` moves a development build's default profile
+  under `~/.cache/decibell-dev/`).
+- **Shared accounts and channels.** The voice self-tests use perf3 / perf4 and "Lounge"; the stream bots use perf4 /
+  perf5 (perf5 was added by `tools/dev/local-stack.sh top-up`: "Daily Gaming" has 299 members now, which
+  `shell-members` must not hard-code). Two runs at once interfere: rerun alone before believing a failure.
+- **Focus and the pointer.** Test windows open on the owner's desktop: idle, hover and focus tests fail when another
+  window takes the focus or the real pointer rests over the test window. Running the self-tests inside a private
+  headless compositor (`dbus-run-session` + `kwin_wayland --virtual`, tried twice) hung without output and left
+  the nested compositor holding the output pipe; if tried again, write output to a file, start it with `setsid`
+  and stop it by PID. The final runs are to be taken with no other agent running.
+- **The clipboard** was overwritten once by a test (a PNG); tests that write it must save and restore it.
 
 ### Self-tests need the headless client built beside the app
 
