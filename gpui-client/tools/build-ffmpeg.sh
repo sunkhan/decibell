@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Builds the GPUI client's FFmpeg into gpui-client/vendor/ffmpeg: a static, LGPL prefix that the
 # whole client links once, for decode (crates/decibell-video: H.264 / HEVC / AV1 through Vulkan
-# Video, NVDEC and VAAPI hwaccels, FFmpeg's software H.264 / HEVC, dav1d for AV1) and for encode
+# Video, NVDEC and VAAPI hwaccels, FFmpeg's software H.264 / HEVC, dav1d for AV1), for encode
 # (crates/decibell-core: NVENC, VAAPI with scale_vaapi for the GPU conversion, and SVT-AV1, the
-# software encoder of a machine with no working hardware one). gpui-client/.cargo/config.toml points
+# software encoder of a machine with no working hardware one) and for playing video and audio
+# attachments (crates/decibell-media: the demuxers, parsers and audio / VP8 / VP9 decoders of its
+# codec matrix, docs/media-design.md §2; every entry there is a format the Electron client plays). gpui-client/.cargo/config.toml points
 # pkg-config at the prefix. Why static, why this version: gpui-client/docs/video-design.md §9; what
 # the encoders need: crates/decibell-core/tools/ffmpeg-encoders.md.
 #
@@ -98,6 +100,12 @@ CONFIGURE_FLAGS=(
   --enable-encoder=libsvtav1
   --enable-filter=scale,scale_vaapi
   --enable-protocol=file
+  # Attachment playback (crates/decibell-media): exactly its codec matrix, docs/media-design.md §2.
+  --enable-demuxer=mov,matroska,ogg,mp3,wav,flac,aac
+  --enable-parser=vp8,vp9,aac,mpegaudio,opus,vorbis,flac
+  --enable-decoder=vp8,vp9
+  --enable-decoder=aac,mp3float,opus,vorbis,flac
+  --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw
 )
 for flag in "${CONFIGURE_FLAGS[@]}"; do
   case "$flag" in
@@ -236,7 +244,10 @@ for component in H264_DECODER HEVC_DECODER AV1_DECODER LIBDAV1D_DECODER \
     H264_VULKAN_HWACCEL HEVC_VULKAN_HWACCEL AV1_VULKAN_HWACCEL \
     H264_NVENC_ENCODER HEVC_NVENC_ENCODER AV1_NVENC_ENCODER \
     H264_VAAPI_ENCODER HEVC_VAAPI_ENCODER AV1_VAAPI_ENCODER LIBSVTAV1_ENCODER \
-    SCALE_FILTER SCALE_VAAPI_FILTER; do
+    SCALE_FILTER SCALE_VAAPI_FILTER \
+    MOV_DEMUXER MATROSKA_DEMUXER OGG_DEMUXER MP3_DEMUXER WAV_DEMUXER FLAC_DEMUXER AAC_DEMUXER \
+    VP8_DECODER VP9_DECODER AAC_DECODER MP3FLOAT_DECODER OPUS_DECODER VORBIS_DECODER FLAC_DECODER \
+    PCM_S16LE_DECODER PCM_S24LE_DECODER PCM_F32LE_DECODER; do
   grep -q "^#define CONFIG_$component 1$" config_components.h || die "configure left out $component"
 done
 
