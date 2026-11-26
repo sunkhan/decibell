@@ -139,7 +139,8 @@ impl Devices {
         cx.notify();
     }
 
-    pub(crate) fn set_list(&mut self, result: Result<Vec<Device>, SharedString>, cx: &mut Context<Self>) {
+    /// The loaded list, or why it could not be loaded (the core's answer; screens seed it).
+    pub fn set_list(&mut self, result: Result<Vec<Device>, SharedString>, cx: &mut Context<Self>) {
         match result {
             Ok(list) => {
                 self.list = Some(list);
