@@ -948,6 +948,16 @@ impl MessageList {
         self.core.position(Self::now(cx), scale)
     }
 
+    /// The message flashing after a jump landed on it (for 1.6 s), if any.
+    pub fn highlighted(&self) -> Option<i64> {
+        self.highlighted
+    }
+
+    /// A jump waits for its target's page.
+    pub fn jump_pending(&self) -> bool {
+        self.pending_jump.is_some()
+    }
+
     /// Screen y (px from the list's top, on device pixels) of row `id`, for the self-tests.
     pub fn row_screen_y(&self, id: i64) -> Option<f32> {
         let index = self.core.index_of_id(id)?;

@@ -40,6 +40,12 @@ pub fn init(cx: &mut gpui::App) {
     decibell_shell::register_pane(cx, decibell_shell::Slot::Chat, |window, cx| cx.new(|cx| ChatPane::for_active_channel(window, cx)).into());
 }
 
+/// The message list of the chat pane that was shown last, while it lives (search's jump checks it
+/// lands; the live benchmark drives it).
+pub fn shown_list(cx: &gpui::App) -> Option<gpui::Entity<MessageList>> {
+    cx.try_global::<pane::ShownList>().and_then(|shown| shown.0.upgrade())
+}
+
 /// The chat screens (with the `fixtures` feature).
 pub fn screens() -> Vec<decibell_harness::Screen> {
     #[cfg(feature = "fixtures")]
