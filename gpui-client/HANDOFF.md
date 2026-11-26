@@ -113,6 +113,7 @@ linked (all git-excluded through `.git/info/exclude`).
 | Worktree / branch | Work |
 |---|---|
 | `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
+| `.worktrees/windows` / `wip/windows` | the Windows batch: D3D11 external surfaces (GPUI patches from 0020), D3D11VA decode, Go Live's source list, idle on Windows, the gap table, `docs/windows-owner-checks.md`; works in rounds: I merge + push each checkpoint and send back the CI log |
 | `.worktrees/platform` / `wip/platform` | GPUI patches 0015+ (clipboard image write, keyring label), single instance, links, attention, progress, window state |
 | `.worktrees/media` / `wip/media` | attachment video / audio playback; extends the shared FFmpeg prefix (every target dir then needs `cargo clean -p ffmpeg-sys-next`) |
 | `.worktrees/core-audio` / `wip/core-audio` | interface sounds, mic test, device events, click fixes (touches `crates/decibell-core`: Electron's bar + Windows check after merging) |
@@ -442,13 +443,14 @@ agents compiling): load average 14.5 / 8.3 / 3.3 / 9.3 at the start of startup /
 - Startup is the window with the shell booting (the core reads its configuration and signs in with the saved sign-in
   meanwhile: `decibell: signed-in` follows ~0.3 s later in the dev markers).
 
-**Windows compile status**: Windows Native Check run 45875216424 (`f8a6ec5`) is green for both jobs: `check` (the
-addon and the core, with the encoder-quality changes to the `cfg(windows)` encoder code) and `gpui-client`
-(`fetch-gpui.sh` with all ten patches + `cargo check --locked --workspace --all-targets` of every client crate
-then on the branch — including video part 2, the voice view and settings — with the client's own FFmpeg built by
-vcpkg from `tools/vcpkg-overlay`: FFmpeg 8.0.1 + SVT-AV1 4.2.0 + dav1d 1.5.3 with its MSVC 19.5x fix; first green
-with that overlay: run 45865452333). Not yet compiled on Windows: the composer and `decibell-home`. Nothing has
-run on Windows; self-tests and unit tests run on Linux only.
+**Windows compile status**: Windows Native Check run 45891637575 (`da3eeba`) is green for both jobs: `check` (the
+addon and the core, with the leave fix and the per-process loopback source) and `gpui-client` (`fetch-gpui.sh` with
+all twelve patches + `cargo check --locked --workspace --all-targets` of every client crate on the branch at that
+commit: chat content, composer, home, settings, server settings, picture editor, servers, search, voice, video,
+with the client's own FFmpeg from `tools/vcpkg-overlay`). **Compiling is all that is known on Windows**: stream
+video, hardware decode, Go Live's source list and the desktop services there are being written by `wip/windows`
+and `wip/platform` (owner decision 2026-11-26 in CLAUDE.md: real implementations, tested by the owner from
+`docs/windows-owner-checks.md`). Self-tests and unit tests run on Linux only until that work adds them to CI.
 
 ### Stream playback (`crates/decibell-video`, 2026-11-26)
 

@@ -188,6 +188,13 @@ push, wait for it to go green, then tag (HANDOFF §5.15).
   format still overrides 12 / 24 h. Never format a date, a time of day or a count by hand in
   `gpui-client/`. Electron formats by its UI language through `Intl` (Chromium ignores the OS's format
   setting) and isn't changed by this.
+- **Native client on Windows: real implementations, compile-checked here, tested by the owner** (owner,
+  2026-11-26). The native client is to replace Electron on Windows too. A session on Linux can't run
+  Windows code, so every Windows side (stream video and D3D11VA decode, Go Live's source list, the desktop
+  services) is written against the pinned sources, compiled by the Windows Native Check (which also runs
+  whatever a GPU-less runner can run) and listed step by step in `gpui-client/docs/windows-owner-checks.md`.
+  A Windows stub that reports "unsupported" is a missing feature, not a finished one; a parity row that
+  only compiles on Windows is "needs owner", never "done".
 - **Native client: a DM is marked read only while it is being read** (owner, 2026-11-26: "That's how
   Discord does it"). A conversation's messages are marked read only while it is the open view, the window
   is focused **and** its list is scrolled to the bottom. A message that arrives otherwise stays unread (row
