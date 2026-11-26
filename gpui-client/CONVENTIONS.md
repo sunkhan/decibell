@@ -714,7 +714,9 @@ matrix, the engine, the no-pop rule and its tests).
   `every_file_of_the_matrix_plays_to_its_end`, its components in `tools/build-ffmpeg.sh` **and** in
   `decibell-app/build.rs`'s lists, and a line in `media-design.md` §2 saying that Chromium plays it.
 - Self-tests `media-idle`, `media-video-play`, `media-audio-play`, `media-persist` (the content fixture's
-  `#clips` channel, memory sources; `DECIBELL_MEDIA_CLIP=<file>` makes the video cards play that file).
+  `#clips` channel, memory sources; `DECIBELL_MEDIA_CLIP=<file>` makes the video cards play that file) and
+  `media-live` (the local stack as `perf2`: uploads a clip to `#off-topic`, plays it from the attachment
+  service, deletes the message).
 
 ## GPUI gotchas met so far
 

@@ -71,6 +71,11 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(fixture_parent(cx, "content-rows")),
         },
         SelfTest {
+            name: "media-live",
+            about: "#off-topic (local stack): a clip uploaded as perf2 plays from the attachment service's range reader (picture, sound into the null sink, a seek), then the message is deleted",
+            run: |cx| Box::pin(parent(cx, "media-live")),
+        },
+        SelfTest {
             name: "media-idle",
             about: "video and audio cards on screen, nothing playing: 0 frames in 5 s, no player, decoder or sink thread",
             run: |cx| Box::pin(fixture_parent(cx, "media-idle")),
@@ -104,6 +109,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "content-invite", about: "(in the app)", run: |cx| Box::pin(check_invite(cx)) },
         SelfTest { name: "content-rows", about: "(in the app)", run: |cx| Box::pin(check_rows(cx)) },
         SelfTest { name: "content-scroll-fixture", about: "(in the app)", run: |cx| Box::pin(check_scroll_fixture(cx)) },
+        SelfTest { name: "media-live", about: "(in the app)", run: |cx| Box::pin(check_media_live(cx)) },
         SelfTest { name: "media-idle", about: "(in the app)", run: |cx| Box::pin(check_media_idle(cx)) },
         SelfTest { name: "media-video-play", about: "(in the app)", run: |cx| Box::pin(check_media_video(cx)) },
         SelfTest { name: "media-audio-play", about: "(in the app)", run: |cx| Box::pin(check_media_audio(cx)) },
@@ -205,6 +211,8 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
         .env("DECIBELL_TEST_PROBES", "1")
         .env("DECIBELL_TEST_INVITE", design_invite)
+        // Nothing a self-test plays is audible.
+        .env("DECIBELL_MEDIA_OUTPUT", "null")
         .env_remove("DECIBELL_PERF")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1405,5 +1413,106 @@ async fn check_media_persist(cx: TestCx) -> Result<()> {
     }
     .await;
     let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+/// The real path: a clip uploaded to the local stack, played through the attachment service's
+/// reader (range requests on demand), then deleted.
+async fn check_media_live(cx: TestCx) -> Result<()> {
+    ensure!(std::env::var("DECIBELL_MEDIA_OUTPUT").is_ok_and(|v| v == "null"), "media self-tests run with DECIBELL_MEDIA_OUTPUT=null");
+    let (channel, list) = open_channel(&cx, "off-topic").await?;
+    let name = format!("selftest-clip-{}.mp4", std::process::id());
+    let clip = include_bytes!("../../decibell-media/tests/assets/sync60.mp4");
+    let newest_before = cx.update(|_, cx| list.read(cx).visible_ids().last().copied().unwrap_or(0))?;
+    cx.update(|_, cx| {
+        let source = decibell_attachments::upload::UploadSource::Memory { name: name.clone(), mime: "video/mp4".into(), data: bytes::Bytes::from_static(clip) };
+        actions::chat::attach_file(daily_gaming(), channel.clone(), source, cx);
+    })?;
+    let ch = channel.clone();
+    wait_for(&cx, Duration::from_secs(15), "the clip to be attached", move |cx| model(cx).chat.composer.read(cx).for_channel(daily_gaming(), &ch).count() > 0).await?;
+    cx.update(|_, cx| actions::chat::send_message(daily_gaming(), channel.clone(), "", 0, cx))?;
+    let (l, n) = (list.clone(), name.clone());
+    wait_for(&cx, Duration::from_secs(30), "the clip's echo", move |cx| {
+        let l = l.read(cx);
+        l.visible_ids().into_iter().any(|id| id > newest_before && l.row(id).is_some_and(|(m, _)| m.attachments.iter().any(|a| *a.filename == *n)))
+    })
+    .await?;
+    let (message, attachment) = cx
+        .update(|_, cx| {
+            let l = list.read(cx);
+            l.visible_ids().into_iter().find_map(|id| {
+                let (m, _) = l.row(id)?;
+                let a = m.attachments.iter().find(|a| *a.filename == *name)?;
+                Some((id, a.id))
+            })
+        })?
+        .context("the clip's message")?;
+    cx.log(format_args!("posted message {message} with attachment {attachment} ({} KB)", clip.len() / 1024));
+    let result = async {
+        // Its card is the newest row: wait until its surface is drawn, then click it.
+        cx.update(|_, cx| {
+            if let Some(hosts) = cx.try_global::<crate::player::VideoHosts>() {
+                hosts.bounds.borrow_mut().clear();
+            }
+            cx.notify(list.entity_id());
+        })?;
+        wait_for(&cx, Duration::from_secs(10), "the clip's card", move |cx| {
+            cx.try_global::<crate::player::VideoHosts>().is_some_and(|hosts| hosts.bounds.borrow().contains_key(&attachment))
+        })
+        .await?;
+        let at = cx.update(|_, cx| cx.try_global::<crate::player::VideoHosts>().and_then(|hosts| hosts.bounds.borrow().get(&attachment).map(|b| b.center())))?.context("no box")?;
+        let playback = cx.update(|_, cx| crate::playback::Playback::global(cx))?.context("no playback")?;
+        let hub = cx.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+        let stream = hub.stream(&format!("media:{}:{attachment}", daily_gaming().wire()));
+        let clicked = Instant::now();
+        cx.click(at)?;
+        let s = stream.clone();
+        wait_for(&cx, Duration::from_secs(15), "the first picture from the server", move |_| s.stats().presented > 0).await?;
+        let first = clicked.elapsed();
+        let p = playback.clone();
+        wait_for(&cx, Duration::from_secs(10), "a second and a half of it", move |cx| p.read(cx).video_times().0 >= 1_500_000).await?;
+        let stats = stream.stats();
+        let (_, duration) = cx.update(|_, cx| playback.read(cx).video_times())?;
+        cx.log(format_args!(
+            "from the attachment service: first picture {} ms after the click, {} pictures in the first 1.5 s, decoded with {}, duration {:.2} s, threads {:?}",
+            first.as_millis(),
+            stats.published,
+            stats.backend.map_or("no decoder", |b| b.label()),
+            duration as f64 / 1e6,
+            media_threads()
+        ));
+        ensure!((59_000_000..=61_000_000).contains(&duration), "duration {duration}");
+        // A seek far ahead is a range request where the reader lands.
+        let (n, sought) = (stream.stats().published, Instant::now());
+        cx.update(|_, cx| playback.update(cx, |p, cx| p.seek_video_to(45_000_000, cx)))?;
+        let s = stream.clone();
+        wait_for(&cx, Duration::from_secs(15), "the picture of the seek", move |_| s.stats().published > n).await?;
+        let p = playback.clone();
+        wait_for(&cx, Duration::from_secs(10), "playback after the seek", move |cx| p.read(cx).video_times().0 >= 45_500_000).await?;
+        cx.log(format_args!("seek to 45 s: picture after {} ms, playing on", sought.elapsed().as_millis()));
+        // The same file as sound alone (what an audio attachment's player does with the reader).
+        let audio = cx.update(|_, cx| model(cx).chat.audio.clone())?;
+        cx.update(|_, cx| {
+            let mut media = fixture_media(attachment);
+            media.channel = channel.clone();
+            audio.update(cx, |a, cx| a.set_active(Some(media), cx));
+        })?;
+        let a = audio.clone();
+        wait_for(&cx, Duration::from_secs(15), "the sound from the server", move |cx| a.read(cx).playing && a.read(cx).time_secs > 0.5).await?;
+        cx.log("the same attachment as sound alone: playing");
+        cx.update(|_, cx| {
+            let m = model(cx);
+            m.chat.video.update(cx, |v, cx| v.set_active(None, cx));
+            m.chat.audio.update(cx, |a, cx| a.set_active(None, cx));
+        })?;
+        wait_for(&cx, Duration::from_secs(10), "the players' threads to end", |_| media_threads().is_empty()).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    // Delete it whatever happened.
+    cx.update(|_, cx| actions::chat::delete_message(daily_gaming(), channel.clone(), message, cx))?;
+    let l = list.clone();
+    wait_for(&cx, Duration::from_secs(15), "the clip's message to go", move |cx| l.read(cx).row(message).is_none()).await?;
+    cx.log(format_args!("deleted message {message}"));
     result
 }

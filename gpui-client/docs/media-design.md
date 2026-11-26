@@ -83,7 +83,8 @@ them (the decoders in `libavcodec.a`, the demuxers in `libavformat.a`, `libswres
 |---|---|---|
 | The prefix (`vendor/ffmpeg`, static archives with symbols) | 79 MB | 93 MB |
 | `libavcodec.a` / `libavformat.a` | 23.9 / 2.0 MB | 35.3 / 5.0 MB |
-| `decibell` (release, stripped, `dev-local`), same sources, old → new prefix | 81,809,000 B | see `HANDOFF.md` §4 |
+| `decibell` (release, stripped, `dev-local`), the same sources linked against each prefix | 81,809,000 B | 85,716,456 B (**+3.9 MB**, +4.8 %) |
+| The same with the engine, the players and their self-tests in it | | 86,258,696 B (+0.5 MB of ours) |
 
 Windows: vcpkg's FFmpeg is not built with `--disable-everything`; with its default features (`avformat`,
 `swresample`, which the build script now checks) it has every row. No overlay or workflow change.
@@ -188,6 +189,32 @@ By ear this cannot be judged in an agent session: the owner's listening checks a
   second apart (`every_file_of_the_matrix_plays_to_its_end`, 21 files); a sealed file plays from a reader that
   decrypts 64 KiB chunks in memory, by range (2 of 60 s read less than half the file).
 
+### In the app (release build, the content fixture's `#clips`, the null audio sink; `media-*` self-tests)
+
+| | `sync60.mp4` (64 × 16, 25 fps) | 1080p60 H.264, 11.4 Mbit/s (`DECIBELL_MEDIA_CLIP`) |
+|---|---|---|
+| Decoder | Vulkan Video | Vulkan Video (`nvidia-smi` decoder utilisation 7 % while it played) |
+| Click → first picture on screen | 50 ms | 62 ms |
+| Pictures published, 4 s, controls hidden | 100 (25.00 / s), 0 dropped | 241 (60.2 / s), 0 dropped |
+| Frames the window drew meanwhile | **0** (100 presents of the kept scene) | **0** (120 presents: the self-test's window is unfocused and has GPUI's default 30 fps inactive cap, `video-design.md` §7; the app's main window has none) |
+| CPU while playing, whole process | 1.5 % of a core | 3.0 % of a core |
+| Wakeups / s: UI thread, decoder thread, control thread, the null sink | 125, 51, 25, 100 | 148, 127, 60, 100 |
+| Paused 3 s | 0 pictures, 0 frames, 0 presents, 0 ms of CPU in the player's threads, the sink thread gone | the same |
+| Seek to 2 s before the end → picture | 50 ms | 25 ms |
+| Private memory before / playing / after it was dropped | 150.4 / 157.4 / 151.3 MB (+0.8) | 186.0 / 244.2 / 198.3 MB (**+12.3**: the 43 MB clip is held in memory by the self-test's source and read through; the difference that stays is not explained yet, §8) |
+
+`media-idle`: video and audio cards on screen, nothing playing, 5 s: 0 frames drawn, 0 presented, no playback
+thread, 0 decoder threads. `media-persist`: the row scrolled away for 2 s, the position goes on (0.73 → 2.73 s)
+and 0 pictures are published; scrolled back, pictures again; a second video replaces the first and an audio
+attachment plays beside it (two players); another channel stops both and no thread is left.
+`media-live` (the local stack, signed in as `perf2`): a 133 KB clip uploaded to `#off-topic`, its card clicked:
+first picture 58 ms later **from the attachment service's range reader**, Vulkan Video, duration 60.00 s; a seek
+45 s ahead shows its picture after 558 ms (a new range request, then the decode from the keyframe 5 s before the
+target); the same attachment as sound alone plays; the message is deleted again.
+`media-audio-play`: sound 526 ms after the click (the 100 ms pre-buffer and the mirrored time's first tick), a
+pause leaves 0 frames and no sink thread, a seek to 58 s lands, the end is the end. Load average 5–10 during
+these runs (other agents' builds).
+
 ## 6. Test media (`crates/decibell-media/tests/assets`, 376 KB)
 
 Made by `tests/assets/make.py` with the system's `ffmpeg` and committed: a 16-cell barcode of the frame number
@@ -211,9 +238,13 @@ the pointer over the whole window while the button is held).
   Space on a focused audio card; the audio card's "Failed to load" line (the play button just stops); the
   last-frame poster after playing; switching DM conversations does not stop playback (only a channel change
   does: DMs have no `active_channel`).
+- **To look at**: 12 MB of private memory stay after a 1080p60 clip was played and dropped (0.8 MB after the
+  64 × 16 one): the decoder's and the slots' GPU allocations are freed with the stream (`live_textures` is 0);
+  what stays is not attributed yet (the allocator's retained arenas from the 43 MB in-memory test source and
+  FFmpeg's buffer pools are the candidates). Measure with the real reader before calling it a leak.
 - **Gaps against Chromium**: 10-bit video (needs 16-bit slots or a conversion in the software path); rotation
   metadata (a phone's portrait video is drawn as stored: GPUI's surfaces do not rotate); VP9 / VP8 hardware
   decode; a device whose default sample rate changes mid-file (the file goes on silently; the next one is
   right).
-- **Not measured in the app yet**: see `HANDOFF.md` §4 / §5 for what the self-tests and `tools/perf` runs
-  still owe.
+- **Not run**: see `HANDOFF.md` §5 (a sealed attachment against the local stack, the Electron comparison,
+  the captures against Electron pages, AMD / Intel, Windows).
