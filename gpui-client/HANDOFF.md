@@ -98,7 +98,7 @@ screens in all seven themes beside Electron's.
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
-| Desktop integration (`crates/decibell-platform`, GPUI patches `0015`–`0018`; branch `wip/platform`) | done on Linux (2026-11-26), every job of Electron's main process accounted for in §1b: one instance per profile (a second start hands its `decibell://` link or `--hotkey` over in ~20 ms and exits), links as the pending invite before sign-in, `--hotkey` from a second start, the taskbar flash on an incoming call (not under DND), launcher progress, the upload quit guard and paused downloads at quit, window state, sleep / lock → Away, Copy image on Wayland and X11 (patch `0015`), the keyring label `Decibell` (`0016`), development builds off the shipped profile. Self-tests `content-copy-image`, `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`, `keyring-label`, `window-state`, `profile-guard` (results: §4 "Desktop integration"). Windows: §5 "Windows batch". By hand: §6 |
+| Desktop integration (`crates/decibell-platform`, GPUI patches `0015`–`0019`; branch `wip/platform`) | done on Linux (2026-11-26), Windows written for real and compiled only, every job of Electron's main process accounted for in §1b: one instance per profile (a second start hands its `decibell://` link or `--hotkey` over in ~20 ms and exits), links as the pending invite before sign-in, `--hotkey` from a second start, the taskbar flash on an incoming call (not under DND), launcher progress, the upload quit guard and paused downloads at quit, window state, sleep / lock → Away, Copy image on Wayland and X11 (patch `0015`), the keyring label `Decibell` (`0016`), development builds off the shipped profile. Self-tests `content-copy-image`, `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`, `keyring-label`, `window-state`, `profile-guard` (results: §4 "Desktop integration"). Windows: §5 "Windows batch". By hand: §6 |
 | Packaging, auto-update, crash reports | not started (the desktop entry for packaging: `assets/linux/decibell.desktop`) |
 
 ## 1a. Worktrees in use (check `git worktree list`; merge or remove each when its work reports)
@@ -132,8 +132,8 @@ CONVENTIONS "Platform").
 
 | Main process (file) | What it did | Here | State / owner |
 |---|---|---|---|
-| `index.ts` `requestSingleInstanceLock`, `second-instance` | one instance per user-data dir; a second start restores and focuses the window and forwards its link | `decibell_platform::instance` (lock per profile, Unix socket / loopback port + secret, a listener thread blocked in `accept`), `apply`: the window comes forward (Wayland: with the second start's `XDG_ACTIVATION_TOKEN`, patch `0018`) | this work |
-| `index.ts` + `hotkeys.ts` `parseHotkeyArg`, `injectHotkey("cli")` | `decibell --hotkey=<action>[:down/:up]` acts in the running instance without focusing it; with nothing running it exits | `launch::parse_hotkey`, `apply` → `actions::hotkeys::inject_cli`; boot exits 0 with a message when nothing runs | this work |
+| `index.ts` `requestSingleInstanceLock`, `second-instance` | one instance per user-data dir; a second start restores and focuses the window and forwards its link | `decibell_platform::instance` (a lock per profile; a Unix socket / a named pipe on Windows, served by a thread blocked in `accept` / `ConnectNamedPipe`), `apply`: the window comes forward (Wayland: with the second start's `XDG_ACTIVATION_TOKEN`, patch `0018`; Windows: `AllowSetForegroundWindow` from the second start) | this work |
+| `index.ts` + `hotkeys.ts` `parseHotkeyArg`, `injectHotkey("cli")` | `decibell --hotkey=<action>[:down/:up]` acts in the running instance without focusing it; with nothing running it exits | `launch::parse_hotkey`, `apply` → `actions::hotkeys::inject_cli`; boot exits 0 with a message when nothing runs. Works on Windows too, where it isn't needed (press actions are `RegisterHotKey` in the core) | this work |
 | `index.ts` `setAsDefaultProtocolClient("decibell")` at every start | registers (and re-points) the URL handler | `assets/linux/decibell.desktop` (`MimeType=x-scheme-handler/decibell`), installed by packaging; the app never registers or re-points anything (Electron's re-pointing is a bug: §4) | packaging (later); Windows: the installer's `HKCU\Software\Classes\decibell` |
 | `index.ts` `isValidDeepLink`, `pendingDeepLinks`, `deep_link_received` | validated links buffered until the renderer listens; before sign-in kept as the pending invite | `launch::is_valid_deep_link`; `apply` → `actions::servers::open_invite_link` → `ServersStore::pending_invite` (kept until the main layout shows it) | this work; the join dialog: `decibell-servers` (its `join` overlay already reads `pending_invite`) |
 | `index.ts` `open-url` (macOS) | links on macOS | — | no macOS target |
@@ -156,15 +156,15 @@ CONVENTIONS "Platform").
 | `window.ts` `setTransferProgress` → `setProgressBar` | launcher / taskbar progress of the transfers | `progress` (Linux `com.canonical.Unity.LauncherEntry`, Windows `ITaskbarList3`) | this work |
 | `window.ts` `flash` → `flashFrame`, dock bounce | attention on an incoming call (not in DND) | `attention` + patch `0017` (Wayland) | this work |
 | `window.ts` `close` → `confirmLosingUploads` | closing with uploads in flight asks | `quit_guard` | this work |
-| `clipboard.ts` `copyAttachment`, `writeImage`, `writeText` | copy a picture (as PNG) / a link | `decibell-chat-content/src/actions.rs` + patch `0015` (Linux pictures) | this work (pictures); text: done |
+| `clipboard.ts` `copyAttachment`, `writeImage`, `writeText` | copy a picture (as PNG) / a link | `decibell-chat-content/src/actions.rs` + patches `0015` (Linux pictures) and `0019` (Windows `CF_DIB`) | this work (pictures); text: done |
 | `dialog.ts` open / save | file pickers (with filters; a save name made unique in Downloads) | `cx.prompt_for_paths` (composer), `cx.prompt_for_new_path` (downloads); GPUI's portal dialogs take no file-type filters | composer / chat-content |
 | `fs.ts`, `fileRegistry.ts`, `writeApproval.ts`, `noStore.ts` | the renderer's file access, sandboxed | — (native code reads and writes itself) | — |
 | `netFetch.ts`, `attachment*.ts`, `downloadPacer.ts`, `downloads.ts` | attachment fetch / crypto / downloads / caps | `decibell-attachments`, chat-content's Transfers | done |
 | `linkPreview.ts`, `publicNet.ts`, `gifs.ts` | link previews, GIF search | `decibell-unfurl`, composer | done |
 | `hotkeys.ts` macOS accelerators | press actions on macOS | — | no macOS target |
 | `hotkeys.ts` `desktop`, `openMouseSettings`, `launchCommand` | the Keybinds tab's desktop help | `decibell-settings` (keybinds tab) | done |
-| `idle.ts` `getSystemIdleState` | auto-away readings | the core's `system_idle` (Wayland, GNOME); X11 / Windows answer "unsupported" | model / core (X11 and Windows readings: open) |
-| `idle.ts` `lock-screen` / `unlock-screen` / `suspend` / `resume` | Away at once on lock / sleep | `session` (sleep / wake: GPUI's logind and `WM_POWERBROADCAST` hooks; lock: `ActiveChanged` of `org.freedesktop.ScreenSaver` / `org.gnome.ScreenSaver`) → `AutoAway::set_locked` | this work; Windows lock: the Windows batch |
+| `idle.ts` `getSystemIdleState` | auto-away readings | `decibell_platform::idle::source()`: Windows `GetLastInputInfo` (exact idle time); elsewhere the core's `system_idle` (Wayland, GNOME); X11 answers "unsupported" (Away only on lock / sleep) | this work (Windows); X11 reading: open (XScreenSaver `QueryInfo`, needs x11rb's `screensaver` feature) |
+| `idle.ts` `lock-screen` / `unlock-screen` / `suspend` / `resume` | Away at once on lock / sleep | `session` (sleep / wake: GPUI's logind and `WM_POWERBROADCAST` hooks; lock: `ActiveChanged` of `org.freedesktop.ScreenSaver` / `org.gnome.ScreenSaver` on Linux, `WM_WTSSESSION_CHANGE` on Windows) → `AutoAway::set_locked` | this work |
 | `e2eeLocalKey.ts` `safeStorage` | the at-rest key in the OS keychain | `decibell_model::local_key::KeychainKey` (GPUI credentials) + patch `0016` (our label) | done + this work |
 | `addon.ts` | load / init / buses / shutdown of the addon | `decibell-model` | done |
 | preload `webUtils.getPathForFile` | dropped files' paths | GPUI's `ExternalPaths` | composer (done) |
@@ -880,17 +880,45 @@ and 941 → 873 µs; a message arriving 3.0 → 2.0 views and no time difference
   (conversation-integration run, load high, 53.7 pictures / s). The exit-time crash in NVIDIA's driver was fixed
   by `decibell_video::shutdown` in the quit hook (video / voice integration); check whether a failing self-test
   leaves by another path that skips it.
-- **Windows batch (desktop integration)**: written to compile, never run (`crates/decibell-platform`):
-  the single instance (an exclusive lock on `<profile>\instance.lock`; a loopback port and a 16-byte secret in
-  `<profile>\instance.port`; the second start calls `AllowSetForegroundWindow` on the first's pid), the flash
-  (`FlashWindowEx(FLASHW_TRAY | FLASHW_TIMERNOFG)`: until the window comes to the foreground, as Electron's
-  `flashFrame(true)`), the taskbar progress (`ITaskbarList3`: normal / paused / none, created on the UI thread), the
-  quit guard (`WM_CLOSE` through `on_window_should_close`, and the title bar), the window state (positions saved),
-  the Credential Manager target `Decibell:url=…` (patch `0016`). **Not built**: screen lock → Away
-  (`WTSRegisterSessionNotification`; sleep / wake works through GPUI's `WM_POWERBROADCAST`), the `decibell://`
-  registration (the installer's `HKCU\Software\Classes\decibell`), and pictures for bitmap-only programs: GPUI writes
-  the registered "PNG" (and "GIF" / "JFIF") formats but no `CF_DIB`, so Paint and older Office paste nothing (a
-  `gpui_windows` patch: add a `CF_DIBV5` beside the PNG).
+- **Windows batch (desktop integration)**: real implementations (owner, 2026-11-26: the native client replaces Electron
+  on Windows too), written against `windows` 0.62.2 (the bindings GPUI's Windows platform uses; every call checked in
+  the crate's source) and GPUI's own `gpui_windows`, compiled only by the Windows Native Check, **never run**
+  (`crates/decibell-platform/src/win32.rs`, `instance.rs`):
+  - single instance: the exclusive lock on `<profile>\instance.lock` (`File::try_lock`, `LockFileEx`), and a named
+    pipe `\\.\pipe\decibell-<hash of the profile path>` (`CreateNamedPipeW` with `FILE_FLAG_FIRST_PIPE_INSTANCE` and
+    `PIPE_REJECT_REMOTE_CLIENTS`, default DACL: only the user, administrators and SYSTEM may write) served by a thread
+    blocked in `ConnectNamedPipe`; the second start opens it (`CreateFileW`, `WaitNamedPipeW` while busy), calls
+    `AllowSetForegroundWindow` on the pipe server's process id (`GetNamedPipeServerProcessId`) and hands its command
+    line over; the first comes forward through GPUI's `activate` (restores a minimised window, `SetForegroundWindow`);
+  - `decibell://` arrives as an argument (`"%1"` in the registered command: the installer's keys are in §6); the app
+    never writes the registry;
+  - `--hotkey=` works as on Linux but isn't needed: press actions are `RegisterHotKey` system hotkeys in the core;
+  - attention: `FlashWindowEx(FLASHW_TRAY | FLASHW_TIMERNOFG)` (until the window comes to the foreground);
+  - taskbar progress: `ITaskbarList3` (`CoCreateInstance(TaskbarList)`, `HrInit`, `SetProgressState` normal / paused /
+    none, `SetProgressValue` in thousandths) on the UI thread, which GPUI made an STA (`OleInitialize`);
+  - window state: GPUI's `window_bounds` (`GetWindowPlacement`: the restored bounds of a maximised window), reopened on
+    the monitor the saved place is on (`WindowOptions::display_id`: GPUI converts the bounds with that monitor's DPI
+    and drops bounds whose centre is on another one); a place on no monitor is dropped;
+  - the quit guard: `WM_CLOSE` (the title bar's close goes through GPUI's non-client handling to `WM_CLOSE`) asks
+    while uploads run; downloads pause in `on_app_quit`, which GPUI also runs on `WM_ENDSESSION`;
+  - screen lock → Away: `WM_WTSSESSION_CHANGE` (`WTSRegisterSessionNotification`) to a message-only window on a thread
+    sleeping in `GetMessageW`; sleep / wake through GPUI's `WM_POWERBROADCAST`; idle time: `GetLastInputInfo`
+    (`decibell_platform::idle`), read when `AutoAway` asks (once per threshold while active, every second while Away);
+  - Copy image: GPUI writes the registered "PNG" format and, with patch `0019`, a `CF_DIB` (Paint, older Office);
+  - the keyring: Credential Manager, generic credential `Decibell:url=decibell://e2ee-local-key/<profile>` (patch
+    `0016`; GPUI persists it `CRED_PERSIST_LOCAL_MACHINE`, i.e. for this user on this machine).
+  Most likely wrong on first contact: placement across monitors with different DPI scales (each monitor's logical
+  bounds are in its own scale: the saved place is matched to a monitor by its centre in that space, GPUI checks
+  again in device pixels), `SetForegroundWindow` refusals when the second start itself wasn't in the foreground
+  (a start from a background process: the window then only flashes), and `ITaskbarList3` calls made before the
+  taskbar button exists (a progress in the first seconds after start is lost until the next change). Known limit: the
+  pipe's reads have no timeout, so a second start that connects and then hangs (not one that crashes or is killed:
+  that breaks the pipe) holds later hand-overs until it exits.
+  Checked without Windows: `win32.rs`, the Windows half of `instance.rs` and `idle.rs` type-check (and pass clippy)
+  against `windows` 0.62.2 in a scratch crate whose copies of `windows` / `windows-core` / `windows-strings` /
+  `windows-result` have their `cfg(windows)` gates removed (the recipe in the Electron hand-off's Windows notes;
+  a planted type error is caught). The GPUI-facing callers (`attention`, `progress`, `session`, `window_state`) are
+  read against `gpui_windows`' source only.
 - **X11 (KWin) window geometry with client-side decorations is racy**: a window opened at a given size comes up with
   its visible size equal to it or 20 px smaller (the margin), depending on whether KWin learns `_GTK_FRAME_EXTENTS`
   before it maps the window (measured: 1300 → 1300, 1280 → 1260 on first starts; 1000 → 980 on some restores, also
@@ -913,7 +941,33 @@ Things only the owner can do; nothing here blocks the rest.
   sign-in. (2) Paste a copied picture into GIMP, LibreOffice, a browser and Discord, on Wayland and under XWayland,
   and with Klipper's "Save images" on (it reads the picture at once). (3) Start a download and watch the task
   manager's progress on Decibell's entry. (4) Quit with an upload running: the "A file is still uploading" question
-  (Enter keeps uploading). (5) Lock the screen: Away at once; unlock: back. (6) The Windows batch in §5.
+  (Enter keeps uploading). (5) Lock the screen: Away at once; unlock: back. (6) On Windows (the batch in §5),
+  for `docs/windows-owner-checks.md`:
+  - **Single instance**: start Decibell, minimise it, start it again from the Start menu: no second window, the first
+    comes back to the front within a second. Start it again from a command prompt while another program is in front:
+    it comes forward, or at least its taskbar button flashes. Two profiles (`set DECIBELL_USER_DATA_DIR=…` in one
+    prompt): two windows.
+  - **`decibell://`** (after the installer registers it): with Decibell running, open
+    `decibell://invite/<a real code>` from Win+R or a browser: the window comes forward with the join dialog; with
+    Decibell closed it starts and shows the dialog after sign-in. The installer's keys, under
+    `HKCU\Software\Classes\decibell`: `(Default)` = `URL:Decibell`, `URL Protocol` = `` (empty string),
+    `DefaultIcon\(Default)` = `"<install dir>\decibell.exe",0`, `shell\open\command\(Default)` =
+    `"<install dir>\decibell.exe" "%1"`. The app never writes the registry.
+  - **Attention**: have someone call you while Decibell is behind another window: its taskbar button flashes until you
+    bring it to the front; not when your status is Do Not Disturb.
+  - **Taskbar progress**: download a large attachment: the taskbar button shows the progress, yellow when you pause it,
+    and clears when it ends.
+  - **Quit guard**: close the window while a file uploads: "A file is still uploading" asks; Keep uploading / Enter /
+    Escape keep the window, Quit anyway closes it. A download running at that moment resumes at the next start.
+  - **Window state**: move the window to a second monitor (ideally one with another scale, e.g. 150 %), resize it,
+    close, start: same monitor, place and size; maximise, close, start: maximised, and Restore gives the old size.
+    Disconnect that monitor, start: the window opens on the remaining one.
+  - **Screen lock and idle**: Win+L, wait, unlock: your status showed Away while locked (another account sees it).
+    Set Settings → auto-away to 1 minute, leave the mouse and keyboard alone: Away after a minute; move the mouse:
+    Online again within about a second.
+  - **Copy image**: right-click a picture → Copy image, paste into Paint (a bitmap: patch `0019`), Word and a browser.
+  - **Keyring**: Credential Manager → Windows Credentials shows a generic credential named
+    `Decibell:url=decibell://e2ee-local-key/…`, nothing named `zed:`.
 
 - **Watch a stream in the Electron client built from this branch before it merges to `main`.** The core's video
   receive path was reworked for this client (frames reach the napi sink directly from the receive thread, one

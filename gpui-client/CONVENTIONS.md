@@ -645,8 +645,11 @@ window is open, and draws the view it returns (the quit question) over the windo
 
 - **One instance per profile directory**: an exclusive lock on `<profile>/instance.lock`, then a Unix socket
   (`<profile>/instance.sock`, or `$XDG_RUNTIME_DIR/decibell-<hash>.sock` when the path is too long; only the user's own
-  connections are accepted) or, on Windows, a loopback port and a secret in `<profile>/instance.port`. The listener is a
-  thread blocked in `accept`. Tests and development profiles run side by side with each other and with a shipped
+  connections are accepted) or, on Windows, a named pipe `\\.\pipe\decibell-<hash>` (no remote clients; the second
+  start lets the first take the foreground). The listener is a thread blocked in `accept` / `ConnectNamedPipe`.
+- **Windows code** (`win32.rs`) is written against `windows` 0.62 (GPUI's bindings): check each call in the crate's
+  source (`~/.cargo/registry/src/*/windows-0.62.*/`), give every `unsafe` block its invariant, never `unwrap` a call
+  that can fail on a real machine; it is compile-checked only by the Windows Native Check. Tests and development profiles run side by side with each other and with a shipped
   instance; a self-test that starts two children on one profile gets one instance.
 - **What a start asks for** is a `Launch` (`launch.rs`: the `decibell://` arguments as `isValidDeepLink` accepts them,
   `--hotkey` as `parseHotkeyArg` does, the desktop's `XDG_ACTIVATION_TOKEN`). The first start applies its own, later
