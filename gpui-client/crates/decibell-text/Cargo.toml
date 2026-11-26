@@ -1,0 +1,46 @@
+[package]
+name = "decibell-text"
+description = "Decibell's text engine on GPUI: Chromium-compatible paragraph layout, painting, hit-testing, labels and rich text"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+gpui.workspace = true
+decibell-richtext = { path = "../decibell-richtext" }
+decibell-highlight = { path = "../decibell-highlight" }
+decibell-tex = { path = "../decibell-tex" }
+log.workspace = true
+# The crates GPUI already links, at its versions and features (vendor/gpui-src/Cargo.toml):
+# nothing here adds code to the binary except what this crate calls.
+icu_segmenter = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+unicode-segmentation = "1.10"
+unicode-linebreak = "0.1.5"
+resvg = { version = "0.49", default-features = false }
+image = { version = "0.25.1", default-features = false }
+smallvec = "1.6"
+miniz_oxide = "0.8"
+
+# Fallback fonts: fontconfig (opened with dlopen when first needed, never linked) picks the
+# installed font for a character the bundled fonts lack, and the file is mapped, not read.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+libc.workspace = true
+memmap2 = "0.9"
+
+[build-dependencies]
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+serde_json = "1"
+flate2 = "1"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+gpui_wgpu.workspace = true
+gpui_platform = { workspace = true, features = ["test-support"] }
+
+[[bench]]
+name = "layout"
+harness = false

@@ -11,12 +11,14 @@ pub const DEFAULT_SCREEN: &str = "gallery";
 pub fn screens() -> Vec<Screen> {
     let mut screens = Vec::new();
     screens.extend(decibell_ui::screens());
+    screens.extend(decibell_text_gallery::screens());
     screens
 }
 
 pub fn selftests() -> Vec<SelfTest> {
     let mut tests = Vec::new();
     tests.extend(crate::selftests::selftests());
+    tests.extend(decibell_ui::selftests());
     tests
 }
 

@@ -1,0 +1,18 @@
+{"styles":{
+  "n":{"family":"Decibell Sans","size":14.5,"lh":1.45,"ls_em":-0.011034,"mono":"Decibell Mono","meta":11.5},
+  "n16":{"family":"Decibell Sans","size":16,"lh":1.45,"ls_em":-0.01,"mono":"Decibell Mono","meta":12.69},
+  "g":{"family":"Decibell Inter","size":13,"lh":1.4,"ls_em":0,"mono":"Decibell Mono","meta":10}},
+ "cases":[
+  {"id":"p01-plain","style":"n","w":560,"wrap":"body","segs":[[0,"The quick brown fox jumps over the lazy dog, then stops: 0123456789 ığüşöç ÀÉÎõü, and wraps onto a second line of the paragraph."]]},
+  {"id":"p02-bold","style":"n","w":560,"wrap":"body","segs":[[0,"Mixed weights: "],[1,"bold words in the middle"],[0," and regular words after them, wrapping once more."]]},
+  {"id":"p03-italic","style":"n","w":560,"wrap":"body","segs":[[2,"Slanted by the engine, not by an italic face: Illinois fjord quiz"],[0," and "],[3,"bold italic too"]]},
+  {"id":"p04-decor","style":"n","w":560,"wrap":"body","segs":[[4,"underlined words (gjpqy)"],[0," and "],[8,"struck-through words"],[0," and "],[32,"https://example.com/docs/voice"]]},
+  {"id":"p05-chip","style":"n","w":560,"wrap":"body","segs":[[0,"Run "],[16,"cargo build --release"],[0," and then "],[16,"npx napi build --platform --js index.js"],[0," before the tests."]]},
+  {"id":"p06-chipwrap","style":"n","w":320,"wrap":"body","segs":[[0,"A chip that wraps: "],[16,"cargo build --release --features local-central --target x86_64"],[0," and text."]]},
+  {"id":"p07-edited","style":"n","w":560,"wrap":"body","segs":[[0,"A message that was changed after it was sent"],[64,"(edited)"]]},
+  {"id":"p08-inter","style":"g","w":560,"wrap":"body","segs":[[0,"Graphite uses Inter at 13 px: The quick brown fox jumps over the lazy dog 0123456789, "],[1,"bold"],[0,", "],[2,"italic"],[0,"."]]},
+  {"id":"p09-n16","style":"n16","w":560,"wrap":"body","segs":[[0,"At the 16 px text size: Sphinx of black quartz, judge my vow. AVATAR To Type Wave."]]},
+  {"id":"p10-narrow","style":"n","w":320,"wrap":"body","segs":[[0,"Narrow column: selam naber güncelleme sonrası ses kanalı çalışıyor mu, yarın bakarız tamam."]]},
+  {"id":"p11-lines","style":"n","w":560,"wrap":"body","segs":[[0,"line one\nline two\n\nline four after an empty line"]]},
+  {"id":"p12-kern","style":"n","w":560,"wrap":"body","segs":[[0,"AV AVA To Ty Yo We LT PA VA WA AWAY TODAY Type AVATAR Tomorrow WAVE Yes fi fl ffi"]]}
+ ]}

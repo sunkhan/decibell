@@ -1,0 +1,4 @@
+# Build output, the Electron profile and Vite's cache (build.sh recreates it).
+/.work/
+# Symlink to electron-client/node_modules, made by build.sh.
+/node_modules

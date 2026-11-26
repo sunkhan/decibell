@@ -1,0 +1,214 @@
+diff --git a/crates/gpui/src/text_system.rs b/crates/gpui/src/text_system.rs
+--- a/crates/gpui/src/text_system.rs
++++ b/crates/gpui/src/text_system.rs
+@@ -412,6 +412,30 @@
+         Ok(result * font_size)
+     }
+ 
++    /// Shapes one line (no `\n`) with the platform's shaper and returns the result as is:
++    /// no cache is read or written, nothing is retained. For callers that keep their own
++    /// layouts (a `WindowTextSystem` caches per window and per frame).
++    pub fn shape_line_uncached(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
++        self.platform_text_system.layout_line(text, font_size, runs)
++    }
++
++    /// The advance of a glyph in its font, without kerning, at `font_size`.
++    pub fn glyph_advance(&self, font_id: FontId, glyph_id: GlyphId, font_size: Pixels) -> Result<Pixels> {
++        let advance = self.platform_text_system.advance(font_id, glyph_id)?.width
++            / self.units_per_em(font_id) as f32;
++        Ok(font_size * advance)
++    }
++
++    /// The glyph the font draws `character` with, if it has one.
++    pub fn glyph_for_char(&self, font_id: FontId, character: char) -> Option<GlyphId> {
++        self.platform_text_system.glyph_for_char(font_id, character)
++    }
++
++    /// The font's metrics, in font units.
++    pub fn font_metrics(&self, font_id: FontId) -> FontMetrics {
++        self.read_metrics(font_id, |metrics| *metrics)
++    }
++
+     // Consider removing this?
+     /// Returns the shaped layout width of for the given character, in the given font and size.
+     pub fn layout_width(&self, font_id: FontId, font_size: Pixels, ch: char) -> Pixels {
+diff --git a/crates/gpui_wgpu/src/cosmic_text_system.rs b/crates/gpui_wgpu/src/cosmic_text_system.rs
+--- a/crates/gpui_wgpu/src/cosmic_text_system.rs
++++ b/crates/gpui_wgpu/src/cosmic_text_system.rs
+@@ -17,7 +17,7 @@
+ use std::{borrow::Cow, ops::Range, sync::Arc};
+ use swash::{
+     scale::{Render, ScaleContext, Source, StrikeWith},
+-    zeno::{Format, Vector},
++    zeno::{Format, Transform, Vector},
+ };
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+@@ -44,6 +44,32 @@
+ struct LoadedFontKey {
+     database_id: cosmic_text::fontdb::ID,
+     font: FontKey,
++    synthetic: SyntheticStyle,
++}
++
++/// Styles the rasteriser makes up because the family has no face for them, as Chromium does
++/// (CSS `font-synthesis`): a slant for an italic request answered by an upright face, extra
++/// weight for a request of 600 or more answered by a face lighter than 600. A face drawn this
++/// way is its own `FontId`, so glyph caches keyed by `FontId` keep the two apart; shaping and
++/// advances are the upright face's.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++struct SyntheticStyle {
++    oblique: bool,
++    bold: bool,
++}
++
++impl SyntheticStyle {
++    /// Skia's `SK_Scalar1 / 4`, the skew Blink sets on a font with a synthetic italic
++    /// (`FontPlatformData::SetupSkFont`): x moves right by a quarter of the height.
++    const OBLIQUE_SKEW: f32 = 0.25;
++    /// FreeType's synthetic emboldening, which Skia uses on Linux: the outline grows by 1/24 em.
++    const BOLD_EM_FRACTION: f32 = 1.0 / 24.0;
++    /// CSS's `bolder` threshold: synthesis happens at or above it.
++    const BOLD_THRESHOLD: f32 = 600.0;
++
++    fn is_none(self) -> bool {
++        !self.oblique && !self.bold
++    }
+ }
+ 
+ struct CosmicTextSystemState {
+@@ -65,6 +91,7 @@
+     font: Arc<CosmicTextFont>,
+     features: CosmicFontFeatures,
+     is_known_emoji_font: bool,
++    synthetic: SyntheticStyle,
+     /// resolved at load time so `layout_line` shares one chain across faces.
+     /// `Arc` keeps clone cheap on the per-run hot path.
+     user_fallback_chain: Arc<[(FontId, SharedString)]>,
+@@ -204,8 +231,9 @@
+         };
+ 
+         let ix = find_best_match(font, candidates, &state)?;
++        let font_id = candidates[ix];
+ 
+-        Ok(candidates[ix])
++        state.synthetic_twin(font_id, font, key)
+     }
+ 
+     fn prewarm_fonts(&self, font_ids: &[FontId]) {
+@@ -399,6 +427,7 @@
+             let key = LoadedFontKey {
+                 database_id,
+                 font: loaded_font_key.clone(),
++                synthetic: SyntheticStyle::default(),
+             };
+             if let Some(&font_id) = self.loaded_font_ids_by_key.get(&key) {
+                 self.loaded_fonts[font_id.0].user_fallback_chain = Arc::clone(&user_fallback_chain);
+@@ -425,7 +454,16 @@
+             // and emoji fonts often have no Latin glyphs, and they are exactly
+             // what cosmic-text falls back to when the primary font lacks a
+             // glyph.
++            //
++            // A family the application added itself is taken as it is: symbol faces
++            // (KaTeX's size and AMS fonts) have no letters and are still what was asked
++            // for, by name, for single glyphs.
++            let added_by_application = matches!(
++                self.font_system.db().face(database_id).map(|face| &face.source),
++                Some(cosmic_text::fontdb::Source::Binary(_))
++            );
+             if font.as_swash().charmap().map('m') == 0
++                && !added_by_application
+                 && !allowed_bad_font_names.contains(&postscript_name.as_str())
+             {
+                 continue;
+@@ -437,6 +475,7 @@
+                 font,
+                 features: cosmic_features.clone(),
+                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
++                synthetic: SyntheticStyle::default(),
+                 user_fallback_chain: Arc::clone(&user_fallback_chain),
+             });
+             self.loaded_font_ids_by_key.insert(key, font_id);
+@@ -445,6 +484,50 @@
+         Ok(loaded_font_ids)
+     }
+ 
++    /// `font_id` itself when the matched face has the requested slant and weight, else the
++    /// `FontId` that draws the same face with what is missing synthesised.
++    fn synthetic_twin(&mut self, font_id: FontId, request: &Font, font: FontKey) -> Result<FontId> {
++        let loaded = self.loaded_font(font_id);
++        if loaded.is_known_emoji_font {
++            return Ok(font_id);
++        }
++        let database_id = loaded.font.id();
++        let face = self
++            .font_system
++            .db()
++            .face(database_id)
++            .context("font face not found in database")?;
++        let synthetic = SyntheticStyle {
++            oblique: request.style != gpui::FontStyle::Normal
++                && face.style == cosmic_text::Style::Normal,
++            bold: request.weight.0 >= SyntheticStyle::BOLD_THRESHOLD
++                && f32::from(face.weight.0) < SyntheticStyle::BOLD_THRESHOLD,
++        };
++        if synthetic.is_none() {
++            return Ok(font_id);
++        }
++        let key = LoadedFontKey {
++            database_id,
++            font,
++            synthetic,
++        };
++        if let Some(&twin) = self.loaded_font_ids_by_key.get(&key) {
++            return Ok(twin);
++        }
++        let loaded = self.loaded_font(font_id);
++        let twin = LoadedFont {
++            font: loaded.font.clone(),
++            features: loaded.features.clone(),
++            is_known_emoji_font: false,
++            synthetic,
++            user_fallback_chain: Arc::clone(&loaded.user_fallback_chain),
++        };
++        let twin_id = FontId(self.loaded_fonts.len());
++        self.loaded_fonts.push(twin);
++        self.loaded_font_ids_by_key.insert(key, twin_id);
++        Ok(twin_id)
++    }
++
+     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
+         let glyph_metrics = self.loaded_font(font_id).font.as_swash().glyph_metrics(&[]);
+         Ok(Size {
+@@ -549,6 +632,23 @@
+             renderer.format(Format::Alpha).offset(subpixel_offset);
+         }
+ 
++        if loaded_font.synthetic.oblique {
++            // Outlines are y-up here: a positive y moves right.
++            renderer.transform(Some(Transform::new(
++                1.0,
++                0.0,
++                SyntheticStyle::OBLIQUE_SKEW,
++                1.0,
++                0.0,
++                0.0,
++            )));
++        }
++        if loaded_font.synthetic.bold {
++            renderer.embolden(
++                pixel_size * params.scale_factor * SyntheticStyle::BOLD_EM_FRACTION,
++            );
++        }
++
+         let glyph_id: u16 = params.glyph_id.0.try_into()?;
+         renderer
+             .render(&mut scaler, glyph_id)
+@@ -586,6 +686,7 @@
+                 font,
+                 features: CosmicFontFeatures::new(),
+                 is_known_emoji_font: check_is_known_emoji_font(&face.post_script_name),
++                synthetic: SyntheticStyle::default(),
+                 user_fallback_chain: Arc::from(Vec::new()),
+             });
+ 

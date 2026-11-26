@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::window_frame::decorations;
-use crate::{ActiveTheme as _, FontRole, Icon, Label, window_corner_radius};
+use crate::{ActiveTheme as _, FontRole, Icon, IconName, Label, window_corner_radius};
 
 /// `h-8`.
 pub const TITLEBAR_HEIGHT: Pixels = px(32.);
@@ -93,7 +93,7 @@ impl RenderOnce for TitleBar {
                             .when(controls.minimize, |group| {
                                 group.child(title_button(
                                     "minimize",
-                                    "icons/window/minimize.svg",
+                                    IconName::WindowMinimize,
                                     WindowControlArea::Min,
                                     chrome.color_surface_active,
                                     chrome.color_text_primary,
@@ -105,9 +105,9 @@ impl RenderOnce for TitleBar {
                                 group.child(title_button(
                                     "maximize",
                                     if maximized {
-                                        "icons/window/restore.svg"
+                                        IconName::WindowRestore
                                     } else {
-                                        "icons/window/maximize.svg"
+                                        IconName::WindowMaximize
                                     },
                                     WindowControlArea::Max,
                                     chrome.color_surface_active,
@@ -119,7 +119,7 @@ impl RenderOnce for TitleBar {
                             .child(
                                 title_button(
                                     "close",
-                                    "icons/window/close.svg",
+                                    IconName::WindowClose,
                                     WindowControlArea::Close,
                                     chrome.color_error,
                                     gpui::white(),
@@ -137,7 +137,7 @@ impl RenderOnce for TitleBar {
 /// `hover_bg` under the pointer.
 fn title_button(
     id: &'static str,
-    icon: &'static str,
+    icon: IconName,
     area: WindowControlArea,
     hover_bg: Hsla,
     hover_icon: Hsla,

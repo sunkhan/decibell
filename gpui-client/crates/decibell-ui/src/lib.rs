@@ -12,20 +12,61 @@
 //! How view code uses these: `gpui-client/CONVENTIONS.md`.
 
 mod assets;
+mod button;
+mod field;
 pub mod fonts;
 pub mod gallery;
 mod icon;
+pub mod identity;
+mod interaction;
+pub mod kit;
+mod kit_tests;
+mod menu;
+pub mod modal;
+pub mod motion;
+pub mod popover;
+pub mod scroll;
+mod select;
+pub mod settings;
+mod slider;
+mod spinner;
+mod structure;
 mod text;
 mod theme;
 mod titlebar;
+mod toast;
+mod toggles;
+mod tooltip;
 mod window_frame;
 
 use decibell_harness::Screen;
 use decibell_theme::ThemeId;
-use gpui::{App, AppContext as _};
+use gpui::{App, AppContext as _, InteractiveElement, KeyBinding, actions};
 
 pub use assets::Assets;
-pub use icon::Icon;
+pub use button::{Button, ButtonSize, ButtonVariant, IconButton, LinkButton, button_row};
+pub use field::{Field, TextField};
+pub use identity::{Avatar, BellMark, LetterAvatar, Presence, StatusDot, StatusPill};
+pub use menu::{ContextMenu, MenuEntry, MenuItem};
+pub use modal::{CloseRequest, ConfirmModal, ConfirmTone, Modal, dialog_card};
+pub use settings::{NavItem, SaveBar, SettingsWindow};
+pub use structure::{
+    Badge, BadgeTone, Banner, EmptyState, ErrorCard, Heading, Notice, SectionLabel, divider,
+    vertical_divider,
+};
+pub use toast::{Toast, ToastAction, ToastId, ToastSeverity, ToastStack, Toasts};
+pub use tooltip::{Tooltip, title_tooltip};
+pub use popover::{
+    DismissEvent, Placed, Placement, Popover, Side, place_menu, visible_window_bounds,
+};
+pub use scroll::{RowHeights, ScrollAlign, ScrollArea, ScrollHandle};
+pub use select::{
+    Select, SelectGroup, SelectHandle, SelectIcon, SelectOption, SelectSize, SelectVariant,
+};
+pub use slider::Slider;
+pub use spinner::Spinner;
+pub use toggles::{Checkbox, Segment, SegmentedControl, Switch};
+pub use icon::{Icon, IconName};
 pub use text::Label;
 pub use theme::{ActiveTheme, FontRole, Theme, Tokens, box_shadows, hsla};
 pub use titlebar::{TITLEBAR_HEIGHT, TitleBar};
@@ -33,17 +74,45 @@ pub use window_frame::{
     AssumeClientDecorations, outer_window_size, window_corner_radius, window_frame,
 };
 
-/// Installs the theme global and registers the bundled fonts.
+actions!(decibell_ui, [FocusNext, FocusPrev]);
+
+/// Installs the theme global, registers the bundled fonts, and binds Tab / Shift-Tab to
+/// [`FocusNext`] / [`FocusPrev`] (GPUI binds no keys of its own: give the root element
+/// [`focus_navigation`] so they move focus through the controls' tab stops).
 pub fn init(cx: &mut App, theme: ThemeId) -> anyhow::Result<()> {
     Theme::init(cx, theme);
+    cx.bind_keys([
+        KeyBinding::new("tab", FocusNext, None),
+        KeyBinding::new("shift-tab", FocusPrev, None),
+    ]);
     fonts::register(cx)
 }
 
-/// The screens this crate registers (see `decibell_harness::Screen`).
+/// Tab / Shift-Tab move focus through the window's tab stops: put this on a window's root
+/// element. (A [`Modal`] keeps Tab inside itself.)
+///
+/// ```ignore
+/// focus_navigation(div().size_full()).child(content)
+/// ```
+pub fn focus_navigation<E: InteractiveElement>(element: E) -> E {
+    element
+        .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
+        .on_action(|_: &FocusPrev, window, cx| window.focus_prev(cx))
+}
+
+/// The self-tests this crate registers (see `decibell_harness::SelfTest`): the kit's.
+pub fn selftests() -> Vec<decibell_harness::SelfTest> {
+    kit_tests::selftests()
+}
+
+/// The screens this crate registers (see `decibell_harness::Screen`): the token sheet and the
+/// component kit's gallery.
 pub fn screens() -> Vec<Screen> {
-    vec![Screen {
+    let mut screens = vec![Screen {
         name: "gallery",
         about: "The design-token sheet: surfaces, colours, type, radii, elevation, icons",
         build: |_, cx| cx.new(|_| gallery::Gallery).into(),
-    }]
+    }];
+    screens.extend(kit::screens());
+    screens
 }

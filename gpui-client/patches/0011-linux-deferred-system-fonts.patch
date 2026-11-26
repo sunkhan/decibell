@@ -1,0 +1,103 @@
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -129,7 +129,9 @@
+         let (power_sender, power_receiver) = calloop::channel::channel();
+ 
+         #[cfg(any(feature = "wayland", feature = "x11"))]
+-        let text_system = Arc::new(crate::linux::CosmicTextSystem::new("IBM Plex Sans"));
++        let text_system = Arc::new(
++            crate::linux::CosmicTextSystem::new_with_deferred_system_fonts("IBM Plex Sans"),
++        );
+         #[cfg(not(any(feature = "wayland", feature = "x11")))]
+         let text_system = Arc::new(gpui::NoopTextSystem::new());
+ 
+diff --git a/crates/gpui_wgpu/src/cosmic_text_system.rs b/crates/gpui_wgpu/src/cosmic_text_system.rs
+--- a/crates/gpui_wgpu/src/cosmic_text_system.rs
++++ b/crates/gpui_wgpu/src/cosmic_text_system.rs
+@@ -85,6 +85,8 @@
+     font_ids_by_family_cache: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+     system_font_fallback: String,
+     missing_glyph_sink: Option<Arc<dyn MissingGlyphSink>>,
++    /// The installed fonts have not been indexed yet (`new_with_deferred_system_fonts`).
++    system_fonts_deferred: bool,
+ }
+ 
+ struct LoadedFont {
+@@ -168,6 +170,7 @@
+             font_ids_by_family_cache: HashMap::default(),
+             system_font_fallback: system_font_fallback.to_string(),
+             missing_glyph_sink: None,
++            system_fonts_deferred: false,
+         }))
+     }
+ 
+@@ -187,10 +190,39 @@
+             font_ids_by_family_cache: HashMap::default(),
+             system_font_fallback: system_font_fallback.to_string(),
+             missing_glyph_sink: None,
++            system_fonts_deferred: false,
+         }))
+     }
+ }
+ 
++impl CosmicTextSystem {
++    /// Starts with an empty font database, like [`Self::new_without_system_fonts`], and indexes
++    /// the installed fonts the first time a family is requested that no added font provides.
++    ///
++    /// Indexing every installed font costs startup time, and cosmic-text then walks the whole
++    /// index for each new (family, weight, style) it shapes. An application that embeds its
++    /// fonts pays neither as long as it names only those; fallback for characters they lack is
++    /// then the application's job (it can add a covering font with `add_fonts`).
++    pub fn new_with_deferred_system_fonts(system_font_fallback: &str) -> Self {
++        let text_system = Self::new_without_system_fonts(system_font_fallback);
++        {
++            let mut state = text_system.0.write();
++            state.system_fonts_deferred = true;
++            // The same locale `FontSystem::new` would have picked; it steers CJK fallback.
++            let locale = std::env::var("LC_ALL")
++                .or_else(|_| std::env::var("LC_CTYPE"))
++                .or_else(|_| std::env::var("LANG"))
++                .ok()
++                .and_then(|value| value.split('.').next().map(|tag| tag.replace('_', "-")))
++                .filter(|tag| !tag.is_empty() && tag != "C" && tag != "POSIX")
++                .unwrap_or_else(|| "en-US".to_string());
++            let database = cosmic_text::fontdb::Database::new();
++            state.font_system = FontSystem::new_with_locale_and_db(locale, database);
++        }
++        text_system
++    }
++}
++
+ impl PlatformTextSystem for CosmicTextSystem {
+     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+         self.0.write().add_fonts(fonts)
+@@ -412,13 +444,21 @@
+ 
+         let name = gpui::font_name_with_fallbacks(name, &self.system_font_fallback);
+ 
+-        let families = self
+-            .font_system
+-            .db()
+-            .faces()
+-            .filter(|face| face.families.iter().any(|family| *name == family.0))
+-            .map(|face| (face.id, face.post_script_name.clone()))
+-            .collect::<SmallVec<[_; 4]>>();
++        let faces_of_family = |font_system: &FontSystem| {
++            font_system
++                .db()
++                .faces()
++                .filter(|face| face.families.iter().any(|family| *name == family.0))
++                .map(|face| (face.id, face.post_script_name.clone()))
++                .collect::<SmallVec<[_; 4]>>()
++        };
++        let mut families = faces_of_family(&self.font_system);
++        if families.is_empty() && self.system_fonts_deferred {
++            self.system_fonts_deferred = false;
++            log::info!("indexing the installed fonts: {name:?} is not among the added ones");
++            self.font_system.db_mut().load_system_fonts();
++            families = faces_of_family(&self.font_system);
++        }
+ 
+         let cosmic_features = cosmic_font_features(features)?;
+ 

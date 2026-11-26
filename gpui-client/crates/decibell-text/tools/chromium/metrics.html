@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Font metrics as Blink rounds them: for each (family, size) the ascent and descent of the
+     inline box (what line boxes are built from). Input: {"families": [...], "sizes": [...]}. -->
+<html><head><meta charset="utf-8"><style>body{margin:0}#stage{position:absolute;left:0;top:0;white-space:nowrap}</style></head>
+<body><div id="stage"></div>
+<script>
+(async () => {
+  const { corpus, fonts } = await window.harness.corpus();
+  const files = { "Decibell Sans": "DecibellSans", "Decibell Inter": "DecibellInter", "Decibell Mono": "DecibellMono" };
+  for (const family of corpus.families) {
+    for (const [name, weight] of [["Regular", 400], ["Bold", 700]]) {
+      const face = new FontFace(family, `url("file://${fonts}/${files[family]}-${name}.ttf")`, { weight: String(weight) });
+      document.fonts.add(face); await face.load();
+    }
+  }
+  const stage = document.getElementById("stage");
+  const out = { dsf: window.devicePixelRatio, rows: [] };
+  for (const family of corpus.families) {
+    for (const size of corpus.sizes) {
+      const line = document.createElement("div");
+      line.style.cssText = `font-family:"${family}";font-size:${size}px;line-height:3`;
+      const text = document.createElement("span"); text.textContent = "Hxg";
+      const mark = document.createElement("span");
+      mark.style.cssText = "display:inline-block;width:1px;height:0;vertical-align:baseline";
+      line.append(text, mark); stage.replaceChildren(line);
+      const box = text.getClientRects()[0]; const baseline = mark.getBoundingClientRect().bottom;
+      out.rows.push([family, size, baseline - box.top, box.bottom - baseline, line.getBoundingClientRect().height]);
+    }
+  }
+  await window.harness.done(out);
+})().catch((e) => console.log("harness failed: " + (e && e.stack || e)));
+</script></body></html>

@@ -29,6 +29,7 @@ gpui_platform.workspace = true
 decibell-theme.workspace = true
 decibell-harness.workspace = true
 decibell-ui.workspace = true
+decibell-text-gallery = { path = "../decibell-text/gallery" }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true

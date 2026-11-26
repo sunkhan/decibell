@@ -1,0 +1,66 @@
+# slot<TAB>input, from electron-client/src/utils/colors.ts stringToColor (regenerate: gen_ramp_expected.mjs)
+1	
+2	a
+7	ada
+7	Ada
+8	basil
+1	aurora
+7	Daily Gaming
+2	Rustaceans
+4	Design Lab
+5	ıİğüşöç
+8	Ünïcødé
+2	日本語の名前
+2	emoji 🎉🔥
+3	👩‍👩‍👧
+1	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2	The quick brown fox jumps over the lazy dog, again and again and again
+1	zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+5	tab\there
+8	uid:1
+1	uid:2
+2	uid:3
+3	uid:4
+4	uid:5
+5	uid:6
+6	uid:7
+7	uid:8
+8	uid:9
+8	uid:10
+7	uid:11
+6	uid:12
+5	uid:13
+4	uid:14
+3	uid:15
+2	uid:16
+1	uid:17
+8	uid:18
+7	uid:19
+1	uid:20
+8	uid:21
+7	uid:22
+6	uid:23
+5	uid:24
+4	uid:25
+3	uid:26
+2	uid:27
+1	uid:28
+8	uid:29
+2	uid:30
+1	uid:31
+8	uid:32
+7	uid:33
+6	uid:34
+5	uid:35
+4	uid:36
+3	uid:37
+2	uid:38
+1	uid:39
+3	uid:40
+2	uid:100
+2	uid:999
+5	uid:1234
+7	uid:65535
+4	uid:123456789
+3	uid:2147483647
+3	uid:9007199254740991

@@ -10,6 +10,10 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0002-gpui-frame-counters.patch` | `Window::frames_drawn()` / `frames_presented()` and the process-wide atomics `gpui::FRAMES_DRAWN` / `FRAMES_PRESENTED`. | The client's frame instrumentation and self-tests (`decibell_harness::perf`): GPUI has no hook that says a frame was drawn or presented. |
 | `0003-wgpu-vulkan-before-gl.patch` | The renderer tries a Vulkan-only wgpu instance first and creates the Vulkan + OpenGL one only if no discrete or integrated Vulkan GPU can configure the window's surface. | Creating the OpenGL backend initialises EGL, which loads every EGL vendor library (Mesa with LLVM, NVIDIA's GL core) although Vulkan then draws everything: −20 MB private memory, −52 MB RSS, −30 ms startup here. |
 | `0004-x11-park-refresh-timer.patch` | On X11 the per-window refresh timer stops after a tick with nothing to draw and restarts from `PlatformWindow::schedule_frame`. | The X11 backend woke the main thread at the monitor's refresh rate for as long as a window was visible (280 times a second here), drawing nothing. |
+| `0005-gpui-surface-fit-filter-device.patch` | On top of `0001`: a surface is fitted (contain / cover / fill) by the renderer from the picture it draws, minified pictures are box-filtered, a picture names its device (and is skipped by a renderer on another), a draw observer reports each picture's first frame, a device loss can be simulated. | What the real stream view (`crates/decibell-video`) needed beyond the prototype: object-fit that survives a resolution change without a repaint, small tiles that do not shimmer, recovery from a lost GPU device, per-picture "presented" times. |
+| `0006-wgpu-keep-lost-instance.patch` | After a device loss the renderer no longer destroys the lost context's wgpu instance. | With two windows open, the second window to recover crashed inside NVIDIA's driver (segfault in `vkGetPhysicalDeviceSurfaceSupportKHR`). Found by the `video-recover` self-test. |
+| `0010-gpui-text-engine.patch` | What `decibell-text` needs from GPUI's text system: shaping without GPUI's per-window cache (`TextSystem::shape_line_uncached`), a glyph's unkerned advance, a font's metrics and its glyph for a character; and on Linux, synthesised styles (an italic request on a family without an italic face is slanted by 0.25, a weight of 600 or more on a family lighter than 600 is emboldened by 1/24 em, each as a `FontId` of its own) and families the application added that have no letters (KaTeX's symbol faces) resolving by name. | The client lays text out itself (`crates/decibell-text/README.md`). Chromium synthesises exactly these styles for the renderer, which loads no italic face. |
+| `0011-linux-deferred-system-fonts.patch` | On Linux the text system starts with an empty font database (`CosmicTextSystem::new_with_deferred_system_fonts`) and indexes the installed fonts only if a family is requested that no added font provides. | Indexing 1,095 installed faces and walking that index for every new (family, weight, style) cost about 85 ms of the time to the first frame; the client names only its bundled families, and `decibell-text` adds a fallback font when a character needs one. |
 
 ## How the patches are applied
 
@@ -134,18 +138,142 @@ Measured as above, under XWayland on a 279.87 Hz display (`0001`–`0003` applie
 The `idle-frames` self-test fails on X11 without this patch and passes with it (1 wakeup in 5 s: its own
 timer). Upstream: yes; it is how the Wayland backend already behaves.
 
+## 0005: surface fit, minification filter, device identity
+
+`crates/gpui_wgpu/src/wgpu_surface.rs` +72 / −12, `wgpu_renderer.rs` +65 / −9, `shaders.wgsl` +25 / −7,
+`wgpu_context.rs` +13. Only files `0001` already touches (and only gpui_wgpu: nothing changes for Windows or
+macOS). `0001` is unchanged; this is a diff against the pin with `0001`–`0004` applied.
+
+- **Fit at draw time.** `WgpuSurfaceView { surface, fit: SurfaceFit::{Fill, Contain, Cover} }` is what an element
+  wraps in the `ExternalSurface` (a bare `WgpuSurface` still works and means `Fill`). The renderer computes the
+  fitted rectangle (contain: centred, snapped to whole pixels) or the texture crop (cover) from the size of the
+  picture it is about to draw. The element is painted once; a stream that changes resolution or aspect keeps
+  its fit with no layout or paint. Corner radii round the painted bounds (the element's box, as CSS does for
+  `object-fit`), so `SurfaceParams` gains `clip_bounds` and `uv_rect` (112 → 144 bytes).
+- **Minification filter.** The fragment shader averages a grid of bilinear taps over each output pixel's
+  footprint in the picture: `ceil(texels per pixel / 2)` taps per axis, at most 4 × 4 (an 8 × 8 texel box). At
+  full size and above that is one tap, the shader of `0001`; a 2560 × 1440 picture in a 384 × 216 mini-player
+  takes 4 × 4. No mip chain, no extra texture, nothing per decoded frame: the cost is paid only by the pixels of
+  a small view. Measured: `gpui-client/HANDOFF.md` §4 "Stream playback" (the `--mirror` row).
+- **A picture names its device** (`WgpuSurfaceFrame::device`), and `WgpuSurface::acquire` returns nothing for a
+  picture of another device. After a device loss the renderer's new device never binds a texture of the old one
+  (a wgpu validation panic otherwise), whatever order the decoder threads and the renderer notice the loss in.
+- **`WgpuSurface::set_frame(frame, tag)` + `set_draw_observer`**: the observer is called with the tag of each
+  picture the first time a rendered frame draws it (the video crate's "presented" count, interval histogram and
+  trace). `picture_size()` reads the newest picture's size.
+- **One `Arc<WgpuSurfaceFrame>` per slot, reused**: `set_frame` only clones the Arc and a slot is free when its
+  owner holds the only reference, so publishing a picture allocates nothing (`in_use` stays for owners that make
+  a frame per picture).
+- **`WgpuContext::simulate_device_loss()`**: marks the device lost without the driver saying so; the renderer
+  then recreates its context on the next frame exactly as after a real loss. The `video-recover` self-test uses
+  it.
+
+Checks: `decibell --selftest video-hw,video-idle,video-two,video-sw,video-recover,video-switch` (each needs
+`0005`), on Wayland and XWayland. Upstream: the fit and the filter belong with `0001`'s surface drawing; the
+device identity is needed by anything that hands wgpu textures across a device loss.
+
+## 0006: the lost instance is kept
+
+`crates/gpui_wgpu/src/wgpu_renderer.rs` +9 / −1, in `WgpuRenderer::recover`.
+
+GPUI recovers from a lost device window by window, each at its next frame: the first creates a new instance,
+adapter and device; the others find the new context and only make a new surface. The old instance lives as
+long as a window still holds its old surface, so it was destroyed in the middle of the *second* window's
+recovery, with the new instance already in use. On NVIDIA 620.73 (Wayland) the new instance's next
+`vkGetPhysicalDeviceSurfaceSupportKHR` then jumped through a null pointer inside `libnvidia-glcore`:
+
+```
+#0  0x0000000000000000 in ?? ()
+#1  … libnvidia-glcore.so.620.73.04
+#4  get_physical_device_surface_support (ash … khr/surface.rs:19)
+#5  surface_capabilities (wgpu-hal/src/vulkan/swapchain/native.rs:85)
+#12 surface_configuration (gpui_wgpu/src/wgpu_renderer.rs)
+#14 WgpuRenderer::recover
+```
+
+The patch forgets one reference to the lost context's `wgpu::Instance`, so `vkDestroyInstance` never runs for
+it: one leaked instance per device loss. Before: `decibell --selftest video-recover` (which marks the device
+lost with two windows open) crashed every time, in the test's own check when the main window was made to
+draw, or in whatever ran next. After: passes, and the main window draws on the new device. Whether the crash
+is the driver's or wgpu's ordering was not established; a single-window recovery never showed it. Upstream:
+worth reporting to Zed with the trace (any two-window Zed on NVIDIA would hit it after a device loss).
+
+## 0010: what the text engine needs
+
+`crates/gpui/src/text_system.rs` +24, `crates/gpui_wgpu/src/cosmic_text_system.rs` +109 / −3.
+
+**`TextSystem`** (all platforms, additive):
+
+- `shape_line_uncached(text, font_size, &[FontRun]) -> LineLayout`: the platform shaper's result as it is.
+  `WindowTextSystem::layout_line` caches per window and drops what a frame did not use; `decibell-text` keeps
+  its own layouts for as long as a message is cached, so GPUI's cache would only hold a second copy.
+- `glyph_advance(font, glyph, size)`: the advance without kerning (a line that ends inside a shaped run is as
+  wide as Chromium's re-shaped line, whose last glyph has lost its kerning).
+- `font_metrics(font) -> FontMetrics` and `glyph_for_char(font, char)`: line boxes are built from the font's
+  own ascent and descent, and formulas draw single glyphs by character.
+
+**`CosmicTextSystem`** (Linux):
+
+- **Synthesised styles.** `font_id` returns a *twin* `FontId` when the matched face lacks what was asked for:
+  `oblique` when the request is italic or oblique and the face is upright, `bold` when the request is 600 or
+  more and the face is lighter than 600 (CSS `font-synthesis`, the rule Blink applies to a web font). The twin
+  shares the face (shaping and advances are unchanged) and differs only in rasterisation: swash's
+  `Render::transform` with a skew of **0.25** (Skia's `SK_Scalar1 / 4`, what Blink sets for a synthetic italic;
+  measured on a 120 px glyph in Electron 33: 0.250) and `Render::embolden(size / 24)` (FreeType's emboldening,
+  which Skia uses on Linux). Because the twin is its own `FontId`, GPUI's raster-bounds cache and glyph atlas
+  keep slanted and upright glyphs apart without a new key field. GPUI's own text elements get italics too.
+- **Symbol families by name.** A face without an `m` glyph was never accepted as a requested font (Zed measures
+  its editor with `m`). A face the application added itself (`fontdb::Source::Binary`) now is: KaTeX's
+  `KaTeX_Size1…4` and `KaTeX_AMS` have no letters, and `resolve_font` panics when nothing resolves.
+
+Windows: untouched. DirectWrite's font matching is expected to return simulated oblique and bold faces by
+itself (its oblique is 20°, not Skia's 14°); unverified, see `crates/decibell-text/README.md` § Windows.
+Upstream: the `TextSystem` accessors perhaps; synthetic styles are a real gap in GPUI on Linux and could go
+upstream with a `FontStyle`-driven design.
+
+## 0011: system fonts on Linux, on demand
+
+`crates/gpui_wgpu/src/cosmic_text_system.rs` +50 / −7, `crates/gpui_linux/src/linux/platform.rs` +3 / −1.
+
+`LinuxCommon::new` built the text system with `CosmicTextSystem::new`, which indexes every installed font
+before the first frame (1,095 faces here), and cosmic-text then walks that whole index, opening most font
+files, for every new (family, weight, style) it shapes. The patch adds
+`CosmicTextSystem::new_with_deferred_system_fonts` (an empty database, the locale `FontSystem::new` would have
+picked) and uses it; `load_family` indexes the installed fonts the first time a family is asked for that no
+added font provides, logs that it did, and goes on as before. So an application that names only fonts it
+added never pays, and one that names a system family behaves as it always did, one index later.
+
+What an application then has to do itself is fallback for characters its fonts lack: with an empty database
+cosmic-text has nothing to fall back to. `decibell-text` does it in its shaping call
+(`crates/decibell-text/src/fallback.rs`): a glyph that came back missing is looked up with fontconfig
+(`dlopen`ed then, never linked), the one font file is mapped and added with `add_fonts`, and the run is shaped
+again before the layout is returned. The database holds the bundled faces plus the fonts conversations
+actually needed, so font queries stay cheap for the life of the process.
+
+Measured on the client (release, the token gallery as the first screen, KDE Plasma 6 Wayland, RTX 4080;
+`0001`–`0006` + `0010` in both columns; the machine was running other builds, see the ranges):
+
+| | before | after |
+|---|---|---|
+| First frame presented, from launch (`tools/perf/startup.sh --runs 6`, median and range) | 277 ms (262–387) | **191 ms** (155–221) |
+| Private dirty memory, window idle for 9 s (`/proc/<pid>/smaps_rollup`, two runs each) | 31.0 / 30.8 MB | **30.1 / 30.2 MB** |
+| Private memory (clean + dirty) | 62.8 / 62.2 MB | 61.4 / 61.6 MB |
+| "indexing the installed fonts" in the log (`DECIBELL_LOG=info`, `--selftest boot`) | — | never |
+| First text in a script the bundled fonts lack (CJK): fontconfig loaded, font found, mapped, added, re-shaped | 0 (already indexed) | 21 ms, once per process |
+| A later new fallback font (Arabic; an emoji font) | 0 | 3.8 ms; 1.0 ms |
+| Text in a script whose font is loaded | — | no extra cost |
+
+The 21 ms can be moved off the frame that first needs it: `decibell_text::prewarm_system_fonts()` loads
+fontconfig from any thread (the app can call it on a background thread once the first frame is out). Not
+exercised: a machine without libfontconfig (no fallback: the glyph stays missing, a warning is logged).
+Upstream: the constructor is generic and could go; Zed itself wants the system fonts.
+
 ## Considered and not patched
 
 - **Worker threads.** GPUI starts one `Worker-N` per CPU (20 here). Limited to 4 CPUs (`taskset -c 0-3`) the
   process has 17 threads instead of 33 and the same memory (private 77.8 vs 78.0 MB, PSS 81.5 vs 81.7): idle
   workers cost nothing measurable, so no cap.
-- **System fonts on Linux.** GPUI's text system loads the index of every installed font (1,095 faces here,
-  10 ms), and cosmic-text then walks all of them for each new (family, weight, style) it shapes, opening most
-  font files to look for a weight axis: 15 such queries for the gallery, 62.6 ms in total, about a quarter of
-  the time to the first frame (`DECIBELL_LOG=debug`, "font matches for … in …"). A one-line patch
-  (`CosmicTextSystem::new_without_system_fonts` in `crates/gpui_linux/src/linux/platform.rs`) removes both,
-  but also every fallback for scripts our fonts lack; it needs a loader that adds a covering system font when
-  a glyph is missing (`App::on_missing_glyphs`). Left for the text work to decide.
+- **System fonts on Linux**: patched, see 0011.
 - **Windows vsync thread** (`crates/gpui_windows/src/platform.rs`: wakes every vblank while idle): cannot be
   run here; its own task.
 
@@ -188,5 +316,6 @@ before trusting the result.
 
 ### Not patched by `0001`
 
-`gpui_windows` (Direct3D 11) still ignores surfaces; the matching change is designed in `video-design.md` §8.
+`gpui_windows` (Direct3D 11) still ignores surfaces; the matching change, and the interface `decibell-video`
+expects from it, is in `video-design.md` §8.
 `gpui_apple` needs nothing: `Window::paint_surface` with a `CVPixelBuffer` already works there.

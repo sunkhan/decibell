@@ -35,15 +35,18 @@ small binary. Measure what you add (`HANDOFF.md` §2, `tools/perf/`).
   `theme.chrome.<token>`. It differs from the base scope only in console-split.
 - **No colour, radius, shadow or font that is not a token.** No `rgb(0x…)`, no `px(6.)` radius, no
   `shadow_md()`. Spacing uses GPUI's Tailwind-scale helpers (`p_4`, `gap_2`, `h_8`: 4 px steps, as in the TSX)
-  or `px(n)` where the TSX has an arbitrary `[n px]`. Two exceptions exist and are commented: the window's own
-  shadow (`window_frame.rs`) and the white of the close button's hover (`hover:text-white`).
+  or `px(n)` where the TSX has an arbitrary `[n px]`. The exceptions are the renderer's own literals, each
+  commented where it is used: the window's shadow (`window_frame.rs`), the close button's hover white
+  (`hover:text-white`), the dialog backdrop's `rgba(0,0,0,0.65)` (`modal.rs`) and nocturne's select-menu sheen
+  (`select.rs`, a globals.css component rule).
 - Converting tokens costs nothing at paint: `Theme` holds `Hsla` / `BoxShadow` values made once per theme
   switch. Don't call `decibell_ui::hsla` / `box_shadows` in `render`, except for a palette that is not the
   active one (a theme preview).
 - `Theme::set(cx, id)` switches and repaints every window; nothing else is needed in views.
 - CSS → GPUI differences already handled in `decibell-ui`: a CSS blur radius is twice GPUI's `blur_radius`;
-  CSS paints the first shadow layer on top, GPUI the last. Not handled anywhere: GPUI has no letter-spacing
-  (`tracking_*` tokens), no percentage radii (use `theme.avatar_radius(size)`), a spread shadow keeps the
+  CSS paints the first shadow layer on top, GPUI the last. Letter-spacing (`tracking_*` tokens) is drawn by
+  `decibell-text` (`Label::tracking(em)`; the theme's body tracking is the default), not by GPUI's own text
+  elements. Not handled anywhere: no percentage radii (use `theme.avatar_radius(size)`), a spread shadow keeps the
   element's corner radius instead of growing it, and `overflow_hidden` clips to the rectangle, not to rounded
   corners (round the child too).
 
@@ -57,20 +60,87 @@ small binary. Measure what you add (`HANDOFF.md` §2, `tools/perf/`).
   `text-[13px]`. Line height defaults to 1.5 × size (what the renderer inherits); pass the px value when the
   TSX sets one.
 - Weights that exist: 400, 500, 600, 700 (Mona Sans wordmark: 600 only). Others snap to the nearest face.
-  There is no italic: GPUI does not synthesise a slant, italic text is drawn upright for now.
+  There is no italic face: `Label::italic()` / an italic run draws a slanted twin of the upright face
+  (`decibell-text`, GPUI patch 0010), as Chromium synthesises it.
 - Adding a weight or family: `tools/gen-fonts.py` (`FAMILIES`), run `tools/gen-fonts.sh`, commit
   `assets/fonts/static/` and `crates/decibell-ui/src/fonts_generated.rs`. The unit tests and the `boot`
   self-test then check the new face resolves to itself.
 
 ## Icons
 
-- `Icon::new("icons/lucide/settings.svg").size(px(16.)).color(theme.color_text_secondary)`. The colour
-  defaults to the inherited text colour; `.stroke_width(1.5)` matches lucide-react's `strokeWidth`;
+- `Icon::new(IconName::StageMic).size(px(18.)).color(theme.color_text_secondary)`. `IconName` is generated
+  from the files under `assets/icons/` (`stage/mic-off.svg` → `StageMicOff`, root files unprefixed), so a
+  missing icon is a compile error. The colour defaults to the inherited text colour; `.stroke_width(2.5)`
+  redraws the glyph at another width in its 24-unit box (lucide-react's `strokeWidth`, the stage's `bold`);
   `.group_hover("name", colour)` follows a hovered ancestor that called `.group("name")` (an icon cannot
   inherit a hover colour: its colour is fixed when its parent renders).
-- Adding an icon: put the SVG under `assets/icons/` (lucide ones through `tools/fetch-assets.mjs`, the
-  renderer's hand-written ones as files, e.g. `assets/icons/window/`). `decibell-ui`'s build script embeds
-  every `.svg` there; nothing else to register. SVGs are drawn as one colour (alpha mask + tint).
+- The set: the renderer's glyph components, extracted from the real TSX by
+  `tools/electron-captures/icons/extract.sh` (`settings/` = settingsUi's stroke set, `settings-tab/`,
+  `server-tab/`, `stage/`, `viewer/`, `picture/`, `transfers/`, `chat/`, `voice/`, `call/`, `devices/`),
+  the kit's own glyphs at the root and in `status/` (copied from the components that draw them), lucide
+  (`tools/fetch-assets.mjs`, driven by the renderer's lucide-react imports) and `window/`.
+- Adding an icon: a glyph component the renderer exports or defines locally → add it to
+  `tools/electron-captures/pages/icons-dump.tsx` and rerun `icons/extract.sh`; an inline `<svg>` inside a
+  bigger component → copy it as a file next to the others (one colour: `currentColor`, the stroke width on
+  the root `<svg>`). `decibell-ui`'s build script embeds every `.svg`; `icon::tests::every_icon_rasterises`
+  checks each one draws through GPUI's own rasteriser. SVGs are drawn as one colour (alpha mask + tint).
+
+## Components (`decibell-ui`)
+
+Build screens from these; don't restyle a button by hand. Each is a builder like GPUI's own elements, reads
+the theme, and has the renderer's hover / focus-visible (the theme's `shadow-ring`) / disabled states. Live
+gallery: `decibell --screen kit-forms` (and `kit-buttons`, `kit-overlays`, `kit-dialogs`, `kit-settings`,
+`kit-settings-rail`, `kit-identity`, `kit-scroll`); each has an Electron twin in `tools/electron-captures`.
+Callbacks take an event so `cx.listener(|this, _: &ClickEvent, window, cx| …)` fits. Keyboard: every
+control is a tab stop and Enter / Space activate it; `decibell_ui::init` binds Tab / Shift-Tab to
+`FocusNext` / `FocusPrev`, which move focus only where a window's root element has
+`decibell_ui::focus_navigation(…)` (GPUI binds no keys itself; a `Modal` keeps them inside).
+
+- Scrolling: `ScrollArea::new(id).track_scroll(&handle).flex_1().child(content)` (Chromium's wheel / key
+  animation and scrollbar; padding goes on the content; `.gutter_stable()`, `.without_keys()`,
+  `.windowed(count, RowHeights::Uniform(px(44.)), |range, window, cx| rows)` for long lists);
+  `ScrollHandle::new()` (`scroll_to`, `scroll_to_bottom`, `scroll_into_view(top, height, ScrollAlign)`,
+  `is_at_bottom`, `shift`); `scroll::ScrollAnimator` (the pure model, for the message list's own element).
+- Buttons: `Button::new(id, "Save changes").variant(ButtonVariant::Danger).size(ButtonSize::Sm).icon(…)
+  .loading(saving).disabled(…).full_width().on_click(…)`; `IconButton::new(id, IconName::Close).small()`;
+  `LinkButton::new(id, "Undo")` (`.recolor()`: the menu idiom); `Spinner::new().size(px(20.))`.
+- Forms: `Switch::new(id, on).on_toggle(…)`; `Checkbox::new(id, on).label("…")`;
+  `SegmentedControl::new(id, vec![Segment::new(v, "Low"), …], selected).on_change(…)`;
+  `Slider::new(id, value, min, max).step(10.).fill().ticks([…]).on_change(…).on_commit(…)`;
+  `Select::options(id, Some(value), vec![SelectOption::new(v, "Label").hint(…)])` or `Select::new(id, value,
+  groups)` (`.size(SelectSize::Sm)`, `.variant(SelectVariant::Sunken)`, `.placeholder(…)`, `.icon(…)`,
+  `.track(&SelectHandle::new(cx))` to open / inspect it from code); `Field::new("Label").hint(…)
+  .error(…).child(control)` (`Field::plain` for dialogs); `TextField::new(id).focus(&handle).value(…)
+  .placeholder(…).error(…)` — **a shell only** until `decibell-text`'s editor is passed to `.input(editor)`.
+- Overlays: `Modal::new(id, open).on_close(|request: &CloseRequest, …| …).child(dialog_card(400., cx)…)`
+  (render it open or not; content must `.occlude()`; refuse a close by not closing);
+  `ConfirmModal::new(id, open, "Delete message", "Delete").message(…).tone(…).busy(…).on_confirm(…)
+  .on_cancel(…)`; `ContextMenu::new(id, point).entry(MenuItem::new("Kick").icon(…).danger())
+  .entry(MenuEntry::Separator).on_dismiss(…)` (`MenuEntry::Label`, `Custom`, `MenuItem::checked`,
+  `expander`, `keep_open`); `Popover::new(id, point).child(…)`; `place_menu(…)` / `Placed` for your own
+  layer; `Tooltip::new(id, "Audio", bounds).shown(hovered)` (the settings rail's label) and
+  `title_tooltip("…")` for GPUI's `.tooltip(…)`; `Toasts::push(cx, Toast::error("…").body(…).action(…))`
+  with one `ToastStack::new()` in the **root** view (not inside a cached view).
+- Structure: `SettingsWindow::new(id, open, &scroll).nav_label(…).item(NavItem::new(id, icon, "Audio")
+  .active(…).dot(dirty)).foot_item(…).title(…).context(…).on_close(…).child(tab)` (folds to the 64 px rail
+  below 1024 px); `SaveBar::new(id, &pane_scroll, dirty, nudge).saving(…).on_reset(…).on_save(…)` (bump
+  `nudge` on a refused leave: it shakes); `SectionLabel::new(…)`, `Heading::new(…)`, `divider(cx)`,
+  `Badge::new(…).tone(BadgeTone::…)`, `Notice::error(…)`, `ErrorCard::new(id, …)`, `EmptyState::new(icon,
+  title, body)`, `Banner::reconnecting()` / `Banner::notice(id, …)`.
+- Identity: `LetterAvatar::new(uid, name, 32.)`, `Avatar::new(uid, name, 32.).image(decoded)`,
+  `StatusDot::new(Presence::Away, ring).size(13.)`, `StatusPill::new(…)`, `BellMark::new(id).rise(true)`;
+  `identity::person_slot(uid, name)` / `avatar_color` / `name_color` (the renderer's colour hash).
+- Motion: `motion::transition(window, cx, id, target, Transition::TAILWIND)` (a CSS transition: frames only
+  while it moves), `transition_flag`, `transition_from` (an entrance), `motion::mix` (colours as CSS
+  interpolates them), `Keyframes`, `CubicBezier` (`EASE`, `TAILWIND`, `POP`…). One-shot entrances use GPUI's
+  `with_animation` with these curves.
+- Gotchas found building the kit: (1) GPUI's `opacity` is not a group composite: a disabled button's label
+  is fainter than in Chromium; (2) no transforms on boxes: entrances keep their translate (as a relative
+  offset) but drop the `scale(0.95)`; (3) no letter-spacing: `tracking-*` labels are tighter; (4) state held
+  in an entity the owner made (not `window.use_keyed_state`) must notify the view it was drawn in, or a
+  cached view replays its old paint (see `select.rs` `update_state`); (5) GPUI keeps *presenting* (not
+  drawing) for 1 s after six inputs within 100 ms: time animations by drawn frames; (6) `capture` renders one
+  frame on a clock that does not run: kit screens turn on reduced motion there so entrances show their end.
 
 ## Element ids
 

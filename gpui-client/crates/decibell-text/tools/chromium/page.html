@@ -1,0 +1,188 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* Tailwind's preflight and the renderer's body rule, as far as they reach text. */
+  html { line-height: 1.5; -webkit-text-size-adjust: 100%; tab-size: 4; }
+  body { margin: 0; background: #17141c; color: #ece6da; font-weight: 400;
+         -webkit-font-smoothing: antialiased; }
+  *, ::before, ::after { box-sizing: border-box; }
+  strong { font-weight: bolder; }
+  code { font-size: 1em; }
+  a { color: inherit; text-decoration: inherit; }
+  #stage { position: absolute; left: 8px; top: 8px; }
+  .case { position: relative; }
+  /* MessageBubble.tsx: whitespace-pre-wrap break-all [overflow-wrap:anywhere] */
+  .wrap-body { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+  /* break-words on pre-wrapped text (composer preview, embeds) */
+  .wrap-words { white-space: pre-wrap; overflow-wrap: break-word; }
+  /* ordinary UI text */
+  .wrap-normal { white-space: normal; }
+  .wrap-nowrap { white-space: nowrap; }
+  /* MessageText.tsx inline code */
+  .chip { box-decoration-break: clone; -webkit-box-decoration-break: clone; border-radius: 4px;
+          background: #0e0c12; padding: 2px 6px; font-size: 0.85em; }
+  .link { color: #c9a45c; }
+  .emoji { display: inline-block; vertical-align: -0.2em; background: #c9a45c55; }
+  .meta { margin-left: 4px; vertical-align: baseline; color: #8a8494; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+const BOLD = 1, ITALIC = 2, UNDERLINE = 4, STRIKE = 8, CODE = 16, LINK = 32, META = 64;
+
+async function loadFonts(dir) {
+  const faces = [
+    ["Decibell Sans", "DecibellSans", [["Regular", 400], ["Medium", 500], ["SemiBold", 600], ["Bold", 700]]],
+    ["Decibell Inter", "DecibellInter", [["Regular", 400], ["Medium", 500], ["SemiBold", 600], ["Bold", 700]]],
+    ["Decibell Mono", "DecibellMono", [["Regular", 400], ["Medium", 500], ["SemiBold", 600], ["Bold", 700]]],
+  ];
+  const loads = [];
+  for (const [family, file, weights] of faces) {
+    for (const [name, weight] of weights) {
+      const face = new FontFace(family, `url("file://${dir}/${file}-${name}.ttf")`, { weight: String(weight) });
+      document.fonts.add(face);
+      loads.push(face.load());
+    }
+  }
+  await Promise.all(loads);
+}
+
+function build(c, style) {
+  const el = document.createElement("div");
+  el.className = `case wrap-${c.wrap || style.wrap || "body"}`;
+  el.style.width = c.w === null ? "max-content" : `${c.w}px`;
+  el.style.fontFamily = `"${style.family}"`;
+  el.style.fontSize = `${style.size}px`;
+  el.style.lineHeight = String(style.lh);
+  el.style.letterSpacing = `${style.ls_em}em`;
+  if (style.weight) el.style.fontWeight = String(style.weight);
+  if (c.clamp) {
+    el.style.display = "-webkit-box"; el.style.webkitBoxOrient = "vertical";
+    el.style.webkitLineClamp = String(c.clamp); el.style.overflow = "hidden";
+  }
+  if (c.ellipsis) { el.style.overflow = "hidden"; el.style.textOverflow = "ellipsis"; }
+  const leaves = []; // {node, seg} for text, {box, seg} for boxes
+  c.segs.forEach((seg, index) => {
+    if (seg[0] === "box") {
+      const box = document.createElement("span");
+      box.className = "emoji";
+      box.style.width = `${seg[1]}px`; box.style.height = `${seg[2]}px`;
+      box.style.verticalAlign = `${-seg[3]}em`;
+      el.appendChild(box);
+      leaves.push({ box, seg: index });
+      return;
+    }
+    const [flags, text] = seg;
+    let parent = el;
+    const wrap = (tag, cls) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      parent.appendChild(e); parent = e;
+    };
+    if (flags & BOLD) wrap("strong");
+    if (flags & ITALIC) wrap("em");
+    if (flags & UNDERLINE) wrap("u");
+    if (flags & STRIKE) wrap("s");
+    if (flags & LINK) wrap("a", "link");
+    if (flags & CODE) { wrap("code", "chip"); parent.style.fontFamily = `"${style.mono}"`; }
+    if (flags & META) { wrap("span", "meta"); parent.style.fontSize = `${style.meta}px`; }
+    const node = document.createTextNode(text);
+    parent.appendChild(node);
+    leaves.push({ node, seg: index });
+  });
+  return { el, leaves };
+}
+
+function measure(el, leaves) {
+  const origin = el.getBoundingClientRect();
+  const range = document.createRange();
+  const lines = [];
+  let offset = 0;          // UTF-16 units into the flattened text; a box is one unit
+  let line = null;         // [start, right, top, seg]
+  let prev = null;         // previous placed rect
+  let afterBreak = true;
+  const place = (rect, seg, isSpace) => {
+    const startsLine = afterBreak ||
+      (prev && rect.left <= prev.left + 0.001 && rect.top > prev.top + 3 && rect.left < prev.right - 0.001) ||
+      (prev && rect.left < prev.left - 0.001);
+    if (startsLine || !line) {
+      line = [offset, 0, rect.top - origin.top, seg];
+      lines.push(line);
+    }
+    if (!isSpace) line[1] = Math.max(line[1], rect.right - origin.left);
+    prev = rect; afterBreak = false;
+  };
+  for (const leaf of leaves) {
+    if (leaf.box) {
+      place(leaf.box.getBoundingClientRect(), leaf.seg, false);
+      offset += 1;
+      continue;
+    }
+    const text = leaf.node.data;
+    for (let i = 0; i < text.length; ) {
+      const cp = text.codePointAt(i);
+      const len = cp > 0xffff ? 2 : 1;
+      if (cp === 10) {
+        // A break ends the line; an empty line still counts.
+        if (afterBreak) lines.push([offset, 0, NaN, leaf.seg]);
+        afterBreak = true; prev = null; line = null;
+      } else {
+        range.setStart(leaf.node, i); range.setEnd(leaf.node, i + len);
+        const rects = range.getClientRects();
+        if (rects.length) {
+          const isSpace = cp === 32 || cp === 9 || cp === 0xa0 && false;
+          place(rects[0], leaf.seg, isSpace);
+        }
+      }
+      i += len; offset += len;
+    }
+  }
+  const r6 = (v) => Math.round(v * 1e4) / 1e4;
+  return { h: r6(origin.height), w: r6(origin.width), lines: lines.map(([s, w, t, g]) => [s, r6(w), Number.isNaN(t) ? null : r6(t), g]) };
+}
+
+(async () => {
+  const { corpus, fonts, shots } = await window.harness.corpus();
+  await loadFonts(fonts);
+  const stage = document.getElementById("stage");
+  const out = { dsf: window.devicePixelRatio, userAgent: navigator.userAgent, cases: [] };
+  const BATCH = 400;
+  for (let at = 0; at < corpus.cases.length; at += BATCH) {
+    const batch = corpus.cases.slice(at, at + BATCH).map((c) => ({ c, ...build(c, corpus.styles[c.style]) }));
+    for (const b of batch) stage.appendChild(b.el);
+    for (const b of batch) {
+      const m = measure(b.el, b.leaves);
+      out.cases.push({ id: b.c.id, ...m });
+    }
+    if (shots) {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      for (const b of batch) {
+        // "sel": [from, to] selects that range of the first text node for the picture.
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        if (b.c.sel) {
+            const node = b.leaves.find((leaf) => leaf.node).node;
+            selection.setBaseAndExtent(node, b.c.sel[0], node, b.c.sel[1]);
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        }
+        // Bring the case to the top of the window: a capture cannot reach below its edge.
+        stage.style.top = `${8 - b.el.offsetTop}px`;
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const r = b.el.getBoundingClientRect();
+        await window.harness.shot(b.c.id, {
+          x: Math.floor(r.left) - 4, y: Math.floor(r.top) - 4,
+          width: Math.ceil(r.width) + 8, height: Math.ceil(r.height) + 8,
+        });
+      }
+    }
+    stage.replaceChildren();
+    stage.style.top = "8px";
+  }
+  await window.harness.done(out);
+})().catch((error) => { console.log(`harness failed: ${error && error.stack || error}`); });
+</script>
+</body>
+</html>

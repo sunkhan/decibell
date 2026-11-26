@@ -9,6 +9,7 @@ publish.workspace = true
 gpui.workspace = true
 decibell-theme.workspace = true
 decibell-harness.workspace = true
+decibell-text.workspace = true
 anyhow.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]

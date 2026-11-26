@@ -8,7 +8,7 @@ use gpui::{
     prelude::*, px,
 };
 
-use crate::{ActiveTheme as _, FontRole, Icon, Label, Theme};
+use crate::{ActiveTheme as _, FontRole, Icon, IconName, Label, Theme};
 
 pub struct Gallery;
 
@@ -474,13 +474,13 @@ fn type_row(role: &'static str, sample: impl IntoElement, cx: &App) -> impl Into
 
 fn icons(cx: &App) -> impl IntoElement {
     let t = cx.theme();
-    const ICONS: [&str; 6] = [
-        "icons/lucide/settings.svg",
-        "icons/lucide/user-plus.svg",
-        "icons/window/minimize.svg",
-        "icons/window/maximize.svg",
-        "icons/window/restore.svg",
-        "icons/window/close.svg",
+    const ICONS: [IconName; 6] = [
+        IconName::LucideSettings,
+        IconName::LucideUserPlus,
+        IconName::WindowMinimize,
+        IconName::WindowMaximize,
+        IconName::WindowRestore,
+        IconName::WindowClose,
     ];
     let line = |size: f32, color: Hsla, stroke_width: Option<f32>| {
         div()

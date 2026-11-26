@@ -1736,6 +1736,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "decibell-harness",
+ "decibell-text-gallery",
  "decibell-theme",
  "decibell-ui",
  "futures",
@@ -1887,6 +1888,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "decibell-text"
+version = "0.1.0"
+dependencies = [
+ "decibell-highlight",
+ "decibell-richtext",
+ "decibell-tex",
+ "flate2",
+ "gpui",
+ "gpui_platform",
+ "gpui_wgpu",
+ "icu_segmenter",
+ "image",
+ "libc",
+ "log",
+ "memmap2",
+ "miniz_oxide",
+ "resvg",
+ "serde_json",
+ "smallvec",
+ "unicode-linebreak",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "decibell-text-gallery"
+version = "0.1.0"
+dependencies = [
+ "decibell-harness",
+ "decibell-highlight",
+ "decibell-richtext",
+ "decibell-text",
+ "decibell-theme",
+ "decibell-ui",
+ "gpui",
+]
+
+[[package]]
 name = "decibell-theme"
 version = "0.1.0"
 
@@ -1896,6 +1934,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "decibell-harness",
+ "decibell-text",
  "decibell-theme",
  "gpui",
  "gpui_wgpu",

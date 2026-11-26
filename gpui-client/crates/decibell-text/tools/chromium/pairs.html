@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Which pairs of printable ASCII characters Blink breaks a line between, for word-break
+     normal and break-all (its line breaker uses a table of its own for ASCII, not UAX #14).
+     Output: {"normal": [94 strings of 94 '0'/'1'], "break_all": [...]}, rows = first char
+     from '!' to '~', columns = second char. -->
+<html><head><meta charset="utf-8"><style>
+body{margin:0}
+.t{width:1px;font:16px monospace;white-space:pre-wrap;overflow-wrap:normal;position:absolute;left:0;top:0}
+</style></head>
+<body><div id="stage"></div>
+<script>
+(async () => {
+  await window.harness.corpus();
+  const stage = document.getElementById("stage");
+  const out = {};
+  const range = document.createRange();
+  for (const [mode, name] of [["normal", "normal"], ["break-all", "break_all"]]) {
+    const rows = [];
+    for (let a = 0x21; a <= 0x7e; a++) {
+      let row = "";
+      const els = [];
+      for (let b = 0x21; b <= 0x7e; b++) {
+        const el = document.createElement("div");
+        el.className = "t"; el.style.wordBreak = mode;
+        el.textContent = String.fromCharCode(a, b);
+        els.push(el);
+      }
+      stage.replaceChildren(...els);
+      for (const el of els) {
+        const node = el.firstChild;
+        range.setStart(node, 0); range.setEnd(node, 1); const first = range.getClientRects()[0];
+        range.setStart(node, 1); range.setEnd(node, 2); const second = range.getClientRects()[0];
+        row += second.top > first.top + 2 ? "1" : "0";
+      }
+      rows.push(row);
+    }
+    out[name] = rows;
+  }
+  await window.harness.done(out);
+})().catch((e) => console.log("harness failed: " + (e && e.stack || e)));
+</script></body></html>

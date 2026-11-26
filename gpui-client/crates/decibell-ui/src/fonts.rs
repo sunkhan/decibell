@@ -14,8 +14,9 @@
 //!
 //! View code never names a family: it asks the theme (`cx.theme().font(FontRole::Meta)`).
 //! Any other weight snaps to the nearest face, as in CSS. There is no italic face (the
-//! renderer has none either and lets Chromium slant the upright one); GPUI does not
-//! synthesise a slant, so italic text is drawn upright until `decibell-text` handles it.
+//! renderer has none either and lets Chromium slant the upright one): asking for italic gives
+//! a slanted twin of the upright face (GPUI patch 0010, the skew Chromium uses), with its own
+//! `FontId` and the same advances.
 
 use std::borrow::Cow;
 
@@ -184,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn other_weights_snap_to_the_nearest_face_and_italic_stays_upright() {
+    fn other_weights_snap_to_the_nearest_face_and_italic_is_a_slanted_twin() {
         let text_system = text_system();
         let regular = resolve(&text_system, "Decibell Inter", 400., FontStyle::Normal);
         let bold = resolve(&text_system, "Decibell Inter", 700., FontStyle::Normal);
@@ -196,8 +197,9 @@ mod tests {
             resolve(&text_system, "Decibell Inter", 900., FontStyle::Normal),
             bold
         );
-        // No italic face is bundled and GPUI does not slant one: italic is the upright face.
-        assert_eq!(
+        // No italic face is bundled: italic is a slanted twin of the upright face (patch 0010),
+        // a different font id so the glyph cache keeps the two apart.
+        assert_ne!(
             resolve(&text_system, "Decibell Inter", 400., FontStyle::Italic),
             regular
         );
