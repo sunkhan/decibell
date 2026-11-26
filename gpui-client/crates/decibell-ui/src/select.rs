@@ -275,6 +275,7 @@ pub struct Select<T: Clone + PartialEq + 'static> {
     initially_open: bool,
     handle: Option<SelectHandle>,
     on_change: Option<ChangeHandler<T>>,
+    menu_priority: usize,
 }
 
 impl<T: Clone + PartialEq + 'static> Select<T> {
@@ -294,7 +295,15 @@ impl<T: Clone + PartialEq + 'static> Select<T> {
             initially_open: false,
             handle: None,
             on_change: None,
+            menu_priority: 3,
         }
+    }
+
+    /// Inside a modal (a settings window): the menu draws over the modal's layer, which GPUI
+    /// would otherwise paint on top of it.
+    pub fn over_modal(mut self) -> Self {
+        self.menu_priority = crate::popover::MODAL_PRIORITY + 3;
+        self
     }
 
     /// Share the open state with the owner.
@@ -695,6 +704,7 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for Select<T> {
                 searchable,
                 filter: filter.clone(),
                 menu_min_width: self.menu_min_width,
+                priority: self.menu_priority,
             }, window, cx)
         });
 
@@ -780,6 +790,7 @@ struct MenuArgs<T: Clone + PartialEq + 'static> {
     searchable: bool,
     filter: Option<Entity<InputState>>,
     menu_min_width: Option<Pixels>,
+    priority: usize,
 }
 
 /// A row's height, from its classes (`py-2` + the 13 px line, + an 11 px hint line).
@@ -792,7 +803,7 @@ fn option_height(size: SelectSize, hint: bool) -> f32 {
 }
 
 fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut Window, cx: &mut App) -> AnyElement {
-    let MenuArgs { id, state, groups, shown, flat, value, on_change, size, family, font, searchable, filter, menu_min_width } = args;
+    let MenuArgs { id, state, groups, shown, flat, value, on_change, size, family, font, searchable, filter, menu_min_width, priority } = args;
 
     // Geometry: every row's height is fixed by its classes, so the menu's natural height (and
     // where the active row is) is known before layout.
@@ -1048,7 +1059,7 @@ fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut W
                 .into_any_element()
         }
     };
-    deferred(placed.child(animated)).with_priority(3).into_any_element()
+    deferred(placed.child(animated)).with_priority(priority).into_any_element()
 }
 
 struct OptionRow<'a, T: Clone + PartialEq + 'static> {

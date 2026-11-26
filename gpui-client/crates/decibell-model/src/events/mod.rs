@@ -106,9 +106,20 @@ pub fn route(model: &Model, event: CoreEvent, cx: &mut App) {
         }
         E::ChannelMessageRejected(p) => todo::m2::channel_message_rejected(model, &p, cx),
         E::MembershipRevoked(p) => servers::membership_revoked(model, &p, cx),
-        E::RoleListReceived(p) => servers::role_list_received(model, &p, cx),
-        E::MemberUpsert(p) => servers::member_upsert(model, &p, cx),
-        E::MemberRemove(p) => servers::member_remove(model, &p, cx),
+        // Also answers: an open member search (Server Settings) patches its loaded pages with
+        // the deltas and drops a deleted role's id (`useMemberSearch`'s listeners).
+        E::RoleListReceived(p) => {
+            servers::role_list_received(model, &p, cx);
+            answer(model, E::RoleListReceived(p), cx);
+        }
+        E::MemberUpsert(p) => {
+            servers::member_upsert(model, &p, cx);
+            answer(model, E::MemberUpsert(p), cx);
+        }
+        E::MemberRemove(p) => {
+            servers::member_remove(model, &p, cx);
+            answer(model, E::MemberRemove(p), cx);
+        }
         E::BanListReceived(p) => servers::ban_list_received(model, &p, cx),
         E::ServerMetaUpdated(p) => servers::server_meta_updated(model, &p, cx),
         E::ServerUpdateResponded(p) => answer(model, E::ServerUpdateResponded(p), cx),

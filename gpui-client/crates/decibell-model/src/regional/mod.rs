@@ -405,6 +405,14 @@ impl Regional {
         out
     }
 
+    /// "7 November 2026" / "November 7, 2026" / "2026 November 7" (`{ month: "long", day,
+    /// year }`: the audit log's day heading in another year).
+    pub fn month_day_year(&self, date: Date, month: MonthName) -> String {
+        let mut out = String::with_capacity(24);
+        self.write_composed(&mut out, date, month, true);
+        out
+    }
+
     /// "Saturday, 7 November" / "Saturday, November 7".
     pub fn weekday_month_day(&self, date: Date) -> String {
         let mut out = String::with_capacity(24);

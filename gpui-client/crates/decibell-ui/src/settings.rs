@@ -140,6 +140,7 @@ pub struct SettingsWindow {
     open: bool,
     scroll: ScrollHandle,
     nav_label: Option<SharedString>,
+    nav_header: Option<(AnyElement, AnyElement)>,
     items: Vec<NavItem>,
     foot: Vec<NavItem>,
     title: SharedString,
@@ -156,6 +157,7 @@ impl SettingsWindow {
             open,
             scroll: scroll.clone(),
             nav_label: None,
+            nav_header: None,
             items: Vec::new(),
             foot: Vec::new(),
             title: SharedString::default(),
@@ -178,6 +180,13 @@ impl SettingsWindow {
     /// The small uppercase label over the tabs (hidden on the rail).
     pub fn nav_label(mut self, label: impl Into<SharedString>) -> Self {
         self.nav_label = Some(label.into());
+        self
+    }
+
+    /// A header of the caller's over the tabs in place of the label (Channel Settings: the
+    /// channel's icon, name and type), and what the rail shows instead (its icon).
+    pub fn nav_header(mut self, full: impl IntoElement, rail: impl IntoElement) -> Self {
+        self.nav_header = Some((full.into_any_element(), rail.into_any_element()));
         self
     }
 
@@ -238,6 +247,7 @@ impl RenderOnce for SettingsWindow {
             .bg(theme.color_bg_darkest)
             .px_3()
             .py_6()
+            .when_some(self.nav_header, |this, (full, rail_header)| this.child(if rail { rail_header } else { full }))
             .when(!rail, |this| {
                 this.when_some(self.nav_label, |this, label| {
                     this.child(

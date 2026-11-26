@@ -254,9 +254,9 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 27 | `mod_action_responded` | `events/servers.rs`; answers; hook `m2::legacy_rejection_suppressed` |
 | 28 | `channel_message_rejected` | `events/chat.rs` (send pacing, slowmode) |
 | 29 | `membership_revoked` | `events/servers.rs`; hook `m3::clear_server_presence` |
-| 30 | `role_list_received` | `events/servers.rs` |
-| 31 | `member_upsert` | `events/servers.rs`; dir: community |
-| 32 | `member_remove` | `events/servers.rs` |
+| 30 | `role_list_received` | `events/servers.rs`; answers (member search drops deleted roles' ids) |
+| 31 | `member_upsert` | `events/servers.rs`; dir: community; answers (member search patches its loaded pages) |
+| 32 | `member_remove` | `events/servers.rs`; answers (member search) |
 | 33 | `ban_list_received` | `events/servers.rs` |
 | 34 | `server_meta_updated` | `events/servers.rs`; dir: community (owner) |
 | 35 | `server_update_responded` | answers (Server Settings → Overview) |

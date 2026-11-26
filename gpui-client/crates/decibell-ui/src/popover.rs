@@ -339,7 +339,12 @@ pub struct Popover {
     prefer: Side,
     on_dismiss: Option<DismissHandler>,
     content: Vec<AnyElement>,
+    priority: usize,
 }
+
+/// A modal's layer: GPUI paints deferred layers by priority alone, so a popover or a select's
+/// menu opened inside a modal must sit above this to be drawn over it (see `over_modal`).
+pub const MODAL_PRIORITY: usize = 10;
 
 impl Popover {
     pub fn new(id: impl Into<ElementId>, anchor: Point<Pixels>) -> Self {
@@ -349,7 +354,15 @@ impl Popover {
             prefer: Side::Below,
             on_dismiss: None,
             content: Vec::new(),
+            priority: 2,
         }
+    }
+
+    /// Opened from inside a modal (a settings window): drawn over the modal's layer, which GPUI
+    /// would otherwise paint on top of it.
+    pub fn over_modal(mut self) -> Self {
+        self.priority = MODAL_PRIORITY + 2;
+        self
     }
 
     pub fn prefer(mut self, side: Side) -> Self {
@@ -395,7 +408,7 @@ impl RenderOnce for Popover {
             })
             .child(drop_in(self.id, dismissal.attach(panel))),
         )
-        .with_priority(2)
+        .with_priority(self.priority)
     }
 }
 
