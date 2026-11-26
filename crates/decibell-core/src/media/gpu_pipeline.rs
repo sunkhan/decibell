@@ -24,6 +24,7 @@ use windows::Win32::Graphics::Dxgi::{
 /// PCI vendor ids of the encoder vendors.
 pub const VENDOR_NVIDIA: u32 = 0x10DE;
 pub const VENDOR_AMD: u32 = 0x1002;
+pub const VENDOR_INTEL: u32 = 0x8086;
 
 #[derive(Clone)]
 pub struct GpuDevice {
@@ -198,6 +199,10 @@ pub fn vendor_for_encoder(encoder_name: &str) -> u32 {
         VENDOR_NVIDIA
     } else if encoder_name.ends_with("_amf") {
         VENDOR_AMD
+    } else if encoder_name.ends_with("_qsv") {
+        // Quick Sync's session is created on the device's adapter
+        // (hwcontext_qsv.c): it must be Intel's.
+        VENDOR_INTEL
     } else {
         0
     }
@@ -220,6 +225,8 @@ mod tests {
     fn vendor_from_encoder_name() {
         assert_eq!(vendor_for_encoder("h264_nvenc"), VENDOR_NVIDIA);
         assert_eq!(vendor_for_encoder("av1_amf"), VENDOR_AMD);
-        assert_eq!(vendor_for_encoder("h264_qsv"), 0);
+        assert_eq!(vendor_for_encoder("h264_qsv"), VENDOR_INTEL);
+        // Software encodes on whichever device captures: no preference.
+        assert_eq!(vendor_for_encoder("libsvtav1"), 0);
     }
 }

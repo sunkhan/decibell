@@ -43,25 +43,39 @@ pub mod peer;
 pub mod source_id;
 pub mod stream_audio_filter;
 pub mod stream_audio_mixer;
-#[cfg(target_os = "windows")]
+// Encoder backends: order, probe results, fallthrough, software limits
+// (pure decisions, tested everywhere).
+pub mod encoder_backend;
+// The real probe (test encodes) and its cache.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod encoder_probe;
+// SVT-AV1 through FFmpeg's libsvtav1: the software last resort.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub mod encoder_software;
 #[cfg(target_os = "windows")]
 pub mod gpu_pipeline;
+// Captured D3D11 frames → CPU NV12 for the software encoder, never waiting
+// on the GPU.
+#[cfg(target_os = "windows")]
+pub mod nv12_readback;
 #[cfg(target_os = "windows")]
 pub mod video_processor;
-// Pure data + tests; only the Windows encoder consumes it.
+// Per-encoder option tables (pure data + tests).
 pub mod bitrate_preset;
 // Annex B / geometry helpers for the native encode path (tested everywhere).
 pub mod encode_util;
 #[cfg(target_os = "windows")]
 pub mod encoder;
-// Linux native FFmpeg encoder (NVENC/VAAPI/libx264) — the Linux
-// counterpart to the Windows `encoder` module.
+// Linux native FFmpeg encoder (NVENC / VAAPI / software SVT-AV1) — the
+// Linux counterpart to the Windows `encoder` module.
 #[cfg(target_os = "linux")]
 pub mod encoder_linux;
-// DMA-BUF → CUDA / VAAPI zero-copy interop for the Linux native pipeline.
+// VAAPI input (upload + GPU convert) for AMD / Intel on Linux.
 #[cfg(target_os = "linux")]
-pub mod gpu_interop;
+mod encoder_vaapi;
+// The harnesses' synthetic screen and output checks (tests only).
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
+mod encoder_checks;
 // PipeWire / XDG-portal screen capture (universal Linux capture path).
 #[cfg(target_os = "linux")]
 pub mod capture_pipewire;
@@ -782,6 +796,18 @@ impl WinCapture {
     }
 }
 
+/// Why one attempt of `start_windows` did not start.
+#[cfg(target_os = "windows")]
+enum WinStartError {
+    /// The device or the capture could not start: nothing another encoder
+    /// would change, the start fails with this.
+    Capture(String),
+    /// The encoder was not tried (software above its limits).
+    Skipped(String),
+    /// The encoder could not be opened: the next choice is tried.
+    Encoder(String),
+}
+
 /// The community (server_id, channel_id) a stream is announced in, shared by
 /// the engine and its native thumbnail sender. None in a DM call.
 type AnnounceTarget = Arc<arc_swap::ArcSwapOption<(String, String)>>;
@@ -891,48 +917,106 @@ impl VideoEngine {
 
     /// Windows-only: spin up the native capture + encoder pipeline.
     /// Source id is the Chromium desktopCapturer id ("screen:N:0" or
-    /// "window:HWND:0"). Encoder name comes from probe_native_encoders.
-    /// `width`×`height` 0×0 means "Source": the captured source's own size,
-    /// kept within `ceiling` (the encoder's advertised maximum). `detail`
-    /// tunes the encoder for a 5 fps stream. Returns the encoded (width,
-    /// height), which is what gets announced.
+    /// "window:HWND:0"). `choices` are the encoders to try in order
+    /// (`encoder_probe::plan`): each is opened on its own vendor's adapter
+    /// with its own capture, and the first whose encoder opens runs the
+    /// stream; a capture that cannot start ends the attempt (it is not the
+    /// encoder's fault). `width`×`height` 0×0 means "Source": the captured
+    /// source's own size, kept within the choice's ceiling. `detail` tunes
+    /// the encoder for a 5 fps stream. Returns the encoded (width, height)
+    /// and the encoder the stream started on, which is what gets announced.
     #[cfg(target_os = "windows")]
     pub fn start_windows(
         &mut self,
         source_id: &str,
-        encoder_name: &str,
-        codec_wire_byte: u8,
+        choices: &[encoder_thread::EncoderChoice],
         width: u32,
         height: u32,
-        ceiling: (u32, u32),
         fps: u32,
         bitrate_kbps: u32,
         detail: bool,
         include_cursor: bool,
-    ) -> Result<(u32, u32), String> {
+    ) -> Result<(u32, u32, encoder_backend::StartedEncoder), String> {
         let target = source_id::parse(source_id)
             .map_err(|e| format!("source id '{}': {:?}", source_id, e))?;
+        let mut errors: Vec<String> = Vec::new();
+        for (i, choice) in choices.iter().enumerate() {
+            // The software encoder may take over inside the thread when it
+            // comes later in the list (its size limits are checked there
+            // against the size this attempt encodes at).
+            let software_later = choices[i + 1..]
+                .iter()
+                .any(|c| c.candidate.backend == encoder_backend::Backend::Software);
+            match self.start_windows_on(
+                &target,
+                choice,
+                software_later,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                detail,
+                include_cursor,
+            ) {
+                Ok((w, h)) => {
+                    log::info!("[stream] encoding {:?} with {}", choice.codec, choice.label);
+                    let started = encoder_backend::StartedEncoder {
+                        codec: choice.codec,
+                        backend: choice.candidate.backend,
+                        label: choice.label.clone(),
+                    };
+                    return Ok((w, h, started));
+                }
+                Err(WinStartError::Capture(e)) => return Err(e),
+                Err(WinStartError::Skipped(why)) => {
+                    log::warn!("[stream] {} not used: {why}", choice.label);
+                    errors.push(format!("{}: {why}", choice.label));
+                }
+                Err(WinStartError::Encoder(e)) => {
+                    encoder_probe::note_failed(choice.candidate, choice.codec, &e);
+                    errors.push(format!("{}: {e}", choice.label));
+                }
+            }
+        }
+        Err(format!("No encoder could be opened ({})", errors.join("; ")))
+    }
+
+    /// One attempt of `start_windows`: device, capture and encoder thread
+    /// for one choice. Leaves nothing running when it fails.
+    #[cfg(target_os = "windows")]
+    #[allow(clippy::too_many_arguments)]
+    fn start_windows_on(
+        &mut self,
+        target: &source_id::CaptureTarget,
+        choice: &encoder_thread::EncoderChoice,
+        software_later: bool,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+        detail: bool,
+        include_cursor: bool,
+    ) -> Result<(u32, u32), WinStartError> {
+        let encoder_name = choice.encoder_name.as_str();
         // Open the device on the encoder vendor's GPU: on hybrid systems
         // the default adapter is often the other vendor's, and NVENC/AMF
-        // can't open on a foreign device. Falls back to the default.
+        // can't open on a foreign device (nor Quick Sync on a non-Intel
+        // one). Falls back to the default, which is also what the software
+        // encoder captures on.
         let gpu = gpu_pipeline::GpuDevice::create_for_vendor(
             gpu_pipeline::vendor_for_encoder(encoder_name),
-        )?;
+        )
+        .map_err(WinStartError::Capture)?;
         let (tx, rx) = std::sync::mpsc::sync_channel::<
             windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
         >(2);
-
-        // Thumbnail channel: the encoder thread try_sends JPEGs on its
-        // schedule; the task posts them to the channel the stream is
-        // announced in (followed across move_stream_to_channel).
-        let (thumb_tx, thumb_task) = spawn_thumbnail_sender(self.announce_target.clone());
 
         // WGC wherever it can go borderless (Win11+ — better cursor/HDR/
         // rotation handling); on Win10, where the WGC border is mandatory,
         // monitors switch to DXGI Desktop Duplication, degrading back to
         // WGC when duplication can't start. Window capture is WGC-only —
         // duplication does whole outputs.
-        let capture = match target {
+        let capture = match *target {
             source_id::CaptureTarget::Monitor(idx) if !capture_wgc::borderless_supported() => {
                 match capture_dxgi::Capture::start(&gpu, idx, tx.clone(), include_cursor, fps) {
                     Ok(c) => {
@@ -943,37 +1027,59 @@ impl VideoEngine {
                         log::warn!(
                             "[stream] DXGI duplication unavailable ({e}); falling back to WGC"
                         );
-                        WinCapture::Wgc(capture_wgc::Capture::start(
-                            &gpu,
-                            source_id::CaptureTarget::Monitor(idx),
-                            tx,
-                            include_cursor,
-                            fps,
-                        )?)
+                        WinCapture::Wgc(
+                            capture_wgc::Capture::start(
+                                &gpu,
+                                source_id::CaptureTarget::Monitor(idx),
+                                tx,
+                                include_cursor,
+                                fps,
+                            )
+                            .map_err(WinStartError::Capture)?,
+                        )
                     }
                 }
             }
-            _ => WinCapture::Wgc(capture_wgc::Capture::start(
-                &gpu,
-                target,
-                tx,
-                include_cursor,
-                fps,
-            )?),
+            _ => WinCapture::Wgc(
+                capture_wgc::Capture::start(&gpu, *target, tx, include_cursor, fps)
+                    .map_err(WinStartError::Capture)?,
+            ),
         };
         let (width, height) = if width == 0 || height == 0 {
             let (src_w, src_h) = capture.size();
-            let size = encode_util::source_encode_size(src_w, src_h, ceiling.0, ceiling.1);
+            let size = encode_util::source_encode_size(src_w, src_h, choice.ceiling.0, choice.ceiling.1);
             log::info!("[stream] source {src_w}x{src_h} encodes at {}x{}", size.0, size.1);
             size
         } else {
             (width, height)
         };
+        // Software above what the CPU is allowed: not opened, and not a
+        // failure of the encoder.
+        let cpus = encoder_probe::logical_cpus();
+        let software = choice.candidate.backend == encoder_backend::Backend::Software;
+        if software {
+            if let Some(why) = encoder_backend::software_refusal(width, height, fps, cpus) {
+                capture.stop();
+                return Err(WinStartError::Skipped(why));
+            }
+        }
+        let software_fallback = !software
+            && software_later
+            && encoder_backend::software_refusal(width, height, fps, cpus).is_none();
+
+        // Thumbnail channel: the encoder thread try_sends JPEGs on its
+        // schedule; the task posts them to the channel the stream is
+        // announced in (followed across move_stream_to_channel).
+        let (thumb_tx, thumb_task) = spawn_thumbnail_sender(self.announce_target.clone());
+
         let encoder_thread = match encoder_thread::EncoderThread::start(
             gpu,
             encoder_thread::EncoderThreadConfig {
+                candidate: choice.candidate,
+                codec: choice.codec,
+                software_fallback,
                 encoder_name: encoder_name.to_string(),
-                codec_wire_byte,
+                codec_wire_byte: choice.codec as u8,
                 width,
                 height,
                 fps,
@@ -993,7 +1099,7 @@ impl VideoEngine {
                 // its own once thumb_tx is gone; abort it anyway.
                 capture.stop();
                 thumb_task.abort();
-                return Err(e);
+                return Err(WinStartError::Encoder(e));
             }
         };
         self.win_force_keyframe = Some(encoder_thread.force_keyframe_handle());
@@ -1040,18 +1146,20 @@ impl VideoEngine {
     }
 
     /// Linux-only: spin up the native PipeWire/portal capture + FFmpeg
-    /// (NVENC/VAAPI/libx264) encode pipeline. `source_id` is forwarded to
-    /// the capture backend; the portal path ignores it (its own dialog
-    /// picks the source), the wlr path parses it. `width`×`height` 0×0
-    /// means "Source": the negotiated capture size, kept within `ceiling`.
-    /// `detail` tunes the encoder for a 5 fps stream. Returns the encoded
-    /// (width, height), which is what gets announced.
+    /// (NVENC / VAAPI / software) encode pipeline. `source_id` is forwarded
+    /// to the capture backend; the portal path ignores it (its own dialog
+    /// picks the source), the wlr path parses it. `choices` are the
+    /// encoders to try in order (`encoder_probe::plan`): the first that
+    /// opens runs the stream, and one that fails before its first packet
+    /// hands over to the next. `width`×`height` 0×0 means "Source": the
+    /// negotiated capture size, kept within `ceiling`. `detail` tunes the
+    /// encoder for a 5 fps stream. Returns the encoded (width, height) and
+    /// the encoder the stream started on, which is what gets announced.
     #[cfg(target_os = "linux")]
     pub async fn start_linux(
         &mut self,
         source_id: &str,
-        target_codec: caps::CodecKind,
-        codec_wire_byte: u8,
+        choices: Vec<encoder_thread_linux::EncoderChoice>,
         width: u32,
         height: u32,
         ceiling: (u32, u32),
@@ -1059,7 +1167,7 @@ impl VideoEngine {
         bitrate_kbps: u32,
         detail: bool,
         include_cursor: bool,
-    ) -> Result<(u32, u32), String> {
+    ) -> Result<(u32, u32, encoder_backend::StartedEncoder), String> {
         let config = capture::CaptureConfig {
             target_fps: fps,
             target_width: width,
@@ -1096,8 +1204,7 @@ impl VideoEngine {
 
         let thread = encoder_thread_linux::LinuxEncoderThread::start(
             encoder_thread_linux::LinuxEncoderThreadConfig {
-                target_codec,
-                codec_wire_byte,
+                choices,
                 width,
                 height,
                 fps,
@@ -1110,10 +1217,11 @@ impl VideoEngine {
             capture,
         )?;
 
+        let started = thread.started().clone();
         self.lin_force_keyframe = Some(thread.force_keyframe_handle());
         self.lin_encoder_thread = Some(thread);
         self.lin_thumbnail_task = Some(thumb_task);
-        Ok((width, height))
+        Ok((width, height, started))
     }
 
     /// Linux-only: tear down the native pipeline. The encode thread's

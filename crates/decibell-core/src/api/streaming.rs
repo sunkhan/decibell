@@ -75,10 +75,26 @@ pub struct StartScreenShareArgs {
 pub struct StartScreenShareResult {
     pub width: u32,
     pub height: u32,
+    /// The VideoCodec byte the stream is encoded in. The requested one,
+    /// except when a native start fell through to the software encoder
+    /// (AV1), which it only does when `enforced_codec` is 0. The renderer
+    /// path echoes `initial_codec`.
+    pub codec: u8,
+    /// The native encoder in use, for the UI: "NVENC (NVIDIA)",
+    /// "VAAPI (AMD)", "Quick Sync (Intel)", "AMF (AMD)",
+    /// "Software (SVT-AV1)". Empty on the renderer (WebCodecs) path.
+    pub encoder: String,
 }
 
-/// The StartStreamReq announcing this stream, with the size it encodes at.
-fn start_stream_packet(args: &StartScreenShareArgs, channel_id: String, width: u32, height: u32) -> Vec<u8> {
+/// The StartStreamReq announcing this stream, with the size it encodes at
+/// and the codec it is encoded in.
+fn start_stream_packet(
+    args: &StartScreenShareArgs,
+    channel_id: String,
+    width: u32,
+    height: u32,
+    chosen_codec: u8,
+) -> Vec<u8> {
     build_packet(
         packet::Type::StartStreamReq,
         packet::Payload::StartStreamReq(StartStreamRequest {
@@ -88,7 +104,7 @@ fn start_stream_packet(args: &StartScreenShareArgs, channel_id: String, width: u
             has_audio: args.share_audio,
             resolution_width: width,
             resolution_height: height,
-            chosen_codec: args.initial_codec as i32,
+            chosen_codec: chosen_codec as i32,
             enforced_codec: args.enforced_codec as i32,
         }),
         None,
@@ -101,20 +117,29 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
         // Linux-only: renderer opted into native encoding. Drives whether we
         // defer engine storage to attach the capture pipeline after the lock.
         let native_linux = cfg!(target_os = "linux") && args.native_encode.unwrap_or(false);
-        // Windows native: resolve the hardware encoder list BEFORE taking the
-        // AppState lock. The probe test-opens NVENC/AMF sessions (hundreds of
-        // ms) — it ran under the lock on every Go Live before; now it's cached
-        // process-wide and only probes (off the runtime) on a cache miss.
-        #[cfg(target_os = "windows")]
-        let native_caps = if args.native_encode.unwrap_or(true) {
-            Some(
-                crate::rt::spawn_blocking(cached_native_encoder_caps)
-                    .await
-                    .map_err(|e| CoreError::other(format!("encoder probe failed: {e}")))?,
-            )
+        // Native encode: resolve what to open BEFORE taking the AppState
+        // lock (and, on Linux, before the portal dialog). The probe
+        // test-encodes on real hardware (hundreds of ms); its result is
+        // cached for the process and on disk, so this only probes (off the
+        // runtime) the first time on a machine, or after a driver change.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        let native_plan = if native_linux || (cfg!(target_os = "windows") && args.native_encode.unwrap_or(true)) {
+            let probed = crate::rt::spawn_blocking(crate::media::encoder_probe::cached)
+                .await
+                .map_err(|e| CoreError::other(format!("encoder probe failed: {e}")))?;
+            // A plan that could not be made (nothing encodes the codec) is
+            // reported where the encoder used to be picked: after the
+            // session checks below, so their errors still come first.
+            Some(native_start_plan(&probed, args.initial_codec, args.enforced_codec))
         } else {
             None
         };
+        // What the stream is announced as. The native paths overwrite it
+        // with what they started on.
+        #[allow(unused_mut)]
+        let mut started_codec = args.initial_codec;
+        #[allow(unused_mut)]
+        let mut started_encoder = String::new();
         let (announce, deferred_engine, session_id, size) = {
             let mut s = state_arc.lock().await;
             if s.video_engine.is_some() {
@@ -210,52 +235,45 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
             // fallback streams without audio — degradation, not a blocker.
             // None defaults to true so older callers keep the native path.
             #[cfg(target_os = "windows")]
-            if let Some(caps) = native_caps {
+            if let Some(plan) = &native_plan {
                 let source_id = args.source_id.as_deref().ok_or_else(|| {
                     CoreError::invalid("source_id required on Windows")
                 })?;
-                // Resolve the requested codec to a working FFmpeg encoder
-                // name via the (cached) native probe. initial_codec=0 means
-                // "auto" — pick the first HW encoder available (whatever
-                // NVENC/AMF gave us). Otherwise honour the user's pick; error
-                // if the probe didn't see that codec as available.
-                if caps.is_empty() {
-                    return Err(CoreError::other(
-                        "No hardware encoder available — install your GPU's video drivers",
-                    ));
-                }
-                let pick = if args.initial_codec == 0 {
-                    &caps[0]
-                } else {
-                    caps.iter().find(|c| c.codec as u8 == args.initial_codec).ok_or_else(
-                        || {
-                            CoreError::other(format!(
-                                "Codec {} not available on this hardware",
-                                args.initial_codec
-                            ))
-                        },
-                    )?
-                };
+                let plan = plan.as_ref().map_err(|e| e.clone())?;
+                // The plan is the probe's answer for the requested codec
+                // (initial_codec 0 = the first codec with a working
+                // encoder), in fallthrough order; start_windows opens the
+                // first that works.
                 let detail = args.detail.unwrap_or(false);
-                let ceiling = if detail {
-                    crate::media::encode_util::DETAIL_CEILING
-                } else {
-                    (pick.max_width, pick.max_height)
-                };
-                size = engine
+                let choices: Vec<crate::media::encoder_thread::EncoderChoice> = plan
+                    .iter()
+                    .map(|c| crate::media::encoder_thread::EncoderChoice {
+                        candidate: c.candidate,
+                        encoder_name: c.encoder_name.clone(),
+                        codec: c.codec,
+                        label: c.label.clone(),
+                        ceiling: if detail && c.hardware {
+                            crate::media::encode_util::DETAIL_CEILING
+                        } else {
+                            c.ceiling
+                        },
+                    })
+                    .collect();
+                let (w, h, started) = engine
                     .start_windows(
                         source_id,
-                        &pick.encoder_name,
-                        pick.codec as u8,
+                        &choices,
                         args.width,
                         args.height,
-                        ceiling,
                         args.fps,
                         args.video_bitrate_kbps,
                         detail,
                         args.include_cursor.unwrap_or(true),
                     )
                     .map_err(CoreError::other)?;
+                size = (w, h);
+                started_codec = started.codec as u8;
+                started_encoder = started.label;
 
                 // Stream audio: the process-loopback mixer captures whatever the
                 // user's app filter allows (AppState::stream_audio_filter — set
@@ -316,17 +334,27 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
         // the owned `engine` drops here → Drop clears the frame sink.
         #[cfg(target_os = "linux")]
         if let Some(mut engine) = deferred_engine {
-            let (target_codec, wire_byte) = resolve_linux_codec(args.initial_codec);
-            let (max_w, max_h, _) =
-                linux_encode_ceiling(target_codec != crate::media::caps::CodecKind::H264Sw);
-            let (width, height) = engine
+            let plan = native_plan.transpose()?.unwrap_or_default();
+            // A "Source" stream is kept within the first choice's ceiling
+            // (hardware: 4K; software: what the CPU is allowed).
+            let ceiling = plan.first().map_or((3840, 2160), |c| c.ceiling);
+            let adapters = crate::media::encoder_probe::adapters();
+            let choices: Vec<crate::media::encoder_thread_linux::EncoderChoice> = plan
+                .iter()
+                .map(|c| crate::media::encoder_thread_linux::EncoderChoice {
+                    candidate: c.candidate,
+                    target: crate::media::encoder_probe::target_for(c.candidate, &adapters),
+                    codec: c.codec,
+                    label: c.label.clone(),
+                })
+                .collect();
+            let (width, height, started) = engine
                 .start_linux(
                     args.source_id.as_deref().unwrap_or(""),
-                    target_codec,
-                    wire_byte,
+                    choices,
                     args.width,
                     args.height,
-                    (max_w, max_h),
+                    ceiling,
                     args.fps,
                     args.video_bitrate_kbps,
                     args.detail.unwrap_or(false),
@@ -383,8 +411,11 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
                 None
             };
 
+            // Announced as requested ("auto" stays 0, as before), unless
+            // the start fell through to another codec (software AV1).
+            let announced_codec = if args.initial_codec == 0 { 0 } else { started.codec as u8 };
             if let Some((write_tx, channel_id)) = announce {
-                let data = start_stream_packet(&args, channel_id, width, height);
+                let data = start_stream_packet(&args, channel_id, width, height, announced_codec);
                 match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
                     Ok(Ok(())) => {}
                     Ok(Err(_)) => return Err(CoreError::other("Connection closed")),
@@ -396,7 +427,12 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
             if let Some(a) = audio_engine {
                 s.audio_stream_engine = Some(a);
             }
-            return Ok(StartScreenShareResult { width, height });
+            return Ok(StartScreenShareResult {
+                width,
+                height,
+                codec: started.codec as u8,
+                encoder: started.label,
+            });
         }
         #[cfg(not(target_os = "linux"))]
         let _ = deferred_engine;
@@ -404,12 +440,23 @@ pub async fn start_screen_share(args: StartScreenShareArgs) -> Result<StartScree
         // Renderer-WebCodecs path (Linux without native, macOS) and Windows
         // native (engine already stored under the lock): announce now.
         let (width, height) = size;
-        let Some((write_tx, channel_id)) = announce else {
-            return Ok(StartScreenShareResult { width, height });
+        let result = StartScreenShareResult {
+            width,
+            height,
+            // What the stream is encoded in: the native start's codec, or
+            // the renderer's request echoed.
+            codec: started_codec,
+            encoder: started_encoder,
         };
-        let data = start_stream_packet(&args, channel_id, width, height);
+        let Some((write_tx, channel_id)) = announce else {
+            return Ok(result);
+        };
+        // Announced as requested ("auto" stays 0, as before), unless the
+        // start fell through to another codec.
+        let announced_codec = if args.initial_codec == 0 { 0 } else { started_codec };
+        let data = start_stream_packet(&args, channel_id, width, height, announced_codec);
         let announce_err = match tokio::time::timeout(std::time::Duration::from_secs(5), write_tx.send(data)).await {
-            Ok(Ok(())) => return Ok(StartScreenShareResult { width, height }),
+            Ok(Ok(())) => return Ok(result),
             Ok(Err(_)) => "Connection closed",
             Err(_) => "Send timed out",
         };
@@ -446,20 +493,74 @@ async fn discard_session_engines(session_id: u64) {
     }
 }
 
-/// Map the renderer's requested VideoCodec byte to a Linux encoder codec
-/// + the wire byte stamped on packets. 0 ("auto") and 1 both resolve to
-/// hardware H.264 (h264_nvenc/vaapi, the most broadly decodable). The
-/// encoder itself falls back through its candidate list per codec.
-#[cfg(target_os = "linux")]
-fn resolve_linux_codec(initial: u8) -> (crate::media::caps::CodecKind, u8) {
-    use crate::media::caps::CodecKind;
-    let kind = match initial {
+/// One encoder a native start may open, with what the platform's start
+/// needs to know about it.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[derive(Clone, Debug)]
+struct PlannedEncoder {
+    candidate: crate::media::encoder_backend::Candidate,
+    codec: CodecKind,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    encoder_name: String,
+    label: String,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    hardware: bool,
+    /// The largest size a "Source" stream is encoded at with it.
+    ceiling: (u32, u32),
+}
+
+/// What a native start opens, in order, for the renderer's request:
+/// `initial` is the VideoCodec byte (0 = "auto": the first codec with a
+/// working encoder, H.264 before HEVC before AV1), `enforced` non-zero pins
+/// the codec (the stream may then not fall through to software AV1 unless
+/// AV1 is what was asked for). An empty plan is an error: nothing on this
+/// machine encodes the codec.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn native_start_plan(
+    probed: &crate::media::encoder_probe::Probed,
+    initial: u8,
+    enforced: u8,
+) -> Result<Vec<PlannedEncoder>, CoreError> {
+    use crate::media::encoder_backend::{backend_label, hardware_ceiling, software_limits, Backend, Os};
+    let codec = match initial {
+        0 => crate::media::encoder_probe::auto_codec(&probed.report),
+        1 => CodecKind::H264Hw,
         2 => CodecKind::H264Sw,
         3 => CodecKind::H265,
         4 => CodecKind::Av1,
-        _ => CodecKind::H264Hw,
+        other => return Err(CoreError::invalid(format!("unknown codec {other}"))),
     };
-    (kind, kind as u8)
+    let os = if cfg!(target_os = "windows") { Os::Windows } else { Os::Linux };
+    let plan = crate::media::encoder_probe::plan(probed, codec, enforced != 0);
+    if plan.is_empty() {
+        return Err(CoreError::other(if probed.report.caps.is_empty() {
+            "No hardware encoder available — install your GPU's video drivers".to_string()
+        } else {
+            format!("Codec {initial} not available on this hardware")
+        }));
+    }
+    let limits = software_limits(crate::media::encoder_probe::logical_cpus());
+    Ok(plan
+        .into_iter()
+        .map(|c| {
+            let vendor_id = c.candidate.adapter.and_then(|i| probed.adapters.get(i)).map_or(0, |a| a.vendor_id);
+            let hardware = c.candidate.backend != Backend::Software;
+            let ceiling = if hardware {
+                let (w, h, _) = hardware_ceiling(os, c.codec);
+                (w, h)
+            } else {
+                (limits.max_width, limits.max_height)
+            };
+            PlannedEncoder {
+                candidate: c.candidate,
+                codec: c.codec,
+                encoder_name: c.encoder_name.to_string(),
+                label: backend_label(c.candidate.backend, vendor_id),
+                hardware,
+                ceiling,
+            }
+        })
+        .collect())
 }
 
 #[cfg_attr(feature = "napi", napi_derive::napi(object))]
@@ -1077,8 +1178,9 @@ where
 // for the full motivation. Linux/macOS continue to use the WebCodecs
 // path and these commands are stubbed out (or absent) there.
 
-/// Native encoder capability returned by `probe_native_encoders`.
-/// Same shape the renderer's WebCodecs probe used to populate.
+/// Native encoder capability returned by `probe_native_encoders`: one per
+/// codec that has a working encoder, hardware first (software, AV1 only,
+/// is listed only when no hardware encoder works at all).
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 #[cfg_attr(feature = "napi", napi_derive::napi(object))]
 pub struct NativeEncoderCap {
@@ -1088,126 +1190,70 @@ pub struct NativeEncoderCap {
     pub max_height: u32,
     pub max_fps: u32,
     pub hardware: bool,
-    /// FFmpeg encoder name that actually opens (e.g. "h264_nvenc").
+    /// FFmpeg encoder name that actually encodes (e.g. "h264_nvenc").
     pub encoder_name: String,
+    /// The backend: "nvenc", "amf", "qsv", "vaapi" or "software".
+    pub backend: String,
+    /// What to show: "NVENC (NVIDIA)", "VAAPI (AMD)", "Quick Sync (Intel)",
+    /// "AMF (AMD)", "Software (SVT-AV1)".
+    pub label: String,
+    /// Software only: the most pixels a second (width × height × fps) the
+    /// CPU is allowed, within `max_*`; a stream above it is refused, so the
+    /// Go Live UI greys those combinations out. 0 for hardware (no limit
+    /// beyond `max_*`).
+    pub max_pixel_rate: u32,
 }
 
-/// Serialises native encoder probes: they test-open real hardware encoder
-/// sessions, and two overlapping probes (boot + a settings re-probe) would
-/// double the concurrent NVENC/AMF sessions for no benefit.
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-static PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Process-wide result of the last successful Windows encoder probe,
-/// shared by `probe_native_encoders` (which refreshes it) and
-/// `start_screen_share` (which reuses it). Each probe opens 3+ NVENC/AMF
-/// sessions and loads/unloads the vendor runtime — once per process is
-/// enough. An empty result is not cached, so a later start retries.
-#[cfg(target_os = "windows")]
-static NATIVE_CAPS_CACHE: std::sync::Mutex<Option<Vec<crate::media::encoder_probe::EncoderCap>>> =
-    std::sync::Mutex::new(None);
-
-/// Run the Windows encoder probe under PROBE_LOCK and cache the result.
-/// Blocking — call from spawn_blocking.
-#[cfg(target_os = "windows")]
-fn probe_and_cache_native_encoders() -> Vec<crate::media::encoder_probe::EncoderCap> {
-    let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    probe_and_cache_locked()
+fn native_caps(report: &crate::media::encoder_probe::ProbeReport) -> Vec<NativeEncoderCap> {
+    report
+        .caps
+        .iter()
+        .map(|c| NativeEncoderCap {
+            codec: c.codec as i32,
+            max_width: c.max_width,
+            max_height: c.max_height,
+            max_fps: c.max_fps,
+            hardware: c.hardware,
+            encoder_name: c.encoder_name.clone(),
+            backend: c.backend.id().to_string(),
+            label: c.label.clone(),
+            max_pixel_rate: c.max_pixel_rate.min(u32::MAX as u64) as u32,
+        })
+        .collect()
 }
 
-/// Probe + cache; the caller holds PROBE_LOCK.
-#[cfg(target_os = "windows")]
-fn probe_and_cache_locked() -> Vec<crate::media::encoder_probe::EncoderCap> {
-    let caps = crate::media::encoder_probe::run(read_primary_gpu_vendor_id());
-    let mut cache = NATIVE_CAPS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    *cache = if caps.is_empty() { None } else { Some(caps.clone()) };
-    caps
-}
-
-/// Cached encoder caps, probing (under PROBE_LOCK) only on a miss.
-/// Blocking — call from spawn_blocking.
-#[cfg(target_os = "windows")]
-fn cached_native_encoder_caps() -> Vec<crate::media::encoder_probe::EncoderCap> {
-    if let Some(caps) = NATIVE_CAPS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        return caps.clone();
-    }
-    // A concurrent probe may have filled the cache while we waited for
-    // the probe lock — check again under it before probing ourselves.
-    let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(caps) = NATIVE_CAPS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        return caps.clone();
-    }
-    probe_and_cache_locked()
-}
-
-/// Runs the native FFmpeg encoder probe. Windows-only. Returns the
-/// list of (codec, vendor) tuples that successfully opened.
+/// Run the native encoder probe now and return what works: each backend
+/// in this machine's order is opened as a stream would open it and encodes
+/// a few small frames (`media::encoder_probe`). The result replaces the
+/// cached one.
 ///
-/// Async + spawn_blocking: the probe opens (and closes) FFmpeg hardware
-/// encoders, which takes hundreds of ms — as a sync napi fn it ran on the
-/// Electron main thread and froze every window for the duration.
-#[cfg(target_os = "windows")]
+/// Async + spawn_blocking: the probe opens real hardware encoder sessions,
+/// which takes hundreds of ms — as a sync napi fn it ran on the Electron
+/// main thread and froze every window for the duration.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub async fn probe_native_encoders() -> Result<Vec<NativeEncoderCap>, CoreError> {
     crate::rt::run(async move {
-        let caps = crate::rt::spawn_blocking(probe_and_cache_native_encoders)
-        .await
-        .map_err(|e| CoreError::other(format!("encoder probe failed: {}", e)))?;
-        Ok(caps
-            .into_iter()
-            .map(|c| NativeEncoderCap {
-                codec: c.codec,
-                max_width: c.max_width,
-                max_height: c.max_height,
-                max_fps: c.max_fps,
-                hardware: c.hardware,
-                encoder_name: c.encoder_name,
-            })
-            .collect())
+        let probed = crate::rt::spawn_blocking(crate::media::encoder_probe::probe)
+            .await
+            .map_err(|e| CoreError::other(format!("encoder probe failed: {}", e)))?;
+        Ok(native_caps(&probed.report))
     })
     .await
 }
 
-/// Linux native FFmpeg encoder probe. Test-opens each codec's candidate
-/// encoders (NVENC → VAAPI → software) and reports which work. Hardware
-/// codecs advertise a 4K/60 ceiling; software libx264 is capped lower
-/// since CPU 4K encoding isn't realtime.
-///
-/// Largest (width, height, fps) a Linux native encoder is offered at: the
-/// probe advertises it, and a "Source" stream is kept within it.
-#[cfg(target_os = "linux")]
-fn linux_encode_ceiling(hardware: bool) -> (u32, u32, u32) {
-    if hardware {
-        (3840, 2160, 60)
-    } else {
-        (1920, 1080, 30)
-    }
-}
-
-/// Async + spawn_blocking for the same reason as the Windows variant: the
-/// test-opens must not run on the Electron main thread.
-#[cfg(target_os = "linux")]
-pub async fn probe_native_encoders() -> Result<Vec<NativeEncoderCap>, CoreError> {
+/// The native encoders as last probed on this machine: the process's
+/// result, else the one saved for these GPUs and drivers
+/// (`<user data>/encoder_probe.json`), else a probe now. What a client
+/// without its own cache (the GPUI client) calls when it needs the list,
+/// e.g. on opening Go Live; never on the startup path.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub async fn cached_native_encoders() -> Result<Vec<NativeEncoderCap>, CoreError> {
     crate::rt::run(async move {
-        let probed = crate::rt::spawn_blocking(|| {
-            let _g = PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            crate::media::encoder_linux::probe_caps()
-        })
-        .await
-        .map_err(|e| CoreError::other(format!("encoder probe failed: {}", e)))?;
-        Ok(probed
-            .into_iter()
-            .map(|(kind, name, hardware)| {
-                let (max_width, max_height, max_fps) = linux_encode_ceiling(hardware);
-                NativeEncoderCap {
-                    codec: kind as i32,
-                    max_width,
-                    max_height,
-                    max_fps,
-                    hardware,
-                    encoder_name: name,
-                }
-            })
-            .collect())
+        let probed = crate::rt::spawn_blocking(crate::media::encoder_probe::cached)
+            .await
+            .map_err(|e| CoreError::other(format!("encoder probe failed: {}", e)))?;
+        Ok(native_caps(&probed.report))
     })
     .await
 }
@@ -1284,45 +1330,6 @@ pub async fn request_stream_keyframe(args: RequestStreamKeyframeArgs) -> Result<
         Ok(())
     })
     .await
-}
-
-/// Enumerate DXGI adapters and return the first non-software adapter's
-/// PCI vendor id. Used by `probe_native_encoders` to pick the right
-/// encoder vendor priority (NVIDIA → NVENC first, etc.).
-#[cfg(target_os = "windows")]
-fn read_primary_gpu_vendor_id() -> u32 {
-    use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1,
-        DXGI_ADAPTER_FLAG_SOFTWARE,
-    };
-    unsafe {
-        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
-            Ok(f) => f,
-            Err(_) => return 0,
-        };
-        let mut i = 0u32;
-        loop {
-            let adapter: IDXGIAdapter1 = match factory.EnumAdapters1(i) {
-                Ok(a) => a,
-                Err(_) => return 0,
-            };
-            // windows-rs 0.61 returns the desc by value.
-            let desc = match adapter.GetDesc1() {
-                Ok(d) => d,
-                Err(_) => {
-                    i += 1;
-                    continue;
-                }
-            };
-            // Bit-mask check — DXGI_ADAPTER_FLAG_SOFTWARE is 2.
-            // desc.Flags is u32 in windows-rs 0.61; FLAG_SOFTWARE
-            // inner value is i32, so cast before AND.
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) == 0 {
-                return desc.VendorId;
-            }
-            i += 1;
-        }
-    }
 }
 
 #[cfg(test)]

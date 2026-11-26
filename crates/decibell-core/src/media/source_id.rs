@@ -13,7 +13,7 @@
 //! HMONITOR / DXGI output. The trailing `:0` is a Chromium
 //! implementation detail (capture plane index) that we ignore.
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureTarget {
     /// WebRTC screen id (EnumDisplayDevicesW device index). Resolved to
     /// an HMONITOR / DXGI output at capture-open time by device name.

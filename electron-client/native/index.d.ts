@@ -893,6 +893,19 @@ export interface StartScreenShareArgs {
 export interface StartScreenShareResult {
   width: number
   height: number
+  /**
+   * The VideoCodec byte the stream is encoded in. The requested one,
+   * except when a native start fell through to the software encoder
+   * (AV1), which it only does when `enforced_codec` is 0. The renderer
+   * path echoes `initial_codec`.
+   */
+  codec: number
+  /**
+   * The native encoder in use, for the UI: "NVENC (NVIDIA)",
+   * "VAAPI (AMD)", "Quick Sync (Intel)", "AMF (AMD)",
+   * "Software (SVT-AV1)". Empty on the renderer (WebCodecs) path.
+   */
+  encoder: string
 }
 export interface StopScreenShareArgs {
   /** Absent during a DM call (no community to notify). */
@@ -966,8 +979,9 @@ export interface CodecSettingsValue {
   useH265: boolean
 }
 /**
- * Native encoder capability returned by `probe_native_encoders`.
- * Same shape the renderer's WebCodecs probe used to populate.
+ * Native encoder capability returned by `probe_native_encoders`: one per
+ * codec that has a working encoder, hardware first (software, AV1 only,
+ * is listed only when no hardware encoder works at all).
  */
 export interface NativeEncoderCap {
   /** VideoCodec wire id (1=H264_HW, 3=H265, 4=AV1). */
@@ -976,8 +990,22 @@ export interface NativeEncoderCap {
   maxHeight: number
   maxFps: number
   hardware: boolean
-  /** FFmpeg encoder name that actually opens (e.g. "h264_nvenc"). */
+  /** FFmpeg encoder name that actually encodes (e.g. "h264_nvenc"). */
   encoderName: string
+  /** The backend: "nvenc", "amf", "qsv", "vaapi" or "software". */
+  backend: string
+  /**
+   * What to show: "NVENC (NVIDIA)", "VAAPI (AMD)", "Quick Sync (Intel)",
+   * "AMF (AMD)", "Software (SVT-AV1)".
+   */
+  label: string
+  /**
+   * Software only: the most pixels a second (width × height × fps) the
+   * CPU is allowed, within `max_*`; a stream above it is refused, so the
+   * Go Live UI greys those combinations out. 0 for hardware (no limit
+   * beyond `max_*`).
+   */
+  maxPixelRate: number
 }
 export interface RequestStreamKeyframeArgs {
   /** Uid of the streamer whose next frame should be an IDR. */

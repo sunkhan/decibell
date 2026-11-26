@@ -1,6 +1,8 @@
 //! Encoder thread orchestration.
 //!
-//! Owns the FFmpeg D3D11VA encoder + the bitrate adjustment cadence.
+//! Owns the stream's encoder (`encoder::StreamEncoder`: a D3D11 hardware
+//! encoder, or SVT-AV1 behind a GPU readback) + the bitrate adjustment
+//! cadence.
 //! Pulls BGRA D3D11 textures from the WGC capture channel, hands them
 //! to the encoder, drains encoded packets into:
 //!  - the existing UDP `VideoSender` (the wire — same path renderer-
@@ -19,6 +21,13 @@
 //! stop) and never drains the encoder (send_eof + receive): a wedged
 //! encoder — e.g. AMF after a TDR removed the device — may never return
 //! from that, and the event must not hang behind it.
+//!
+//! Fallthrough: a hardware encoder that opened but fails before its first
+//! packet is replaced, in place and on the same device, by the software
+//! encoder when the stream may use it (`software_fallback`); the failure is
+//! only reported (`native_stream_failed`) when there is nothing left to
+//! fall to. Open failures fall through one level up, in
+//! `VideoEngine::start_windows`, which can also move to another adapter.
 
 #![cfg(target_os = "windows")]
 
@@ -30,7 +39,9 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 
-use super::encoder::{Encoder, FrameOutcome};
+use super::caps::CodecKind;
+use super::encoder::{FrameOutcome, StreamEncoder};
+use super::encoder_backend::{Backend, Candidate, SOFTWARE_ENCODER};
 use super::gpu_pipeline::GpuDevice;
 use super::thumb_encode::{ThumbnailSchedule, ThumbnailWorker};
 use super::thumbnail::ThumbnailGenerator;
@@ -42,6 +53,14 @@ use crate::events;
 /// 60 fps: a transient hiccup (pool momentarily exhausted, encoder input
 /// full) recovers well inside it; a dead device fails every frame.
 const MAX_CONSECUTIVE_FAILURES: u32 = 60;
+
+/// Consecutive failed frames, before the encoder has produced anything,
+/// after which the software encoder takes over (when allowed).
+const EARLY_FAILURES: u32 = 10;
+
+/// How soon the loop looks again while the software path waits for the GPU
+/// to finish a readback (it never blocks on the GPU itself).
+const READBACK_POLL: Duration = Duration::from_millis(4);
 
 /// How long `stop()` waits for the thread before detaching it. The loop
 /// polls its stop flag every ≤100 ms; only a thread wedged inside the
@@ -56,6 +75,13 @@ pub struct EncoderThread {
 }
 
 pub struct EncoderThreadConfig {
+    /// What the probe cache knows this encoder as, and its codec.
+    pub candidate: Candidate,
+    pub codec: CodecKind,
+    /// The software encoder may take over if this one fails before its
+    /// first packet (it is in the start's plan after this one, and the
+    /// stream's size is within its limits). The stream then becomes AV1.
+    pub software_fallback: bool,
     pub encoder_name: String,
     /// Wire codec byte: 1=H264_HW, 3=H265, 4=AV1. Stamped into every
     /// UdpVideoPacket so receivers pick the right decoder.
@@ -79,6 +105,21 @@ pub struct EncoderThreadConfig {
     pub thumbnail_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
 }
 
+/// One encoder a stream may start on (`VideoEngine::start_windows`).
+#[derive(Clone, Debug)]
+pub struct EncoderChoice {
+    /// What the probe cache knows it as.
+    pub candidate: Candidate,
+    /// FFmpeg's name ("h264_nvenc", "hevc_qsv", "libsvtav1").
+    pub encoder_name: String,
+    /// The codec it encodes; its wire byte is stamped into every packet.
+    pub codec: CodecKind,
+    /// "NVENC (NVIDIA)", "Quick Sync (Intel)", "Software (SVT-AV1)".
+    pub label: String,
+    /// The largest size a "Source" stream is encoded at with it.
+    pub ceiling: (u32, u32),
+}
+
 /// Why the encode loop returned.
 enum LoopExit {
     /// The stop flag was set (or the capture ended because of it).
@@ -95,7 +136,7 @@ impl EncoderThread {
     ) -> Result<Self, String> {
         // Open encoder up front so any failure surfaces in start() not
         // deep in the thread.
-        let mut encoder = Encoder::open(
+        let mut encoder = StreamEncoder::open(
             &gpu,
             &cfg.encoder_name,
             cfg.width,
@@ -104,11 +145,14 @@ impl EncoderThread {
             cfg.bitrate_kbps,
             cfg.detail,
         )?;
-        let force_keyframe = encoder.force_keyframe_handle();
+        // One flag for the stream's whole life: the loop forwards it to
+        // whichever encoder is open (a fallthrough replaces the encoder).
+        let force_keyframe = Arc::new(AtomicBool::new(false));
+        let force_keyframe_t = force_keyframe.clone();
 
         // The thumbnail generator owns its own readback resources; keeps
         // the encoder loop free of D3D11 readback bookkeeping.
-        let mut thumb = ThumbnailGenerator::new(gpu);
+        let mut thumb = ThumbnailGenerator::new(gpu.clone());
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = stop.clone();
@@ -121,7 +165,7 @@ impl EncoderThread {
                 // claiming to stream. Contained, logged, and surfaced
                 // to the renderer below.
                 let exit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_encode_loop(&mut encoder, &mut thumb, rx, &cfg, &stop_t)
+                    run_encode_loop(&mut encoder, &gpu, &mut thumb, rx, &cfg, &stop_t, &force_keyframe_t)
                 }));
                 let failure = match exit {
                     Ok(LoopExit::Stopped) => None,
@@ -203,12 +247,23 @@ impl Drop for EncoderThread {
 }
 
 fn run_encode_loop(
-    encoder: &mut Encoder,
+    encoder: &mut StreamEncoder,
+    gpu: &GpuDevice,
     thumb: &mut ThumbnailGenerator,
     rx: mpsc::Receiver<ID3D11Texture2D>,
     cfg: &EncoderThreadConfig,
     stop: &AtomicBool,
+    force_keyframe: &AtomicBool,
 ) -> LoopExit {
+    // The codec on the wire and the encoder's identity: they change if the
+    // software encoder takes over.
+    let wire_codec = Cell::new(cfg.codec_wire_byte);
+    let mut current = (cfg.candidate, cfg.codec);
+    let mut encoder_name = cfg.encoder_name.clone();
+    let mut encoder_keyframe = encoder.force_keyframe_handle();
+    // Until the encoder has produced a packet it is on trial.
+    let proven = Cell::new(false);
+    let mut told_working = false;
     let mut last_telemetry = Instant::now();
     // Thumbnail on the first frame, a follow-up 2 s later, then every 15 s.
     // The downscale + JPEG encode run on the worker, not this thread.
@@ -234,7 +289,8 @@ fn run_encode_loop(
     // send_bgra does when the encoder input is full — goes through here.
     let mut on_packet = |data: &[u8], is_key: bool, pkt_pts: i64| {
         // Wire: packetise + UDP send.
-        cfg.video_sender.send_frame_paced(cfg.codec_wire_byte, is_key, data);
+        proven.set(true);
+        cfg.video_sender.send_frame_paced(wire_codec.get(), is_key, data);
         // Self-preview: ship same encoded bytes to renderer via per-
         // stream Buffer TSFN keyed by local username. Convert
         // packet pts (in time_base = 1/fps units) back to microseconds.
@@ -249,7 +305,7 @@ fn run_encode_loop(
             let timestamp_us = pkt_pts.saturating_mul(1_000_000) / cfg.fps.max(1) as i64;
             events::send_stream_frame(events::StreamFrame {
                 key: cfg.local_username.clone(),
-                codec: cfg.codec_wire_byte,
+                codec: wire_codec.get(),
                 keyframe: is_key,
                 timestamp: timestamp_us,
                 data: super::frame_pool::take_copy(data),
@@ -265,9 +321,19 @@ fn run_encode_loop(
         if stop.load(Ordering::Relaxed) {
             return LoopExit::Stopped;
         }
-        let bgra = match rx.recv_timeout(Duration::from_millis(100)) {
+        // Software: a picture is encoded once the GPU has finished reading
+        // it back, so look again soon while one is in flight.
+        let wait = if encoder.pending_readbacks() > 0 { READBACK_POLL } else { Duration::from_millis(100) };
+        let bgra = match rx.recv_timeout(wait) {
             Ok(t) => t,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if encoder.pending_readbacks() > 0 {
+                    if let Err(e) = encoder.for_each_packet(&mut on_packet) {
+                        return LoopExit::Failed(format!("encoder error: {e}"));
+                    }
+                }
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // stop_windows signals us before stopping the capture, so
                 // a disconnect without the flag means the capture died.
@@ -305,15 +371,63 @@ fn run_encode_loop(
             thumb_schedule.taken(now);
         }
 
+        // A keyframe request goes to whichever encoder is open, on the
+        // frame about to be sent (as when the flag was the encoder's own).
+        if force_keyframe.swap(false, Ordering::Relaxed) {
+            encoder_keyframe.store(true, Ordering::Relaxed);
+        }
+        let mut fatal: Option<String> = None;
         let mut failure = match encoder.send_bgra(&bgra, pts, &mut on_packet) {
             Ok(FrameOutcome::Submitted) => None,
             Ok(FrameOutcome::Dropped(reason)) => Some(reason),
-            Err(fatal) => return LoopExit::Failed(format!("encoder error: {fatal}")),
+            Err(e) => {
+                fatal = Some(e.clone());
+                Some(e)
+            }
         };
         // Drain even after a drop: an exhausted pool frees up as packets
         // come out.
-        if let Err(e) = encoder.for_each_packet(&mut on_packet) {
-            failure.get_or_insert(e);
+        if fatal.is_none() {
+            if let Err(e) = encoder.for_each_packet(&mut on_packet) {
+                failure.get_or_insert(e);
+            }
+        }
+        if proven.get() && !told_working {
+            told_working = true;
+            super::encoder_probe::note_working(current.0, current.1);
+        }
+        // An encoder that fails before its first packet opened but cannot
+        // encode: the software encoder takes over on the same device when
+        // the stream may use it. Otherwise the old rules apply.
+        let early = !proven.get()
+            && failure.is_some()
+            && (fatal.is_some() || consecutive_failures + 1 >= EARLY_FAILURES);
+        if early && cfg.software_fallback && current.0.backend != Backend::Software {
+            let why = failure.clone().unwrap_or_default();
+            super::encoder_probe::note_failed(current.0, current.1, &why);
+            match StreamEncoder::open(gpu, SOFTWARE_ENCODER, cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps, cfg.detail) {
+                Ok(software) => {
+                    log::warn!(
+                        "[encoder] {encoder_name} failed before its first packet ({why}); continuing with {SOFTWARE_ENCODER}"
+                    );
+                    *encoder = software;
+                    encoder_keyframe = encoder.force_keyframe_handle();
+                    encoder_name = SOFTWARE_ENCODER.to_string();
+                    current = (Candidate { backend: Backend::Software, adapter: None }, CodecKind::Av1);
+                    wire_codec.set(CodecKind::Av1 as u8);
+                    consecutive_failures = 0;
+                    continue;
+                }
+                Err(e) => {
+                    return LoopExit::Failed(format!("encoder error: {why}; software encoder: {e}"));
+                }
+            }
+        }
+        if let Some(fatal) = fatal {
+            if !proven.get() {
+                super::encoder_probe::note_failed(current.0, current.1, &fatal);
+            }
+            return LoopExit::Failed(format!("encoder error: {fatal}"));
         }
         match failure {
             None => consecutive_failures = 0,
@@ -321,6 +435,9 @@ fn run_encode_loop(
                 consecutive_failures += 1;
                 frames_dropped += 1;
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    if !proven.get() {
+                        super::encoder_probe::note_failed(current.0, current.1, &reason);
+                    }
                     return LoopExit::Failed(format!(
                         "{consecutive_failures} consecutive frames failed (last: {reason})"
                     ));
@@ -341,7 +458,7 @@ fn run_encode_loop(
         if last_telemetry.elapsed() >= Duration::from_secs(1) {
             log::info!(
                 "[encoder] codec={} {}x{}@{} target={}kbps frames_sent={} dropped={} thumbs_sent={}",
-                cfg.encoder_name,
+                encoder_name,
                 cfg.width,
                 cfg.height,
                 cfg.fps,

@@ -17,6 +17,10 @@ use super::capture::{
     CaptureStopper, DmaBufFrame, RawFrame,
 };
 
+/// "Whatever layout the driver likes": the modifier a producer that cannot
+/// allocate LINEAR is offered as the alternative.
+const DRM_FORMAT_MOD_INVALID: i64 = 0x00ff_ffff_ffff_ffff;
+
 const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
 
 /// On Linux, screen/window selection is handled by the XDG Desktop Portal.
@@ -577,7 +581,7 @@ fn build_format_pod(
                     default: 0_i64, // DRM_FORMAT_MOD_LINEAR — preferred
                     alternatives: vec![
                         0_i64,
-                        super::gpu_interop::DRM_FORMAT_MOD_INVALID as i64,
+                        DRM_FORMAT_MOD_INVALID,
                     ],
                 },
             ))),

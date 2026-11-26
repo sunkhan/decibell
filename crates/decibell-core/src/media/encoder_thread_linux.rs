@@ -1,8 +1,7 @@
 //! Linux native encoder thread — the Linux counterpart to the Windows
-//! `encoder_thread`. Pulls captured frames (CPU `RawFrame` from PipeWire
-//! SHM / wlr-screencopy, or zero-copy `DmaBufFrame` when the compositor
-//! advertises DMA-BUF) and drives the FFmpeg `H264Encoder`
-//! (NVENC/VAAPI/libx264), draining encoded packets into:
+//! `encoder_thread`. Pulls captured CPU frames (`RawFrame` from PipeWire
+//! SHM / wlr-screencopy) and drives the FFmpeg `H264Encoder` (NVENC, VAAPI
+//! or software SVT-AV1), draining encoded packets into:
 //!  - the UDP `VideoSender` (the wire — same path renderer-encoded
 //!    chunks took), with the HEVC/AV1 keyframe description prefixed via
 //!    `WIRE_DESCRIPTION_MAGIC` exactly like `send_video_frame` does;
@@ -11,14 +10,18 @@
 //!
 //! Runs on one OS thread; all FFmpeg + GPU state stays on it.
 //!
-//! Note on "zero-copy": the revived `capture_pipewire` currently does not
-//! advertise DMA-BUF (the gpu_receiver stays empty) because of the
-//! NVIDIA-proprietary + mesa-allocated-DMA-BUF black-frame issue
-//! documented in `gpu_interop`. The live path is therefore CPU-captured
-//! BGRA → `encode_bgra_direct`, where NVENC still does BGRA→NV12 on the
-//! GPU (no CPU `sws_scale`). The DMA-BUF branch below is kept wired so
-//! it lights up automatically if a capture backend starts delivering
-//! `DmaBufFrame`s again.
+//! Frames are CPU memory on every backend: `capture_pipewire` does not
+//! advertise DMA-BUF (mesa-allocated DMA-BUFs came out black on the NVIDIA
+//! proprietary driver). NVENC and VAAPI still convert BGRA → NV12 on the
+//! GPU; only the software encoder converts on the CPU.
+//!
+//! **Fallthrough**: `start` is given the backends to try in order
+//! (`encoder_probe::plan`). The first that opens runs the stream. If it
+//! then fails before its first packet (a driver that opens and cannot
+//! encode), the loop opens the next one in place and carries on; only when
+//! the last one has failed does the stream end with `native_stream_failed`.
+//! Each failure and the backend that ends up working are told to the probe
+//! cache. One pass over the list: no retries, no timers.
 //!
 //! Exit path (as on Windows): when the stream ends without being asked to,
 //! the thread tells the renderer FIRST — `stream_capture_ended` when the
@@ -37,12 +40,12 @@ use std::time::{Duration, Instant};
 
 use jpeg_encoder::ColorType;
 
-use super::capture::{
-    CaptureEnd, CaptureEndSlot, CaptureOutput, CaptureStopper, DmaBufFrame, PixelFormat, RawFrame,
-};
-use super::encoder_linux::{EncodedFrame, EncoderConfig, H264Encoder};
+use super::capture::{CaptureEnd, CaptureEndSlot, CaptureOutput, CaptureStopper, PixelFormat, RawFrame};
+use super::caps::CodecKind;
+use super::encoder_backend::{software_refusal, Backend, Candidate};
+pub use super::encoder_backend::StartedEncoder;
+use super::encoder_linux::{EncodedFrame, EncoderConfig, EncoderTarget, H264Encoder};
 use super::thumb_encode::{ThumbnailJob, ThumbnailSchedule, ThumbnailWorker};
-use super::gpu_interop::{GpuBackendType, GpuContext};
 use super::video_pipeline::VideoSender;
 use crate::events;
 use crate::media::video_packet::WIRE_DESCRIPTION_MAGIC;
@@ -55,12 +58,23 @@ const KEYFRAME_INTERVAL_SECS: u32 = 2;
 /// inside it; a dead encoder fails every frame.
 const MAX_CONSECUTIVE_FAILURES: u32 = 60;
 
+/// Consecutive failed frames, before the encoder has produced anything,
+/// after which the next backend is opened (a transient hiccup on the very
+/// first frame is tolerated; a backend that cannot encode fails them all).
+const EARLY_FAILURES: u32 = 3;
+
+/// Seconds of frames an encoder may swallow without producing a packet
+/// before it counts as failed. Every backend here answers within a frame or
+/// two (software: a handful).
+const SILENT_SECS: u32 = 2;
+
 /// How long `stop()` waits for the thread before detaching it. The loop
 /// checks its stop flag at least every 50 ms; only a thread wedged inside
 /// the encoder/driver overruns this.
 const STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct LinuxEncoderThread {
+    started: StartedEncoder,
     stop: Arc<AtomicBool>,
     force_keyframe: Arc<AtomicBool>,
     /// Ends the capture feeding the thread (taken by `stop`).
@@ -115,11 +129,22 @@ fn report_for(exit: &LoopExit, stop_requested: bool) -> ExitReport {
     }
 }
 
+/// One encoder the stream may run on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncoderChoice {
+    /// What the probe cache knows it as.
+    pub candidate: Candidate,
+    pub target: EncoderTarget,
+    /// The codec it encodes; its wire byte (1=H264_HW, 3=H265, 4=AV1) is
+    /// stamped into every UdpVideoPacket so receivers pick the decoder.
+    pub codec: CodecKind,
+    /// "NVENC (NVIDIA)", "VAAPI (AMD)", "Software (SVT-AV1)".
+    pub label: String,
+}
+
 pub struct LinuxEncoderThreadConfig {
-    pub target_codec: crate::media::caps::CodecKind,
-    /// Wire codec byte (1=H264_HW, 2=H264_SW, 3=H265, 4=AV1) stamped into
-    /// every UdpVideoPacket so receivers pick the right decoder.
-    pub codec_wire_byte: u8,
+    /// The encoders to try, in order (never empty).
+    pub choices: Vec<EncoderChoice>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -151,19 +176,27 @@ impl LinuxEncoderThread {
                 KEYFRAME_INTERVAL_SECS
             },
             detail: cfg.detail,
+            source_size: (0, 0),
         };
-        let CaptureOutput { receiver, gpu_receiver, end, stopper, .. } = capture;
+        // DMA-BUF frames are not consumed (the capture never sends any).
+        let CaptureOutput { receiver, end, stopper, width: source_w, height: source_h, .. } = capture;
+        let config = EncoderConfig { source_size: (source_w, source_h), ..config };
         // Open the encoder up front so a failure surfaces here in start()
-        // rather than deep inside the thread. `find_hw_encoder` logs which
-        // backend it picked (h264_nvenc / *_vaapi / libx264) — that line
-        // is the signal for whether we're on the GPU fast path or the CPU
-        // sws_scale fallback. On failure the capture is ended here: the
-        // portal session would otherwise stay open behind a failed start.
-        let mut encoder = H264Encoder::new(cfg.target_codec, &config).inspect_err(|_| {
-            if let Some(s) = &stopper {
-                s.stop();
+        // rather than deep inside the thread: the first choice that opens.
+        // On failure the capture is ended here: the portal session would
+        // otherwise stay open behind a failed start.
+        let mut remaining: std::collections::VecDeque<EncoderChoice> = cfg.choices.iter().cloned().collect();
+        let mut errors = Vec::new();
+        let (mut encoder, mut current) = match open_next(&mut remaining, &config, &mut errors) {
+            Some(opened) => opened,
+            None => {
+                if let Some(s) = &stopper {
+                    s.stop();
+                }
+                return Err(format!("No encoder could be opened ({})", errors.join("; ")));
             }
-        })?;
+        };
+        let started = StartedEncoder { codec: current.codec, backend: current.candidate.backend, label: current.label.clone() };
 
         let stop = Arc::new(AtomicBool::new(false));
         let force_keyframe = Arc::new(AtomicBool::new(false));
@@ -172,14 +205,15 @@ impl LinuxEncoderThread {
         let spawned = std::thread::Builder::new()
             .name("decibell-encoder-linux".to_string())
             .spawn(move || {
-                let input = CaptureInput { frames: receiver, gpu_frames: gpu_receiver, end };
+                let input = CaptureInput { frames: receiver, end };
                 let stream_start = Instant::now();
                 // catch_unwind: a panic anywhere in the encode loop (FFmpeg
                 // binding, bitstream parsing) must not silently kill this
                 // thread while the app keeps claiming to stream. Contained,
                 // logged, and surfaced to the renderer below.
                 let exit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_encode_loop(&mut encoder, &config, input, &cfg, &stop_t, &fk_t, stream_start)
+                    let mut next = |errors: &mut Vec<String>| open_next(&mut remaining, &config, errors);
+                    run_encode_loop(&mut encoder, &mut current, &mut next, input, &cfg, &stop_t, &fk_t, stream_start)
                 }))
                 .unwrap_or_else(|panic| {
                     let msg = panic
@@ -212,7 +246,7 @@ impl LinuxEncoderThread {
                 if exit == LoopExit::Stopped {
                     let mut frames_sent = 0;
                     for ef in encoder.flush() {
-                        emit_encoded(ef, &cfg, stream_start, &mut frames_sent);
+                        emit_encoded(ef, current.codec as u8, &cfg, stream_start, &mut frames_sent);
                     }
                 }
             });
@@ -227,6 +261,7 @@ impl LinuxEncoderThread {
         };
 
         Ok(Self {
+            started,
             stop,
             force_keyframe,
             capture_stopper: stopper,
@@ -236,6 +271,13 @@ impl LinuxEncoderThread {
 
     pub fn force_keyframe_handle(&self) -> Arc<AtomicBool> {
         self.force_keyframe.clone()
+    }
+
+    /// The encoder the stream started on (what is announced). A later
+    /// fallthrough inside the loop keeps the codec unless it lands on
+    /// software, which the choices only allow when the codec may change.
+    pub fn started(&self) -> &StartedEncoder {
+        &self.started
     }
 
     /// Flag the loop, end the capture, and join, bounded by
@@ -282,8 +324,59 @@ impl Drop for LinuxEncoderThread {
 /// capture records why it ended.
 struct CaptureInput {
     frames: Receiver<RawFrame>,
-    gpu_frames: Option<Receiver<DmaBufFrame>>,
     end: Arc<CaptureEndSlot>,
+}
+
+/// Has the encoder on trial (opened, no packet out yet) failed? A proven
+/// encoder never fails this way: its failures go by the 60-frame rule.
+/// `error` is this frame's encode error, if it had one.
+fn trial_verdict(
+    proven: bool,
+    consecutive_failures: u32,
+    frames_in: u32,
+    fps: u32,
+    error: Option<&str>,
+) -> Option<String> {
+    if proven {
+        return None;
+    }
+    match error {
+        Some(e) if consecutive_failures >= EARLY_FAILURES => Some(e.to_string()),
+        Some(_) => None,
+        None if frames_in >= fps.max(1) * SILENT_SECS => Some(format!("{frames_in} frames in, no packet out")),
+        None => None,
+    }
+}
+
+/// Open the next choice that opens, telling the probe cache about each one
+/// that does not. None when the list is used up; `errors` collects why.
+fn open_next(
+    remaining: &mut std::collections::VecDeque<EncoderChoice>,
+    config: &EncoderConfig,
+    errors: &mut Vec<String>,
+) -> Option<(H264Encoder, EncoderChoice)> {
+    while let Some(choice) = remaining.pop_front() {
+        // Software above what the CPU is allowed: skipped, not a failure.
+        let refusal = (choice.candidate.backend == Backend::Software)
+            .then(|| software_refusal(config.width, config.height, config.fps, super::encoder_probe::logical_cpus()))
+            .flatten();
+        if let Some(why) = refusal {
+            log::warn!("[encoder-linux] {} not used: {why}", choice.label);
+            errors.push(format!("{}: {why}", choice.label));
+            continue;
+        }
+        match H264Encoder::open(&choice.target, choice.codec, config) {
+            Ok(encoder) => {
+                log::info!("[encoder-linux] encoding {:?} with {}", choice.codec, choice.label);
+                return Some((encoder, choice));
+            }
+            Err(e) => {
+                super::encoder_probe::note_failed(choice.candidate, choice.codec, &e);
+                errors.push(format!("{}: {e}", choice.label));
+            }
+        }
+    }
+    None
 }
 
 /// Packetise + ship one encoded frame: UDP wire (with HEVC/AV1 keyframe
@@ -291,11 +384,11 @@ struct CaptureInput {
 /// the preview gets the encoder's own buffer once the wire is done with it.
 fn emit_encoded(
     ef: EncodedFrame,
+    codec: u8,
     cfg: &LinuxEncoderThreadConfig,
     stream_start: Instant,
     frames_sent: &mut u32,
 ) {
-    let codec = cfg.codec_wire_byte;
 
     // Wire: HEVC(3)/AV1(4) keyframes carry an out-of-band decoder
     // description (hvcC / av1C). Prefix it with the magic tag + BE length
@@ -343,9 +436,41 @@ fn emit_encoded(
     *frames_sent += 1;
 }
 
-fn run_encode_loop(
-    encoder: &mut H264Encoder,
-    config: &EncoderConfig,
+/// What the encode loop needs of an encoder (the real one is `H264Encoder`;
+/// the loop's fallthrough is tested with stand-ins that fail on cue).
+trait FrameEncoder {
+    fn encode(&mut self, frame: &RawFrame) -> Result<Option<EncodedFrame>, String>;
+    fn receive_pending(&mut self) -> Option<EncodedFrame>;
+    fn force_keyframe(&mut self);
+}
+
+impl FrameEncoder for H264Encoder {
+    fn encode(&mut self, frame: &RawFrame) -> Result<Option<EncodedFrame>, String> {
+        match frame.pixel_format {
+            PixelFormat::NV12 => self.encode_nv12_frame(&frame.data, frame.width, frame.height),
+            PixelFormat::BGRA | PixelFormat::RGBA => {
+                let is_bgra = frame.pixel_format == PixelFormat::BGRA;
+                self.encode_bgra_frame(&frame.data, frame.width, frame.height, frame.stride, is_bgra)
+            }
+        }
+    }
+
+    fn receive_pending(&mut self) -> Option<EncodedFrame> {
+        H264Encoder::receive_pending(self)
+    }
+
+    fn force_keyframe(&mut self) {
+        H264Encoder::force_keyframe(self)
+    }
+}
+
+/// `open_next` opens the next choice when the encoder on trial fails (None:
+/// the list is used up); it appends why each one it skipped did not open.
+#[allow(clippy::too_many_arguments)]
+fn run_encode_loop<E: FrameEncoder>(
+    encoder: &mut E,
+    current: &mut EncoderChoice,
+    open_next: &mut dyn FnMut(&mut Vec<String>) -> Option<(E, EncoderChoice)>,
     capture: CaptureInput,
     cfg: &LinuxEncoderThreadConfig,
     stop: &AtomicBool,
@@ -353,12 +478,10 @@ fn run_encode_loop(
     stream_start: Instant,
 ) -> LoopExit {
     let frame_rx = capture.frames;
-    let gpu_frame_rx = capture.gpu_frames;
-
-    // Lazily created on the first DMA-BUF frame; stays None on the CPU
-    // path so no GPU context is allocated when it isn't needed.
-    let mut gpu_ctx: Option<GpuContext> = None;
-    let mut gpu_initialized = false;
+    // Until the open encoder has produced a packet it is on trial: failing
+    // now falls through to the next choice instead of ending the stream.
+    let mut proven = false;
+    let mut frames_in = 0u32;
 
     // Re-encode the last frame if capture stalls (static screen) so the
     // GOP keeps flowing and receivers don't time out the stream. A source
@@ -384,41 +507,27 @@ fn run_encode_loop(
             encoder.force_keyframe();
         }
 
-        // Prefer a zero-copy DMA-BUF frame if the capture backend offers
-        // one; otherwise fall to the CPU SHM frame.
-        let mut gpu_frame_opt = None;
-        if let Some(ref gpu_rx) = gpu_frame_rx {
-            if let Ok(f) = gpu_rx.try_recv() {
-                gpu_frame_opt = Some(f);
+        match frame_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(f) => last_frame = Some(f),
+            Err(RecvTimeoutError::Timeout) => {
+                // Only re-encode the last frame once per frame interval;
+                // otherwise spin lightly until the next real frame.
+                if !(last_frame_time.elapsed() >= repeat_interval && last_frame.is_some()) {
+                    continue;
+                }
             }
-        }
-        let got_gpu_frame = gpu_frame_opt.is_some();
-
-        if !got_gpu_frame {
-            match frame_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(f) => last_frame = Some(f),
-                Err(RecvTimeoutError::Timeout) => {
-                    // Only re-encode the last frame once per frame interval;
-                    // otherwise spin lightly until the next real frame.
-                    if !(last_frame_time.elapsed() >= repeat_interval && last_frame.is_some()) {
-                        continue;
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    log::info!("[encoder-linux] capture channel disconnected");
-                    return exit_on_capture_disconnect(
-                        stop.load(Ordering::Relaxed),
-                        capture.end.get(),
-                    );
-                }
+            Err(RecvTimeoutError::Disconnected) => {
+                log::info!("[encoder-linux] capture channel disconnected");
+                return exit_on_capture_disconnect(
+                    stop.load(Ordering::Relaxed),
+                    capture.end.get(),
+                );
             }
         }
         last_frame_time = Instant::now();
 
-        // Thumbnail (CPU frames only; the DMA-BUF path has no CPU-side
-        // pixels to downscale without a readback — TODO if a compositor
-        // re-enables DMA-BUF capture). Only the copy of the frame happens
-        // here; the downscale + JPEG encode run on the thumbnail worker.
+        // Thumbnail. Only the copy of the frame happens here; the
+        // downscale + JPEG encode run on the thumbnail worker.
         let now = Instant::now();
         if thumb_schedule.due(now) {
             if let Some(job) = last_frame.as_ref().and_then(thumbnail_job) {
@@ -429,58 +538,81 @@ fn run_encode_loop(
             thumb_schedule.taken(now);
         }
 
-        let encode_result: Result<Option<EncodedFrame>, String> =
-            if let Some(dmabuf) = gpu_frame_opt {
-                encode_dmabuf(encoder, &mut gpu_ctx, &mut gpu_initialized, config, &dmabuf)
-            } else {
-                let frame = match last_frame.as_ref() {
-                    Some(f) => f,
-                    None => continue,
-                };
-                match frame.pixel_format {
-                    PixelFormat::NV12 => {
-                        encoder.encode_nv12_frame(&frame.data, frame.width, frame.height)
-                    }
-                    PixelFormat::BGRA | PixelFormat::RGBA => {
-                        let is_bgra = frame.pixel_format == PixelFormat::BGRA;
-                        encoder.encode_bgra_frame(
-                            &frame.data,
-                            frame.width,
-                            frame.height,
-                            frame.stride,
-                            is_bgra,
-                        )
-                    }
-                }
+        let encode_result: Result<Option<EncodedFrame>, String> = {
+            let frame = match last_frame.as_ref() {
+                Some(f) => f,
+                None => continue,
             };
+            encoder.encode(frame)
+        };
+        frames_in += 1;
 
+        // What ended this encoder's trial, if anything did.
+        let trial_failure: Option<String>;
         match encode_result {
             Ok(encoded) => {
                 consecutive_failures = 0;
-                if let Some(ef) = encoded {
-                    emit_encoded(ef, cfg, stream_start, &mut frames_sent);
+                let mut next = encoded;
+                // An encoder may hand back more than one packet for a call
+                // (one it could not finish last time): take every packet
+                // that is ready, so its queue never grows.
+                while let Some(ef) = next {
+                    if !proven {
+                        proven = true;
+                        super::encoder_probe::note_working(current.candidate, current.codec);
+                    }
+                    emit_encoded(ef, current.codec as u8, cfg, stream_start, &mut frames_sent);
+                    next = encoder.receive_pending();
                 }
+                trial_failure = trial_verdict(proven, consecutive_failures, frames_in, cfg.fps, None);
             }
             Err(e) => {
                 consecutive_failures += 1;
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    return LoopExit::Failed(format!(
-                        "{consecutive_failures} consecutive frames failed to encode (last: {e})"
-                    ));
+                trial_failure = trial_verdict(proven, consecutive_failures, frames_in, cfg.fps, Some(&e));
+                if trial_failure.is_none() {
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        return LoopExit::Failed(format!(
+                            "{consecutive_failures} consecutive frames failed to encode (last: {e})"
+                        ));
+                    }
+                    if last_failure_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                        log::warn!(
+                            "[encoder-linux] encode failed: {e} (consecutive={consecutive_failures})"
+                        );
+                        last_failure_warn = Some(Instant::now());
+                    }
                 }
-                if last_failure_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+            }
+        }
+        if let Some(why) = trial_failure {
+            // The backend opened and cannot encode: the next one takes
+            // over, on the same capture. Only the last one's failure ends
+            // the stream.
+            super::encoder_probe::note_failed(current.candidate, current.codec, &why);
+            let mut errors = vec![format!("{}: {why}", current.label)];
+            match open_next(&mut errors) {
+                Some((next_encoder, next_choice)) => {
                     log::warn!(
-                        "[encoder-linux] encode failed: {e} (consecutive={consecutive_failures})"
+                        "[encoder-linux] {} failed before its first packet ({why}); continuing with {}",
+                        current.label,
+                        next_choice.label
                     );
-                    last_failure_warn = Some(Instant::now());
+                    *encoder = next_encoder;
+                    *current = next_choice;
+                    consecutive_failures = 0;
+                    frames_in = 0;
+                }
+                None => {
+                    return LoopExit::Failed(format!("no encoder works on this machine ({})", errors.join("; ")));
                 }
             }
         }
 
         if last_telemetry.elapsed() >= Duration::from_secs(1) {
             log::debug!(
-                "[encoder-linux] codec_byte={} {}x{}@{} {}kbps frames_sent={} thumbs_sent={}",
-                cfg.codec_wire_byte,
+                "[encoder-linux] {} codec_byte={} {}x{}@{} {}kbps frames_sent={} thumbs_sent={}",
+                current.label,
+                current.codec as u8,
                 cfg.width,
                 cfg.height,
                 cfg.fps,
@@ -492,103 +624,6 @@ fn run_encode_loop(
             thumbnails_sent = 0;
             last_telemetry = Instant::now();
         }
-    }
-}
-
-/// Zero-copy DMA-BUF encode: lazily detects the GPU backend on the first
-/// frame (swapping the encoder to a CUDA/VAAPI hw context) then imports +
-/// encodes. Dormant unless a capture backend advertises DMA-BUF.
-fn encode_dmabuf(
-    encoder: &mut H264Encoder,
-    gpu_ctx: &mut Option<GpuContext>,
-    gpu_initialized: &mut bool,
-    config: &EncoderConfig,
-    dmabuf: &super::capture::DmaBufFrame,
-) -> Result<Option<EncodedFrame>, String> {
-    use std::os::fd::AsRawFd;
-
-    if !*gpu_initialized {
-        *gpu_initialized = true;
-        *gpu_ctx = GpuContext::new();
-        if let Some(gpu) = gpu_ctx.as_mut() {
-            match gpu.backend_type() {
-                GpuBackendType::Vaapi => {
-                    if let Err(e) = gpu.init_vaapi_frames(config.width, config.height) {
-                        log::warn!("[encoder-linux] VAAPI frames init failed ({e}); CPU fallback");
-                        *gpu_ctx = None;
-                    } else {
-                        match H264Encoder::new_vaapi(
-                            config,
-                            gpu.vaapi_device_ref(),
-                            gpu.vaapi_frames_ref(),
-                        ) {
-                            Ok(e) => {
-                                log::info!("[encoder-linux] VA-API zero-copy encoding enabled");
-                                *encoder = e;
-                            }
-                            Err(e) => {
-                                log::warn!("[encoder-linux] VAAPI encoder failed ({e}); CPU fallback");
-                                *gpu_ctx = None;
-                            }
-                        }
-                    }
-                }
-                GpuBackendType::Cuda => {
-                    let shared_ctx = gpu.cuda_ctx_raw();
-                    match H264Encoder::new_cuda(config, shared_ctx) {
-                        Ok(e) => {
-                            log::info!("[encoder-linux] CUDA zero-copy encoding enabled");
-                            *encoder = e;
-                        }
-                        Err(e) => {
-                            log::warn!("[encoder-linux] CUDA encoder init failed ({e}); CPU fallback");
-                            *gpu_ctx = None;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let Some(gpu) = gpu_ctx.as_mut() else {
-        // GPU init failed — drop this DMA-BUF frame; the CPU SHM channel
-        // (if any) keeps the stream alive.
-        return Ok(None);
-    };
-
-    match gpu.backend_type() {
-        GpuBackendType::Cuda => {
-            if !encoder.has_cuda_hw() {
-                return Ok(None);
-            }
-            match gpu.import_dmabuf_cuda(
-                dmabuf.fd.as_raw_fd(),
-                dmabuf.width,
-                dmabuf.height,
-                dmabuf.stride,
-                dmabuf.drm_format,
-                dmabuf.modifier,
-            ) {
-                Some(dev_ptr) => {
-                    gpu.push_cuda_ctx();
-                    let r = encoder.encode_cuda_frame(dev_ptr, dmabuf.width, dmabuf.height);
-                    gpu.pop_cuda_ctx();
-                    r
-                }
-                None => Ok(None),
-            }
-        }
-        GpuBackendType::Vaapi => match gpu.map_dmabuf_vaapi(
-            dmabuf.fd.as_raw_fd(),
-            dmabuf.width,
-            dmabuf.height,
-            dmabuf.stride,
-            dmabuf.drm_format,
-            dmabuf.modifier,
-        ) {
-            Some(mut vaapi_frame) => encoder.encode_vaapi_frame(&mut vaapi_frame),
-            None => Ok(None),
-        },
     }
 }
 
@@ -617,6 +652,7 @@ fn thumbnail_job(frame: &RawFrame) -> Option<ThumbnailJob> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::capture::CaptureEndSlot;
 
     /// Review B9: why the capture channel disconnected decides what the
     /// renderer hears. Before, every exit only logged, so the UI stayed
@@ -637,6 +673,378 @@ mod tests {
         ));
         // A capture that vanished without saying why is a failure.
         assert!(matches!(exit_on_capture_disconnect(false, None), LoopExit::Failed(_)));
+    }
+
+    /// An encoder that opened is on trial until its first packet: three
+    /// failed frames in a row, or two seconds of frames swallowed, hand the
+    /// stream to the next backend. Once it has produced a packet its
+    /// failures are the old rule's business (60 in a row end the stream).
+    #[test]
+    fn an_encoder_is_on_trial_until_its_first_packet() {
+        // Failing from the first frame: the third failure ends the trial.
+        assert_eq!(trial_verdict(false, 1, 1, 30, Some("send failed")), None);
+        assert_eq!(trial_verdict(false, 2, 2, 30, Some("send failed")), None);
+        assert_eq!(trial_verdict(false, 3, 3, 30, Some("send failed")), Some("send failed".to_string()));
+        // Accepting frames and returning nothing: two seconds' worth.
+        assert_eq!(trial_verdict(false, 0, 59, 30, None), None);
+        assert!(trial_verdict(false, 0, 60, 30, None).unwrap().contains("no packet out"));
+        assert_eq!(trial_verdict(false, 0, 9, 5, None), None);
+        assert!(trial_verdict(false, 0, 10, 5, None).is_some());
+        // Proven: never.
+        assert_eq!(trial_verdict(true, 59, 1000, 30, Some("send failed")), None);
+        assert_eq!(trial_verdict(true, 0, 1000, 30, None), None);
+    }
+
+    fn choice(backend: Backend, node: Option<&str>) -> EncoderChoice {
+        EncoderChoice {
+            candidate: Candidate { backend, adapter: None },
+            target: EncoderTarget { backend, render_node: node.map(str::to_string) },
+            codec: if backend == Backend::Software { CodecKind::Av1 } else { CodecKind::H264Hw },
+            label: backend.id().to_string(),
+        }
+    }
+
+    fn config(width: u32, height: u32, fps: u32) -> EncoderConfig {
+        EncoderConfig {
+            width,
+            height,
+            fps,
+            bitrate_kbps: 2000,
+            keyframe_interval_secs: 2,
+            detail: false,
+            source_size: (width, height),
+        }
+    }
+
+    /// The start walks the choices in order: a backend that cannot open
+    /// (here VAAPI on a render node that does not exist) is skipped with
+    /// its reason, and the next one that opens runs the stream. Runs where
+    /// NVENC or SVT-AV1 is usable; elsewhere every choice fails and the
+    /// reasons are all reported.
+    #[test]
+    fn a_start_falls_through_to_the_next_backend_that_opens() {
+        let _one_at_a_time = crate::media::encoder_checks::encoder_lock();
+        let cfg = config(640, 360, 30);
+        let mut remaining: std::collections::VecDeque<EncoderChoice> = [
+            choice(Backend::Vaapi, Some("/dev/dri/renderD999-none")),
+            choice(Backend::Nvenc, None),
+            choice(Backend::Software, None),
+        ]
+        .into();
+        let mut errors = Vec::new();
+        match open_next(&mut remaining, &cfg, &mut errors) {
+            Some((encoder, opened)) => {
+                assert_ne!(opened.candidate.backend, Backend::Vaapi);
+                assert_eq!(encoder.backend, opened.candidate.backend);
+                assert!(errors[0].starts_with("vaapi: "), "{errors:?}");
+                println!("fell through {errors:?} to {}", encoder.encoder_name());
+            }
+            None => {
+                assert_eq!(errors.len(), 3, "{errors:?}");
+                assert!(remaining.is_empty());
+                println!("skipped: no backend opens here ({errors:?})");
+            }
+        }
+    }
+
+    /// A stand-in encoder: fails every frame, or hands back one packet a
+    /// frame whose bytes are its codec's wire byte.
+    struct Fake {
+        works: bool,
+        codec: u8,
+        frames: u64,
+    }
+
+    impl FrameEncoder for Fake {
+        fn encode(&mut self, _frame: &RawFrame) -> Result<Option<EncodedFrame>, String> {
+            if !self.works {
+                return Err("the driver refused the frame".to_string());
+            }
+            self.frames += 1;
+            Ok(Some(EncodedFrame {
+                data: vec![self.codec; 32],
+                is_keyframe: self.frames == 1,
+                pts: self.frames,
+                avcc_description: None,
+            }))
+        }
+
+        fn receive_pending(&mut self) -> Option<EncodedFrame> {
+            None
+        }
+
+        fn force_keyframe(&mut self) {}
+    }
+
+    /// Run the real loop over stand-in encoders: `first` is open, `later`
+    /// are what the fallthrough can open next. Returns the loop's exit and
+    /// the codec byte of every packet that reached the relay.
+    fn run_loop_with(first: Fake, later: Vec<(Fake, EncoderChoice)>, frames: u32) -> (LoopExit, Vec<u8>) {
+        use crate::media::media_socket::MediaSocket;
+        use crate::media::video_packet::UdpVideoPacket;
+        use std::net::UdpSocket;
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(relay.local_addr().unwrap()).unwrap();
+        let sender = Arc::new(VideoSender::new(Arc::new(MediaSocket::plain(sock, "7")), "7".into(), None));
+        let (thumbnail_tx, _thumbnail_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let cfg = LinuxEncoderThreadConfig {
+            choices: Vec::new(),
+            width: 64,
+            height: 64,
+            fps: 30,
+            bitrate_kbps: 500,
+            detail: false,
+            local_username: Arc::from("7"),
+            video_sender: sender,
+            thumbnail_tx,
+        };
+        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<RawFrame>(64);
+        for n in 0..frames {
+            frame_tx
+                .send(RawFrame {
+                    data: vec![n as u8; 64 * 64 * 4],
+                    width: 64,
+                    height: 64,
+                    stride: 64 * 4,
+                    pixel_format: PixelFormat::BGRA,
+                    timestamp_us: 0,
+                })
+                .unwrap();
+        }
+        let end = Arc::new(CaptureEndSlot::default());
+        // The capture "ends" once the frames are consumed: the loop then
+        // returns, and how it returns is what is checked.
+        end.record(CaptureEnd::SourceGone("test over".into()));
+        drop(frame_tx);
+        let mut encoder = first;
+        let mut current = choice(Backend::Nvenc, None);
+        let mut later: std::collections::VecDeque<(Fake, EncoderChoice)> = later.into();
+        let mut next = |errors: &mut Vec<String>| {
+            let opened = later.pop_front();
+            if opened.is_none() {
+                errors.push("software: not in this build".to_string());
+            }
+            opened
+        };
+        let exit = run_encode_loop(
+            &mut encoder,
+            &mut current,
+            &mut next,
+            CaptureInput { frames: frame_rx, end },
+            &cfg,
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            Instant::now(),
+        );
+        let mut codecs = Vec::new();
+        let mut buf = vec![0u8; 65536];
+        while let Ok(n) = relay.recv(&mut buf) {
+            codecs.push(UdpVideoPacket::from_bytes(&buf[..n]).expect("a video packet").codec);
+        }
+        (exit, codecs)
+    }
+
+    /// The encoder that opened cannot encode: after three failed frames the
+    /// next backend takes over on the same capture, its frames go out with
+    /// its own codec byte, and the stream goes on to its normal end.
+    #[test]
+    fn an_encoder_that_fails_its_trial_hands_over_to_the_next() {
+        let failing = Fake { works: false, codec: 1, frames: 0 };
+        let software = (Fake { works: true, codec: 4, frames: 0 }, choice(Backend::Software, None));
+        let (exit, codecs) = run_loop_with(failing, vec![software], 12);
+        // 3 frames lost to the trial, 9 encoded by the second backend.
+        assert_eq!(codecs, vec![4u8; 9]);
+        assert_eq!(exit, LoopExit::SourceEnded("test over".into()), "not a failure");
+    }
+
+    /// Nothing left to fall to: the stream fails, and the reason names
+    /// every backend that was tried.
+    #[test]
+    fn the_last_backend_failing_its_trial_fails_the_stream() {
+        let failing = Fake { works: false, codec: 1, frames: 0 };
+        let (exit, codecs) = run_loop_with(failing, Vec::new(), 12);
+        assert!(codecs.is_empty());
+        match exit {
+            LoopExit::Failed(why) => {
+                assert!(why.contains("nvenc: the driver refused the frame"), "{why}");
+                assert!(why.contains("software: not in this build"), "{why}");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    /// A proven encoder is not replaced: its failures count towards the
+    /// 60-in-a-row rule and the stream continues meanwhile.
+    #[test]
+    fn a_proven_encoder_keeps_the_stream_through_a_few_failures() {
+        struct Flaky(u64);
+        impl FrameEncoder for Flaky {
+            fn encode(&mut self, _frame: &RawFrame) -> Result<Option<EncodedFrame>, String> {
+                self.0 += 1;
+                // Frames 4 to 8 fail (five in a row), after three good ones.
+                if (4..=8).contains(&self.0) {
+                    return Err("busy".to_string());
+                }
+                Ok(Some(EncodedFrame { data: vec![1; 16], is_keyframe: self.0 == 1, pts: self.0, avcc_description: None }))
+            }
+            fn receive_pending(&mut self) -> Option<EncodedFrame> {
+                None
+            }
+            fn force_keyframe(&mut self) {}
+        }
+        // Same scaffolding as run_loop_with, with a counter on the opener.
+        let mut opened = 0;
+        let mut next = |_: &mut Vec<String>| -> Option<(Flaky, EncoderChoice)> {
+            opened += 1;
+            None
+        };
+        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<RawFrame>(64);
+        for _ in 0..12 {
+            frame_tx
+                .send(RawFrame { data: vec![0; 64 * 64 * 4], width: 64, height: 64, stride: 256, pixel_format: PixelFormat::BGRA, timestamp_us: 0 })
+                .unwrap();
+        }
+        drop(frame_tx);
+        let end = Arc::new(CaptureEndSlot::default());
+        end.record(CaptureEnd::SourceGone("test over".into()));
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(sock.local_addr().unwrap()).unwrap();
+        let (thumbnail_tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let cfg = LinuxEncoderThreadConfig {
+            choices: Vec::new(),
+            width: 64,
+            height: 64,
+            fps: 30,
+            bitrate_kbps: 500,
+            detail: false,
+            local_username: Arc::from("7"),
+            video_sender: Arc::new(VideoSender::new(
+                Arc::new(crate::media::media_socket::MediaSocket::plain(sock, "7")),
+                "7".into(),
+                None,
+            )),
+            thumbnail_tx,
+        };
+        let exit = run_encode_loop(
+            &mut Flaky(0),
+            &mut choice(Backend::Nvenc, None),
+            &mut next,
+            CaptureInput { frames: frame_rx, end },
+            &cfg,
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            Instant::now(),
+        );
+        assert_eq!(exit, LoopExit::SourceEnded("test over".into()));
+        assert_eq!(opened, 0, "no other backend was opened");
+    }
+
+    /// The Linux stream pipeline without the capture: generated frames in a
+    /// `CaptureOutput`, the real encode thread, the real packetiser, and a
+    /// loopback socket standing in for the relay. The first choice cannot
+    /// open (VAAPI on a node that does not exist), so the stream starts on
+    /// the next one, says so, puts frames of that codec on the wire with a
+    /// keyframe first, and stops without reporting a failure. Runs where
+    /// NVENC or SVT-AV1 is usable.
+    #[test]
+    fn the_thread_streams_a_generated_capture_on_the_first_backend_that_opens() {
+        let _one_at_a_time = crate::media::encoder_checks::encoder_lock();
+        use crate::events::{testing, CoreEvent};
+        use crate::media::media_socket::MediaSocket;
+        use crate::media::video_packet::UdpVideoPacket;
+        use std::net::UdpSocket;
+        testing::install_recording_sink();
+        const W: u32 = 640;
+        const H: u32 = 360;
+
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(relay.local_addr().unwrap()).unwrap();
+        let sender = Arc::new(VideoSender::new(Arc::new(MediaSocket::plain(sock, "7")), "7".into(), None));
+        sender.set_frame_rate(30);
+
+        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<RawFrame>(2);
+        let capture = CaptureOutput {
+            receiver: frame_rx,
+            width: W,
+            height: H,
+            gpu_receiver: None,
+            end: Arc::new(CaptureEndSlot::default()),
+            stopper: None,
+        };
+        let (thumbnail_tx, _thumbnail_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let cfg = LinuxEncoderThreadConfig {
+            choices: vec![
+                choice(Backend::Vaapi, Some("/dev/dri/renderD999-none")),
+                choice(Backend::Nvenc, None),
+                choice(Backend::Software, None),
+            ],
+            width: W,
+            height: H,
+            fps: 30,
+            bitrate_kbps: 1500,
+            detail: false,
+            local_username: Arc::from("7"),
+            video_sender: sender,
+            thumbnail_tx,
+        };
+        let thread = match LinuxEncoderThread::start(cfg, capture) {
+            Ok(t) => t,
+            Err(e) => {
+                assert!(e.contains("vaapi") && e.contains("nvenc") && e.contains("software"), "{e}");
+                println!("skipped: no backend opens here ({e})");
+                return;
+            }
+        };
+        let started = thread.started().clone();
+        assert_ne!(started.backend, Backend::Vaapi, "the node does not exist");
+        assert_eq!(started.codec, if started.backend == Backend::Software { CodecKind::Av1 } else { CodecKind::H264Hw });
+
+        let stride = W as usize * 4;
+        for n in 0..20u32 {
+            let mut data = vec![0u8; stride * H as usize];
+            for (i, px) in data.chunks_exact_mut(4).enumerate() {
+                let v = ((i as u32 / 16 + n * 3) % 255) as u8;
+                px.copy_from_slice(&[v, v ^ 0x55, n as u8 * 8, 255]);
+            }
+            frame_tx
+                .send(RawFrame { data, width: W, height: H, stride, pixel_format: PixelFormat::BGRA, timestamp_us: n as u64 * 33_333 })
+                .expect("the encode thread takes frames");
+        }
+        // Frames reach the relay: the first is a keyframe, all carry the
+        // started codec's wire byte.
+        let mut buf = vec![0u8; 65536];
+        let mut frames_seen = std::collections::BTreeSet::new();
+        let mut first = true;
+        while frames_seen.len() < 10 {
+            let n = relay.recv(&mut buf).expect("encoded frames on the wire within 5 s");
+            let packet = UdpVideoPacket::from_bytes(&buf[..n]).expect("a video packet");
+            assert_eq!(packet.codec, started.codec as u8);
+            if first {
+                assert!(packet.is_keyframe(), "the stream opens with a keyframe");
+                first = false;
+            }
+            let frame_id = packet.frame_id;
+            frames_seen.insert(frame_id);
+        }
+        thread.stop();
+        let failures = testing::take_events(|e| matches!(e, CoreEvent::NativeStreamFailed { .. } | CoreEvent::StreamCaptureEnded));
+        assert!(failures.is_empty(), "a requested stop reports nothing: {failures:?}");
+        println!("streamed {:?} with {} after skipping VAAPI", started.codec, started.label);
+    }
+
+    /// Software above the CPU's limit is not opened, and that is not a
+    /// failure of the encoder (nothing is told to the probe cache).
+    #[test]
+    fn software_is_not_opened_above_its_limits() {
+        let mut remaining: std::collections::VecDeque<EncoderChoice> = [choice(Backend::Software, None)].into();
+        let mut errors = Vec::new();
+        assert!(open_next(&mut remaining, &config(3840, 2160, 60), &mut errors).is_none());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("software encoding stops at"), "{errors:?}");
     }
 
     #[test]

@@ -1,13 +1,15 @@
-//! Linux native FFmpeg video encoder (NVENC via CUDA, VAAPI, libx264
-//! fallback), revived near-verbatim from the Tauri client for the native
-//! stream pipeline. See docs/superpowers/specs/2026-05-15-linux-native-
-//! ffmpeg-encoder-design.md.
+//! Linux native FFmpeg video encoder: NVENC (BGRA in, converted on the
+//! GPU), VAAPI for AMD / Intel (`encoder_vaapi.rs`), and software SVT-AV1
+//! as the last resort. Input is always a CPU frame (PipeWire SHM). Which
+//! backend opens is decided by `encoder_backend.rs` / `encoder_probe.rs`.
+//! See docs/superpowers/specs/2026-05-15-linux-native-ffmpeg-encoder-
+//! design.md and 2026-11-26-encoders-every-vendor-design.md.
 //!
-//! Windows uses the slimmer `encoder.rs::Encoder` (D3D11VA). The
-//! `#[cfg(target_os = "windows")]` items retained below are inert here —
-//! the whole file is Linux-only — and kept solely to minimise the diff
-//! from the source file for future re-syncs.
+//! Windows uses `encoder.rs::Encoder` (D3D11VA).
 #![cfg(target_os = "linux")]
+
+use super::encoder_backend::Backend;
+use super::encoder_vaapi::VaapiInput;
 
 /// Parse H.264 Annex B bitstream into individual NAL units.
 /// Returns a list of (nal_type, nal_data_without_start_code).
@@ -296,6 +298,109 @@ impl SwsScaler {
     }
 }
 
+/// swscale for the CPU-converted paths (software: BGRA → I420; VAAPI's CPU
+/// tier: BGRA → NV12), converting and scaling in one pass on a few threads.
+///
+/// Measured on an i7-12700K (docs/superpowers/specs/2026-11-26-encoders-
+/// every-vendor-design.md §6): single-threaded, this conversion costs 6 ms
+/// a 1080p frame and 10 ms a 1440p one, more than SVT-AV1's fastest presets
+/// spend encoding it; swscale's slice threading (the `threads` option, used
+/// through `sws_scale_frame`) divides that by the thread count. Its worker
+/// threads live as long as the context: nothing is allocated per frame.
+struct YuvScaler {
+    ctx: *mut ffmpeg_next::sys::SwsContext,
+    /// The capture's pixels, copied in row by row (its stride is its own).
+    src_frame: ffmpeg_next::frame::Video,
+    src_w: u32,
+    src_h: u32,
+    src_fmt: ffmpeg_next::format::Pixel,
+}
+
+impl Drop for YuvScaler {
+    fn drop(&mut self) {
+        unsafe { ffmpeg_next::sys::sws_freeContext(self.ctx) };
+    }
+}
+
+/// Threads swscale converts on: a quarter of the logical CPUs, 1 to 4.
+/// (Past four the conversion is already under 2 ms at 1440p.)
+fn sws_threads(logical_cpus: usize) -> i64 {
+    (logical_cpus / 4).clamp(1, 4) as i64
+}
+
+impl YuvScaler {
+    fn new(
+        src_w: u32,
+        src_h: u32,
+        src_fmt: ffmpeg_next::format::Pixel,
+        dst_w: u32,
+        dst_h: u32,
+        dst_fmt: ffmpeg_next::format::Pixel,
+    ) -> Result<Self, String> {
+        use ffmpeg_next::sys::*;
+        use std::ffi::c_void;
+        // libswscale/swscale.h: SWS_BILINEAR (1 << 1). ffmpeg-sys binds the
+        // flags as a macro in 8.0 and as an enum in 8.1.
+        const SWS_BILINEAR: i64 = 2;
+        let threads = sws_threads(std::thread::available_parallelism().map_or(4, |n| n.get()));
+        unsafe {
+            let ctx = sws_alloc_context();
+            if ctx.is_null() {
+                return Err("sws_alloc_context failed".to_string());
+            }
+            let opts: [(&std::ffi::CStr, i64); 8] = [
+                (c"srcw", src_w as i64),
+                (c"srch", src_h as i64),
+                (c"src_format", AVPixelFormat::from(src_fmt) as i64),
+                (c"dstw", dst_w as i64),
+                (c"dsth", dst_h as i64),
+                (c"dst_format", AVPixelFormat::from(dst_fmt) as i64),
+                // Bilinear: the same size converts without filtering, and a
+                // downscale (a 1440p screen shared at 1080p) keeps text
+                // readable without the cost of a wider filter.
+                (c"sws_flags", SWS_BILINEAR),
+                (c"threads", threads),
+            ];
+            for (name, value) in opts {
+                let rc = av_opt_set_int(ctx as *mut c_void, name.as_ptr(), value, 0);
+                if rc < 0 {
+                    sws_freeContext(ctx);
+                    return Err(format!("swscale option {name:?}: {}", ffmpeg_next::Error::from(rc)));
+                }
+            }
+            let rc = sws_init_context(ctx, std::ptr::null_mut(), std::ptr::null_mut());
+            if rc < 0 {
+                sws_freeContext(ctx);
+                return Err(format!("sws_init_context: {}", ffmpeg_next::Error::from(rc)));
+            }
+            // RGB -> YUV: swscale converts with BT.601 unless told
+            // otherwise, and the stream is flagged BT.709 limited range (as
+            // NVENC's own conversion produces). Full-range RGB in, BT.709
+            // studio range out; swscale passes this on to its slice threads.
+            let bt709 = sws_getCoefficients(SWS_CS_ITU709 as i32);
+            sws_setColorspaceDetails(ctx, bt709, 1, bt709, 0, 0, 1 << 16, 1 << 16);
+            let src_frame = ffmpeg_next::frame::Video::new(src_fmt, src_w, src_h);
+            Ok(Self { ctx, src_frame, src_w, src_h, src_fmt })
+        }
+    }
+
+    fn matches(&self, src_w: u32, src_h: u32, src_fmt: ffmpeg_next::format::Pixel) -> bool {
+        self.src_w == src_w && self.src_h == src_h && self.src_fmt == src_fmt
+    }
+
+    /// Convert (and scale) one captured frame into `dst`. `data` was
+    /// validated by the caller for `stride` and this scaler's source size.
+    fn convert(&mut self, data: &[u8], stride: usize, dst: &mut ffmpeg_next::frame::Video) -> Result<(), String> {
+        let src_stride = self.src_frame.stride(0);
+        copy_rows(data, stride, self.src_frame.data_mut(0), src_stride, self.src_w as usize * 4, self.src_h as usize);
+        let rc = unsafe { ffmpeg_next::sys::sws_scale_frame(self.ctx, dst.as_mut_ptr(), self.src_frame.as_ptr()) };
+        if rc < 0 {
+            return Err(format!("sws_scale_frame: {}", ffmpeg_next::Error::from(rc)));
+        }
+        Ok(())
+    }
+}
+
 /// How a captured BGRA/RGBA CPU frame reaches the encoder's input frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputRoute {
@@ -358,93 +463,56 @@ fn swizzle_rows_rgba_to_bgra(
     }
 }
 
-/// Test-open a hardware encoder at a small probe resolution to confirm it
-/// actually works on this machine's drivers — `find_by_name` only tells us
-/// FFmpeg *registered* the encoder, not that the GPU/driver can open it.
-/// Inlined from the Tauri caps.rs helper (PR8 removed it from the shared
-/// caps module when encoder probing moved to the renderer).
-fn probe_one_encoder(name: &str) -> bool {
-    let codec = match ffmpeg_next::encoder::find_by_name(name) {
-        Some(c) => c,
-        None => {
-            log::info!("[probe] {name}: not registered in libavcodec");
-            return false;
-        }
-    };
-    let ctx = ffmpeg_next::codec::context::Context::new_with_codec(codec);
-    let mut enc = match ctx.encoder().video() {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("[probe] {name}: encoder().video() failed: {e}");
-            return false;
-        }
-    };
-    enc.set_width(640);
-    enc.set_height(360);
-    enc.set_format(ffmpeg_next::format::Pixel::NV12);
-    enc.set_time_base((1, 30));
-    enc.set_frame_rate(Some((30, 1)));
-    enc.set_bit_rate(1_000_000);
-    match enc.open_as(codec) {
-        Ok(_) => true,
-        Err(e) => {
-            log::warn!("[probe] {name}: open failed: {e}");
-            false
-        }
+/// Where an encoder runs: one backend, and for VAAPI the DRM render node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncoderTarget {
+    pub backend: Backend,
+    /// VAAPI: `/dev/dri/renderD*`; None = libva's default device.
+    pub render_node: Option<String>,
+}
+
+impl EncoderTarget {
+    pub fn new(backend: Backend) -> Self {
+        Self { backend, render_node: None }
     }
 }
 
-/// Probe which codecs have a working encoder on this machine, in vendor
-/// priority order (NVENC then VAAPI then software). Returns
-/// `(codec, encoder_name, is_hardware)` for the first backend that opens
-/// per codec. Drives the renderer's codec picker via the
-/// `probe_native_encoders` command — the Linux analogue of the Windows
-/// `encoder_probe::run`.
-pub fn probe_caps() -> Vec<(crate::media::caps::CodecKind, String, bool)> {
-    use crate::media::caps::CodecKind;
-    let table: [(CodecKind, &[&str], bool); 4] = [
-        (CodecKind::H264Hw, &["h264_nvenc", "h264_vaapi"], true),
-        (CodecKind::H265, &["hevc_nvenc", "hevc_vaapi"], true),
-        (CodecKind::Av1, &["av1_nvenc", "av1_vaapi"], true),
-        (CodecKind::H264Sw, &["libx264"], false),
-    ];
-    let mut out = Vec::new();
-    for (kind, names, hardware) in table {
-        for name in names {
-            if probe_one_encoder(name) {
-                log::info!("[encoder-linux] probe: {:?} available via {}", kind, name);
-                out.push((kind, name.to_string(), hardware));
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// Video encoder using FFmpeg's C API via ffmpeg-next. Despite the name
-/// (kept stable for diff hygiene) this struct now supports H.264, H.265,
-/// AV1, and x264 software via the `codec` field — selected at construction
-/// time. Per-codec backends and config tuning live in find_hw_encoder /
-/// codec_options below.
+/// Video encoder using FFmpeg's C API via ffmpeg-next: one backend (NVENC,
+/// VAAPI, or software SVT-AV1) and one codec, both chosen at `open`. The
+/// name predates the other codecs and is kept for diff hygiene.
 pub struct H264Encoder {
     /// Which codec this encoder produces. Plumbs through to the
     /// per-packet UdpVideoPacket.codec byte (Plan B Task 7) and to
     /// codec-specific config / extradata handling (Plan B Tasks 4-5).
     pub codec: crate::media::caps::CodecKind,
+    /// The backend it runs on, and FFmpeg's name for it.
+    pub backend: Backend,
+    encoder_name: &'static str,
     /// H.264 only: the last SPS+PPS seen on a keyframe (Annex B), spliced
     /// into keyframes that arrive without them (see with_h264_parameter_sets).
     h264_param_sets: Option<Vec<u8>>,
+    /// HEVC only: the last hvcC built from a keyframe's inline parameter
+    /// sets, reused for a keyframe that arrives without them.
+    hevc_description: Option<Vec<u8>>,
+    /// AV1: ship the encoder's extradata as the keyframe description (the
+    /// NVENC path, as before). VAAPI and software AV1 carry the sequence
+    /// header in band on every keyframe and send none, like the Windows
+    /// encoders.
+    av1_description: bool,
     encoder: ffmpeg_next::encoder::Video,
     frame_count: u64,
     keyframe_interval: u64,
     force_next_keyframe: bool,
     target_width: u32,
     target_height: u32,
-    /// Persistent NV12 frame buffer — reused across encode calls to avoid
-    /// allocating a new frame every time.
+    /// Persistent CPU-converted input frame, reused across encode calls:
+    /// NV12 (VAAPI's CPU-convert tier), I420 for software. Unused by NVENC
+    /// and by VAAPI's GPU convert.
     nv12_frame: ffmpeg_next::frame::Video,
-    /// Persistent scaler for BGRA→NV12 conversion (fallback for non-NVENC).
-    scaler: Option<SwsScaler>,
+    /// The pixel format of `nv12_frame`.
+    sw_format: ffmpeg_next::format::Pixel,
+    /// Persistent converter / scaler into `nv12_frame`.
+    scaler: Option<YuvScaler>,
     /// Whether the encoder was opened with pix_fmt=BGRA (the NVENC family).
     /// When true, NVENC handles BGRA→NV12 conversion on the GPU, avoiding
     /// expensive CPU-based sws_scale color conversion — and only
@@ -455,28 +523,9 @@ pub struct H264Encoder {
     /// Persistent scaler for BGRA→BGRA scaling (used when source resolution
     /// differs from encoder resolution on the NVENC BGRA path).
     bgra_scaler: Option<SwsScaler>,
-
-    /// NVIDIA CUDA: FFmpeg hw_device_ctx (AVBufferRef*). When set, NVENC
-    /// reads frames from GPU memory instead of system memory.
-    #[cfg(target_os = "linux")]
-    cuda_hw_device_ref: *mut std::ffi::c_void,
-    /// NVIDIA CUDA: hw_frames_ctx (AVBufferRef*) for frame pool.
-    #[cfg(target_os = "linux")]
-    cuda_hw_frames_ref: *mut std::ffi::c_void,
-
-    /// VA-API: whether this encoder instance uses h264_vaapi with HW frames.
-    #[cfg(target_os = "linux")]
-    is_vaapi_hw: bool,
-
-    /// Windows QSV (Intel Quick Sync) zero-copy: separate hwdevice + frames
-    /// derived from the D3D11VA pool. The encoder consumes AV_PIX_FMT_QSV
-    /// frames whose underlying texture comes from our D3D11 source pool —
-    /// `source_frames` on the QSV frames context links them. Both refs are
-    /// null on the NVENC/AMF path; we own them and unref on Drop.
-    #[cfg(target_os = "windows")]
-    qsv_hw_device_ref: *mut std::ffi::c_void,
-    #[cfg(target_os = "windows")]
-    qsv_hw_frames_ref: *mut std::ffi::c_void,
+    /// VAAPI: the device and the upload / conversion in front of the
+    /// encoder. Declared after `encoder` so the codec context goes first.
+    vaapi: Option<VaapiInput>,
 }
 
 #[derive(Debug, Clone)]
@@ -488,6 +537,10 @@ pub struct EncoderConfig {
     pub keyframe_interval_secs: u32,
     /// A 5 fps stream: the encoder's quality preset (bitrate_preset::detail_opts).
     pub detail: bool,
+    /// The capture's frame size when it is known before the first frame
+    /// (0×0 otherwise): VAAPI sizes its upload surfaces for it up front
+    /// instead of rebuilding its conversion on the first frame.
+    pub source_size: (u32, u32),
 }
 
 #[derive(Debug)]
@@ -504,13 +557,14 @@ pub struct EncodedFrame {
     /// Codec decoder-configuration record, present on keyframes only:
     ///   - H.264 → none (SPS/PPS travel inline in the Annex B keyframe)
     ///   - H.265 → hvcC (built from the keyframe's inline VPS/SPS/PPS)
-    ///   - AV1   → av1C (FFmpeg encoder.extradata())
+    ///   - AV1   → NVENC: FFmpeg encoder.extradata(); VAAPI / software: none
+    ///     (the sequence header is in band on every keyframe)
     /// Field name kept stable for diff hygiene; semantics are codec-aware.
     /// Pass these bytes verbatim to WebCodecs VideoDecoder.configure({description}).
     pub avcc_description: Option<Vec<u8>>,
 }
 
-// The encoder holds raw FFmpeg pointers (CUDA hw refs, SwsContext) that
+// The encoder holds raw FFmpeg pointers (VAAPI refs, SwsContext) that
 // aren't auto-`Send`, but a `H264Encoder` is only ever constructed on one
 // thread and then used solely on the dedicated encode thread it's moved
 // into (see encoder_thread_linux) — never shared or touched concurrently.
@@ -518,29 +572,85 @@ pub struct EncodedFrame {
 unsafe impl Send for H264Encoder {}
 
 impl H264Encoder {
-    /// Create a new video encoder for the given codec.
-    /// Tries codec-specific backends in order: NVENC, VA-API (Linux), AMF/QSV/MF (Windows).
-    /// For CodecKind::H264Sw, picks libx264 (no hardware fallback).
+    /// Open the first backend of this machine's order that encodes
+    /// `target_codec` (no probe cache: tests and tools; a stream start goes
+    /// through `encoder_probe::start_plan`).
     pub fn new(target_codec: crate::media::caps::CodecKind, config: &EncoderConfig) -> Result<Self, String> {
+        let adapters = super::encoder_probe::adapters();
+        let order = super::encoder_backend::backend_order(
+            super::encoder_backend::Os::Linux,
+            &adapters,
+            super::encoder_backend::forced_backend(),
+        );
+        let mut errors = Vec::new();
+        for candidate in order {
+            if candidate.backend.encoder_name(target_codec).is_none() {
+                continue;
+            }
+            let target = super::encoder_probe::target_for(candidate, &adapters);
+            match Self::open(&target, target_codec, config) {
+                Ok(enc) => return Ok(enc),
+                Err(e) => errors.push(format!("{}: {e}", candidate.backend.id())),
+            }
+        }
+        Err(format!("No encoder available for {:?}. Tried: {}", target_codec, errors.join("; ")))
+    }
+
+    /// Open `target_codec` on one backend. Fails (with the reason) when the
+    /// linked FFmpeg lacks the encoder, the driver refuses it, or the
+    /// backend has no encoder for the codec.
+    pub fn open(
+        target: &EncoderTarget,
+        target_codec: crate::media::caps::CodecKind,
+        config: &EncoderConfig,
+    ) -> Result<Self, String> {
         ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
 
-        let (codec, codec_name) = Self::find_hw_encoder(target_codec)?;
-        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
-            .encoder()
-            .video()
-            .map_err(|e| format!("Encoder context: {}", e))?;
+        let backend = target.backend;
+        let codec_name: &'static str = backend
+            .encoder_name(target_codec)
+            .ok_or_else(|| format!("{} has no encoder for {:?}", backend.id(), target_codec))?;
+        if !matches!(backend, Backend::Nvenc | Backend::Vaapi | Backend::Software) {
+            return Err(format!("{} is not a Linux backend", backend.id()));
+        }
+        let codec = ffmpeg_next::encoder::find_by_name(codec_name)
+            .ok_or_else(|| format!("{codec_name} is not in this FFmpeg build"))?;
+        let fps = config.fps.max(1);
+        let gop = fps * config.keyframe_interval_secs.max(1);
 
-        context.set_width(config.width);
-        context.set_height(config.height);
-        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
-        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
-        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_gop(config.fps * config.keyframe_interval_secs);
-
+        // NVENC (any codec) accepts BGRA directly — the GPU handles BGRA→NV12
+        // conversion internally, eliminating expensive CPU-based sws_scale.
+        let supports_bgra_input = backend == Backend::Nvenc;
+        // VAAPI: the device, and the conversion that feeds it (GPU convert,
+        // or the CPU tier). Opened first: the codec context needs its
+        // frames context.
+        let mut vaapi = if backend == Backend::Vaapi {
+            let (src_w, src_h) = match config.source_size {
+                (0, _) | (_, 0) => (config.width, config.height),
+                size => size,
+            };
+            Some(VaapiInput::open(
+                target.render_node.as_deref(),
+                config.width,
+                config.height,
+                src_w,
+                src_h,
+                fps,
+            )?)
+        } else {
+            None
+        };
+        let sw_format = match backend {
+            // SVT-AV1's 8-bit input (libsvtav1.c: yuv420p / yuv420p10).
+            Backend::Software => ffmpeg_next::format::Pixel::YUV420P,
+            _ => ffmpeg_next::format::Pixel::NV12,
+        };
         // AV1 needs AV_CODEC_FLAG_GLOBAL_HEADER set so FFmpeg populates
-        // extradata with a proper av1C config record (which build_encoded_frame
-        // ships verbatim to WebCodecs as the description).
+        // extradata with the config record build_encoded_frame ships to
+        // WebCodecs as the description: NVENC only, as before. VAAPI
+        // (vaapi_encode.c writes the sequence header with every IDR) and
+        // SVT-AV1 (a sequence header OBU opens every key frame's temporal
+        // unit) need no description, so none is sent, as on Windows.
         // H.264 and H.265 use a different path: parse SPS/PPS (and VPS for
         // HEVC) out of the keyframe's annex-B inline NALs and build the
         // avcC / hvcC manually. This required for HEVC because Chromium's
@@ -548,105 +658,154 @@ impl H264Encoder {
         // as just the top-left ~1/4 of the picture, regardless of slices/tune.
         // Inline VPS/SPS/PPS in keyframes (no GLOBAL_HEADER) produces a
         // bitstream the decoder consumes correctly.
-        if target_codec == crate::media::caps::CodecKind::Av1 {
-            const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
-            unsafe {
-                let p = context.as_mut_ptr();
-                (*p).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            }
-        }
+        let av1_description = target_codec == crate::media::caps::CodecKind::Av1 && backend == Backend::Nvenc;
 
-        // Disable B-frames for real-time streaming — B-frames require reordering
-        // which adds latency and can cause artifacts with simple decoders.
-        context.set_max_b_frames(0);
-
-        // NVENC (any codec) accepts BGRA directly — the GPU handles BGRA→NV12
-        // conversion internally, eliminating expensive CPU-based sws_scale.
-        let supports_bgra_input = cfg!(target_os = "linux") &&
-            (codec_name == "h264_nvenc" || codec_name == "hevc_nvenc" || codec_name == "av1_nvenc");
-
-        if supports_bgra_input {
-            context.set_format(ffmpeg_next::format::Pixel::BGRA);
-        } else {
-            context.set_format(ffmpeg_next::format::Pixel::NV12);
-        }
-
-        // Signal BT.709 colorspace in SPS VUI so the decoder uses the correct
-        // YUV→RGB matrix. Without this, decoders may assume BT.601 and produce
-        // a green tint on HD content.
-        context.set_colorspace(ffmpeg_next::color::Space::BT709);
-        context.set_color_range(ffmpeg_next::color::Range::MPEG);
-
-        let mut opts = ffmpeg_next::Dictionary::new();
-        match codec_name.as_str() {
-            // ── NVENC family (H.264 / HEVC / AV1) — same option vocabulary ──
-            "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
-                opts.set("forced-idr", "1");
-                opts.set("preset", "p5");
-                opts.set("rc", "cbr");
-                // hevc_nvenc with tune=ull was producing pictures that
-                // Chromium's WebCodecs decoder rendered as just the top-left
-                // ~1280x720 region. Switching to tune=ll (still low-latency,
-                // less aggressive) and forcing single-slice produces a
-                // bitstream the decoder handles correctly. H.264 and AV1
-                // NVENC remain on tune=ull where they work fine.
-                if codec_name == "hevc_nvenc" {
-                    opts.set("tune", "ll");
-                    opts.set("slices", "1");
-                } else {
-                    opts.set("tune", "ull");
+        // VAAPI rate control: CBR is what every preset means (as NVENC's
+        // rc=cbr). A driver without it (vaapi_encode.c fails the open with
+        // "Driver does not support CBR RC mode") gets VBR with the peak at
+        // the target, then FFmpeg's own choice. One attempt for the others.
+        let rc_ladder: &[Option<&str>] =
+            if backend == Backend::Vaapi { &super::bitrate_preset::VAAPI_RC_LADDER } else { &[None] };
+        let mut opened = None;
+        let mut last_err = String::new();
+        for &rc_mode in rc_ladder {
+            if backend == Backend::Software {
+                // One configuration for both platforms: encoder_software.rs.
+                match super::encoder_software::software_context(
+                    config.width,
+                    config.height,
+                    fps,
+                    config.bitrate_kbps,
+                    gop,
+                    config.detail,
+                ) {
+                    Ok(encoder) => opened = Some((encoder, None)),
+                    Err(e) => last_err = e,
                 }
-                // VBV buffer: four frames of headroom for rate control, at most 400 ms
-                let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, config.fps);
-                unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
+                break;
             }
-            // ── AMF family (AMD) ──
-            "h264_amf" | "hevc_amf" | "av1_amf" => {
-                opts.set("usage", "ultralowlatency");
-                opts.set("quality", "speed");
-                // AMF's forced_idr defaults to 0: a forced keyframe would be a
-                // non-IDR I (AV1: intra-only) frame that isn't flagged key.
-                opts.set("forced_idr", "1");
+            let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
+                .encoder()
+                .video()
+                .map_err(|e| format!("Encoder context: {}", e))?;
+
+            context.set_width(config.width);
+            context.set_height(config.height);
+            context.set_frame_rate(Some(ffmpeg_next::Rational::new(fps as i32, 1)));
+            context.set_time_base(ffmpeg_next::Rational::new(1, fps as i32));
+            context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
+            context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
+            context.set_gop(gop);
+
+            if av1_description {
+                const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
+                unsafe {
+                    let p = context.as_mut_ptr();
+                    (*p).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+                }
             }
-            // ── QSV family (Intel) ──
-            "h264_qsv" | "hevc_qsv" | "av1_qsv" => {
-                opts.set("preset", "veryfast");
-                opts.set("forced_idr", "1");
+
+            // Disable B-frames for real-time streaming — B-frames require reordering
+            // which adds latency and can cause artifacts with simple decoders.
+            context.set_max_b_frames(0);
+
+            if supports_bgra_input {
+                context.set_format(ffmpeg_next::format::Pixel::BGRA);
+            } else if let Some(v) = &vaapi {
+                context.set_format(ffmpeg_next::format::Pixel::VAAPI);
+                unsafe {
+                    let p = context.as_mut_ptr();
+                    (*p).hw_device_ctx = ffmpeg_next::sys::av_buffer_ref(v.device());
+                    (*p).hw_frames_ctx = ffmpeg_next::sys::av_buffer_ref(v.encoder_frames());
+                }
+            } else {
+                context.set_format(sw_format);
             }
-            // ── Media Foundation (Windows) — H.264 + HEVC only ──
-            "h264_mf" | "hevc_mf" => {
-                opts.set("rate_control", "cbr");
-                opts.set("scenario", "display_remoting");
-                opts.set("hw_encoding", "1");
+
+            // Signal BT.709 colorspace in SPS VUI so the decoder uses the correct
+            // YUV→RGB matrix. Without this, decoders may assume BT.601 and produce
+            // a green tint on HD content.
+            context.set_colorspace(ffmpeg_next::color::Space::BT709);
+            context.set_color_range(ffmpeg_next::color::Range::MPEG);
+
+            let mut opts = ffmpeg_next::Dictionary::new();
+            match backend {
+                // ── NVENC family (H.264 / HEVC / AV1) — same option vocabulary ──
+                Backend::Nvenc => {
+                    opts.set("forced-idr", "1");
+                    opts.set("preset", "p5");
+                    opts.set("rc", "cbr");
+                    // hevc_nvenc with tune=ull was producing pictures that
+                    // Chromium's WebCodecs decoder rendered as just the top-left
+                    // ~1280x720 region. Switching to tune=ll (still low-latency,
+                    // less aggressive) and forcing single-slice produces a
+                    // bitstream the decoder handles correctly. H.264 and AV1
+                    // NVENC remain on tune=ull where they work fine.
+                    if codec_name == "hevc_nvenc" {
+                        opts.set("tune", "ll");
+                        opts.set("slices", "1");
+                    } else {
+                        opts.set("tune", "ull");
+                    }
+                    // VBV buffer: four frames of headroom for rate control, at most 400 ms
+                    let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, fps);
+                    unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
+                }
+                // ── VAAPI (AMD radeonsi, Intel iHD): bitrate_preset::vaapi_opts ──
+                Backend::Vaapi => {
+                    for (k, v) in super::bitrate_preset::vaapi_opts() {
+                        opts.set(k, v);
+                    }
+                    if let Some(mode) = rc_mode {
+                        opts.set("rc_mode", mode);
+                    }
+                    // The HRD buffer (VAEncMiscParameterHRD): the same four
+                    // frames / 400 ms as NVENC's VBV.
+                    let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, fps);
+                    unsafe { (*context.as_mut_ptr()).rc_buffer_size = vbv_bits; }
+                }
+                // Software was opened above; AMF / Quick Sync are Windows'.
+                Backend::Software | Backend::Amf | Backend::Qsv => {}
             }
-            // ── x264 software encoder ──
-            "libx264" => {
-                opts.set("preset", "veryfast");
-                opts.set("tune", "zerolatency");
-                opts.set("nal-hrd", "cbr");
-                opts.set("forced-idr", "1");
+            if config.detail {
+                for (k, v) in super::bitrate_preset::detail_opts(codec_name) {
+                    opts.set(k, v);
+                }
             }
-            _ => {
-                // h264_vaapi / hevc_vaapi / av1_vaapi — use defaults
+
+            match context.open_with(opts) {
+                Ok(encoder) => {
+                    opened = Some((encoder, rc_mode));
+                    break;
+                }
+                Err(e) => {
+                    last_err = match rc_mode {
+                        Some(mode) => format!("Open encoder (rc_mode {mode}): {e}"),
+                        None => format!("Open encoder: {e}"),
+                    };
+                    if rc_ladder.len() > 1 {
+                        log::info!("[encoder] {codec_name}: {last_err}");
+                    }
+                }
             }
         }
-        if config.detail {
-            for (k, v) in super::bitrate_preset::detail_opts(&codec_name) {
-                opts.set(k, v);
-            }
-        }
+        let Some((encoder, rc_mode)) = opened else {
+            return Err(last_err);
+        };
 
-        let encoder = context
-            .open_with(opts)
-            .map_err(|e| format!("Open encoder: {}", e))?;
-
-        let input_fmt = if supports_bgra_input { "BGRA (GPU convert)" } else { "NV12" };
+        let input_fmt = match (&vaapi, backend) {
+            (Some(v), _) => format!(
+                "VAAPI ({}; rate control {})",
+                v.tier_name(),
+                rc_mode.unwrap_or("chosen by FFmpeg")
+            ),
+            (None, Backend::Nvenc) => "BGRA (GPU convert)".to_string(),
+            _ => "I420 (CPU convert)".to_string(),
+        };
         log::info!("[encoder] {:?} encoder opened: {} — {}x{} @ {}fps, {}kbps, input={}",
                   target_codec, codec_name, config.width, config.height, config.fps, config.bitrate_kbps, input_fmt);
 
-        let nv12_frame = ffmpeg_next::frame::Video::new(
-            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
-        );
+        let nv12_frame = ffmpeg_next::frame::Video::new(sw_format, config.width, config.height);
 
         let bgra_frame = if supports_bgra_input {
             Some(ffmpeg_next::frame::Video::new(
@@ -658,912 +817,30 @@ impl H264Encoder {
 
         Ok(H264Encoder {
             h264_param_sets: None,
+            hevc_description: None,
+            av1_description,
             codec: target_codec,
+            backend,
+            encoder_name: codec_name,
             encoder,
             frame_count: 0,
-            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
+            keyframe_interval: gop as u64,
             force_next_keyframe: false,
             target_width: config.width,
             target_height: config.height,
             nv12_frame,
+            sw_format,
             scaler: None,
             supports_bgra_input,
             bgra_frame,
             bgra_scaler: None,
-            #[cfg(target_os = "linux")]
-            cuda_hw_device_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "linux")]
-            cuda_hw_frames_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "linux")]
-            is_vaapi_hw: false,
-            #[cfg(target_os = "windows")]
-            qsv_hw_device_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "windows")]
-            qsv_hw_frames_ref: std::ptr::null_mut(),
+            vaapi: vaapi.take(),
         })
     }
 
-    /// Find the best available encoder backend for the given codec.
-    /// Hardware backends tried in priority order; for CodecKind::H264Sw the
-    /// only candidate is libx264 (no hardware fallback — software is the
-    /// codec). CodecKind::Unknown returns an error.
-    fn find_hw_encoder(
-        target_codec: crate::media::caps::CodecKind,
-    ) -> Result<(ffmpeg_next::Codec, String), String> {
-        use crate::media::caps::CodecKind;
-        let candidates: Vec<&str> = match target_codec {
-            CodecKind::H264Hw => if cfg!(target_os = "linux") {
-                vec!["h264_nvenc", "h264_vaapi", "h264_amf"]
-            } else {
-                vec!["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf"]
-            },
-            CodecKind::H264Sw => vec!["libx264"],
-            CodecKind::H265 => if cfg!(target_os = "linux") {
-                vec!["hevc_nvenc", "hevc_vaapi", "hevc_amf"]
-            } else {
-                vec!["hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_mf"]
-            },
-            CodecKind::Av1 => if cfg!(target_os = "linux") {
-                vec!["av1_nvenc", "av1_vaapi", "av1_amf"]
-            } else {
-                vec!["av1_nvenc", "av1_amf", "av1_qsv"]
-            },
-            CodecKind::Unknown => return Err("Cannot construct encoder for CODEC_UNKNOWN".to_string()),
-        };
-
-        // Pick the FIRST candidate whose encoder actually opens on this
-        // machine, not just the first one FFmpeg has registered. Without
-        // this hardware-aware probe we'd pick `h264_nvenc` on every Windows
-        // box where vcpkg's FFmpeg ships NVENC (basically all of them),
-        // even ones with only an AMD GPU — that NVENC then fails at open
-        // time and we lose the chance to fall through to AMF. libx264
-        // doesn't need probing (software, always works), and skipping it
-        // saves a slow open on cold caches.
-        for name in &candidates {
-            let codec = match ffmpeg_next::encoder::find_by_name(name) {
-                Some(c) => c,
-                None => continue,
-            };
-            if *name == "libx264" || probe_one_encoder(name) {
-                log::info!("Using {:?} encoder: {}", target_codec, name);
-                return Ok((codec, name.to_string()));
-            }
-        }
-        Err(format!(
-            "No encoder available for {:?}. Tried: {:?}. Check FFmpeg build features and hardware drivers.",
-            target_codec, candidates
-        ))
-    }
-
-    /// Initialize CUDA hardware frame encoding for NVENC.
-    /// After this, `encode_cuda_frame()` accepts CUdeviceptr from GPU memory.
-    ///
-    /// `external_cu_ctx`, if non-null, is a CUcontext created elsewhere
-    /// (specifically: by our `gpu_interop::GpuContext`) that the encoder
-    /// must share. CUDA device pointers are context-scoped — passing a
-    /// `dev_ptr` allocated in context A into an NVENC session bound to
-    /// context B returns EINVAL. Sharing one context lets our DMA-BUF
-    /// imports and NVENC use the same memory addresses.
-    #[cfg(target_os = "linux")]
-    pub fn init_cuda_hw(&mut self, external_cu_ctx: *mut std::ffi::c_void) -> Result<(), String> {
-        use ffmpeg_next::sys::*;
-
-        unsafe {
-            let mut hw_device_ref: *mut AVBufferRef = if external_cu_ctx.is_null() {
-                // No external context: let FFmpeg create its own.
-                let mut dev_ref: *mut AVBufferRef = std::ptr::null_mut();
-                let rc = av_hwdevice_ctx_create(
-                    &mut dev_ref,
-                    AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                    0,
-                );
-                if rc < 0 || dev_ref.is_null() {
-                    return Err(format!("av_hwdevice_ctx_create(CUDA) failed: {}", rc));
-                }
-                dev_ref
-            } else {
-                // Share the caller's CUDA context. Allocate the hw device
-                // buffer, manually write our context pointer into the
-                // AVCUDADeviceContext.cuda_ctx field, then init it.
-                //
-                // AVCUDADeviceContext layout:
-                //   CUcontext cuda_ctx;   // offset 0  (8 bytes on 64-bit)
-                //   CUstream  stream;     // offset 8
-                //   void*     internal;   // offset 16
-                let dev_ref = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
-                if dev_ref.is_null() {
-                    return Err("av_hwdevice_ctx_alloc(CUDA) failed".into());
-                }
-                let hw_dev_ctx = (*dev_ref).data as *mut AVHWDeviceContext;
-                let cuda_dev_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
-                // First field of AVCUDADeviceContext is `CUcontext cuda_ctx`.
-                *(cuda_dev_ctx as *mut *mut std::ffi::c_void) = external_cu_ctx;
-                let rc = av_hwdevice_ctx_init(dev_ref);
-                if rc < 0 {
-                    let mut dr = dev_ref;
-                    av_buffer_unref(&mut dr);
-                    return Err(format!("av_hwdevice_ctx_init(CUDA, shared ctx) failed: {}", rc));
-                }
-                log::info!("[encoder] CUDA hw_device_ctx initialized with shared context");
-                dev_ref
-            };
-
-            // Create hw_frames_ctx
-            let frames_ref = av_hwframe_ctx_alloc(hw_device_ref);
-            if frames_ref.is_null() {
-                av_buffer_unref(&mut hw_device_ref);
-                return Err("av_hwframe_ctx_alloc(CUDA) failed".into());
-            }
-
-            let frames_ctx = (*frames_ref).data as *mut AVHWFramesContext;
-            (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_CUDA;
-            // NVENC accepts BGRA as sw_format — GPU handles BGRA->NV12 internally
-            (*frames_ctx).sw_format = if self.supports_bgra_input {
-                AVPixelFormat::AV_PIX_FMT_BGRA
-            } else {
-                AVPixelFormat::AV_PIX_FMT_NV12
-            };
-            (*frames_ctx).width = self.target_width as libc::c_int;
-            (*frames_ctx).height = self.target_height as libc::c_int;
-            (*frames_ctx).initial_pool_size = 4;
-
-            let rc = av_hwframe_ctx_init(frames_ref);
-            if rc < 0 {
-                let mut frames_ref_mut = frames_ref;
-                av_buffer_unref(&mut frames_ref_mut);
-                av_buffer_unref(&mut hw_device_ref);
-                return Err(format!("av_hwframe_ctx_init(CUDA) failed: {}", rc));
-            }
-
-            self.cuda_hw_device_ref = hw_device_ref as *mut std::ffi::c_void;
-            self.cuda_hw_frames_ref = frames_ref as *mut std::ffi::c_void;
-
-            log::info!("[encoder] CUDA hw_frames_ctx initialized ({}x{})",
-                self.target_width, self.target_height);
-            Ok(())
-        }
-    }
-
-    /// Encode a frame from CUDA device memory (NVIDIA zero-copy path).
-    /// `dev_ptr` is a CUdeviceptr to BGRA pixel data in GPU-linear memory.
-    #[cfg(target_os = "linux")]
-    pub fn encode_cuda_frame(
-        &mut self,
-        dev_ptr: u64,
-        width: u32,
-        height: u32,
-    ) -> Result<Option<EncodedFrame>, String> {
-        use ffmpeg_next::sys::*;
-
-        if self.cuda_hw_frames_ref.is_null() {
-            return Err("CUDA encoding not initialized".into());
-        }
-
-        unsafe {
-            // Allocate a CUDA AVFrame from the hw_frames pool
-            let frame = av_frame_alloc();
-            if frame.is_null() {
-                return Err("av_frame_alloc failed".into());
-            }
-
-            (*frame).format = AVPixelFormat::AV_PIX_FMT_CUDA as libc::c_int;
-            (*frame).width = width as libc::c_int;
-            (*frame).height = height as libc::c_int;
-            (*frame).hw_frames_ctx = av_buffer_ref(self.cuda_hw_frames_ref as *const AVBufferRef);
-
-            let rc = av_hwframe_get_buffer(
-                self.cuda_hw_frames_ref as *mut AVBufferRef, frame, 0,
-            );
-            if rc < 0 {
-                av_frame_free(&mut (frame as *mut AVFrame));
-                return Err(format!("av_hwframe_get_buffer(CUDA) failed: {}", rc));
-            }
-
-            // Copy our dev_ptr content into the hwframe-allocated buffer.
-            // av_hwframe_get_buffer returned a CUDA buffer with NVENC-aligned
-            // pitch (frame->linesize[0]); overwriting frame->data[0] to point
-            // at our tight-packed buffer was what triggered "Invalid argument"
-            // — FFmpeg/NVENC saw a data[0] not matching its buf[0] ref. A
-            // cuMemcpy2D on the same context keeps everything consistent and
-            // pays only a GPU-local copy (<0.1ms for 1080p BGRA).
-            let bpp: u32 = if self.supports_bgra_input { 4 } else { 1 }; // BGRA=4, NV12 Y plane=1
-            let src_pitch = (width * bpp) as usize;
-            let dst_pitch = (*frame).linesize[0] as usize;
-            let dst_dev_ptr = (*frame).data[0] as u64;
-
-            // Dynamically load cuMemcpy2D once (we don't own the global
-            // CudaApi here, so just grab the entry we need).
-            let cu_memcpy_fn = {
-                let cu_lib = libloading::Library::new("libcuda.so.1")
-                    .map_err(|e| format!("libcuda.so.1 load: {}", e))?;
-                let sym: libloading::Symbol<unsafe extern "C" fn(*const u8) -> i32> =
-                    cu_lib.get(b"cuMemcpy2D_v2\0")
-                        .map_err(|e| format!("cuMemcpy2D_v2 lookup: {}", e))?;
-                let ptr = *sym;
-                // Leak the Library to keep the symbol valid for the process lifetime.
-                std::mem::forget(cu_lib);
-                ptr
-            };
-
-            // CUDA_MEMCPY2D struct — layout must match the driver API header.
-            //   u=0 offset bytes/lines, memory type 2 = device
-            const CU_MEMTYPE_DEVICE: u32 = 2;
-            #[repr(C)]
-            struct CudaMemcpy2D {
-                src_x_in_bytes: usize,
-                src_y: usize,
-                src_memory_type: u32,
-                src_host: *const std::ffi::c_void,
-                src_device: u64,
-                src_array: *mut std::ffi::c_void,
-                _src_reserved: usize,
-                src_pitch: usize,
-                dst_x_in_bytes: usize,
-                dst_y: usize,
-                dst_memory_type: u32,
-                dst_host: *mut std::ffi::c_void,
-                dst_device: u64,
-                dst_array: *mut std::ffi::c_void,
-                _dst_reserved: usize,
-                dst_pitch: usize,
-                width_in_bytes: usize,
-                height: usize,
-            }
-            let copy = CudaMemcpy2D {
-                src_x_in_bytes: 0, src_y: 0,
-                src_memory_type: CU_MEMTYPE_DEVICE,
-                src_host: std::ptr::null(), src_device: dev_ptr,
-                src_array: std::ptr::null_mut(), _src_reserved: 0,
-                src_pitch,
-                dst_x_in_bytes: 0, dst_y: 0,
-                dst_memory_type: CU_MEMTYPE_DEVICE,
-                dst_host: std::ptr::null_mut(), dst_device: dst_dev_ptr,
-                dst_array: std::ptr::null_mut(), _dst_reserved: 0,
-                dst_pitch,
-                width_in_bytes: (width * bpp) as usize,
-                height: height as usize,
-            };
-            let rc = cu_memcpy_fn(&copy as *const _ as *const u8);
-            if rc != 0 {
-                av_frame_free(&mut (frame as *mut AVFrame));
-                return Err(format!("cuMemcpy2D(dev_ptr -> hwframe) failed: {}", rc));
-            }
-
-            // Set PTS and keyframe flags
-            (*frame).pts = self.frame_count as i64;
-            if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
-                (*frame).pict_type = AVPictureType::AV_PICTURE_TYPE_I;
-                self.force_next_keyframe = false;
-            } else {
-                (*frame).pict_type = AVPictureType::AV_PICTURE_TYPE_NONE;
-            }
-            self.frame_count += 1;
-
-            // Wrap in ffmpeg_next for send_frame
-            let wrapped = ffmpeg_next::frame::Video::wrap(frame);
-
-            let send_result = self.encoder.send_frame(&wrapped);
-            match send_result {
-                Ok(()) => {}
-                Err(ffmpeg_next::Error::Other { errno: ffmpeg_next::error::EAGAIN }) => {
-                    let _ = self.receive_one_packet();
-                    self.encoder.send_frame(&wrapped)
-                        .map_err(|e| format!("Send CUDA frame (retry): {}", e))?;
-                }
-                Err(e) => {
-                    return Err(format!("Send CUDA frame: {}", e));
-                }
-            }
-
-            Ok(self.receive_one_packet())
-        }
-    }
-
-    /// Check if CUDA hw encoding is ready.
-    #[cfg(target_os = "linux")]
-    pub fn has_cuda_hw(&self) -> bool {
-        !self.cuda_hw_frames_ref.is_null()
-    }
-
-    /// Create a new H264Encoder specifically for VA-API with hw_device_ctx.
-    /// Used when GPU context detected VAAPI backend (AMD/Intel).
-    #[cfg(target_os = "linux")]
-    pub fn new_vaapi(
-        config: &EncoderConfig,
-        vaapi_device_ref: *mut ffmpeg_next::sys::AVBufferRef,
-        vaapi_frames_ref: *mut ffmpeg_next::sys::AVBufferRef,
-    ) -> Result<Self, String> {
-        use ffmpeg_next::sys::*;
-
-        ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
-
-        let codec = ffmpeg_next::encoder::find_by_name("h264_vaapi")
-            .ok_or("h264_vaapi encoder not found")?;
-
-        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
-            .encoder().video()
-            .map_err(|e| format!("VAAPI encoder context: {}", e))?;
-
-        context.set_width(config.width);
-        context.set_height(config.height);
-        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
-        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
-        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_gop(config.fps * config.keyframe_interval_secs);
-        context.set_max_b_frames(0);
-        context.set_format(ffmpeg_next::format::Pixel::VAAPI);
-
-        // Set hw_device_ctx and hw_frames_ctx on the raw AVCodecContext
-        unsafe {
-            let ctx_ptr = context.as_mut_ptr();
-            (*ctx_ptr).hw_device_ctx = av_buffer_ref(vaapi_device_ref);
-            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(vaapi_frames_ref);
-        }
-
-        let mut opts = ffmpeg_next::Dictionary::new();
-        opts.set("rc_mode", "CBR");
-
-        let encoder = context.open_with(opts)
-            .map_err(|e| format!("Open h264_vaapi encoder: {}", e))?;
-
-        log::info!("[encoder] h264_vaapi opened: {}x{} @ {}fps, {}kbps (DMA-BUF zero-copy)",
-            config.width, config.height, config.fps, config.bitrate_kbps);
-
-        // NV12 frame is unused in VAAPI path but required by struct
-        let nv12_frame = ffmpeg_next::frame::Video::new(
-            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
-        );
-
-        Ok(H264Encoder {
-            h264_param_sets: None,
-            // VAAPI path is currently H.264-only (Plan B Group 2 limits scope).
-            codec: crate::media::caps::CodecKind::H264Hw,
-            encoder,
-            frame_count: 0,
-            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
-            force_next_keyframe: false,
-            target_width: config.width,
-            target_height: config.height,
-            nv12_frame,
-            scaler: None,
-            supports_bgra_input: false,
-            bgra_frame: None,
-            bgra_scaler: None,
-            #[cfg(target_os = "linux")]
-            cuda_hw_device_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "linux")]
-            cuda_hw_frames_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "linux")]
-            is_vaapi_hw: true,
-            #[cfg(target_os = "windows")]
-            qsv_hw_device_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "windows")]
-            qsv_hw_frames_ref: std::ptr::null_mut(),
-        })
-    }
-
-    /// NVIDIA CUDA-native constructor. Creates a hw_device_ctx sharing the
-    /// caller's CUcontext, a hw_frames_ctx for the pool, and opens h264_nvenc
-    /// with `pix_fmt=AV_PIX_FMT_CUDA` so NVENC accepts CUDA frames directly.
-    ///
-    /// This replaces the older `H264Encoder::new` + `init_cuda_hw` flow: the
-    /// older flow opened the encoder with `pix_fmt=BGRA` (CPU-side memory)
-    /// and later tried to feed it `AV_PIX_FMT_CUDA` frames, which NVENC
-    /// rejected with EINVAL because the codec context was already configured
-    /// for a different frame kind.
-    #[cfg(target_os = "linux")]
-    pub fn new_cuda(
-        config: &EncoderConfig,
-        external_cu_ctx: *mut std::ffi::c_void,
-    ) -> Result<Self, String> {
-        use ffmpeg_next::sys::*;
-
-        ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
-
-        let codec = ffmpeg_next::encoder::find_by_name("h264_nvenc")
-            .ok_or_else(|| "h264_nvenc encoder not available".to_string())?;
-
-        // Build hw_device_ctx with the shared CUcontext.
-        let (hw_device_ref, hw_frames_ref) = unsafe {
-            let dev_ref = if external_cu_ctx.is_null() {
-                let mut r: *mut AVBufferRef = std::ptr::null_mut();
-                let rc = av_hwdevice_ctx_create(
-                    &mut r, AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
-                    std::ptr::null(), std::ptr::null_mut(), 0,
-                );
-                if rc < 0 || r.is_null() {
-                    return Err(format!("av_hwdevice_ctx_create(CUDA) failed: {}", rc));
-                }
-                r
-            } else {
-                let r = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA);
-                if r.is_null() {
-                    return Err("av_hwdevice_ctx_alloc(CUDA) failed".into());
-                }
-                let hw_dev_ctx = (*r).data as *mut AVHWDeviceContext;
-                let cuda_dev_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
-                *(cuda_dev_ctx as *mut *mut std::ffi::c_void) = external_cu_ctx;
-                let rc = av_hwdevice_ctx_init(r);
-                if rc < 0 {
-                    let mut rr = r;
-                    av_buffer_unref(&mut rr);
-                    return Err(format!("av_hwdevice_ctx_init(CUDA, shared) failed: {}", rc));
-                }
-                r
-            };
-
-            let frames_ref = av_hwframe_ctx_alloc(dev_ref);
-            if frames_ref.is_null() {
-                let mut dr = dev_ref;
-                av_buffer_unref(&mut dr);
-                return Err("av_hwframe_ctx_alloc(CUDA) failed".into());
-            }
-            let frames_ctx = (*frames_ref).data as *mut AVHWFramesContext;
-            (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_CUDA;
-            (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_BGRA;
-            (*frames_ctx).width = config.width as libc::c_int;
-            (*frames_ctx).height = config.height as libc::c_int;
-            (*frames_ctx).initial_pool_size = 4;
-            let rc = av_hwframe_ctx_init(frames_ref);
-            if rc < 0 {
-                let mut fr = frames_ref;
-                let mut dr = dev_ref;
-                av_buffer_unref(&mut fr);
-                av_buffer_unref(&mut dr);
-                return Err(format!("av_hwframe_ctx_init(CUDA) failed: {}", rc));
-            }
-            log::info!("[encoder] CUDA hw_frames_ctx initialized ({}x{}) with shared ctx",
-                config.width, config.height);
-            (dev_ref, frames_ref)
-        };
-
-        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
-            .encoder().video()
-            .map_err(|e| {
-                unsafe {
-                    let mut fr = hw_frames_ref;
-                    let mut dr = hw_device_ref;
-                    av_buffer_unref(&mut fr);
-                    av_buffer_unref(&mut dr);
-                }
-                format!("CUDA encoder context: {}", e)
-            })?;
-
-        context.set_width(config.width);
-        context.set_height(config.height);
-        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
-        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
-        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_gop(config.fps * config.keyframe_interval_secs);
-        context.set_max_b_frames(0);
-        context.set_format(ffmpeg_next::format::Pixel::CUDA);
-        context.set_colorspace(ffmpeg_next::color::Space::BT709);
-        context.set_color_range(ffmpeg_next::color::Range::MPEG);
-
-        // Attach hw_device_ctx and hw_frames_ctx. AVCodecContext takes its own
-        // ref; we keep our own copy in self for later frame allocation.
-        unsafe {
-            let ctx_ptr = context.as_mut_ptr();
-            (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
-            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
-            // VBV buffer: four frames of headroom for rate control, at most 400 ms
-            let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, config.fps);
-            (*ctx_ptr).rc_buffer_size = vbv_bits;
-        }
-
-        let mut opts = ffmpeg_next::Dictionary::new();
-        opts.set("forced-idr", "1");
-        opts.set("preset", "p5");
-        opts.set("tune", "ull");
-        opts.set("rc", "cbr");
-
-        let encoder = context.open_with(opts)
-            .map_err(|e| {
-                unsafe {
-                    let mut fr = hw_frames_ref;
-                    let mut dr = hw_device_ref;
-                    av_buffer_unref(&mut fr);
-                    av_buffer_unref(&mut dr);
-                }
-                format!("Open h264_nvenc (CUDA path): {}", e)
-            })?;
-
-        log::info!(
-            "[encoder] h264_nvenc opened with CUDA pix_fmt: {}x{} @ {}fps, {}kbps (zero-copy)",
-            config.width, config.height, config.fps, config.bitrate_kbps
-        );
-
-        let nv12_frame = ffmpeg_next::frame::Video::new(
-            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
-        );
-
-        Ok(H264Encoder {
-            h264_param_sets: None,
-            // CUDA path is currently H.264-only (Plan B Group 2 limits scope).
-            codec: crate::media::caps::CodecKind::H264Hw,
-            encoder,
-            frame_count: 0,
-            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
-            force_next_keyframe: false,
-            target_width: config.width,
-            target_height: config.height,
-            nv12_frame,
-            scaler: None,
-            supports_bgra_input: true,
-            bgra_frame: None,
-            bgra_scaler: None,
-            cuda_hw_device_ref: hw_device_ref as *mut std::ffi::c_void,
-            cuda_hw_frames_ref: hw_frames_ref as *mut std::ffi::c_void,
-            is_vaapi_hw: false,
-        })
-    }
-
-    /// Create a Windows-only D3D11 zero-copy encoder. Frames must come from
-    /// hw_frames_ctx-allocated D3D11 textures (use acquire_pool_frame /
-    /// encode_d3d11_frame). Mirrors new_cuda's pattern but with D3D11VA hwaccel.
-    /// Only supports NVENC encoders (h264_nvenc / hevc_nvenc / av1_nvenc).
-    #[cfg(target_os = "windows")]
-    pub fn new_d3d11(
-        target_codec: crate::media::caps::CodecKind,
-        config: &EncoderConfig,
-        shared_device: *mut std::ffi::c_void, // ID3D11Device, transmuted via .as_raw()
-    ) -> Result<Self, String> {
-        use ffmpeg_next::sys::*;
-
-        ffmpeg_next::init().map_err(|e| format!("FFmpeg init: {}", e))?;
-
-        let (codec, codec_name) = Self::find_hw_encoder(target_codec)?;
-        // GPU zero-copy supports NVENC (NVIDIA), AMF (AMD), and QSV (Intel).
-        // NVENC/AMF accept AV_PIX_FMT_D3D11 input directly via D3D11VA hwctx;
-        // QSV needs a D3D11VA→QSV hwdevice derivation + a separate QSV
-        // frames context whose source_frames link points back at the D3D11
-        // pool, so VideoProcessor can keep blitting NV12 into D3D11 textures
-        // and the encoder consumes them as AV_PIX_FMT_QSV. Other encoders
-        // (mf, vaapi, libx264) route through the CPU pipeline.
-        let is_nvenc = codec_name.contains("nvenc");
-        let is_amf = codec_name.contains("_amf");
-        let is_qsv = codec_name.contains("_qsv");
-        if !is_nvenc && !is_amf && !is_qsv {
-            return Err(format!(
-                "new_d3d11 supports NVENC, AMF, and QSV only, got '{}'",
-                codec_name
-            ));
-        }
-
-        // ── Build hw_device_ctx around the shared D3D11 device ─────────────
-        let hw_device_ref = unsafe {
-            let r = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
-            if r.is_null() {
-                return Err("av_hwdevice_ctx_alloc(D3D11VA) failed".into());
-            }
-            // Populate the device pointer manually — same trick as new_cuda
-            // does for CUcontext. AVD3D11VADeviceContext.device is the first
-            // field, so the cast lands on it.
-            let hw_dev_ctx = (*r).data as *mut AVHWDeviceContext;
-            let d3d_ctx = (*hw_dev_ctx).hwctx as *mut std::ffi::c_void;
-            *(d3d_ctx as *mut *mut std::ffi::c_void) = shared_device;
-
-            let rc = av_hwdevice_ctx_init(r);
-            if rc < 0 {
-                let mut rr = r;
-                av_buffer_unref(&mut rr);
-                return Err(format!("av_hwdevice_ctx_init(D3D11VA) failed: {}", rc));
-            }
-            log::info!("[encoder] D3D11VA hw_device_ctx initialized with shared device");
-            r
-        };
-
-        // ── Build hw_frames_ctx (NV12 D3D11 texture pool, size 6) ──────────
-        //
-        // BindFlags for AVD3D11VAFramesContext is the field FFmpeg passes
-        // to ID3D11Device::CreateTexture2D. NVIDIA's driver accepts
-        // different combinations depending on the texture format,
-        // ArraySize, and FFmpeg build. We've observed:
-        //   - FFmpeg 8 / Gyan / local builds:  RT|SR works,
-        //                                      RT|SR|DEC fails (E_INVALIDARG).
-        //   - FFmpeg 8 / vcpkg (CI bundled):   RT|SR fails with
-        //                                      AVERROR_UNKNOWN — needs the
-        //                                      stricter combo.
-        // RT|SR comes first because it's the cheapest combo on NVIDIA and
-        // succeeds on the dev path; RT|SR|DEC is the fallback the vcpkg
-        // build seems to want; RT|DEC is a last-ditch try.
-        //
-        // Each attempt rebuilds hw_frames_ref because av_hwframe_ctx_init
-        // takes a fresh AVBufferRef and a failed init can leave it
-        // partially populated. We also lower FFmpeg's log level to QUIET
-        // during the trial so the noisy "Could not create the texture
-        // (80070057)" line FFmpeg emits on each failed CreateTexture2D
-        // doesn't show up on the success path — restored before init
-        // logs the chosen combo.
-        //
-        // Layout of AVD3D11VAFramesContext (libavutil/hwcontext_d3d11va.h):
-        //   offset  0: ID3D11Texture2D* texture  (8 bytes, x64)
-        //   offset  8: UINT BindFlags           (4 bytes)
-        //   offset 12: UINT MiscFlags           (4 bytes)
-        // ffmpeg-sys-next doesn't generate Rust bindings for the
-        // Windows-only struct, so we poke the field by offset.
-        const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
-        const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
-        const D3D11_BIND_DECODER: u32 = 0x200;
-        let bind_flag_attempts: &[(&str, u32)] = &[
-            ("RT|SR",     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE),
-            ("RT|SR|DEC", D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DECODER),
-            ("RT|DEC",    D3D11_BIND_RENDER_TARGET | D3D11_BIND_DECODER),
-        ];
-
-        let mut last_err = String::new();
-        let mut hw_frames_ref: *mut AVBufferRef = std::ptr::null_mut();
-        let mut chosen_label = "";
-
-        let saved_log_level = unsafe { av_log_get_level() };
-        unsafe { av_log_set_level(AV_LOG_QUIET); }
-
-        for &(label, flags) in bind_flag_attempts {
-            unsafe {
-                let r = av_hwframe_ctx_alloc(hw_device_ref);
-                if r.is_null() {
-                    last_err = "av_hwframe_ctx_alloc(D3D11VA) failed".into();
-                    continue;
-                }
-                let frames_ctx = (*r).data as *mut AVHWFramesContext;
-                (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_D3D11;
-                (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
-                (*frames_ctx).width = config.width as i32;
-                (*frames_ctx).height = config.height as i32;
-                (*frames_ctx).initial_pool_size = 6; // see spec §5
-
-                let frames_hwctx = (*frames_ctx).hwctx as *mut u8;
-                let bind_flags_ptr = frames_hwctx.add(8) as *mut u32;
-                *bind_flags_ptr = flags;
-
-                let rc = av_hwframe_ctx_init(r);
-                if rc == 0 {
-                    hw_frames_ref = r;
-                    chosen_label = label;
-                    break;
-                }
-                last_err = format!("av_hwframe_ctx_init(D3D11VA, {}): {}", label, rc);
-                let mut rr = r;
-                av_buffer_unref(&mut rr);
-            }
-        }
-
-        unsafe { av_log_set_level(saved_log_level); }
-
-        if hw_frames_ref.is_null() {
-            unsafe {
-                let mut hd = hw_device_ref;
-                av_buffer_unref(&mut hd);
-            }
-            return Err(format!("av_hwframe_ctx_init(D3D11VA) failed for all BindFlags combos; last: {}", last_err));
-        }
-
-        log::info!("[encoder] D3D11VA hw_frames_ctx initialized ({}x{}, pool=6, BindFlags={})",
-            config.width, config.height, chosen_label);
-
-        // ── QSV (Intel): derive a QSV hwdevice from the D3D11 hwdevice,
-        //    then derive a QSV frames context from the D3D11 frames pool.
-        //    av_hwframe_ctx_create_derived sets up the source_frames link
-        //    internally — av_hwframe_get_buffer on the QSV pool will allocate
-        //    a D3D11 frame from the source and wrap it as AV_PIX_FMT_QSV
-        //    with mfxHDLPair* in data[3] pointing at the D3D11 texture +
-        //    array index. NVENC/AMF skip this and consume the D3D11 pool
-        //    directly.
-        const AV_HWFRAME_MAP_DIRECT: i32 = 4;
-        let mut qsv_hw_device_ref: *mut AVBufferRef = std::ptr::null_mut();
-        let mut qsv_hw_frames_ref: *mut AVBufferRef = std::ptr::null_mut();
-        let (encoder_pix_fmt, encoder_frames_ref) = if is_qsv {
-            unsafe {
-                let mut qsv_dev: *mut AVBufferRef = std::ptr::null_mut();
-                let rc = av_hwdevice_ctx_create_derived(
-                    &mut qsv_dev,
-                    AVHWDeviceType::AV_HWDEVICE_TYPE_QSV,
-                    hw_device_ref,
-                    0,
-                );
-                if rc < 0 || qsv_dev.is_null() {
-                    let mut hd = hw_device_ref;
-                    av_buffer_unref(&mut hd);
-                    let mut hf = hw_frames_ref;
-                    av_buffer_unref(&mut hf);
-                    return Err(format!("av_hwdevice_ctx_create_derived(QSV): {}", rc));
-                }
-
-                let mut qsv_frames: *mut AVBufferRef = std::ptr::null_mut();
-                let rc = av_hwframe_ctx_create_derived(
-                    &mut qsv_frames,
-                    AVPixelFormat::AV_PIX_FMT_QSV,
-                    qsv_dev,
-                    hw_frames_ref,
-                    AV_HWFRAME_MAP_DIRECT,
-                );
-                if rc < 0 || qsv_frames.is_null() {
-                    av_buffer_unref(&mut qsv_dev);
-                    let mut hd = hw_device_ref;
-                    av_buffer_unref(&mut hd);
-                    let mut hf = hw_frames_ref;
-                    av_buffer_unref(&mut hf);
-                    return Err(format!("av_hwframe_ctx_create_derived(QSV frames): {}", rc));
-                }
-
-                log::info!("[encoder] QSV hw_frames_ctx initialized ({}x{}, derived from D3D11VA pool)",
-                    config.width, config.height);
-                qsv_hw_device_ref = qsv_dev;
-                qsv_hw_frames_ref = qsv_frames;
-                (AVPixelFormat::AV_PIX_FMT_QSV, qsv_frames)
-            }
-        } else {
-            (AVPixelFormat::AV_PIX_FMT_D3D11, hw_frames_ref)
-        };
-
-        // ── Build encoder context ──────────────────────────────────────────
-        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec)
-            .encoder()
-            .video()
-            .map_err(|e| format!("Encoder context: {}", e))?;
-
-        context.set_width(config.width);
-        context.set_height(config.height);
-        context.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
-        context.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
-        context.set_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_max_bit_rate((config.bitrate_kbps as usize) * 1000);
-        context.set_gop(config.fps * config.keyframe_interval_secs);
-        context.set_max_b_frames(0);
-
-        // Pixel format depends on encoder family:
-        //   NVENC / AMF  → AV_PIX_FMT_D3D11, hw_frames_ctx = D3D11 pool
-        //   QSV          → AV_PIX_FMT_QSV,   hw_frames_ctx = QSV pool (linked to D3D11)
-        // hw_device_ctx is always the D3D11VA one — FFmpeg uses it for the
-        // source D3D11 device on QSV via the source_frames chain.
-        unsafe {
-            let ctx_ptr = context.as_mut_ptr();
-            (*ctx_ptr).pix_fmt = encoder_pix_fmt;
-            (*ctx_ptr).hw_device_ctx = av_buffer_ref(hw_device_ref);
-            (*ctx_ptr).hw_frames_ctx = av_buffer_ref(encoder_frames_ref);
-            // VBV buffer: four frames of headroom for rate control, at most 400 ms
-            let vbv_bits = super::encode_util::vbv_bits(config.bitrate_kbps, config.fps);
-            (*ctx_ptr).rc_buffer_size = vbv_bits;
-
-            // AV1: same GLOBAL_HEADER trick as the CPU constructor — without
-            // it FFmpeg's av1_nvenc keeps the av1C config inline rather than
-            // populating extradata, and read_extradata_for_description("av1C")
-            // returns None so WebCodecs gets no description on keyframes.
-            // H.264 / H.265 build their description by parsing the keyframe
-            // bitstream so they don't need this.
-            if target_codec == crate::media::caps::CodecKind::Av1 {
-                const AV_CODEC_FLAG_GLOBAL_HEADER: i32 = 1 << 22;
-                (*ctx_ptr).flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            }
-        }
-
-        context.set_colorspace(ffmpeg_next::color::Space::BT709);
-        context.set_color_range(ffmpeg_next::color::Range::MPEG);
-
-        // Encoder options per vendor — match the CPU path's dictionary so
-        // bitstream characteristics (rate control, latency tuning) stay
-        // consistent between CPU and GPU paths.
-        let mut opts = ffmpeg_next::Dictionary::new();
-        if is_nvenc {
-            opts.set("forced-idr", "1");
-            opts.set("preset", "p5");
-            opts.set("rc", "cbr");
-            if codec_name == "hevc_nvenc" {
-                opts.set("tune", "ll");
-                opts.set("slices", "1");
-            } else {
-                opts.set("tune", "ull");
-            }
-        } else if is_amf {
-            // AMF (AMD): "ultralowlatency" usage minimizes encoder buffering
-            // for screen sharing; "speed" quality preset trades some
-            // compression efficiency for lower CPU/GPU load. Same vocabulary
-            // the CPU AMF path uses.
-            opts.set("usage", "ultralowlatency");
-            opts.set("quality", "speed");
-            // Forced keyframes must be IDRs (AMF's forced_idr defaults to 0).
-            opts.set("forced_idr", "1");
-        } else if is_qsv {
-            // QSV (Intel): preset=veryfast biases towards encode speed and
-            // forced_idr=1 lets us respond to viewer keyframe requests.
-            // Same vocabulary as the CPU QSV path.
-            opts.set("preset", "veryfast");
-            opts.set("forced_idr", "1");
-        }
-
-        let encoder = context
-            .open_with(opts)
-            .map_err(|e| {
-                // Clean up if open fails — also drop QSV refs if we built them.
-                unsafe {
-                    let mut hd = hw_device_ref;
-                    av_buffer_unref(&mut hd);
-                    let mut hf = hw_frames_ref;
-                    av_buffer_unref(&mut hf);
-                    if !qsv_hw_frames_ref.is_null() {
-                        av_buffer_unref(&mut qsv_hw_frames_ref);
-                    }
-                    if !qsv_hw_device_ref.is_null() {
-                        av_buffer_unref(&mut qsv_hw_device_ref);
-                    }
-                }
-                format!("Open D3D11 encoder ({}): {}", codec_name, e)
-            })?;
-
-        log::info!(
-            "[encoder] D3D11 zero-copy encoder opened: {} — {}x{} @ {}fps, {}kbps",
-            codec_name, config.width, config.height, config.fps, config.bitrate_kbps
-        );
-
-        let nv12_frame = ffmpeg_next::frame::Video::new(
-            ffmpeg_next::format::Pixel::NV12, config.width, config.height,
-        );
-
-        Ok(H264Encoder {
-            h264_param_sets: None,
-            codec: target_codec,
-            encoder,
-            frame_count: 0,
-            keyframe_interval: (config.fps * config.keyframe_interval_secs) as u64,
-            force_next_keyframe: false,
-            target_width: config.width,
-            target_height: config.height,
-            nv12_frame,
-            scaler: None,
-            supports_bgra_input: false,
-            bgra_frame: None,
-            bgra_scaler: None,
-            #[cfg(target_os = "linux")]
-            cuda_hw_device_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "linux")]
-            cuda_hw_frames_ref: std::ptr::null_mut(),
-            #[cfg(target_os = "linux")]
-            is_vaapi_hw: false,
-            #[cfg(target_os = "windows")]
-            qsv_hw_device_ref: qsv_hw_device_ref as *mut std::ffi::c_void,
-            #[cfg(target_os = "windows")]
-            qsv_hw_frames_ref: qsv_hw_frames_ref as *mut std::ffi::c_void,
-        })
-    }
-
-    /// Encode a VA-API hardware frame (AMD/Intel zero-copy path).
-    /// The `vaapi_frame` must have format=VAAPI with a valid VASurface.
-    #[cfg(target_os = "linux")]
-    pub fn encode_vaapi_frame(
-        &mut self,
-        vaapi_frame: &mut ffmpeg_next::frame::Video,
-    ) -> Result<Option<EncodedFrame>, String> {
-        vaapi_frame.set_pts(Some(self.frame_count as i64));
-
-        if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
-            vaapi_frame.set_kind(ffmpeg_next::picture::Type::I);
-            self.force_next_keyframe = false;
-        } else {
-            vaapi_frame.set_kind(ffmpeg_next::picture::Type::None);
-        }
-        self.frame_count += 1;
-
-        match self.encoder.send_frame(vaapi_frame) {
-            Ok(()) => {}
-            Err(ffmpeg_next::Error::Other { errno: ffmpeg_next::error::EAGAIN }) => {
-                let _ = self.receive_one_packet();
-                self.encoder.send_frame(vaapi_frame)
-                    .map_err(|e| format!("Send VAAPI frame (retry): {}", e))?;
-            }
-            Err(e) => return Err(format!("Send VAAPI frame: {}", e)),
-        }
-
-        Ok(self.receive_one_packet())
-    }
-
-    /// Check if this encoder uses VA-API hardware frames.
-    #[cfg(target_os = "linux")]
-    pub fn is_vaapi_hw(&self) -> bool {
-        self.is_vaapi_hw
+    /// FFmpeg's name of the open encoder ("h264_nvenc", "libsvtav1", …).
+    pub fn encoder_name(&self) -> &'static str {
+        self.encoder_name
     }
 
     /// Receive one encoded packet and produce a codec-appropriate EncodedFrame.
@@ -1577,35 +854,6 @@ impl H264Encoder {
                 self.build_encoded_frame(raw_data, is_keyframe, pts)
             }
             Err(_) => None,
-        }
-    }
-
-    /// HEVC-specific: read the encoder's extradata (annex-B VPS+SPS+PPS),
-    /// convert to a proper hvcC record per ISO/IEC 14496-15. Cached on
-    /// first call would be a future optimization (extradata doesn't
-    /// change after encoder open) but for now we rebuild per keyframe.
-    fn build_hvcc_description(&self) -> Option<Vec<u8>> {
-        let raw = self.read_raw_extradata()?;
-        if raw.is_empty() {
-            log::info!("[encoder] WARNING: HEVC extradata empty");
-            return None;
-        }
-        // Diagnostic: log first 16 bytes so the format is unambiguous in
-        // debug output. annex-B starts with 00 00 00 01, hvcC starts with 01.
-        let preview_len = raw.len().min(16);
-        log::info!("[encoder] HEVC extradata first {} bytes: {:02X?}", preview_len, &raw[..preview_len]);
-        let hvcc = build_hevc_hvcc(&raw)?;
-        log::info!("[encoder] hvcC built ({} bytes from {} bytes annex-B)", hvcc.len(), raw.len());
-        Some(hvcc)
-    }
-
-    fn read_raw_extradata(&self) -> Option<Vec<u8>> {
-        unsafe {
-            let ctx_ptr = self.encoder.as_ptr();
-            let extradata = (*ctx_ptr).extradata;
-            let size = (*ctx_ptr).extradata_size as usize;
-            if extradata.is_null() || size == 0 { return None; }
-            Some(std::slice::from_raw_parts(extradata, size).to_vec())
         }
     }
 
@@ -1637,6 +885,19 @@ impl H264Encoder {
         // produces NV12 today; refuse rather than corrupt memory.
         if self.supports_bgra_input {
             return Err("NV12 input on an encoder opened for BGRA".to_string());
+        }
+        // Likewise an encoder whose CPU frame is I420 (software), or VAAPI
+        // with its RGB upload surfaces.
+        if self.sw_format != ffmpeg_next::format::Pixel::NV12
+            || self.vaapi.as_ref().is_some_and(|v| v.gpu_convert())
+        {
+            return Err(format!("NV12 input is not supported by {}", self.encoder_name));
+        }
+        if width != self.target_width || height != self.target_height {
+            return Err(format!("NV12 input of {width}x{height} on a {}x{} encoder", self.target_width, self.target_height));
+        }
+        if nv12_data.len() < (width as usize * height as usize * 3) / 2 {
+            return Err("short NV12 frame".to_string());
         }
         let frame = &mut self.nv12_frame;
 
@@ -1679,7 +940,9 @@ impl H264Encoder {
     /// - NVENC path: the frame goes into the BGRA input frame (an RGBA
     ///   capture has R and B swapped on the way) and the GPU converts to
     ///   NV12 — no CPU colour conversion.
-    /// - Fallback path: converts to NV12 via CPU sws_scale (for VA-API etc.).
+    /// - VAAPI: uploaded as it is and converted + scaled by the GPU's video
+    ///   processor (or, on the CPU tier, sws to NV12 and an NV12 upload).
+    /// - Software: sws converts (and scales) to I420 for SVT-AV1.
     pub fn encode_bgra_frame(
         &mut self,
         rgba_data: &[u8],
@@ -1698,36 +961,41 @@ impl H264Encoder {
                 rgba_data.len()
             ));
         }
+        if self.vaapi.as_ref().is_some_and(|v| v.gpu_convert()) {
+            let hw = match self.vaapi.as_mut() {
+                Some(v) => v.convert(rgba_data, src_width, src_height, stride, is_bgra)?,
+                None => return Err("VAAPI input missing".to_string()),
+            };
+            return self.send_hw_frame(hw);
+        }
         let same_size = src_width == self.target_width && src_height == self.target_height;
         let route = input_route(self.supports_bgra_input, is_bgra, same_size);
         if route != InputRoute::ConvertToNv12 {
             return self.encode_bgra_direct(rgba_data, src_width, src_height, stride, is_bgra, route);
         }
 
-        // Fallback: CPU-based BGRA→NV12 conversion via sws_scale
+        // CPU conversion via sws_scale into the encoder's CPU format (NV12
+        // for VAAPI's CPU tier, I420 for software)
         let src_fmt = if is_bgra {
             ffmpeg_next::format::Pixel::BGRA
         } else {
             ffmpeg_next::format::Pixel::RGBA
         };
 
-        if self.scaler.as_ref().map_or(true, |s| !s.matches(src_width, src_height, src_fmt)) {
-            self.scaler = Some(SwsScaler::new(
+        if self.scaler.as_ref().is_none_or(|s| !s.matches(src_width, src_height, src_fmt)) {
+            self.scaler = Some(YuvScaler::new(
                 src_width, src_height, src_fmt,
                 self.target_width, self.target_height,
-                ffmpeg_next::format::Pixel::NV12,
+                self.sw_format,
             )?);
         }
-        let sws = self.scaler.as_mut().unwrap();
-
-        let src_stride = sws.src_frame.stride(0);
-        copy_rows(rgba_data, stride, sws.src_frame.data_mut(0), src_stride, src_width as usize * 4, src_height as usize);
-
         // Propagate rather than .expect(): a scaler failure on the
         // per-frame path should kill the stream cleanly (caught by the
         // encode loop), not panic the encode thread.
-        sws.ctx.run(&sws.src_frame, &mut self.nv12_frame)
-            .map_err(|e| format!("sws_scale: {}", e))?;
+        match self.scaler.as_mut() {
+            Some(scaler) => scaler.convert(rgba_data, stride, &mut self.nv12_frame)?,
+            None => return Err("scaler missing".to_string()),
+        }
         self.prepare_and_encode()
     }
 
@@ -1819,8 +1087,61 @@ impl H264Encoder {
         Ok(self.receive_one_packet())
     }
 
+    /// Set PTS and keyframe flags on a hardware (VAAPI) surface and send it.
+    /// `hw` stays owned by the VAAPI input; the encoder takes its own
+    /// reference.
+    fn send_hw_frame(&mut self, hw: *mut ffmpeg_next::sys::AVFrame) -> Result<Option<EncodedFrame>, String> {
+        use ffmpeg_next::sys::{avcodec_send_frame, AVPictureType};
+        // AVERROR(EAGAIN): the negative errno.
+        const AGAIN: i32 = -ffmpeg_next::error::EAGAIN;
+        unsafe {
+            (*hw).pts = self.frame_count as i64;
+            // vaapi_encode (hw_base_encode.c) turns pict_type I on an input
+            // frame into a forced IDR.
+            if self.frame_count % self.keyframe_interval == 0 || self.force_next_keyframe {
+                (*hw).pict_type = AVPictureType::AV_PICTURE_TYPE_I;
+                self.force_next_keyframe = false;
+            } else {
+                (*hw).pict_type = AVPictureType::AV_PICTURE_TYPE_NONE;
+            }
+            self.frame_count += 1;
+            let ctx = self.encoder.as_mut_ptr();
+            let mut rc = avcodec_send_frame(ctx, hw);
+            if rc == AGAIN {
+                let pending = self.receive_one_packet();
+                rc = avcodec_send_frame(ctx, hw);
+                if rc < 0 {
+                    return Err(format!("Send frame (retry): {}", ffmpeg_next::Error::from(rc)));
+                }
+                // The packet drained to make room is this call's output.
+                return Ok(pending.or_else(|| self.receive_one_packet()));
+            }
+            if rc < 0 {
+                return Err(format!("Send frame: {}", ffmpeg_next::Error::from(rc)));
+            }
+        }
+        Ok(self.receive_one_packet())
+    }
+
+    /// A packet the encoder finished since the last call, if any. Software
+    /// encodes on its own threads: a frame's packet is usually not ready
+    /// when its `encode_*` call returns, so the caller drains with this
+    /// after every frame and the encoder's queue never grows.
+    pub fn receive_pending(&mut self) -> Option<EncodedFrame> {
+        self.receive_one_packet()
+    }
+
     /// Set PTS, keyframe flags, and send the prepared nv12_frame to the encoder.
     fn prepare_and_encode(&mut self) -> Result<Option<EncodedFrame>, String> {
+        // VAAPI's CPU tier: the converted NV12 frame is uploaded to a
+        // surface, which is what the encoder takes.
+        if self.vaapi.is_some() {
+            let hw = match self.vaapi.as_mut() {
+                Some(v) => v.upload_nv12(unsafe { self.nv12_frame.as_ptr() })?,
+                None => return Err("VAAPI input missing".to_string()),
+            };
+            return self.send_hw_frame(hw);
+        }
         self.nv12_frame.set_pts(Some(self.frame_count as i64));
 
         // Force keyframe at interval or on demand (PLI)
@@ -1902,15 +1223,28 @@ impl H264Encoder {
                     if built.is_some() {
                         log::info!("[encoder] hvcC built from keyframe ({} bytes from {} bytes annex-B)",
                                   built.as_ref().unwrap().len(), raw_data.len());
+                        self.hevc_description = built.clone();
+                        built
+                    } else if self.hevc_description.is_some() {
+                        // A keyframe without inline VPS/SPS/PPS (a driver
+                        // that writes them only on the first IDR): the
+                        // description from the last one that had them
+                        // still configures the decoder.
+                        log::debug!("[encoder] HEVC keyframe without parameter sets; reusing the last hvcC");
+                        self.hevc_description.clone()
                     } else {
                         log::warn!("[encoder] WARNING: failed to build hvcC from keyframe ({} bytes)", raw_data.len());
+                        None
                     }
-                    built
                 } else { None };
                 (hvcc_data, desc)
             }
             CodecKind::Av1 => {
-                let desc = if is_keyframe { self.read_extradata_for_description("av1C") } else { None };
+                let desc = if is_keyframe && self.av1_description {
+                    self.read_extradata_for_description("av1C")
+                } else {
+                    None
+                };
                 (raw_data, desc)
             }
             CodecKind::Unknown => return None,
@@ -1943,187 +1277,6 @@ impl H264Encoder {
         }
     }
 
-    /// Allocate a D3D11 NV12 texture from the encoder's hw_frames_ctx pool.
-    /// Caller blits BGRA→NV12 into the returned frame's texture, then submits
-    /// via encode_d3d11_frame.
-    #[cfg(target_os = "windows")]
-    pub fn acquire_pool_frame(&mut self) -> Result<D3d11PoolFrame, String> {
-        use ffmpeg_next::sys::*;
-        unsafe {
-            let av_frame = av_frame_alloc();
-            if av_frame.is_null() {
-                return Err("av_frame_alloc failed".into());
-            }
-            // Read the encoder's hw_frames_ctx (set in new_d3d11).
-            let ctx_ptr = self.encoder.as_ptr();
-            let frames_ref = (*ctx_ptr).hw_frames_ctx;
-            if frames_ref.is_null() {
-                let mut frame_ptr = av_frame;
-                av_frame_free(&mut frame_ptr);
-                return Err("encoder has no hw_frames_ctx — was it built via new_d3d11?".into());
-            }
-            let rc = av_hwframe_get_buffer(frames_ref, av_frame, 0);
-            if rc < 0 {
-                let mut frame_ptr = av_frame;
-                av_frame_free(&mut frame_ptr);
-                return Err(format!("av_hwframe_get_buffer: {}", rc));
-            }
-            Ok(D3d11PoolFrame { av_frame })
-        }
-    }
-
-    /// Submit a pool frame (already filled by VideoProcessor) to the encoder.
-    /// Returns the next encoded packet if one is ready, or None if the encoder
-    /// is buffering.
-    #[cfg(target_os = "windows")]
-    pub fn encode_d3d11_frame(
-        &mut self,
-        pool_frame: D3d11PoolFrame,
-    ) -> Result<Option<EncodedFrame>, String> {
-        use ffmpeg_next::sys::*;
-        unsafe {
-            let pts = self.frame_count as i64;
-            (*pool_frame.av_frame).pts = pts;
-
-            // Force keyframe if requested (responds to PLI).
-            if self.force_next_keyframe {
-                (*pool_frame.av_frame).pict_type = AVPictureType::AV_PICTURE_TYPE_I;
-                (*pool_frame.av_frame).flags |= AV_FRAME_FLAG_KEY as i32;
-                self.force_next_keyframe = false;
-            } else {
-                (*pool_frame.av_frame).pict_type = AVPictureType::AV_PICTURE_TYPE_NONE;
-            }
-
-            // Submit via sys API (ffmpeg-next has no public typed wrapper for
-            // sending a raw AVFrame). EAGAIN means "drain a packet first then
-            // retry" — same handling as the existing encode_nv12_frame path.
-            let ctx_ptr = self.encoder.as_mut_ptr();
-            let mut rc = avcodec_send_frame(ctx_ptr, pool_frame.av_frame);
-            if rc == ffmpeg_next::error::EAGAIN {
-                let _ = self.receive_one_packet();
-                rc = avcodec_send_frame(ctx_ptr, pool_frame.av_frame);
-            }
-            if rc < 0 && rc != ffmpeg_next::error::EAGAIN {
-                return Err(format!("avcodec_send_frame: {}", rc));
-            }
-            // pool_frame is dropped here, releasing the texture back to the pool.
-            // FFmpeg internally retains a ref while encoding.
-            drop(pool_frame);
-        }
-
-        self.frame_count += 1;
-        Ok(self.receive_one_packet())
-    }
-}
-
-/// Wraps an AVFrame allocated from the D3D11 hw_frames_ctx pool. The frame's
-/// data[0] is a pointer to a pool-managed ID3D11Texture2D — the caller's
-/// VideoProcessor blits BGRA→NV12 into that texture, then submits the wrapper
-/// via H264Encoder::encode_d3d11_frame.
-#[cfg(target_os = "windows")]
-pub struct D3d11PoolFrame {
-    av_frame: *mut ffmpeg_next::sys::AVFrame,
-}
-
-#[cfg(target_os = "windows")]
-impl D3d11PoolFrame {
-    /// Get the D3D11 texture this pool frame wraps. The VideoProcessor
-    /// blits BGRA→NV12 directly into this texture.
-    ///
-    /// Format dispatch:
-    ///   AV_PIX_FMT_D3D11 (NVENC / AMF): data[0] = ID3D11Texture2D*,
-    ///     data[1] = array slice index (intptr_t).
-    ///   AV_PIX_FMT_QSV (Intel): data[3] = mfxHDLPair*, where the first
-    ///     field is the ID3D11Texture2D* from the source D3D11 pool and
-    ///     the second is the array slice index (cast as intptr_t). FFmpeg's
-    ///     QSV hwcontext only fills mfxHDLPair when source_frames is set;
-    ///     our new_d3d11 always sets that for QSV so the layout is stable.
-    pub fn texture(&self) -> windows::Win32::Graphics::Direct3D11::ID3D11Texture2D {
-        use ffmpeg_next::sys::AVPixelFormat;
-        use windows::core::Interface;
-        use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
-        unsafe {
-            let fmt = (*self.av_frame).format;
-            let raw_tex: *mut std::ffi::c_void = if fmt == AVPixelFormat::AV_PIX_FMT_QSV as i32 {
-                let mfx_pair = (*self.av_frame).data[3] as *const *mut std::ffi::c_void;
-                if mfx_pair.is_null() {
-                    panic!("QSV pool frame has null mfxHDLPair pointer");
-                }
-                *mfx_pair
-            } else {
-                (*self.av_frame).data[0] as *mut std::ffi::c_void
-            };
-            let tex: ID3D11Texture2D = ID3D11Texture2D::from_raw_borrowed(&raw_tex)
-                .expect("Pool frame texture pointer was null")
-                .clone();
-            tex
-        }
-    }
-
-    /// The array-slice index of the underlying D3D11 texture array.
-    /// data[1] for AV_PIX_FMT_D3D11; mfxHDLPair[1] for AV_PIX_FMT_QSV.
-    #[allow(dead_code)]
-    pub fn array_slice(&self) -> usize {
-        use ffmpeg_next::sys::AVPixelFormat;
-        unsafe {
-            let fmt = (*self.av_frame).format;
-            if fmt == AVPixelFormat::AV_PIX_FMT_QSV as i32 {
-                let mfx_pair = (*self.av_frame).data[3] as *const usize;
-                *mfx_pair.add(1)
-            } else {
-                (*self.av_frame).data[1] as usize
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for D3d11PoolFrame {
-    fn drop(&mut self) {
-        unsafe {
-            ffmpeg_next::sys::av_frame_free(&mut self.av_frame);
-        }
-    }
-}
-
-impl Drop for H264Encoder {
-    fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
-        {
-            use ffmpeg_next::sys::*;
-            unsafe {
-                if !self.cuda_hw_frames_ref.is_null() {
-                    let mut ptr = self.cuda_hw_frames_ref as *mut AVBufferRef;
-                    av_buffer_unref(&mut ptr);
-                    self.cuda_hw_frames_ref = std::ptr::null_mut();
-                }
-                if !self.cuda_hw_device_ref.is_null() {
-                    let mut ptr = self.cuda_hw_device_ref as *mut AVBufferRef;
-                    av_buffer_unref(&mut ptr);
-                    self.cuda_hw_device_ref = std::ptr::null_mut();
-                }
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            use ffmpeg_next::sys::*;
-            unsafe {
-                // Frames before device — frames context holds a ref to its
-                // device, and the chain of source_frames refs needs to drain
-                // before the underlying D3D11 device's last release.
-                if !self.qsv_hw_frames_ref.is_null() {
-                    let mut ptr = self.qsv_hw_frames_ref as *mut AVBufferRef;
-                    av_buffer_unref(&mut ptr);
-                    self.qsv_hw_frames_ref = std::ptr::null_mut();
-                }
-                if !self.qsv_hw_device_ref.is_null() {
-                    let mut ptr = self.qsv_hw_device_ref as *mut AVBufferRef;
-                    av_buffer_unref(&mut ptr);
-                    self.qsv_hw_device_ref = std::ptr::null_mut();
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2214,6 +1367,32 @@ mod tests {
         assert_eq!(&same[..10], &src);
     }
 
+    /// How long the CPU conversion takes (the software path's first step):
+    /// `cargo test --release --lib yuv_scaler_speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn yuv_scaler_speed() {
+        use super::YuvScaler;
+        use ffmpeg_next::format::Pixel;
+        ffmpeg_next::init().unwrap();
+        let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
+        println!("{} swscale thread(s) on {cpus} logical CPUs", super::sws_threads(cpus));
+        for (sw, sh, dw, dh) in [(1920u32, 1080u32, 1920u32, 1080u32), (2560, 1440, 2560, 1440), (2560, 1440, 1920, 1080)] {
+            let stride = sw as usize * 4;
+            let frame: Vec<u8> = (0..stride * sh as usize).map(|i| (i * 31 % 251) as u8).collect();
+            let mut scaler = YuvScaler::new(sw, sh, Pixel::BGRA, dw, dh, Pixel::YUV420P).unwrap();
+            let mut dst = ffmpeg_next::frame::Video::new(Pixel::YUV420P, dw, dh);
+            let mut times = Vec::new();
+            for _ in 0..60 {
+                let t = std::time::Instant::now();
+                scaler.convert(&frame, stride, &mut dst).unwrap();
+                times.push(t.elapsed().as_secs_f64() * 1e3);
+            }
+            times.sort_by(|a, b| a.total_cmp(b));
+            println!("{sw}x{sh} BGRA -> {dw}x{dh} I420: median {:.2} ms, p95 {:.2} ms", times[30], times[57]);
+        }
+    }
+
     /// A capture in `is_bgra` byte order with a padded stride: left half
     /// red, right half blue, padding bytes 0x77.
     fn two_tone(w: u32, h: u32, stride: usize, is_bgra: bool) -> Vec<u8> {
@@ -2260,11 +1439,12 @@ mod tests {
     #[test]
     #[ignore]
     fn nvenc_encodes_rgba_and_bgra_captures_in_true_colour() {
+        let _one_at_a_time = crate::media::encoder_checks::encoder_lock();
         use super::{EncoderConfig, H264Encoder};
         use crate::media::caps::CodecKind;
         const W: u32 = 640;
         const H: u32 = 360;
-        let cfg = EncoderConfig { width: W, height: H, fps: 30, bitrate_kbps: 4000, keyframe_interval_secs: 2, detail: false };
+        let cfg = EncoderConfig { width: W, height: H, fps: 30, bitrate_kbps: 4000, keyframe_interval_secs: 2, detail: false, source_size: (0, 0) };
         for (label, is_bgra, src_w, src_h) in [
             ("bgra", true, W, H),
             ("rgba", false, W, H),
