@@ -661,7 +661,12 @@ shell's (`DmRows`, `UnreadDmTiles`).
   statuses, DM pages, E2EE states); `decibell-home-fixture <dir>` exports the scenes for
   `tools/electron-captures/pages/_home.tsx`. Self-tests (`dm-*` incl. `dm-read-rules`, `friends-*`, `profile-popup`,
   `status-custom`, `user-menu-moderation`, `home-idle`) run child apps (`--check home-…`): read-only as `alice`,
-  everything that changes state between two throwaway accounts registered once per run.
+  everything that changes state between two throwaway accounts registered once per run. The later ones
+  (`selftests/dm_flows.rs`: `dm-quick-send`, `dm-list-order`, `dm-delete-edit`, `dm-friends-only`, `dm-e2ee-keys`) run
+  the app as a throwaway account and the other people (and our other devices) as `decibell-headless` clients
+  (`dm-privacy`, `e2ee-reset` are their steps for friends-only DMs and Reset keys); the DM list records its drawn order
+  and previews for them (`probes::text("dm-rows")`). `dm-e2ee-keys` removes a throwaway account's keys from the local
+  stack's database (psql) to show a pinned peer whose keys are gone.
 
 ## Attachments: the upload probe (`decibell-attachments`, feature `media-probe`)
 
@@ -904,7 +909,10 @@ What a released build does on its own and how it is packed: `PACKAGING.md`.
     whenever nothing else does (13), so its listeners see every key; `App::intercept_keystrokes` runs before
     everything (key bindings, the focused element) and its `KeystrokeEvent` carries no physical key code, so
     app-wide handling that must defer to the focused element or read the physical key (type-to-focus, the
-    hotkey fallback) belongs on the root's element instead.
+    hotkey fallback) belongs on the root's element instead. A `window.on_key_event` registered from a canvas
+    inside a view is a node's listener like any other: it hears keys only while something in that subtree is
+    focused. The renderer's `window.addEventListener("keydown")` (the DM call stage's and the incoming
+    card's Escape) is therefore a function the root's `on_key_down` calls (`decibell_voice::calls::escape`).
 14. **KaTeX's font files mark every face Regular** (OS/2 `fsSelection` 0x0040); fontconfig (Chromium) takes the
     slant from the style name, fontdb (GPUI) from `fsSelection`: upright `KaTeX_Main` resolved to the italic face
     and italic `KaTeX_Math` got a synthetic slant on top. `decibell-text` marks the five italic faces before it
@@ -1001,7 +1009,11 @@ joined into it by the app (`registry::join_features`), so neither crate depends 
   passphrase `decibell-m3-test-passphrase`; `perf5` is a second streamer for measurements, `tools/dev/local-stack.sh
   top-up`), everyone muted and deafened before joining. The headless `stream-file` step (with `stream-pause` /
   `stream-resume`: a streamer whose frames stop arriving) and `tools/perf/streambot.sh` stream `.dbv` recordings into
-  a channel through the real path.
+  a channel through the real path; `stream-file` in an active DM call shares to the call's peer (STREAM_START over
+  central, the frames over the call's socket). The DM call tests (`selftests/calls.rs`: `call-out`, `call-timeout`,
+  `call-elsewhere`, `call-voice-exclusive`, `call-share`) put every headless client that connects a call on the
+  parent's null sink first (the `audio-devices <sink>` step) and skip without one; a second device of ours is
+  `Peer::start_as("perf3", …)`.
   `DECIBELL_VOICE_TRACE=1` logs every render of the voice views (which view drew a frame).
 - **Go Live in a self-test never captures the desktop**: `voice-golive-software` runs the app on a private session
   bus with nothing on it but a fake ScreenCast portal (`src/fake_screencast_portal.py`, `GoLiveRig`) that hands the

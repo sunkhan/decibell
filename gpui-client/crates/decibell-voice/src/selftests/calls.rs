@@ -320,8 +320,8 @@ async fn at_rest(cx: &TestCx, what: &str) -> Result<()> {
 }
 
 /// Until 300 ms pass without a draw, at most 3 s (a playing stream presents all the time, so
-/// `TestCx::settle`'s present rule never holds here; and see PARITY 3.7 on the drawing that can
-/// start after a while): what is pending is drawn, so a click goes to the frame on screen.
+/// `TestCx::settle`'s present rule never holds here): what is pending is drawn, so a click goes to
+/// the frame on screen.
 async fn calm(cx: &TestCx) {
     let started = Instant::now();
     let mut last = cx.frames().map(|f| f.drawn).unwrap_or(0);
@@ -397,7 +397,9 @@ pub(super) async fn check_share(cx: TestCx) -> Result<()> {
 
     // At rest the focused stream costs presents, not draws.
     at_rest(&cx, "the focused stream").await?;
-    // How long a still pointer stays quiet, over the video and off the stage (logged, 3 s windows).
+    // A still pointer, over the video and off the stage, in 250 ms buckets: over the video the
+    // overlays fade in, and out 2.5 s later (each ~150 ms, drawn at the display's rate); outside
+    // those two fades, and off the stage throughout, a picture costs a present and nothing draws.
     for (what, at) in [
         ("over the video", probes::bounds("call-video").context("the video")?.center()),
         ("on the title bar", cx.update(|window, cx| {
@@ -405,14 +407,19 @@ pub(super) async fn check_share(cx: TestCx) -> Result<()> {
             point(v.left() + v.size.width * 0.4, v.top() + gpui::px(12.))
         })?),
     ] {
+        let (stores, _subs) = Changes::watch_all(&cx)?;
         cx.mouse_move(at)?;
         let mut windows = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..16 {
             let from = cx.frames()?;
-            cx.sleep(Duration::from_secs(3)).await;
+            cx.sleep(Duration::from_millis(250)).await;
             windows.push(cx.frames()?.since(from).drawn);
         }
-        cx.log(format_args!("the pointer still {what}: drawn per 3 s window {windows:?}"));
+        let notified: Vec<String> = stores.borrow().iter().map(|(k, n)| format!("{k} {n}")).collect();
+        cx.log(format_args!("the pointer still {what}: drawn per 250 ms {windows:?}; stores that notified: [{}]", notified.join(", ")));
+        let fades: &[usize] = if what == "over the video" { &[0, 1, 9, 10, 11] } else { &[] };
+        let rest: u64 = windows.iter().enumerate().filter(|(i, _)| !fades.contains(i)).map(|(_, n)| *n).sum();
+        ensure!(rest <= 12, "the pointer still {what}: {rest} drawn outside the overlays' fades in 4 s ({windows:?})");
     }
     // The overlays up over the playing video, the pointer still on its middle and then on a
     // control: pictures cost presents; the overlays go 2.5 s after the last move either way (the
@@ -571,15 +578,14 @@ pub(super) async fn check_share(cx: TestCx) -> Result<()> {
     cx.keystroke("escape")?;
     wait_for(&cx, Duration::from_secs(5), "Escape: out of theater", |cx| !model(cx).live.calls.read(cx).theater).await?;
     cx.log(format_args!("theater from the video's controls: the video {:.0} → {:.0} px tall; Escape went back to the tiles, then out of theater", f32::from(before.size.height), f32::from(during.size.height)));
-    // Open (PARITY 3.7): a few seconds after the round trip, with the pointer resting over the
-    // stage, the window starts drawing at the display's rate (the whole tree re-renders, no handler
-    // of the stage is involved); logged here, last before the hang-up, so it can't hide the steps
-    // above.
+    // Quiet a while after the round trip, the pointer still on the stage (builds with the old
+    // overlay hold drew every frame from a few seconds on here).
     cx.sleep(crate::focus::OVERLAY_HIDE + Duration::from_millis(600)).await;
     let from = cx.frames()?;
     cx.sleep(Duration::from_secs(6)).await;
     let after = cx.frames()?.since(from);
     cx.log(format_args!("6 s after the theater round trip (the pointer still on its button): {} drawn / {} presented", after.drawn, after.presented));
+    ensure!(after.drawn <= 24, "{} frames drawn in 6 s at rest after the theater round trip", after.drawn);
 
     peer.cue("hangup")?;
     wait_for(&cx, Duration::from_secs(15), "the call to end", |cx| call_status(cx) == CallStatus::Idle).await?;
