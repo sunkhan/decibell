@@ -55,6 +55,27 @@ through the named event `Local\decibell-perf-<pid>` that `--perf` listens on: Wi
 `decibell.exe` to Windows. The Windows Native Check runs `row.ps1` against the built client on its runner
 (under Windows PowerShell 5.1) to keep the script working; the numbers of a machine without a GPU mean nothing.
 
+**The Electron half of the table.** The targets are ratios against Electron on the same machine, so every row is
+taken twice, with the same label:
+
+1. Start the installed Electron client yourself (no script does: it opens your own profile) and find its main
+   process: `Get-CimInstance Win32_Process -Filter "Name='Decibell.exe'" | Where-Object CommandLine -notmatch '--type=' | Select-Object ProcessId`.
+   `row.ps1 -ProcessId` sums that process and every child (renderer, GPU process, utilities).
+2. Put both clients in the same state before each row (same server and channel, visible, unfocused, the pointer
+   outside the window), one client running at a time unless the row is about both.
+3. Rows: `idle, #general, unfocused` · `idle, #general, minimised` · `idle, Home, focused` ·
+   `voice, alone, muted` · `watching 1 stream 1080p60` · `watching 2 streams`.
+4. Startup: `startup.ps1 -Exe <each client's exe> -Out results\<client>-startup` (launch → visible window; the
+   native client also prints `first-frame … monotonic_ns=` under `--perf`, on the `Stopwatch` clock). Install
+   size: `windows\install-size.ps1` on Electron's install folder, and on `decibell.exe` plus the DLLs beside it.
+5. `frames` stays empty in Electron's rows: there is no per-process presented-frame counter a script can read
+   without tracing. Its cost at rest shows in `cpu_core_pct`, `wakeups_s` and `gpu_3d_pct` (and with
+   `measure.ps1 -IncludeDwm`, in DWM's own 3D time).
+
+First numbers from a machine without a GPU (the CI runner, a debug build, the gallery screen at rest; they
+only show the script and the client's rest state work): 21.5 MB private working set, 55.9 MB commit, 0 % CPU,
+0 context switches / s over 20 s, 0 frames drawn / presented, `VSyncProvider` 0 / s.
+
 `startup.ps1` signs in on every run when the client has a saved sign-in; keep `-Runs` small (central allows 30
 password sign-ins per address, then one per 2 s).
 

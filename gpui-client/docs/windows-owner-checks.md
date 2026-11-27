@@ -9,6 +9,22 @@ each step says what to run, what you should see, what a failure looks like and w
 Send back, for anything that fails: the command, its whole output (`DECIBELL_LOG=info` set), and for a crash the
 last lines before it. PowerShell throughout; `$repo` is the checkout.
 
+## What the CI runner already checks (don't repeat by hand)
+
+Run 45983095122 (a GitHub Windows runner: no GPU, Direct3D 11 on WARP, a debug build) passed, and every push
+runs again: the build and fxc on the shaders; `boot` (the window opens on a Direct3D device with the surface
+pipeline, every bundled font face resolves under DirectWrite, the wide "Plus" / "Max" families included);
+`idle-frames`, `themes`, `window-frame`; all seven `kit-*`; `input-undo`, `input-bytes-cap`,
+`input-select-filter`, `input-caret-idle`; `chat-resize`, `chat-selection`, `chat-rows`, `chat-idle`,
+`chat-hover`; `encoder-software`; **`video-probe`** (software decode of all three codecs, upload into Direct3D
+textures, a row read back from the GPU, the surface drawn in a window, D3D11VA given up cleanly where there is
+no video device); 295 unit tests; and `row.ps1` against the client at rest: 0 context switches / s, 0 frames,
+`VSyncProvider` asleep (patch `0021`).
+
+So on your machine the self-tests of §1 are a smoke test (one command, expect all PASS); what needs **you** is
+what a runner cannot have: a real GPU and its decoders (§3), real monitors, windows and games (§6), a touchpad
+(§4), the real desktop (§5, §7), your eyes for colour and fonts, and the numbers against Electron (§4, §9).
+
 ## 0. Build
 
 Once (HANDOFF §2 has the reasons): Rust stable (MSVC), Git for Windows, Visual Studio Build Tools with the

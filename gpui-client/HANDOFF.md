@@ -272,6 +272,38 @@ build); with patch `0021` the gallery at rest reads 0 context switches / s and 0
 `decibell-text`, a 2 s deadline against Windows' slow refused connect in `decibell-unfurl`). Only `boot` ran of
 the self-tests (the step stopped at its failure: fixed), so `video-probe` and the rest are still to be read.
 
+**Which self-tests the Windows runner executes** (run 45983095122 and the groups added after it):
+
+- *Passed there*: `boot`, `idle-frames`, `themes`, `window-frame`, `video-probe`, the seven `kit-*`, `input-undo`,
+  `input-bytes-cap`, `input-select-filter`, `input-caret-idle`, `chat-resize`, `chat-selection`, `chat-rows`,
+  `chat-idle`, `chat-hover`, `encoder-software`.
+- *Failed there, tests corrected* (the product was right; each expectation now comes from Chromium's Windows
+  behaviour, with its source in the test): `input-typing` and the `input_vectors` unit tests (Ctrl+Right ends
+  past the spaces on Windows: Blink's `ShouldSkipSpaceWhenMovingRight` / `SkipWhitespaceIfNeeded`), `input-ime`
+  (it placed its caret with that same key), `chat-history` (a wheel notch is 100 px on Windows:
+  `kScrollbarPixelsPerLine = 100 / 3`).
+- *Failed there, cause not known yet*: `chat-switch` (the first frame after returning to a channel had the row
+  421 px off), `input-atoms` (a click did not focus the composer field), `render-cost` (a case drew no frames;
+  it also loses a case on Linux). None reproduces on Linux, also not in a 1024 × 720 window (the runner's
+  size, tried). Each now prints what is needed to tell: the list's positions over the following frames and
+  its scroll range across the switch; the click point, the field's bounds, the window's size, scale and
+  activation; the name of the case. The runner's desktop is also raised to 1920 × 1080 first.
+- *Added, first run pending*: `chat-scroll-spec`, `input-clipboard`, `input-password`, `hotkeys-focused`,
+  `hotkeys-layout`, `join-status-picker`, `join-dm-composer`, `picture-editor`, `settings-narrow`,
+  `server-settings-idle`, `content-scroll-fixture`, `content-rows`, and the platform crate's `profile-guard`,
+  `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`, `keyring-label`,
+  `window-state` (whether those need more than a window is what the run will say).
+- *Cannot run there*: everything that signs in (the local stack is Linux servers: `shell-*`, `chat-live`,
+  `voice-*`, `call-ring`, `settings-*`, `composer-*`, the pickers, `dm-*`, `friends-*`, `profile-popup`,
+  `status-custom`, `user-menu-moderation`, `home-idle`, the live `content-*` and `media-*`, the stack half of
+  `server-settings`, `search-*`, `servers-*`, the invite and channel tests); `regional` (glibc locales, by
+  design) and `idle-x11`, `video-nvdec`, `video-vaapi`, `video-fastpath` (Linux only).
+- *Could run with some work*: the stream tests (`video-hw`, `-sw`, `-idle`, `-two`, `-switch`, `-order`,
+  `-recover`, `-starve`, `-stall`) need `vendor/streams`, which is made with NVENC on Linux and not in the
+  repository: a small software-encoded set committed or generated in the job would let the runner play real
+  streams through the software path (hardware decode stays the owner's). `regional-read` needs only
+  `--screen main-server` and would print what the runner's regional settings give.
+
 Rules that came out of it:
 - `decibell-video` names the renderer's surface types through `crate::surface` and splits on `cfg(vk)` (Linux),
   `cfg(d3d)` (Windows), `cfg(gpu)` (either), all set by its `build.rs`. A new decoder is a `DecodeBackend`
