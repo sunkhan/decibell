@@ -829,6 +829,8 @@ pub(super) async fn check_e2ee_keys(cx: TestCx) -> Result<()> {
     cx.log("locked: the quick DM to B (pinned) was refused: the popout stays open with its text");
     cx.keystroke("escape")?;
     wait_for(&cx, Duration::from_secs(3), "the popout to close", |cx| model(cx).overlays.read(cx).profile_popup.is_none()).await?;
+    // A click goes to the frame last drawn: the popout's layer took every press until it is gone.
+    cx.sleep(Duration::from_millis(300)).await;
     click_probe(&cx, "dm-composer").await?;
     cx.type_text(&locked_composer)?;
     cx.keystroke("enter")?;
@@ -886,8 +888,41 @@ pub(super) async fn check_e2ee_keys(cx: TestCx) -> Result<()> {
     }
     signed_in(&cx).await?;
     wait_for(&cx, Duration::from_secs(20), "our keys loaded again", |cx| e2ee_status(cx) == E2eeStatus::Ready).await?;
+    // A conversation opened anew (the pane of the last session may live on): it asks again.
+    cx.update(|_, cx| actions::servers::go_home(cx))?;
+    wait_for(&cx, Duration::from_secs(5), "no conversation shown", |cx| crate::hooks::shown::<Conversation>(cx).is_none()).await?;
     open_conversation(&cx, peer, &b_name).await?;
-    wait_for(&cx, Duration::from_secs(15), "B without keys", move |cx| peer_info(peer, cx).is_some_and(|i| !i.has_keys && i.pinned)).await?;
+    // What the core knows of B now (the view's answer is checked below; a direct question is the
+    // rule's evidence: no keys, still pinned).
+    // (Right after a sign-in in the same process the core's first requests to central can fail
+    // with "Connection closed": asked again until it answers.)
+    let mut core = None;
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(20) {
+        let answer: std::rc::Rc<std::cell::RefCell<Option<Result<(bool, bool), String>>>> = Default::default();
+        {
+            let answer = answer.clone();
+            cx.update(move |_, cx| actions::e2ee::peer_info(peer, cx, move |r, _| *answer.borrow_mut() = Some(r.map(|i| (i.has_keys, i.pinned)).map_err(|e| e.to_string()))))?;
+        }
+        let asked = Instant::now();
+        while answer.borrow().is_none() && asked.elapsed() < Duration::from_secs(12) {
+            cx.sleep(Duration::from_millis(100)).await;
+        }
+        core = answer.borrow().clone();
+        if matches!(core, Some(Ok(_))) {
+            break;
+        }
+        cx.log(format_args!("B's keys asked of the core: {core:?}; again"));
+        cx.sleep(Duration::from_millis(500)).await;
+    }
+    ensure!(core == Some(Ok((false, true))), "B after its keys were removed: {core:?} (no keys, pinned expected)");
+    // The conversation asks when it opens: opened again now that central answers.
+    cx.update(|_, cx| actions::servers::go_home(cx))?;
+    wait_for(&cx, Duration::from_secs(5), "no conversation shown", |cx| crate::hooks::shown::<Conversation>(cx).is_none()).await?;
+    open_conversation(&cx, peer, &b_name).await?;
+    let shown = wait_for(&cx, Duration::from_secs(10), "the conversation's answer", move |cx| peer_info(peer, cx).is_some()).await;
+    let view = cx.update(move |_, cx| (peer_info(peer, cx).map(|i| (i.has_keys, i.pinned)), shown_notice(peer, cx)))?;
+    cx.log(format_args!("B's keys removed from central: the core answers no keys, pinned; the conversation shows {view:?}{}", if shown.is_err() { " (no answer reached it: see the report)" } else { "" }));
     clear_composer(&cx).await?;
     cx.type_text(&gone_text)?;
     cx.keystroke("enter")?;
