@@ -699,16 +699,26 @@ fn cpu_ms() -> Option<u64> {
 /// is not zero is taken again, up to three times. Another window of the session taking or
 /// giving back the activation redraws the window frame once (as the app's `idle-frames`
 /// test allows for): only a window that draws in every attempt is drawing by itself.
+/// Frames over `duration` after drawing stopped: the first try with none, else what an
+/// undisturbed try drew (the caller's check fails on it). A try the shared desktop disturbed (the
+/// focus changing hands, the pointer crossing the window: both redraw) proves nothing; three are
+/// inconclusive.
 async fn idle_frames(window: &TestCx, duration: Duration) -> Result<Frames> {
-    let mut frames = Frames { drawn: 0, presented: 0 };
+    let (mut undisturbed, mut last) = (None, String::new());
     for _ in 0..3 {
         window.settle().await?;
-        frames = frames_over(window, duration).await?;
+        let before = window.frames()?;
+        let disturbed = window.watched_sleep(duration).await?;
+        let frames = window.frames()?.since(before);
         if frames.drawn == 0 && frames.presented == 0 {
-            break;
+            return Ok(frames);
+        }
+        match disturbed {
+            None => undisturbed = Some(frames),
+            Some(d) => last = format!("{frames:?}, disturbed: {d}"),
         }
     }
-    Ok(frames)
+    undisturbed.ok_or_else(|| decibell_harness::inconclusive(format!("three tries disturbed by the desktop ({last})")))
 }
 
 async fn frames_over(window: &TestCx, duration: Duration) -> Result<Frames> {

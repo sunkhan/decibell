@@ -295,7 +295,9 @@ async fn kit_idle(cx: TestCx) -> Result<()> {
 /// A screen with spinners: after the entrances, no frame is drawn (no view re-renders) and the
 /// spinners' presents stay at or under 60 a second.
 async fn spinning_idle(cx: &TestCx) -> Result<String> {
-    cx.sleep(Duration::from_millis(800)).await;
+    // The entrances done and drawing stopped (the window's activation by the compositor may come
+    // late under load, and redraws it): the spinners present on without drawing.
+    cx.settle().await?;
     // A try that drew while the desktop disturbed the window (its focus changed hands, the pointer
     // moved over it) is taken again; three disturbed tries are inconclusive.
     let mut last = String::new();
