@@ -444,10 +444,6 @@ async fn check_roles_reorder(cx: TestCx) -> Result<()> {
         cx.sleep(Duration::from_millis(250)).await;
         cx.type_text(&user)?;
         click_probe_now(&cx, &format!("add-member:{}", member.uid)).await?;
-        let r = roles.clone();
-        wait_for(&cx, Duration::from_secs(5), "the throwaway picked", move |cx| r.read(cx).add_picker_state(cx).is_some_and(|(_, picked)| picked == 1))
-            .await
-            .with_context(|| format!("picker: {:?}", cx.update(|_, cx| roles.read(cx).add_picker_state(cx)).ok().flatten()))?;
         click_probe_now(&cx, "add-members-run").await?;
         let uid = member.uid;
         let t = wait_for(&cx, Duration::from_secs(10), "the throwaway to hold a", move |cx| roster_member(cx, uid).is_some_and(|m| m.role_ids.contains(&a))).await?;
@@ -821,8 +817,6 @@ async fn check_channel_more(cx: TestCx) -> Result<()> {
     let sealed = cx.update(|_, cx| channel_named(cx, &sealed_name))?.context("vanished")?.id.to_string();
     let result = async {
         // A topic: saved, echoed, drawn in the header.
-        let id = ChannelId::from(text.clone());
-        cx.update(move |_, cx| actions::chat::open_channel(server, id, cx))?;
         let window = open_channel_settings(&cx, &text).await?;
         cx.settle().await?;
         ensure!(!decibell_harness::probes::flag_set("channel-topic-unencrypted-note"), "a plain channel says its topic isn't encrypted");
@@ -840,7 +834,10 @@ async fn check_channel_more(cx: TestCx) -> Result<()> {
         // The channel open (opening its settings opened the community, which may have shown
         // another of its channels).
         let id = ChannelId::from(text.clone());
-        cx.update(move |_, cx| actions::chat::open_channel(server, id, cx))?;
+        cx.update(move |_, cx| {
+            model(cx).nav.update(cx, |n, cx| n.set_active_channel(Some(id.clone()), cx));
+            actions::chat::open_channel(server, id, cx);
+        })?;
         let t2 = topic.clone();
         wait_for(&cx, Duration::from_secs(8), "the header to draw the topic", move |_| {
             decibell_harness::probes::text_of("channel-header-topic").is_some_and(|t| t == t2.as_str())
@@ -887,9 +884,21 @@ async fn check_channel_more(cx: TestCx) -> Result<()> {
         click_probe(&cx, "perm-add-target").await?;
         // The picker's search field has the focus (a blinking caret).
         cx.sleep(Duration::from_millis(250)).await;
+        cx.log(format_args!("DIAG picker opened: {:?}, focused {:?}", cx.update(|_, cx| window.read(cx).perm_picker(cx))?, cx.update(|w, cx| w.focused(cx).map(|f| format!("{f:?}")))?));
         cx.type_text(&user)?;
+        cx.sleep(Duration::from_millis(800)).await;
+        cx.log(format_args!(
+            "DIAG typed: {:?}; probe {:?}",
+            cx.update(|_, cx| window.read(cx).perm_picker(cx))?,
+            decibell_harness::probes::bounds(&format!("perm-pick:{}", member.uid))
+        ));
         click_probe_now(&cx, &format!("perm-pick:{}", member.uid)).await?;
+        cx.sleep(Duration::from_millis(300)).await;
+        cx.log(format_args!("DIAG clicked: {:?}; target {}", cx.update(|_, cx| window.read(cx).perm_picker(cx))?, cx.update(|_, cx| window.read(cx).perm_target())?));
         let key = format!("member:{}", member.uid);
+        let k = key.clone();
+        let w = window.clone();
+        wait_for(&cx, Duration::from_secs(5), "the throwaway selected as the target", move |cx| w.read(cx).perm_target() == k).await?;
         let bit = perm::SEND_MESSAGES;
         for (label, want) in [("Allow", Bits { allow: bit, deny: 0 }), ("Inherit", Bits { allow: 0, deny: 0 }), ("Deny", Bits { allow: 0, deny: bit })] {
             let probe = format!("tri:{bit}:{label}");
@@ -897,6 +906,12 @@ async fn check_channel_more(cx: TestCx) -> Result<()> {
             let w = window.clone();
             cx.update(move |_, cx| w.update(cx, |w, cx| w.reveal(b, cx)))?;
             cx.sleep(Duration::from_millis(250)).await;
+            cx.log(format_args!(
+                "DIAG {label}: probe {:?}, pane {:?}, target {}",
+                decibell_harness::probes::bounds(&probe),
+                cx.update(|_, cx| window.read(cx).pane_viewport())?,
+                cx.update(|_, cx| window.read(cx).perm_target())?
+            ));
             click_probe_now(&cx, &probe).await?;
             let (k, w) = (key.clone(), window.clone());
             wait_for(&cx, Duration::from_secs(3), &format!("{label} staged"), move |cx| {

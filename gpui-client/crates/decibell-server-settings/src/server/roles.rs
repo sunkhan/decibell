@@ -538,12 +538,6 @@ impl RolesTab {
         self.move_to(&r, if up { r.position + 1 } else { r.position - 1 }, cx);
     }
 
-    /// The self-tests: the Add members picker's (shown, picked) counts while it is open.
-    #[cfg(feature = "fixtures")]
-    pub(crate) fn add_picker_state(&self, cx: &App) -> Option<(usize, usize)> {
-        self.add_picker.as_ref().map(|p| (p.search.read(cx).members.len(), p.picked.len()))
-    }
-
     /// The focus handle of a role's hierarchy row (made the first time it is drawn).
     pub fn row_focus(&self, id: i64) -> Option<FocusHandle> {
         self.row_focus.get(&id).cloned()

@@ -378,6 +378,23 @@ impl ChannelSettingsWindow {
         }
     }
 
+    /// The self-tests: the permission target shown, and the pane's viewport.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn perm_target(&self) -> String {
+        self.perms.selected_key().to_string()
+    }
+
+    /// The self-tests: the + picker's (typed text, members found) while it is open.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn perm_picker(&self, cx: &App) -> Option<(String, usize)> {
+        self.perms.picker_state(cx)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn pane_viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.scroll.viewport_bounds()
+    }
+
     /// The self-tests: scroll the pane so that `bounds` (window coordinates, as last laid out) is
     /// in view.
     #[cfg(feature = "fixtures")]

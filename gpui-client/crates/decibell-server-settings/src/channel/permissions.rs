@@ -105,6 +105,16 @@ pub struct PermDraft {
 }
 
 impl PermDraft {
+    /// The + picker's (typed text, members found) while it is open.
+    pub fn picker_state(&self, cx: &App) -> Option<(String, usize)> {
+        self.picker.as_ref().map(|p| (p.query.text(cx).to_string(), p.search.read(cx).members.len()))
+    }
+
+    /// The target shown (`role:<id>` / `member:<uid>`; empty until one is chosen).
+    pub fn selected_key(&self) -> &str {
+        &self.selected
+    }
+
     pub fn pending_bits(&self, key: &str) -> Option<Bits> {
         self.pending.iter().find(|(k, _)| k == key).map(|(_, b)| *b)
     }
