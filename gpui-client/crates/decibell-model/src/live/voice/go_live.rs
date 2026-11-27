@@ -215,16 +215,20 @@ impl StreamSettings {
     }
 
     /// `(initial_codec, enforced_codec)` for `start_screen_share`. Advanced's pinned codec
-    /// pins both. Auto sends `(0, 0)`: the core starts on the first codec the probe found an
-    /// encoder for (H.264 before HEVC before AV1, `encoder_probe::auto_codec`), tries every
-    /// hardware encoder of it, and only then the software encoder (SVT-AV1), which it adds to
-    /// the plan only while the codec isn't pinned. Electron's native path sends H.264 for
-    /// both and falls back to WebCodecs (OpenH264) when that fails; this client has no such
-    /// fallback, so pinning would leave a machine without a hardware H.264 encoder unable to
-    /// stream at all (quirk #26: an Auto stream is announced unlocked here).
-    pub fn start_codecs(&self) -> (VideoCodec, VideoCodec) {
+    /// pins both. Auto starts on `first_probed`, the codec of the first encoder the probe found
+    /// (H.264 before HEVC before AV1: what the core's own `auto_codec` picks; H.264 before the
+    /// caps are known), **unpinned**: the core tries every hardware encoder of it and then the
+    /// software encoder (SVT-AV1), which it adds to the plan only while the codec isn't pinned,
+    /// and announces the codec it really started on. (Auto as `initial 0` would be announced
+    /// as 0, which the community reads as H.264, whatever was encoded.) Electron's native path
+    /// pins H.264 and falls back to WebCodecs (OpenH264) when that fails; this client has no
+    /// such fallback, so pinning would leave a machine without a hardware H.264 encoder unable
+    /// to stream at all (quirk #26: an Auto stream is announced unlocked here).
+    pub fn start_codecs(&self, first_probed: Option<VideoCodec>) -> (VideoCodec, VideoCodec) {
         match self.enforced_codec {
-            VideoCodec::Unknown => (VideoCodec::Unknown, VideoCodec::Unknown),
+            VideoCodec::Unknown => {
+                (first_probed.filter(|c| *c != VideoCodec::Unknown).unwrap_or(VideoCodec::H264Hw), VideoCodec::Unknown)
+            }
             pinned => (pinned, pinned),
         }
     }
@@ -391,13 +395,16 @@ mod tests {
 
     #[test]
     fn auto_leaves_the_codec_to_the_core_and_a_pin_pins_both() {
-        // Auto: (0, 0), so the core may fall through to the software encoder (SVT-AV1).
+        // Auto: the first probed codec, unpinned (enforced 0), so the core may fall through to
+        // the software encoder (SVT-AV1) and announces what it started on.
         let mut st = StreamSettings::default();
-        assert_eq!(st.start_codecs(), (VideoCodec::Unknown, VideoCodec::Unknown));
-        assert_eq!((st.start_codecs().0.wire(), st.start_codecs().1.wire()), (0, 0));
+        assert_eq!(st.start_codecs(Some(VideoCodec::H264Hw)), (VideoCodec::H264Hw, VideoCodec::Unknown));
+        assert_eq!(st.start_codecs(Some(VideoCodec::Av1)), (VideoCodec::Av1, VideoCodec::Unknown), "software only");
+        assert_eq!(st.start_codecs(None), (VideoCodec::H264Hw, VideoCodec::Unknown), "caps not loaded yet");
+        assert_eq!(st.start_codecs(None).1.wire(), 0);
         for pinned in [VideoCodec::H264Hw, VideoCodec::H265, VideoCodec::Av1] {
             st.enforced_codec = pinned;
-            assert_eq!(st.start_codecs(), (pinned, pinned));
+            assert_eq!(st.start_codecs(Some(VideoCodec::H264Hw)), (pinned, pinned));
         }
     }
 }

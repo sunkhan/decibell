@@ -99,14 +99,14 @@ impl Encoders {
         })
     }
 
-    /// The encoder a stream of `settings` would start on: the first probed for its codec. Auto
-    /// starts on the first cap the probe found (the core's `auto_codec`: `go_live` sends codec 0
-    /// unpinned, so the core picks it and may fall through to software).
+    /// The encoder a stream of `settings` would start on: the first probed for its codec (Auto:
+    /// the first cap the probe found, unpinned: `StreamSettings::start_codecs`). An unpinned
+    /// codec nothing encodes in hardware falls through to the software encoder, as the core does.
     pub fn planned(&self, settings: &StreamSettings) -> Option<&EncoderCap> {
-        match settings.start_codecs().0 {
-            VideoCodec::Unknown => self.caps.first(),
-            codec => self.caps.iter().find(|c| c.codec == codec),
-        }
+        let (codec, enforced) = settings.start_codecs(self.caps.first().map(|c| c.codec));
+        self.caps.iter().find(|c| c.codec == codec).or_else(|| {
+            (enforced == VideoCodec::Unknown).then(|| self.caps.iter().find(|c| !c.hardware)).flatten()
+        })
     }
 }
 
@@ -181,8 +181,7 @@ mod tests {
         let sw = Encoders { caps: vec![cap(VideoCodec::Av1, false, 1920 * 1080 * 30)], loaded: true, pinned: false };
         let auto = StreamSettings::default();
         assert_eq!(sw.planned(&auto).map(|c| (c.codec, c.hardware)), Some((VideoCodec::Av1, false)));
-        let mut h264 = StreamSettings::default();
-        h264.enforced_codec = VideoCodec::H264Hw;
+        let h264 = StreamSettings { enforced_codec: VideoCodec::H264Hw, ..StreamSettings::default() };
         assert_eq!(sw.planned(&h264), None, "H.264 pinned: no software H.264 encoder");
     }
 }

@@ -892,9 +892,10 @@ pub fn go_live(cx: &mut App) {
     }
     let st = StreamSettings::of(model.settings.read(cx).get());
     let share_audio = can_pick_stream_audio_apps() && st.share_audio;
-    // Auto leaves the codec to the core so a machine without a hardware encoder for it
-    // still streams, in software (`StreamSettings::start_codecs`).
-    let (initial, enforced) = st.start_codecs();
+    // Auto doesn't pin the codec, so a machine without a hardware encoder for it still
+    // streams, in software (`StreamSettings::start_codecs`).
+    let first_probed = model.live.voice.codecs.read(cx).encoders.first().map(|e| e.codec);
+    let (initial, enforced) = st.start_codecs(first_probed);
     let (width, height) = st.resolution.request_size();
     let args = api::streaming::StartScreenShareArgs {
         server_id: key.as_ref().map(|k| k.0.wire()),
