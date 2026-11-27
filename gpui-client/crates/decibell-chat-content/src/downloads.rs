@@ -10,7 +10,7 @@ use decibell_model::{Model, ServerId, actions};
 use gpui::{App, Task};
 
 /// The folder downloads land in: Settings' choice, else the OS Downloads folder (Electron's
-/// `app.getPath("downloads")`: `$XDG_DOWNLOAD_DIR`, else `~/Downloads`).
+/// `app.getPath("downloads")`: [`os_downloads_dir`]).
 pub fn download_dir(cx: &App) -> PathBuf {
     let configured = cx.try_global::<Model>().map(|m| m.settings.read(cx).get().download_dir.clone()).unwrap_or_default();
     if !configured.is_empty() && std::path::Path::new(&configured).is_absolute() {
@@ -19,25 +19,8 @@ pub fn download_dir(cx: &App) -> PathBuf {
     os_downloads_dir()
 }
 
-/// The OS Downloads folder.
-pub fn os_downloads_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
-    // `xdg-user-dirs` keeps the folder's (possibly localised) name in user-dirs.dirs.
-    if let Ok(text) = std::fs::read_to_string(home.join(".config/user-dirs.dirs")) {
-        for line in text.lines() {
-            if let Some(value) = line.strip_prefix("XDG_DOWNLOAD_DIR=") {
-                let value = value.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy());
-                if !value.is_empty() {
-                    return PathBuf::from(value);
-                }
-            }
-        }
-    }
-    home.join("Downloads")
-}
+/// The OS Downloads folder (`decibell_model::actions::transfers::os_downloads_dir`).
+pub use decibell_model::actions::transfers::os_downloads_dir;
 
 /// Starts downloading `a`; resolves whether it started (false for a dismissed dialog or a
 /// failure, which the model toasts).

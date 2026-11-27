@@ -9,6 +9,14 @@ use crate::Model;
 use crate::live::transfers::{Destination, DownloadContext, PendingUpload, StartArgs};
 use crate::ids::ServerId;
 
+/// The OS Downloads folder, `app.getPath("downloads")` (Chromium's `DIR_DEFAULT_DOWNLOADS`): on
+/// Linux xdg-user-dirs' `XDG_DOWNLOAD_DIR` in `$XDG_CONFIG_HOME/user-dirs.dirs` (localised or moved
+/// folders included), on Windows the Downloads known folder (moved or not), else `~/Downloads`.
+/// Where downloads land when no folder is chosen, and what Settings → Network names.
+pub fn os_downloads_dir() -> PathBuf {
+    dirs::download_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Downloads"))
+}
+
 fn model(cx: &App) -> Option<Model> {
     cx.try_global::<Model>().cloned()
 }

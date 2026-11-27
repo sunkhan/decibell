@@ -95,9 +95,9 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(perf1(cx, "settings-network-caps", Phases::One)),
         },
         SelfTest {
-            name: "settings-unsaved-shake",
-            about: "a typed custom speed holds the window: Esc shakes the save bar, Reset lets it close; a press elsewhere applies it (onBlur)",
-            run: |cx| Box::pin(perf1(cx, "settings-unsaved-shake", Phases::One)),
+            name: "settings-network-leave",
+            about: "a typed custom speed never holds the window (no save bar, as the renderer): a press on another tab applies it (onBlur) and opens that tab; Esc and ✕ apply it and close",
+            run: |cx| Box::pin(perf1(cx, "settings-network-leave", Phases::One)),
         },
         SelfTest {
             name: "settings-idle",
@@ -463,7 +463,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "settings-audio-meter", about: "(in the app) devices, the meter's hold, the input mode", run: |cx| Box::pin(check_audio(cx)) },
         SelfTest { name: "settings-keybinds-record", about: "(in the app) the recorder", run: |cx| Box::pin(check_keybinds(cx)) },
         SelfTest { name: "settings-network-caps", about: "(in the app) speed caps", run: |cx| Box::pin(check_network(cx)) },
-        SelfTest { name: "settings-unsaved-shake", about: "(in the app) a draft holds the window", run: |cx| Box::pin(check_shake(cx)) },
+        SelfTest { name: "settings-network-leave", about: "(in the app) leaving Network applies a typed speed", run: |cx| Box::pin(check_network_leave(cx)) },
         SelfTest { name: "settings-idle", about: "(in the app) every tab at rest", run: |cx| Box::pin(check_idle(cx)) },
     ]
 }
@@ -1402,7 +1402,7 @@ async fn check_network(cx: TestCx) -> Result<()> {
     // The custom box: a click, typed, Enter.
     click_probe(&cx, "rate-down-custom").await?;
     retype(&cx, "3.5")?;
-    ensure!(cx.update(|_, cx| network(cx).is_some_and(|n| n.read(cx).dirty(cx)))?, "the typed value isn't a draft");
+    ensure!(cx.update(|_, cx| network(cx).is_some_and(|n| n.read(cx).typed(cx)))?, "the box doesn't hold the typed value");
     cx.keystroke("enter")?;
     wait_for(&cx, Duration::from_secs(3), "the custom download cap", move |cx| caps(cx).1 == (3.5 * 1024. * 1024.) as u64).await?;
     cx.sleep(Duration::from_millis(600)).await;
@@ -1422,63 +1422,66 @@ async fn check_network(cx: TestCx) -> Result<()> {
     log_out(&cx).await
 }
 
-async fn check_shake(cx: TestCx) -> Result<()> {
+async fn check_network_leave(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     let upload = |cx: &App| model(cx).settings.read(cx).get().upload_limit_bps;
-    let nudges = move |cx: &App| network(cx).map_or(0, |n| n.read(cx).nudges());
-    let draft = |cx: &App| network(cx).is_some_and(|n| n.read(cx).dirty(cx));
-    open_on(&cx, TabId::Network).await?;
-    // Typed, not applied: a draft (the box keeps the focus).
-    click_probe(&cx, "rate-up-custom").await?;
-    retype(&cx, "12.5")?;
-    ensure!(cx.update(move |_, cx| draft(cx))?, "the typed value isn't a draft");
-    // Esc at once: the box applies what it holds when it loses the focus, and the desktop may take
-    // the focus from this window whenever the test yields (the renderer's blur did the same).
-    cx.keystroke("escape")?;
-    let (shaken, open, applied) = cx.update(move |_, cx| (nudges(cx), settings_open(cx), upload(cx)))?;
-    ensure!(open, "Esc closed the window over a draft");
-    ensure!(shaken == 1, "Esc with a draft didn't shake the save bar ({shaken})");
-    ensure!(applied == 0, "Esc applied the draft");
-    cx.log("Esc with a typed value shook the save bar; the window stayed, nothing applied");
-    cx.settle().await?;
-    // The save bar's Reset drops it: Esc closes. (The box still has the focus: its caret blinks
-    // twice a second while the window is the desktop's active one, which no "1 s without a frame"
-    // survives; Tab moves the focus on to the next control inside the window, as a hand would,
-    // with nothing left to apply.)
-    cx.update(move |_, cx| {
-        if let Some(n) = network(cx) {
-            n.update(cx, |n, cx| n.reset(cx));
-        }
-    })?;
-    cx.keystroke("tab")?;
-    draw_pending(&cx)?;
-    step(&cx, "Esc after Reset", async |cx| cx.keystroke("escape").map(|_| ()), |cx| !settings_open(cx)).await?;
-    // A press anywhere else takes the focus from the box, which applies what it holds
-    // (`onBlur`): another tab opens, with the cap applied.
+    let typed = |cx: &App| network(cx).is_some_and(|n| n.read(cx).typed(cx));
+    let mbps = |v: f64| (v * 1024. * 1024.).round() as u64;
+    // No save bar, ever: the renderer's tab has none (its box applies on blur).
     open_on(&cx, TabId::Network).await?;
     click_probe(&cx, "rate-up-custom").await?;
     retype(&cx, "12.5")?;
-    // Press and release as a hand does, with a frame between them: GPUI moves the focus on the
-    // press but tells the box it lost it (blur: apply) only when it draws the next frame, and the
-    // release is what opens the tab.
+    ensure!(cx.update(move |_, cx| typed(cx))?, "the box doesn't hold the typed value");
+    // A press on another tab: the box loses the focus (blur: apply) and the tab opens. Press and
+    // release as a hand does, with a frame between them (the release is what opens the tab).
     draw_pending(&cx)?;
     let tab = wait_probe(&cx, "settings-tab:account").await?.center();
     cx.mouse_down(tab, 1, Modifiers::default())?;
     draw_pending(&cx)?;
     cx.mouse_up(tab)?;
     park(&cx)?;
-    let switched = wait_for(&cx, Duration::from_secs(3), "the Account tab", move |cx| shown_tab(cx) == Some(TabId::Account)).await.is_ok();
-    ensure!(switched, "a press on another tab with a typed value didn't open it");
+    wait_for(&cx, Duration::from_secs(3), "the Account tab", move |cx| shown_tab(cx) == Some(TabId::Account))
+        .await
+        .context("a press on another tab with a typed value didn't open it")?;
     let applied = cx.update(move |_, cx| upload(cx))?;
-    cx.log(format_args!("a press on another tab applied the typed value first ({applied} B/s), then the tab opened"));
-    ensure!(applied == (12.5 * 1024. * 1024.) as u64, "the press elsewhere didn't apply the typed value");
+    cx.log(format_args!("a press on another tab applied the typed value ({applied} B/s) and opened the tab"));
+    ensure!(applied == mbps(12.5), "the press elsewhere didn't apply the typed value");
+    // Esc with a typed value: the window closes and the value applies (the renderer drops it:
+    // docs/electron-quirks.md #26).
+    open_on(&cx, TabId::Network).await?;
+    click_probe(&cx, "rate-up-custom").await?;
+    retype(&cx, "7.5")?;
+    cx.keystroke("escape")?;
+    wait_for(&cx, Duration::from_secs(3), "Settings closed by Esc", move |cx| !settings_open(cx)).await?;
+    let applied = cx.update(move |_, cx| upload(cx))?;
+    cx.log(format_args!("Esc closed the window and applied the typed value ({applied} B/s)"));
+    ensure!(applied == mbps(7.5), "Esc didn't apply the typed value");
+    // ✕ (the pane's close, as its button calls it) with the box focused: applied, closed.
+    open_on(&cx, TabId::Network).await?;
+    click_probe(&cx, "rate-up-custom").await?;
+    retype(&cx, "4.5")?;
+    cx.update(|_, cx| {
+        if let Some(window) = crate::handles::settings(cx) {
+            window.update(cx, |w, cx| w.request_close(cx));
+        }
+    })?;
+    wait_for(&cx, Duration::from_secs(3), "Settings closed by ✕", move |cx| !settings_open(cx)).await?;
+    let applied = cx.update(move |_, cx| upload(cx))?;
+    cx.log(format_args!("✕ closed the window and applied the typed value ({applied} B/s)"));
+    ensure!(applied == mbps(4.5), "✕ didn't apply the typed value");
+    // A value that isn't a number applies nothing and holds nothing.
+    open_on(&cx, TabId::Network).await?;
+    click_probe(&cx, "rate-up-custom").await?;
+    retype(&cx, "abc")?;
+    cx.keystroke("escape")?;
+    wait_for(&cx, Duration::from_secs(3), "Settings closed with text that isn't a number", move |cx| !settings_open(cx)).await?;
+    ensure!(cx.update(move |_, cx| upload(cx))? == mbps(4.5), "text that isn't a number changed the cap");
     // Put perf1's cap back.
     cx.update(|_, cx| {
         let s = model(cx).settings.clone();
         s.update(cx, |s, cx| s.change(|v| v.upload_limit_bps = 0, cx));
     })?;
     cx.sleep(Duration::from_millis(600)).await;
-    cx.keystroke("escape")?;
     log_out(&cx).await
 }
 

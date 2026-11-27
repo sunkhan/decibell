@@ -2001,6 +2001,7 @@ dependencies = [
  "decibell-core",
  "decibell-theme",
  "decibell-unfurl",
+ "dirs",
  "futures",
  "getrandom 0.2.16",
  "gpui",

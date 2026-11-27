@@ -2,20 +2,21 @@
 //! downloads land (the OS Downloads folder or a chosen one, "Ask where to save each file"), and
 //! the attachment speed caps: presets, a custom MB/s value, Unlimited.
 //!
-//! A preset applies at once, as in the renderer. The custom box applies on Enter or when it loses
-//! focus (`onBlur`; a press anywhere else, Tab, the window going to the background); until then
-//! what was typed is a draft: the tab shows the save bar, and Esc (the one way to leave while the
-//! box still has the focus) shakes it instead of dropping the value (the renderer lost it). The
-//! caps reach the attachment service through the model (`CoreAttachmentService::set_limits` on
-//! every settings change), mid-transfer too; they are saved in `config.json`
-//! (`upload_limit_bps`, `download_limit_bps`).
+//! A preset applies at once, as in the renderer. The custom box applies when it loses focus
+//! (`onBlur`: a press anywhere else, Tab, the window going to the background) and on Enter; there is
+//! no draft and no save bar, as in the renderer: leaving the tab (another tab, ✕, the backdrop)
+//! applies what the box holds first, as the blur those presses cause does there, and so does Esc
+//! (the renderer closes on Esc without a blur and drops the typed value: `docs/electron-quirks.md`
+//! #27). The caps reach the attachment service through the model
+//! (`CoreAttachmentService::set_limits` on every settings change), mid-transfer too; they are saved
+//! in `config.json` (`upload_limit_bps`, `download_limit_bps`).
 
 use std::path::PathBuf;
 
 use decibell_common::Watch;
 use decibell_model::{Model, actions};
 use decibell_text::input::{InputEvent, InputState, numeric};
-use decibell_ui::{ActiveTheme as _, Button, FontRole, Label, SaveBar, ScrollHandle, TextField, TextFieldVariant};
+use decibell_ui::{ActiveTheme as _, Button, FontRole, Label, ScrollHandle, TextField, TextFieldVariant};
 use gpui::{AnyElement, App, AppContext as _, Context, Entity, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*};
 
 use super::TabId;
@@ -66,6 +67,40 @@ pub fn commit_custom(text: &str) -> Option<(u64, String)> {
     let next = mbps_to_bps(if n == 0. { 0. } else { n.max(MIN_MBPS) });
     let shown = if preset_for(next).is_none() { format_mbps(bps_to_mbps(next)) } else { String::new() };
     Some((next, shown))
+}
+
+/// The step of the custom box (`step={0.5}`); its base is the minimum (`min={MIN_MBPS}`).
+pub const STEP_MBPS: f64 = 0.5;
+
+/// ArrowUp / ArrowDown in the box, as Chromium steps an `<input type="number" min="0.1" step="0.5">`
+/// (`InputType::StepUpFromLayoutObject`): what isn't a number counts as 0; below the minimum,
+/// ArrowUp jumps to it and ArrowDown does nothing; otherwise the value moves to the next multiple
+/// of the step above (below) it, counted from the minimum. `None`: the box keeps its text.
+pub fn step_custom(text: &str, up: bool) -> Option<String> {
+    let current = parse_float(text).filter(|v| v.is_finite()).unwrap_or(0.);
+    if up && current < MIN_MBPS {
+        return Some(format_number(MIN_MBPS));
+    }
+    if !up && current <= MIN_MBPS {
+        return None;
+    }
+    // Steps from the base, rounded so 7.6 - 0.1 = 7.5 counts as whole.
+    let steps = ((current - MIN_MBPS) / STEP_MBPS * 1e9).round() / 1e9;
+    let next = if steps.fract() == 0. {
+        steps + if up { 1. } else { -1. }
+    } else if up {
+        steps.floor() + 1.
+    } else {
+        steps.ceil() - 1.
+    };
+    let value = MIN_MBPS + next * STEP_MBPS;
+    (value >= MIN_MBPS - 1e-9).then(|| format_number(value))
+}
+
+/// A number as JavaScript prints it (`String(7.6)` → "7.6"), past f64 noise.
+fn format_number(v: f64) -> String {
+    let r = (v * 1e9).round() / 1e9;
+    if r.fract() == 0. { format!("{}", r as i64) } else { format!("{r}") }
 }
 
 /// JS `parseFloat`: the longest leading number ("7.5abc" → 7.5).
@@ -134,13 +169,10 @@ fn shown(s: &decibell_core::config::AppSettings) -> Shown {
     Shown { upload: s.upload_limit_bps, download: s.download_limit_bps, dir: s.download_dir.clone(), ask: s.ask_download_location }
 }
 
-/// The OS Downloads folder (`app.getPath("downloads")`): `$XDG_DOWNLOAD_DIR`, else `~/Downloads`.
+/// The OS Downloads folder, where downloads land when no folder is chosen (the one the
+/// attachments' download manager uses).
 pub fn default_download_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default();
-    PathBuf::from(home).join("Downloads")
+    actions::transfers::os_downloads_dir()
 }
 
 /// "/home/me/…/Decibell downloads": keep both ends of a long path (`shortenMiddle`, 56).
@@ -160,9 +192,6 @@ pub struct NetworkTab {
     shown: Shown,
     upload: Custom,
     download: Custom,
-    /// Whether a box held a draft at the last render (the bar shows while one does).
-    drafted: bool,
-    nudge: u32,
     default_dir: String,
     _subscriptions: Vec<Subscription>,
     _watch: Watch,
@@ -193,10 +222,8 @@ impl NetworkTab {
         })];
         for (direction, input) in [(Direction::Upload, &upload.input), (Direction::Download, &download.input)] {
             subscriptions.push(cx.subscribe(input, move |this, _, event: &InputEvent, cx| match event {
-                // Enter and `onBlur` apply it.
+                // Enter and `onBlur` apply it; typing redraws the box only.
                 InputEvent::Submit | InputEvent::Blur => this.commit(direction, cx),
-                // Typing redraws the box only; the tab when the save bar comes or goes.
-                InputEvent::Change if this.dirty(cx) != this.drafted => cx.notify(),
                 _ => {}
             }));
         }
@@ -206,8 +233,6 @@ impl NetworkTab {
             shown: s,
             upload,
             download,
-            drafted: false,
-            nudge: 0,
             default_dir: crate::hooks::SettingsHooks::get(cx)
                 .staged
                 .downloads_default
@@ -218,17 +243,16 @@ impl NetworkTab {
         }
     }
 
-    pub fn dirty(&self, cx: &App) -> bool {
+    /// A box holds text it hasn't applied yet (it has the focus: a blur applies it).
+    pub fn typed(&self, cx: &App) -> bool {
         self.upload.dirty(cx) || self.download.dirty(cx)
     }
 
-    pub fn nudge(&mut self, cx: &mut Context<Self>) {
-        self.nudge += 1;
-        cx.notify();
-    }
-
-    pub fn nudges(&self) -> u32 {
-        self.nudge
+    /// Leaving the tab: what the boxes hold applies first (the blur the renderer's leaving press
+    /// causes).
+    pub fn commit_all(&mut self, cx: &mut Context<Self>) {
+        self.commit(Direction::Upload, cx);
+        self.commit(Direction::Download, cx);
     }
 
     fn custom(&mut self, direction: Direction) -> &mut Custom {
@@ -264,7 +288,7 @@ impl NetworkTab {
         cx.notify();
     }
 
-    /// The custom box's `onBlur` (also Enter, and the save bar's Save).
+    /// The custom box's `onBlur` (also Enter, and leaving the tab).
     pub fn commit(&mut self, direction: Direction, cx: &mut Context<Self>) {
         let c = self.custom(direction);
         if !c.dirty(cx) {
@@ -283,13 +307,14 @@ impl NetworkTab {
         cx.notify();
     }
 
-    /// The save bar's Reset: the boxes show what applies again.
-    pub fn reset(&mut self, cx: &mut Context<Self>) {
-        for c in [&self.upload, &self.download] {
-            c.show(&c.committed, cx);
+    /// ArrowUp / ArrowDown in a box: the value steps as Chromium's number input does; like typing,
+    /// it applies when the box loses the focus.
+    fn step(&mut self, direction: Direction, up: bool, cx: &mut Context<Self>) {
+        let c = self.custom(direction);
+        let text = c.input.read(cx).value().to_string();
+        if let Some(next) = step_custom(&text, up) {
+            c.show(&next, cx);
         }
-        self.nudge = 0;
-        cx.notify();
     }
 
     fn pick_folder(&mut self, cx: &mut Context<Self>) {
@@ -369,6 +394,19 @@ impl NetworkTab {
                         div()
                             .relative()
                             .children(decibell_shell::probes::probe(box_id))
+                            // `type="number"`: the arrows step the value (before the field's own
+                            // caret moves see them).
+                            .capture_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                let m = event.keystroke.modifiers;
+                                let plain = !(m.control || m.alt || m.shift || m.platform || m.function);
+                                let up = match event.keystroke.key.as_str() {
+                                    "up" if plain => true,
+                                    "down" if plain => false,
+                                    _ => return,
+                                };
+                                this.step(direction, up, cx);
+                                cx.stop_propagation();
+                            }))
                             .child(TextField::new(box_id).variant(TextFieldVariant::Compact).editor(&custom.input)),
                     )
                     .child(Label::new("MB/s").size(12.).color(theme.color_text_muted)),
@@ -471,8 +509,6 @@ impl Render for NetworkTab {
                     .color(theme.color_text_muted),
                 ),
             );
-        let dirty = self.dirty(cx);
-        self.drafted = dirty;
         let body = div()
             .flex()
             .flex_col()
@@ -480,18 +516,7 @@ impl Render for NetworkTab {
             .child(downloads)
             .child(speed_intro)
             .child(self.rate_row(Direction::Upload, cx))
-            .child(self.rate_row(Direction::Download, cx))
-            .when(dirty, |this| {
-                this.child(
-                    SaveBar::new("network-save", &self.scroll, true, self.nudge)
-                        .on_reset(cx.listener(|this, _, _, cx| this.reset(cx)))
-                        .on_save(cx.listener(|this, _, _, cx| {
-                            this.commit(Direction::Upload, cx);
-                            this.commit(Direction::Download, cx);
-                            this.nudge = 0;
-                        })),
-                )
-            });
+            .child(self.rate_row(Direction::Download, cx));
         super::pane(TabId::Network, &self.scroll, &self.close).child(body)
     }
 }
@@ -514,6 +539,26 @@ mod tests {
         assert_eq!(commit_custom("abc"), None);
         assert_eq!(commit_custom("-3"), None);
         assert_eq!(commit_custom("7.5MB"), Some((mbps_to_bps(7.5), "7.5".into())));
+    }
+
+    /// Chromium's ArrowUp / ArrowDown on `<input type="number" min="0.1" step="0.5">`.
+    #[test]
+    fn arrows_step_as_chromium_does() {
+        let up = |t: &str| step_custom(t, true);
+        let down = |t: &str| step_custom(t, false);
+        assert_eq!(up(""), Some("0.1".into()), "empty: the minimum");
+        assert_eq!(up("0"), Some("0.1".into()));
+        assert_eq!(up("abc"), Some("0.1".into()));
+        assert_eq!(down(""), None, "nothing below the minimum");
+        assert_eq!(down("0.1"), None);
+        assert_eq!(up("0.1"), Some("0.6".into()));
+        assert_eq!(up("0.6"), Some("1.1".into()));
+        assert_eq!(down("1.1"), Some("0.6".into()));
+        assert_eq!(up("7.5"), Some("7.6".into()), "off the grid: the next value on it");
+        assert_eq!(down("7.5"), Some("7.1".into()));
+        assert_eq!(up("7.6"), Some("8.1".into()));
+        assert_eq!(down("0.3"), Some("0.1".into()));
+        assert_eq!(up("100.1"), Some("100.6".into()));
     }
 
     #[test]

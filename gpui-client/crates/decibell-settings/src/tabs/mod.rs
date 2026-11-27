@@ -157,19 +157,12 @@ impl TabView {
         }
     }
 
-    /// The tab holds a draft that leaving would lose (only Network's typed custom speed does:
-    /// the renderer's tabs apply everything at once).
-    pub fn dirty(&self, cx: &App) -> bool {
-        match self {
-            TabView::Network(v) => v.read(cx).dirty(cx),
-            _ => false,
-        }
-    }
-
-    /// A refused leave: the tab's save bar shakes.
-    pub fn nudge(&self, cx: &mut App) {
+    /// Leaving the tab (another tab, closing): what it holds unapplied applies first, as the blur
+    /// the renderer's leaving press causes (only Network's custom speed box holds anything: every
+    /// other control applies at once).
+    pub fn commit_typed(&self, cx: &mut App) {
         if let TabView::Network(v) = self {
-            v.update(cx, |v, cx| v.nudge(cx));
+            v.update(cx, |v, cx| v.commit_all(cx));
         }
     }
 }

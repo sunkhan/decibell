@@ -37,6 +37,9 @@ log.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "sync", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The OS Downloads folder as Chromium finds it (xdg-user-dirs on Linux, the known folder on
+# Windows): `actions::transfers::os_downloads_dir`.
+dirs = "6"
 base64 = "0.22"
 getrandom = "0.2"
 arc-swap = "1"

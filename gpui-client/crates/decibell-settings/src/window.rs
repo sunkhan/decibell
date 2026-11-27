@@ -2,9 +2,11 @@
 //! `"settings"` (the user panel's gear, the new sign-in toast's "Review devices"), on the kit's
 //! `SettingsWindow` frame with the renderer's tabs in its order, the open tab from
 //! `model.nav.settings_tab` (unknown → the first), Devices only when central serves the list
-//! (`LoginResponse.devices`). Esc, ✕ and a press on the backdrop close it, unless the open tab
-//! holds a draft: then its save bar shakes (owner rule "unsaved edits hold the window"; a tab
-//! switch is refused the same way). Below 1024 px the frame folds its sidebar into the icon rail.
+//! (`LoginResponse.devices`). Esc, ✕ and a press on the backdrop close it. The renderer's user
+//! Settings hold no drafts (every control applies at once; Network's custom speed on blur), so
+//! nothing holds the window: leaving a tab or closing applies what Network's box holds first, as the
+//! blur of the renderer's leaving press does. Below 1024 px the frame folds its sidebar into the icon
+//! rail.
 //!
 //! The window is uncached (an overlay of the main layout, it renders with it); the open tab is
 //! its own view drawn cached at the pane's size, so a change in a tab redraws that tab only.
@@ -135,26 +137,21 @@ impl SettingsOverlay {
         self.view.as_ref()
     }
 
-    /// Esc, ✕, the backdrop: close, or shake the open tab's save bar while it holds a draft.
+    /// Esc, ✕, the backdrop: close (what the open tab holds unapplied applies first).
     pub fn request_close(&mut self, cx: &mut Context<Self>) {
-        if let Some(view) = &self.view
-            && view.dirty(cx)
-        {
-            view.nudge(cx);
-            return;
+        if let Some(view) = &self.view {
+            view.commit_typed(cx);
         }
         let overlays = Model::global(cx).overlays.clone();
         overlays.update(cx, |o, cx| o.close_modal(cx));
     }
 
-    /// A tab in the sidebar.
+    /// A tab in the sidebar: it opens (what the open tab holds unapplied applies first).
     pub fn select(&mut self, tab: TabId, cx: &mut Context<Self>) {
         if let Some(view) = &self.view
             && view.tab() != tab
-            && view.dirty(cx)
         {
-            view.nudge(cx);
-            return;
+            view.commit_typed(cx);
         }
         let nav = Model::global(cx).nav.clone();
         nav.update(cx, |n, cx| n.set_settings_tab(tab.id(), cx));
@@ -174,7 +171,6 @@ impl Render for SettingsOverlay {
             self.view = Some(TabView::build(active, link, window, cx));
         }
         let shown = self.view.as_ref().map_or(active, TabView::tab);
-        let dirty = self.view.as_ref().is_some_and(|v| v.dirty(cx));
 
         let mut frame = SettingsWindow::new("settings", self.open, &self.unused_scroll)
             .nav_label("Settings")
@@ -185,7 +181,6 @@ impl Render for SettingsOverlay {
                 NavItem::new(("settings-tab", tab as usize), tab.icon(), tab.label())
                     .probe(format!("settings-tab:{}", tab.id()))
                     .active(tab == shown)
-                    .dot(dirty && tab == shown)
                     .on_click(cx.listener(move |this, _, _, cx| this.select(tab, cx))),
             );
         }
