@@ -221,7 +221,7 @@ channel, press Share screen.
 | IME | type with the Japanese or Chinese IME in the message box | the candidate window sits at the caret; composition text is underlined; Enter commits without sending |
 | Regional formats | `--screen main-server --selftest regional-read` prints what the client read from Windows' regional settings; compare message dates and times with the Region settings' short date and time | day / month order, separator, 12 / 24 h and digit grouping as Windows has them, English month names |
 | Hotkeys | Settings → Keybinds: record Ctrl+Shift+M for mute, a bare key for push-to-talk, a mouse side button | the summary names the Windows backend; mute works with another app focused and the combo no longer reaches that app; push-to-talk works while a game has focus and the key still reaches the game; on a non-US layout the recorded key is the one pressed |
-| Links, files | click a link; Open and Show in folder on a finished download; attach through the file dialog; drop files on the window | the default browser; Explorer with the file selected; the upload starts. (Open on a downloaded program runs it, as in Explorer: a decision for the owner whether to ask first) |
+| Links, files | click a link; Open and Show in folder on a finished download; attach through the file dialog; drop files on the window | the default browser; Explorer with the file selected; the upload starts. Open on a downloaded program (`.exe`, `.bat`, `.msi`, …) asks first ("… can run programs on your computer"), then runs it as Explorer would: the same as Electron |
 | Clipboard | copy and paste text both ways with Notepad; paste a screenshot (Win+Shift+S) into the message box | text keeps its line breaks; the screenshot becomes an upload |
 | Devices | Settings → Audio lists inputs and outputs by their Windows names; unplug the chosen headset in a voice channel | the lists follow; voice moves to the default device |
 | DPI | 100 %, 150 %, 175 % and a per-monitor mix | sharp text at each; a stream tile's picture not blurred beyond its size |
@@ -248,3 +248,32 @@ states. For the Electron client:
    and the same with the native exe (keep `-Runs` small: each run signs in). Install size:
    `install-size.ps1` on Electron's install folder against `decibell.exe` plus the DLLs beside it.
 6. Send `tools\perf\results\windows-table.md` and the `*-threads.txt` files.
+
+## 10. The signed-in self-tests on Windows, by PARITY section
+
+Most of the client is the same code on both systems over the same core, and its self-tests sign in against
+the local stack. None of them has run on Windows (the CI runner has no servers). One sitting covers them:
+
+1. The stack in WSL2 (§2), a `dev-local` build, and the peer the two-client tests start:
+   ```powershell
+   cargo build --release -p decibell-app --features dev-local
+   cargo build --release -p decibell-model --features local-central --bin decibell-headless
+   $env:DECIBELL_CENTRAL = "127.0.0.1:18080"; $env:DECIBELL_DEV_PASSWORD = "decibell-test-1"
+   $env:DECIBELL_DEV_DIR = "<folder holding run\accounts.json copied from the stack>"
+   ```
+2. Run each line below (one window at a time; keep the pointer off it), and send every line's summary
+   (`selftest: N passed, M failed`) with the output of anything that failed. A test that says `SKIP` names
+   what it lacked: some still lean on Linux helpers (a D-Bus daemon, KWin, `sha256sum`) and say so; that is
+   a finding to send, not a failure of yours.
+
+| § | Command (`.\target\release\decibell.exe --selftest …`) | By hand, because it needs Windows itself |
+|---|---|---|
+| 10.1 Accounts (PARITY §1) | `shell-signin,shell-navigate,shell-members,shell-idle,shell-signout,settings-devices-signout,settings-password,settings-rename` | Settings → Devices lists this install as "Windows" with the app version (never the PC's name). Sign in on a second Windows install: the first is told. A central whose certificate changed: the re-trust prompt |
+| 10.2 People (§2) | `profile-popup,status-custom,friends-flow,friends-page,user-menu-moderation,settings-privacy-dms,picture-editor` | Change the profile picture through **the Windows file dialog** (a `.jpg` taken by a phone, held upright; a `.png`; cancel): the editor opens with the picture the right way up |
+| 10.3 Direct messages and calls (§3) | `dm-open-history,dm-send-receive,dm-read-sync,dm-read-rules,dm-e2ee,home-idle,call-ring,join-dm-composer` | A call with another machine, then **share a screen and a window into the call from Windows** (the Go Live dialog of §6 opens from the call bar): the other side sees it; stop; the call goes on |
+| 10.4 Servers (§4) | `servers-browse-join,servers-join-link,invite-manage-live,invite-friends-live,welcome-banner,servers-idle,server-settings-open,overview-save,members-search,audit-log-live,bans-live` | Change a server's picture through the file dialog |
+| 10.5 Channels and roles (§5) | `channel-create-delete,channel-reorder,category-sync-drop,channel-settings-echo,category-sync,roles-edit-echo` | Drag a channel into a category with the mouse (the test drives the model) |
+| 10.6 Chat (§6) | `chat-live,composer-type-send,composer-draft,composer-burst,composer-slowmode,composer-refused,composer-edit,composer-reply,composer-attach,composer-drop,composer-paste-image,emoji-picker,gif-picker,composer-type-to-focus,composer-idle,composer-typing-cost` then `content-images-live,content-scroll-images,content-cache-bound,content-gif,content-viewer,content-embed,content-invite,content-download,media-live,media-idle,media-video-play,media-audio-play,media-persist` then `search-live,search-supersede,search-refused,search-paging,search-jump,search-narrow,search-encrypted,search-nothing-stored,header-members-toggle,search-idle,search-typing-cost` | A message with a code block and with `$x^2$` (drawn as in Electron); play a video and an audio attachment (sound on the device §8 names; no click at pause or seek) |
+| 10.7 Voice (§7) | `voice-join,voice-speaking-idle,voice-mute,voice-cues,voice-switch,settings-audio-meter` | With a second person: join, switch channel, leave; both hear each other through **WASAPI** with echo cancellation, noise suppression and gain as set in Settings → Audio (speak with speakers on: the other side hears no echo); the right-click volume of a person; mute, deafen, a moderator's server-mute; the lock in the voice bar (MLS) and the stats popover's numbers moving |
+| 10.8 Streams (§8) | `voice-watch,voice-stall,voice-golive-dialog` | While you stream from Windows: the stream's **thumbnail** on your tile in the channel list for people not watching (refreshed every 15 s); move to another voice channel and choose to take the stream along; **stream sound** heard by a viewer, and sealed (the viewer's stats show an encrypted stream) |
+| 10.9 Settings (§9) | `settings-open,settings-appearance-apply,settings-e2ee,settings-keybinds-record,settings-network-caps,settings-unsaved-shake,settings-idle` | Account: the avatar and name as on Linux. Appearance: every theme. Network: the download folder shown is your real Downloads folder (**also when you moved it** in Explorer's properties: the client reads `%USERPROFILE%\Downloads`, so a moved folder is a finding). About, the updater and the crash reporter are the installer's checks (`PACKAGING.md` §11) |
