@@ -86,14 +86,18 @@ administrator rights, `%LOCALAPPDATA%\Programs\Decibell Native` (Electron's inst
 installed (the protocol key only while it still points here) and leaves the profile, as Electron's does.
 Electron ships no portable zip; neither does this.
 
-`packaging/windows/package.ps1` stages `decibell.exe`, runs `check-ship.sh` on it, writes
-`resources/install.json` (`nsis`), and **finds the DLLs by walking the PE import tables**
+`packaging/windows/package.ps1` stages `decibell.exe`, writes `resources/install.json` (`nsis`), **finds
+the DLLs by walking the PE import tables**
 (`packaging/windows/dlls.py`, normal and delay-load imports, recursively) through vcpkg's
 `installed\x64-windows\bin` — so the list is whatever the overlay's install tree really holds
 (expected: FFmpeg's `avcodec`, `avformat`, `avutil`, `swscale`, `swresample`, `avfilter`, `avdevice`
 DLLs, `dav1d.dll`, `SvtAv1Enc.dll` and anything they import) — and copies the Visual C++ runtime
 (`vcruntime140*.dll`, `msvcp140.dll`) app-local from Visual Studio's redistributable folder. A DLL found
-nowhere fails the build. The list is in the workflow's `dlls.txt` artifact.
+nowhere fails the build. The list is in the workflow's `dlls.txt` artifact. Then it runs `check-ship.sh`
+with Git for Windows' `bash.exe` by its path (a bare `bash` on a hosted runner can be WSL's launcher):
+on a PE file it checks the development strings, `--version` (which loads every imported DLL, so it runs
+once they are beside the executable) and the GUI subsystem (no console window); the ELF checks (build id,
+RPATH, the allowed shared libraries) have no PE twin there, and the DLL walk is what checks the imports.
 
 `packaging/windows/test-install.ps1` (run by the workflow on the runner) installs silently into a
 temporary folder, checks the files, every registry value above, the shortcut's AppUserModelID, runs

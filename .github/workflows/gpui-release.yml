@@ -75,6 +75,15 @@ jobs:
       run:
         working-directory: gpui-client
     steps:
+      # A fat-LTO release build of the client, the FFmpeg build, the patched GPUI checkout and the
+      # packages need more than the runner's free disk: drop toolchains this job never uses.
+      - name: Free disk space
+        working-directory: .
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
       - uses: actions/checkout@v4
 
       - name: Install Rust
@@ -109,14 +118,26 @@ jobs:
         with:
           node-version: 20
 
+      # What the ship build's -sys crates probe with pkg-config or link (from `cargo tree` and their
+      # build scripts' output on the build machine, 2026-11-27): alsa-sys → alsa, audiopus_sys → opus,
+      # pipewire-sys / libspa-sys → libpipewire-0.3 + libspa (bindgen: libclang), freetype-sys →
+      # freetype2 and yeslogic-fontconfig-sys → fontconfig (GPUI's font-kit; linked as needed, absent
+      # from the binary's NEEDED list), ffmpeg-sys-next → our prefix + libva / libva-drm / libdrm,
+      # xkbcommon → xkbcommon / xkbcommon-x11 (#[link]), x11rb / xcb → xcb. The binary then NEEDs
+      # libxkbcommon(-x11), libxcb, libva(-drm), libdrm, libopus, libpipewire-0.3, libasound, libgcc_s,
+      # libc, libm (packaging/check-ship.sh's list, packaging/linux/mkdeb.py's Depends). Vulkan, EGL,
+      # Wayland and D-Bus are loaded or spoken at run time (headers only). tools/build-ffmpeg.sh needs
+      # cmake, ninja, python3-venv (meson) and libva / libdrm; packaging needs xz, file and
+      # desktop-file-validate.
       - name: Install system packages
         working-directory: .
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libvulkan-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libwayland-dev libvulkan-dev \
             libasound2-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev libdbus-1-dev \
-            libva-dev libdrm-dev pkg-config cmake ninja-build python3-venv xz-utils desktop-file-utils file
+            libfontconfig-dev libfreetype-dev libva-dev libdrm-dev \
+            pkg-config cmake ninja-build python3-venv xz-utils desktop-file-utils file
 
       # The client's static LGPL FFmpeg (tools/build-ffmpeg.sh) and the source archives it was built
       # from (published with a release: the LGPL's relinking materials, PACKAGING.md).
@@ -201,7 +222,11 @@ jobs:
           test -x "$appimage"
           APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version | tee target/appimage-version.txt
           grep -qx "decibell $v" target/appimage-version.txt
-          ../tools/perf/install-size.sh --label "native tarball" "target/packages/decibell-$v-linux-x86_64.tar.xz" || true
+          # The install size from CI: the tarball's tree as it lands on disk.
+          rm -rf target/unpacked && mkdir -p target/unpacked
+          tar -xJf "target/packages/decibell-$v-linux-x86_64.tar.xz" -C target/unpacked
+          ../tools/perf/install-size.sh --label "native tarball (CI)" "target/unpacked/decibell-$v-linux-x86_64"
+          ls -l target/packages
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
@@ -284,10 +309,7 @@ jobs:
       - name: Unit tests of the release crate
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        shell: bash
-        run: |
-          export PATH="$VCPKG_ROOT/installed/x64-windows/bin:$PATH"
-          cargo test --locked -p decibell-release
+        run: cargo test --locked -p decibell-release
 
       - name: Build the ship binary
         env:

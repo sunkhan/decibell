@@ -27,10 +27,6 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path "$stage\resources", "$stage\licenses" | Out-Null
 
 Copy-Item $Binary "$stage\decibell.exe"
-# The binary is a ship build of this version (Git for Windows' bash runs the shared check).
-# Forward slashes: Git for Windows' bash and coreutils take D:/a/… as they are.
-& bash ("$client/packaging/check-ship.sh" -replace '\\', '/') ("$stage/decibell.exe" -replace '\\', '/') $version
-if ($LASTEXITCODE -ne 0) { throw "check-ship failed" }
 
 [IO.File]::WriteAllText("$stage\resources\install.json", "{`"kind`":`"nsis`",`"version`":`"$version`"}`n")
 foreach ($f in 'sentry.json', 'gifs.json') {
@@ -50,6 +46,19 @@ $dllArgs = @('--exe', "$stage\decibell.exe", '--search', "$Vcpkg\installed\x64-w
 if ($redist) { $dllArgs += @('--redist', $redist.FullName) }
 & python -I "$client\packaging\windows\dlls.py" @dllArgs
 if ($LASTEXITCODE -ne 0) { throw "dlls.py failed" }
+
+# The binary is a ship build of this version: the shared check, run by Git for Windows' bash by its
+# path (a bare `bash` on a hosted runner can be WSL's launcher, with no distribution behind it), once
+# the DLLs are beside it (its `--version` run loads every one the executable imports).
+$gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+if (-not (Test-Path $gitBash)) {
+  $git = (Get-Command git -ErrorAction Stop).Source
+  $gitBash = Join-Path (Split-Path (Split-Path $git)) 'bin\bash.exe'
+}
+if (-not (Test-Path $gitBash)) { throw "Git for Windows' bash.exe not found (looked at $gitBash)" }
+# Forward slashes: Git for Windows' bash and coreutils take D:/a/... as they are.
+& $gitBash ("$client/packaging/check-ship.sh" -replace '\\', '/') ("$stage/decibell.exe" -replace '\\', '/') $version
+if ($LASTEXITCODE -ne 0) { throw "check-ship refused $stage\decibell.exe (its reason is printed above)" }
 
 & python -I "$client\packaging\licenses.py" --target x86_64-pc-windows-msvc --vcpkg "$Vcpkg\installed\x64-windows" `
   --version $version --out "$stage\licenses\THIRD_PARTY_LICENSES.md"
