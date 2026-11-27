@@ -14,7 +14,7 @@ the last three commits: rerun it.
    `row_focus`, the key handler in `role_row`). Self-test `roles-reorder` PASS (also covers drag, the RGB colour
    picker driven as UI, holders added through Add members and removed with ✕).
 2. **Other §1 gaps: done.** Welcome ring turns while the window is visible, present-only ≤ 30 fps
-   (`decibell-servers/src/welcome.rs`, quirk #26 with the measured cost); Create role no longer dimmed at 250.
+   (`decibell-servers/src/welcome.rs`, quirk #37 with the measured cost); Create role no longer dimmed at 250.
 3. **Leaving / joining: done.** `servers-leave-rejoin` PASS (a leave sticks 8 s; leave + immediate re-join through
    the invite stays). `server-owner-leave` PASS. A refused auto-rejoin can't be produced on the stack (HANDOFF §5).
 4. **Missing tests: done, one left.** PASS in a full run on 2026-11-27 (each also passed earlier, so twice):
@@ -40,7 +40,7 @@ the last three commits: rerun it.
 6. **PARITY rows 4.1–5.9: written** (`PARITY.md`); 4.6 partial, 4.8 needs owner (second-device leave race), the rest
    done. Final double run of every test was not finished (stopped mid-way).
 
-Docs written: quirks #26–#28 (`docs/electron-quirks.md`), HANDOFF §5 (leave race checked live, refused rejoin not
+Docs written: quirks #37–#39 (`docs/electron-quirks.md`), HANDOFF §5 (leave race checked live, refused rejoin not
 reproducible, admin actions), CONVENTIONS (keyboard, throwaway-target tests, the ring, invites clipboard).
 
 ## The stack (`tools/dev/local-stack.sh status`)

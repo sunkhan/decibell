@@ -1284,7 +1284,7 @@ Release build, RTX 4080 (NVIDIA 595), KDE Wayland; other agents' builds ran besi
   couldn't** was compared tab by tab on 2026-11-27 (`wip/fix-servers`): every action and gate exists; the
   differences found and fixed were Alt+↑ / Alt+↓ role reordering, the channel topic box typeable without Manage
   Channels (`<textarea disabled>`), ↑ / ↓ stepping in Storage's upload headroom (`type=number step=0.5 min=0`),
-  Server Settings reopening on its last tab (quirk #28), and keyboard access (every hand-built control a tab stop
+  Server Settings reopening on its last tab (quirk #39), and keyboard access (every hand-built control a tab stop
   with Enter / Space and the focus ring; ↑ / ↓ through the member menu, role picker, Add members, the owner picker
   and Add a role or member, the first item focused as a menu opens; ↓ opens the owner picker). Still mouse-first:
   the focus doesn't scroll a plain overflow list to the focused row (Chromium's `focus()` does), and a role row

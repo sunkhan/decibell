@@ -954,7 +954,7 @@ confirmations, the kicked / banned notice.
   stores a `SyncPrompt` in the drag state; `SyncPromptOverlay` shows it.
 - **The welcome banner's ring** turns as the renderer's does (20 s a turn), but as one SVG sprite under a
   `TimedTransformation` capped at `welcome::SPIN_FPS` (30) presents a second: nothing is drawn while it turns, and
-  it stands still while the window is hidden or motion is reduced (quirk #26). `welcome-banner` measures it.
+  it stands still while the window is hidden or motion is reduced (quirk #37). `welcome-banner` measures it.
 - **Inputs** are the renderer's `<input>` boxes around `decibell-text`'s `TextInput` (`ui::input_box`): each look
   (background, radius, padding, `text-sm` / 13 px, monospace with a sans placeholder, the plain placeholder of an
   input without a `placeholder:` class) is an `InputLook`. Autofocus happens in the next render (it has the window);

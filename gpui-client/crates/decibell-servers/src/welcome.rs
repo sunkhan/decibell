@@ -16,7 +16,7 @@
 //! transformation that re-presents the retained scene at most [`SPIN_FPS`] times a second without
 //! re-rendering anything (as the server bar's glow breathes, `decibell-shell/src/glow.rs`). Its
 //! edge moves 13 px a second, so a step is under half a pixel. Hidden, it stands still and the
-//! window presents nothing. `docs/electron-quirks.md` #26 has the cost.
+//! window presents nothing. `docs/electron-quirks.md` #37 has the cost.
 
 use std::cell::Cell;
 use std::rc::Rc;
