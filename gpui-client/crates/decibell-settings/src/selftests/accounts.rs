@@ -475,7 +475,7 @@ async fn check_log_out(cx: TestCx) -> Result<()> {
     let me = format!("#{uid}");
     let mut peer = Headless::start(
         "peer",
-        &["register", &peer_name, &password, "login-as", &peer_name, &password, "wait", "logged-in", "audio-devices", &monitor, &sink, "mute", "deafen",
+        &["register", &peer_name, &password, "login-as", &peer_name, &password, "wait", "logged-in", "audio-devices", &sink, "mute", "deafen",
           "call", &me, "wait", "call", "active", "print", "active", "wait", "call", "idle", "print", "ended", "logout", "wait", "logged-out"],
     )?;
     wait_for(&cx, Duration::from_secs(60), "the incoming call", |cx| model(cx).live.calls.read(cx).status == CallStatus::Incoming).await?;

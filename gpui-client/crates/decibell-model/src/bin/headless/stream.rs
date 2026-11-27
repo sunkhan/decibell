@@ -279,6 +279,8 @@ pub async fn run(step: &StreamStep, model: &Model, cx: &mut AsyncApp) -> Result<
                 // own entry is listed, as the app's Go Live does in a call.
                 let live = LiveStream {
                     codec: VideoCodec::from_wire(rec.codec as i32),
+                    // A recording is one codec from start to end: announced locked to it.
+                    enforced: VideoCodec::from_wire(rec.codec as i32),
                     width: started.width,
                     height: started.height,
                     fps: rec.fps,

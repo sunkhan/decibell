@@ -37,7 +37,6 @@ Live steps (voice, people, calls):
   device-sign-out <id | @file>    sign one device out (the id, or a file holding it)
   friends-only <on|off>           Settings → Privacy's friends-only DMs (the account's)
   join <community>                join a public community of central's directory (as Browse's Join)
-  audio-devices <input> <output>  the voice / call devices (a test's null sink and its monitor)
   leave <community>               leave one of our communities
   call <user> | answer | decline | hangup
   watch <user>[,<user>...]        register presence interest (as a view showing them); a user is a
@@ -90,7 +89,6 @@ pub enum LiveStep {
     FriendsOnly(bool),
     Join(String),
     Leave(String),
-    AudioDevices(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +165,6 @@ pub fn parse(arg: &str, it: &mut Args) -> Result<Option<LiveStep>, String> {
         }),
         "join" => LiveStep::Join(next(arg, it)?),
         "leave" => LiveStep::Leave(next(arg, it)?),
-        "audio-devices" => LiveStep::AudioDevices(next(arg, it)?, next(arg, it)?),
         _ => return Ok(None),
     }))
 }
@@ -430,13 +427,6 @@ pub async fn run(step: &LiveStep, model: &Model, timeout: Duration, cx: &mut Asy
             let (tx, rx) = futures::channel::oneshot::channel();
             cx.update(|cx| actions::servers::connect(server.0, server.1, server.2, cx, move |r, _| drop(tx.send(r))));
             rx.await.map_err(|_| "join: no answer".to_string())?.map_err(|e| format!("join {name:?}: {e}"))?;
-        }
-        LiveStep::AudioDevices(input, output) => {
-            let (input, output) = (input.clone(), output.clone());
-            cx.update(|cx| {
-                actions::voice::set_input_device(Some(input), cx);
-                actions::voice::set_output_device(Some(output), cx);
-            });
         }
         LiveStep::Leave(name) => {
             let id = cx.update(|cx| model.servers.read(cx).servers().iter().find(|s| &*s.name == name.as_str()).map(|s| s.id));
