@@ -23,7 +23,7 @@ needed to continue. The local stack is up unless the machine restarted (`tools/d
 | **The pushed head** | `gpui-client` = `origin/gpui-client` (see `git log -1`) | Everything below "merged" is on it. Windows Native Check and the Native Client Release dry run were green on `0eed848`; the later pushes (sign-in, the suite triage, Windows checkpoint 5, the Members crash fix) had their runs still going when work stopped: **read both workflows' results first.** |
 | **Voice and DMs / calls, round 1** | on the head since `2ddad7d8` | Landed after a full verification on that tree: `tools/win-check.sh --shaders` rc 0, 739 unit tests, both flavours, `check-ship.sh`, 22 of 22 release tests, 64 of 66 self-tests (every `voice-*`, `video-*`, `media-*`, `call-*`, `dm-*`, `server-settings-*`). The two failures are open items below (`search-paging`; `video-vaapi`, intermittent). `.worktrees/land4` still holds that build: **the owner uses it to try the client** (`target/release/decibell` there); rebuild the main tree's before removing it. |
 | **Communities / channels, round 1** | `wip/fix-servers`, `.worktrees/fix-servers` (base `52d32cc` + audit B's docs) | Stopped with its work committed and compiling: `e6064dac` (product), `cbf38701` (tests), `ee14806e` / `6e76c59e` (test fixes, PARITY §4–§5), `ab98c8dc` (`docs/wip-fix-servers.md`: what is done, what is next). **Open there: `server-settings-idle` fails on that branch, cause not found.** Not verified by me, not stacked. |
-| **Round 2** (rows still `partial` after round 1), stopped about an hour in; **none of its new tests has run** | `.worktrees/r2-*`, each with `docs/wip-r2-<name>.md` (finished / half done with file and function / not started / what was learned) | `wip/r2-signin` (base `99f9645`): `35a2de07` compiles, notes `24cb55f0` (the heartbeat interval for 1.5, how the unlisted throwaway community for 1.9 works). `wip/r2-people` (same base): `f7a686a5` (a fake FileChooser portal test for the avatar buttons), `e5392db3` (the 2.8 / 2.2 tests), notes `48ca18aa`; compile-checked except a last small audit-log edit. `wip/r2-chat` (same base): `89c7d709`, compiles except a few late probe edits; has the paging fix and a `search-paging-fixture` test, unrun. `wip/r2-app` (same base): `ce302b6c` compiles (a modal keeps a dropped focus, one opener for links, once-guarded feature inits, their tests), notes `abf29a0d`; the §9 rows themselves not started. `wip/r2-voice` (base `wip/land3`): `7bdc6a62`, **labelled "does not compile" because its compile check was cancelled: unverified**, notes `467b6486`. |
+| **Round 2** (rows still `partial` after round 1), stopped about an hour in; **none of its new tests has run** | `.worktrees/r2-*`, each with `docs/wip-r2-<name>.md` (finished / half done with file and function / not started / what was learned) | `wip/r2-signin` (base `99f9645`): `35a2de07` compiles, notes `24cb55f0` (the heartbeat interval for 1.5, how the unlisted throwaway community for 1.9 works). `wip/r2-people` (same base): `f7a686a5` (a fake FileChooser portal test for the avatar buttons), `e5392db3` (the 2.8 / 2.2 tests), notes `48ca18aa`; compile-checked except a last small audit-log edit. `wip/r2-chat` (rebased onto `70ce847b`; its paging fix is landed): `1e2d9566`, the rest of round 2 as one WIP commit, unrun. `wip/r2-app` (same base): `ce302b6c` compiles (a modal keeps a dropped focus, one opener for links, once-guarded feature inits, their tests), notes `abf29a0d`; the §9 rows themselves not started. `wip/r2-voice` (base `wip/land3`): `7bdc6a62`, **labelled "does not compile" because its compile check was cancelled: unverified**, notes `467b6486`. |
 
 Agents can be resumed with their context (their ids are in the session's transcript) or replaced by fresh ones
 briefed from the audit reports (`docs/parity-audit-{a,b,c}.md`), the `PARITY.md` rows and the WIP notes.
@@ -41,17 +41,14 @@ briefed from the audit reports (`docs/parity-audit-{a,b,c}.md`), the `PARITY.md`
    before the voice work fails the same way now, and it passed in three verifications earlier the same day
    (the owner was running the client beside the last runs): find out whether it is the shim under load or our
    reorder queue.
-2. **Fix the debug-build crash in selectable labels** (found by the sign-in agent, not fixed):
-   `decibell-text/src/label.rs` `listen_for_selection` calls `window.insert_hitbox` from the label's `paint`;
-   GPUI's `debug_assert_prepaint` aborts every debug build that draws one (Settings → Devices). Insert the
-   hitbox in `prepaint` and keep it for `paint`. Release builds don't assert, which is why every verification
-   passed.
-3. **Search results can stop paging** (`search-paging` fails intermittently: "paging stopped (100 results, has
-   more true, … asked false)"): `ResultsView::maybe_load_more` runs only when the view renders. The chat agent
-   found the cause (the render sees the previous frame's scroll position, so the last render before the end
-   can be short of the look-ahead and nothing renders again) and moved the ask onto a per-frame check, with the
-   member list and the GIF picker, which could stall the same way: `wip/r2-chat` `89c7d709`, **unrun**
-   (`docs/wip-r2-chat.md`; its new test is `search-paging-fixture`).
+2. ~~Fix the debug-build crash in selectable labels~~ **done** (`70ce847b`: the hitbox is taken in prepaint;
+   `settings-devices-signout` and `people-profile` pass on a debug build).
+3. ~~Search results can stop paging~~ **done** (`4cea5c32`, the chat agent's item 1 alone, landed): the render
+   read the position the previous frame drew, so a last move longer than the 400 px look-ahead never asked for
+   the next page; the ask now comes from the frame itself (`decibell_ui::ScrollArea::on_frame`, free when no
+   closure is set), and the member list and the GIF picker use the same check. `search-paging` 3 of 3,
+   `search-paging-fixture` 2 of 2. The rest of that agent's round 2 is one WIP commit on `wip/r2-chat`
+   (`1e2d9566`, rebased onto the head; `docs/wip-r2-chat.md` there).
 4. **Finish round 1 for communities / channels and round 2 for the other areas**, landing each as before
    (below), until **no `PARITY.md` row is `partial`**. Quirk numbers reserved for round 2 so parallel work
    doesn't collide: sign-in 51–54, people 55–58, chat 59–64, app 65–70, voice 71–76 (`docs/electron-quirks.md`
