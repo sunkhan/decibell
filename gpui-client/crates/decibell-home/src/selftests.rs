@@ -49,6 +49,8 @@ mod read_rules;
 
 #[path = "selftests/people.rs"]
 mod people;
+#[path = "selftests/dm_flows.rs"]
+mod dm_flows;
 
 const ALICE: &str = "alice";
 const BOB_UID: Uid = 2;
@@ -68,6 +70,11 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "dm-read-sync", about: "two devices of a throwaway account: reading on one clears the unread count on the other", run: |cx| Box::pin(parties(cx, "dm-read-sync", &["a", "a2", "b"])) },
         SelfTest { name: "dm-read-rules", about: "a DM is read only while open, focused and at the bottom: unfocused / scrolled up / minimised it stays unread here and on a second device until that holds", run: |cx| Box::pin(read_rules::parent(cx)) },
         SelfTest { name: "dm-e2ee", about: "two throwaway accounts set up encryption: the chip reads Encrypted, a message arrives decrypted; a fresh profile is locked until unlocked", run: |cx| Box::pin(e2ee(cx)) },
+        SelfTest { name: "dm-quick-send", about: "the popout's quick DM while the conversation is scrolled back in history: sent with no bubble, the popup closes, the conversation opens, the peer gets it", run: |cx| Box::pin(dm_flows::parent(cx, "dm-quick-send", 2)) },
+        SelfTest { name: "dm-list-order", about: "three throwaway accounts: the DM list's drawn order and previews follow each new message", run: |cx| Box::pin(dm_flows::parent(cx, "dm-list-order", 3)) },
+        SelfTest { name: "dm-delete-edit", about: "delete through the row (confirmation, Enter) and with Shift, gone for the peer too; a delete and an edit central refuses: the row back, central's text in the toasts", run: |cx| Box::pin(dm_flows::parent(cx, "dm-delete-edit", 2)) },
+        SelfTest { name: "dm-friends-only", about: "a DM to a friends-only stranger: the bubble withdrawn, \"Message not sent\" with central's text; a call refused", run: |cx| Box::pin(dm_flows::parent(cx, "dm-friends-only", 2)) },
+        SelfTest { name: "dm-e2ee-keys", about: "the set-up nudge dismissed; Change passphrase and Reset keys from Settings (the other device locks, the peer sees it); the keys-changed notice; locked or the peer's keys gone: refused, never plaintext", run: |cx| Box::pin(dm_flows::parent(cx, "dm-e2ee-keys", 2)) },
         SelfTest { name: "friends-flow", about: "throwaway accounts: request by name, accept, both lists, remove; block / unblock", run: |cx| Box::pin(parties(cx, "friends-flow", &["a", "b"])) },
         SelfTest { name: "friends-page", about: "as alice: the tabs show the seeded state (bob, carol friends; dave pending; erin blocked)", run: |cx| Box::pin(alice(cx, "home-friends-page")) },
         SelfTest { name: "profile-popup", about: "as alice: carol's popout from Daily Gaming's member list shows her roles; Escape closes it", run: |cx| Box::pin(alice(cx, "home-profile-popup")) },
@@ -338,6 +345,11 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "home-idle", about: "(in the app) idle frames", run: |cx| Box::pin(check_idle(cx)) },
         SelfTest { name: "home-actor", about: "(in the app) one participant of a two-account test", run: |cx| Box::pin(actor(cx)) },
         SelfTest { name: "home-dm-read-rules", about: "(in the app) the reader of dm-read-rules", run: |cx| Box::pin(read_rules::check(cx)) },
+        SelfTest { name: "home-dm-quick-send", about: "(in the app) the quick DM while scrolled back", run: |cx| Box::pin(dm_flows::check_quick_send(cx)) },
+        SelfTest { name: "home-dm-list-order", about: "(in the app) the DM list's order and previews", run: |cx| Box::pin(dm_flows::check_list_order(cx)) },
+        SelfTest { name: "home-dm-delete-edit", about: "(in the app) deletes and refusals", run: |cx| Box::pin(dm_flows::check_delete_edit(cx)) },
+        SelfTest { name: "home-dm-friends-only", about: "(in the app) a friends-only stranger", run: |cx| Box::pin(dm_flows::check_friends_only(cx)) },
+        SelfTest { name: "home-dm-e2ee-keys", about: "(in the app) key changes", run: |cx| Box::pin(dm_flows::check_e2ee_keys(cx)) },
     ]
     .into_iter()
     .chain(people::checks())

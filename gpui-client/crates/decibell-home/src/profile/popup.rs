@@ -118,7 +118,10 @@ impl ProfilePopup {
         self.polled = None;
         self.placeholder_name = SharedString::default();
         self.community.clear();
-        self.input.update(cx, |state, cx| state.clear(cx));
+        self.input.update(cx, |state, cx| {
+            state.set_disabled(false, cx);
+            state.clear(cx);
+        });
         if let Some(open) = self.open.clone() {
             let model = Model::global(cx).clone();
             self.follow_name(cx);
@@ -206,8 +209,11 @@ impl ProfilePopup {
         }));
     }
 
-    /// The quick DM: sent through the DM actions (the bubble at once, the echo confirms it), then
-    /// the conversation opens.
+    /// The quick DM (`handleSend`): sent as the renderer sends it, with no bubble (central's echo
+    /// lands in the conversation, whatever it shows: scrolled back in history too), the field
+    /// disabled meanwhile. Sent: the field clears, the popup closes and the conversation opens.
+    /// Refused (encryption locked with a pinned peer, central gone): the popup stays open with
+    /// the text, the field usable again.
     fn send(&mut self, cx: &mut Context<Self>) {
         let Some(open) = self.open.clone() else { return };
         let text = self.input.read(cx).value().trim().to_string();
@@ -215,13 +221,46 @@ impl ProfilePopup {
             return;
         }
         self.sending = true;
+        self.input.update(cx, |state, cx| state.set_disabled(true, cx));
+        cx.notify();
         let name = popup_name(&open, cx);
-        // The conversation exists before the bubble lands in it.
-        actions::dm::open_dm(open.uid, name, cx);
-        actions::dm::send_dm(open.uid, &text, 0, cx);
-        self.input.update(cx, |state, cx| state.clear(cx));
-        let overlays = Model::global(cx).overlays.clone();
-        overlays.update(cx, |o, cx| o.close_profile_popup(cx));
+        let opened = self.opened;
+        let sent = actions::dm::send_quick(open.uid, name.clone(), &text, cx);
+        cx.spawn(async move |this, cx| {
+            let result = sent.await;
+            let _ = this.update(cx, |this, cx| {
+                let still_open = this.opened == opened;
+                match result {
+                    Ok(()) => {
+                        if still_open {
+                            this.input.update(cx, |state, cx| state.clear(cx));
+                            let overlays = Model::global(cx).overlays.clone();
+                            overlays.update(cx, |o, cx| o.close_profile_popup(cx));
+                        }
+                        actions::dm::open_dm(open.uid, name, cx);
+                    }
+                    Err(e) => {
+                        log::error!("DM send failed: {e}");
+                        if still_open {
+                            this.sending = false;
+                            this.input.update(cx, |state, cx| state.set_disabled(false, cx));
+                            cx.notify();
+                        }
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The quick DM is on its way (tests).
+    pub fn sending(&self) -> bool {
+        self.sending
+    }
+
+    /// The quick-DM field's text (tests).
+    pub fn quick_dm_text(&self, cx: &App) -> String {
+        self.input.read(cx).value().to_string()
     }
 
     /// The live preview's click: open the stream's community, join its channel, watch it large.
@@ -373,7 +412,7 @@ impl Render for ProfilePopup {
             look.py = 9.;
             look.size = 12.;
             look.font = FontRole::Sans;
-            input_box(("popup-dm", self.opened), &self.input, look, window, cx)
+            div().relative().children(decibell_shell::probes::probe("popup-dm")).child(input_box(("popup-dm", self.opened), &self.input, look, window, cx))
         });
         let gradient = person_gradient(uid, &name, cx);
         let pill = status_pill(presence, FontRole::Sans, cx);

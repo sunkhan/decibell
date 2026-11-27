@@ -33,6 +33,8 @@ Message steps (the open community):
   dm-read <user>                  read it up to its newest message (mark read); an open
                                   conversation (`dm-open`) counts as being read: a DM arriving
                                   for it isn't unread
+  dm-privacy <friends|anyone>     Settings → Privacy's \"Only friends can DM me\" (the account's
+                                  value at central)
   search <query>                  one server-side search (one argument: quote it); waits
   wait-history <channel>          its newest page is in
   wait-message <channel> <text>   a row with that text arrived (another client's message)
@@ -57,6 +59,7 @@ pub enum ChatStep {
     DmSend { user: String, text: String },
     DmDelete { user: String, target: String },
     DmRead(String),
+    DmPrivacy(bool),
     Search(String),
     Wait(ChatWait),
 }
@@ -87,7 +90,7 @@ pub enum ChatWait {
 pub fn is_step(cmd: &str) -> bool {
     matches!(
         cmd,
-        "history" | "send" | "send-burst" | "edit" | "delete" | "dm-open" | "dm-send" | "dm-delete" | "dm-read" | "search"
+        "history" | "send" | "send-burst" | "edit" | "delete" | "dm-open" | "dm-send" | "dm-delete" | "dm-read" | "dm-privacy" | "search"
     ) || cmd.starts_with("wait-") && cmd != "wait-file"
 }
 
@@ -130,6 +133,11 @@ pub fn parse(cmd: &str, it: &mut std::vec::IntoIter<String>) -> Result<ChatStep,
         "dm-open" => ChatStep::DmOpen(next("user", it)?),
         "dm-send" => ChatStep::DmSend { user: next("user", it)?, text: next("text", it)? },
         "dm-read" => ChatStep::DmRead(next("user", it)?),
+        "dm-privacy" => ChatStep::DmPrivacy(match next("friends|anyone", it)?.as_str() {
+            "friends" => true,
+            "anyone" => false,
+            other => return Err(format!("dm-privacy: {other:?} (friends or anyone)")),
+        }),
         "dm-delete" => ChatStep::DmDelete { user: next("user", it)?, target: next("id", it)? },
         "search" => ChatStep::Search(next("query", it)?),
         "wait-history" => ChatStep::Wait(ChatWait::History(next("channel", it)?)),
@@ -348,6 +356,16 @@ pub async fn run(step: &ChatStep, model: &Model, timeout: Duration, cx: &mut Asy
             cx.update(|cx| dm_actions::mark_read(peer, cx));
             // Past the 250 ms before the marker leaves.
             cx.background_executor().timer(Duration::from_millis(400)).await;
+        }
+        ChatStep::DmPrivacy(friends_only) => {
+            let friends_only = *friends_only;
+            cx.update(|cx| dm_actions::set_friends_only_dms(friends_only, cx));
+            // Central keeps it on the account; its echo (`OWN_PRESENCE`) settles the setting.
+            if !until(timeout, cx, |cx| model.settings.read(cx).get().friends_only_dms == friends_only).await {
+                return Err("dm-privacy: the setting didn't follow".into());
+            }
+            cx.background_executor().timer(Duration::from_millis(500)).await;
+            crate::say(format!("DM-PRIVACY {}", if friends_only { "friends" } else { "anyone" }));
         }
         ChatStep::Search(query) => {
             let server = cx.update(|cx| model.nav.read(cx).active_server).ok_or("no community is open")?;

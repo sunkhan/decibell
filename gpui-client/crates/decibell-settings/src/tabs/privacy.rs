@@ -201,9 +201,10 @@ fn e2ee_section(_: &mut Window, cx: &mut App) -> AnyElement {
     };
     // E2eeSection's `SecondaryButton`.
     let secondary = |id: &'static str, label: &'static str, mode: PassphraseMode, _: &App| {
-        Button::new(id, label)
-            .variant(ButtonVariant::QuietOutline)
-            .on_click(move |_, _, cx| open_passphrase(mode, cx))
+        div()
+            .relative()
+            .children(decibell_shell::probes::probe(id))
+            .child(Button::new(id, label).variant(ButtonVariant::QuietOutline).on_click(move |_, _, cx| open_passphrase(mode, cx)))
             .into_any_element()
     };
     let (description, badge, actions): (&str, Option<(&str, bool)>, Vec<AnyElement>) =

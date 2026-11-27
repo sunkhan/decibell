@@ -41,6 +41,10 @@ use super::{banner, dm_composer};
 use crate::e2ee::{PeerInfoChanged, PeerInfos, current_key};
 use crate::ui::{Look, button};
 
+/// The room the chat (messages and composer) keeps under the compact call stage (`CallStage.tsx`
+/// `CHAT_MIN`): the stage gives way down to its own minimum.
+const CHAT_MIN: f32 = 180.;
+
 /// What stands in the list's place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Body {
@@ -170,7 +174,8 @@ impl Conversation {
         if let Some(load) = actions::dm::open_history(peer, cx) {
             this.load = Some(this.await_load(load, cx));
         }
-        PeerInfos::want(peer, cx);
+        // Opening the conversation asks again (`usePeerE2ee` per mount).
+        PeerInfos::ask_again(peer, cx);
         this.body = this.body_now(cx);
         this.seen.0 = this.slice.read(cx).rows().len();
         // Read once the list says it landed at the bottom of a focused window (its first frame).
@@ -218,6 +223,11 @@ impl Conversation {
 
     pub fn body(&self) -> Body {
         self.body
+    }
+
+    /// The message the delete confirmation asks about, while it is open (tests).
+    pub fn confirming_delete(&self) -> Option<i64> {
+        self.confirm_delete
     }
 
     /// The composer under the list (none until the app registers one).
@@ -444,9 +454,22 @@ impl Render for Conversation {
             .children(notice)
             .children(self.stage.clone().map(|stage| stage.into_any_element()))
             .when(theater.is_none(), |this| {
+                // Under the compact call stage the chat keeps at least `CHAT_MIN` (`CallStage.tsx`):
+                // the stage is drawn shorter, never this.
+                let chat_min = if self.stage.is_some() { CHAT_MIN } else { 0. };
                 // The composer draws the inline send error above its card (`sendError`).
-                this.child(div().relative().flex().flex_col().flex_1().min_h_0().overflow_hidden().child(body)).children(
-                    self.composer.as_ref().map(|c| div().relative().children(decibell_shell::probes::probe("dm-composer")).child(c.view.clone())),
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h(px(chat_min))
+                        .child(div().relative().flex().flex_col().flex_1().min_h_0().overflow_hidden().child(body))
+                        .children(
+                            self.composer
+                                .as_ref()
+                                .map(|c| div().relative().children(decibell_shell::probes::probe("dm-composer")).child(c.view.clone())),
+                        ),
                 )
             })
             .child(

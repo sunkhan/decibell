@@ -185,6 +185,22 @@ impl Render for DmRows {
                     .into_any_element(),
             );
         }
+        // The self-tests read the drawn order and previews (only with probes on: nothing is
+        // built otherwise).
+        if crate::probes::enabled() {
+            let drawn: String = list
+                .sorted()
+                .iter()
+                .filter_map(|peer| list.get(*peer).map(|c| (*peer, c)))
+                .map(|(peer, c)| {
+                    let preview = c.last_message.as_ref().map_or(String::new(), |m| {
+                        decibell_richtext::plain::preview(&m.content).own_text().unwrap_or("").to_string()
+                    });
+                    format!("{peer}\t{preview}\n")
+                })
+                .collect();
+            crate::probes::text("dm-rows", &drawn.into());
+        }
         let empty = rows.is_empty();
         // The relative times are memoised in the renderer with a 60 s clock; here the list
         // re-renders exactly when the soonest label on screen changes, and has no timer otherwise.

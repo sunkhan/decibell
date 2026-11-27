@@ -116,6 +116,7 @@ pub fn header(f: &HeaderFacts, cx: &mut App) -> impl IntoElement + use<> {
     };
     let call_disabled = !online || !f.call_signaling || !idle;
     let call = header_button("call", IconName::ShellPhone, call_title, call_disabled, cx)
+        .children(decibell_shell::probes::probe("dm-call"))
         .when(!call_disabled, |this| this.on_click(move |_: &ClickEvent, _, cx| actions::calls::start_call(peer, cx)));
     let theater = f.theater.map(|unread| {
         let t = cx.theme();

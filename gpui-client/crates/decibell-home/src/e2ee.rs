@@ -132,6 +132,21 @@ impl PeerInfos {
         });
     }
 
+    /// A view of `uid` mounted (the renderer's hook fetched per mounted view: opening a
+    /// conversation asks again, so a peer who set up or reset encryption since is seen): the kept
+    /// answer goes (nothing shown until the new one, as `setInfo(null)`) and the core is asked.
+    pub fn ask_again(uid: Uid, cx: &mut App) {
+        if let Some(store) = PeerInfos::existing(cx) {
+            store.update(cx, |s, cx| {
+                if s.entries.remove(&uid).is_some() {
+                    cx.emit(PeerInfoChanged(uid));
+                    cx.notify();
+                }
+            });
+        }
+        PeerInfos::want(uid, cx);
+    }
+
     /// Sign-out: nothing carries over to the next account.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         if !self.entries.is_empty() {

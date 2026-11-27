@@ -286,6 +286,31 @@ pub fn send_gif(peer: Uid, url: &str, reply_to: i64, cx: &mut App) -> SendOutcom
     send(peer, url, reply_to, true, cx)
 }
 
+/// The profile popout's quick DM (`UserProfilePopup.tsx` `handleSend`): sent as the renderer
+/// sends it there, straight to the core with no bubble and no nonce, so it goes out whatever
+/// the conversation shows (scrolled back in history included) and only central's echo puts it
+/// in the conversation. The task ends with the call's outcome: the popout closes once it went
+/// out and keeps its text when it didn't (encryption locked with a pinned peer, central gone).
+pub fn send_quick(peer: Uid, name: SharedString, text: &str, cx: &mut App) -> Task<Result<(), crate::error::UiError>> {
+    let text = text.trim().to_string();
+    if text.is_empty() || peer <= 0 {
+        return Task::ready(Ok(()));
+    }
+    let args = api::messaging::SendPrivateMessageArgs {
+        recipient: name.to_string(),
+        recipient_uid: Some(peer),
+        message: text,
+        reply_to: None,
+        nonce: None,
+    };
+    cx.spawn(async move |_| {
+        if !crate::core::is_running() {
+            return Err(crate::error::UiError::not_running());
+        }
+        api::messaging::send_private_message(args).await.map_err(crate::error::UiError::from)
+    })
+}
+
 fn send(peer: Uid, content: &str, reply_to: i64, gif: bool, cx: &mut App) -> SendOutcome {
     let Some(model) = model(cx) else { return SendOutcome::Nothing };
     if content.is_empty() || peer <= 0 {

@@ -28,6 +28,10 @@ Live steps (voice, people, calls):
   friend-add <name> | friend-accept <name> | friend-decline <name> | friend-remove <name>
   e2ee-status                     pull the E2EE status
   e2ee-ready <passphrase>         set encryption up (not set up) or unlock it (locked)
+  e2ee-reset <passphrase>         Reset keys: a new identity under a new passphrase (the account's
+                                  other devices lock; a pinned peer sees a key change)
+  audio-devices <sink>            the voice / call devices: <sink> for output, its monitor for
+                                  input (a test's null sink: nothing heard, no real microphone)
   peer-info <user>                one line `DUMP peer-info <json>` (keys, safety number)
   devices                         load the account's device list
   device-sign-out <id | @file>    sign one device out (the id, or a file holding it)
@@ -71,6 +75,8 @@ pub enum LiveStep {
     Friend(&'static str, String),
     E2eeStatus,
     E2eeReady(String),
+    E2eeReset(String),
+    AudioDevices(String),
     PeerInfo(String),
     Devices,
     DeviceSignOut(String),
@@ -138,6 +144,8 @@ pub fn parse(arg: &str, it: &mut Args) -> Result<Option<LiveStep>, String> {
         "friend-remove" => LiveStep::Friend("remove", next(arg, it)?),
         "e2ee-status" => LiveStep::E2eeStatus,
         "e2ee-ready" => LiveStep::E2eeReady(next(arg, it)?),
+        "e2ee-reset" => LiveStep::E2eeReset(next(arg, it)?),
+        "audio-devices" => LiveStep::AudioDevices(next(arg, it)?),
         "peer-info" => LiveStep::PeerInfo(next(arg, it)?),
         "devices" => LiveStep::Devices,
         "device-sign-out" => LiveStep::DeviceSignOut(next(arg, it)?),
@@ -327,6 +335,35 @@ pub async fn run(step: &LiveStep, model: &Model, timeout: Duration, cx: &mut Asy
                 cx.background_executor().timer(Duration::from_millis(50)).await;
             }
         }
+        LiveStep::E2eeReset(passphrase) => {
+            let before = cx.update(|cx| model.live.e2ee.read(cx).key_id);
+            cx.update(|cx| {
+                model.live.e2ee.update(cx, |e, cx| e.open(PassphraseMode::Reset, cx));
+                actions::e2ee::submit_passphrase(passphrase.clone(), passphrase.clone(), cx);
+            });
+            let started = Instant::now();
+            loop {
+                let (status, key_id, flow) = cx.update(|cx| {
+                    let e = model.live.e2ee.read(cx);
+                    (e.status, e.key_id, e.passphrase.clone())
+                });
+                if let Some(err) = flow.as_ref().and_then(|f| f.error.clone()) {
+                    return Err(format!("e2ee-reset: {err}"));
+                }
+                if flow.is_none() && status == E2eeStatus::Ready && key_id != before {
+                    crate::say(format!("E2EE-RESET key {key_id}"));
+                    break;
+                }
+                if started.elapsed() > timeout {
+                    return Err(format!("e2ee-reset: still {status:?}, key {key_id}"));
+                }
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+            }
+        }
+        LiveStep::AudioDevices(sink) => cx.update(|cx| {
+            actions::voice::set_input_device(Some(format!("{sink}.monitor")), cx);
+            actions::voice::set_output_device(Some(sink.clone()), cx);
+        }),
         LiveStep::PeerInfo(name) => {
             let uid = cx.update(|cx| need_uid(model, name, cx))?;
             let (tx, rx) = futures::channel::oneshot::channel();

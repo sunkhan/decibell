@@ -63,6 +63,8 @@ fn action_button(id: &'static str, label: &'static str, primary: bool, on_click:
             }
         })
         .on_click(on_click)
+        .relative()
+        .children(decibell_shell::probes::probe(id))
         .child(Label::new(label).size(12.).weight(if primary { 600. } else { 500. }))
         .into_any_element()
 }
