@@ -521,3 +521,64 @@ fn cost() {
     let group = started.elapsed().as_nanos() as f64 / n as f64;
     println!("message_stamp {stamp:.1} ns (local zone {zone:.1} ns + formatting {format:.1} ns); group {group:.1} ns [{total}]");
 }
+
+/// A zone whose clocks jump from 00:00 to 01:00 on 2026-09-06 (UTC−4 → UTC−3, as Chile's do):
+/// midnight that night doesn't exist.
+#[derive(Clone, Copy, Debug)]
+struct JumpsAtMidnight;
+
+impl JumpsAtMidnight {
+    const WINTER: i32 = -4 * 3600;
+    const SUMMER: i32 = -3 * 3600;
+    fn jump_local() -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 9, 6).unwrap().and_hms_opt(0, 0, 0).unwrap()
+    }
+    /// The instant of the jump: 00:00 at UTC−4.
+    fn jump_utc() -> chrono::NaiveDateTime {
+        Self::jump_local() - chrono::Duration::seconds(i64::from(Self::WINTER))
+    }
+}
+
+impl chrono::TimeZone for JumpsAtMidnight {
+    type Offset = chrono::FixedOffset;
+    fn from_offset(_: &chrono::FixedOffset) -> Self {
+        JumpsAtMidnight
+    }
+    fn offset_from_local_date(&self, local: &chrono::NaiveDate) -> chrono::LocalResult<chrono::FixedOffset> {
+        self.offset_from_local_datetime(&local.and_hms_opt(12, 0, 0).unwrap())
+    }
+    fn offset_from_local_datetime(&self, local: &chrono::NaiveDateTime) -> chrono::LocalResult<chrono::FixedOffset> {
+        let jump = Self::jump_local();
+        if *local < jump {
+            chrono::LocalResult::Single(chrono::FixedOffset::east_opt(Self::WINTER).unwrap())
+        } else if *local < jump + chrono::Duration::hours(1) {
+            chrono::LocalResult::None
+        } else {
+            chrono::LocalResult::Single(chrono::FixedOffset::east_opt(Self::SUMMER).unwrap())
+        }
+    }
+    fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> chrono::FixedOffset {
+        self.offset_from_utc_datetime(&utc.and_hms_opt(12, 0, 0).unwrap())
+    }
+    fn offset_from_utc_datetime(&self, utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(if *utc < Self::jump_utc() { Self::WINTER } else { Self::SUMMER }).unwrap()
+    }
+}
+
+/// "Today" on the evening before a jump over midnight ends where the jump lands (01:00 new time,
+/// the same instant as 00:00 old time), not a day later; an ordinary night ends at its midnight.
+#[test]
+fn midnight_in_a_dst_gap_is_where_the_jump_lands() {
+    use chrono::TimeZone as _;
+    let jump = JumpsAtMidnight::jump_utc().and_utc().timestamp();
+    let evening = jump - 3 * 3600;
+    assert_eq!(next_midnight_in(&JumpsAtMidnight, evening), Some(jump), "the day ends at the jump");
+    let local = JumpsAtMidnight.timestamp_opt(jump, 0).single().unwrap().naive_local();
+    assert_eq!(local, JumpsAtMidnight::jump_local() + chrono::Duration::hours(1), "01:00 on the clock");
+    // The next night has its midnight (UTC−3).
+    let next = next_midnight_in(&JumpsAtMidnight, jump + 3600).unwrap();
+    assert_eq!(next, jump + 23 * 3600, "a 23-hour day");
+    // A night a week before: 24 hours after the previous midnight.
+    let week_before = jump - 7 * 86_400 - 3 * 3600;
+    assert_eq!(next_midnight_in(&JumpsAtMidnight, week_before), Some(jump - 7 * 86_400));
+}

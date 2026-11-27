@@ -289,12 +289,11 @@ fn letter(uid: Uid, name: SharedString, size: f32, chrome: bool, cx: &App) -> gp
         .into_any_element()
 }
 
-/// A custom status message (`StatusMessageText`): its emoji, then its text, one line cut with
-/// "…". The caller gives the line's font, size and colour (`font-meta text-micro text-text-muted`
-/// in lists).
-///
-/// The renderer draws the emoji as Twemoji; here they come from the text engine's font fallback
-/// until the rich-text engine's inline emoji are wired into labels (decibell-text).
+/// A custom status message (`StatusMessageText`): its emoji, then its text, every emoji drawn as
+/// Twemoji (`emoji_size`, default 14 px), on one line cut with "…" whose whole text shows on
+/// hover (the renderer's `title`), or wrapped ([`StatusMessageText::wrap`]: the profile cards).
+/// The caller gives the line's font, size and colour (`font-meta text-micro text-text-muted` in
+/// lists).
 #[derive(IntoElement)]
 pub struct StatusMessageText {
     message: StatusMessage,
@@ -302,11 +301,13 @@ pub struct StatusMessageText {
     size: f32,
     line_height: Option<f32>,
     color: Option<Hsla>,
+    emoji_size: f32,
+    wrap: bool,
 }
 
 impl StatusMessageText {
     pub fn new(message: StatusMessage) -> Self {
-        Self { message, font: FontRole::Meta, size: 11., line_height: None, color: None }
+        Self { message, font: FontRole::Meta, size: 11., line_height: None, color: None, emoji_size: 14., wrap: false }
     }
 
     pub fn font(mut self, font: FontRole) -> Self {
@@ -328,6 +329,19 @@ impl StatusMessageText {
         self.color = Some(color);
         self
     }
+
+    /// The emoji's size, px (`emojiSize`).
+    pub fn emoji_size(mut self, px: f32) -> Self {
+        self.emoji_size = px;
+        self
+    }
+
+    /// Wrap instead of truncating to one line (`wrap`: `whitespace-pre-wrap break-words`, no
+    /// hover text).
+    pub fn wrap(mut self) -> Self {
+        self.wrap = true;
+        self
+    }
 }
 
 /// The text a status message reads as: `"<emoji> <text>"`, either part optional.
@@ -345,10 +359,17 @@ impl RenderOnce for StatusMessageText {
             .font(self.font)
             .size(self.size)
             .color(self.color.unwrap_or(cx.theme().color_text_muted))
-            .truncate();
+            .emoji(self.emoji_size);
+        label = if self.wrap { label.pre_wrap() } else { label.truncate() };
         if let Some(line_height) = self.line_height {
             label = label.line_height(line_height);
         }
-        label
+        // A cut line reads in full on hover: the text, as the renderer's `title` (no emoji).
+        let title = (!self.wrap && !self.message.text.is_empty()).then(|| self.message.text.clone());
+        div()
+            .id("status-message")
+            .min_w_0()
+            .when_some(title, |this, title| this.tooltip(decibell_ui::title_tooltip(title)))
+            .child(label)
     }
 }

@@ -175,7 +175,8 @@ impl Render for DmRows {
                             .min_w_0()
                             .child(Label::new(name).font(FontRole::Channel).size(text_member).weight(500.).truncate())
                             .when_some(preview, |this, preview| {
-                                this.child(Label::new(preview).font(FontRole::Channel).size(11.).color(ink.color_text_muted).truncate())
+                                // `MessageText preview emojiSize={13}`: Twemoji in the line.
+                                this.child(Label::new(preview).font(FontRole::Channel).size(11.).color(ink.color_text_muted).emoji(13.).truncate())
                             }),
                     )
                     .when_some(time, |this, time| {

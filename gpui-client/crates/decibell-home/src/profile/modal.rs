@@ -12,10 +12,11 @@ use decibell_model::live::friends::{Friend, FriendAction, FriendStatus};
 use decibell_model::stores::community::{Member, Role};
 use decibell_model::stores::overlays::modal;
 use decibell_model::{Model, ServerId, Uid, actions};
+use decibell_text::input::{InputState, InputStyle, TextArea, TextInput};
 use decibell_ui::{ActiveTheme as _, CloseRequest, FontRole, Icon, IconName, Label, Modal, ScrollArea, StatusDot};
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Global, IntoElement, Render, SharedString, Subscription,
-    Window, div, prelude::*, px,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, Global, IntoElement, Render, SharedString,
+    Subscription, Window, div, prelude::*, px,
 };
 
 use super::role_chips;
@@ -50,6 +51,9 @@ pub struct ProfileModal {
     tab: ProfileTab,
     /// A friend action on its way (`FriendActions`' `busy`).
     busy: bool,
+    /// The `select-text` values drawn (About's values, the safety number's groups, fingerprints):
+    /// read-only fields, by place, made when first drawn and dropped when the screen closes.
+    values: std::collections::HashMap<SharedString, Entity<InputState>>,
     community: Vec<Subscription>,
     _watch: Watch,
     _subscriptions: Vec<Subscription>,
@@ -79,8 +83,16 @@ impl ProfileModal {
             // Our status reaching "ready" asks for the safety number.
             cx.observe(&model.live.e2ee, |this, _, cx| this.want_info(cx)),
         ];
-        let mut this =
-            Self { shown: None, open: false, tab: ProfileTab::Profile, busy: false, community: Vec::new(), _watch: watch, _subscriptions: subscriptions };
+        let mut this = Self {
+            shown: None,
+            open: false,
+            tab: ProfileTab::Profile,
+            busy: false,
+            values: Default::default(),
+            community: Vec::new(),
+            _watch: watch,
+            _subscriptions: subscriptions,
+        };
         let (open, next) = {
             let o = model.overlays.read(cx);
             (o.is_open(modal::USER_PROFILE) && o.user_profile_user.is_some(), o.user_profile_user.map(|uid| (uid, o.user_profile_server)))
@@ -95,6 +107,7 @@ impl ProfileModal {
             self.tab = cx.default_global::<TabRequest>().0.take().unwrap_or_default();
             self.shown = next;
             self.busy = false;
+            self.values.clear();
             self.follow_community(cx);
             self.open = true;
             self.want_info(cx);
@@ -102,6 +115,7 @@ impl ProfileModal {
         } else if !open && self.open {
             self.open = false;
             self.community.clear();
+            self.values.clear();
             cx.notify();
         }
     }
@@ -129,6 +143,43 @@ impl ProfileModal {
 
     pub fn tab(&self) -> ProfileTab {
         self.tab
+    }
+
+    /// A `select-text` value (`Row`'s `dd`, the safety number, `Mono`): a read-only field of the
+    /// text engine (drag, double and triple click, Ctrl+A, Ctrl+C), kept per place while shown.
+    fn selectable(&mut self, key: SharedString, value: &str, multi_line: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        let state = self
+            .values
+            .entry(key)
+            .or_insert_with(|| {
+                cx.new(|cx| if multi_line { InputState::multi_line(window, cx) } else { InputState::single_line(window, cx) }.read_only(true))
+            })
+            .clone();
+        if state.read(cx).value() != value {
+            state.update(cx, |state, cx| state.set_value(value, cx));
+        }
+        state
+    }
+
+    /// One line of selectable text in a label's look.
+    fn value_text(&mut self, key: SharedString, value: &str, font: FontRole, size: f32, tracking: Option<f32>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let state = self.selectable(key, value, false, window, cx);
+        let style = value_style(font, size, tracking, cx);
+        TextInput::new(&state, style).into_any_element()
+    }
+
+    /// `Mono`: an uppercase caption over a monospaced, selectable value that breaks anywhere.
+    fn mono(&mut self, key: SharedString, label: impl Into<SharedString>, value: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let state = self.selectable(key, value, true, window, cx);
+        let mut style = value_style(FontRole::Mono, 11., Some(0.06), cx);
+        style.wrapping = decibell_text::Wrapping::MESSAGE;
+        let t = cx.theme();
+        let label: SharedString = label.into();
+        div()
+            .mt_2p5()
+            .child(Label::new(label.to_uppercase()).size(10.).weight(600.).tracking(0.07).color(t.color_text_muted))
+            .child(div().mt_1().child(TextArea::new(&state, style)))
+            .into_any_element()
     }
 
     fn close(cx: &mut App) {
@@ -206,15 +257,14 @@ fn para(text: impl Into<SharedString>, cx: &App) -> AnyElement {
     Label::new(text).size(12.).line_height(12. * 1.55).color(cx.theme().color_text_muted).into_any_element()
 }
 
-/// `Mono`: an uppercase caption over a monospaced value.
-fn mono(label: impl Into<SharedString>, value: SharedString, cx: &App) -> AnyElement {
-    let t = cx.theme();
-    let label: SharedString = label.into();
-    div()
-        .mt_2p5()
-        .child(Label::new(label.to_uppercase()).size(10.).weight(600.).tracking(0.07).color(t.color_text_muted))
-        .child(div().mt_1().child(Label::new(value).font(FontRole::Mono).size(11.).tracking(0.06).color(t.color_text_primary)))
-        .into_any_element()
+/// A selectable value's look: a label's (the font at `size`, line height 1.5, `text-text-primary`,
+/// `tracking` em or the body's) with Chromium's selection colours.
+fn value_style(font: FontRole, size: f32, tracking: Option<f32>, cx: &mut App) -> InputStyle {
+    let mut style = decibell_ui::TextField::input_style(font, size, 1.5, cx);
+    if let Some(em) = tracking {
+        style.text.letter_spacing = em * size;
+    }
+    style
 }
 
 const fn friend_label(status: FriendStatus) -> &'static str {
@@ -239,7 +289,7 @@ struct Shown {
 }
 
 impl ProfileModal {
-    fn profile_tab(&self, s: &Shown, cx: &App) -> AnyElement {
+    fn profile_tab(&mut self, s: &Shown, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let nickname = s.member.as_ref().map(|m| m.nickname.clone()).filter(|n| !n.is_empty() && *n != s.name);
         let mut rows: Vec<(SharedString, SharedString)> = vec![("Username".into(), s.name.clone())];
         if let Some(nickname) = nickname {
@@ -253,14 +303,18 @@ impl ProfileModal {
             let label = s.server_name.as_ref().map_or_else(|| "Joined server".into(), |n| format!("Joined {n}").into());
             rows.push((label, crate::fmt::short_date(member.joined_at)));
         }
-        let t = cx.theme();
-        let (muted, primary) = (t.color_text_muted, t.color_text_primary);
+        let muted = cx.theme().color_text_muted;
+        // The values are `select-text` (`Row`'s `dd`).
+        let values: Vec<AnyElement> = rows
+            .iter()
+            .map(|(l, v)| self.value_text(SharedString::from(format!("about:{l}")), v, FontRole::Sans, 13., None, window, cx))
+            .collect();
         // `grid-cols-[max-content_1fr] gap-x-6 gap-y-2`: a label column as wide as its widest.
         let about = div()
             .flex()
             .gap_6()
             .child(div().flex().flex_col().flex_none().gap_2().children(rows.iter().map(|(l, _)| Label::new(l.clone()).size(13.).color(muted))))
-            .child(div().flex().flex_col().flex_1().min_w_0().gap_2().children(rows.iter().map(|(_, v)| Label::new(v.clone()).size(13.).color(primary).truncate())))
+            .child(div().flex().flex_col().flex_1().min_w_0().gap_2().children(values))
             .into_any_element();
         let mut cards = vec![card("About".into(), None, false, None, vec![about], cx)];
         if s.server.is_some() {
@@ -271,16 +325,19 @@ impl ProfileModal {
         div().flex().flex_col().gap_3().children(cards).into_any_element()
     }
 
-    fn privacy_tab(&self, s: &Shown, cx: &App) -> AnyElement {
-        let model = Model::global(cx);
-        let e2ee = model.live.e2ee.read(cx);
-        let (supported, status, fingerprint) = (e2ee.supported, e2ee.status, e2ee.fingerprint.clone());
-        let settings = |label: &'static str, tab: &'static str| {
+    fn privacy_tab(&mut self, s: &Shown, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let model = Model::global(cx).clone();
+        let (supported, status, fingerprint) = {
+            let e2ee = model.live.e2ee.read(cx);
+            (e2ee.supported, e2ee.status, e2ee.fingerprint.clone())
+        };
+        let secondary = Look::secondary(cx);
+        let settings = move |label: &'static str, tab: &'static str| {
             div()
                 .mt_3()
                 .flex()
                 .justify_end()
-                .child(button(SharedString::from(format!("profile-{tab}-{label}")), label, Look::secondary(cx), false).on_click(move |_: &ClickEvent, _, cx| open_settings(tab, cx)))
+                .child(button(SharedString::from(format!("profile-{tab}-{label}")), label, secondary, false).on_click(move |_: &ClickEvent, _, cx| open_settings(tab, cx)))
                 .into_any_element()
         };
         if s.own {
@@ -302,7 +359,7 @@ impl ProfileModal {
             };
             let mut body = vec![para(text, cx)];
             if status == E2eeStatus::Ready && !fingerprint.is_empty() {
-                body.push(mono("Your fingerprint", fingerprint, cx));
+                body.push(self.mono("fingerprint:own".into(), "Your fingerprint", &fingerprint, window, cx));
             }
             if supported && status != E2eeStatus::Unavailable {
                 body.push(settings("Manage in Settings", "privacy"));
@@ -350,6 +407,23 @@ impl ProfileModal {
                 cx,
             );
         }
+        // The safety number's groups and the fingerprint, selectable (`select-text`): made before
+        // the theme is borrowed for the rest.
+        let scale = window.scale_factor();
+        let group_style = value_style(FontRole::Mono, 14., Some(0.08), cx);
+        let engine = decibell_text::Engine::global(cx);
+        let groups_shown: Vec<AnyElement> = info
+            .safety_number
+            .split(' ')
+            .enumerate()
+            .map(|(i, group)| {
+                let state = self.selectable(SharedString::from(format!("safety:{i}")), group, false, window, cx);
+                // The field as wide as its text, centred in its column (`text-center`).
+                let width = engine.label_layout(group, &group_style.text, decibell_text::Wrapping::NOWRAP, f32::INFINITY, scale).width();
+                div().flex().justify_center().child(div().w(px((width * scale).ceil() / scale + 1.)).child(TextInput::new(&state, group_style))).into_any_element()
+            })
+            .collect();
+        let peer_fingerprint = self.mono("fingerprint:peer".into(), format!("{name}'s fingerprint"), &info.fingerprint, window, cx);
         let t = cx.theme();
         let mut first = vec![para(format!("Messages between you and {name} are sealed on your devices; the server only ever stores encrypted data."), cx)];
         if info.changed_at > 0 {
@@ -411,11 +485,7 @@ impl ProfileModal {
             .bg(t.color_bg_dark)
             .px_4()
             .py_3()
-            .children(info.safety_number.split(' ').map(|group| {
-                div().flex().justify_center().child(
-                    Label::new(SharedString::from(group.to_string())).font(FontRole::Mono).size(14.).tracking(0.08).color(t.color_text_primary),
-                )
-            }))
+            .children(groups_shown)
             .into_any_element();
         div()
             .flex()
@@ -440,7 +510,7 @@ impl ProfileModal {
                 None,
                 vec![
                     para(format!("What {name}'s own app shows under Settings → Privacy. Comparing fingerprints is the same check as the safety number, one identity at a time."), cx),
-                    mono(format!("{name}'s fingerprint"), info.fingerprint.clone(), cx),
+                    peer_fingerprint,
                 ],
                 cx,
             ))
@@ -449,7 +519,7 @@ impl ProfileModal {
 }
 
 impl Render for ProfileModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.open;
         let modal = Modal::new("user-profile", open).on_close(|_: &CloseRequest, _, cx| ProfileModal::close(cx));
         let Some((uid, server)) = self.shown else { return modal };
@@ -477,8 +547,8 @@ impl Render for ProfileModal {
         let message = status_message_of(uid, cx);
         let shown = Shown { uid, own, name: name.clone(), friend: friend.clone(), member, roles, server, server_name, presence };
         let content = match self.tab {
-            ProfileTab::Profile => self.profile_tab(&shown, cx),
-            ProfileTab::Privacy => self.privacy_tab(&shown, cx),
+            ProfileTab::Profile => self.profile_tab(&shown, window, cx),
+            ProfileTab::Privacy => self.privacy_tab(&shown, window, cx),
         };
         // A pending request either way, or a block, is not a conversation yet.
         let can_message = uid > 0 && !own && friend.as_ref().is_none_or(|f| f.status.is_accepted());
@@ -627,7 +697,7 @@ impl Render for ProfileModal {
                             .when(display != name, |this| this.child(div().mt_0p5().child(Label::new(name.clone()).size(13.).color(muted))))
                             .child(div().mt_2().flex().child(pill))
                             .when_some(message, |this, message| {
-                                this.child(div().mt_2p5().child(StatusMessageText::new(message).font(FontRole::Sans).size(14.).line_height(14. * 1.375).color(secondary)))
+                                this.child(div().mt_2p5().child(StatusMessageText::new(message).font(FontRole::Sans).size(14.).line_height(14. * 1.375).color(secondary).emoji_size(18.).wrap()))
                             }),
                     ),
             )

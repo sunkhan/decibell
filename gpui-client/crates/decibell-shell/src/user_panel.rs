@@ -10,7 +10,7 @@
 
 use crate::ink::Ink;
 use crate::slots::{PanelAction, user_panel_action};
-use decibell_common::{BoundsCell, UserAvatar, Watch, dot_presence, status_line};
+use decibell_common::{BoundsCell, StatusMessageText, UserAvatar, Watch, dot_presence};
 use decibell_model::live::calls::CallStatus;
 use decibell_model::live::presence::{DisplayStatus, OwnStatus};
 use decibell_model::stores::overlays::modal;
@@ -395,9 +395,19 @@ impl Render for UserPanel {
                     ),
                 )
             });
-        let status_text: SharedString = match &message {
-            Some(message) => status_line(message),
-            None => SharedString::new_static(status.label()),
+        // The custom status (`StatusMessageText`, 13 px Twemoji), else the status's name.
+        let status_line = match message.clone() {
+            Some(message) => StatusMessageText::new(message)
+                .size(cx.theme().scaled.text_micro)
+                .color(t.color_text_muted)
+                .emoji_size(13.)
+                .into_any_element(),
+            None => Label::new(SharedString::new_static(status.label()))
+                .font(FontRole::Meta)
+                .size(cx.theme().scaled.text_micro)
+                .color(t.color_text_muted)
+                .truncate()
+                .into_any_element(),
         };
         let identity_body = div()
             .flex()
@@ -420,15 +430,7 @@ impl Render for UserPanel {
                             .color(t.color_text_bright)
                             .truncate(),
                     )
-                    .when(supported, |this| {
-                        this.child(
-                            Label::new(status_text)
-                                .font(FontRole::Meta)
-                                .size(cx.theme().scaled.text_micro)
-                                .color(t.color_text_muted)
-                                .truncate(),
-                        )
-                    }),
+                    .when(supported, |this| this.child(status_line)),
             );
         let identity = if supported {
             div()
@@ -606,7 +608,7 @@ fn status_menu(
                         let overlays = Model::global(cx).overlays.clone();
                         overlays.update(cx, |o, cx| o.open_modal(modal::CUSTOM_STATUS, cx));
                     }))
-                    .child(Label::new(status_line(&message)).size(13.).color(t.color_text_primary).truncate()),
+                    .child(StatusMessageText::new(message.clone()).font(FontRole::Sans).size(13.).color(t.color_text_primary).emoji_size(16.)),
             )
             .child(
                 div()

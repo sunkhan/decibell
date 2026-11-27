@@ -153,9 +153,24 @@ pub fn local(secs: i64) -> Option<LocalTime> {
 /// rules): when "today" changes for the chat's stamps and the custom status's "Today". `None`
 /// when unrepresentable.
 pub fn next_local_midnight(secs: i64) -> Option<i64> {
-    let t = Local.timestamp_opt(secs, 0).single()?;
+    next_midnight_in(&Local, secs)
+}
+
+/// [`next_local_midnight`] in `tz`. Where local midnight doesn't exist (the clocks jump over it: a
+/// DST change at 00:00, as in Chile, Paraguay or Cuba) the day starts where the jump lands, as
+/// JavaScript's `setHours(24, 0, 0, 0)` reads a missing local time with the offset in force
+/// before it (`CustomStatusModal`'s `clearAfterSeconds`); a midnight that happens twice is the
+/// first.
+pub(crate) fn next_midnight_in<Tz: chrono::TimeZone>(tz: &Tz, secs: i64) -> Option<i64> {
+    let t = tz.timestamp_opt(secs, 0).single()?;
     let next = t.date_naive().succ_opt()?.and_hms_opt(0, 0, 0)?;
-    Local.from_local_datetime(&next).earliest().map(|m| m.timestamp())
+    match tz.from_local_datetime(&next) {
+        chrono::LocalResult::Single(m) | chrono::LocalResult::Ambiguous(m, _) => Some(m.timestamp()),
+        chrono::LocalResult::None => {
+            let before = tz.from_local_datetime(&(next - chrono::Duration::minutes(1))).earliest()?;
+            Some(before.timestamp() + 60)
+        }
+    }
 }
 
 /// How a month is named in a composed date.

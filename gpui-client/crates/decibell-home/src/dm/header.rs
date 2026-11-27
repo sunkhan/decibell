@@ -178,7 +178,7 @@ pub fn header(f: &HeaderFacts, cx: &mut App) -> impl IntoElement + use<> {
         .child(div().flex_none().child(Label::new(f.name.clone()).font(FontRole::Display).size(title_size).weight(weight).tracking(tracking).color(bright).nowrap()))
         .child(status_pill(f.presence, FontRole::Channel, cx))
         .when_some(f.message.clone(), |this, message| {
-            this.child(div().min_w_0().max_w(px(384.)).child(StatusMessageText::new(message).font(FontRole::Channel).size(13.).color(muted)))
+            this.child(div().min_w_0().max_w(px(384.)).child(StatusMessageText::new(message).font(FontRole::Channel).size(13.).color(muted).emoji_size(16.)))
         })
         .children(badge)
         .child(div().flex_1())

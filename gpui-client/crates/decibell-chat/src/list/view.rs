@@ -1148,6 +1148,17 @@ impl MessageList {
         Some(point(self.bounds.left() + px(x + line.width * fraction), self.bounds.top() + px(row_y + y + line.height / 2.)))
     }
 
+    /// The window bounds of row `id`'s sender name, or of its quoted reply's name (`quoted`), for
+    /// pointer-driven tests (the profile popup opens 8 px right of the clicked element).
+    pub fn name_bounds(&self, id: i64, quoted: bool) -> Option<Bounds<Pixels>> {
+        let layout = self.core.entries[self.core.index_of_id(id)?].layout.as_ref()?;
+        let target = if quoted { Target::ReplyName } else { Target::Sender };
+        // A point outside the avatar: the name's box.
+        let [x, y, w, h] = layout.target_box(target, -1., -1.)?;
+        let row_y = self.row_screen_y(id)? + self.drawn.slide;
+        Some(Bounds::new(point(self.bounds.left() + px(x), self.bounds.top() + px(row_y + y)), gpui::size(px(w), px(h))))
+    }
+
     /// The window position of the middle of row `id`'s hover action (shown while the row is
     /// hovered), for pointer-driven tests.
     pub fn action_point(&self, id: i64, action: RowAction, cx: &App) -> Option<Point<Pixels>> {
@@ -1538,14 +1549,23 @@ impl MessageList {
                     cx.emit(ListEvent::OpenLink(url));
                 }
             }
-            Target::Sender if message.sender_uid != 0 => {
-                // `{ x: rect.right + 8, y: rect.top }` of what was clicked.
-                decibell_common::open_profile_at(message.sender_uid, point(event.position.x + px(8.), event.position.y), server, cx);
-            }
-            Target::ReplyName => {
-                if let Some(reply) = &message.reply {
-                    decibell_common::open_profile_at(reply.sender_uid, point(event.position.x + px(8.), event.position.y), server, cx);
+            Target::Sender | Target::ReplyName => {
+                let uid = match target {
+                    Target::Sender => message.sender_uid,
+                    _ => message.reply.as_ref().map_or(0, |reply| reply.sender_uid),
+                };
+                if uid == 0 {
+                    return;
                 }
+                // `{ x: rect.right + 8, y: rect.top }` of the clicked element (the avatar, the
+                // name, the quoted name), as `MessageBubble` / `ReplyPreview` open it.
+                let at = self
+                    .locate(event.position)
+                    .filter(|(row, _, _)| *row == index)
+                    .and_then(|(_, x, y)| layout.target_box(target, x, y).map(|b| (x, y, b)))
+                    .map(|(x, y, b)| point(event.position.x - px(x) + px(b[0] + b[2] + 8.), event.position.y - px(y) + px(b[1])))
+                    .unwrap_or(point(event.position.x + px(8.), event.position.y));
+                decibell_common::open_profile_at(uid, at, server, cx);
             }
             Target::ReplyLine => {
                 if let Some(reply) = &message.reply {

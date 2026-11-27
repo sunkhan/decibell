@@ -717,6 +717,31 @@ impl RowLayout {
         })
     }
 
+    /// The box (`[x, y, w, h]`, the row's own coordinates) of the element that a [`Target::Sender`]
+    /// or [`Target::ReplyName`] hit at (`x`, `y`) fell on: the avatar or the name, the quoted name.
+    /// The profile popup opens at its right edge (`MessageBubble`'s / `ReplyPreview`'s
+    /// `getBoundingClientRect()` of the clicked element).
+    pub fn target_box(&self, target: Target, x: f32, y: f32) -> Option<[f32; 4]> {
+        match target {
+            Target::Sender => {
+                let avatar = [ROW_PAD_LEFT, self.bubble_y + self.header_y, AVATAR, AVATAR];
+                if x >= avatar[0] && x < avatar[0] + avatar[2] && y >= avatar[1] && y < avatar[1] + avatar[3] {
+                    return Some(avatar);
+                }
+                let name = self.name.as_ref()?;
+                let (name_x, name_y) = self.name_origin();
+                Some([name_x, name_y, name.width(), name.height()])
+            }
+            Target::ReplyName => {
+                let reply = self.reply.as_ref()?;
+                let name = reply.name.as_ref()?;
+                let line = self.header_y - ROW_PAD_TOP - REPLY_MARGIN_BOTTOM;
+                Some([self.content_x + reply.name_x, self.bubble_y + ROW_PAD_TOP, name.width(), line])
+            }
+            _ => None,
+        }
+    }
+
     /// What is at (`x`, `y`) in the row's own coordinates.
     pub fn hit(&self, x: f32, y: f32, width: f32, hovered: bool, can_delete: bool) -> RowHit {
         let inside = |b: [f32; 4]| x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3];

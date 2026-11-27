@@ -319,6 +319,7 @@ fn member_row(model: &Model, server: Option<ServerId>, member: &Member, online: 
                                 StatusMessageText::new(message)
                                     .size(theme.scaled.text_micro)
                                     .line_height(16.)
+                                    .emoji_size(13.)
                                     .color(theme.color_text_muted),
                             )
                         }),

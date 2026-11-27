@@ -31,6 +31,8 @@ pub struct Label {
     wrapping: Wrapping,
     inherit_color: bool,
     selection: Option<Entity<TextSelection>>,
+    /// Emoji drawn as Twemoji at this size, px ([`Label::emoji`]).
+    emoji: Option<f32>,
 }
 
 /// What is selected in a selectable [`Label`] (`user-select: text`): byte offsets into its text.
@@ -96,6 +98,7 @@ impl Label {
             wrapping: Wrapping::NORMAL,
             inherit_color: false,
             selection: None,
+            emoji: None,
         }
     }
 
@@ -104,6 +107,16 @@ impl Label {
     /// shows over it. `selection` holds it: make it once per label (`window.use_keyed_state`).
     pub fn selectable(mut self, selection: Entity<TextSelection>) -> Self {
         self.selection = Some(selection);
+        self
+    }
+
+    /// Draw the emoji in the text as Twemoji, `size` px square, sitting 0.2 em under the
+    /// baseline (`Twemoji.tsx`: an `inline-block align-[-0.2em]` of the size), where the label
+    /// would otherwise take them from the system's emoji font: a custom status, a DM preview.
+    /// An emoji the pack lacks stays text. The pictures are rasterised when the layout is built
+    /// (once per text, size and scale), so a frame only places them.
+    pub fn emoji(mut self, size: f32) -> Self {
+        self.emoji = Some(size);
         self
     }
 
@@ -140,7 +153,61 @@ impl Label {
     }
 
     fn key(&self, scale: f32) -> u64 {
-        label_key(&self.text, &self.style, self.wrapping, scale)
+        let key = label_key(&self.text, &self.style, self.wrapping, scale);
+        match self.emoji {
+            None => key,
+            Some(size) => {
+                let mut hasher = KeyHasher::default();
+                (key, size.to_bits()).hash(&mut hasher);
+                hasher.finish()
+            }
+        }
+    }
+}
+
+/// The inline boxes of a label's Twemoji carry this plus the emoji's byte offset in the text.
+const EMOJI_TAG: u32 = 1 << 31;
+
+/// A label's text with its emoji as inline boxes (`emoji`: their size) or as plain text.
+fn label_text(builder: &mut ParagraphBuilder, engine: &Engine, text: &str, style: &TextStyle, emoji: Option<f32>, scale: f32) {
+    let Some(size) = emoji else {
+        builder.text(text, style, 0);
+        return;
+    };
+    let device_px = (size * scale).round() as u32;
+    let mut last = 0;
+    for range in decibell_richtext::emoji::find_iter(text) {
+        let Some(asset) = decibell_richtext::emoji::twemoji_asset(&text[range.clone()]) else { continue };
+        if engine.emoji.prepare(asset, device_px).is_none() {
+            continue;
+        }
+        if range.start > last {
+            builder.text(&text[last..range.start], style, 0);
+        }
+        builder.inline_box(size, size, 0.2 * style.size, EMOJI_TAG | range.start as u32);
+        last = range.end;
+    }
+    if last < text.len() {
+        builder.text(&text[last..], style, 0);
+    }
+}
+
+/// The Twemoji a label's inline box shows: the emoji at the byte offset its tag carries.
+fn emoji_at(text: &str, tag: u32) -> Option<decibell_richtext::EmojiAsset> {
+    if tag & EMOJI_TAG == 0 {
+        return None;
+    }
+    let rest = text.get((tag & !EMOJI_TAG) as usize..)?;
+    let range = decibell_richtext::emoji::find_iter(rest).next().filter(|range| range.start == 0)?;
+    decibell_richtext::emoji::twemoji_asset(&rest[range])
+}
+
+/// Paints a label's Twemoji into the boxes its layout placed (`label_text`).
+fn paint_emoji(layout: &Layout, text: &str, origin: gpui::Point<Pixels>, engine: &Engine, window: &mut Window, cx: &mut App) {
+    for (tag, [x, y, width, height]) in layout.boxes() {
+        let Some(asset) = emoji_at(text, tag) else { continue };
+        let bounds = Bounds::new(gpui::point(origin.x + px(x), origin.y + px(y)), size(px(width), px(height)));
+        engine.emoji.paint(asset, bounds, window, cx);
     }
 }
 
@@ -155,11 +222,12 @@ fn label_key(text: &str, style: &TextStyle, wrapping: Wrapping, scale: f32) -> u
 }
 
 /// The cached layout of a label at a width.
-fn label_layout(engine: &Engine, key: u64, text: &str, style: &TextStyle, wrapping: Wrapping, width: f32, scale: f32) -> Rc<Layout> {
+#[allow(clippy::too_many_arguments)]
+fn label_layout(engine: &Engine, key: u64, text: &str, style: &TextStyle, wrapping: Wrapping, emoji: Option<f32>, width: f32, scale: f32) -> Rc<Layout> {
     engine.labels.layout(key, width, scale, || {
         let paragraph = engine.labels.paragraph(key, || {
             let mut builder = ParagraphBuilder::new(engine, style, wrapping, scale);
-            builder.text(text, style, 0);
+            label_text(&mut builder, engine, text, style, emoji, scale);
             builder.build()
         });
         Layout::new(paragraph, width, engine)
@@ -170,7 +238,7 @@ impl Engine {
     /// The layout a [`Label`] with this text and style has at `width` px: for code that
     /// needs a label's size before it draws one.
     pub fn label_layout(&self, text: &str, style: &TextStyle, wrapping: Wrapping, width: f32, scale: f32) -> Rc<Layout> {
-        label_layout(self, label_key(text, style, wrapping, scale), text, style, wrapping, width, scale)
+        label_layout(self, label_key(text, style, wrapping, scale), text, style, wrapping, None, width, scale)
     }
 }
 
@@ -202,7 +270,7 @@ impl Element for Label {
         let engine = Engine::global(cx);
         let scale = window.scale_factor();
         let key = self.key(scale);
-        let (text, style, wrapping) = (self.text.clone(), self.style, self.wrapping);
+        let (text, style, wrapping, emoji) = (self.text.clone(), self.style, self.wrapping, self.emoji);
         let layout_id = window.request_measured_layout(Style::default(), move |known, available, _, _| {
             // A label that does not wrap has one size; one that wraps is as wide as it is
             // allowed to be and as high as that makes it.
@@ -214,7 +282,7 @@ impl Element for Label {
                 (None, AvailableSpace::MaxContent) => f32::INFINITY,
             };
             let width = if wraps { limit } else { f32::INFINITY };
-            let layout = label_layout(&engine, key, &text, &style, wrapping, width, scale);
+            let layout = label_layout(&engine, key, &text, &style, wrapping, emoji, width, scale);
             let natural = snapped(layout.width(), layout.height(), scale);
             if !wraps && wrapping.ellipsis {
                 // A truncating label gives way down to nothing, like `min-width: 0`.
@@ -242,9 +310,9 @@ impl Element for Label {
         let key = self.key(scale);
         let width = f32::from(bounds.size.width);
         let wraps = self.wrapping.wraps();
-        let mut layout = label_layout(&engine, key, &self.text, &self.style, self.wrapping, if wraps { width } else { f32::INFINITY }, scale);
+        let mut layout = label_layout(&engine, key, &self.text, &self.style, self.wrapping, self.emoji, if wraps { width } else { f32::INFINITY }, scale);
         if !wraps && self.wrapping.ellipsis && layout.width() > width + 0.5 / scale {
-            layout = label_layout(&engine, key, &self.text, &self.style, self.wrapping, width, scale);
+            layout = label_layout(&engine, key, &self.text, &self.style, self.wrapping, self.emoji, width, scale);
         }
         let color = if self.inherit_color { window.text_style().color } else { self.style.color };
         let mut options = PaintOptions {
@@ -265,6 +333,9 @@ impl Element for Label {
             listen_for_selection(&selection, &layout, bounds, window);
         }
         layout.paint(bounds.origin, &options, window, cx);
+        if self.emoji.is_some() {
+            paint_emoji(&layout, &self.text, bounds.origin, &engine, window, cx);
+        }
     }
 }
 
@@ -448,5 +519,59 @@ mod selection_tests {
         assert_eq!(s.selected_text(), None, "a caret selects nothing");
         s.set(0, 200);
         assert_eq!(s.range(), None, "past the text (it changed): nothing");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::sync::Arc;
+
+    use gpui::{Hsla, TextSystem};
+
+    use super::*;
+    use crate::FontSpec;
+
+    fn engine() -> Rc<Engine> {
+        let platform = gpui_wgpu::CosmicTextSystem::new_without_system_fonts("Decibell Inter");
+        let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/static");
+        let mut files: Vec<_> = std::fs::read_dir(fonts)
+            .expect("gpui-client/assets/fonts/static")
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "ttf"))
+            .collect();
+        files.sort();
+        let text_system = Arc::new(TextSystem::new(Arc::new(platform)));
+        text_system.add_fonts(files.iter().map(|file| Cow::Owned(std::fs::read(file).unwrap())).collect()).unwrap();
+        Engine::new(text_system)
+    }
+
+    /// A label with `emoji(size)` lays its emoji out as boxes of that size, each naming the emoji it
+    /// shows; text between them stays text, and a label without it keeps every emoji as text.
+    #[test]
+    fn emoji_become_boxes_of_their_size() {
+        if crate::emoji::packed_emoji_count() == 0 {
+            eprintln!("SKIP: the Twemoji pack is empty (assets/twemoji missing at build time)");
+            return;
+        }
+        let engine = engine();
+        let face = engine.face(&FontSpec::new("Decibell Inter", 400));
+        let style = TextStyle::new(face, 11., Hsla::default());
+        let text = "🎮 playing 🙂 now";
+        let with = label_layout(&engine, 1, text, &style, Wrapping::TRUNCATE, Some(13.), f32::INFINITY, 1.);
+        let boxes: Vec<(u32, [f32; 4])> = with.boxes().collect();
+        assert_eq!(boxes.len(), 2, "{boxes:?}");
+        for (tag, [_, _, width, height]) in &boxes {
+            assert_eq!((*width, *height), (13., 13.));
+            assert!(emoji_at(text, *tag).is_some(), "tag {tag:#x} names no emoji");
+        }
+        assert_eq!(emoji_at(text, boxes[0].0).map(|a| a.chars()), Some("🎮"));
+        assert_eq!(emoji_at(text, boxes[1].0).map(|a| a.chars()), Some("🙂"));
+        assert!(boxes[0].1[0] < boxes[1].1[0], "in reading order");
+        let without = label_layout(&engine, 2, text, &style, Wrapping::TRUNCATE, None, f32::INFINITY, 1.);
+        assert_eq!(without.boxes().count(), 0);
+        // Cut short: the boxes past the cut aren't placed.
+        let cut = label_layout(&engine, 1, text, &style, Wrapping::TRUNCATE, Some(13.), 40., 1.);
+        assert!(cut.boxes().count() < 2, "a cut label places only the emoji before the \"…\"");
     }
 }

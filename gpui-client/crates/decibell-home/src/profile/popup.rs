@@ -43,6 +43,12 @@ pub struct ProfilePopup {
     thumbnail: Option<Arc<gpui::Image>>,
     /// Re-fetches the poster while the popup shows a live person.
     thumbnail_task: Option<Task<()>>,
+    /// Where the polled stream is (a stream that moves to another channel or community is
+    /// polled there anew: `UserProfilePopup`'s effect on `streamEntry`).
+    polled: Option<(ServerId, decibell_model::ChannelId)>,
+    /// The name in the quick DM's placeholder ("Message @name": renames and a looked-up member
+    /// row follow, as `useUserName` does).
+    placeholder_name: SharedString,
     focus: FocusHandle,
     /// The open person's community entities (roster, roles), re-subscribed per opening.
     community: Vec<Subscription>,
@@ -74,6 +80,12 @@ impl ProfilePopup {
             }),
             // A stream starting or stopping while open: the poster follows.
             cx.subscribe(&model.live.voice.streams, |this, _, _: &StreamsChanged, cx| this.follow_stream(cx)),
+            // A rename: the placeholder follows.
+            cx.subscribe(&model.users, |this, _, changed: &decibell_model::stores::users::NamesChanged, cx| {
+                if this.open.as_ref().is_some_and(|o| changed.0.contains(&o.uid)) {
+                    this.follow_name(cx);
+                }
+            }),
         ];
         let mut this = Self {
             open: None,
@@ -82,6 +94,8 @@ impl ProfilePopup {
             sending: false,
             thumbnail: None,
             thumbnail_task: None,
+            polled: None,
+            placeholder_name: SharedString::default(),
             focus: cx.focus_handle(),
             community: Vec::new(),
             _watch: watch,
@@ -101,19 +115,24 @@ impl ProfilePopup {
         self.sending = false;
         self.thumbnail = None;
         self.thumbnail_task = None;
+        self.polled = None;
+        self.placeholder_name = SharedString::default();
         self.community.clear();
         self.input.update(cx, |state, cx| state.clear(cx));
         if let Some(open) = self.open.clone() {
             let model = Model::global(cx).clone();
-            let name = popup_name(&open, cx);
-            self.input.update(cx, |state, cx| state.set_placeholder(format!("Message @{name}"), cx));
+            self.follow_name(cx);
             if let Some(server) = open.server
                 && let Some(community) = model.community(server, cx)
             {
                 if community.roster.read(cx).member(open.uid).is_none() {
                     want_member(server, open.uid, cx);
                 }
-                self.community.push(cx.observe(&community.roster, |_, _, cx| cx.notify()));
+                // The member row: roles, nickname, and the name the placeholder falls back on.
+                self.community.push(cx.observe(&community.roster, |this, _, cx| {
+                    this.follow_name(cx);
+                    cx.notify();
+                }));
                 self.community.push(cx.observe(&community.roles, |_, _, cx| cx.notify()));
             }
             // The quick-DM field takes focus as the popup opens; without one the card does
@@ -134,20 +153,37 @@ impl ProfilePopup {
         overlays.update(cx, |o, cx| o.close_profile_popup(cx));
     }
 
-    /// Poll the poster while the person streams (the renderer's interval), stop otherwise.
+    /// The quick DM's placeholder names the person as the popup does now.
+    fn follow_name(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = self.open.clone() else { return };
+        let name = popup_name(&open, cx);
+        if name != self.placeholder_name {
+            self.placeholder_name = name.clone();
+            self.input.update(cx, |state, cx| state.set_placeholder(format!("Message @{name}"), cx));
+        }
+    }
+
+    /// Poll the poster while the person streams (the renderer's interval), stop otherwise; a
+    /// stream that moved is polled where it is now, from a blank poster.
     fn follow_stream(&mut self, cx: &mut Context<Self>) {
         let Some(open) = self.open.clone() else { return };
         let model = Model::global(cx).clone();
-        let Some(server) = model.live.voice.streams.read(cx).of_user(open.uid).map(|s| s.server) else {
+        let Some((server, channel)) = model.live.voice.streams.read(cx).of_user(open.uid).map(|s| (s.server, s.channel.clone())) else {
             self.thumbnail_task = None;
+            self.polled = None;
             if self.thumbnail.take().is_some() {
                 cx.notify();
             }
             return;
         };
-        if self.thumbnail_task.is_some() {
+        let at = Some((server, channel));
+        if self.thumbnail_task.is_some() && self.polled == at {
             return;
         }
+        if self.polled.is_some() && self.thumbnail.take().is_some() {
+            cx.notify();
+        }
+        self.polled = at;
         let uid = open.uid;
         self.thumbnail_task = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -428,7 +464,7 @@ impl Render for ProfilePopup {
                     .when(nickname.as_ref().is_some_and(|n| *n != name), |this| this.child(Label::new(name.clone()).size(12.).color(muted)))
                     .child(div().mt_1p5().flex().child(pill))
                     .when_some(message, |this, message| {
-                        this.child(div().mt_2().child(StatusMessageText::new(message).font(FontRole::Sans).size(13.).line_height(13. * 1.375).color(secondary)))
+                        this.child(div().mt_2().child(StatusMessageText::new(message).font(FontRole::Sans).size(13.).line_height(13. * 1.375).color(secondary).emoji_size(16.).wrap()))
                     }),
             )
             .children(stream)

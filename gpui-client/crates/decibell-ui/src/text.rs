@@ -33,6 +33,7 @@ pub struct Label {
     tracking: Option<f32>,
     wrapping: Wrapping,
     selectable: Option<gpui::ElementId>,
+    emoji: Option<f32>,
 }
 
 impl Label {
@@ -48,6 +49,7 @@ impl Label {
             tracking: None,
             wrapping: Wrapping::NORMAL,
             selectable: None,
+            emoji: None,
         }
     }
 
@@ -118,6 +120,20 @@ impl Label {
         self.wrapping = Wrapping::NORMAL.clamp(lines);
         self
     }
+
+    /// Lines as typed, wrapped at words, a long word anywhere (`whitespace-pre-wrap
+    /// break-words`).
+    pub fn pre_wrap(mut self) -> Self {
+        self.wrapping = Wrapping::PRE_WRAP;
+        self
+    }
+
+    /// Emoji in the text as Twemoji of `size` px (`decibell_text::Label::emoji`): where the
+    /// renderer draws a `<Twemoji>` (custom statuses, DM previews).
+    pub fn emoji(mut self, size: f32) -> Self {
+        self.emoji = Some(size);
+        self
+    }
 }
 
 impl RenderOnce for Label {
@@ -143,6 +159,9 @@ impl RenderOnce for Label {
         if let Some(id) = self.selectable {
             let selection = window.use_keyed_state(id, cx, |_, _| decibell_text::TextSelection::default());
             label = label.selectable(selection);
+        }
+        if let Some(size) = self.emoji {
+            label = label.emoji(size);
         }
         match self.color {
             Some(_) => label,

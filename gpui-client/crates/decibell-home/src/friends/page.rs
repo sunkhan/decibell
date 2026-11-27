@@ -414,7 +414,7 @@ fn friend_row(friend: &Friend, cx: &mut App) -> AnyElement {
     };
     let subline: AnyElement = match message {
         // A friend's custom status stands in for "Online" / "Away", as Discord's page reads.
-        Some(message) => StatusMessageText::new(message).size(text_micro).color(muted).into_any_element(),
+        Some(message) => StatusMessageText::new(message).size(text_micro).color(muted).emoji_size(13.).into_any_element(),
         None => Label::new(if accepted { presence.label() } else { status_label(status) })
             .font(FontRole::Meta)
             .size(text_micro)

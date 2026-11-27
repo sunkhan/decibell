@@ -211,7 +211,7 @@ impl FriendsRail {
                     .group_hover(group, move |s| s.text_color(primary))
                     .child(Label::new(name).font(FontRole::Channel).size(14.).line_height(18.).truncate())
                     .when_some(message, |this, message| {
-                        this.child(StatusMessageText::new(message).size(micro).line_height(14.).color(muted))
+                        this.child(StatusMessageText::new(message).size(micro).line_height(14.).color(muted).emoji_size(13.))
                     }),
             )
             .children(trailing)
