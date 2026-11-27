@@ -243,8 +243,14 @@ impl Thumbnails {
         self.wanted == 1
     }
 
+    /// The last view that wanted posters went: what it fetched on demand is forgotten, so the
+    /// next visit fetches again a stream whose fetch came back empty (`useStreamThumbnails`'
+    /// `requested` set lives as long as its mount).
     pub(crate) fn release(&mut self) {
         self.wanted = self.wanted.saturating_sub(1);
+        if self.wanted == 0 {
+            self.requested.clear();
+        }
     }
 
     pub fn set(&mut self, uid: Uid, jpeg: Vec<u8>, cx: &mut Context<Self>) {
@@ -495,6 +501,21 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
 
     use super::*;
+
+    #[test]
+    fn a_new_visit_of_the_voice_view_fetches_again_what_came_back_empty() {
+        let mut t = Thumbnails::default();
+        assert!(t.retain());
+        t.requested.insert("s1".into());
+        // A second view (the call stage) holds it: the mark stays.
+        assert!(!t.retain());
+        t.release();
+        assert!(t.requested.contains("s1"));
+        // The last view goes: the next mount asks again.
+        t.release();
+        assert!(t.requested.is_empty());
+        assert!(!t.wanted());
+    }
 
     fn info(owner: Uid) -> StreamInfo {
         StreamInfo {
