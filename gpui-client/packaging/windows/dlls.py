@@ -124,7 +124,7 @@ def main() -> int:
             shutil.copy2(path, args.copy_to / path.name)
     print(f"dlls: Windows provides {', '.join(sorted(system)) or '(not checked)'}")
     if args.list:
-        args.list.write_text("".join(f"{p.name}\n" for _, p in sorted(shipped.items())))
+        args.list.write_text("".join(f"{p.name}\n" for _, p in sorted(shipped.items())), encoding="utf-8")
     if missing:
         print("dlls: not found anywhere: " + ", ".join(missing), file=sys.stderr)
         return 1

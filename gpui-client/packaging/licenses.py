@@ -35,7 +35,9 @@ OURS = re.compile(r"^decibell(-|_|$)")
 def metadata(target: str, features: str) -> dict:
     cmd = ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", target,
            "--no-default-features", "--features", features]
-    return json.loads(subprocess.run(cmd, cwd=CLIENT, check=True, capture_output=True, text=True).stdout)
+    # Bytes, decoded as UTF-8 here: `text=True` decodes with the locale's code page (cp1252 on the Windows
+    # runner, which failed on the metadata's first non-ASCII author name).
+    return json.loads(subprocess.run(cmd, cwd=CLIENT, check=True, capture_output=True).stdout.decode("utf-8"))
 
 
 def linked_packages(meta: dict) -> list:
@@ -156,7 +158,7 @@ def c_section_linux(prefix: pathlib.Path) -> list:
     stamp = {}
     stamp_file = prefix / ".decibell-ffmpeg-stamp"
     if stamp_file.is_file():
-        for line in stamp_file.read_text().splitlines():
+        for line in stamp_file.read_text(encoding="utf-8").splitlines():
             parts = line.split()
             if len(parts) == 3 and not line.startswith("--"):
                 stamp[parts[0]] = (parts[1], parts[2])

@@ -46,6 +46,9 @@ env:
   # a repository variable, not a secret (it is public by nature). Unset: feeds are not signed.
   DECIBELL_UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
   CARGO_BUILD_JOBS: 4
+  # Python reads, writes and prints UTF-8 on every runner (Windows' default is the legacy code page:
+  # the third dry run's licenses.py failed decoding `cargo metadata` as cp1252).
+  PYTHONUTF8: "1"
   # Symbols stay in the build; the packaging step moves them to `.debug` and strips the binary.
   CARGO_PROFILE_RELEASE_STRIP: "false"
 
