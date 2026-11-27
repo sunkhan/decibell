@@ -47,7 +47,17 @@ fi
 
 export RUSTUP_HOME="$home/rustup"
 export PATH="$home/cargo/bin:$PATH"          # cargo must find this toolchain's rustc, not /usr/bin's
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$home/target}"
+# One target directory per checkout. Cargo names a workspace member's build by its path inside the
+# workspace, so two worktrees sharing a target directory share build-script binaries: on 2026-11-27 the
+# main tree ran decibell-ui's build script as another worktree had compiled it (that worktree's
+# CARGO_MANIFEST_DIR baked in) and failed on a directory that no longer existed; it could as easily
+# have checked the other tree's generated code. The main checkout keeps `target`; a worktree under
+# `.worktrees/<name>` gets `targets/<name>` (remove it with the worktree).
+case "$here" in
+    */.worktrees/*) tree="${here%/gpui-client}"; default_target="$home/targets/${tree##*/}" ;;
+    *) default_target="$home/target" ;;
+esac
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$default_target}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
 export PKG_CONFIG_ALLOW_CROSS=1
 headers="/usr/include/wine/msvcrt /usr/include/wine/windows"
