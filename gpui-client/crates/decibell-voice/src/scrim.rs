@@ -173,8 +173,13 @@ pub fn quality_pill(stream: &StreamInfo, large: bool, cx: &App) -> Option<impl I
         return None;
     }
     let base = if large { scrim_lg(cx) } else { scrim(cx) };
+    // `title={enforcedCodec ? "Stream locked to <codec>" : undefined}`
+    let locked = (stream.enforced_codec != VideoCodec::Unknown)
+        .then(|| SharedString::from(format!("Stream locked to {}", codec.unwrap_or_default())));
     Some(
-        base.when(has_res, |this| {
+        base.id("quality-pill")
+            .when_some(locked, |this, title| this.tooltip(decibell_ui::title_tooltip(title)))
+            .when(has_res, |this| {
             this.child(scrim_text(format!("{}{}", format_resolution(stream.width, stream.height), stream.fps), white(0.7), cx))
         })
         .when_some(codec, |this, codec| this.child(scrim_text(codec, codec_color(stream.current_codec), cx)))

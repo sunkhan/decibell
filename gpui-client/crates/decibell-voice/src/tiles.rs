@@ -193,11 +193,18 @@ impl Render for ParticipantTile {
                 )
             })
             .children(badge)
-            .when_some(state_icon, |this, (name, _title)| {
-                this.child(Icon::new(name).size(px(icon)).stroke_width(2.5).color(error))
+            .when_some(state_icon, |this, (name, title)| {
+                this.child(
+                    div().id(title).tooltip(title_tooltip(title)).child(Icon::new(name).size(px(icon)).stroke_width(2.5).color(error)),
+                )
             })
             .when(d.locally_muted, |this| {
-                this.child(Icon::new(IconName::StageSpeakerMuted).size(px(icon)).stroke_width(2.5).color(accent))
+                this.child(
+                    div()
+                        .id("muted-by-you")
+                        .tooltip(title_tooltip("Muted by you"))
+                        .child(Icon::new(IconName::StageSpeakerMuted).size(px(icon)).stroke_width(2.5).color(accent)),
+                )
             });
 
         let uid = d.uid;
@@ -572,16 +579,24 @@ impl Render for StreamTile {
                             .child(UserAvatar::new(owner, owner_name.clone(), 16.))
                             .child(div().min_w_0().child(scrim::scrim_text(label.clone(), white(1.), cx).truncate()))
                             .when(d.info.has_audio && !d.call, |this| {
-                                this.child(Icon::new(IconName::StageSpeaker).size(px(13.)).color(white(0.7)))
+                                this.child(
+                                    div()
+                                        .id("has-audio")
+                                        .tooltip(title_tooltip("Has audio"))
+                                        .child(Icon::new(IconName::StageSpeaker).size(px(13.)).color(white(0.7))),
+                                )
                             }),
                     ),
                 )
                 .when(d.info.watcher_count > 0 && !d.call, |this| {
+                    let count = decibell_model::regional::Regional::get().group(d.info.watcher_count as u64);
                     this.child(
                         div().absolute().bottom_2().right_2().child(
                             scrim::scrim(cx)
+                                .id("watching")
+                                .tooltip(title_tooltip(SharedString::from(format!("{count} watching"))))
                                 .child(Icon::new(IconName::StageEye).size(px(13.)).color(white(1.)))
-                                .child(scrim::scrim_text(decibell_model::regional::Regional::get().group(d.info.watcher_count as u64), white(1.), cx)),
+                                .child(scrim::scrim_text(count, white(1.), cx)),
                         ),
                     )
                 })

@@ -341,7 +341,14 @@ fn participant_badges(live: bool, local_mute: bool, state: VoiceUserState, t: &I
                     .child(Label::new("LIVE").size(10.).weight(600.).color(t.color_error)),
             )
         })
-        .when(local_mute, |this| this.child(Icon::new(IconName::VoiceLocalMute).size(px(14.)).color(t.color_accent)))
+        .when(local_mute, |this| {
+            this.child(
+                div()
+                    .id("muted-by-you")
+                    .tooltip(title_tooltip("Muted by you"))
+                    .child(Icon::new(IconName::VoiceLocalMute).size(px(14.)).color(t.color_accent)),
+            )
+        })
         .children(server_badge)
         .map(|this| {
             if state.deafened {
@@ -496,6 +503,7 @@ impl Render for ChannelSidebar {
         let roster = roster.as_ref().map(|r| r.read(cx));
         let hierarchy = Hierarchy::new(me, owner, &roles, roster.map(|r| r.members()));
         let member_drag = self.member_drag.clone();
+        crate::probes::flag("member-drag", member_drag.is_some());
         let sidebar = cx.weak_entity();
 
         let mut people = HashSet::new();
@@ -629,6 +637,7 @@ impl Render for ChannelSidebar {
                     .hover(|s| s.bg(t.color_surface_hover))
                     .cursor_pointer()
                     .child(bounds.probe())
+                    .children(crate::probes::probe(format!("voice-member:{uid}")))
                     .on_click({
                         let bounds = bounds.clone();
                         move |_: &ClickEvent, _, cx| open_profile_beside(uid, bounds.get(), Some(server), cx)
