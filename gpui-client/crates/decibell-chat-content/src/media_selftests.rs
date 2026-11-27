@@ -65,7 +65,7 @@ struct Played {
 /// Opens `bytes` with exactly the decoders `order` (the machine's own when `None`), takes the
 /// window's frame with the first picture up, then plays the file to its end.
 async fn play_with(cx: &TestCx, key: &str, bytes: &[u8], order: Option<&[decibell_video::DecodeBackend]>, pictures: u64) -> Result<Played> {
-    let hub = cx.app().update(|cx| VideoHub::global(cx));
+    let hub = cx.app().update(VideoHub::global);
     hub.set_decoder_order(order);
     let stage = Stage::open(cx, key, bytes.to_vec(), false, (640., 520.))?;
     let result = async {
@@ -97,7 +97,7 @@ async fn check_on_every_decoder(cx: &TestCx, name: &str, codec: decibell_video::
 /// logged). Also returns the software decoder's frame.
 async fn check_decoders(cx: &TestCx, name: &str, codec: decibell_video::Codec, bytes: &[u8], pictures: u64, strict: bool) -> Result<(decibell_video::DecodeBackend, Shot)> {
     use decibell_video::{DecodeBackend, DecodePath};
-    let hub = cx.app().update(|cx| VideoHub::global(cx));
+    let hub = cx.app().update(VideoHub::global);
     let order = hub.decoder_order();
     let software = play_with(cx, &format!("{name}:software"), bytes, Some(&[DecodeBackend::Software]), pictures).await.context("software")?;
     cx.log(format_args!("{name}: software: {} pictures shown, {} late, first picture after {:.0} ms", software.shown, software.late, software.first_picture.as_secs_f64() * 1e3));
@@ -150,7 +150,7 @@ fn expected_sdr_grey(e: f64, transfer: u32) -> f64 {
 
 async fn check_ten_bit(cx: TestCx) -> Result<()> {
     use decibell_video::Codec;
-    let hub = cx.app().update(|cx| VideoHub::global(cx));
+    let hub = cx.app().update(VideoHub::global);
     // The test picture: a grey field of code 96 (8-bit, limited range) under the barcode, whose
     // cells are black in the first picture. As R'G'B' that grey is (96 - 16) / 219.
     let grey = (96. - 16.) / 219.;
@@ -188,7 +188,7 @@ async fn check_ten_bit(cx: TestCx) -> Result<()> {
 
 async fn check_vp9_hw(cx: TestCx) -> Result<()> {
     let own = check_on_every_decoder(&cx, "vp9_hw.webm", decibell_video::Codec::Vp9, include_bytes!("../../decibell-media/tests/assets/vp9_hw.webm"), 50).await?;
-    let hub = cx.app().update(|cx| VideoHub::global(cx));
+    let hub = cx.app().update(VideoHub::global);
     let hardware = hub.decoder_order().into_iter().any(|backend| backend.path() == decibell_video::DecodePath::Hardware);
     if hardware && own == decibell_video::DecodeBackend::Software {
         cx.log("NOTE: this machine has hardware decoders and none of them decodes VP9: the file is decoded in software");

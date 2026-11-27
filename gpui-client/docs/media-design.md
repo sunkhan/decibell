@@ -16,19 +16,19 @@ Read from `PersistentVideoLayer.tsx`, `PersistentAudioLayer.tsx`, `videoPlayback
 |---|---|
 | One `<video>` and one `<audio>` exist, at app level; the card is a placeholder. A video and an audio attachment can play at the same time; a second video replaces the first, a second audio the first. Nothing ties them to voice channels, streams or calls. | The same: `Playback` (an entity, global) owns at most one video `Player` and one audio `Player`, following `model.chat.video.active` / `chat.audio.active`. Voice is not touched in either direction. |
 | Playback survives the row unmounting (scrolled away, trimmed, a jump window). | The same: the player belongs to `Playback`, not to the row. While the row is not drawn the player is told (`set_visible(false)`): sound and clock go on, pictures are decoded and neither copied nor presented. |
-| **A channel switch stops it** (`clearChannel` in both state modules, and the audio layer's own subscription) and forgets the channel's positions. FEATURES.md's "survive … channel switches" is not what the code does. | The same as the code: leaving the channel clears both and the channel's "Paused at" positions. Reported to the architect, not changed. |
+| **A channel switch stops it** (`clearChannel` in both state modules, and the audio layer's own subscription) and forgets the channel's positions. FEATURES.md's "survive … channel switches" is not what the code does. What the renderer's listeners key on is `activeChannelId` alone, so playback *survives* every navigation that leaves that id as it is (the DM view entered directly, a voice / stream / settings view, another server with a channel of the same bare id): §9. | Leaving the channel clears both and the channel's "Paused at" positions and posters; so does a change of the open DM conversation (the renderer has no attachments in DMs). Reported to the architect, not changed. |
 | There is no mini-player, docked player or "back to message" for attachments (those exist for streams only). | None built. |
 | Click on the poster → plays at once, resuming where that attachment was left (five positions per channel, LRU). The bar under a standalone card says "Paused at m:ss" for a video left part-way. | The same (`Playback::resume`, `paused_label`). |
-| Video controls: over the picture's lower edge, `from-black/85 via-black/50 to-transparent`, scrub bar (4 px track, accent fill), then play / pause, `m:ss / m:ss`, mute, an 80 px volume bar (wheel: ±5 %), fullscreen. Shown while paused, while scrubbing, or while the pointer moved over the video in the last 3 s; they fade and slide 300 ms. | The same layout and rules; **no 300 ms fade** (they appear and go at once) and no thumb on the bars' hover: listed in §8. |
+| Video controls: over the picture's lower edge, `from-black/85 via-black/50 to-transparent`, scrub bar (4 px track, accent fill), then play / pause, `m:ss / m:ss`, mute, an 80 px volume bar (wheel: ±5 %), fullscreen. Shown while paused, while scrubbing, or while the pointer moved over the video in the last 3 s; they fade and slide 300 ms. | The same layout and rules, the 300 ms ease-out fade and 8 px slide (`motion::transition_flag`: frames only while it moves, 0 list frames once the controls are gone) and the bars' hover thumbs included. |
 | Single click toggles play after 220 ms; a double click toggles fullscreen instead. Keys on the focused player: Space, ← / → (5 s; repeats at most every 80 ms), F, Esc leaves fullscreen. | The same (the repeat throttle is not needed: seeks replace each other in the player). |
-| Fullscreen: the wrapper becomes `fixed inset-0` and the window goes fullscreen; the cursor is hidden while playing, hovered and idle; a download button top right. | Window fullscreen + a shell overlay with the same stage; the cursor rests with the controls (`hide_cursor_until_mouse_moves`, GPUI patch 0013). No download button there yet (§8). |
+| Fullscreen: the wrapper becomes `fixed inset-0` and the window goes fullscreen; the cursor is hidden while playing, hovered and idle; a download button top right. | Window fullscreen + a shell overlay with the same stage; the cursor rests with the controls (`hide_cursor_until_mouse_moves`, GPUI patch 0013); the download button top right, fading with the controls. |
 | Volume and mute are settings (`mediaVideoVolume` / `mediaVideoMuted`, `mediaAudioVolume` / `mediaAudioMuted`), separate for video and audio, persisted, adjustable before anything plays (audio card). Dragging to 0 mutes; any other value unmutes. | The same settings (`media_*` in the core's config, through `model.settings`). |
 | Sound goes to Chromium's default output: the renderer never calls `setSinkId`, so Settings → Audio's output device (and the separate stream output) do not apply to attachments. | **Differs** (owner, 2026-11-26): attachments are routed like other people's stream audio. The separate stream-output device when that option is on, else the voice output device; no name saved means the system's default. A stream of the player's own on that device (`output.rs`, §3 "The output device"). |
 | At the end the element pauses on its last frame; play starts again from 0. Nothing loops. | The same (`Phase::Ended`). `Player::set_looping` exists and is tested; nothing turns it on. |
-| Audio card: play / pause, scrub (only once the element reported a duration), `m:ss / m:ss` seeded from the upload's `durationMs`, mute, volume with wheel; Space on the focused card toggles. An MP3's `Infinity` duration is guarded to 0. | The same, except Space on the audio card (§8). Durations are always finite here: the container's, else FFmpeg's estimate from the bitrate, else 0. |
-| A media error: the video element is reloaded and resumed where it was; the audio card logs. | A file that cannot be opened or decoded shows why on the video's box ("Unsupported format (…)", the server's or reader's error) and a click tries again; the audio card stops (§8: no message line yet). A decoder that fails mid-file is replaced by the next (`decibell-video`'s order) from the keyframe before the current position, at most four times without a picture in between. |
+| Audio card: play / pause, scrub (only once the element reported a duration), `m:ss / m:ss` seeded from the upload's `durationMs`, mute, volume with wheel; Space on the focused card toggles. An MP3's `Infinity` duration is guarded to 0. | The same, Space on the focused card included (a press on the card focuses it). Durations are always finite here: the container's, else FFmpeg's estimate from the bitrate, else 0. |
+| A media error: the video element is reloaded and resumed where it was; the audio card logs. | A file that cannot be opened or decoded shows why on the video's box ("Unsupported format (…)", the server's or reader's error) and a click tries again; the audio card shows `Failed to load: <reason>` under its row with the X on its button, and the button or Space opens the player again (the renderer's button is disabled there; its only error is a URL that cannot be built). A decoder that fails mid-file is replaced by the next (`decibell-video`'s order) from the keyframe before the current position, at most four times without a picture in between. |
 | A deleted message's video goes on playing with nothing showing it, until the channel changes. | The same. |
-| The poster is the upload's thumbnail (else the ThumbHash blur); after a video was played, a JPEG of its last frame. | The thumbnail / blur. **No last-frame poster** (§8): a played video shows its thumbnail again, with "Paused at". No decoder is ever opened for a card at rest. |
+| The poster is the upload's thumbnail (else the ThumbHash blur); after a video was played, a JPEG of its last frame. | The same picture by other means: when a player is dropped, the slot its last picture is in is kept (`decibell_video::Still`, two plane textures: 3 MB for 1080p) and the card draws it (`StillView`) under the same veil and play button, with "Paused at". No read-back, no JPEG, no decoder for a card at rest (`media-poster`: 0 frames at rest with it on screen); five a channel, dropped with the channel. |
 | Bytes: `<video>` range requests through a loopback HTTP proxy that adds the token and decrypts sealed files. | `MediaReader` (range reads, sealed chunks opened in memory, 256 KiB read ahead, the download cap) behind a custom AVIO context. Nothing on disk, no local socket. |
 
 ## 2. The codec matrix
@@ -303,17 +303,45 @@ the pointer over the whole window while the button is held).
 
 ## 8. Open
 
-- **Not built**: the controls' 300 ms fade / slide and the bars' hover thumbs; the fullscreen download button;
-  Space on a focused audio card; the audio card's "Failed to load" line (the play button just stops); the
-  last-frame poster after playing; switching DM conversations does not stop playback (only a channel change
-  does: DMs have no `active_channel`).
-- **To look at**: 12 MB of private memory stay after a 1080p60 clip was played and dropped (0.8 MB after the
-  64 × 16 one): the decoder's and the slots' GPU allocations are freed with the stream (`live_textures` is 0);
-  what stays is not attributed yet (the allocator's retained arenas from the 43 MB in-memory test source and
-  FFmpeg's buffer pools are the candidates). Measure with the real reader before calling it a leak.
-- **Gaps against Chromium**: 10-bit video (needs 16-bit slots or a conversion in the software path); rotation
-  metadata (a phone's portrait video is drawn as stored: GPUI's surfaces do not rotate); VP9 / VP8 hardware
-  decode; a device whose default sample rate changes mid-file (the file goes on silently; the next one is
-  right).
-- **Not run**: see `HANDOFF.md` §5 (a sealed attachment against the local stack, the Electron comparison,
-  the captures against Electron pages, AMD / Intel, Windows).
+- **`media-keys` does not pass** as of this writing: its first half does (a press focuses the audio card, Space
+  plays and pauses, a refused source shows the "Failed to load" line and grows the card by 26 px, Space opens
+  the player again), then the fixture window never comes to rest before the retry click (2 frames in the 2 s
+  before; continuous drawing during `rest`). Not root-caused; the video keys, the fullscreen download button
+  and the fade's "0 frames after it" assertions behind that point have therefore not run in this tree.
+- **10-bit on NVDEC, VA-API and D3D11VA**: refused at open, software decodes instead (Vulkan Video is the first
+  choice on all three Linux vendors, so this is the fallback's fallback; on Windows it means 10-bit is software
+  until P010 slots are written in `windows/slots.rs`).
+- **HDR**: the conversion is an approximation (§2a) nobody has looked at; mastering metadata is not read; no
+  HDR output.
+- **A device at another sample rate** costs a seek when the output device changes mid-file (§3).
+- **4:2:2 / 4:4:4** video is refused ("Unsupported format (codec, not 4:2:0)"); Chromium plays it in software.
+- **Uploads from this client record no size, duration or poster for a video** (`decibell-attachments`'
+  `MediaProbe` has no implementor): `decibell_media::probe` gives the turned size and the duration from the
+  header and would be the place to start; the card's box then falls back to its default shape.
+- **The shared FFmpeg prefix** has no VP9 hwaccels until it is rebuilt from `tools/build-ffmpeg.sh` (the stamp
+  differs, so the script rebuilds; `cargo clean -p ffmpeg-sys-next` in every target directory after the swap).
+  Against the old prefix VP9 fails the lazy probe on every hardware decoder with its reason and plays in
+  software: nothing breaks.
+- **Not run**: AMD / Intel (VA-API VP9, the shared-queue Vulkan path for VP9 and 10-bit), Windows (everything:
+  `windows-owner-checks.md`).
+
+## 9. Where the renderer's playback survives a navigation (told, not changed)
+
+The three places that stop a player (`videoPlaybackState.ts:96-99`, `audioPlaybackState.ts:77-79`,
+`PersistentAudioLayer.tsx:26-36`) all fire only when `useChatStore.activeChannelId` changes to another value.
+So in the Electron client a playing video (hidden, still audible) or audio attachment goes on through:
+
+- entering the DM view directly: an unread DM tile in the server bar (`ServerBar.tsx:212-215`), Send in the
+  profile popup, Message in the profile modal, accepting a call, the mini stream player's expand during a call
+  (none of them touch `activeChannelId`), and from there through every switch between DM conversations;
+- another server that has a channel with the same bare id (`openServer.ts:11-21` keeps the channel when the new
+  server has one with that id: every server's `general`), where a card with the same attachment id would even
+  host the other server's video;
+- the voice view, a stream view, browse, Settings and every other modal;
+- a search Jump or "Go to message" inside the same channel (the row unmounts and remounts), the active
+  channel or server clicked again.
+
+It stops on: another channel of the same server, another server without that channel id, the Home button,
+leaving the server, the channel being deleted, a Jump to another channel, sign-out. No attachment can be
+played inside a DM (DM bubbles get no attachments). The native client stops on every channel change and on
+every change of the open DM conversation.

@@ -506,6 +506,12 @@ fn shown(cx: &App) -> Option<Entity<decibell_chat::MessageList>> {
 
 /// Signed in, Daily Gaming connected, `name` open as the channel list opens it; the list.
 pub(crate) async fn open_channel(cx: &TestCx, name: &str) -> Result<(ChannelId, Entity<decibell_chat::MessageList>)> {
+    open_channel_with(cx, name, true).await
+}
+
+/// [`open_channel`]; `rows`: wait for the newest page's rows (false for a channel that may be
+/// empty, like the stack's `#vault`: its pane shows the welcome banner and no row ever comes).
+pub(crate) async fn open_channel_with(cx: &TestCx, name: &str, rows: bool) -> Result<(ChannelId, Entity<decibell_chat::MessageList>)> {
     let t = wait_for(cx, Duration::from_secs(30), "the sign-in", |cx| model(cx).auth.read(cx).is_authenticated).await?;
     cx.log(format_args!("signed in after {} ms", t.as_millis()));
     wait_for(cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
@@ -532,7 +538,12 @@ pub(crate) async fn open_channel(cx: &TestCx, name: &str) -> Result<(ChannelId, 
     wait_for(cx, Duration::from_secs(10), "the chat pane", |cx| shown(cx).is_some()).await?;
     let list = cx.update(|_, cx| shown(cx))?.context("no list")?;
     let l = list.clone();
-    wait_for(cx, Duration::from_secs(20), "the newest page", move |cx| l.read(cx).row_count() > 0 && l.read(cx).rows_unmeasured() == 0).await?;
+    if rows {
+        wait_for(cx, Duration::from_secs(20), "the newest page", move |cx| l.read(cx).row_count() > 0 && l.read(cx).rows_unmeasured() == 0).await?;
+    } else {
+        cx.sleep(Duration::from_millis(1500)).await;
+        wait_for(cx, Duration::from_secs(20), "the list to be measured", move |cx| l.read(cx).rows_unmeasured() == 0).await?;
+    }
     Ok((channel, list))
 }
 
@@ -1643,6 +1654,10 @@ async fn check_media_keys(cx: TestCx) -> Result<()> {
         wait_for(&w, Duration::from_secs(10), "the second failure", move |cx| p.read(cx).audio_error(NOTE).is_some()).await?;
         // A click on the button tries again; this time the file is there.
         refuse.store(false, Ordering::SeqCst);
+        if std::env::var_os("DECIBELL_MEDIA_KEYS_TRACE").is_some() {
+            let (notified, _) = store_notifications(&w, Duration::from_secs(2)).await?;
+            cx.log(format_args!("TRACE after the second failure, 2 s: {notified}; threads {:?}; audio {:?}", media_threads(), w.update(|_, cx| (audio.read(cx).playing, audio.read(cx).time_secs))?));
+        }
         rest(&w, &list).await?;
         let button = probes::bounds(&play_key).context("the audio card's play button")?;
         w.click(button.center())?;
