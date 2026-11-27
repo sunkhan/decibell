@@ -152,12 +152,15 @@ fn banner(base: Hsla) -> gpui::Background {
     linear_gradient(135., linear_color_stop(base, 0.), linear_color_stop(Hsla::from(dark), 1.))
 }
 
-/// The picture as a button (`PictureButton` with `badge`): a hover scrim saying "Change" over a
-/// camera, and the pencil badge at the corner.
+/// The picture as a button (`PictureButton` with `badge`): a tab stop that Enter and Space press, a
+/// scrim saying "Change" over a camera while hovered or focused from the keyboard
+/// (`group-hover` / `group-focus-visible`), and the pencil badge at the corner.
 fn picture_button(uid: Uid, name: SharedString, saved: Option<Arc<Image>>, window: &mut Window, cx: &mut App) -> AnyElement {
     let id: gpui::ElementId = "account-picture".into();
     let hover = Hover::new(window, cx, id.clone(), Some(Transition::TAILWIND));
-    let (h, listener) = (hover.progress, hover.listener());
+    let focus = window.use_keyed_state((id.clone(), "focus"), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+    let focus_visible = focus.is_focused(window) && window.last_input_was_keyboard();
+    let (h, listener) = (if focus_visible { 1. } else { hover.progress }, hover.listener());
     let theme = cx.theme();
     let radius = theme.avatar_radius(px(80.));
     let ring = theme.shadow_ring.clone();
@@ -165,6 +168,7 @@ fn picture_button(uid: Uid, name: SharedString, saved: Option<Arc<Image>>, windo
     let scrim = gpui::black().opacity(0.55 * h);
     div()
         .id(id)
+        .track_focus(&focus)
         .relative()
         .flex()
         .flex_none()

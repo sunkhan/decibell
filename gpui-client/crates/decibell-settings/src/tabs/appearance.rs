@@ -108,7 +108,10 @@ fn theme_card(this: &AppearanceTab, id: ThemeId, window: &mut Window, cx: &mut C
     let hover = decibell_ui::Hover::new(window, cx, element_id.clone(), Some(decibell_ui::motion::Transition::TAILWIND));
     let (h, listener) = (hover.progress, hover.listener());
     let selected = id == this.shown.theme;
-    let focus = this.cards[id.index()].clone();
+    // A roving tab stop (`tabIndex={i === focusedIndex ? 0 : -1}`): Tab reaches the focused card,
+    // else the selected one; the arrows, Home and End move between them.
+    let roving = this.cards.iter().position(|f| f.is_focused(window)).unwrap_or(this.shown.theme.index());
+    let focus = this.cards[id.index()].clone().tab_stop(id.index() == roving);
     let theme = cx.theme();
     let p = &id.scopes().theme_preview;
     let (chrome, sidebar, content, divider, accent, secondary, muted) = (

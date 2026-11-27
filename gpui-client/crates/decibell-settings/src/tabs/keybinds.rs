@@ -449,17 +449,28 @@ impl KeybindsTab {
     }
 
     fn open_mouse_settings(&mut self, cx: &mut Context<Self>) {
-        let ok = self.desktop == Desktop::Kde
-            && std::process::Command::new("systemsettings")
-                .arg("kcm_mouse")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .is_ok();
+        let ok = self.desktop == Desktop::Kde && launch_detached("systemsettings", &["kcm_mouse"]);
         self.open_failed = !ok;
         cx.notify();
     }
+}
+
+/// `spawn(cmd, args, { detached: true, stdio: "ignore" }).unref()`: the program runs in a process
+/// group of its own with no stdio, and when it exits a thread of ours that exists only until then
+/// reaps it (Node reaps its children itself; an unreaped child would stay a zombie while we run).
+fn launch_detached(program: &str, args: &[&str]) -> bool {
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let Ok(mut child) = command.spawn() else { return false };
+    let reaper = std::thread::Builder::new().name("decibell-reap".into()).spawn(move || {
+        let _ = child.wait();
+    });
+    if let Err(e) = reaper {
+        log::warn!("[hotkeys] no thread to reap {program}: {e}");
+    }
+    true
 }
 
 fn note(text: impl Into<SharedString>, color: Hsla) -> AnyElement {

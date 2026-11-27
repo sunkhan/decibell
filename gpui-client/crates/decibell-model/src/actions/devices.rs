@@ -23,7 +23,16 @@ pub fn load(cx: &mut App) {
 /// The Devices tab is shown (a `devices_changed` then reloads at once) / hidden.
 pub fn watch(on: bool, cx: &mut App) {
     let Some(model) = model(cx) else { return };
-    model.live.devices.update(cx, |d, _| d.watching = if on { d.watching + 1 } else { d.watching.saturating_sub(1) });
+    model.live.devices.update(cx, |d, cx| {
+        // The renderer's list is the tab's own state (`useState(null)`): every opening starts
+        // from "Loading your devices…", never from what the last opening showed.
+        if on && d.watching == 0 && (d.list.is_some() || d.error.is_some()) {
+            d.list = None;
+            d.error = None;
+            cx.notify();
+        }
+        d.watching = if on { d.watching + 1 } else { d.watching.saturating_sub(1) };
+    });
     if on {
         load(cx);
     }

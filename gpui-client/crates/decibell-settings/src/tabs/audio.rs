@@ -283,8 +283,13 @@ impl AudioTab {
         let width = f32::from(bounds.size.width).max(1.);
         let f = (f32::from(x - bounds.left()) / width).clamp(0., 1.);
         let raw = MIN_THRESHOLD_DB + f * (MAX_THRESHOLD_DB - MIN_THRESHOLD_DB);
-        ((raw * 2.).round() / 2.) as f64
+        js_round(f64::from(raw) * 2.) / 2.
     }
+}
+
+/// JavaScript's `Math.round`: halves go up (-50.5 → -50), where Rust's `round` goes away from 0.
+fn js_round(x: f64) -> f64 {
+    (x + 0.5).floor()
 }
 
 fn percent(db: f32) -> f32 {
@@ -455,7 +460,7 @@ impl AudioTab {
         let above = open_mic || self.level >= threshold;
         let level_pct = percent(self.level);
         let threshold_pct = percent(threshold);
-        let badge = if open_mic { "Off".to_string() } else { format!("{} dB", threshold.round() as i64) };
+        let badge = if open_mic { "Off".to_string() } else { format!("{} dB", js_round(f64::from(threshold)) as i64) };
         let accent = theme.color_accent;
 
         let bar_bounds = self.bar.clone();
@@ -689,6 +694,14 @@ impl Render for AudioTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rounds_as_javascript() {
+        assert_eq!(js_round(-50.5), -50.);
+        assert_eq!(js_round(-50.6), -51.);
+        assert_eq!(js_round(2.5), 3.);
+        assert_eq!(js_round(-101.5) / 2., -50.5);
+    }
 
     #[test]
     fn the_bar_maps_decibels_to_its_width() {

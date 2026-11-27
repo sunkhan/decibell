@@ -14,7 +14,7 @@ use decibell_model::stores::invites::InviteChanged;
 use decibell_model::stores::servers::PendingInvite;
 use decibell_model::{Model, ServerId, actions};
 use decibell_ui::{ActiveTheme as _, CloseRequest, FontRole, Label, Modal};
-use gpui::{App, ClickEvent, Context, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{App, ClickEvent, Context, FocusHandle, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px};
 
 use crate::ui::HEADING_TRACKING;
 
@@ -47,6 +47,9 @@ pub struct JoinOverlay {
     pending: Option<PendingInvite>,
     joining: bool,
     local_error: Option<SharedString>,
+    /// ×, Cancel and Accept are buttons in the renderer: tab stops that Enter and Space press
+    /// (GPUI's keyboard click on a focused element).
+    focus: [FocusHandle; 3],
     _join: Option<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
     _watch: Watch,
@@ -82,7 +85,9 @@ impl JoinOverlay {
                 this.pending.is_some()
             });
         let pending = model.servers.read(cx).pending_invite.clone();
-        let mut this = Self { model, pending, joining: false, local_error: None, _join: None, _subscriptions: subscriptions, _watch: watch };
+        let focus = [cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)];
+        let mut this =
+            Self { model, pending, joining: false, local_error: None, focus, _join: None, _subscriptions: subscriptions, _watch: watch };
         this.opened(cx);
         cx.set_global(crate::Current::<JoinOverlay>(cx.weak_entity()));
         this
@@ -241,6 +246,8 @@ impl JoinOverlay {
         };
         let (accent, accent_hover, on_accent, surface_hover, primary, muted) =
             (t.color_accent, t.color_accent_hover, t.color_on_accent, t.color_surface_hover, t.color_text_primary, t.color_text_muted);
+        let [close_focus, cancel_focus, accept_focus] = self.focus.clone();
+        let ring = t.shadow_ring.clone();
         div()
             .occlude()
             .w_full()
@@ -261,6 +268,11 @@ impl JoinOverlay {
                     .child(
                         div()
                             .id("join-close")
+                            .track_focus(&close_focus)
+                            .focus_visible({
+                                let ring = ring.clone();
+                                move |s| s.shadow(ring)
+                            })
                             .group("join-close")
                             .flex()
                             .size_8()
@@ -319,6 +331,11 @@ impl JoinOverlay {
                     .child(
                         div()
                             .id("join-cancel")
+                            .track_focus(&cancel_focus)
+                            .focus_visible({
+                                let ring = ring.clone();
+                                move |s| s.shadow(ring)
+                            })
                             .flex_1()
                             .flex()
                             .justify_center()
@@ -348,7 +365,13 @@ impl JoinOverlay {
                             .py_2()
                             // Stretched to the bordered Cancel's 38 px, the label centred.
                             .items_center()
-                            .when(can_join, |this| this.cursor_pointer().hover(move |s| s.bg(accent_hover)))
+                            // A disabled button isn't a tab stop.
+                            .when(can_join, |this| {
+                                this.track_focus(&accept_focus)
+                                    .focus_visible(move |s| s.shadow(ring))
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(accent_hover))
+                            })
                             .when(!can_join, |this| this.opacity(0.5))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 if can_join {

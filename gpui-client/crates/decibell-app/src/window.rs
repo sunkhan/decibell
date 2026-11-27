@@ -39,7 +39,11 @@ fn main_window_options(profile: Option<&std::path::Path>, cx: &App) -> WindowOpt
         window_bounds: Some(bounds),
         // The screen the saved place is on (Windows converts the bounds with its DPI scale).
         display_id,
-        window_min_size: Some(MIN_SIZE),
+        // Wayland takes the minimum as the visible size (xdg window geometry); X11's
+        // WM_NORMAL_HINTS apply to the whole X window, which holds the shadow margin
+        // (`_GTK_FRAME_EXTENTS`): without it the visible minimum was 780 × 580. (GPUI's X11 hint
+        // is unscaled: at a scale other than 1 the X11 minimum stays off; HANDOFF §5.)
+        window_min_size: Some(if cx.compositor_name() == "X11" { outer_window_size(MIN_SIZE) } else { MIN_SIZE }),
         // The title is what the taskbar and window switcher show. `appears_transparent` is
         // what gives Windows our title bar instead of the system caption.
         titlebar: Some(TitlebarOptions {
