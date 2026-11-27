@@ -367,6 +367,24 @@ fn roster_nickname(server: ServerId, uid: decibell_model::Uid, cx: &App) -> Opti
     model(cx).community(server, cx).and_then(|c| c.roster.read(cx).member(uid).map(|m| m.nickname.to_string()))
 }
 
+/// `name` typed into the Members tab's search, as a person finds a member past the first page;
+/// their record as the tab lists it.
+async fn search_in_tab(cx: &TestCx, members: &Entity<crate::server::members::MembersTab>, name: &str) -> Result<Member> {
+    cx.update(|w, cx| members.update(cx, |t, cx| t.focus_search(w, cx)))?;
+    cx.sleep(Duration::from_millis(80)).await;
+    cx.keystroke("ctrl-a")?;
+    cx.type_text(name)?;
+    let search = cx.update(|_, cx| members.read(cx).search().clone())?;
+    let wanted = name.to_string();
+    wait_for(cx, Duration::from_secs(10), &format!("the tab's search for {name}"), move |cx| {
+        let s = search.read(cx);
+        s.query() == wanted && !s.settling() && s.loaded && !s.loading && s.members.iter().any(|m| m.username == wanted.as_str())
+    })
+    .await?;
+    let name = name.to_string();
+    cx.update(move |_, cx| members.read(cx).search().read(cx).members.iter().find(|m| m.username == name.as_str()).cloned())?.context("vanished")
+}
+
 /// Edit `member`'s nickname in the Members tab as its row's "Set nickname" does: the field
 /// opens on the current one, `nickname` replaces it, Enter saves; the field closes on the echo.
 async fn set_nickname_in_tab(cx: &TestCx, members: &Entity<crate::server::members::MembersTab>, member: &Member, nickname: &str) -> Result<Duration> {
@@ -380,20 +398,31 @@ async fn set_nickname_in_tab(cx: &TestCx, members: &Entity<crate::server::member
     }
     cx.keystroke("enter")?;
     let (server, uid, want) = (daily_gaming(), member.uid, nickname.to_string());
-    let members = members.clone();
-    wait_for(cx, Duration::from_secs(10), "the nickname's echo", move |cx| {
-        // The tab's rows (the server's search, patched by the roster's deltas), else the roster.
-        let shown = members.read(cx).search().read(cx).members.iter().find(|m| m.uid == uid).map(|m| m.nickname.to_string());
-        shown.or_else(|| roster_nickname(server, uid, cx)).as_deref() == Some(want.as_str()) && members.read(cx).nickname_editor().0.is_none()
+    // The tab's rows (the server's search, patched by the roster's deltas), else the roster.
+    let shown = move |members: &Entity<crate::server::members::MembersTab>, cx: &App| {
+        let listed = members.read(cx).search().read(cx).members.iter().find(|m| m.uid == uid).map(|m| m.nickname.to_string());
+        listed.or_else(|| roster_nickname(server, uid, cx))
+    };
+    let tab = members.clone();
+    let result = wait_for(cx, Duration::from_secs(10), "the nickname's echo", move |cx| {
+        shown(&tab, cx).as_deref() == Some(want.as_str()) && tab.read(cx).nickname_editor().0.is_none()
     })
-    .await
+    .await;
+    if result.is_err() {
+        let state = cx.update(|_, cx| {
+            let toasts: Vec<String> = model(cx).toasts.read(cx).toasts().iter().map(|t| format!("{}: {}", t.title, t.body.as_deref().unwrap_or_default())).collect();
+            format!("shown {:?}, editor {:?}, toasts {toasts:?}", shown(members, cx), members.read(cx).nickname_editor())
+        })?;
+        cx.log(format_args!("no echo for {nickname:?}: {state}"));
+    }
+    result
 }
 
 async fn check_nickname_own(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     let (_, tab) = open_settings(&cx, TabId::Members).await?;
     let Tab::Members(members) = tab else { bail!("not the Members tab") };
-    let me = find_member(&cx, "alice").await?;
+    let me = search_in_tab(&cx, &members, "alice").await?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let gate = cx.update(|_, cx| crate::server::members::Gates::read(daily_gaming(), cx).acts(&me, now).nick)?;
     ensure!(gate, "alice's own row offers no nickname in Daily Gaming");
@@ -420,8 +449,8 @@ async fn check_nickname_mod(cx: TestCx) -> Result<()> {
     let (_, tab) = open_settings(&cx, TabId::Members).await?;
     let Tab::Members(members) = tab else { bail!("not the Members tab") };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    // A Member-role placeholder (not the one user-menu-moderation edits).
-    let target = find_member(&cx, "emreaydn").await?;
+    // A Member-role placeholder (not the one user-menu-moderation edits), found in the tab.
+    let target = search_in_tab(&cx, &members, "emreaydn").await?;
     let gate = cx.update(|_, cx| crate::server::members::Gates::read(daily_gaming(), cx).acts(&target, now).nick)?;
     ensure!(gate, "carol (Moderator: Manage Nicknames) gets no nickname entry on a Member");
     let original = target.nickname.to_string();
@@ -430,7 +459,7 @@ async fn check_nickname_mod(cx: TestCx) -> Result<()> {
     cx.log(format_args!("carol set {:?}'s nickname {nickname:?}: on the record after {} ms", target.username, t.as_millis()));
     set_nickname_in_tab(&cx, &members, &target, &original).await?;
     // bob is an Admin, above her: the row offers nothing; asked anyway, the server refuses.
-    let bob = find_member(&cx, "bob").await?;
+    let bob = search_in_tab(&cx, &members, "bob").await?;
     let gate = cx.update(|_, cx| crate::server::members::Gates::read(daily_gaming(), cx).acts(&bob, now).nick)?;
     ensure!(!gate, "carol is offered bob's nickname");
     let before = bob.nickname.to_string();

@@ -522,7 +522,8 @@ mod selection_tests {
     }
 }
 
-#[cfg(test)]
+// GPUI's Linux text system with the bundled fonts (the crate's other engine tests do the same).
+#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
 mod tests {
     use std::borrow::Cow;
     use std::sync::Arc;

@@ -832,6 +832,17 @@ impl Roster {
         }));
     }
 
+    /// Drop `uid`'s record as if the pages had not reached them, without touching the revision:
+    /// the self-tests' stand-in for a member past the first page (`ROSTER_FIRST_PAGE`) on a stack
+    /// whose communities all fit in it. Self-tests only (`fixtures`).
+    #[cfg(feature = "fixtures")]
+    pub fn forget(&mut self, uid: Uid, cx: &mut Context<Self>) {
+        self.members.remove(&uid);
+        self.lookups.asked.remove(&uid);
+        self.lookups.tries.remove(&uid);
+        self.touch(cx);
+    }
+
     /// Look `uid` up when the roster lacks them (`useMemberInterest`): a message author,
     /// a voice participant, a profile. Call it when such a row is built, not from
     /// `render`. No-op when the member is held, when no page has arrived yet, while a

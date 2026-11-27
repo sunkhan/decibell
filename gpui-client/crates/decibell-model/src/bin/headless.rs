@@ -585,7 +585,7 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
             let started = Instant::now();
             let (id, host, port) = loop {
                 let found = cx.update(|cx| {
-                    model.servers.read(cx).servers().iter().find(|s| &*s.name == name.as_str()).map(|s| (s.id, s.host.to_string(), s.port))
+                    model.servers.read(cx).discoverable().iter().find(|s| &*s.name == name.as_str()).map(|s| (s.id, s.host.to_string(), s.port))
                 });
                 if let Some(found) = found {
                     break found;

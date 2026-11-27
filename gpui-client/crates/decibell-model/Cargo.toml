@@ -18,6 +18,9 @@ path = "src/bin/headless.rs"
 # Lets a release build honour DECIBELL_CENTRAL (the local test stack). Test and
 # measurement builds only: the shipping app must never turn it on (HANDOFF.md §3).
 local-central = ["decibell-core/local-central"]
+# Test hooks a feature crate's self-tests use (its own `fixtures` feature turns this on): never in
+# a shipped build.
+fixtures = []
 
 [dependencies]
 # The runtime's thread names the panic hook reads.

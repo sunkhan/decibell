@@ -8,7 +8,7 @@ publish.workspace = true
 [features]
 # The deterministic search state the screens are drawn from (the shell's and the chat's fixtures
 # plus a seeded search store), its JSON export for the Electron captures, and the screens.
-fixtures = ["decibell-shell/fixtures", "decibell-chat/fixtures", "dep:serde_json"]
+fixtures = ["decibell-shell/fixtures", "decibell-chat/fixtures", "decibell-model/fixtures", "dep:serde_json"]
 
 [[bin]]
 name = "decibell-search-fixture"

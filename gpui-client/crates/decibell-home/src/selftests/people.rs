@@ -22,7 +22,7 @@
 
 use std::rc::Rc;
 
-use gpui::{ClipboardItem, Modifiers, PlatformInput, ScrollDelta, ScrollEvent, TouchPhase};
+use gpui::{ClipboardItem, Modifiers, PlatformInput, ScrollDelta, ScrollEvent, SharedString, TouchPhase};
 
 use super::read_rules::{Headless, headless_accounts, headless_exe};
 use super::*;
@@ -159,12 +159,12 @@ fn clipboard_text(cx: &App) -> Option<String> {
 /// Join Daily Gaming from the directory as Browse's Join does, and wait for its roster.
 async fn join_daily_gaming(cx: &TestCx) -> Result<()> {
     cx.update(|_, cx| actions::servers::request_server_list(cx))?;
-    wait_for(cx, Duration::from_secs(15), "the directory", |cx| model(cx).servers.read(cx).servers().iter().any(|s| s.id == daily_gaming())).await?;
+    wait_for(cx, Duration::from_secs(15), "the directory", |cx| model(cx).servers.read(cx).discoverable().iter().any(|s| s.id == daily_gaming())).await?;
     let failed: Rc<std::cell::RefCell<Option<String>>> = Rc::default();
     {
         let failed = failed.clone();
         cx.update(move |_, cx| {
-            let (host, port) = model(cx).servers.read(cx).servers().iter().find(|s| s.id == daily_gaming()).map(|s| (s.host.to_string(), s.port)).expect("listed");
+            let (host, port) = model(cx).servers.read(cx).discoverable().iter().find(|s| s.id == daily_gaming()).map(|s| (s.host.to_string(), s.port)).expect("listed");
             actions::servers::connect(daily_gaming(), host, port, cx, move |result, _| {
                 if let Err(e) = result {
                     *failed.borrow_mut() = Some(e.js_string().to_string());
@@ -330,6 +330,9 @@ fn own_message(cx: &App) -> Option<String> {
 
 /// The status menu opened from the user panel, then `row` clicked.
 async fn status_menu(cx: &TestCx, row: &str) -> Result<()> {
+    // A dialog closing still takes clicks while it fades (300 ms).
+    wait_for(cx, Duration::from_secs(10), "no dialog open", |cx| !model(cx).overlays.read(cx).is_open(modal::CUSTOM_STATUS)).await?;
+    cx.sleep(Duration::from_millis(400)).await;
     click_probe(cx, "user-panel-identity").await?;
     quiet(cx).await?;
     click_probe(cx, row).await?;
@@ -564,7 +567,8 @@ async fn check_profile(cx: TestCx) -> Result<()> {
     let a = format!("#{}", s.me);
     let b_steps = steps(&[
         "e2ee-ready", PASSPHRASE, "wait", "e2ee", "ready", "print", "b-keys",
-        "friends", "wait", "friend", &a, "pending_incoming", "print", "b-asked", "friend-accept", &a, "print", "b-accepted",
+        "friends", "wait", "friend", &a, "pending_incoming", "print", "b-asked",
+        "wait-file", &s.cue_path("b-accept"), "friend-accept", &a, "print", "b-accepted",
         "wait", "friend", &a, "none", "print", "b-removed",
         "wait-file", &s.cue_path("done"), "logout", "wait", "logged-out",
     ]);
@@ -577,6 +581,13 @@ async fn check_profile(cx: TestCx) -> Result<()> {
     }
     e2ee_ready(&cx).await?;
     b.mark(&cx, "b-keys").await?;
+    // B is shown somewhere first (as a person is, wherever a profile opens from): watched, so
+    // central names them and the screen's actions name them too.
+    cx.update(move |_, cx| actions::presence::retain([peer], cx))?;
+    {
+        let name = b_name.clone();
+        wait_for(&cx, Duration::from_secs(10), "B's name", move |cx| model(cx).name_of(peer, &SharedString::default(), cx) == name.as_str()).await?;
+    }
 
     // The popout's avatar opens the profile screen.
     cx.update(move |_, cx| decibell_common::open_profile_at(peer, point(px(500.), px(160.)), None, cx))?;
@@ -588,9 +599,24 @@ async fn check_profile(cx: TestCx) -> Result<()> {
     cx.log("the popout's avatar opened B's profile screen");
 
     // Its friend actions: Add friend; B accepts; Remove friend.
+    let add = wait_probe(&cx, "profile-add").await?;
     click_probe(&cx, "profile-add").await?;
-    wait_for(&cx, Duration::from_secs(10), "the request", move |cx| friend_status(peer, cx) == Some(FriendStatus::PendingOutgoing)).await?;
+    let sent = wait_for(&cx, Duration::from_secs(10), "the request", move |cx| friend_status(peer, cx) == Some(FriendStatus::PendingOutgoing)).await;
+    if let Err(e) = sent {
+        let state = cx.update(move |_, cx| {
+            let m = model(cx);
+            format!(
+                "Add friend at {add:?}; friend state {:?}, the friends error {:?}, toasts {:?}, the screen open {}",
+                friend_status(peer, cx),
+                m.live.friends.read(cx).last_action_error,
+                toast_titles(cx),
+                profile_open_for(peer, cx)
+            )
+        })?;
+        bail!("{e:#}: {state}");
+    }
     b.mark(&cx, "b-asked").await?;
+    s.cue("b-accept")?;
     b.mark(&cx, "b-accepted").await?;
     wait_for(&cx, Duration::from_secs(10), "the friendship", move |cx| friend_status(peer, cx).is_some_and(FriendStatus::is_accepted)).await?;
     quiet(&cx).await?;
@@ -797,8 +823,17 @@ async fn check_popout_stream(cx: TestCx) -> Result<()> {
     let closed = cx.update(|_, cx| model(cx).overlays.read(cx).profile_popup.is_none())?;
     cx.log(format_args!("the click joined Lounge (MLS ready) and focused perf4's stream {} ms later; the popout closed: {closed}", t.as_millis()));
     ensure!(closed, "the popout stayed open");
-    let streams = decibell_harness::test_audio::ensure_only_on(&sink).context("the session's devices")?;
-    cx.log(format_args!("the session's streams are on the null sink: {streams:?}"));
+    // The session's device streams open a moment after it starts: all on the sink and its monitor.
+    let started = Instant::now();
+    let streams = loop {
+        let streams = decibell_harness::test_audio::ensure_only_on(&sink).context("the session's devices")?;
+        if !streams.sinks.is_empty() && !streams.sources.is_empty() {
+            break streams;
+        }
+        ensure!(started.elapsed() < Duration::from_secs(10), "the session's streams never opened: {streams:?}");
+        cx.sleep(Duration::from_millis(200)).await;
+    };
+    cx.log(format_args!("the session's streams are on the null sink and its monitor: {streams:?}"));
 
     cx.update(|_, cx| actions::voice::leave_voice_channel(cx))?;
     wait_for(&cx, Duration::from_secs(15), "leaving Lounge", |cx| model(cx).live.voice.session.read(cx).connected().is_none()).await?;

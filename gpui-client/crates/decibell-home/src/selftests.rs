@@ -601,7 +601,48 @@ async fn check_profile_popup(cx: TestCx) -> Result<()> {
     ensure!(opened, "the popout view");
     cx.keystroke("escape")?;
     wait_for(&cx, Duration::from_secs(3), "Escape to close it", |cx| model(cx).overlays.read(cx).profile_popup.is_none()).await?;
+    popout_anchors(&cx).await?;
     sign_out(&cx).await
+}
+
+/// From the message list, the popout opens 8 px right of the clicked name, level with its top
+/// (`MessageBubble` / `ReplyPreview`: `{ x: rect.right + 8, y: rect.top }`): a sender's name and,
+/// when one is in view, a quoted reply's.
+async fn popout_anchors(cx: &TestCx) -> Result<()> {
+    cx.update(|_, cx| model(cx).nav.update(cx, |nav, cx| nav.set_active_channel(Some("general".into()), cx)))?;
+    wait_for(cx, Duration::from_secs(15), "#general's rows", |cx| decibell_chat::shown_list(cx).is_some_and(|l| !l.read(cx).visible_ids().is_empty())).await?;
+    quiet(cx).await?;
+    for quoted in [false, true] {
+        let target = cx.update(move |_, cx| {
+            let list = decibell_chat::shown_list(cx)?;
+            let list = list.read(cx);
+            let view = list.bounds();
+            list.visible_ids().into_iter().rev().find_map(|id| {
+                let (message, facts) = list.row(id)?;
+                let uid = if quoted { message.reply.as_ref().map(|r| r.sender_uid)? } else { message.sender_uid };
+                if uid == 0 || facts.grouped {
+                    return None;
+                }
+                let name = list.name_bounds(id, quoted)?;
+                (view.contains(&name.origin) && view.contains(&name.bottom_right())).then_some((uid, name))
+            })
+        })?;
+        let Some((uid, name)) = target else {
+            cx.log(format_args!("no {} name in view: that anchor isn't checked", if quoted { "quoted" } else { "sender's" }));
+            continue;
+        };
+        cx.click(name.center())?;
+        park_pointer(cx)?;
+        wait_for(cx, Duration::from_secs(5), "the popout", move |cx| model(cx).overlays.read(cx).profile_popup.as_ref().is_some_and(|p| p.uid == uid)).await?;
+        let anchor = cx.update(|_, cx| model(cx).overlays.read(cx).profile_popup.as_ref().map(|p| (p.anchor.x, p.anchor.y)))?.context("closed")?;
+        let want = (f32::from(name.right()) + 8., f32::from(name.top()));
+        cx.log(format_args!("{} name {name:?}: the popout at {anchor:?} (its right edge + 8, its top: {want:?})", if quoted { "a quoted" } else { "a sender's" }));
+        ensure!((anchor.0 - want.0).abs() < 1. && (anchor.1 - want.1).abs() < 1., "the popout opened at {anchor:?}, not {want:?}");
+        cx.keystroke("escape")?;
+        wait_for(cx, Duration::from_secs(3), "Escape to close it", |cx| model(cx).overlays.read(cx).profile_popup.is_none()).await?;
+        quiet(cx).await?;
+    }
+    Ok(())
 }
 
 fn menu_sections() -> Vec<String> {

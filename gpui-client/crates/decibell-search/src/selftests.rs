@@ -619,22 +619,44 @@ const NICKNAMED: [(i64, &str, &str); 4] = [
 /// G5 (parity audit): a result card names its sender as `useDisplayName` does, looking up a member
 /// the roster hasn't loaded, so an offline member's nickname shows rather than their account name.
 async fn check_nickname(cx: TestCx) -> Result<()> {
-    ready(&cx).await?;
+    // Not `ready`: #general's newest rows would look their authors up (the nicknamed members
+    // among them). #announcements has none of them.
+    wait_for(&cx, Duration::from_secs(30), "the sign-in", |cx| model(cx).auth.read(cx).is_authenticated).await?;
+    wait_for(&cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
+    wait_for(&cx, Duration::from_secs(10), "Daily Gaming's channels", |cx| {
+        model(cx).community(daily_gaming(), cx).is_some_and(|c| c.channels.read(cx).contains("announcements"))
+    })
+    .await?;
+    cx.update(|_, cx| {
+        let m = model(cx);
+        m.nav.update(cx, |nav, cx| nav.set_active_channel(Some(ChannelId::from("announcements")), cx));
+        actions::servers::open_server(daily_gaming(), cx);
+        m.nav.update(cx, |nav, cx| nav.set_active_channel(Some(ChannelId::from("announcements")), cx));
+    })?;
+    wait_for(&cx, Duration::from_secs(15), "#announcements' newest page", |cx| {
+        model(cx).chat.channels.read(cx).get(daily_gaming(), "announcements").is_some_and(|s| s.read(cx).fetched)
+    })
+    .await?;
+    wait_probe(&cx, "search-box").await?;
+    park_pointer(&cx)?;
     let server = daily_gaming();
     // The roster's first page is in (its generation is what a lookup is asked under).
     wait_for(&cx, Duration::from_secs(15), "Daily Gaming's roster", move |cx| {
         model(cx).community(server, cx).is_some_and(|c| c.roster.read(cx).meta().is_some_and(|m| !m.refetching))
     })
     .await?;
-    let unloaded = cx.update(|_, cx| {
-        let community = model(cx).community(server, cx)?;
-        let roster = community.roster.read(cx);
-        NICKNAMED.into_iter().find(|(uid, _, _)| roster.member(*uid).is_none())
+    // The roster's first page holds 500 members and every community of the stack fits in it: one
+    // of the nicknamed members is dropped from the loaded roster to stand for a member past it.
+    let (uid, account, nickname) = NICKNAMED[0];
+    cx.update(move |_, cx| {
+        if let Some(c) = model(cx).community(server, cx) {
+            c.roster.update(cx, |r, cx| r.forget(uid, cx));
+        }
     })?;
-    let Some((uid, account, nickname)) = unloaded else {
-        return Err(decibell_harness::inconclusive("every nicknamed member of the fixture is already on the roster's loaded pages"));
-    };
-    cx.log(format_args!("{account} (uid {uid}, nickname {nickname:?}) isn't on the loaded roster"));
+    cx.sleep(Duration::from_millis(200)).await;
+    let loaded = cx.update(move |_, cx| model(cx).community(server, cx).is_some_and(|c| c.roster.read(cx).member(uid).is_some()))?;
+    ensure!(!loaded, "{account} is still on the roster (something drawn looked them up again)");
+    cx.log(format_args!("{account} (uid {uid}, nickname {nickname:?}) dropped from the loaded roster (a member past its first page)"));
     let mut s = Searcher::new();
     let query = SearchQuery { text: "".into(), filters: vec![SearchFilter::From { uid, username: account.into() }] };
     let a = s.run(&cx, query).await?;
