@@ -137,7 +137,8 @@ impl AudioTab {
                 }
             }),
             cx.observe(&model.live.voice.session, |this, session, cx| {
-                let connected = session.read(cx).channel.is_some();
+                // A voice channel or a DM call (`mediaSessionActive`: the renderer's meter follows a call too).
+                let connected = session.read(cx).media_session_active();
                 if connected != this.connected {
                     this.connected = connected;
                     // A call takes the mic: the test stops (the pipeline's meter takes over).
@@ -173,7 +174,7 @@ impl AudioTab {
             scroll: ScrollHandle::new(),
             close,
             shown: shown(model.settings.read(cx).get()),
-            connected: model.live.voice.session.read(cx).channel.is_some(),
+            connected: model.live.voice.session.read(cx).media_session_active(),
             level: SettingsHooks::get(cx).staged.meter_level.unwrap_or(-96.),
             meter_held: false,
             test_active: false,
