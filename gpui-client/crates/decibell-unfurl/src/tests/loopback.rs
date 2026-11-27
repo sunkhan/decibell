@@ -596,7 +596,10 @@ async fn gif_search_end_to_end() {
         GifConfig::new(GifProvider::Giphy, "k"),
         client(&pki, Dns::with(&[])),
         &dead,
-        Duration::from_secs(2),
+        // Linux refuses at once. Windows answers a refused connect by trying again (three SYNs,
+        // about two seconds on loopback) before it reports the refusal: a deadline of 2 s, as
+        // this had, loses that race there and reads "timeout". The product's deadline is 10 s.
+        Duration::from_secs(8),
     );
     assert_eq!(
         gifs.search("cat", None, None, false)

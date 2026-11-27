@@ -635,7 +635,11 @@ mod tests {
         assert_eq!(buffer.text(), "hello there");
         buffer.move_by(Motion::DocStart, false);
         buffer.delete(Motion::WordRight);
-        assert_eq!(buffer.text(), " there");
+        // Ctrl+Delete removes what Ctrl+Right would pass: the word on Linux, the word and the
+        // spaces after it on Windows (Chromium's `ShouldSkipSpaceWhenMovingRight`, the
+        // platform's own convention: `boundaries::next_word`).
+        let after_word = if cfg!(target_os = "windows") { "there" } else { " there" };
+        assert_eq!(buffer.text(), after_word);
         buffer.delete(Motion::Right);
         buffer.move_by(Motion::DocEnd, false);
         buffer.delete(Motion::Left);
