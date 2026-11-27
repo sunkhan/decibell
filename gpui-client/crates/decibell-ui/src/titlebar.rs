@@ -182,8 +182,8 @@ fn title_button(
                 // also what makes Windows 11 show its snap layouts over the maximise button).
                 // The press is then the system's: GPUI's Windows backend minimises, closes,
                 // and maximises *or restores* on the button's mouse-up unless the app handled
-                // the event, so nothing is handled here (`Window::zoom_window` only ever
-                // maximises on Windows).
+                // the event, so nothing is handled here (a handler here would act a second time:
+                // `Window::zoom_window` toggles, GPUI patch `0022`).
                 button.occlude()
             } else {
                 button

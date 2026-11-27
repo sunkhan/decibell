@@ -1,0 +1,20 @@
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 217b20d..0660d5f 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -947,7 +947,14 @@ impl PlatformWindow for WindowsWindow {
+     fn zoom(&self) {
+         unsafe {
+             if IsWindowVisible(self.0.hwnd).as_bool() {
+-                ShowWindowAsync(self.0.hwnd, SW_MAXIMIZE).ok().log_err();
++                // A toggle, as `Window::zoom_window` says and as the other platforms do: a
++                // maximised window goes back to its restored size.
++                let show = if self.state.is_maximized() {
++                    SW_RESTORE
++                } else {
++                    SW_MAXIMIZE
++                };
++                ShowWindowAsync(self.0.hwnd, show).ok().log_err();
+             } else if let Some(mut status) = self.state.initial_placement.take() {
+                 status.state = WindowOpenState::Maximized;
+                 self.state.initial_placement.set(Some(status));
