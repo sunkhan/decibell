@@ -12,7 +12,8 @@
 # The binary defaults to this tree's `target/release/decibell` (a `dev-local` release build; the headless
 # client beside it must be current: HANDOFF "Self-tests need the headless client"). DECIBELL_CENTRAL defaults
 # to the local stack. Exit status: 0 when every test passed; a test that printed SKIP (a missing fixture or
-# helper) is reported as SKIP and fails the run.
+# helper) is reported as SKIP, one that printed INCONCLUSIVE (it could not
+# measure: the desktop disturbed every try) as INCONCLUSIVE, and either fails the run.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -37,7 +38,7 @@ mkdir -p "$work"
 [ -z "$logs" ] || mkdir -p "$logs"
 export DECIBELL_CENTRAL=${DECIBELL_CENTRAL:-127.0.0.1:18080}
 
-pass=0; failed=(); skipped=()
+pass=0; failed=(); skipped=(); inconclusive=()
 for name in "$@"; do
   profile=$work/profile; rm -rf "$profile"; mkdir -p "$profile"
   log=$work/$name.log
@@ -48,7 +49,10 @@ for name in "$@"; do
     timeout "${DECIBELL_SELFTEST_TIMEOUT:-420}" "$bin" --selftest "$name" >"$log" 2>&1
   rc=$?
   took=$(( $(date +%s) - start ))
-  if [ $rc = 0 ] && grep -aqE 'SKIP:|SKIPPED' "$log"; then
+  if [ $rc = 0 ] && grep -aq 'INCONCLUSIVE' "$log"; then
+    # A test that could not measure (the desktop disturbed every try) says so and exits 0: not a pass.
+    inconclusive+=("$name"); echo "INCONCLUSIVE $name: $(grep -a 'INCONCLUSIVE' "$log" | head -2 | cut -c1-300 | tr '\n' '|')"
+  elif [ $rc = 0 ] && grep -aqE 'SKIP:|SKIPPED' "$log"; then
     # A test that could not run (no fixture, no KWin helper, the stack down) exits 0: never count it as a pass.
     skipped+=("$name"); echo "SKIP $name: $(grep -aE 'SKIP:|SKIPPED' "$log" | head -2 | cut -c1-300 | tr '\n' '|')"
   elif [ $rc = 0 ]; then
@@ -60,5 +64,5 @@ for name in "$@"; do
   [ -z "$logs" ] || cp "$log" "$logs/$name.log"
 done
 rm -rf "$work"
-echo "== $pass passed, ${#failed[@]} failed${failed:+: ${failed[*]}}, ${#skipped[@]} skipped${skipped:+: ${skipped[*]}}"
-[ ${#failed[@]} = 0 ] && [ ${#skipped[@]} = 0 ]
+echo "== $pass passed, ${#failed[@]} failed${failed:+: ${failed[*]}}, ${#skipped[@]} skipped${skipped:+: ${skipped[*]}}, ${#inconclusive[@]} inconclusive${inconclusive:+: ${inconclusive[*]}}"
+[ ${#failed[@]} = 0 ] && [ ${#skipped[@]} = 0 ] && [ ${#inconclusive[@]} = 0 ]
