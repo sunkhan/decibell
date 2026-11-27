@@ -304,12 +304,15 @@ impl Watching {
         }
     }
 
-    /// Stop showing `uid`: not watched, not focused, not in the mini player.
+    /// Stop showing `uid`: not watched, not focused, not in the mini player. The window leaves
+    /// fullscreen with the focused stream (`CallStage`'s "the focused stream ended or was
+    /// unwatched while fullscreen → come back"; the voice view's paths did it by hand).
     pub fn remove(&mut self, uid: Uid, cx: &mut Context<Self>) {
         let before = self.clone();
         self.watching.retain(|u| *u != uid);
         if self.focused == Some(uid) {
             self.focused = None;
+            self.fullscreen = false;
         }
         if self.pip == Some(uid) {
             self.pip = None;

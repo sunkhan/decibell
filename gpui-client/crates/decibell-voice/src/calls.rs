@@ -20,7 +20,8 @@ use decibell_common::{UserAvatar, Watch, user_name};
 use decibell_model::live::calls::{CallPath, CallStatus};
 use decibell_model::live::voice::session::Participant;
 use decibell_model::live::voice::streams::StreamInfo;
-use decibell_model::stores::layout::{CALL_STAGE_MIN, CALL_STAGE_STREAM_DEFAULT, CALL_STAGE_VOICE_DEFAULT, CallStageMode};
+use decibell_model::stores::layout::{CALL_STAGE_MAX, CALL_STAGE_MIN, CALL_STAGE_STREAM_DEFAULT, CALL_STAGE_VOICE_DEFAULT, CallStageMode};
+use decibell_model::stores::navigation::ActiveView;
 use decibell_model::{Model, Uid, actions};
 use decibell_ui::identity::{avatar_color, person_slot};
 use decibell_ui::motion::mix;
@@ -28,7 +29,7 @@ use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, title_toolt
 use decibell_video::{Fit, VideoView, Viewer};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, DispatchPhase, Easing, Entity, Hsla, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, SharedString, StyleRefinement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, SharedString, StyleRefinement,
     Subscription, Task, TimedTransformation, Transformation, Window, anchored, canvas, div, prelude::*, px, svg,
 };
 
@@ -74,6 +75,50 @@ fn breathing_ring(w: f32, h: f32, radius: f32, stroke: f32, color: Hsla, cx: &Ap
         );
     }
     sprite.into_any_element()
+}
+
+// ── Escape ──────────────────────────────────────────────────────────────────────────────
+
+/// Escape at the window (`IncomingCallModal`'s `useEscapeToClose` and `CallStage`'s `keydown`
+/// listener on `window`): the app's root element hands every Escape that reached it here, in the
+/// bubble phase, after the focused element had its turn. A listener inside the card or the stage
+/// never heard it: with nothing focused GPUI dispatches keys to the root's node only, and nothing
+/// in them takes the focus. The incoming card declines (or puts away its "answered elsewhere"
+/// notice); the stage of the open conversation's call steps back: fullscreen, then the focused
+/// stream, then theater. Returns whether it was used.
+pub fn escape(cx: &mut App) -> bool {
+    let Some(model) = cx.try_global::<Model>().cloned() else { return false };
+    let mut used = false;
+    let (ringing, ended) = {
+        let c = model.live.calls.read(cx);
+        (c.status == CallStatus::Incoming && c.incoming.is_some(), c.incoming_ended.is_some())
+    };
+    if ringing {
+        actions::calls::decline_call(cx);
+        used = true;
+    } else if ended {
+        model.live.calls.update(cx, |c, cx| c.clear_incoming_ended(cx));
+        used = true;
+    }
+    let stage_shown = CallStage::call(cx).is_some() && model.nav.read(cx).active_view == ActiveView::Dm;
+    if stage_shown {
+        let (fullscreen, focused) = {
+            let w = model.live.voice.watching.read(cx);
+            (w.fullscreen, w.focused)
+        };
+        let theater = model.live.calls.read(cx).theater;
+        if fullscreen {
+            model.live.voice.watching.update(cx, |w, cx| w.set_fullscreen(false, cx));
+            used = true;
+        } else if focused.is_some() {
+            back_to_tiles(cx);
+            used = true;
+        } else if theater {
+            model.live.calls.update(cx, |c, cx| c.set_theater(false, 0, cx));
+            used = true;
+        }
+    }
+    used
 }
 
 // ── the incoming call ───────────────────────────────────────────────────────────────────
@@ -126,20 +171,6 @@ impl Render for IncomingCall {
         let tint = mix(theme.color_bg_light, avatar_color(theme, person_slot(from_uid, &caller)), theme.palette.tile_tint);
         let viewport = decibell_ui::visible_window_bounds(window, cx);
         let avatar_radius = f32::from(theme.avatar_radius(px(44.)));
-        let keys = canvas(|_, _, _| {}, move |_, _, window, _| {
-            window.on_key_event(move |e: &KeyDownEvent, phase, _, cx| {
-                if phase == DispatchPhase::Bubble && e.keystroke.key == "escape" {
-                    if ringing {
-                        actions::calls::decline_call(cx);
-                    } else {
-                        let model = Model::global(cx).clone();
-                        model.live.calls.update(cx, |c, cx| c.clear_incoming_ended(cx));
-                    }
-                }
-            })
-        })
-        .absolute()
-        .size_0();
         let avatar = div()
             .relative()
             .flex_none()
@@ -225,7 +256,6 @@ impl Render for IncomingCall {
             .pl_3p5()
             .pr_3()
             .shadow(theme.shadow_float.clone())
-            .child(keys)
             .child(avatar)
             .child(
                 div()
@@ -259,14 +289,17 @@ const STATUS_MIN_W: f32 = 700.;
 const QUALITY_MIN_W: f32 = 560.;
 /// One row of tiles wins unless the best-fit grid's tiles are this much bigger.
 const ROW_PREFERENCE: f32 = 0.85;
-/// The chat keeps at least this much under the compact stage.
-const CHAT_MIN: f32 = 180.;
+/// The chat keeps at least this much under the compact stage (`CHAT_MIN`): the DM pane gives its
+/// chat column this minimum and the stage shrinks (to `CALL_STAGE_MIN` at most) to leave it.
+pub const CHAT_MIN: f32 = 180.;
 
 pub struct CallStage {
-    /// The stage's own bounds and its parent's height (for the compact cap), as laid out.
+    /// The stage's own width, as laid out.
     width: Rc<Cell<f32>>,
-    parent_height: Rc<Cell<f32>>,
     tiles_size: Rc<Cell<(f32, f32)>>,
+    /// The stage's height as last laid out (the compact stage can be drawn shorter than the
+    /// height asked for: the chat keeps `CHAT_MIN` under it).
+    drawn_height: Rc<Cell<f32>>,
     tiles: Vec<(Uid, Entity<ParticipantTile>)>,
     streams: Vec<(Uid, Entity<StreamTile>)>,
     focused: Option<(Uid, Viewer)>,
@@ -311,8 +344,8 @@ impl CallStage {
             .people(cx, |this: &Self, uid| this.tiles.iter().any(|(u, _)| *u == uid));
         let mut this = Self {
             width: Rc::new(Cell::new(0.)),
-            parent_height: Rc::new(Cell::new(0.)),
             tiles_size: Rc::new(Cell::new((0., 0.))),
+            drawn_height: Rc::new(Cell::new(0.)),
             tiles: Vec::new(),
             streams: Vec::new(),
             focused: None,
@@ -345,6 +378,7 @@ impl CallStage {
 
     /// Bring the tiles and the focused viewer in line with the stores.
     fn sync(&mut self, cx: &mut Context<Self>) {
+        crate::trace("CallStage sync");
         let model = Model::global(cx).clone();
         let me = model.auth.read(cx).uid;
         let Some((peer, status)) = Self::call(cx) else {
@@ -461,6 +495,7 @@ impl CallStage {
     }
 
     fn poke(&mut self, cx: &mut Context<Self>) {
+        crate::trace("CallStage poke");
         if !self.overlay {
             self.overlay = true;
             cx.notify();
@@ -473,6 +508,16 @@ impl CallStage {
                 cx.notify();
             });
         }));
+    }
+
+    /// The pointer left the video: the overlays go at once (`hideOverlay`).
+    fn hide(&mut self, cx: &mut Context<Self>) {
+        crate::trace("CallStage hide");
+        self.hide_timer = None;
+        if self.overlay {
+            self.overlay = false;
+            cx.notify();
+        }
     }
 
     fn toggle_stats(&mut self, cx: &mut Context<Self>) {
@@ -553,10 +598,11 @@ impl Render for CallStage {
             CallStageMode::Stream => prefs.call_stage_stream_height,
             CallStageMode::Voice => prefs.call_stage_voice_height,
         } as f32;
-        let parent = self.parent_height.get();
-        let max_compact = if parent > 0. { (parent - 48. - CHAT_MIN).max(CALL_STAGE_MIN as f32) } else { f32::MAX };
         let compact = !fullscreen && !theater;
-        let height = self.resizing.map(|(_, _, h)| h).unwrap_or(stage_height).min(max_compact);
+        // The compact stage asks for its height; the layout draws it shorter when the chat under
+        // it would get less than `CHAT_MIN` (the DM pane keeps that room for it), never below
+        // `CALL_STAGE_MIN` (`maxCompactHeight`).
+        let height = self.resizing.map(|(_, _, h)| h).unwrap_or(stage_height);
         let duration = started_at.map(|t| format_duration(Instant::now().saturating_duration_since(t))).unwrap_or_default();
         let stage_w = self.width.get();
         let (c_accent, c_border, c_bg_dark) = {
@@ -565,10 +611,11 @@ impl Render for CallStage {
         };
 
         let width_cell = self.width.clone();
-        let parent_cell = self.parent_height.clone();
+        let height_cell = self.drawn_height.clone();
         let this = cx.entity().downgrade();
         let measure = canvas(
             move |bounds, window, cx| {
+                height_cell.set(f32::from(bounds.size.height));
                 let w = f32::from(bounds.size.width);
                 if (width_cell.get() - w).abs() >= 1. {
                     width_cell.set(w);
@@ -577,7 +624,6 @@ impl Render for CallStage {
                         let _ = this.update(cx, |_, cx| cx.notify());
                     });
                 }
-                let _ = &parent_cell;
             },
             |_, _, _, _| {},
         )
@@ -668,7 +714,16 @@ impl Render for CallStage {
             let own = uid == me;
             let owner_name = info.as_ref().map(|i| user_name(uid, &i.owner_name, cx)).unwrap_or_default();
             let label: SharedString = if own { "Your screen".into() } else { format!("{owner_name}'s screen").into() };
-            let overlay = self.overlay;
+            // The overlays fade in and out in 150 ms (`transition-opacity duration-150`: frames
+            // only while they move) and take no clicks while hidden (`pointer-events-none`). They go
+            // 2.5 s after the pointer last moved, also when it rests on a control: in the renderer
+            // the control's `mousemove` reaches the video's `onMouseMove` after its `onMouseEnter`
+            // hold, so the hide timer is armed again.
+            let t = decibell_ui::motion::transition_flag(window, cx, "call-overlay", self.overlay, decibell_ui::motion::Transition::TAILWIND);
+            decibell_shell::probes::flag("call-overlay", self.overlay);
+            if crate::tracing() {
+                crate::trace(&format!("CallStage overlay {} t {t:.3} mouse {:?}", self.overlay, window.mouse_position()));
+            }
             let me_entity = cx.entity().downgrade();
             let volume = (!own).then(|| {
                 let a = me_entity.clone();
@@ -698,12 +753,14 @@ impl Render for CallStage {
             };
             let chips = (stage_w >= CHIPS_MIN_W).then(|| {
                 div()
+                    .id("call-video-chips")
                     .absolute()
                     .bottom(px(26.))
                     .right_3()
                     .flex()
                     .gap_1p5()
-                    .opacity(if self.overlay { 1. } else { 0. })
+                    .opacity(t)
+                    .when(t == 0., |this| this.invisible())
                     .child(peer_chip(me, true, cx))
                     .child(peer_chip(peer, false, cx))
             });
@@ -724,7 +781,6 @@ impl Render for CallStage {
                         )
                     })
             });
-            let opacity = if overlay { 1. } else { 0. };
             div()
                 .id("call-video")
                 .relative()
@@ -748,6 +804,12 @@ impl Render for CallStage {
                     }
                 }))
                 .on_mouse_move(cx.listener(|this, _, _, cx| this.poke(cx)))
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if !*hovered {
+                        this.hide(cx)
+                    }
+                }))
+                .children(decibell_shell::probes::probe("call-video"))
                 .child(div().size_full().child(VideoView::new(&viewer).fit(Fit::Contain)))
                 .when(stalled, |this| this.child(scrim::reconnecting(cx)))
                 .children(stats)
@@ -758,20 +820,23 @@ impl Render for CallStage {
                         .top_3()
                         .flex()
                         .gap_1p5()
-                        .opacity(opacity)
+                        .opacity(t)
+                        .when(t == 0., |this| this.invisible())
                         .child(scrim::live_pill(LiveSize::Lg, cx))
                         .child(scrim::scrim_lg(cx).child(UserAvatar::new(uid, owner_name.clone(), 18.)).child(scrim::scrim_text(label, white(1.), cx)))
                         .children(info.as_ref().filter(|_| stage_w >= QUALITY_MIN_W).and_then(|i| scrim::quality_pill(i, true, cx))),
                 )
                 .child(
                     div()
+                        .id("call-video-controls")
                         .absolute()
                         .right_3()
                         .top_3()
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .opacity(opacity)
+                        .opacity(t)
+                        .when(t == 0., |this| this.invisible())
                         .when(fullscreen, |this| this.child(div().mr_1p5().child(Label::new("Esc to exit").size(11.).color(white(0.5)))))
                         .children(status_on_video)
                         .child(overlay_button("call-stats", "Stream stats", IconName::StageStats, self.stats, cx, {
@@ -816,7 +881,7 @@ impl Render for CallStage {
                             },
                         )),
                 )
-                .child(div().absolute().left_0().right_0().bottom_4().flex().justify_center().opacity(opacity).child(docked))
+                .child(div().absolute().left_0().right_0().bottom_4().flex().justify_center().opacity(t).when(t == 0., |this| this.invisible()).child(docked))
                 .children(chips)
                 .into_any_element()
         } else {
@@ -918,7 +983,10 @@ impl Render for CallStage {
                             model.layout.update(cx, |l, cx| l.set_call_stage_height(mode, default, cx));
                             return;
                         }
-                        this.resizing = Some((f32::from(e.position.y), height, height));
+                        // From the height drawn (shorter than the one asked for when the chat
+                        // needed the room).
+                        let drawn = this.drawn_height.get().max(CALL_STAGE_MIN as f32);
+                        this.resizing = Some((f32::from(e.position.y), drawn, drawn));
                         cx.notify();
                     }),
                 )
@@ -940,10 +1008,12 @@ impl Render for CallStage {
                         return;
                     }
                     let _ = a.update(cx, |s, cx| {
-                        if let Some((start_y, start_h, _)) = s.resizing {
-                            let parent = s.parent_height.get();
-                            let max = if parent > 0. { (parent - 48. - CHAT_MIN).max(CALL_STAGE_MIN as f32) } else { f32::MAX };
-                            let h = (start_h + f32::from(e.position.y) - start_y).clamp(CALL_STAGE_MIN as f32, max);
+                        if let Some((start_y, start_h, asked)) = s.resizing {
+                            // The layout drew less than was asked: that is the most the chat
+                            // leaves (`maxStageHeight`), and the drag stops there.
+                            let drawn = s.drawn_height.get();
+                            let max = if drawn + 0.5 < asked { drawn } else { CALL_STAGE_MAX as f32 };
+                            let h = (start_h + f32::from(e.position.y) - start_y).clamp(CALL_STAGE_MIN as f32, max.max(CALL_STAGE_MIN as f32));
                             s.resizing = Some((start_y, start_h, h));
                             cx.notify();
                         }
@@ -956,6 +1026,8 @@ impl Render for CallStage {
                     }
                     let _ = b.update(cx, |s, cx| {
                         if let Some((_, _, h)) = s.resizing.take() {
+                            // What is drawn is what is kept.
+                            let h = h.min(s.drawn_height.get().max(CALL_STAGE_MIN as f32));
                             let model = Model::global(cx).clone();
                             model.layout.update(cx, |l, cx| l.set_call_stage_height(mode, h, cx));
                             cx.notify();
@@ -966,27 +1038,6 @@ impl Render for CallStage {
             .absolute()
             .size_0()
         });
-        let keys = canvas(|_, _, _| {}, move |_, _, window, _| {
-            window.on_key_event(move |e: &KeyDownEvent, phase, _, cx| {
-                if phase != DispatchPhase::Bubble || e.keystroke.key != "escape" {
-                    return;
-                }
-                let model = Model::global(cx).clone();
-                let (fs, focused) = {
-                    let w = model.live.voice.watching.read(cx);
-                    (w.fullscreen, w.focused)
-                };
-                if fs {
-                    model.live.voice.watching.update(cx, |w, cx| w.set_fullscreen(false, cx));
-                } else if focused.is_some() {
-                    back_to_tiles(cx);
-                } else if theater {
-                    model.live.calls.update(cx, |c, cx| c.set_theater(false, 0, cx));
-                }
-            })
-        })
-        .absolute()
-        .size_0();
 
         let root = div()
             .relative()
@@ -995,9 +1046,8 @@ impl Render for CallStage {
             .w_full()
             .bg(if fullscreen { black(1.) } else { c_bg_dark })
             .when(!fullscreen, |this| this.border_b_1().border_color(c_border))
-            .map(|this| if compact { this.flex_none().h(px(height)) } else { this.flex_1().min_h_0() })
+            .map(|this| if compact { this.flex_shrink(1.).h(px(height)).min_h(px(CALL_STAGE_MIN as f32)) } else { this.flex_1().min_h_0() })
             .child(measure)
-            .child(keys)
             .child(body)
             .children(handle)
             .children(track);

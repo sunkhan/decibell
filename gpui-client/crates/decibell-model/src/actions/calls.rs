@@ -461,8 +461,9 @@ pub(crate) fn ring_incoming(model: &Model, call: crate::live::calls::IncomingCal
 // ── In-call screen share ────────────────────────────────────────────────────
 
 /// Our stream started inside the active call: tell the peer and list our own entry (the
-/// self-preview tile). No-op outside a call.
-pub(crate) fn announce_stream_start(model: &Model, live: &LiveStream, cx: &mut App) {
+/// self-preview tile). No-op outside a call. (Public for `decibell-headless`'s test streamer,
+/// which brings its own frames.)
+pub fn announce_stream_start(model: &Model, live: &LiveStream, cx: &mut App) {
     let (call_id, peer) = {
         let c = model.live.calls.read(cx);
         if c.status != CallStatus::Active {
@@ -497,7 +498,7 @@ pub(crate) fn announce_stream_start(model: &Model, live: &LiveStream, cx: &mut A
 }
 
 /// Our stream ended inside the active call. No-op outside a call.
-pub(crate) fn announce_stream_stop(model: &Model, cx: &mut App) {
+pub fn announce_stream_stop(model: &Model, cx: &mut App) {
     let (call_id, peer) = {
         let c = model.live.calls.read(cx);
         if c.status != CallStatus::Active {

@@ -46,10 +46,15 @@ pub use video_events::video_event;
 
 /// `DECIBELL_VOICE_TRACE=1`: log each render of the voice views (which view redrew a frame).
 pub(crate) fn trace(view: &str) {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var_os("DECIBELL_VOICE_TRACE").is_some_and(|v| v == "1")) {
+    if tracing() {
         log::info!("[voice-trace] render {view}");
     }
+}
+
+/// `DECIBELL_VOICE_TRACE=1` is set (a detail is formatted only then).
+pub(crate) fn tracing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("DECIBELL_VOICE_TRACE").is_some_and(|v| v == "1"))
 }
 
 struct Initialized;

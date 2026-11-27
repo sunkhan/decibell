@@ -63,7 +63,15 @@ const TESTS: &[(&str, &str)] = &[
     ("voice-watch-hidden", "a watched stream (1080p60 H.264 from a headless peer) stops decoding while the window is minimised: CPU and decoded pictures with the window shown, minimised as before the pause (measured), minimised now (no decoder thread, nothing decoded, the watch goes on); restored, a keyframe is asked for and the picture comes back"),
     ("voice-member-drag", "as alice (Daily Gaming's owner, out of voice): perf4 in Lounge is dragged from the sidebar onto Squad; while the drag is in flight the channels it may land on pulse; dropped, perf4 is moved there; then the user menu's voice moderation: server mute and unmute reach the roster, Disconnect from voice takes perf4 out"),
     ("voice-golive-software", "DECIBELL_ENCODER=software (no hardware encoder): Go Live with Auto reaches SVT-AV1 through the real capture path (a fake ScreenCast portal on a private bus handing over a test-pattern PipeWire node, never the desktop); the greyed preset moves to an encodable one; a refused picker's error is gone on reopen; the peer sees an AV1 stream announced unlocked; our preview decodes it and mutes the stream gain, which comes back when the preview goes; the desktop ending the capture ends the stream; the dialog closes when the session ends"),
+    ("call-out", "perf3 calls perf4 from the DM header: Calling…, Ringing…, answered (P2P over loopback, on the test sink), hung up; perf4 already in a call: Busy"),
+    ("call-timeout", "an unanswered call: after 45 s the caller ends it (No answer) and the callee sees a missed call"),
+    ("call-elsewhere", "perf4 calls perf3, whose second (headless) device answers: the card here says Answered on another device for 3 s, then goes"),
+    ("call-voice-exclusive", "in Lounge, calling perf4 leaves the channel; joining Lounge during the call ends it"),
+    ("call-share", "perf4 shares a recording in a call: the stream tile, watched; back to the tiles and focus again; theater; fullscreen and Escape; the mini-player; stopped while fullscreen: tile gone, fullscreen left, decoder freed; shared again, then perf4 hangs up"),
 ];
+
+#[path = "selftests/calls.rs"]
+mod calls_flows;
 
 fn about(name: &str) -> &'static str {
     TESTS.iter().find(|(n, _)| *n == name).map(|(_, a)| *a).unwrap_or("")
@@ -83,6 +91,11 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "voice-golive-software", about: about("voice-golive-software"), run: |cx| Box::pin(parent_golive(cx, "voice-golive-software")) },
         SelfTest { name: "voice-watch-hidden", about: about("voice-watch-hidden"), run: |cx| Box::pin(parent(cx, "voice-watch-hidden")) },
         SelfTest { name: "voice-member-drag", about: about("voice-member-drag"), run: |cx| Box::pin(parent_env(cx, "voice-member-drag", "alice", Vec::new())) },
+        SelfTest { name: "call-out", about: about("call-out"), run: |cx| Box::pin(parent(cx, "call-out")) },
+        SelfTest { name: "call-timeout", about: about("call-timeout"), run: |cx| Box::pin(parent(cx, "call-timeout")) },
+        SelfTest { name: "call-elsewhere", about: about("call-elsewhere"), run: |cx| Box::pin(parent(cx, "call-elsewhere")) },
+        SelfTest { name: "call-voice-exclusive", about: about("call-voice-exclusive"), run: |cx| Box::pin(parent(cx, "call-voice-exclusive")) },
+        SelfTest { name: "call-share", about: about("call-share"), run: |cx| Box::pin(parent(cx, "call-share")) },
     ]
 }
 
@@ -270,6 +283,11 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "voice-golive-software", about: "(in the app) Go Live on the software encoder", run: |cx| Box::pin(check_golive_software(cx)) },
         SelfTest { name: "voice-watch-hidden", about: "(in the app) a watched stream while minimised", run: |cx| Box::pin(check_watch_hidden(cx)) },
         SelfTest { name: "voice-member-drag", about: "(in the app) drag a voice member to another channel", run: |cx| Box::pin(check_member_drag(cx)) },
+        SelfTest { name: "call-out", about: "(in the app) an outgoing call", run: |cx| Box::pin(calls_flows::check_out(cx)) },
+        SelfTest { name: "call-timeout", about: "(in the app) an unanswered call", run: |cx| Box::pin(calls_flows::check_timeout(cx)) },
+        SelfTest { name: "call-elsewhere", about: "(in the app) answered on another device", run: |cx| Box::pin(calls_flows::check_elsewhere(cx)) },
+        SelfTest { name: "call-voice-exclusive", about: "(in the app) a call and a voice channel", run: |cx| Box::pin(calls_flows::check_voice_exclusive(cx)) },
+        SelfTest { name: "call-share", about: "(in the app) a screen share in a call", run: |cx| Box::pin(calls_flows::check_share(cx)) },
     ]
 }
 
@@ -605,15 +623,20 @@ struct Peer {
 }
 
 impl Peer {
-    /// Signs in, unlocks, and runs `steps` (cue files are `<cues>/<name>`).
+    /// Signs in as `perf4`, unlocks, and runs `steps` (cue files are `<cues>/<name>`).
     fn start(steps: &[String]) -> Result<Peer> {
+        Peer::start_as(PEER, steps)
+    }
+
+    /// The same as another account of the stack (a second device of ours: `perf3`).
+    fn start_as(account: &str, steps: &[String]) -> Result<Peer> {
         let exe = headless_exe().context("decibell-headless not built")?;
         let profile = Profile::new("voice-peer")?;
         let cues = profile.0.join("cues");
         std::fs::create_dir_all(&cues)?;
         let mut args: Vec<String> = vec!["--user-data-dir".into(), profile.0.display().to_string(), "--timeout".into(), "60".into()];
         args.extend(
-            ["login", PEER, "wait", "connected", COMMUNITY, "open-server", COMMUNITY, "e2ee-ready", PASSPHRASE, "mute", "deafen"]
+            ["login", account, "wait", "connected", COMMUNITY, "open-server", COMMUNITY, "e2ee-ready", PASSPHRASE, "mute", "deafen"]
                 .map(String::from),
         );
         args.extend(steps.iter().map(|s| s.replace("@cue:", &format!("{}/", cues.display()))));

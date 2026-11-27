@@ -105,6 +105,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Escape for the DM call's stage and the incoming-call card (their listeners on
+                // `window` in the renderer).
+                if event.keystroke.key == "escape" && decibell_voice::calls::escape(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if decibell_composer::type_to_focus(event, window, cx) {
                     cx.stop_propagation();
                 }

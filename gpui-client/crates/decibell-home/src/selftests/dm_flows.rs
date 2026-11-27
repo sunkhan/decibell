@@ -653,6 +653,9 @@ async fn close_settings(cx: &TestCx) -> Result<()> {
     Ok(())
 }
 
+/// The core's answer about a peer's keys, (has keys, pinned), filled in by its callback.
+type Answer = std::rc::Rc<std::cell::RefCell<Option<Result<(bool, bool), String>>>>;
+
 /// The local stack's database: B's published keys and backup removed (B is a throwaway account
 /// this test registered; nothing else is touched). Central then answers "no keys" for B.
 fn remove_keys_from_stack(name: &str) -> Result<()> {
@@ -899,7 +902,7 @@ pub(super) async fn check_e2ee_keys(cx: TestCx) -> Result<()> {
     let mut core = None;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(20) {
-        let answer: std::rc::Rc<std::cell::RefCell<Option<Result<(bool, bool), String>>>> = Default::default();
+        let answer: Answer = Default::default();
         {
             let answer = answer.clone();
             cx.update(move |_, cx| actions::e2ee::peer_info(peer, cx, move |r, _| *answer.borrow_mut() = Some(r.map(|i| (i.has_keys, i.pinned)).map_err(|e| e.to_string()))))?;

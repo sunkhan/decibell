@@ -1,7 +1,9 @@
 //! `stream-file`: a test-only streamer for `decibell-headless`. It announces a stream in the
 //! connected voice channel exactly as the renderer's WebCodecs path does (`start_screen_share`
 //! with `native_encode: false`: the core makes the stream's `VideoEngine`, MLS-sealed like every
-//! stream of a channel session), then feeds a `.dbv` recording's pre-encoded frames through the
+//! stream of a channel session), or, in an active DM call, to the call's peer as the renderer's
+//! call share does (the same start with no community, then STREAM_START over central; the frames
+//! go sealed over the call's own socket), then feeds a `.dbv` recording's pre-encoded frames through the
 //! core's `send_video_frame` at the recording's timing, looping. A watcher's keyframe request
 //! (the core's `keyframe_requested`) makes it jump to the recording's next keyframe, as the
 //! renderer forced one in its encoder. No capture, no encoder: the tool `tools/perf/streambot.sh`
@@ -21,15 +23,19 @@ use std::time::{Duration, Instant};
 
 use decibell_core::api::streaming;
 use decibell_core::events::CoreEvent;
-use decibell_model::Model;
-use gpui::{AsyncApp, Subscription};
+use decibell_model::live::calls::CallStatus;
+use decibell_model::live::voice::VideoCodec;
+use decibell_model::live::voice::streams::{LiveStream, OwnStreamPhase};
+use decibell_model::{Model, actions};
+use gpui::{AsyncApp, SharedString, Subscription};
 use serde_json::json;
 
 pub const USAGE: &str = "\
 Streaming (test only):
-  stream-file <file.dbv>          stream a .dbv recording into the connected voice channel:
-                                  pre-encoded frames through the core (MLS-sealed), looped, at
-                                  the file's timing; keyframe requests jump to its next keyframe
+  stream-file <file.dbv>          stream a .dbv recording into the connected voice channel, or
+                                  to the peer of an active DM call: pre-encoded frames through the
+                                  core (sealed), looped, at the file's timing; keyframe requests
+                                  jump to its next keyframe
   stream-pause                    stop sending frames (the stream stays announced: what a
                                   watcher sees when the streamer's frames no longer arrive)
   stream-resume                   send again, from where it stopped
@@ -239,12 +245,17 @@ pub async fn run(step: &StreamStep, model: &Model, cx: &mut AsyncApp) -> Result<
                 return Err("stream-file: already streaming".into());
             }
             let rec = Recording::open(path)?;
-            let key = cx
-                .update(|cx| model.live.voice.session.read(cx).connected())
-                .ok_or("stream-file: not in a voice channel (voice-join first)")?;
+            let (key, in_call) = cx.update(|cx| {
+                let session = model.live.voice.session.read(cx);
+                let call = model.live.calls.read(cx).status == CallStatus::Active && session.call_peer.is_some();
+                (session.connected(), call)
+            });
+            if key.is_none() && !in_call {
+                return Err("stream-file: not in a voice channel or an active call (voice-join or a call first)".into());
+            }
             let args = streaming::StartScreenShareArgs {
-                server_id: Some(key.0.wire()),
-                channel_id: Some(key.1.to_string()),
+                server_id: key.as_ref().map(|k| k.0.wire()),
+                channel_id: key.as_ref().map(|k| k.1.to_string()),
                 fps: rec.fps,
                 width: rec.width,
                 height: rec.height,
@@ -263,6 +274,24 @@ pub async fn run(step: &StreamStep, model: &Model, cx: &mut AsyncApp) -> Result<
                 audio_apps: None,
             };
             let started = streaming::start_screen_share(args).await.map_err(|e| format!("stream-file: {e}"))?;
+            if in_call {
+                // No community to announce it: the peer hears STREAM_START over central, and our
+                // own entry is listed, as the app's Go Live does in a call.
+                let live = LiveStream {
+                    codec: VideoCodec::from_wire(rec.codec as i32),
+                    width: started.width,
+                    height: started.height,
+                    fps: rec.fps,
+                    has_audio: false,
+                    encoder: SharedString::default(),
+                    server: None,
+                    channel: None,
+                };
+                cx.update(|cx| {
+                    model.live.voice.own_stream.update(cx, |o, cx| o.set_phase(OwnStreamPhase::Live(live.clone()), cx));
+                    actions::calls::announce_stream_start(model, &live, cx);
+                });
+            }
             let stop = Arc::new(AtomicBool::new(false));
             let paused = Arc::new(AtomicBool::new(false));
             let want_key = Arc::new(AtomicBool::new(false));
@@ -330,6 +359,13 @@ pub async fn stop(model: &Model, cx: &mut AsyncApp) {
         channel_id: key.as_ref().map(|k| k.1.to_string()),
     })
     .await;
+    // In a call: the peer hears STREAM_STOP (a no-op outside one, or after the call ended).
+    cx.update(|cx| {
+        if model.live.voice.own_stream.read(cx).is_live() {
+            model.live.voice.own_stream.update(cx, |o, cx| o.set_phase(OwnStreamPhase::Idle, cx));
+        }
+        actions::calls::announce_stream_stop(model, cx);
+    });
     crate::say(format!(
         "STREAM-STOPPED sent {} frames, {} keyframe jumps",
         bot.sent.load(Ordering::Relaxed),
