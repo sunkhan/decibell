@@ -118,7 +118,12 @@ impl Render for AboutTab {
             .child(div().mb_3().child(Label::new("Updates").size(13.).weight(600.).color(theme.color_text_primary)))
             .child(row)
             .children(notice.map(|notice| {
-                div().id("update-failed-notice").mt_3().child(Label::new(notice).size(12.).color(theme.color_error))
+                div()
+                    .id("update-failed-notice")
+                    .relative()
+                    .mt_3()
+                    .children(decibell_shell::probes::probe("update-failed-notice"))
+                    .child(Label::new(notice).size(12.).color(theme.color_error))
             }));
 
         super::pane(TabId::About, &self.scroll, &self.close)

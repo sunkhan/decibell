@@ -421,11 +421,15 @@ impl RenderOnce for SettingsPane {
                         })
                     }),
             )
-            .child(IconButton::new((id.clone(), "close"), IconName::Close).on_click(move |_, window, cx| {
-                if let Some(handler) = &on_close {
-                    handler(CloseRequest::Escape, window, cx);
-                }
-            }));
+            .child(
+                div().relative().children(decibell_harness::probes::probe("settings-pane-close")).child(
+                    IconButton::new((id.clone(), "close"), IconName::Close).on_click(move |_, window, cx| {
+                        if let Some(handler) = &on_close {
+                            handler(CloseRequest::Escape, window, cx);
+                        }
+                    }),
+                ),
+            );
 
         ScrollArea::new(id)
             .track_scroll(&self.scroll)

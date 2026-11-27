@@ -7,7 +7,7 @@
 //! no draft and no save bar, as in the renderer: leaving the tab (another tab, ✕, the backdrop)
 //! applies what the box holds first, as the blur those presses cause does there, and so does Esc
 //! (the renderer closes on Esc without a blur and drops the typed value: `docs/electron-quirks.md`
-//! #27). The caps reach the attachment service through the model
+//! #26). The caps reach the attachment service through the model
 //! (`CoreAttachmentService::set_limits` on every settings change), mid-transfer too; they are saved
 //! in `config.json` (`upload_limit_bps`, `download_limit_bps`).
 

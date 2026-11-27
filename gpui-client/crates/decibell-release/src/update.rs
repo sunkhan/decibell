@@ -62,18 +62,24 @@ pub enum Status {
 
 /// `detectMode()`.
 pub fn mode() -> Mode {
-    if !install::packaged() {
+    mode_for(install::packaged(), install::current().kind, std::env::var_os("APPIMAGE").map(PathBuf::from).as_deref())
+}
+
+/// `detectMode` for an install: not packaged → disabled; the Windows installer's install and an
+/// AppImage whose folder we may write → self-update; every other package (tarball, `.deb`, AUR, an
+/// AppImage in a read-only folder, a stamp without its `APPIMAGE`) → notify-only.
+fn mode_for(packaged: bool, kind: Option<Kind>, appimage: Option<&std::path::Path>) -> Mode {
+    if !packaged {
         return Mode::Disabled;
     }
-    match install::current().kind {
+    match kind {
         Some(Kind::Nsis) if cfg!(windows) => Mode::SelfUpdate,
-        Some(Kind::AppImage) if cfg!(target_os = "linux") && appimage_writable() => Mode::SelfUpdate,
+        Some(Kind::AppImage) if cfg!(target_os = "linux") && appimage.is_some_and(appimage_writable) => Mode::SelfUpdate,
         _ => Mode::NotifyOnly,
     }
 }
 
-fn appimage_writable() -> bool {
-    let Some(path) = std::env::var_os("APPIMAGE").map(PathBuf::from) else { return false };
+fn appimage_writable(path: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
@@ -405,6 +411,36 @@ impl<'a> Progress<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `detectMode` by install: deb, AUR and the tarball only say an update is available; an
+    /// AppImage updates itself while its folder is ours to write, and only says so in a read-only
+    /// folder (or without its `APPIMAGE`); nothing outside a package.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_mode_follows_the_install() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let writable = dir.path().join("rw/Decibell.AppImage");
+        let read_only = dir.path().join("ro/Decibell.AppImage");
+        for file in [&writable, &read_only] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"x").unwrap();
+        }
+        std::fs::set_permissions(read_only.parent().unwrap(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // SAFETY: geteuid has no preconditions.
+        let root = unsafe { libc::geteuid() } == 0;
+        assert_eq!(mode_for(false, Some(Kind::AppImage), Some(&writable)), Mode::Disabled);
+        for kind in [Kind::Deb, Kind::Aur, Kind::Tarball, Kind::Nsis] {
+            assert_eq!(mode_for(true, Some(kind), None), Mode::NotifyOnly, "{kind:?}");
+        }
+        assert_eq!(mode_for(true, None, None), Mode::NotifyOnly);
+        assert_eq!(mode_for(true, Some(Kind::AppImage), Some(&writable)), Mode::SelfUpdate);
+        assert_eq!(mode_for(true, Some(Kind::AppImage), None), Mode::NotifyOnly, "no APPIMAGE");
+        if !root {
+            assert_eq!(mode_for(true, Some(Kind::AppImage), Some(&read_only)), Mode::NotifyOnly, "a read-only folder");
+        }
+        std::fs::set_permissions(read_only.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     use crate::feed::tests::{key, sign};
     use crate::http::tests::{loopback, serve};
     use base64::Engine as _;

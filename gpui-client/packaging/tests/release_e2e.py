@@ -207,13 +207,29 @@ def updater_cases(binary, work, key, public):
         appimage.write_bytes(b"stand-in")
         return d / "profile", {"DECIBELL_TEST_INSTALL_KIND": kind, "APPIMAGE": str(appimage), "DECIBELL_TEST_UPDATE_PUBLIC_KEY": public}
 
-    # 1. No update: the channel's version is this one.
+    # 1. No update: the channel's version is this one; then About's Check now checks again.
     gh = FakeGitHub(key, VERSION, payload)
     profile, env = profile_env("no-update")
     env["DECIBELL_TEST_UPDATE_ORIGIN"] = gh.server.origin
-    lines, _ = run_app(binary, profile, env, done)
+    control = work / "no-update" / "control"
+    os.mkfifo(control)
+    env["DECIBELL_DEV_CONTROL"] = str(control)
+    asked = []
+
+    def check_again(ls):
+        s = states(ls)
+        if not asked and s and s[-1].startswith("NotAvailable"):
+            with open(control, "w") as fifo:
+                fifo.write("update-check\n")
+            asked.append(len(s))
+        return asked and len(states(ls)) >= asked[0] + 2 and states(ls)[-1].startswith("NotAvailable")
+
+    lines, _ = run_app(binary, profile, env, check_again)
     s = states(lines)
-    check("updater: no update", s[:2] == ["Idle", "Checking"] and s[-1].startswith("NotAvailable"), " → ".join(s))
+    check("updater: no update", s[:2] == ["Idle", "Checking"] and asked and s[asked[0] - 1].startswith("NotAvailable"), " → ".join(s))
+    feeds = [p for (_, p, _, _) in gh.server.requests if p.endswith("decibell-native.json")]
+    check("updater: Check now checks again", asked and s[asked[0]:] [:1] == ["Checking"] and s[-1].startswith("NotAvailable") and len(feeds) == 2,
+          f"{' → '.join(s[asked[0]:]) if asked else 'never asked'}; feed fetched {len(feeds)} times")
     gh.server.close()
 
     # 2. Available → downloaded → verified → staged; Electron's releases never asked for.

@@ -929,6 +929,25 @@ async fn check_join_link(cx: TestCx) -> Result<()> {
     if connected {
         cx.log(format_args!("NOTE: after the last leave the core is back in Design Lab (decibell-core's reconnect race; tile entry {member}; swept after the test)"));
     }
+
+    // 5. The deep-link dialog with an unknown code: "Invalid invite", Accept disabled; its × and
+    // Cancel are buttons the keyboard presses (Tab to them, Enter), as the renderer's are.
+    let pending = |cx: &mut App| model(cx).servers.read(cx).pending_invite.is_some();
+    for (what, tabs) in [("×", 1), ("Cancel", 2)] {
+        ensure!(cx.update(|_, cx| crate::open_invite_link("decibell://invite/ZZZZ9999ZZ", cx))?, "the link didn't parse");
+        wait_for(&cx, Duration::from_secs(15), "the dialog to find the code unknown", |cx| {
+            crate::current::<crate::join::JoinOverlay>(cx).is_some_and(|j| j.read(cx).state(cx).invalid)
+        })
+        .await?;
+        settle_drawn(&cx).await?;
+        ensure!(probes::bounds("join-accept").is_some(), "the dialog isn't drawn");
+        for _ in 0..tabs {
+            cx.keystroke("tab")?;
+        }
+        cx.keystroke("enter")?;
+        wait_for(&cx, Duration::from_secs(5), &format!("{what} (Tab, Enter) to close the dialog"), move |cx| !pending(cx)).await?;
+        cx.log(format_args!("an unknown code's dialog: Invalid invite, Accept disabled; {what} pressed from the keyboard closed it"));
+    }
     log_out(&cx).await
 }
 

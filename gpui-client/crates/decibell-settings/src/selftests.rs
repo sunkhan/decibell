@@ -104,6 +104,11 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "the window open on each tab: 0 frames drawn over 5 s",
             run: |cx| Box::pin(perf1(cx, "settings-idle", Phases::One)),
         },
+        SelfTest {
+            name: "settings-close-ways",
+            about: "the pane's ✕ and a press on the backdrop close Settings (as Esc does: settings-open); About shows a failed-update notice and opening it marks the notice read",
+            run: |cx| Box::pin(perf1(cx, "settings-close-ways", Phases::One)),
+        },
     ]
 }
 
@@ -465,6 +470,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "settings-network-caps", about: "(in the app) speed caps", run: |cx| Box::pin(check_network(cx)) },
         SelfTest { name: "settings-network-leave", about: "(in the app) leaving Network applies a typed speed", run: |cx| Box::pin(check_network_leave(cx)) },
         SelfTest { name: "settings-idle", about: "(in the app) every tab at rest", run: |cx| Box::pin(check_idle(cx)) },
+        SelfTest { name: "settings-close-ways", about: "(in the app) ✕, the backdrop, About's notice", run: |cx| Box::pin(check_close_ways(cx)) },
     ]
 }
 
@@ -757,12 +763,49 @@ fn device_ids(cx: &App) -> Option<Vec<(i64, bool)>> {
     model(cx).live.devices.read(cx).list.as_ref().map(|l| l.iter().map(|d| (d.id, d.current)).collect())
 }
 
+/// This device's address is text to select (`select-text`): a triple click takes all of it, a
+/// drag across it the same, a press elsewhere clears it; nothing is copied (the clipboard is the
+/// owner's).
+async fn select_address(cx: &TestCx) -> Result<()> {
+    let (id, address) = cx
+        .update(|_, cx| model(cx).live.devices.read(cx).current().map(|d| (d.id, d.address.to_string())))?
+        .context("no current device")?;
+    if address.is_empty() {
+        cx.log("this device has no address in the list: selection not checked");
+        return Ok(());
+    }
+    let label = wait_probe(cx, &format!("device-address:{id}")).await?;
+    let selected = |cx: &TestCx| cx.update(|_, cx| decibell_text::selected_label_text(cx));
+    draw_pending(cx)?;
+    cx.mouse_down(label.center(), 3, Modifiers::default())?;
+    cx.mouse_up(label.center())?;
+    draw_pending(cx)?;
+    let tripled = selected(cx)?;
+    park(cx)?;
+    cx.click(point(label.right() + px(60.), label.center().y))?;
+    draw_pending(cx)?;
+    let after_press = selected(cx)?;
+    cx.mouse_down(point(label.left() + px(1.), label.center().y), 1, Modifiers::default())?;
+    cx.mouse_drag(point(label.right() + px(4.), label.center().y))?;
+    cx.mouse_up(point(label.right() + px(4.), label.center().y))?;
+    draw_pending(cx)?;
+    let dragged = selected(cx)?;
+    park(cx)?;
+    cx.click(point(label.right() + px(60.), label.center().y))?;
+    cx.log(format_args!("the address {address:?}: a triple click selected {tripled:?}, a press elsewhere left {after_press:?}, a drag selected {dragged:?}"));
+    ensure!(tripled.as_deref() == Some(address.as_str()), "a triple click didn't select the address");
+    ensure!(after_press.is_none(), "a press elsewhere didn't clear the selection");
+    ensure!(dragged.as_deref() == Some(address.as_str()), "a drag across the address didn't select it");
+    Ok(())
+}
+
 async fn check_devices(cx: TestCx) -> Result<()> {
     signed_in(&cx).await?;
     open_on(&cx, TabId::Devices).await?;
     wait_for(&cx, Duration::from_secs(10), "the device list", |cx| device_ids(cx).is_some()).await?;
     let before = cx.update(|_, cx| device_ids(cx))?.unwrap_or_default();
     cx.log(format_args!("{} devices listed ({} other)", before.len(), before.iter().filter(|d| !d.1).count()));
+    select_address(&cx).await?;
     mark("ready");
     let known: Vec<i64> = before.iter().map(|d| d.0).collect();
     wait_for(&cx, Duration::from_secs(60), "the second device in the list", {
@@ -1482,6 +1525,76 @@ async fn check_network_leave(cx: TestCx) -> Result<()> {
         s.update(cx, |s, cx| s.change(|v| v.upload_limit_bps = 0, cx));
     })?;
     cx.sleep(Duration::from_millis(600)).await;
+    log_out(&cx).await
+}
+
+/// An updater stand-in that counts what About asks of it.
+#[derive(Default)]
+struct CountingUpdateHooks {
+    notice_seen: std::cell::Cell<u32>,
+}
+
+impl crate::UpdateHooks for CountingUpdateHooks {
+    fn check(&self, _: &mut App) {}
+    fn quit_and_install(&self, _: &mut App) {}
+    fn open_release_page(&self, _: &mut App) {}
+    fn failed_notice_seen(&self, _: &mut App) {
+        self.notice_seen.set(self.notice_seen.get() + 1);
+    }
+}
+
+async fn check_close_ways(cx: TestCx) -> Result<()> {
+    signed_in(&cx).await?;
+    // The pane's ✕.
+    open_on(&cx, TabId::Account).await?;
+    let close = wait_probe(&cx, "settings-pane-close").await?.center();
+    cx.click(close)?;
+    park(&cx)?;
+    wait_for(&cx, Duration::from_secs(3), "Settings closed by ✕", |cx| !settings_open(cx)).await?;
+    cx.log("✕ closed Settings");
+    // A press on the backdrop (the window's corner, outside the Settings window).
+    open_on(&cx, TabId::Privacy).await?;
+    settle_drawn(&cx).await?;
+    let v = visible(&cx)?;
+    cx.click(point(v.left() + px(12.), v.bottom() - px(12.)))?;
+    park(&cx)?;
+    wait_for(&cx, Duration::from_secs(3), "Settings closed by the backdrop", |cx| !settings_open(cx)).await?;
+    cx.log("a press on the backdrop closed Settings");
+    wait_for(&cx, Duration::from_secs(2), "the tab's view to go", |cx| shown_tab(cx).is_none()).await?;
+    // About with a failed-update notice: it shows, and opening About marks it read (once).
+    let hooks = std::rc::Rc::new(CountingUpdateHooks::default());
+    let (previous, before) = cx.update({
+        let hooks = hooks.clone();
+        move |_, cx| {
+            let previous = crate::SettingsHooks::get(cx).update.clone();
+            crate::SettingsHooks::set_update_hooks(hooks, cx);
+            let update = model(cx).update.clone();
+            let before = update.read(cx).failed_notice.clone();
+            update.update(cx, |u, cx| u.set_failed_notice(Some("Version 9.9.9 didn't start (test), so 0.9.4 was kept.".into()), cx));
+            (previous, before)
+        }
+    })?;
+    let result = async {
+        open_on(&cx, TabId::About).await?;
+        settle_drawn(&cx).await?;
+        let seen = hooks.notice_seen.get();
+        let shown = probes::bounds("update-failed-notice").is_some();
+        cx.log(format_args!("About opened with a failed-update notice: marked read {seen} time(s), still shown: {shown}"));
+        ensure!(seen == 1, "opening About marked the notice read {seen} times");
+        ensure!(shown, "About doesn't show the notice");
+        cx.keystroke("escape")?;
+        wait_for(&cx, Duration::from_secs(3), "Settings closed", |cx| !settings_open(cx)).await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    cx.update(move |_, cx| {
+        if let Some(previous) = previous {
+            crate::SettingsHooks::set_update_hooks(previous, cx);
+        }
+        let update = model(cx).update.clone();
+        update.update(cx, |u, cx| u.set_failed_notice(before, cx));
+    })?;
+    result?;
     log_out(&cx).await
 }
 
