@@ -81,7 +81,9 @@ pub struct WelcomeBanner {
     width: Rc<Cell<f32>>,
     follow: Follow,
     _watch: Watch,
-    /// The ring turns only while the window is visible: re-render when that changes.
+    /// Whether the ring turned in the last render.
+    turning: Rc<Cell<bool>>,
+    /// The ring turns only while the window is visible: re-render when that changes it.
     _visibility: Subscription,
 }
 
@@ -97,8 +99,15 @@ impl WelcomeBanner {
         watch.store(&model.communities, cx);
         let mut follow = Follow::default();
         follow.set(Some(server), cx);
-        let visibility = cx.observe_window_visibility(window, |_, _, _, cx| cx.notify());
-        Self { server, channel, width: Rc::new(Cell::new(0.)), follow, _watch: watch, _visibility: visibility }
+        // A visibility event that doesn't start or stop the ring draws nothing.
+        let visibility = cx.observe_window_visibility(window, |this: &mut Self, _, window, cx| {
+            if ring_turns(window, cx) != this.turning.get() {
+                log::debug!("[welcome] window visibility changed: the ring turns {}", !this.turning.get());
+                cx.notify();
+            }
+        });
+        let turning = Rc::new(Cell::new(ring_turns(window, cx)));
+        Self { server, channel, width: Rc::new(Cell::new(0.)), follow, _watch: watch, turning, _visibility: visibility }
     }
 }
 
@@ -126,6 +135,7 @@ impl Render for WelcomeBanner {
 
         let shown = motion::transition_from(window, cx, "welcome-fade-up", 0., 1., FADE_UP);
         let turns = ring_turns(window, cx);
+        self.turning.set(turns);
         decibell_harness::probes::flag("welcome-ring-turns", turns);
         let width = match self.width.get() {
             w if w > 0. => w,

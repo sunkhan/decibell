@@ -443,6 +443,8 @@ async fn check_roles_reorder(cx: TestCx) -> Result<()> {
         // The picker's search field has the focus (a blinking caret from here on).
         cx.sleep(Duration::from_millis(250)).await;
         cx.type_text(&user)?;
+        // The server's answer to the typed search (250 ms debounce): the rows move as it lands.
+        cx.sleep(Duration::from_millis(800)).await;
         click_probe_now(&cx, &format!("add-member:{}", member.uid)).await?;
         click_probe_now(&cx, "add-members-run").await?;
         let uid = member.uid;
@@ -585,6 +587,8 @@ async fn transfer_to(cx: &TestCx, name: &str, uid: i64) -> Result<()> {
     // The picker's search field has the focus (a blinking caret from here on).
     cx.sleep(Duration::from_millis(250)).await;
     cx.type_text(name)?;
+    // The server's answer to the typed search (250 ms debounce): the rows move as it lands.
+    cx.sleep(Duration::from_millis(800)).await;
     click_probe_now(cx, &format!("owner-option:{uid}")).await?;
     cx.update(|_, cx| window.update(cx, |w, cx| w.scroll_pane_to_bottom(cx)))?;
     click_probe_now(cx, "transfer-confirm").await?;
@@ -884,17 +888,12 @@ async fn check_channel_more(cx: TestCx) -> Result<()> {
         click_probe(&cx, "perm-add-target").await?;
         // The picker's search field has the focus (a blinking caret).
         cx.sleep(Duration::from_millis(250)).await;
-        cx.log(format_args!("DIAG picker opened: {:?}, focused {:?}", cx.update(|_, cx| window.read(cx).perm_picker(cx))?, cx.update(|w, cx| w.focused(cx).map(|f| format!("{f:?}")))?));
         cx.type_text(&user)?;
-        cx.sleep(Duration::from_millis(800)).await;
-        cx.log(format_args!(
-            "DIAG typed: {:?}; probe {:?}",
-            cx.update(|_, cx| window.read(cx).perm_picker(cx))?,
-            decibell_harness::probes::bounds(&format!("perm-pick:{}", member.uid))
-        ));
-        click_probe_now(&cx, &format!("perm-pick:{}", member.uid)).await?;
+        // The server's answer to the typed search (250 ms debounce): the rows move as it lands.
+        let w = window.clone();
+        wait_for(&cx, Duration::from_secs(8), "the picker's search", move |cx| w.read(cx).perm_picker(cx).is_some_and(|(_, n)| n == 1)).await?;
         cx.sleep(Duration::from_millis(300)).await;
-        cx.log(format_args!("DIAG clicked: {:?}; target {}", cx.update(|_, cx| window.read(cx).perm_picker(cx))?, cx.update(|_, cx| window.read(cx).perm_target())?));
+        click_probe_now(&cx, &format!("perm-pick:{}", member.uid)).await?;
         let key = format!("member:{}", member.uid);
         let k = key.clone();
         let w = window.clone();
@@ -906,12 +905,6 @@ async fn check_channel_more(cx: TestCx) -> Result<()> {
             let w = window.clone();
             cx.update(move |_, cx| w.update(cx, |w, cx| w.reveal(b, cx)))?;
             cx.sleep(Duration::from_millis(250)).await;
-            cx.log(format_args!(
-                "DIAG {label}: probe {:?}, pane {:?}, target {}",
-                decibell_harness::probes::bounds(&probe),
-                cx.update(|_, cx| window.read(cx).pane_viewport())?,
-                cx.update(|_, cx| window.read(cx).perm_target())?
-            ));
             click_probe_now(&cx, &probe).await?;
             let (k, w) = (key.clone(), window.clone());
             wait_for(&cx, Duration::from_secs(3), &format!("{label} staged"), move |cx| {

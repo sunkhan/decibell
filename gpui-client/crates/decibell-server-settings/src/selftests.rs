@@ -1531,6 +1531,10 @@ fn open_fixture_window(cx: &TestCx, visible: (f32, f32)) -> Result<TestCx> {
 async fn settings_idle(cx: TestCx) -> Result<()> {
     let test = open_fixture_window(&cx, (1280., 800.))?;
     let result = async {
+        // No channel open under the window: the fixture has no core, so a chat pane there asks for
+        // history again whenever the window's activation redraws it, and the refusal lands (and
+        // draws) at a moment no test controls. What is measured here is the settings window.
+        test.update(|_, cx| model(cx).nav.update(cx, |n, cx| n.set_active_channel(None, cx)))?;
         test.update(|_, cx| model(cx).overlays.update(cx, |o, cx| o.open_modal(modal::SERVER_SETTINGS, cx)))?;
         wait_for(&test, Duration::from_secs(5), "the window", |cx| host::server_window(cx).is_some()).await?;
         let window = test.update(|_, cx| host::server_window(cx))?.context("no window")?;
