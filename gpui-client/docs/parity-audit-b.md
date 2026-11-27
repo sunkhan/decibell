@@ -200,7 +200,43 @@ Each can be a self-test against the local stack unless marked otherwise.
 
 ## 4. Self-tests run today
 
-RESULTS_TABLE
+The first 79 ran directly (`decibell --selftest <name>`, one at a time, a failure run again up to twice); the
+coordinator then asked for `gpui-client/tools/selftest.sh` (one test window on the machine at a time), through
+which the rest ran and every earlier failure was run again (three times).
+
+**PASS** (directly): `shell-signin`, `shell-navigate` (2nd try), `shell-members`, `servers-browse-join`,
+`servers-join-link`, `invite-manage-live` (its Copy link check SKIPPED: the clipboard was not empty),
+`invite-friends-live`, `welcome-banner`, `content-invite`, `deep-link-arg`, `server-settings-open`, `overview-save`,
+`roles-edit-echo`, `members-search`, `audit-log-live`, `bans-live`, `user-menu-moderation`, `profile-popup`,
+`settings-narrow`, `picture-editor`, `channel-create-delete`, `channel-reorder`, `category-sync-drop`, `category-sync`,
+`channel-settings-echo`, `header-members-toggle`, `servers-idle`, `server-settings-idle` (2nd try), `chat-live`,
+`chat-history`, `chat-switch`, `chat-resize`, `chat-selection`, `chat-scroll-spec`, `chat-rows`, `chat-hover`,
+`chat-idle`, `composer-type-send`, `composer-draft`, `composer-burst`, `composer-slowmode`, `composer-refused`,
+`composer-edit`, `composer-reply`, `composer-attach`, `composer-drop`, `composer-paste-image` (XWayland),
+`emoji-picker`, `gif-picker`, `input-atoms`, `content-images-live`, `content-gif` (2nd try), `content-viewer`,
+`content-embed`, `content-download`, `content-copy-image`, `content-rows`, `media-live`, `media-idle`,
+`media-audio-play`, `media-persist`, `search-live`, `search-supersede`, `search-refused`, `search-paging`,
+`search-jump`, `search-narrow`, `search-encrypted`, `search-nothing-stored`, `regional`, `settings-appearance-apply`,
+`taskbar-progress`, `composer-idle` (2nd try), `search-idle` (2nd try).
+
+**PASS** (through the wrapper): `voice-join`, `settings-network-caps`, `dm-send-receive`, `search-typing-cost`,
+`composer-typing-cost`, `content-scroll-fixture`, `content-scroll-images`, `content-cache-bound`, `input-clipboard`,
+`input-ime`, `home-idle`; `media-video-play` (failed 3× directly — "3 frames drawn, 2 presented while paused", "no
+video card at rest in the fixture channel", "the list drew 6 frames while a video played with its controls hidden"
+— and once through the wrapper with "no video card at rest…", then passed twice through it); `input-typing`
+(failed once through the wrapper, "frames per typed character: [2, 1, …, 3, …]", then passed twice).
+
+**FAILED three times through the wrapper** (and before that three times directly where listed):
+
+| Test | Message | Row | Reading |
+|---|---|---|---|
+| `composer-type-to-focus` | "nothing focused: the key went to the box ("")" | 6.2 | real on the head; the focus fixes are in `wip/integrate-d` (`0ad76c48`, `2f156e9f`), unmerged |
+| `join-dm-composer` | "type-to-focus with nothing focused" (the box holds "", focused false) | 6.2 / 3.x | the same cause |
+| `render-cost` | "only 0 of 30 changes drew a frame" | outside these rows | fails the same way on the Windows runner; not investigated here |
+
+**Could not run**: `shell-idle` — "tools/perf/winctl.sh not found above the binary": the frozen build's directory
+(`~/.cache/decibell-dev/parity-root`) has no `tools/` above it. It is 4.4's evidence for the glow at rest; rerun it
+from a tree's own build.
 
 ## 5. Rows with no step in `docs/windows-owner-checks.md`
 
