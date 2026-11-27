@@ -285,27 +285,6 @@ fn body_of(rows: usize, fetched: bool, loading: bool, failed: bool) -> Body {
     }
 }
 
-#[cfg(test)]
-mod body_tests {
-    use super::{Body, body_of};
-
-    #[test]
-    fn what_stands_in_the_lists_place() {
-        // (rows, fetched, loading, failed)
-        assert_eq!(body_of(0, false, false, false), Body::Loading, "the frame before the load starts");
-        assert_eq!(body_of(0, false, true, false), Body::Loading);
-        assert_eq!(body_of(3, false, true, false), Body::Loading, "live rows before the first page: still waiting for it");
-        assert_eq!(body_of(0, true, true, false), Body::Loading, "a reload with nothing to show");
-        assert_eq!(body_of(5, true, true, false), Body::List, "a page loading above rows");
-        assert_eq!(body_of(0, false, false, true), Body::Failed);
-        assert_eq!(body_of(4, false, false, true), Body::Failed, "live rows don't hide a first page that never came");
-        assert_eq!(body_of(0, true, false, true), Body::Failed);
-        assert_eq!(body_of(4, true, false, true), Body::List, "a later failure with the page in keeps the list");
-        assert_eq!(body_of(0, true, false, false), Body::Welcome);
-        assert_eq!(body_of(2, true, false, false), Body::List);
-    }
-}
-
 fn centered() -> gpui::Div {
     div().flex_1().flex().flex_col().items_center().justify_center()
 }
@@ -494,5 +473,26 @@ impl Render for ChatPane {
                         cx.notify();
                     })),
             )
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::{Body, body_of};
+
+    #[test]
+    fn what_stands_in_the_lists_place() {
+        // (rows, fetched, loading, failed)
+        assert_eq!(body_of(0, false, false, false), Body::Loading, "the frame before the load starts");
+        assert_eq!(body_of(0, false, true, false), Body::Loading);
+        assert_eq!(body_of(3, false, true, false), Body::Loading, "live rows before the first page: still waiting for it");
+        assert_eq!(body_of(0, true, true, false), Body::Loading, "a reload with nothing to show");
+        assert_eq!(body_of(5, true, true, false), Body::List, "a page loading above rows");
+        assert_eq!(body_of(0, false, false, true), Body::Failed);
+        assert_eq!(body_of(4, false, false, true), Body::Failed, "live rows don't hide a first page that never came");
+        assert_eq!(body_of(0, true, false, true), Body::Failed);
+        assert_eq!(body_of(4, true, false, true), Body::List, "a later failure with the page in keeps the list");
+        assert_eq!(body_of(0, true, false, false), Body::Welcome);
+        assert_eq!(body_of(2, true, false, false), Body::List);
     }
 }

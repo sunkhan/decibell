@@ -113,12 +113,21 @@ impl Element for InputElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> (LayoutId, ()) {
         let state = self.state.clone();
         let scale = window.scale_factor();
         let mut style = Style::default();
-        style.size.width = relative(1.).into();
+        let unwrapped = {
+            let state = state.read(cx);
+            state.buffer.rules().multiline && state.style.is_some_and(|style| style.wrapping == Wrapping::PRE)
+        };
+        if unwrapped {
+            // As wide as the longest line, at least the container (the measure below answers that).
+            style.min_size.width = relative(1.).into();
+        } else {
+            style.size.width = relative(1.).into();
+        }
         let layout_id = window.request_measured_layout(style, move |known, available, _, cx| {
             let width = match (known.width, available.width) {
                 (Some(width), _) => f32::from(width),

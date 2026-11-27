@@ -193,12 +193,14 @@ impl SnippetPanel {
         let scroll_x = gpui::ScrollHandle::new();
         let reveal = scroll.clone();
         let reveal_x = scroll_x.clone();
-        let panel = cx.entity().downgrade();
+        // The hook runs inside the field's update, which may run inside this panel's own (Tab):
+        // the panel is told to draw again by id, never updated from here.
+        let panel = cx.entity_id();
         field.update(cx, |field, _| {
             field.on_reveal_caret(move |caret, cx| {
                 reveal.scroll_into_view(caret.top(), caret.size.height, decibell_ui::ScrollAlign::Nearest);
                 if kind == SnippetKind::Code && reveal_caret_x(&reveal_x, caret) {
-                    let _ = panel.update(cx, |_, cx| cx.notify());
+                    cx.notify(panel);
                 }
             })
         });
@@ -277,22 +279,29 @@ impl SnippetPanel {
             }
             "tab" if self.kind == SnippetKind::Code => {
                 cx.stop_propagation();
-                self.field.update(cx, |field, cx| {
-                    let selection = field.selection();
-                    let (from, to) = (selection.anchor.min(selection.head), selection.anchor.max(selection.head));
-                    let value = field.value().to_string();
-                    let multiline = value[from..to].contains('\n');
-                    if !m.shift && !multiline {
-                        field.insert_text(INDENT, cx);
-                        return;
-                    }
-                    let (text, start, end) = indent_lines(&value, from, to, m.shift);
-                    field.set_value(&text, cx);
-                    field.select(Selection { anchor: start, head: end }, cx);
-                });
+                self.tab(m.shift, cx);
             }
             _ => {}
         }
+    }
+
+    /// Tab / Shift+Tab in the code area: two spaces at the caret, or the touched lines indented or
+    /// outdented. Reached as a key or as the window's focus actions, which the app binds to Tab
+    /// and dispatches before key listeners (the panel takes them while the code area has the focus).
+    fn tab(&mut self, outdent: bool, cx: &mut Context<Self>) {
+        self.field.update(cx, |field, cx| {
+            let selection = field.selection();
+            let (from, to) = (selection.anchor.min(selection.head), selection.anchor.max(selection.head));
+            let value = field.value().to_string();
+            let multiline = value[from..to].contains('\n');
+            if !outdent && !multiline {
+                field.insert_text(INDENT, cx);
+                return;
+            }
+            let (text, start, end) = indent_lines(&value, from, to, outdent);
+            field.set_value(&text, cx);
+            field.select(Selection { anchor: start, head: end }, cx);
+        });
     }
 }
 
@@ -353,6 +362,7 @@ impl Render for SnippetPanel {
                         div()
                             .id("snippet-code-x")
                             .w_full()
+                            .flex()
                             .overflow_x_scroll()
                             // The wheel's vertical turn stays the outer area's; Shift turns it
                             // sideways (Chromium's textarea).
@@ -371,7 +381,8 @@ impl Render for SnippetPanel {
                                 cx.stop_propagation();
                                 cx.notify();
                             }))
-                            .child(div().p(px(CODE_PAD)).child(TextArea::new(&self.field, mono(12.5, Wrapping::PRE, cx)))),
+                            // As wide as the longest line, at least the area.
+                            .child(div().flex_none().min_w_full().p(px(CODE_PAD)).child(TextArea::new(&self.field, mono(12.5, Wrapping::PRE, cx)))),
                     ),
                 )
                 .into_any_element(),
@@ -441,6 +452,10 @@ impl Render for SnippetPanel {
             .p_3()
             .shadow(shadow)
             .on_key_down(cx.listener(Self::key_down))
+            .when(kind == SnippetKind::Code, |this| {
+                this.on_action(cx.listener(|this, _: &decibell_ui::FocusNext, _, cx| this.tab(false, cx)))
+                    .on_action(cx.listener(|this, _: &decibell_ui::FocusPrev, _, cx| this.tab(true, cx)))
+            })
             .child(
                 div()
                     .mb_2()

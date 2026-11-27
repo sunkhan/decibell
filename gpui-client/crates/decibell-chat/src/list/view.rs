@@ -1563,10 +1563,14 @@ impl MessageList {
             let (from, to) = layout.unit_at(layout.resolve(hit.pos, false), count);
             Some((Caret { pos: from, ..caret.clone() }, Caret { pos: to, ..caret.clone() }))
         };
+        // A press on a button (a hover action, a code block's copy or expand bar) is a click, Shift
+        // held or not: Shift+click on the trash deletes without asking even with a caret left in
+        // the list, where it would otherwise extend the selection and never click.
+        let button = matches!(hit.target, Target::Action(_) | Target::CodeCopy(_) | Target::CodeToggle(_));
         self.selection = match event.click_count {
             2 => unit(self, 2),
             3 => unit(self, 3),
-            _ if event.modifiers.shift => match self.selection.take() {
+            _ if event.modifiers.shift && !button => match self.selection.take() {
                 Some((anchor, _)) => Some((anchor, caret)),
                 None => Some((caret.clone(), caret)),
             },

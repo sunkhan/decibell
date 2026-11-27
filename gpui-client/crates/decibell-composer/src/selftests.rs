@@ -180,7 +180,13 @@ async fn check_message_ui(cx: TestCx) -> Result<()> {
         cx.log("the emoji popover: :grinning:, closed by Escape, a click elsewhere and the emoji again");
 
         // A reply: its quoted line says where a click goes, and goes there.
-        cx.update(|_, cx| list.update(cx, |l, cx| l.set_reply_target(Some(id), cx)))?;
+        // Reply from the row's hover action, as a person does.
+        let row_body = cx.update(|_, cx| list.read(cx).body_point(id, 0.5))?.context("the message on screen")?;
+        cx.mouse_move(row_body)?;
+        cx.sleep(Duration::from_millis(100)).await;
+        let reply_button = cx.update(|_, cx| list.read(cx).action_point(id, decibell_chat::RowAction::Reply, cx))?.context("the reply action")?;
+        cx.click(reply_button)?;
+        cx.sleep(Duration::from_millis(200)).await;
         let reply_text = format!("reply {tag}");
         let reply = send(&cx, &composer, OFF_TOPIC, &reply_text).await?;
         posted.push(reply);
@@ -205,9 +211,13 @@ async fn check_message_ui(cx: TestCx) -> Result<()> {
         let after = cx.update(|_, cx| list.read(cx).time_text(id))?.unwrap_or_default();
         cx.update(|_, cx| model(cx).settings.update(cx, |s, cx| s.set_time_format(format, cx)))?;
         ensure!(after != before, "Settings' time format left {before:?} as it was");
+        let (l, b) = (list.clone(), before.clone());
+        wait_for(&cx, Duration::from_secs(3), "the time labelled as before", move |cx| l.read(cx).time_text(id).is_some_and(|t| t == b)).await?;
         cx.log(format_args!("time format {other:?}: {before:?} → {after:?} (and back)"));
 
         // Shift+click on the trash: deleted with no confirmation.
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(3), "the reply laid out again", move |cx| l.read(cx).body_point(reply, 0.5).is_some()).await?;
         let row_body = cx.update(|_, cx| list.read(cx).body_point(reply, 0.5))?.context("the reply on screen")?;
         cx.mouse_move(row_body)?;
         cx.sleep(Duration::from_millis(100)).await;
