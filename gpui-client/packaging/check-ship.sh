@@ -8,7 +8,7 @@
 #   packaging/check-ship.sh <decibell binary> <expected version>
 set -euo pipefail
 
-bin="$1"
+bin="$(realpath "$1")"
 want="$2"
 fail() { echo "check-ship: $*" >&2; exit 1; }
 [ -f "$bin" ] || fail "no binary at $bin"
