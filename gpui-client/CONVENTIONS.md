@@ -277,7 +277,11 @@ opens):
 - **Self-tests that need a signed-in app** run it as a child: `decibell --check <name> --login perf1`
   (`decibell_shell::checks()`; a binary with `dev-local`), with its own profile and `DECIBELL_TEST_PROBES=1`,
   which makes `decibell_harness::probes::probe(key)` (also `decibell_shell::probes`) record where elements
-  are so the check can click them (the kit's `Button` and `NavItem` take `.probe(key)`).
+  are so the check can click them (the kit's `Button` and `NavItem` take `.probe(key)`). **Put a probe in a
+  `relative().flex()` element**: its canvas is absolute without insets, so in a block element it sits at its
+  static place, under the content (the sign-in page's mode link was clicked 20 px too low, `auth-typed`).
+  A check that clicks after something changed in a window in the background draws first (a modifiers
+  event naming no key: `draw_pending` in the shell's and Settings' tests) so the click reaches this frame.
 
 ## Chat (`decibell-chat`)
 

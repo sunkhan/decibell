@@ -457,9 +457,9 @@ eval "$(../tools/dev/local-stack.sh client-env)"            # DECIBELL_CENTRAL=1
 DECIBELL_USER_DATA_DIR=/tmp/p DECIBELL_DEV_PASSWORD=decibell-test-1 target/release/decibell --login perf1
 ```
 
-`--login <account>` (dev-local only) signs in without typing (the text fields are display-only until the
-editor lands): refused unless `DECIBELL_CENTRAL` is loopback and the account is in the stack's
-`accounts.json`. dev-local builds also print `decibell: signed-in <name>` / `connected <community>` on stdout
+`--login <account>` (dev-local only) signs in without typing (the sign-in page itself takes typing:
+`auth-typed`): refused unless `DECIBELL_CENTRAL` is loopback and the account is in the stack's `accounts.json`.
+dev-local builds also print `decibell: signed-in <name>` / `connected <community>` on stdout
 and read commands from the pipe `DECIBELL_DEV_CONTROL` names (`home`, `channel <community>\t<channel>`,
 `minimize`, `quit`): what `tools/perf/clients/gpui.sh` drives.
 

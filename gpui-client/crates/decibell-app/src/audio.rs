@@ -150,8 +150,9 @@ impl Player {
                     audio::stop_ring();
                 }
             }
-            // TODO(attention): the taskbar flash / dock bounce (GPUI has no API for it at the pin).
-            Cue::Flash => log::debug!("[cues] Flash (no window attention yet)"),
+            // The taskbar flash is `decibell_platform::attention`'s, which answers the same cue
+            // (only while the window isn't active): nothing to play here.
+            Cue::Flash => {}
         }
     }
 

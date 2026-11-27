@@ -405,7 +405,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(cx.update(Toasts::count), 1);
         // The ✕ (or the action): the kit's dismiss.
-        cx.update(|cx| Toasts::dismiss_all(cx));
+        cx.update(Toasts::dismiss_all);
         cx.run_until_parked();
         assert!(model.toasts.read_with(cx, |t, _| t.toasts().is_empty()), "the model kept the closed toast");
         let again = model.toasts.update(cx, |t, cx| t.warning("New sign-in to your account", Some("Linux".into()), cx));
