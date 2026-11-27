@@ -55,11 +55,14 @@ configurations (default, `capture`, `dev-local`, and `--no-default-features --fe
 `tools/win-check.sh`, the unit tests and the key self-tests (Electron's bar too when `crates/decibell-core`
 changed), push `gpui-client`, read the Windows Native Check and the Native Client Release dry run.
 
-**Frame-count self-tests need a quiet desktop.** `idle-frames`, `kit-idle`, `themes` and the other tests that
-count frames fail when another test window opens beside them or the pointer crosses them (a focus change is
-"3 drawn, 2 presented"): with several agents running self-tests at once they flake; rerun alone before
-believing a failure. `shell-signin` failed once in the same conditions ("timed out after 10 s waiting for
-Daily Gaming's channels", passing on every rerun): watch for it in the final runs.
+**Self-tests go through `tools/selftest.sh <name>…`** (every agent, every session): one test window at a time on
+the machine, each test in its own process with a fresh profile, the lock taken per test so sessions interleave.
+Two test windows open at once take each other's focus and pointer: on 2026-11-27, with five agents testing side
+by side, `input-typing`, `kit-idle`, `idle-frames` and `themes` each failed and passed on alternate runs (a focus
+change is "3 drawn, 2 presented"), and `shell-signin` failed once ("timed out after 10 s waiting for Daily
+Gaming's channels"). The owner's own pointer over a test window still disturbs a frame count: rerun once before
+believing a failure. `--bin <path>` runs another build (the parity audit's frozen copy is
+`~/.cache/decibell-dev/parity-root/target/release/decibell`).
 
 **Then the final phase, on a quiet machine (nothing else building):**
 1. `PARITY.md`: every `docs/FEATURES.md` §1–§9 row "done" with evidence or "needs owner" with what to test.
@@ -184,6 +187,7 @@ linked (all git-excluded through `.git/info/exclude`).
 | `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
 | `.worktrees/windows` / `wip/windows` | the Windows batch, in rounds (§1c): checkpoints 1 and 2 merged; round 3 = the six self-tests and two `decibell-text` unit tests that fail on the Windows runner (run 45983095122: `chat-history`, `chat-switch`, `input-typing`, `input-ime`, `input-atoms`, `render-cost`; `input_vectors`' word stops), the groups skipped there, the rest of its gap table. After each checkpoint: merge, push, send it the run's logs from `origin/ci/win-gpui-check-log` |
 | `.worktrees/media2` / `wip/media2` | attachment playback, second pass (rotation, 10-bit, VP9 hardware, UI pieces, sealed live test, retained memory, Electron comparison, captures) |
+| `.worktrees/parity-a`, `-b`, `-c` / `wip/parity-*` | the parity audit (FEATURES §1–§3, §4–§6, §7–§9): each fills its sections of `PARITY.md` (columns: Status, Evidence / what is left, Windows) and writes `docs/parity-audit-<x>.md`, the gap list with sizes; they change no product code and run the frozen build in `~/.cache/decibell-dev/parity-root` |
 | `.worktrees/land` / `wip/land` | the architect's landing tree, driven by `tools/land.sh` (pick an agent's commits, resolve, then fast-forward the main tree): empty of unmerged work when this was written |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
