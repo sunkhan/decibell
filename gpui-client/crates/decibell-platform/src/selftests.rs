@@ -1045,6 +1045,18 @@ async fn check_progress(cx: TestCx) -> Result<()> {
     ensure!(asking, "closing with an upload in flight didn't ask");
     say(format_args!("guard asked, window kept"));
     cx.update(|_, cx| guard.update(cx, |g, cx| g.keep_uploading(cx)))?;
+    // The updater's Restart quits through the guard too (`before-quit` asks): with the upload in
+    // flight it asks and the restart waits; "Keep uploading" calls it off.
+    let restart = std::rc::Rc::new(std::cell::Cell::new(false));
+    let flag = restart.clone();
+    cx.update(|_, cx| guard.update(cx, |g, cx| g.quit_app(move |_| flag.set(true), cx)))?;
+    cx.sleep(Duration::from_millis(100)).await;
+    ensure!(cx.update(|_, cx| guard.read(cx).is_open())?, "Restart to update with an upload in flight didn't ask");
+    ensure!(!restart.get(), "Restart to update went ahead with an upload in flight");
+    cx.update(|_, cx| guard.update(cx, |g, cx| g.keep_uploading(cx)))?;
+    cx.sleep(Duration::from_millis(100)).await;
+    ensure!(!restart.get(), "\"Keep uploading\" didn't call the restart off");
+    say(format_args!("guard asked before the update's restart; Keep uploading called it off"));
     cx.update(|_, cx| {
         model(cx).live.transfers.update(cx, |t, cx| {
             t.sync_uploads(&[], |_, _| ("".into(), "".into()), cx);

@@ -15,9 +15,15 @@
 //! 3. starts the new version with `--update-trial=<pipe>` and the start's own arguments, and waits
 //!    up to [`TRIAL_TIMEOUT`] for it to write `ok` once its first frame is on screen;
 //! 4. `ok`: the old version exits and the backup goes (Linux at once; Windows at the new version's
-//!    next start, the old image being mapped until then). No `ok` (it exited, crashed or hung): it is
-//!    killed, the old files go back, the version is remembered as failed (never offered again), and
-//!    the old version carries on starting (About: "Couldn't check: …").
+//!    next start, the old image being mapped until then). No `ok`: it is killed if it still runs,
+//!    the old files go back and the old version carries on starting. Then:
+//!    - it **exited or crashed** before its first frame: the version is remembered as failed (never
+//!      offered again; About says so once);
+//!    - it **ran but showed no frame within [`TRIAL_TIMEOUT`]**: inconclusive (a locked screen, a
+//!      suspended session or a slow disk stalls a first frame with nothing wrong in the version), so
+//!      the download stays staged and the next start tries again; only [`TRIAL_TIMEOUTS`] of those
+//!      in a row count as failed. electron-updater has no trial at all: it installs and keeps
+//!      whatever it installed, so a version is only ever given up on evidence.
 //!
 //! The wait is one blocking read of a pipe on a thread made for it (the pipe closes if the new
 //! version dies): no polling.
@@ -36,6 +42,8 @@ use crate::version::Version;
 
 /// How long a new version has to show its first frame.
 pub const TRIAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Trial starts in a row that ran without showing a frame before the version counts as failed.
+pub const TRIAL_TIMEOUTS: u32 = 3;
 /// The argument a supervised start receives (its value: the pipe to write `ok` to).
 pub const TRIAL_ARG: &str = "--update-trial";
 /// The argument Restart starts the old version with: wait for the profile, then apply.
@@ -52,6 +60,9 @@ pub struct Staged {
     pub file: String,
     /// Base64 SHA-512, as the feed gave it.
     pub sha512: String,
+    /// Trial starts of it that ran but showed no frame in time (inconclusive), in a row.
+    #[serde(default)]
+    pub timeouts: u32,
 }
 
 impl Staged {
@@ -120,7 +131,8 @@ pub enum Outcome {
     /// The new version is running: this process exits.
     Started,
     /// It didn't start; the old version is back in place and this process carries on.
-    RolledBack { version: String, reason: String },
+    /// `inconclusive`: it ran but showed no frame in time (kept staged, tried again next start).
+    RolledBack { version: String, reason: String, inconclusive: bool },
     /// Nothing was changed (why), this process carries on.
     NotApplied(String),
 }
@@ -129,16 +141,26 @@ pub enum Outcome {
 /// Call it holding no lock on the profile.
 pub fn apply(dir: &Path, staged: &Staged, args: &[OsString]) -> Outcome {
     let outcome = platform_apply(dir, staged, args, TRIAL_TIMEOUT);
-    match &outcome {
+    settle(dir, staged, &outcome);
+    outcome
+}
+
+/// What an outcome leaves in the update directory.
+fn settle(dir: &Path, staged: &Staged, outcome: &Outcome) {
+    match outcome {
         Outcome::Started => Staged::clear(dir),
-        Outcome::RolledBack { version, reason } => {
+        Outcome::RolledBack { version, reason, inconclusive: true } if staged.timeouts + 1 < TRIAL_TIMEOUTS => {
+            log::warn!("[update] {version} showed no window in time ({reason}); the old version was put back, it is tried again at the next start");
+            let _ = Staged { timeouts: staged.timeouts + 1, ..staged.clone() }.write(dir);
+        }
+        Outcome::RolledBack { version, reason, inconclusive } => {
+            let reason = if *inconclusive { format!("{reason}, {TRIAL_TIMEOUTS} times") } else { reason.clone() };
             log::error!("[update] {version} didn't start ({reason}); the old version was put back");
-            Failed { version: version.clone(), reason: reason.clone(), shown: false }.write(dir);
+            Failed { version: version.clone(), reason, shown: false }.write(dir);
             Staged::clear(dir);
         }
         Outcome::NotApplied(why) => log::warn!("[update] not applied: {why}"),
     }
-    outcome
 }
 
 #[cfg(target_os = "linux")]
@@ -184,11 +206,11 @@ pub(crate) fn swap_and_trial(new: &Path, target: &Path, version: &str, args: &[O
             let _ = std::fs::remove_file(&previous);
             Outcome::Started
         }
-        Err(reason) => {
+        Err(failure) => {
             let _ = std::fs::rename(target, &incoming);
             let _ = std::fs::rename(&previous, target);
             let _ = std::fs::remove_file(&incoming);
-            Outcome::RolledBack { version: version.to_string(), reason }
+            Outcome::RolledBack { version: version.to_string(), inconclusive: failure.inconclusive, reason: failure.reason }
         }
     }
 }
@@ -204,7 +226,11 @@ fn platform_apply(dir: &Path, staged: &Staged, args: &[OsString], timeout: Durat
         Ok(status) if status.success() => {}
         Ok(status) => {
             restore_previous(&install);
-            return Outcome::RolledBack { version: staged.version.clone(), reason: format!("the installer failed ({status})") };
+            return Outcome::RolledBack {
+                version: staged.version.clone(),
+                reason: format!("the installer failed ({status})"),
+                inconclusive: false,
+            };
         }
         Err(e) => return Outcome::NotApplied(format!("couldn't run the installer: {e}")),
     }
@@ -212,9 +238,9 @@ fn platform_apply(dir: &Path, staged: &Staged, args: &[OsString], timeout: Durat
     command.args(args);
     match trial(command, timeout) {
         Ok(()) => Outcome::Started,
-        Err(reason) => {
+        Err(failure) => {
             restore_previous(&install);
-            Outcome::RolledBack { version: staged.version.clone(), reason }
+            Outcome::RolledBack { version: staged.version.clone(), reason: failure.reason, inconclusive: failure.inconclusive }
         }
     }
 }
@@ -267,9 +293,23 @@ pub fn clean_up_after_update() {
     }
 }
 
+/// Why a trial start failed; `inconclusive`: it ran but showed no frame in time.
+#[derive(Debug)]
+struct TrialFailure {
+    reason: String,
+    inconclusive: bool,
+}
+
+impl TrialFailure {
+    fn broken(reason: impl Into<String>) -> TrialFailure {
+        TrialFailure { reason: reason.into(), inconclusive: false }
+    }
+}
+
 /// Starts `command` with a trial pipe and waits for `ok` on it.
-fn trial(mut command: Command, timeout: Duration) -> Result<(), String> {
-    let (reader, mut child) = spawn_with_pipe(&mut command).map_err(|e| format!("it couldn't be started: {e}"))?;
+fn trial(mut command: Command, timeout: Duration) -> Result<(), TrialFailure> {
+    let (reader, mut child) =
+        spawn_with_pipe(&mut command).map_err(|e| TrialFailure::broken(format!("it couldn't be started: {e}")))?;
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("decibell-update-trial".into()).spawn(move || {
         let mut said = String::new();
@@ -278,7 +318,7 @@ fn trial(mut command: Command, timeout: Duration) -> Result<(), String> {
     });
     if spawned.is_err() {
         kill(&mut child);
-        return Err("couldn't wait for it".into());
+        return Err(TrialFailure { reason: "couldn't wait for it".into(), inconclusive: true });
     }
     match rx.recv_timeout(timeout) {
         Ok(said) if said.starts_with("ok") => {
@@ -287,11 +327,11 @@ fn trial(mut command: Command, timeout: Duration) -> Result<(), String> {
         }
         Ok(_) => {
             let status = child.wait().map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
-            Err(format!("it exited before showing a window ({status})"))
+            Err(TrialFailure::broken(format!("it exited before showing a window ({status})")))
         }
         Err(_) => {
             kill(&mut child);
-            Err(format!("it showed no window within {} s", timeout.as_secs()))
+            Err(TrialFailure { reason: format!("it showed no window within {} s", timeout.as_secs()), inconclusive: true })
         }
     }
 }
@@ -505,9 +545,40 @@ mod tests {
         let (_dir, target, staged) = setup("# old", "sleep 30");
         let started = std::time::Instant::now();
         let outcome = swap_and_trial(&staged, &target, "9.9.9", &[], Duration::from_millis(500));
-        assert!(matches!(outcome, Outcome::RolledBack { ref reason, .. } if reason.contains("no window")), "{outcome:?}");
+        assert!(
+            matches!(outcome, Outcome::RolledBack { ref reason, inconclusive: true, .. } if reason.contains("no window")),
+            "{outcome:?}"
+        );
         assert!(started.elapsed() < Duration::from_secs(5), "the hung child was killed, not waited for");
         assert!(std::fs::read_to_string(&target).unwrap().contains("# old"));
+    }
+
+    /// No frame in time is inconclusive: the download stays staged and is tried again, and only
+    /// the third such start in a row counts as failed; a version that exits fails at once.
+    #[test]
+    fn a_trial_without_a_frame_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = Staged { version: "99.0.0".into(), file: "f".into(), sha512: String::new(), timeouts: 0 };
+        staged.write(dir.path()).unwrap();
+        let record = |inconclusive, timeouts| {
+            let staged = Staged { timeouts, ..staged.clone() };
+            let outcome = Outcome::RolledBack { version: "99.0.0".into(), reason: "it showed no window within 60 s".into(), inconclusive };
+            settle(dir.path(), &staged, &outcome);
+        };
+        record(true, 0);
+        assert_eq!(Staged::read(dir.path()).map(|s| s.timeouts), Some(1), "kept, one inconclusive try");
+        assert!(Failed::read(dir.path()).is_none(), "not given up on");
+        record(true, 1);
+        assert_eq!(Staged::read(dir.path()).map(|s| s.timeouts), Some(2));
+        record(true, 2);
+        assert!(Staged::read(dir.path()).is_none(), "the third gives up");
+        let failed = Failed::read(dir.path()).unwrap();
+        assert!(failed.reason.ends_with("3 times") && !failed.shown, "{failed:?}");
+        // A version that exits is given up on at its first try.
+        let dir = tempfile::tempdir().unwrap();
+        staged.write(dir.path()).unwrap();
+        settle(dir.path(), &staged, &Outcome::RolledBack { version: "99.0.0".into(), reason: "exited".into(), inconclusive: false });
+        assert!(Staged::read(dir.path()).is_none() && Failed::is(dir.path(), "99.0.0"));
     }
 
     #[test]
@@ -517,7 +588,7 @@ mod tests {
         std::fs::write(&file, b"payload").unwrap();
         use base64::Engine as _;
         let sha = base64::engine::general_purpose::STANDARD.encode(file_sha512(&file).unwrap());
-        let staged = Staged { version: "99.0.0".into(), file: "Decibell-99.0.0-x86_64.AppImage".into(), sha512: sha };
+        let staged = Staged { version: "99.0.0".into(), file: "Decibell-99.0.0-x86_64.AppImage".into(), sha512: sha, timeouts: 0 };
         staged.write(dir.path()).unwrap();
         assert_eq!(Staged::read(dir.path()), Some(staged.clone()));
         assert!(staged.verify(dir.path()));
@@ -525,7 +596,7 @@ mod tests {
         assert!(!staged.verify(dir.path()), "a file changed after it landed");
         // An older or equal version, or a path, is not an update.
         for (version, name) in [("0.0.1", "x"), (crate::VERSION, "x"), ("99.0.0", "../x"), ("99.0.0", ".hidden")] {
-            Staged { version: version.into(), file: name.into(), sha512: String::new() }.write(dir.path()).unwrap();
+            Staged { version: version.into(), file: name.into(), sha512: String::new(), timeouts: 0 }.write(dir.path()).unwrap();
             assert_eq!(Staged::read(dir.path()), None, "{version} {name}");
         }
         Staged::clear(dir.path());

@@ -10,7 +10,10 @@
 //!   `scroll <seconds> <px/s> [<refresh Hz>]`, `minimize`, `quit`, and for the voice measurements
 //!   (`tools/perf` watch scenarios): `unlock <passphrase>` (the E2EE keys, as the passphrase dialog
 //!   would), `voice <community>\t<channel>` (muted and deafened first, then the sidebar's join),
-//!   `watch <uid>` (focus a stream: watch it large), `leave` — read by a thread blocked on the pipe
+//!   `watch <uid>` (focus a stream: watch it large), `leave`, and for the release tests
+//!   (`packaging/tests/release_e2e.py`) `restart-to-update` (the update chip's Restart) and
+//!   `update-notice-seen` (what opening About does with a failed-start notice) — read by a thread
+//!   blocked on the pipe
 //!   (no wakeups while nothing comes). `scroll` runs the scroll benchmark on the open channel
 //!   (`decibell_chat::bench::run_live`) and prints `decibell: scroll-result <json>` when it ends.
 
@@ -177,6 +180,17 @@ fn run_command(command: &str, window: AnyWindowHandle, cx: &mut App) -> bool {
             true
         }
         "minimize" => window.update(cx, |_, window, _| window.minimize_window()).is_ok(),
+        // The update chip's Restart (the release tests: the quit, the relaunch's arguments).
+        "restart-to-update" => {
+            cx.dispatch_action(&decibell_shell::RestartToUpdate);
+            true
+        }
+        // What opening Settings → About does with a failed-start notice (the release tests run
+        // signed out, where Settings can't open).
+        "update-notice-seen" => {
+            let hooks = decibell_settings::SettingsHooks::get(cx).update.clone();
+            hooks.map(|h| h.failed_notice_seen(cx)).is_some()
+        }
         "unlock" => {
             use decibell_model::live::e2ee::{E2eeStatus, PassphraseMode};
             let status = model.live.e2ee.read(cx).status;

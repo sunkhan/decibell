@@ -53,33 +53,30 @@ impl Drop for AbortOnUnwind {
 }
 
 /// The release tests' panics that need the running app (`DECIBELL_TEST_PANIC`, development
-/// builds): `runtime:<message>` panics in a task on the core's runtime (tokio catches it: the app
-/// carries on, and says so on stdout once its window has drawn); `resumed:<message>` resumes a
-/// panic on the UI thread as `rt::run` does with a task's (the process ends through
+/// builds), once the core runs: `runtime:<message>` panics in a task on the core's runtime (tokio
+/// catches it: the app carries on and says so on stdout); `resumed:<message>` resumes such a panic
+/// on the UI thread as `decibell_core::rt::run` does with a task's (the process ends through
 /// [`AbortOnUnwind`]).
 #[cfg(feature = "dev")]
 pub fn panic_in_app_for_test(cx: &mut App) {
     let Ok(what) = std::env::var("DECIBELL_TEST_PANIC") else { return };
-    if let Some(message) = what.strip_prefix("runtime:") {
-        let message = message.to_string();
+    let (resume, message) = match what.split_once(':') {
+        Some(("runtime", message)) => (false, message.to_string()),
+        Some(("resumed", message)) => (true, message.to_string()),
+        _ => return,
+    };
+    cx.spawn(async move |cx| {
+        // The core's runtime exists once the keychain was read (a test's wait, not the app's).
+        while !decibell_model::core::is_running() {
+            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+        }
         let task = decibell_core::rt::spawn(async move { panic!("{message}") });
-        cx.spawn(async move |cx| {
-            let joined = task.await;
-            println!("decibell: crash-test runtime panic caught by the runtime: {}", joined.is_err_and(|e| e.is_panic()));
-            // Still running: the UI thread takes work after the panic.
-            cx.update(|_| println!("decibell: crash-test alive after the runtime panic"));
-        })
-        .detach();
-    } else if let Some(message) = what.strip_prefix("resumed:") {
-        let message = message.to_string();
-        let task = decibell_core::rt::spawn(async move { panic!("{message}") });
-        cx.spawn(async move |_| {
-            if let Err(e) = task.await
-                && e.is_panic()
-            {
-                std::panic::resume_unwind(e.into_panic());
-            }
-        })
-        .detach();
-    }
+        match task.await {
+            Err(e) if resume && e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            joined => println!("decibell: crash-test runtime panic caught by the runtime: {}", joined.is_err_and(|e| e.is_panic())),
+        }
+        // The UI thread still takes work after the panic.
+        cx.update(|_| println!("decibell: crash-test alive after the runtime panic"));
+    })
+    .detach();
 }

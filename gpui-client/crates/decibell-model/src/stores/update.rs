@@ -1,5 +1,5 @@
-//! The updater's state (`stores/updateStore.ts`): the shape only. Nothing feeds it until
-//! the updater exists (the last phase); the About tab and the user panel read it.
+//! The updater's state (`stores/updateStore.ts`), fed by the app's updater (`decibell-app`
+//! `updater.rs`); the About tab and the user panel read it.
 
 use gpui::{Context, SharedString};
 
@@ -28,6 +28,10 @@ pub struct UpdateStore {
     pub status: UpdateStatus,
     pub mode: UpdateMode,
     pub current_version: SharedString,
+    /// A downloaded version didn't start and the previous one was kept (the trial start,
+    /// `decibell_release::apply`): About says so beside the status, whatever the checks report,
+    /// until it has been shown once. Electron has no trial start, so no such line.
+    pub failed_notice: Option<SharedString>,
 }
 
 impl UpdateStore {
@@ -36,5 +40,12 @@ impl UpdateStore {
         self.mode = mode;
         self.current_version = current_version;
         cx.notify();
+    }
+
+    pub fn set_failed_notice(&mut self, notice: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.failed_notice != notice {
+            self.failed_notice = notice;
+            cx.notify();
+        }
     }
 }

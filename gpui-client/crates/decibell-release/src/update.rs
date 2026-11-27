@@ -317,7 +317,7 @@ fn download(client: &Client, settings: &Settings, version: &str, artifact: &Arti
     let landed = dir.join(&name);
     std::fs::rename(&partial, &landed).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&record);
-    Staged { version: version.to_string(), file: name, sha512: artifact.sha512.clone() }
+    Staged { version: version.to_string(), file: name, sha512: artifact.sha512.clone(), timeouts: 0 }
         .write(dir)
         .map_err(|e| e.to_string())?;
     Ok(())

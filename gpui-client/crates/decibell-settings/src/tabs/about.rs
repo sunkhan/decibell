@@ -1,7 +1,9 @@
 //! Settings → About (`AboutTab.tsx`): the app card (name, tagline, version) and the updater's
 //! status with its one button. The version is the app's own (`SettingsHooks::app_version`) unless
-//! the updater reports one; the buttons go to the app's [`crate::UpdateHooks`] (the updater is a
-//! later task: without it the model's `UpdateStore` says "disabled").
+//! the updater reports one; the buttons go to the app's [`crate::UpdateHooks`] (without them, in
+//! screens, the model's `UpdateStore` says "disabled"). Under the status, when a downloaded version
+//! didn't start, the updater's notice (`UpdateStore::failed_notice`; Electron has no trial start):
+//! opening About is what marks it read.
 
 use decibell_common::Watch;
 use decibell_model::Model;
@@ -28,6 +30,9 @@ impl AboutTab {
         let model = Model::global(cx).clone();
         let mut watch = Watch::new();
         watch.store(&model.update, cx);
+        if model.update.read(cx).failed_notice.is_some() {
+            hook(cx, |h, cx| h.failed_notice_seen(cx));
+        }
         Self { scroll: ScrollHandle::new(), close, _watch: watch }
     }
 }
@@ -52,7 +57,7 @@ impl Render for AboutTab {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = Model::global(cx).clone();
         let update = model.update.read(cx);
-        let (status, mode) = (update.status.clone(), update.mode);
+        let (status, mode, notice) = (update.status.clone(), update.mode, update.failed_notice.clone());
         let version = if update.current_version.is_empty() {
             SettingsHooks::get(cx).app_version.clone()
         } else {
@@ -111,7 +116,10 @@ impl Render for AboutTab {
             .px_5()
             .py_5()
             .child(div().mb_3().child(Label::new("Updates").size(13.).weight(600.).color(theme.color_text_primary)))
-            .child(row);
+            .child(row)
+            .children(notice.map(|notice| {
+                div().id("update-failed-notice").mt_3().child(Label::new(notice).size(12.).color(theme.color_error))
+            }));
 
         super::pane(TabId::About, &self.scroll, &self.close)
             .child(div().flex().flex_col().gap_4().child(app_card).child(updates_card))

@@ -6,10 +6,14 @@
 //!   first frame (`kickoffInitialCheck`), and on "Check now" / "Try again"; one GPUI one-shot
 //!   timer, re-armed after a check only if `RECHECK_EVERY` says so (Electron: never); never while a
 //!   check runs; never in a disabled (development) build.
-//! - **Restart** (About's button, the chip): the window closes, the core shuts down, and this
-//!   version starts again with `--apply-update`, which applies the staged update with a trial
-//!   start (`boot::apply_staged_update`, `decibell_release::apply`). A staged update is also
+//! - **Restart** (About's button, the chip): asks first while files upload (the quit guard, as
+//!   Electron's `before-quit`), then the window closes, the core shuts down, and this version starts
+//!   again with `--apply-update` alone (never this start's arguments: an old `decibell://` link
+//!   would open again; electron-updater restarts with none), which applies the staged update with a
+//!   trial start (`boot::apply_staged_update`, `decibell_release::apply`). A staged update is also
 //!   applied at the next start without Restart (electron-updater installs at quit).
+//! - **A version that didn't start** (`failed.json`): About says so beside the status until About
+//!   has been opened once (the first check's states don't replace it).
 //! - **Open release page**: the feed's release in the browser.
 //!
 //! The check runs on the updater's own thread; its states come back over a channel that wakes the
@@ -40,6 +44,8 @@ pub fn update_dir(profile: &Path) -> PathBuf {
 struct Installed {
     updater: Updater,
     store: Entity<UpdateStore>,
+    /// The profile's update directory (`failed.json`).
+    dir: PathBuf,
 }
 
 impl Global for Installed {}
@@ -72,21 +78,21 @@ pub fn install(model: &Model, profile: &Path, trial: Option<String>, window: Any
     let mode = updater.mode();
     log::info!("[update] mode={mode:?}, version={}", crate::VERSION);
     let dir = update_dir(profile);
-    // A version that didn't start: said once in About (as an error, the state Electron has).
-    let initial = match Failed::read(&dir) {
-        Some(failed) if !failed.shown => {
-            Failed { shown: true, ..failed.clone() }.write(&dir);
-            Status::Error {
-                message: format!("version {} didn't start ({}), so {} was kept", failed.version, failed.reason, crate::VERSION),
-            }
-        }
-        _ => Status::Idle,
-    };
+    // A version that didn't start: said in About beside the status (which the first check goes on
+    // to fill) until About has shown it once.
+    let notice = Failed::read(&dir).filter(|f| !f.shown).map(|failed| {
+        SharedString::from(format!("Version {} didn't start ({}), so {} was kept.", failed.version, failed.reason, crate::VERSION))
+    });
     let store = model.update.clone();
-    let initial = model_status(initial);
-    marker(&initial);
-    store.update(cx, |u, cx| u.set(initial, model_mode(mode), crate::VERSION.into(), cx));
-    cx.set_global(Installed { updater, store });
+    marker(&UpdateStatus::Idle);
+    if let Some(notice) = &notice {
+        notice_marker(notice);
+    }
+    store.update(cx, |u, cx| {
+        u.set(UpdateStatus::Idle, model_mode(mode), crate::VERSION.into(), cx);
+        u.set_failed_notice(notice, cx);
+    });
+    cx.set_global(Installed { updater, store, dir });
     SettingsHooks::set_update_hooks(Rc::new(Hooks), cx);
     cx.on_action(|_: &decibell_shell::RestartToUpdate, cx| quit_and_install(cx));
 
@@ -133,6 +139,16 @@ fn marker(status: &UpdateStatus) {
     let _ = status;
 }
 
+/// Development builds under the release tests: the failed-start notice and its being seen.
+fn notice_marker(text: &str) {
+    #[cfg(feature = "dev")]
+    if std::env::var_os("DECIBELL_TEST_UPDATE_ORIGIN").is_some() {
+        println!("decibell: update notice {text:?}");
+    }
+    #[cfg(not(feature = "dev"))]
+    let _ = text;
+}
+
 /// The one-shot timer: a check `after` from now.
 fn arm(after: Duration, cx: &mut App) {
     let timer = cx.background_executor().timer(after);
@@ -173,16 +189,26 @@ fn check(cx: &mut App) {
     .detach();
 }
 
-/// `quitAndInstall()`: only a self-updating install with a download ready.
+/// `quitAndInstall()`: only a self-updating install with a download ready. It quits as
+/// `app.quit()` does, through `before-quit`: while files upload the quit guard asks first, and
+/// "Keep uploading" calls the restart off.
 fn quit_and_install(cx: &mut App) {
     let Some(installed) = cx.try_global::<Installed>() else { return };
     let ready = matches!(installed.store.read(cx).status, UpdateStatus::Downloaded { .. });
     if installed.updater.mode() != Mode::SelfUpdate || !ready {
         return;
     }
-    log::info!("[update] restarting to apply the update");
-    RESTART.store(true, Ordering::Release);
-    cx.quit();
+    let restart = |_: &mut App| {
+        log::info!("[update] restarting to apply the update");
+        RESTART.store(true, Ordering::Release);
+    };
+    match decibell_platform::quit_guard(cx) {
+        Some(guard) => guard.update(cx, |g, cx| g.quit_app(restart, cx)),
+        None => {
+            restart(cx);
+            cx.quit();
+        }
+    }
 }
 
 struct Hooks;
@@ -200,6 +226,19 @@ impl UpdateHooks for Hooks {
         if let Some(installed) = cx.try_global::<Installed>() {
             let page: SharedString = installed.updater.release_page().into();
             cx.open_url(&page);
+        }
+    }
+
+    /// About showed the failed-start notice: it was read, so the next start won't show it again
+    /// (this run keeps it on screen).
+    fn failed_notice_seen(&self, cx: &mut App) {
+        let Some(installed) = cx.try_global::<Installed>() else { return };
+        if let Some(failed) = Failed::read(&installed.dir).filter(|f| !f.shown) {
+            Failed { shown: true, ..failed }.write(&installed.dir);
+            #[cfg(feature = "dev")]
+            if std::env::var_os("DECIBELL_TEST_UPDATE_ORIGIN").is_some() {
+                println!("decibell: update notice seen");
+            }
         }
     }
 }
@@ -252,7 +291,9 @@ pub fn wait_for_profile(profile: &Path) {
     }
 }
 
-/// After the event loop: Restart was pressed, so this version starts again to apply the update.
+/// After the event loop: Restart was pressed, so this version starts again to apply the update,
+/// with `--apply-update` and nothing else: this start's own arguments (a `decibell://` link it was
+/// opened with, a `--hotkey`) were for this start, and electron-updater restarts with none.
 pub fn relaunch_if_requested() {
     if !RESTART.load(Ordering::Acquire) {
         return;
@@ -260,7 +301,11 @@ pub fn relaunch_if_requested() {
     // An AppImage restarts from its file (the running executable lives in its mount).
     let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file()).or_else(|| std::env::current_exe().ok());
     let Some(exe) = exe else { return };
-    match std::process::Command::new(&exe).arg(decibell_release::apply::APPLY_ARG).args(trial_args()).spawn() {
+    #[cfg(feature = "dev")]
+    if std::env::var_os("DECIBELL_TEST_UPDATE_ORIGIN").is_some() {
+        println!("decibell: update relaunch {:?}", [decibell_release::apply::APPLY_ARG]);
+    }
+    match std::process::Command::new(&exe).arg(decibell_release::apply::APPLY_ARG).spawn() {
         Ok(_) => log::info!("[update] started {} to apply the update", exe.display()),
         Err(e) => log::error!("[update] couldn't start {} again: {e}", exe.display()),
     }

@@ -9,8 +9,9 @@ profile, HOME-independent, on a private D-Bus session.
     python3 -I packaging/tests/release_e2e.py --binary target/release/decibell [--only updater,apply,crash]
 
 The updater cases open the app's window for a few seconds (the first check follows the first frame);
-the crash cases panic before any window. A release (optimised) build is needed for the crash cases:
-the ship profile aborts on panic, as a shipped build does.
+most crash cases panic before any window (the recovered ones open it). A release (optimised) build
+is needed for the crash cases: its profile unwinds as a shipped build's does, and the panic hook ends
+the process on a panic nothing catches.
 
 Signing uses the owner's documented commands (`openssl genpkey` / `pkeyutl -sign -rawin`), so the
 test also proves them (gpui-client/PACKAGING.md, "Signing key")."""
@@ -140,14 +141,16 @@ class FakeGitHub:
 
 # ── Running the app ───────────────────────────────────────────────────────────────────────────
 
-def run_app(binary, profile, env_extra, until, timeout=60, cwd=None, bus=True):
+def run_app(binary, profile, env_extra, until, timeout=60, cwd=None, bus=True, args=(), alive=None):
     """Starts the app on a private D-Bus session; returns (lines, returncode) once `until(lines)` or
-    the timeout; the whole process group is then terminated."""
+    the timeout; the whole process group is then terminated. `alive`, a list, gets whether the
+    process was still running when `until` held."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("DECIBELL_", "APPIMAGE"))}
     env.update({"DECIBELL_USER_DATA_DIR": str(profile), "DECIBELL_LOG": "info", "DECIBELL_TEST_UPDATE_DELAY_MS": "200"})
     env.update(env_extra)
     # A private session bus for runs that reach the UI; the crash cases end before GPUI starts.
     cmd = ["dbus-run-session", "--", str(binary)] if bus and shutil.which("dbus-run-session") else [str(binary)]
+    cmd += [str(a) for a in args]
     proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True, cwd=cwd)
     lines = []
     deadline = time.monotonic() + timeout
@@ -159,7 +162,11 @@ def run_app(binary, profile, env_extra, until, timeout=60, cwd=None, bus=True):
     t = threading.Thread(target=reader, daemon=True)
     t.start()
     while time.monotonic() < deadline:
-        if until(lines) or proc.poll() is not None:
+        if until(lines):
+            if alive is not None:
+                alive.append(proc.poll() is None)
+            break
+        if proc.poll() is not None:
             break
         time.sleep(0.05)
     code = proc.poll()
@@ -269,6 +276,30 @@ def updater_cases(binary, work, key, public):
     check("updater: a tarball / package-manager install only says it is available", s[-1:] == ['Available { version: "9.9.9" }'] and gh.downloads == 0, " → ".join(s))
     gh.server.close()
 
+    # 7. Restart (the update chip, through the control pipe) on a start that was opened with an
+    #    invite link: the app quits, and this version starts again with --apply-update alone (an
+    #    old link must not open again; electron-updater restarts with no arguments).
+    gh = FakeGitHub(key, "9.9.9", payload)
+    profile, env = profile_env("restart")
+    env["DECIBELL_TEST_UPDATE_ORIGIN"] = gh.server.origin
+    control = work / "restart" / "control"
+    os.mkfifo(control)
+    env["DECIBELL_DEV_CONTROL"] = str(control)
+    sent = []
+
+    def restart_when_ready(ls):
+        if not sent and any(l == 'decibell: update Downloaded { version: "9.9.9" }' for l in ls):
+            with open(control, "w") as fifo:
+                fifo.write("restart-to-update\n")
+            sent.append(True)
+        return any(l.startswith("decibell: update relaunch") for l in ls)
+
+    lines, code = run_app(binary, profile, env, restart_when_ready, args=["decibell://invite/ABCD234567"])
+    relaunch = [l for l in lines if l.startswith("decibell: update relaunch")]
+    check("updater: Restart quits and starts this version again with --apply-update alone (no old link)",
+          sent and relaunch == ['decibell: update relaunch ["--apply-update"]'], relaunch[0] if relaunch else f"no relaunch (exit {code})")
+    gh.server.close()
+
 
 def apply_cases(binary, work):
     def setup(name, new_bytes):
@@ -296,11 +327,30 @@ def apply_cases(binary, work):
     # A "new version" that exits at once: rolled back, the old one carries on and says why.
     d, appimage, env = setup("apply-rollback", b"#!/bin/sh\nexit 3\n")
     old = appimage.read_bytes()
-    lines, _ = run_app(binary, d / "profile", env, lambda ls: any(l.startswith("decibell: update Error") for l in ls), timeout=60)
-    s = states(lines)
-    failed = json.loads((d / "profile/update/failed.json").read_text()) if (d / "profile/update/failed.json").exists() else {}
+    control = d / "control"
+    os.mkfifo(control)
+    env["DECIBELL_DEV_CONTROL"] = str(control)
+    failed_path = d / "profile/update/failed.json"
+    seen_before = []
+
+    def notice_then_seen(ls):
+        # The first check (against a closed port) ends in an error: the notice must outlive it, and
+        # stay unread until About shows it (here: the control pipe's stand-in for opening About).
+        if not seen_before and any(l.startswith("decibell: update Error") for l in ls):
+            seen_before.append(json.loads(failed_path.read_text()).get("shown") if failed_path.exists() else None)
+            with open(control, "w") as fifo:
+                fifo.write("update-notice-seen\n")
+        return any(l == "decibell: update notice seen" for l in ls)
+
+    lines, _ = run_app(binary, d / "profile", env, notice_then_seen, timeout=60)
+    notices = [l for l in lines if l.startswith("decibell: update notice \"")]
+    failed = json.loads(failed_path.read_text()) if failed_path.exists() else {}
     check("apply: a version that doesn't start is rolled back and remembered",
-          appimage.read_bytes() == old and failed.get("version") == "9.9.9" and s and s[0].startswith('Error { message: "version 9.9.9 didn\'t start'), s[0] if s else "no state")
+          appimage.read_bytes() == old and failed.get("version") == "9.9.9" and len(notices) == 1
+          and notices[0].startswith('decibell: update notice "Version 9.9.9 didn\'t start (it exited before showing a window'),
+          notices[0] if notices else "no notice")
+    check("apply: the notice outlives the first check and is marked read only once About showed it",
+          seen_before == [False] and failed.get("shown") is True, f"shown after the check: {seen_before}, after About: {failed.get('shown')}")
 
 
 def crash_cases(binary, work):
@@ -350,6 +400,49 @@ def crash_cases(binary, work):
               and event["exception"]["values"][0]["stacktrace"]["frames"])
         detail = f'value "{value}", tags {event["tags"]}, leaks {leaks}'
     check("crash: a panic sends exactly one envelope, scrubbed, with Electron's tags", ok, detail)
+    check("crash: a panic nothing catches still ends the process (SIGABRT)", code in (-6, 134), f"exit {code}")
+
+    # The main thread: the same.
+    _, _, code, got = run("main", {"DECIBELL_TEST_CRASH_DSN": dsn}, panic="main:on the main thread")
+    events = [json.loads(b.split(b"\n")[2]) for (_, _, b) in got]
+    check("crash: a panic on the main thread ends the process with one fatal report",
+          code in (-6, 134) and len(events) == 1 and events[0]["level"] == "fatal" and events[0]["tags"]["thread"] == "main",
+          f"exit {code}, {[(e['level'], e['tags']['thread']) for e in events]}")
+
+    def recovered(name, panic, marker, thread, catcher):
+        profile = work / name
+        profile.mkdir(parents=True)
+        e = {"DECIBELL_TEST_INSTALL_KIND": "tarball", "DECIBELL_TEST_CRASH_DSN": dsn, "DECIBELL_TEST_PANIC": panic, "DECIBELL_PERF": "1"}
+        before = len(received)
+        alive = []
+        lines, code = run_app(binary, profile, e, lambda ls: any(marker in l for l in ls), timeout=40, alive=alive)
+        time.sleep(0.5)
+        events = [json.loads(b.split(b"\n")[2]) for (_, _, b) in received[before:]]
+        ok = (alive == [True] and len(events) == 1 and events[0]["level"] == "error"
+              and events[0]["tags"]["thread"] == thread and events[0]["tags"].get("recovered") == catcher
+              and events[0]["exception"]["values"][0]["mechanism"]["handled"] is True)
+        detail = f"alive {alive}, {[(e['level'], e['tags'].get('thread'), e['tags'].get('recovered')) for e in events]}"
+        return ok, detail
+
+    # Caught: the app carries on (its window opens), one report at level error, handled.
+    ok, detail = recovered("guarded", "guarded:read failed in a guarded section", "first-frame", "decibell-test-panic", "guarded")
+    check("crash: a panic in a section of ours that catches it is reported as recovered, the app carries on", ok, detail)
+    ok, detail = recovered("runtime", "runtime:a task of the core panicked", "crash-test alive after the runtime panic", "decibell-rt", "runtime")
+    check("crash: a panic in a task on the core's runtime (a core worker) is caught there, reported as recovered, the app carries on", ok, detail)
+
+    # A caught panic resumed on the UI thread (what rt::run does with an awaited task's): the
+    # process ends, with a fatal report naming where the panic began.
+    profile = work / "resumed"
+    profile.mkdir(parents=True)
+    before = len(received)
+    lines, code = run_app(binary, profile, {"DECIBELL_TEST_INSTALL_KIND": "tarball", "DECIBELL_TEST_CRASH_DSN": dsn,
+                                            "DECIBELL_TEST_PANIC": "resumed:a task the UI thread waited for panicked"}, lambda ls: False, timeout=40)
+    time.sleep(0.5)
+    events = [json.loads(b.split(b"\n")[2]) for (_, _, b) in received[before:]]
+    fatal = [e for e in events if e["level"] == "fatal"]
+    check("crash: a caught panic resumed on the UI thread ends the process with a fatal report",
+          code in (-6, 134) and len(fatal) == 1 and fatal[0]["tags"].get("resumed_from") == "decibell-rt" and fatal[0]["tags"]["thread"] == "main",
+          f"exit {code}, {[(e['level'], e['tags'].get('thread'), e['tags'].get('resumed_from')) for e in events]}")
 
     _, _, _, got = run("toggle-off", {"DECIBELL_TEST_CRASH_DSN": dsn}, config={"settings": {"crash_reporting_enabled": False}})
     check("crash: Privacy toggle off → nothing sent, no connection", len(got) == 0 and not any(p for p, _, _ in got))

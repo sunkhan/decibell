@@ -6,7 +6,9 @@
 //! The question is the kit's `ConfirmModal` in the window (Electron's was the OS's message box;
 //! GPUI has none on Linux). It answers every way of closing: the title bar's close button
 //! (`decibell_ui::CloseHandler`) and the desktop's (`Window::on_window_should_close`: Alt+F4, the
-//! taskbar's Close). Quitting from code (the development control pipe) does not ask.
+//! taskbar's Close) and the app quitting itself to restart for an update ([`QuitGuard::quit_app`]:
+//! electron-updater's `quitAndInstall` passes `before-quit`, which asks). Quitting from code (the
+//! development control pipe) does not ask.
 
 use decibell_model::Model;
 use decibell_ui::{CloseHandler, ConfirmModal, ConfirmTone};
@@ -20,6 +22,9 @@ pub struct QuitGuard {
     confirmed: bool,
     /// Uploads that a close would lose, when the question opened.
     uploads: usize,
+    /// The question was asked for [`QuitGuard::quit_app`]: what to do once "Quit anyway" is chosen
+    /// ("Keep uploading" drops it).
+    pending_quit: Option<Box<dyn FnOnce(&mut App)>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -43,8 +48,23 @@ impl QuitGuard {
         self.open
     }
 
+    /// Quits the app (Restart to update), asking first while files upload, as `before-quit` does:
+    /// `then` runs just before the quit, at once when nothing would be lost, else once "Quit anyway"
+    /// is chosen; "Keep uploading" drops it and nothing quits.
+    pub fn quit_app(&mut self, then: impl FnOnce(&mut App) + 'static, cx: &mut Context<Self>) {
+        if self.allow_close(cx) {
+            then(cx);
+            cx.quit();
+        } else {
+            self.pending_quit = Some(Box::new(then));
+        }
+    }
+
     pub(crate) fn keep_uploading(&mut self, cx: &mut Context<Self>) {
         self.open = false;
+        if self.pending_quit.take().is_some() {
+            crate::marker(format_args!("quit-guard: the restart was called off"));
+        }
         cx.notify();
     }
 
@@ -52,6 +72,11 @@ impl QuitGuard {
         self.open = false;
         self.confirmed = true;
         cx.notify();
+        if let Some(then) = self.pending_quit.take() {
+            then(cx);
+            cx.quit();
+            return;
+        }
         if window.window_handle() == self.window {
             window.remove_window();
         }
@@ -81,7 +106,7 @@ pub fn install(window: AnyWindowHandle, cx: &mut App) -> Entity<QuitGuard> {
                 async {}
             }));
         }
-        QuitGuard { window, open: false, confirmed: false, uploads: 0, _subscriptions: subscriptions }
+        QuitGuard { window, open: false, confirmed: false, uploads: 0, pending_quit: None, _subscriptions: subscriptions }
     });
     let for_button = guard.clone();
     cx.set_global(CloseHandler(std::rc::Rc::new(move |window, cx| {

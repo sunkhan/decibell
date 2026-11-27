@@ -23,6 +23,8 @@ pub trait UpdateHooks: 'static {
     fn check(&self, cx: &mut App);
     fn quit_and_install(&self, cx: &mut App);
     fn open_release_page(&self, cx: &mut App);
+    /// About showed the notice that a downloaded version didn't start (`UpdateStore::failed_notice`).
+    fn failed_notice_seen(&self, _cx: &mut App) {}
 }
 
 pub struct SettingsHooks {
