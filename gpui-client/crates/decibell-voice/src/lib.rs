@@ -24,6 +24,7 @@ pub mod dock;
 pub mod fixture;
 pub mod focus;
 pub mod go_live;
+pub mod sources;
 pub mod layout;
 pub mod menus;
 pub mod mini;

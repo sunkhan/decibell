@@ -2283,8 +2283,11 @@ dependencies = [
  "decibell-video",
  "futures",
  "gpui",
+ "image",
  "log",
  "serde_json",
+ "smallvec",
+ "windows 0.62.2",
 ]
 
 [[package]]

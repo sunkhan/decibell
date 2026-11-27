@@ -8,9 +8,14 @@
 //! shows "Starting…", the core's refusal, and closes once the stream is live. Presets the probe
 //! says this machine can't encode (software-only encoders past their CPU ceiling) are greyed out.
 //!
-//! Windows' own source grid (`goLive/SourceGrid.tsx`, `desktopCapturer`) is a later task:
-//! [`windows_source_grid`] is where it goes.
+//! On Windows the dialog has its own grid of screens and windows (`goLive/SourceGrid.tsx`
+//! over `desktopCapturer`): [`crate::sources`] lists them with a still each, on a background
+//! thread, now and every [`SOURCES_POLL`] while the dialog is open and never otherwise; the
+//! tile picked becomes `OwnStream::source_id`, which `go_live` hands to the core.
 
+use std::collections::HashSet;
+use std::hash::{Hash as _, Hasher as _};
+use std::sync::Arc;
 use std::time::Duration;
 
 use decibell_common::Watch;
@@ -26,8 +31,11 @@ use decibell_ui::{
     Slider, Spinner, Switch, title_tooltip,
 };
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, Context, Entity, ImageSource, IntoElement, ObjectFit, Render, RenderImage,
+    SharedString, Task, Window, div, img, prelude::*, px,
 };
+
+use crate::sources::{self, ListedSource, SourceKind};
 
 use crate::codecs::Encoders;
 use crate::state::VoiceUi;
@@ -36,6 +44,35 @@ const BITRATE_MIN: f32 = 1000.;
 const BITRATE_MAX: f32 = 30000.;
 /// The picker re-lists apps this often while it is on screen (apps start and stop playing).
 pub const APPS_POLL: Duration = Duration::from_millis(2000);
+/// The source grid lists again this often while the dialog is open (`SourceGrid.tsx`
+/// `REFRESH_MS`): windows open and close, and the stills go stale.
+pub const SOURCES_POLL: Duration = Duration::from_millis(5000);
+
+/// A screen or window in the grid.
+struct GridSource {
+    id: SharedString,
+    name: SharedString,
+    kind: SourceKind,
+    still: Option<Arc<RenderImage>>,
+    /// A hash of the still's pixels: a listing that brings the same picture changes nothing.
+    still_hash: u64,
+    icon: Option<Arc<RenderImage>>,
+    /// The icon was asked for once (a window without one is not asked every five seconds).
+    icon_asked: bool,
+}
+
+fn pixels_hash(bitmap: &sources::Bitmap) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (bitmap.width, bitmap.height).hash(&mut hasher);
+    bitmap.bgra.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// A listed bitmap as an image GPUI draws. `None` for one whose size and bytes disagree.
+fn render_image(bitmap: sources::Bitmap) -> Option<Arc<RenderImage>> {
+    let buffer = image::RgbaImage::from_raw(bitmap.width, bitmap.height, bitmap.bgra)?;
+    Some(Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(image::Frame::new(buffer), 1))))
+}
 
 pub struct GoLiveDialog {
     ui: Entity<VoiceUi>,
@@ -44,6 +81,13 @@ pub struct GoLiveDialog {
     /// The attempt this dialog started (closes when it goes live).
     started: bool,
     apps_timer: Option<Task<()>>,
+    /// The source grid (Windows): which tab shows, what was listed last, and the task that
+    /// lists while the dialog is open.
+    source_tab: SourceKind,
+    sources: Vec<GridSource>,
+    sources_loaded: bool,
+    sources_error: Option<SharedString>,
+    sources_task: Option<Task<()>>,
     _watch: Watch,
 }
 
@@ -62,7 +106,141 @@ impl GoLiveDialog {
             .store_if(&encoders, cx, |this: &mut Self, _, _| this.open)
             .store_if(&model.live.voice.session, cx, |this: &mut Self, _, _| this.open);
         // Closed until the first render sees it open (so an open-at-creation runs the opening).
-        Self { ui, open: false, advanced: false, started: false, apps_timer: None, _watch: watch }
+        Self {
+            ui,
+            open: false,
+            advanced: false,
+            started: false,
+            apps_timer: None,
+            source_tab: SourceKind::Screen,
+            sources: Vec::new(),
+            sources_loaded: false,
+            sources_error: None,
+            sources_task: None,
+            _watch: watch,
+        }
+    }
+
+    /// Lists the sources now and every [`SOURCES_POLL`] while `on` (the dialog is open on a
+    /// platform with the grid). Off: the task is dropped and the stills are released, so a
+    /// closed dialog costs no thread, no timer and no texture.
+    fn keep_sources_fresh(&mut self, on: bool, cx: &mut Context<Self>) {
+        let on = on && sources::supported();
+        if on == self.sources_task.is_some() {
+            return;
+        }
+        if !on {
+            self.sources_task = None;
+            for source in std::mem::take(&mut self.sources) {
+                for image in [source.still, source.icon].into_iter().flatten() {
+                    cx.drop_image(image, None);
+                }
+            }
+            self.sources_loaded = false;
+            self.sources_error = None;
+            return;
+        }
+        self.sources_task = Some(cx.spawn(async |this, cx| {
+            loop {
+                // Stills for the tab on screen only; icons for windows not asked yet.
+                let Ok((tab, asked)) = this.update(cx, |this, _| {
+                    let asked: HashSet<String> =
+                        this.sources.iter().filter(|s| s.icon_asked).map(|s| s.id.to_string()).collect();
+                    (this.source_tab, asked)
+                }) else {
+                    break;
+                };
+                let listed = cx
+                    .background_spawn(async move { sources::list(tab, &|id| !asked.contains(id)) })
+                    .await;
+                if this.update(cx, |this, cx| this.sources_listed(listed, cx)).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(SOURCES_POLL).await;
+            }
+        }));
+    }
+
+    /// A listing arrived: the grid becomes it, keeping the stills and icons it did not bring
+    /// (the other tab's, an unchanged one's) and releasing the ones it replaced.
+    fn sources_listed(&mut self, listed: Result<Vec<ListedSource>, String>, cx: &mut Context<Self>) {
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(error) => {
+                log::warn!("go live: listing what can be shared failed: {error}");
+                let error = Some(SharedString::from(error));
+                if self.sources_error != error || !self.sources_loaded {
+                    self.sources_error = error;
+                    self.sources_loaded = true;
+                    cx.notify();
+                }
+                return;
+            }
+        };
+        let mut changed = !self.sources_loaded || self.sources_error.is_some();
+        self.sources_loaded = true;
+        self.sources_error = None;
+        let mut old = std::mem::take(&mut self.sources);
+        let mut dropped: Vec<Arc<RenderImage>> = Vec::new();
+        for (position, source) in listed.into_iter().enumerate() {
+            let previous = old.iter().position(|o| o.id.as_ref() == source.id).map(|index| old.swap_remove(index));
+            changed |= previous.is_none();
+            let mut entry = previous.unwrap_or_else(|| GridSource {
+                id: source.id.clone().into(),
+                name: source.name.clone().into(),
+                kind: source.kind,
+                still: None,
+                still_hash: 0,
+                icon: None,
+                icon_asked: false,
+            });
+            if entry.name.as_ref() != source.name {
+                entry.name = source.name.into();
+                changed = true;
+            }
+            if let Some(still) = source.thumbnail {
+                let hash = pixels_hash(&still);
+                if entry.still.is_none() || entry.still_hash != hash {
+                    dropped.extend(entry.still.take());
+                    entry.still = render_image(still);
+                    entry.still_hash = hash;
+                    changed = true;
+                }
+            }
+            if source.kind == SourceKind::Window && !entry.icon_asked {
+                // This listing was asked for the icon, whether or not the window has one.
+                entry.icon_asked = true;
+                if let Some(icon) = source.icon.and_then(render_image) {
+                    entry.icon = Some(icon);
+                    changed = true;
+                }
+            }
+            self.sources.push(entry);
+            // The order is the listing's (screens, then windows front to back).
+            changed |= self.sources.len() - 1 != position;
+        }
+        // What is left of the old list is gone from the desktop.
+        changed |= !old.is_empty();
+        for gone in old {
+            dropped.extend(gone.still);
+            dropped.extend(gone.icon);
+        }
+        for image in dropped {
+            cx.drop_image(image, None);
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn show_source_tab(&mut self, tab: SourceKind, cx: &mut Context<Self>) {
+        if self.source_tab != tab {
+            self.source_tab = tab;
+            // List again at once, with stills for this tab.
+            self.sources_task = None;
+            self.keep_sources_fresh(true, cx);
+            cx.notify();
+        }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -128,6 +306,7 @@ impl Render for GoLiveDialog {
         let sound_available = actions::voice::can_pick_stream_audio_apps();
         let share_audio = sound_available && s.share_audio;
         self.keep_apps_fresh(open && share_audio, cx);
+        self.keep_sources_fresh(open, cx);
         let modal = Modal::new("go-live", open)
             .padding(24., 24.)
             .on_close(cx.listener(|this, _: &CloseRequest, _, cx| this.close(cx)));
@@ -153,6 +332,11 @@ impl Render for GoLiveDialog {
         });
         let close_click = cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx));
         let cancel_click = cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx));
+        let source = if sources::supported() {
+            self.source_grid(starting, cx)
+        } else {
+            system_picker_note(cx).into_any_element()
+        };
         let theme = cx.theme();
         let summary = {
             let mut text = match active_preset(&s) {
@@ -218,7 +402,6 @@ impl Render for GoLiveDialog {
                     ),
             );
 
-        let source = windows_source_grid(cx).unwrap_or_else(|| system_picker_note(cx).into_any_element());
         let body: AnyElement = if wide {
             div()
                 .id("go-live-body")
@@ -378,13 +561,254 @@ impl Render for GoLiveDialog {
     }
 }
 
-/// Where Windows' in-app source grid goes (`goLive/SourceGrid.tsx` over `desktopCapturer`): not
-/// built yet. On Linux the portal's dialog picks the source after Go Live, so this is `None`.
-pub fn windows_source_grid(_cx: &App) -> Option<AnyElement> {
-    None
+impl GoLiveDialog {
+    /// "What to share" (`goLive/SourceGrid.tsx`): the Screens / Windows tabs and a grid of
+    /// tiles, each a still in a 16:9 frame over the source's name. A click picks the source.
+    fn source_grid(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
+        let mut to_tab = [SourceKind::Screen, SourceKind::Window]
+            .map(|kind| Some(cx.listener(move |this, _: &ClickEvent, _, cx| this.show_source_tab(kind, cx))));
+        let theme = cx.theme();
+        let tab = self.source_tab;
+        let picked = Model::global(cx).live.voice.own_stream.read(cx).source_id.clone();
+        let count = |kind: SourceKind| self.sources.iter().filter(|s| s.kind == kind).count();
+        let mut tab_button = |kind: SourceKind, label: &'static str, icon: IconName| {
+            let click = to_tab[kind as usize].take();
+            let active = tab == kind;
+            let color = if active { theme.color_accent_bright } else { theme.color_text_muted };
+            div()
+                .id(label)
+                .group(label)
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .rounded(theme.radius_sm)
+                .px_3()
+                .py_1()
+                .when(active, |this| this.bg(theme.color_accent_mid))
+                .when(!active, |this| this.cursor_pointer())
+                .when_some(click, |this, click| this.on_click(click))
+                .relative()
+                .children(decibell_shell::probes::probe(format!("source-tab:{label}")))
+                .child(Icon::new(icon).size(px(13.)).color(color).when(!active, |icon| icon.group_hover(label, theme.color_text_secondary)))
+                .child(
+                    Label::new(label)
+                        .size(12.)
+                        .weight(600.)
+                        .color(color),
+                )
+                .when(self.sources_loaded, |this| {
+                    this.child(
+                        div().opacity(0.7).child(
+                            Label::new(SharedString::from(count(kind).to_string()))
+                                .font(FontRole::Meta)
+                                .size(12.)
+                                .weight(500.)
+                                .color(color),
+                        ),
+                    )
+                })
+        };
+        let tabs = div()
+            .flex()
+            .rounded(theme.radius_md)
+            .bg(theme.color_bg_darkest)
+            .p(px(3.))
+            .child(tab_button(SourceKind::Screen, "Screens", IconName::SettingsMonitor))
+            .child(tab_button(SourceKind::Window, "Windows", IconName::SettingsAppWindow));
+        let header = div()
+            .flex()
+            .flex_none()
+            .h_8()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(SectionLabel::new("What to share"))
+            .child(tabs);
+
+        let shown: Vec<&GridSource> = self.sources.iter().filter(|s| s.kind == tab).collect();
+        // Two columns: the card is 460 px wide here (the renderer's third column for windows
+        // belongs to its 760 px Windows card).
+        let columns = 2;
+        let content: AnyElement = if !self.sources_loaded {
+            // The renderer's skeleton: two tiles for screens, six for windows.
+            let tiles = if tab == SourceKind::Screen { 2 } else { 6 };
+            div()
+                .grid()
+                .grid_cols(columns)
+                .gap_2()
+                .children((0..tiles).map(|_| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_1p5()
+                        .child(div().w_full().aspect_ratio(16. / 9.).rounded(theme.radius_md).bg(theme.color_bg_light))
+                        .child(div().mx_1().h_3().w_2_3().rounded(theme.radius_sm).bg(theme.color_bg_light))
+                }))
+                .into_any_element()
+        } else if let Some(error) = &self.sources_error {
+            div()
+                .py_6()
+                .flex()
+                .justify_center()
+                .child(Label::new(error.clone()).size(12.).color(theme.color_error).clamp(3))
+                .into_any_element()
+        } else if shown.is_empty() {
+            let (icon, text) = match tab {
+                SourceKind::Screen => (IconName::SettingsMonitor, "No screens to share"),
+                SourceKind::Window => (IconName::SettingsAppWindow, "No windows to share"),
+            };
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_2()
+                .px_6()
+                .py_10()
+                .child(Icon::new(icon).size(px(22.)).color(theme.color_text_muted))
+                .child(Label::new(text).size(13.).weight(500.).color(theme.color_text_secondary))
+                .when(tab == SourceKind::Window, |this| {
+                    this.child(
+                        Label::new("Open the app you want to show. It turns up here in a few seconds.")
+                            .size(12.)
+                            .color(theme.color_text_muted),
+                    )
+                })
+                .into_any_element()
+        } else {
+            div()
+                .id("go-live-sources")
+                .grid()
+                .grid_cols(columns)
+                .gap_2()
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .pr_1()
+                .when(disabled, |this| this.opacity(0.6))
+                .children(shown.into_iter().map(|source| {
+                    let on = picked.as_deref() == Some(source.id.as_ref());
+                    let id = source.id.clone();
+                    let group = SharedString::from(format!("source:{id}"));
+                    let frame = div()
+                        .relative()
+                        .w_full()
+                        .aspect_ratio(16. / 9.)
+                        .overflow_hidden()
+                        .rounded(theme.radius_md)
+                        .border_2()
+                        .bg(theme.color_bg_darkest)
+                        .map(|this| {
+                            if on {
+                                this.border_color(theme.color_accent)
+                            } else {
+                                this.border_color(theme.color_border_divider)
+                                    .group_hover(group.clone(), |st| st.border_color(theme.color_border))
+                            }
+                        })
+                        .when_some(source.still.clone(), |this, still| {
+                            this.child(img(ImageSource::Render(still)).size_full().object_fit(ObjectFit::Contain))
+                        })
+                        .when(on, |this| {
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .top_1p5()
+                                    .right_1p5()
+                                    .flex()
+                                    .size_5()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(theme.color_accent)
+                                    .child(Icon::new(IconName::SettingsCheck).size(px(12.)).color(theme.color_on_accent)),
+                            )
+                        });
+                    let mark: AnyElement = match source.icon.clone() {
+                        Some(icon) => img(ImageSource::Render(icon)).flex_none().size_4().into_any_element(),
+                        None => div()
+                            .flex_none()
+                            .child(
+                                Icon::new(if source.kind == SourceKind::Screen {
+                                    IconName::SettingsMonitor
+                                } else {
+                                    IconName::SettingsAppWindow
+                                })
+                                .size(px(14.))
+                                .color(if on { theme.color_accent } else { theme.color_text_muted }),
+                            )
+                            .into_any_element(),
+                    };
+                    let name = Label::new(source.name.clone()).size(13.).truncate();
+                    let name = if on {
+                        name.weight(600.).color(theme.color_text_bright)
+                    } else {
+                        name.weight(500.).color(theme.color_text_secondary)
+                    };
+                    div()
+                        .id(SharedString::from(format!("source-tile:{id}")))
+                        .group(group.clone())
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .gap_2()
+                        .rounded(theme.radius_lg)
+                        .p_1p5()
+                        .map(|this| if on { this.bg(theme.color_accent_soft) } else { this.hover(|st| st.bg(theme.color_surface_hover)) })
+                        .when(!disabled, |this| {
+                            this.cursor_pointer().on_click(move |_: &ClickEvent, _, cx| {
+                                let model = Model::global(cx).clone();
+                                model.live.voice.own_stream.update(cx, |own, cx| own.set_source(Some(id.to_string()), cx));
+                                // The app list marks the app that owns the picked window.
+                                refresh_apps(cx);
+                            })
+                        })
+                        .tooltip(title_tooltip(source.name.clone()))
+                        .relative()
+                        .children(decibell_shell::probes::probe(format!("source:{}", source.id)))
+                        .child(frame)
+                        .child(
+                            div()
+                                .flex()
+                                .w_full()
+                                .min_w_0()
+                                .items_center()
+                                .gap_2()
+                                .px_1()
+                                .pb_0p5()
+                                .child(mark)
+                                .child(div().min_w_0().child(name)),
+                        )
+                }))
+                .into_any_element()
+        };
+        div()
+            .flex()
+            .flex_none()
+            .flex_col()
+            .gap_3()
+            .px_5()
+            .pb_5()
+            .child(header)
+            .child(content)
+            .when(tab == SourceKind::Screen && self.sources_loaded && self.sources_error.is_none(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_2()
+                        .child(Icon::new(IconName::SettingsAppWindow).size(px(14.)).color(theme.color_text_muted))
+                        .child(
+                            Label::new("Sharing one window keeps notifications and other apps out of view.")
+                                .size(12.)
+                                .color(theme.color_text_muted),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
 }
 
-/// "You'll pick a screen or window next": the system's dialog will ask (Linux / macOS).
 fn system_picker_note(cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let system = if cfg!(target_os = "macos") { "macOS" } else { "your system" };
