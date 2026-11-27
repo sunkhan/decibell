@@ -23,15 +23,23 @@ use super::keymap::{self, Command, Move};
 use crate::{Affinity, Engine};
 
 thread_local! {
-    /// The field that last took the focus (GPUI runs on one thread): [`text_field_focused`].
-    static FOCUSED: RefCell<Option<WeakFocusHandle>> = const { RefCell::new(None) };
+    /// Every live field's focus handle (GPUI runs on one thread): [`text_field_focused`] asks the
+    /// window's focus itself, not the focus events, which a window in the background doesn't send
+    /// (a field focused there would read as not focused, and its keys would go to the composer).
+    static FIELDS: RefCell<Vec<WeakFocusHandle>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Whether a text field has the keyboard focus in `window`, so that a key that types a
 /// character goes into it. The app's focused hotkey fallback asks: bare typing keys are the
 /// field's, not a keybind's.
 pub fn text_field_focused(window: &Window) -> bool {
-    FOCUSED.with(|focused| focused.borrow().as_ref().and_then(WeakFocusHandle::upgrade).is_some_and(|f| f.is_focused(window)))
+    FIELDS.with(|fields| {
+        let mut focused = false;
+        fields.borrow_mut().retain(|field| {
+            field.upgrade().inspect(|handle| focused |= handle.is_focused(window)).is_some()
+        });
+        focused
+    })
 }
 
 /// Blink's caret blink interval (`LayoutTheme::CaretBlinkInterval`): half a second shown,
@@ -138,6 +146,11 @@ impl InputState {
     /// multi-line field until [`set_enter`](Self::set_enter) says otherwise.
     pub fn new(rules: Rules, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
+        FIELDS.with(|fields| {
+            let mut fields = fields.borrow_mut();
+            fields.retain(|field| field.upgrade().is_some());
+            fields.push(focus.downgrade());
+        });
         let subscriptions = [
             cx.on_focus(&focus, window, Self::focused),
             cx.on_blur(&focus, window, Self::blurred),
@@ -553,7 +566,6 @@ impl InputState {
     // ---- focus and the blinking caret ----
 
     fn focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        FOCUSED.with(|focused| *focused.borrow_mut() = Some(self.focus.downgrade()));
         self.touch();
         self.sync_blink(window, cx);
         cx.emit(InputEvent::Focus);
@@ -561,13 +573,6 @@ impl InputState {
     }
 
     fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        FOCUSED.with(|focused| {
-            let mut focused = focused.borrow_mut();
-            // Another field may have taken the focus first (its `focused` ran before this).
-            if focused.as_ref().and_then(WeakFocusHandle::upgrade).is_none_or(|f| f == self.focus) {
-                *focused = None;
-            }
-        });
         self.buffer.unmark();
         self.buffer.close_undo_step();
         self.drag = None;

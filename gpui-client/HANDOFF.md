@@ -1115,7 +1115,10 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   inline editor focuses itself as its row is laid out): the root took the focus from it, and the edit's keys went
   to the composer (`dm-send-receive`: "timed out waiting for the edit's echo", every run). The root now takes the
   focus at once only when nothing is focused, and from a focused handle only if it still isn't drawn after the
-  next frame. Still open: with a modal up, an explicit `window.blur()` gives the focus to the root, outside the
+  next frame. Second cause, same symptom: `decibell_text::text_field_focused` remembered the field whose
+  `on_focus` ran last, and GPUI sends no focus events while the window is in the background (the event's paths
+  are empty then), so a field focused in an inactive window read as not focused and type-to-focus sent its keys
+  to the composer. It now asks the window's focus against every live field's handle. Still open: with a modal up, an explicit `window.blur()` gives the focus to the root, outside the
   modal's layer, so its Esc / Enter / Tab no longer reach it (a press in a modal focuses its layer, so only an
   explicit blur gets there); a fix would hand the focus to the topmost open modal instead.
 - **Self-test harness (integrate-d)**: `TestCx::settle` waits for draws to stop; presents that run on without
