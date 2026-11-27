@@ -407,6 +407,23 @@ startup come first, so they stay as they are.
 
 ### 9.4 The ship build against the targets
 
+Taken 2026-11-27 holding the machine-wide build lock (load average 0.0–1.5), the stripped ship binary
+`decibell-0.9.4` (§9.1), outside a package (updater and crash reports off, as in a package without a DSN), a
+throwaway profile, no saved sign-in: the window shows the sign-in page. The app runs on a private D-Bus
+without services (a ship build would otherwise put its at-rest key in the session keyring: §10). Electron's
+numbers are HANDOFF §4's (0.9.4 on this machine); its startup and memory rows are taken signed in with
+`#general` open, which the ship build cannot do against the test stack (it never honours `DECIBELL_CENTRAL`):
+the development build's signed-in rows are HANDOFF §4's "Shell" table.
+
+| Target | Electron 0.9.4 | Target | Ship build |
+|---|---|---|---|
+| Install size (`tools/perf/install-size.sh` on the unpacked tarball) | 417.0 MB | ≤ 104 MB | **77.1 MB** (14 files: the binary 75.9, the licences 1.1) — 0.18 × Electron |
+| Download | — | — | tarball 23.2 MB (xz), `.deb` 24.1 MB |
+| Startup: launch → first frame presented (`tools/perf/startup.sh`, the app's `first-frame` marker; median of 5 warm runs, 1 discarded) | 671 ms (saved sign-in) | ≤ 224 ms | **159 ms** (158–176) at the sign-in page; the development build of the same commit: 170 ms (163–171) |
+| Idle private memory (`tools/perf/measure.sh`, 20 s settle + 40 s) | 341.7 MB (`#general`) | ≤ 114 MB | **70.1 MB** at the sign-in page (private dirty 30.9, PSS 87.3, RSS 130.7; GPU memory 58.2 MB) |
+| Idle CPU | 14.5 % / 0.5 % | ≤ 1.45 % | **0.012 %** of a core |
+| Own wakeups at rest | 4,292 / s | ≤ 30 / s | **0.0 / s** (NVIDIA's `[vkps] Update` 4.0 / s, one unnamed driver thread 0.5 / s); 37 threads |
+
 ## 10. Read-only and isolated runs
 
 Results of 2026-11-26/27 on this machine (KDE Plasma 6.8 Wayland, RTX 4080).
