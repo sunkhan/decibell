@@ -1127,6 +1127,14 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
 
 Things only the owner can do; nothing here blocks the rest.
 
+- **Shipping the native client** (`PACKAGING.md` §11): the tag pattern (`native-v<VER>`), the update signing
+  key (`UPDATE_PUBLIC_KEY` variable + `UPDATE_SIGNING_KEY` secret, or signing by hand), pinning the AppImage
+  tools' hashes from the dry run's log, the project's licence (no `LICENSE` file; the LGPL needs one that
+  allows relinking), the AUR name `decibell-native-bin`, Windows names and code signing while both clients
+  ship, the re-check interval, Sentry debug-file uploads, and how Electron users move over. On Windows (never
+  run here): install, `decibell://`, the shortcut's taskbar grouping, an update with its trial start and a
+  rollback (`PACKAGING.md` §3, §6).
+
 - **The desktop integration by hand** (`decibell-platform`, Linux): (1) after packaging installs
   `assets/linux/decibell.desktop`, click a `decibell://invite/…` link in a browser while Decibell runs: the window
   comes to the front (the forwarded activation token, patch `0018`, is only exercised by a real launcher; without a
