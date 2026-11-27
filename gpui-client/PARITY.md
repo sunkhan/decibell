@@ -14,17 +14,21 @@ system_idle.rs state.rs`, `electron-client/native/src/` for `commands/`), `C/` =
 
 ## 1. Accounts, sign-in and devices (central)
 
-| # | Feature | Status | Evidence / what is left | Mirrors |
-|---|---|---|---|---|
-| 1.1 | Register | not started | | `R/features/auth/`, `N/commands/auth.rs`, `Z/auth_manager.cpp` |
-| 1.2 | Sign in | not started | | `N/net/central.rs`, `Z/abuse_limits.hpp` |
-| 1.3 | Stay signed in | not started | | `N/config.rs`, `M/e2eeLocalKey.ts`; spec `2026-10-15-central-hardening-design.md` |
-| 1.4 | Several devices | not started | | spec `2026-10-18-multi-device-design.md` |
-| 1.5 | Device list | not started | | `R/features/settings/tabs/DevicesTab.tsx`, `N/commands/devices.rs`; spec `2026-10-19-devices-and-password-design.md` |
-| 1.6 | Change password | not started | | `R/features/settings/ChangePasswordModal.tsx` |
-| 1.7 | Change username | not started | | `R/features/settings/RenameUsernameModal.tsx`; spec `2026-10-15-uid-identity-design.md` |
-| 1.8 | Log out | not started | | `N/commands/devices.rs::forget_this_device` |
-| 1.9 | Certificate pinning | not started | | `N/net/pins.rs`, `N/net/tls.rs`, `R/components/CertMismatchModal.tsx` |
+Audited 2026-11-27 against the branch head `51be7d71` (the frozen build in `~/.cache/decibell-dev/parity-root`);
+gaps and their sizes: `docs/parity-audit-a.md`. Status here is `done` / `needs owner` / `partial`. Unit tests are
+cited from the code and were not rerun (no builds in the audit); self-test results are this audit's runs.
+
+| # | Feature | Status | Evidence / what is left | Windows | Mirrors |
+|---|---|---|---|---|---|
+| 1.1 | Register | partial | **The sign-up form can't be typed into**: `AuthView`'s fields have no editor (`decibell-shell/src/auth.rs` `field()`; nothing calls `set_field`), so nobody can register from the app. The action, the result line and the lower-casing exist (`actions::auth::register`, unit test `sign_in_page_states`); every throwaway account of `settings-password` / `settings-rename` / `settings-e2ee` / `friends-flow` / `dm-*` registered through the action (all PASS 2026-11-27). No self-test drives the page | owner: no step yet | `R/features/auth/`, `N/commands/auth.rs`, `Z/auth_manager.cpp` |
+| 1.2 | Sign in | partial | **The sign-in page can't be typed into** (same cause as 1.1): only a saved sign-in or the development `--login` signs in. Errors under the form, "Can't reconnect" toast when signed in, the re-trust prompt on a pin failure: implemented (`events/auth.rs`, `actions::auth::sign_in`). Self-tests sign in through the action or `--login`: `shell-signin` PASS 2026-11-27; none types into the page | owner: no step yet | `N/net/central.rs`, `Z/abuse_limits.hpp` |
+| 1.3 | Stay signed in | partial | Saved sign-in sealed under the keychain key and the automatic sign-in at start: `shell-no-keyring` (no Secret Service: saved and used on the next start) PASS, `keyring-label` (label `Decibell`, private keyring) PASS, `shell-signout` (cleared) PASS, all 2026-11-27. Untested: resuming after a dropped central connection (the core's resume token; the model's `again` path has unit test `a_new_sign_in_drops_loaded_conversations_but_keeps_unconfirmed_sends`), and a signed-out device's saved password refused at its next start | owner: checks §7 (Keyring) | `N/config.rs`, `M/e2eeLocalKey.ts`; spec `2026-10-15-central-hardening-design.md` |
+| 1.4 | Several devices | partial | Two perf1 devices online together (`settings-devices-signout` PASS), read state across devices (`dm-read-sync`, `dm-read-rules` PASS), all 2026-11-27. Untested: the 8-device refusal (`device_limit` → error / "Can't reconnect"), status / custom status / friends-only and own DM echoes reaching the account's other device, friend-list and membership pushes, own rename / avatar on the other device, `REPLACED` | owner: no step yet | spec `2026-10-18-multi-device-design.md` |
+| 1.5 | Device list | partial | `settings-devices-signout` PASS 2026-11-27: a second perf1 device appears, Sign out → confirm (Enter) → it leaves the list and the signed-out client shows the sign-in notice. Untested: "Sign out of all other devices" (needs two others), the "New sign-in to your account" toast and its Review devices action (unit test `a_new_device_is_announced_and_sign_out_clears_people` only), a signed-out device's community sessions ending | owner: no step yet | `R/features/settings/tabs/DevicesTab.tsx`, `N/commands/devices.rs`; spec `2026-10-19-devices-and-password-design.md` |
+| 1.6 | Change password | partial | `settings-password` PASS 2026-11-27: typed through the dialog, the length check, the other device signed out with its notice, this one stays, the new password signs in; checks unit-tested (`titles_and_password_checks`). Untested: a wrong current password refused (central's text in the dialog) | owner: no step yet | `R/features/settings/ChangePasswordModal.tsx` |
+| 1.7 | Change username | partial | `settings-rename` PASS 2026-11-27: the same-name check, lower-cased as typed, the account, names store and shell follow; rules unit-tested (`dialogs/rename.rs`). Untested: central's refusals (two a day, a taken name), the old name still signing in, the rename reaching a joined community live (`SESSION_TOKEN_UPDATE`) and the account's other device / watchers (`USER_RENAMED`) | owner: no step yet | `R/features/settings/RenameUsernameModal.tsx`; spec `2026-10-15-uid-identity-design.md` |
+| 1.8 | Log out | partial | `shell-signout` PASS 2026-11-27 (back on the sign-in page, saved sign-in gone), but it calls `actions::auth::sign_out`, not Settings → Account's Log Out (`actions::auth::log_out`, which hangs up a call first). Untested: central forgetting the device, a call / voice / stream stopped by Log Out | owner: no step yet | `N/commands/devices.rs::forget_this_device` |
+| 1.9 | Certificate pinning | partial | "Certificate changed" dialog over the sign-in page and the main layout (`decibell-shell/src/overlays.rs`), offered from sign-in, the join dialog and Browse; unit tests `cert_mismatch_is_taken_apart`, `fingerprints_read_like_the_renderer`. No self-test drives a mismatch. Differs: an invite card's Join doesn't join again after trusting (no retry, `actions::servers::redeem_invite`); the failure toast says "Couldn't trust the certificate" (Electron "Couldn't re-trust certificate") | owner: no step yet | `N/net/pins.rs`, `N/net/tls.rs`, `R/components/CertMismatchModal.tsx` |
 
 ## 2. People: profiles, presence, friends
 
