@@ -330,9 +330,56 @@ it for the next start. Nothing at rest: the sender thread exists while a report 
 
 See the tables below (this machine; filled by the packaging work, 2026-11-26).
 
-### 9.1 Size by crate (ship build, unstripped symbols: `packaging/size-by-crate.py`)
+### 9.1 Size by crate (ship build, `packaging/size-by-crate.py`)
+
+The ship binary of this branch (base `9605d9f`: without the branch head's `decibell-media` and the core's
+audio work), built 2026-11-27 against the shared 93 MB FFmpeg prefix (whose files date from 2026-11-26 20:57,
+before this target directory's first build, so `cargo clean -p ffmpeg-sys-next` had nothing to refresh),
+profile `release` (opt-level 3, fat LTO, 1 codegen unit, abort on panic): **79.6 MB stripped**
+(79,590,608 bytes; `.text` 62.4 MB, `.rodata` 10.9 MB, `.eh_frame` + header 4.1 MB, `.data.rel.ro` 1.9 MB).
+Its sized symbols (67.8 MB of it; the rest is section overhead and data without symbols), by crate:
+
+| Share | Crate (Rust) or archive ([C]) |
+|---|---|
+| 18.4 MB | **the C codecs**: SVT-AV1 6.84 (the software encoder), libavcodec 6.36, dav1d 1.90, libswscale 1.78, libavutil 0.82, libavformat 0.40, libswresample 0.16, libavfilter 0.10 |
+| 12.3 MB | GPUI and its stack: gpui 4.55, naga 1.33, harfrust 0.76, gpui_linux 0.63, wgpu_core 0.62, wgpu_hal 0.46, skrifa 0.42, accesskit_unix 0.40, usvg 0.38, read_fonts 0.38, wayland_client 0.33, taffy 0.29, … |
+| 11.1 MB | ours: decibell_core 2.32, decibell_server_settings 1.42, decibell_ui 1.06, decibell_voice 0.81, decibell_model 0.64, decibell_chat_content 0.60, decibell_home 0.54, decibell_tex 0.53, decibell_shell 0.43, decibell_settings 0.35, decibell_composer 0.33, … **decibell_release 0.12** |
+| 3.6 MB | `.eh_frame` (unwind tables: the crash reporter's backtraces need them) |
+| 3.6 MB | D-Bus: zvariant 2.23, zbus 1.35 (serialisation generics, several interfaces) |
+| 3.2 + 0.9 + 0.7 MB | Rust's `core`, `alloc`, `std` (monomorphised generics) |
+| 1.5 MB | tokio |
+| 1.2 MB | prost (the wire protocol's messages) |
+| 2.5 MB | image decoders: image 0.79, zune_jpeg 0.53, image_webp 0.48, **exr 0.38, tiff 0.27** |
+| 0.9 + 0.4 MB | rustfft + aec3 (voice processing) |
+| 0.6 + 0.6 + 0.4 MB | openmls, ring, rustls |
+
+Inside libavcodec: the VP9 software decoder 1.72 MB, H.264 1.33 MB, shared DSP 0.69 MB, AAC 0.31 MB, AV1
+(parser / hwaccel glue) 0.18, VP8 0.15, HEVC 0.11 + its bitstream helpers 0.12; libavformat's MP4 demuxer
+0.13 MB.
+
+**Could go (listed, not changed: the FFmpeg prefix and GPUI's features are shared work):**
+- `libavdevice`: built into the prefix, nothing of it reaches the binary — `--disable-avdevice` only
+  shortens the FFmpeg build;
+- GPUI enables every `image` format through Zed's workspace manifest (`vendor/zed/Cargo.toml`: `exr`,
+  `tiff`, `dds`, `hdr`, `tga`, `pnm`, `qoi`, `ff`, `rayon`); the client decodes JPEG / PNG / GIF / WebP / BMP:
+  **~0.7 MB** (EXR + TIFF and the rest) with a GPUI patch to that list;
+- two font stacks: cosmic-text 0.19 (GPUI's) pulls harfrust 0.5 / read-fonts 0.37 / skrifa 0.40 / fontdb
+  0.23 beside the newer harfrust 0.12 / read-fonts 0.41 / skrifa 0.44 / fontdb 0.24 (usvg's and ours):
+  ~1–1.5 MB if one side moved;
+- two RustCrypto generations (openmls' HPKE brings `sha2` / `digest` / `curve25519-dalek` 0.11 / 5.x beside
+  the core's 0.10 / 4.x): the core's and OpenMLS' choice;
+- the VP9 software decoder (1.7 MB) is the largest single decoder: attachment playback's; the second media
+  pass adds VP9 hardware decode, which still needs the software fallback by the codec rule.
+None of these is test-only code: the ship build's development code is gone (§9.2).
 
 ### 9.2 Levers
+
+| Lever | Binary (stripped) | Effect | Startup / scroll |
+|---|---|---|---|
+| development flavour (`--features dev-local`), release profile, packed relocations | 86.62 MB | — | see §9.4 |
+| **ship flavour** (no screens, self-tests, fixtures, probes, test hooks) | **79.59 MB** | **−7.03 MB** (−8.1 %) | same code on the app's path |
+| **packed relative relocations** (`-z pack-relative-relocs`, `build.rs`) | (before: 82.25) | **−2.58 MB**: `.rela.dyn` 2.62 MB → 8.5 KB + `.relr.dyn` 31 KB; ~100,000 fewer relocations applied at every start | fewer pages touched at start |
+| symbols stripped (`strip`, the packaging step) | (unstripped 130.66) | −51.1 MB: Rust symbols and the C libraries' DWARF (~39 MB); kept as the `.debug` file | none (never mapped) |
 
 ### 9.3 Assets
 
