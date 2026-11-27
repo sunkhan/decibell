@@ -373,16 +373,22 @@ fn friend_row(friend: &Friend, cx: &mut App) -> AnyElement {
                 .on_click(act(FriendAction::Accept, name.clone()))
                 .into_any_element(),
             row_button("decline", "Decline", Some(IconName::SettingsX), RowButtonLook::Danger, cx)
+                .relative()
+                .children(decibell_shell::probes::probe(format!("friend-decline:{uid}")))
                 .on_click(act(FriendAction::Reject, name.clone()))
                 .into_any_element(),
         ],
         FriendStatus::PendingOutgoing => vec![
             row_button("cancel", "Cancel", Some(IconName::SettingsX), RowButtonLook::Danger, cx)
+                .relative()
+                .children(decibell_shell::probes::probe(format!("friend-cancel:{uid}")))
                 .on_click(act(FriendAction::Remove, name.clone()))
                 .into_any_element(),
         ],
         FriendStatus::Blocked => vec![
             row_button("unblock", "Unblock", None, RowButtonLook::Outline, cx)
+                .relative()
+                .children(decibell_shell::probes::probe(format!("friend-unblock:{uid}")))
                 .on_click(act(FriendAction::Remove, name.clone()))
                 .into_any_element(),
         ],
@@ -390,6 +396,8 @@ fn friend_row(friend: &Friend, cx: &mut App) -> AnyElement {
             let more = BoundsCell::new();
             vec![
                 icon_button("message", IconName::HomeFriendMessage, "Message", cx)
+                    .relative()
+                    .children(decibell_shell::probes::probe(format!("friend-message:{uid}")))
                     .on_click(move |_: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         open_conversation(uid, cx);
@@ -479,6 +487,9 @@ impl Render for FriendsPage {
         let model = Model::global(cx).clone();
         let friends: Vec<Friend> = model.live.friends.read(cx).list().to_vec();
         let error = model.live.friends.read(cx).last_action_error.clone();
+        // The self-tests read the errors as drawn (empty when none is).
+        decibell_shell::probes::text("friends-error", &error.clone().unwrap_or_default());
+        decibell_shell::probes::text("friends-add-error", &self.add_error.clone().unwrap_or_default());
         let count = |f: &dyn Fn(FriendStatus) -> bool| friends.iter().filter(|x| f(x.status)).count();
         let accepted = count(&|s| s.is_accepted());
         let online = count(&|s| s == FriendStatus::Online);

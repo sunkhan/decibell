@@ -118,6 +118,11 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(settings_narrow(cx)),
         },
         SelfTest {
+            name: "members-nickname",
+            about: "(local stack) Daily Gaming's Members tab: alice (owner) sets and clears her own nickname; not in Rustaceans, where @everyone lacks Change Nickname; carol (Manage Nicknames) a member's; a nickname above her refused",
+            run: |cx| Box::pin(parent_nickname(cx)),
+        },
+        SelfTest {
             name: "server-settings-idle",
             about: "every Server Settings tab settles to 0 frames over 5 s; closing drops the window and its state",
             run: |cx| Box::pin(settings_idle(cx)),
@@ -342,6 +347,113 @@ async fn parent_bans(cx: TestCx) -> Result<()> {
     }
 }
 
+/// T19 (parity audit A): nicknames by permission, through Server Settings → Members.
+async fn parent_nickname(cx: TestCx) -> Result<()> {
+    let Some(stack) = stack()? else {
+        skip_down(&cx);
+        return Ok(());
+    };
+    for (check, login) in [("members-nickname-own", "alice"), ("members-nickname-mod", "carol")] {
+        if let Child::NoDevLogin = run_child(&cx, check, Some(login), &stack, &[]).await? {
+            skip_no_login(&cx);
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// A member's nickname as the roster holds it (`None`: not loaded).
+fn roster_nickname(server: ServerId, uid: decibell_model::Uid, cx: &App) -> Option<String> {
+    model(cx).community(server, cx).and_then(|c| c.roster.read(cx).member(uid).map(|m| m.nickname.to_string()))
+}
+
+/// Edit `member`'s nickname in the Members tab as its row's "Set nickname" does: the field
+/// opens on the current one, `nickname` replaces it, Enter saves; the field closes on the echo.
+async fn set_nickname_in_tab(cx: &TestCx, members: &Entity<crate::server::members::MembersTab>, member: &Member, nickname: &str) -> Result<Duration> {
+    let m = member.clone();
+    cx.update(move |w, cx| members.update(cx, |t, cx| t.open_nick(&m, w, cx)))?;
+    cx.sleep(Duration::from_millis(150)).await;
+    cx.keystroke("ctrl-a")?;
+    cx.keystroke("backspace")?;
+    if !nickname.is_empty() {
+        cx.type_text(nickname)?;
+    }
+    cx.keystroke("enter")?;
+    let (server, uid, want) = (daily_gaming(), member.uid, nickname.to_string());
+    let members = members.clone();
+    wait_for(cx, Duration::from_secs(10), "the nickname's echo", move |cx| {
+        // The tab's rows (the server's search, patched by the roster's deltas), else the roster.
+        let shown = members.read(cx).search().read(cx).members.iter().find(|m| m.uid == uid).map(|m| m.nickname.to_string());
+        shown.or_else(|| roster_nickname(server, uid, cx)).as_deref() == Some(want.as_str()) && members.read(cx).nickname_editor().0.is_none()
+    })
+    .await
+}
+
+async fn check_nickname_own(cx: TestCx) -> Result<()> {
+    signed_in(&cx).await?;
+    let (_, tab) = open_settings(&cx, TabId::Members).await?;
+    let Tab::Members(members) = tab else { bail!("not the Members tab") };
+    let me = find_member(&cx, "alice").await?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let gate = cx.update(|_, cx| crate::server::members::Gates::read(daily_gaming(), cx).acts(&me, now).nick)?;
+    ensure!(gate, "alice's own row offers no nickname in Daily Gaming");
+    let original = me.nickname.to_string();
+    let nickname = format!("alice {}", tag());
+    let t = set_nickname_in_tab(&cx, &members, &me, &nickname).await?;
+    cx.log(format_args!("alice set her own nickname {nickname:?} from her row: on the record after {} ms, the field closed", t.as_millis()));
+    set_nickname_in_tab(&cx, &members, &me, &original).await?;
+    cx.log(format_args!("and put it back to {original:?}"));
+    // Rustaceans: @everyone has no Change Nickname, and alice holds nothing that grants it.
+    let rust = ServerId::from_central(2);
+    wait_for(&cx, Duration::from_secs(30), "Rustaceans' roster", move |cx| model(cx).community(rust, cx).is_some_and(|c| c.roster.read(cx).member(1).is_some())).await?;
+    let (gate, has) = cx.update(move |_, cx| {
+        let me = model(cx).community(rust, cx).and_then(|c| c.roster.read(cx).member(1).cloned()).expect("own row");
+        (crate::server::members::Gates::read(rust, cx).acts(&me, now).nick, model(cx).has_permission(rust, perm::CHANGE_NICKNAME, cx))
+    })?;
+    cx.log(format_args!("Rustaceans: Change Nickname {has}, her own row's nickname entry {gate}"));
+    ensure!(!has && !gate, "a nickname entry where @everyone lacks Change Nickname");
+    Ok(())
+}
+
+async fn check_nickname_mod(cx: TestCx) -> Result<()> {
+    signed_in(&cx).await?;
+    let (_, tab) = open_settings(&cx, TabId::Members).await?;
+    let Tab::Members(members) = tab else { bail!("not the Members tab") };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    // A Member-role placeholder (not the one user-menu-moderation edits).
+    let target = find_member(&cx, "emreaydn").await?;
+    let gate = cx.update(|_, cx| crate::server::members::Gates::read(daily_gaming(), cx).acts(&target, now).nick)?;
+    ensure!(gate, "carol (Moderator: Manage Nicknames) gets no nickname entry on a Member");
+    let original = target.nickname.to_string();
+    let nickname = format!("by carol {}", tag());
+    let t = set_nickname_in_tab(&cx, &members, &target, &nickname).await?;
+    cx.log(format_args!("carol set {:?}'s nickname {nickname:?}: on the record after {} ms", target.username, t.as_millis()));
+    set_nickname_in_tab(&cx, &members, &target, &original).await?;
+    // bob is an Admin, above her: the row offers nothing; asked anyway, the server refuses.
+    let bob = find_member(&cx, "bob").await?;
+    let gate = cx.update(|_, cx| crate::server::members::Gates::read(daily_gaming(), cx).acts(&bob, now).nick)?;
+    ensure!(!gate, "carol is offered bob's nickname");
+    let before = bob.nickname.to_string();
+    let toasts_before = cx.update(|_, cx| model(cx).toasts.read(cx).toasts().len())?;
+    let (b, tab) = (bob.clone(), members.clone());
+    cx.update(move |w, cx| tab.update(cx, |t, cx| t.open_nick(&b, w, cx)))?;
+    cx.sleep(Duration::from_millis(150)).await;
+    cx.keystroke("ctrl-a")?;
+    cx.type_text("not allowed")?;
+    cx.keystroke("enter")?;
+    let m = members.clone();
+    wait_for(&cx, Duration::from_secs(10), "the refusal", move |cx| model(cx).toasts.read(cx).toasts().len() > toasts_before && !m.read(cx).nickname_editor().1).await?;
+    let (toast, editing, after) = cx.update(|_, cx| {
+        let t = model(cx).toasts.read(cx).toasts().last().map(|t| format!("{}: {}", t.title, t.body.as_deref().unwrap_or_default()));
+        (t, members.read(cx).nickname_editor().0, roster_nickname(daily_gaming(), 2, cx))
+    })?;
+    cx.log(format_args!("bob's nickname asked for anyway: refused ({toast:?}); the field still open: {}; his nickname {after:?}", editing == Some(2)));
+    ensure!(editing == Some(2), "the field closed on a refusal (the draft is kept)");
+    ensure!(after.as_deref().is_none_or(|n| n == before), "bob's nickname changed to {after:?}");
+    cx.keystroke("escape")?;
+    Ok(())
+}
+
 async fn parent_channel(cx: TestCx) -> Result<()> {
     let Some(stack) = stack_for(DESIGN_LAB)? else {
         skip_down(&cx);
@@ -393,6 +505,8 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "category-sync", about: "(in the app) category following", run: |cx| Box::pin(check_category(cx)) },
         SelfTest { name: "settings-throwaway", about: "(in the app) the throwaway account: join, or send", run: |cx| Box::pin(check_throwaway(cx)) },
         SelfTest { name: "settings-cleanup", about: "(in the app) delete what the settings tests created", run: |cx| Box::pin(check_cleanup(cx)) },
+        SelfTest { name: "members-nickname-own", about: "(in the app) alice's own nickname", run: |cx| Box::pin(check_nickname_own(cx)) },
+        SelfTest { name: "members-nickname-mod", about: "(in the app) carol's Manage Nicknames", run: |cx| Box::pin(check_nickname_mod(cx)) },
     ]
 }
 

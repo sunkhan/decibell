@@ -263,6 +263,7 @@ impl ProfilePopup {
         let (divider, secondary, accent_bright, radius_sm) =
             (t.color_border_divider, t.color_text_secondary, t.color_accent_bright, t.radius_sm);
         let (server, channel) = (location.server, location.channel.clone());
+        crate::hooks::record("profile-popup-stream", || vec![format!("#{channel_name}"), title.to_string()]);
         Some(
             div()
                 .child(div().mx_4().my_3().h(px(1.)).bg(divider))
@@ -282,6 +283,7 @@ impl ProfilePopup {
                                 .id("popup-stream")
                                 .group("popup-stream")
                                 .relative()
+                                .children(decibell_shell::probes::probe("popup-stream"))
                                 .w_full()
                                 // `aspect-video` on the 268 px column.
                                 .h(px((POPUP_WIDTH - 32.) * 9. / 16.))
@@ -418,6 +420,7 @@ impl Render for ProfilePopup {
                     div()
                         .id("popup-avatar")
                         .group("popup-avatar")
+                        .children(decibell_shell::probes::probe("popup-avatar"))
                         .absolute()
                         .top(px(-36.))
                         .left_0()

@@ -62,6 +62,9 @@ Account and communities:
   wait roster <community>         its first roster page is in
   wait online <community> <user>  that member shows as online (offline: `wait offline …`)
   open-server <community>         as clicking its tile
+  join <community>                join a public community of the directory (Browse's Join; a
+                                  throwaway account's membership: `leave` it again)
+  leave <community>               leave it (the server's answer drops the membership)
   open-channel <channel>          in the open community (navigation only: `history` loads it)
   idle <seconds>                  do nothing (measure it from outside)
   print <text>                    one line `MARK <text>` (a test's cue)
@@ -105,6 +108,8 @@ enum Step {
     Wait(Wait),
     OpenServer(String),
     OpenChannel(String),
+    Join(String),
+    Leave(String),
     Dump(Vec<String>),
     Idle(f64),
     Print(String),
@@ -156,6 +161,8 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "login-as" => Step::LoginAs { name: next(&arg, &mut it)?, password: next(&arg, &mut it)? },
             "logout" => Step::Logout,
             "open-server" => Step::OpenServer(next(&arg, &mut it)?),
+            "join" => Step::Join(next(&arg, &mut it)?),
+            "leave" => Step::Leave(next(&arg, &mut it)?),
             "open-channel" => Step::OpenChannel(next(&arg, &mut it)?),
             "idle" => Step::Idle(next(&arg, &mut it)?.parse().map_err(|_| "idle: not a number")?),
             "print" => Step::Print(next(&arg, &mut it)?),
@@ -572,6 +579,32 @@ async fn run_step(step: &Step, model: &Model, timeout: Duration, cx: &mut AsyncA
                 Ok(())
             }
             None => Err(format!("open-server: no community named {name:?}")),
+        })?,
+        Step::Join(name) => {
+            cx.update(actions::servers::request_server_list);
+            let started = Instant::now();
+            let (id, host, port) = loop {
+                let found = cx.update(|cx| {
+                    model.servers.read(cx).servers().iter().find(|s| &*s.name == name.as_str()).map(|s| (s.id, s.host.to_string(), s.port))
+                });
+                if let Some(found) = found {
+                    break found;
+                }
+                if started.elapsed() > timeout {
+                    return Err(format!("join: no community named {name:?} in the directory within {timeout:?}"));
+                }
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+            };
+            let (tx, rx) = futures::channel::oneshot::channel();
+            cx.update(|cx| actions::servers::connect(id, host, port, cx, move |result, _| drop(tx.send(result))));
+            rx.await.map_err(|_| "join: dropped")?.map_err(|e| format!("join {name}: {}", e.js_string()))?;
+        }
+        Step::Leave(name) => cx.update(|cx| match community_named(model, name, cx) {
+            Some((id, _)) => {
+                actions::servers::leave(id, cx);
+                Ok(())
+            }
+            None => Err(format!("leave: no community named {name:?}")),
         })?,
         Step::OpenChannel(name) => cx.update(|cx| {
             let server = model.nav.read(cx).active_server.ok_or("open-channel: no community is open")?;

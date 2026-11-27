@@ -145,6 +145,12 @@ impl ProfileModal {
         self.tab
     }
 
+    /// A selectable value's field by its place (`about:<label>`, `safety:<n>`,
+    /// `fingerprint:own` / `fingerprint:peer`), while drawn: the self-tests select in it.
+    pub fn value_state(&self, key: &str) -> Option<Entity<InputState>> {
+        self.values.get(key).cloned()
+    }
+
     /// A `select-text` value (`Row`'s `dd`, the safety number, `Mono`): a read-only field of the
     /// text engine (drag, double and triple click, Ctrl+A, Ctrl+C), kept per place while shown.
     fn selectable(&mut self, key: SharedString, value: &str, multi_line: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
@@ -161,10 +167,10 @@ impl ProfileModal {
         state
     }
 
-    /// One line of selectable text in a label's look.
-    fn value_text(&mut self, key: SharedString, value: &str, font: FontRole, size: f32, tracking: Option<f32>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// An About value: one line of selectable text in the row's look (`text-text-primary`, 13 px).
+    fn value_text(&mut self, key: SharedString, value: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.selectable(key, value, false, window, cx);
-        let style = value_style(font, size, tracking, cx);
+        let style = value_style(FontRole::Sans, 13., None, cx);
         TextInput::new(&state, style).into_any_element()
     }
 
@@ -307,7 +313,7 @@ impl ProfileModal {
         // The values are `select-text` (`Row`'s `dd`).
         let values: Vec<AnyElement> = rows
             .iter()
-            .map(|(l, v)| self.value_text(SharedString::from(format!("about:{l}")), v, FontRole::Sans, 13., None, window, cx))
+            .map(|(l, v)| self.value_text(SharedString::from(format!("about:{l}")), v, window, cx))
             .collect();
         // `grid-cols-[max-content_1fr] gap-x-6 gap-y-2`: a label column as wide as its widest.
         let about = div()
@@ -465,6 +471,8 @@ impl ProfileModal {
         let (accent_bright, accent) = (t.color_accent_bright, t.color_accent);
         let copy = div()
             .id("copy-safety-number")
+            .relative()
+            .children(decibell_shell::probes::probe("copy-safety-number"))
             .cursor_pointer()
             .text_color(accent_bright)
             .hover(move |s| s.text_color(accent))
@@ -562,6 +570,8 @@ impl Render for ProfileModal {
                     let name = name.clone();
                     let look = if primary { Look::primary(cx) } else { Look::secondary(cx) };
                     button(id, label, look, busy)
+                        .relative()
+                        .children(decibell_shell::probes::probe(id))
                         .when(!busy, |this| this.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.act(action, uid, name.clone(), cx))))
                         .into_any_element()
                 };
@@ -606,6 +616,8 @@ impl Render for ProfileModal {
             let active = tab == which;
             div()
                 .id(id)
+                .relative()
+                .children(decibell_shell::probes::probe(id))
                 .mb(px(-1.))
                 .border_b_2()
                 .border_color(if active { accent } else { gpui::transparent_black() })

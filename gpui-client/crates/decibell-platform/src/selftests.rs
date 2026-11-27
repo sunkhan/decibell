@@ -71,6 +71,11 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "auto-away on X11: SYNC IDLETIME alarms in a private Xvfb (idle at 2 s, active at once on XTEST input there, re-armed, threshold changes, thread gone when off, 0 wakeups at rest), MIT-SCREEN-SAVER, neither; the session's own source on Wayland and XWayland",
             run: |cx| Box::pin(idle_x11_test(cx)),
         },
+        SelfTest {
+            name: "session-lock-away",
+            about: "the screen lock (ActiveChanged on a private bus) is Away at once, for a headless watcher too, and the unlock back; with another device of the account active the account stays Online until that one is idle too",
+            run: |cx| Box::pin(session_lock_test(cx)),
+        },
     ]
 }
 
@@ -85,6 +90,7 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "platform-window-state", about: "(in the app) the window's bounds", run: |cx| Box::pin(check_window_state(cx)) },
         SelfTest { name: "platform-keyring", about: "(in the app) a credentials round trip", run: |cx| Box::pin(check_keyring(cx)) },
         SelfTest { name: "platform-idle-source", about: "(in the app) the idle source, auto-away on and off", run: |cx| Box::pin(check_idle_source(cx)) },
+        SelfTest { name: "platform-session-lock", about: "(in the app) A through the locks of session-lock-away", run: |cx| Box::pin(check_session_lock(cx)) },
     ]
 }
 
@@ -111,6 +117,32 @@ async fn idle_x11_test(cx: TestCx) -> Result<()> {
 
 #[cfg(not(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local")))]
 async fn check_idle_source(_: TestCx) -> Result<()> {
+    Ok(())
+}
+
+// ── session-lock-away (`selftests/session_lock.rs`: Linux's ScreenSaver signal) ───────────────────
+
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local"))]
+mod session_lock;
+
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local"))]
+async fn session_lock_test(cx: TestCx) -> Result<()> {
+    session_lock::parent(cx).await
+}
+
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local"))]
+async fn check_session_lock(cx: TestCx) -> Result<()> {
+    session_lock::check(cx).await
+}
+
+#[cfg(not(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local")))]
+async fn session_lock_test(cx: TestCx) -> Result<()> {
+    cx.log("SKIP: the ScreenSaver signal is Linux's (Windows: docs/windows-owner-checks.md), in development builds (--features dev-local)");
+    Ok(())
+}
+
+#[cfg(not(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local")))]
+async fn check_session_lock(_: TestCx) -> Result<()> {
     Ok(())
 }
 

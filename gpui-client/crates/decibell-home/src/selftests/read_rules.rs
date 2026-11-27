@@ -21,14 +21,14 @@ use std::sync::mpsc;
 use super::*;
 
 /// `decibell-headless` next to this binary.
-fn headless_exe() -> Option<PathBuf> {
+pub(super) fn headless_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let candidate = exe.parent()?.join("decibell-headless");
     candidate.exists().then_some(candidate)
 }
 
 /// One headless client running a script; its stdout lines arrive on a channel.
-struct Headless {
+pub(super) struct Headless {
     label: &'static str,
     process: Process,
     lines: mpsc::Receiver<String>,
@@ -36,7 +36,7 @@ struct Headless {
 }
 
 impl Headless {
-    fn start(label: &'static str, profile: &Path, central: &str, steps: Vec<String>) -> Result<Headless> {
+    pub(super) fn start(label: &'static str, profile: &Path, central: &str, steps: Vec<String>) -> Result<Headless> {
         let exe = headless_exe().context("decibell-headless is not built next to this binary")?;
         let mut args: Vec<String> = vec!["--user-data-dir".into(), profile.display().to_string(), "--timeout".into(), "60".into()];
         args.extend(steps);
@@ -60,7 +60,7 @@ impl Headless {
     }
 
     /// Until a line starting with `prefix` (FAILED fails); returns it.
-    async fn line(&mut self, cx: &TestCx, prefix: &str, limit: Duration) -> Result<String> {
+    pub(super) async fn line(&mut self, cx: &TestCx, prefix: &str, limit: Duration) -> Result<String> {
         let started = Instant::now();
         loop {
             while let Ok(line) = self.lines.try_recv() {
@@ -77,7 +77,7 @@ impl Headless {
         }
     }
 
-    async fn mark(&mut self, cx: &TestCx, name: &str) -> Result<()> {
+    pub(super) async fn mark(&mut self, cx: &TestCx, name: &str) -> Result<()> {
         self.line(cx, &format!("MARK {name}"), Duration::from_secs(60)).await.map(|_| ())
     }
 }
@@ -91,7 +91,7 @@ impl Drop for Headless {
 
 /// Signs `name` up with a headless client; central's sign-up bucket (10, then one per 2 min per
 /// address, shared with every test of this stack) is waited for, up to 5 min.
-async fn register(cx: &TestCx, stack: &Stack, name: &str, password: &str) -> Result<()> {
+pub(super) async fn register(cx: &TestCx, stack: &Stack, name: &str, password: &str) -> Result<()> {
     let started = Instant::now();
     loop {
         let profile = TempDir::new("read-rules-register")?;
@@ -107,17 +107,9 @@ async fn register(cx: &TestCx, stack: &Stack, name: &str, password: &str) -> Res
     }
 }
 
-/// The parent: the run's two throwaway accounts (registered by a headless client unless another
-/// people test of this run did already), then the app as A.
-pub(super) async fn parent(cx: TestCx) -> Result<()> {
-    let Some(stack) = stack()? else {
-        cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
-        return Ok(());
-    };
-    if headless_exe().is_none() {
-        cx.log("SKIP: decibell-headless is not built next to this binary (cargo build --release -p decibell-model --features local-central --bin decibell-headless)");
-        return Ok(());
-    }
+/// The run's two throwaway accounts: registered by a headless client unless another people test
+/// of this run did already.
+pub(super) async fn headless_accounts(cx: &TestCx, stack: &Stack) -> Result<Accounts> {
     let known = ACCOUNTS.lock().expect("lock").clone().filter(|a| a.registered);
     let accounts = match known {
         Some(accounts) => {
@@ -128,12 +120,26 @@ pub(super) async fn parent(cx: TestCx) -> Result<()> {
             let tag = format!("{:x}", std::process::id() ^ (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)));
             let accounts = Accounts { a: format!("ht{tag}a"), b: format!("ht{tag}b"), password: format!("home-test-{tag}-pw"), registered: true };
             cx.log(format_args!("registering the throwaway accounts {} and {} (decibell-headless)", accounts.a, accounts.b));
-            register(&cx, &stack, &accounts.a, &accounts.password).await?;
-            register(&cx, &stack, &accounts.b, &accounts.password).await?;
+            register(cx, stack, &accounts.a, &accounts.password).await?;
+            register(cx, stack, &accounts.b, &accounts.password).await?;
             *ACCOUNTS.lock().expect("lock") = Some(accounts.clone());
             accounts
         }
     };
+    Ok(accounts)
+}
+
+/// The parent: the run's two throwaway accounts, then the app as A.
+pub(super) async fn parent(cx: TestCx) -> Result<()> {
+    let Some(stack) = stack()? else {
+        cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
+        return Ok(());
+    };
+    if headless_exe().is_none() {
+        cx.log("SKIP: decibell-headless is not built next to this binary (cargo build --release -p decibell-model --features local-central --bin decibell-headless)");
+        return Ok(());
+    }
+    let accounts = headless_accounts(&cx, &stack).await?;
     let cues = TempDir::new("read-rules-cues")?;
     let app_profile = TempDir::new("read-rules-a")?;
     let env = actor_env("dm-read-rules", "a", &accounts.a, &accounts.b, &accounts.password, &cues.0);

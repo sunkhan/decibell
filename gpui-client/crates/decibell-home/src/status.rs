@@ -442,7 +442,11 @@ impl Render for CustomStatusModal {
                     .mt_1p5()
                     .flex()
                     .justify_end()
-                    .child(Label::new(SharedString::from(format!("{}/{}", crate::fmt::count(chars), crate::fmt::count(STATUS_TEXT_MAX)))).font(FontRole::Meta).size(t.scaled.text_micro).color(muted)),
+                    .child({
+                        let counter = SharedString::from(format!("{}/{}", crate::fmt::count(chars), crate::fmt::count(STATUS_TEXT_MAX)));
+                        decibell_shell::probes::text("status-counter", &counter);
+                        Label::new(counter).font(FontRole::Meta).size(t.scaled.text_micro).color(muted)
+                    }),
             )
             .child(div().mb_2().mt_3().child(caps_clear))
             .child(select)

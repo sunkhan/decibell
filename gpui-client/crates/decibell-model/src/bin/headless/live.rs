@@ -21,6 +21,8 @@ Live steps (voice, people, calls):
   voice-leave
   mute | unmute | deafen | undeafen
   status <online|away|dnd|invisible>
+  device-idle <on|off>            this device's idle flag, as auto-away reports it (the account
+                                  shows Away only while every device is idle)
   status-message <text> <seconds> our custom status (\"\" clears; 0 s = never clears)
   friends                         ask for the friend list
   friend-add <name> | friend-accept <name> | friend-decline <name> | friend-remove <name>
@@ -55,6 +57,7 @@ pub enum LiveStep {
     Mute(bool),
     Deafen(bool),
     Status(String),
+    Idle(bool),
     StatusMessage(String, u32),
     Friends,
     Friend(&'static str, String),
@@ -103,6 +106,11 @@ pub fn parse(arg: &str, it: &mut Args) -> Result<Option<LiveStep>, String> {
         "deafen" => LiveStep::Deafen(true),
         "undeafen" => LiveStep::Deafen(false),
         "status" => LiveStep::Status(next(arg, it)?),
+        "device-idle" => match next(arg, it)?.as_str() {
+            "on" => LiveStep::Idle(true),
+            "off" => LiveStep::Idle(false),
+            other => return Err(format!("device-idle: on or off, not {other:?}")),
+        },
         "status-message" => {
             let text = next(arg, it)?;
             let secs = next(arg, it)?.parse().map_err(|_| "status-message: seconds")?;
@@ -227,6 +235,10 @@ pub async fn run(step: &LiveStep, model: &Model, timeout: Duration, cx: &mut Asy
                 other => return Err(format!("status: unknown {other:?}")),
             };
             cx.update(|cx| actions::presence::choose_status(status, cx));
+        }
+        LiveStep::Idle(idle) => {
+            let idle = *idle;
+            cx.update(|cx| actions::presence::report_idle(idle, cx));
         }
         LiveStep::StatusMessage(text, secs) => {
             let message = StatusMessage::of(text, "");

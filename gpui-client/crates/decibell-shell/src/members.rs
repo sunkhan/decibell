@@ -258,6 +258,16 @@ fn member_row(model: &Model, server: Option<ServerId>, member: &Member, online: 
     } else {
         DisplayStatus::Offline
     };
+    if crate::probes::enabled() {
+        // The dot as drawn, for the self-tests (`people-interest`).
+        let dot = match status {
+            DisplayStatus::Online => "online",
+            DisplayStatus::Away => "away",
+            DisplayStatus::Dnd => "dnd",
+            _ => "offline",
+        };
+        crate::probes::text(format!("member-status:{uid}"), &SharedString::new_static(dot));
+    }
     let name = decibell_common::user_name(uid, &member.username, cx);
     let shown = if member.nickname.is_empty() { name.clone() } else { member.nickname.clone() };
     let message = decibell_common::status_message_of(uid, cx);

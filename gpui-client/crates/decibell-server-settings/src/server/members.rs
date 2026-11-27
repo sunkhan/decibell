@@ -435,7 +435,7 @@ impl MembersTab {
         cx.notify();
     }
 
-    fn open_nick(&mut self, m: &Member, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_nick(&mut self, m: &Member, window: &mut Window, cx: &mut Context<Self>) {
         let placeholder = user_name(m.uid, &m.username, cx);
         let nickname = m.nickname.to_string();
         self.nick.update(cx, |s, cx| {
@@ -446,6 +446,12 @@ impl MembersTab {
         self.nick_open = Some(m.uid);
         self.menu = None;
         cx.notify();
+    }
+
+    /// The member whose nickname is being edited, and whether its save waits on the echo (the
+    /// self-tests).
+    pub(crate) fn nickname_editor(&self) -> (Option<Uid>, bool) {
+        (self.nick_open, self.nick_save.saving())
     }
 
     fn save_nickname(&mut self, cx: &mut Context<Self>) {

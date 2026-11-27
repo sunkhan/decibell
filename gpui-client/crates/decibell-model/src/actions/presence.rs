@@ -77,8 +77,9 @@ pub fn remove_avatar() -> LocalBoxFuture<'static, ()> {
     })
 }
 
-/// Auto-away's report: our idle flag to the own-presence store and to central.
-pub(crate) fn report_idle(idle: bool, cx: &mut App) {
+/// Auto-away's report: our idle flag to the own-presence store and to central (also the headless
+/// client's `idle on|off`).
+pub fn report_idle(idle: bool, cx: &mut App) {
     let Some(model) = model(cx) else { return };
     model.live.presence.own.update(cx, |o, cx| o.set_idle(idle, cx));
     fire("set_idle", api::presence::set_idle(api::presence::SetIdleArgs { idle }), cx);

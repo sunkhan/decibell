@@ -447,6 +447,7 @@ impl Render for UserPanel {
                 .hover(|s| s.bg(t.color_surface_hover))
                 .cursor_pointer()
                 .tooltip(title_tooltip("Set status"))
+                .children(crate::probes::probe("user-panel-identity"))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     // `{ x: rect.left, y: rect.top - 6 }`, opening above.
@@ -597,6 +598,8 @@ fn status_menu(
             .child(
                 div()
                     .id("status-menu-edit")
+                    .relative()
+                    .children(crate::probes::probe("status-menu-edit"))
                     .flex_1()
                     .min_w_0()
                     .py_2()
@@ -614,6 +617,8 @@ fn status_menu(
                 div()
                     .id("status-menu-clear")
                     .group("status-menu-clear")
+                    .relative()
+                    .children(crate::probes::probe("status-menu-clear"))
                     .mr_1()
                     .flex()
                     .flex_none()
@@ -635,6 +640,8 @@ fn status_menu(
             )
             .into_any_element(),
         None => row("status-menu-set-custom")
+            .relative()
+            .children(crate::probes::probe("status-menu-set-custom"))
             .items_center()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.close_status_menu(cx);
@@ -654,6 +661,8 @@ fn status_menu(
             OwnStatus::Invisible => DisplayStatus::Invisible,
         };
         row(label)
+            .relative()
+            .children(crate::probes::probe(format!("status-menu:{label}")))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if !selected {
                     actions::presence::choose_status(status, cx);

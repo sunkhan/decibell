@@ -47,6 +47,9 @@ use crate::status::{ClearAfter, CustomStatusModal};
 #[path = "selftests/read_rules.rs"]
 mod read_rules;
 
+#[path = "selftests/people.rs"]
+mod people;
+
 const ALICE: &str = "alice";
 const BOB_UID: Uid = 2;
 const CAROL_UID: Uid = 3;
@@ -72,6 +75,9 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "user-menu-moderation", about: "as alice (owner): a placeholder's menu, nickname set and reverted, the ban dialog opened and cancelled; none as a member", run: |cx| Box::pin(alice(cx, "home-user-menu-moderation")) },
         SelfTest { name: "home-idle", about: "as alice: the Friends page and an open conversation at rest draw 0 frames over 5 s", run: |cx| Box::pin(alice(cx, "home-idle")) },
     ]
+    .into_iter()
+    .chain(people::selftests())
+    .collect()
 }
 
 /// The stack as `accounts.json` describes it.
@@ -333,6 +339,9 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "home-actor", about: "(in the app) one participant of a two-account test", run: |cx| Box::pin(actor(cx)) },
         SelfTest { name: "home-dm-read-rules", about: "(in the app) the reader of dm-read-rules", run: |cx| Box::pin(read_rules::check(cx)) },
     ]
+    .into_iter()
+    .chain(people::checks())
+    .collect()
 }
 
 fn model(cx: &App) -> Model {
@@ -703,6 +712,23 @@ async fn check_user_menu(cx: TestCx) -> Result<()> {
     cx.log(format_args!("bob's menu in Rustaceans, as a member: sections {sections:?}"));
     ensure!(!sections.iter().any(|s| s == "500"), "a member sees moderation entries");
     cx.update(|_, cx| crate::menu::close_user_menu(cx))?;
+    // Her own menu: "Set nickname" where @everyone may change theirs (Daily Gaming), nothing in
+    // Rustaceans, where @everyone lacks Change Nickname.
+    let me = cx.update(|_, cx| own_uid(cx))?;
+    for (server, offered) in [(server, true), (rust, false)] {
+        cx.update(move |_, cx| decibell_common::open_user_menu(me, point(px(700.), px(200.)), Some(server), cx))?;
+        wait_for(&cx, Duration::from_secs(5), "our own menu", move |cx| model(cx).overlays.read(cx).context_menu.as_ref().is_some_and(|m| m.uid == me && m.server == Some(server))).await?;
+        quiet(&cx).await?;
+        let sections = menu_sections();
+        let has = sections.iter().any(|s| s == "500");
+        cx.log(format_args!("our own menu in {server:?}: sections {sections:?} (nickname offered: {has})"));
+        ensure!(has == offered, "our own nickname entry in {server:?}: {has}, expected {offered}");
+        if offered {
+            wait_probe(&cx, "user-menu:menu-nickname").await?;
+        }
+        cx.update(|_, cx| crate::menu::close_user_menu(cx))?;
+        quiet(&cx).await?;
+    }
     sign_out(&cx).await
 }
 

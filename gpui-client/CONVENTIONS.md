@@ -249,7 +249,14 @@ opens):
   list's create actions), `leave` (the shell draws that confirmation itself).
 - **People**: draw avatars with `decibell_common::UserAvatar` (picture or letter, the status dot, and while
   drawn the presence interest and the picture fetch), names with `display_name(server, uid, &fallback, cx)` /
-  `user_name`, custom statuses with `StatusMessageText`. Never draw a uid; "Unknown user" is the fallback.
+  `user_name`, custom statuses with `StatusMessageText` (Twemoji at the renderer's `emojiSize`, `.wrap()` on
+  the profile cards). Never draw a uid; "Unknown user" is the fallback. **A name inside a community looks
+  the member up** as `useDisplayName` does: a list calls `want_member(server, uid, cx)` where it builds a row
+  (once per row, not per frame) and re-checks its shown names in one roster observer (the message list, the
+  audit log); a view that shows one member holds a `decibell_common::NicknameWatch` and calls `follow(server,
+  uid, cx)` whenever the person or community changes (voice tiles, the focused stream, the mini-player).
+  Emoji in a one-line label drawn as the renderer's `<Twemoji>`: `Label::emoji(px)` (`decibell_text`'s inline
+  boxes, rasterised with the layout).
 - **Keep a cached view current** with `decibell_common::Watch`, listing every store `render` reads, once,
   in `new`: `.store(&e, cx)` (every notify), `.store_if(&e, cx, |this, e, cx| changed)` (compare the part
   shown, e.g. the navigation's view), `.event(&e, cx, |this, ev| this.shows(ev.key))` (keyed events),
