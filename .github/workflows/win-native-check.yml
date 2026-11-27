@@ -266,6 +266,8 @@ jobs:
           DECIBELL_LOG: info
           RUST_BACKTRACE: "1"
         run: |
+          # Every group runs whatever the one before it returned (Actions' bash is `-e`).
+          set +e
           export PATH="$(cygpath "$VCPKG_ROOT")/installed/x64-windows/bin:$PATH"
           export DECIBELL_USER_DATA_DIR="$RUNNER_TEMP/decibell-profile"
           : > selftests.log
@@ -288,7 +290,10 @@ jobs:
           echo "=== decibell --selftest boot (GPUI_DISABLE_DIRECT_COMPOSITION=1)" | tee -a selftests.log
           GPUI_DISABLE_DIRECT_COMPOSITION=1 timeout 600 target/debug/decibell.exe --selftest boot >> selftests.log 2>&1
           echo "=== exit $? (boot, no DirectComposition)" | tee -a selftests.log
-          tail -n 60 selftests.log
+          echo "=== summary" >> selftests.log
+          grep -a -E '^selftest [a-z0-9-]+: (PASS|FAIL|SKIP)|^=== exit' selftests.log > selftests.summary
+          cat selftests.summary | tee -a selftests.log
+          exit 0
 
       # The window at rest, measured by the script the owner uses on a real machine
       # (tools/perf/windows/row.ps1, under Windows PowerShell 5.1 as there): the numbers of a
@@ -303,22 +308,28 @@ jobs:
         run: |
           $env:Path = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:Path"
           $env:DECIBELL_USER_DATA_DIR = "$env:RUNNER_TEMP\decibell-profile"
-          if (-not (Test-Path target\debug\decibell.exe)) { "no binary" | Tee-Object idle.log; exit 0 }
+          # UTF-8, appended: Windows PowerShell's redirection and Tee-Object write UTF-16.
+          function Log { process { $_ | Out-String -Stream | ForEach-Object { $_; Add-Content -Path idle.log -Value $_ -Encoding utf8 } } }
+          Set-Content -Path idle.log -Value "tools/perf/windows/row.ps1 on the runner" -Encoding utf8
+          if (-not (Test-Path target\debug\decibell.exe)) { "no binary" | Log; exit 0 }
           $process = Start-Process -FilePath target\debug\decibell.exe -ArgumentList '--perf','--screen','gallery' `
             -RedirectStandardError perf.log -PassThru
           try {
             ..\tools\perf\windows\row.ps1 -ProcessId $process.Id -Client gpui -Label "ci gallery at rest" `
-              -PerfLog perf.log -Settle 20 -Seconds 20 -Results "$PWD\perf-results\windows-table.md" *>&1 |
-              Tee-Object idle.log
-            Get-Content perf-results\windows-table.md | Tee-Object -Append idle.log
-            ..\tools\perf\windows\install-size.ps1 target\debug\decibell.exe | Tee-Object -Append idle.log
+              -PerfLog perf.log -Settle 20 -Seconds 20 -Results "$PWD\perf-results\windows-table.md" *>&1 | Log
+            "--- the results file" | Log
+            Get-Content perf-results\windows-table.md | Log
+            "--- who wakes (threads.ps1)" | Log
+            Get-ChildItem perf-results\*-threads.txt | ForEach-Object { Get-Content $_.FullName } | Log
+            "--- install size" | Log
+            ..\tools\perf\windows\install-size.ps1 target\debug\decibell.exe *>&1 | Log
           } catch {
-            "row.ps1 failed: $_" | Tee-Object -Append idle.log
-            $_.ScriptStackTrace | Tee-Object -Append idle.log
+            "row.ps1 failed: $_" | Log
+            $_.ScriptStackTrace | Log
           }
-          "--- the client's stderr" | Tee-Object -Append idle.log
-          Get-Content perf.log -ErrorAction SilentlyContinue | Select-Object -Last 40 | Tee-Object -Append idle.log
-          "alive: $(-not $process.HasExited)" | Tee-Object -Append idle.log
+          "--- the client's stderr" | Log
+          Get-Content perf.log -ErrorAction SilentlyContinue | Select-Object -Last 40 | Log
+          "alive: $(-not $process.HasExited)" | Log
           if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
           exit 0
 
