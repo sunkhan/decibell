@@ -105,6 +105,13 @@ impl UserPanel {
     }
 }
 
+/// A `<button>` of the panel: a tab stop that Enter / Space click (GPUI's keyboard click reaches
+/// `on_click`), with the theme's ring while focused from the keyboard.
+fn as_button(el: gpui::Stateful<gpui::Div>, ring: &[gpui::BoxShadow]) -> gpui::Stateful<gpui::Div> {
+    let ring = ring.to_vec();
+    el.tab_index(0).focus_visible(move |s| s.shadow(ring))
+}
+
 /// `PanelButton`: 32 × 32 `rounded-sm`, danger `bg-error/15 text-error hover:bg-error/25`, active
 /// `bg-accent-soft text-accent-bright`, else `text-text-secondary hover:bg-surface-hover
 /// hover:text-text-primary`.
@@ -116,6 +123,7 @@ fn panel_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
     danger: bool,
     active: bool,
     t: &Ink,
+    ring: &[gpui::BoxShadow],
     right_click: Option<(PanelAction, BoundsCell)>,
     on_click: F,
 ) -> impl IntoElement + use<F> {
@@ -137,6 +145,7 @@ fn panel_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
         .rounded(t.radius_sm)
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
+        .map(|this| as_button(this, ring))
         .cursor_pointer()
         .tooltip(title_tooltip(title))
         .on_click(on_click)
@@ -156,6 +165,7 @@ impl Render for UserPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = Model::global(cx).clone();
         let t = crate::ink::chrome(cx);
+        let ring = cx.theme().chrome.shadow_ring.clone();
         let auth = model.auth.read(cx);
         let (me, username) = (auth.uid, auth.username.clone().unwrap_or_default());
         let voice = &model.live.voice;
@@ -275,6 +285,7 @@ impl Render for UserPanel {
                         .id("user-panel-latency")
                         .relative()
                         .ml_auto()
+                        .map(|this| as_button(this, &ring))
                         .cursor_pointer()
                         .tooltip(title_tooltip("Click for connection stats"))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -326,6 +337,7 @@ impl Render for UserPanel {
                         .border_color(border)
                         .bg(bg)
                         .hover(move |s| s.bg(bg_hover))
+                        .map(|this| as_button(this, &ring))
                         .cursor_pointer()
                         .tooltip(title_tooltip(if streaming { "Stop sharing" } else { "Share screen" }))
                         .child(stream_bounds.probe())
@@ -353,6 +365,7 @@ impl Render for UserPanel {
                         .relative()
                         .flex()
                         .flex_none()
+                        .map(|this| as_button(this, &ring))
                         .cursor_pointer()
                         .tooltip(title_tooltip("Stream sound"))
                         .hover(move |s| s.bg(accent.opacity(0.15)))
@@ -474,6 +487,7 @@ impl Render for UserPanel {
                     true,
                     false,
                     &t,
+                    &ring,
                     None,
                     move |_, _, cx| {
                         let in_call = Model::global(cx).live.calls.read(cx).status != CallStatus::Idle;
@@ -498,6 +512,7 @@ impl Render for UserPanel {
                 mic_off,
                 mic_off,
                 &t,
+                &ring,
                 Some((PanelAction::InputDevices, self.mute_bounds.clone())),
                 |_, _, cx| actions::voice::toggle_mute(cx),
             ))
@@ -508,10 +523,11 @@ impl Render for UserPanel {
                 deafened,
                 deafened,
                 &t,
+                &ring,
                 Some((PanelAction::OutputDevices, self.deafen_bounds.clone())),
                 |_, _, cx| actions::voice::toggle_deafen(cx),
             ))
-            .child(panel_button("user-panel-settings", IconName::SettingsGear, "Settings", false, false, &t, None, |_, _, cx| {
+            .child(panel_button("user-panel-settings", IconName::SettingsGear, "Settings", false, false, &t, &ring, None, |_, _, cx| {
                 let overlays = Model::global(cx).overlays.clone();
                 overlays.update(cx, |o, cx| o.open_modal(modal::SETTINGS, cx));
             }));

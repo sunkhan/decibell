@@ -56,6 +56,8 @@ pub fn dock_button(
         .rounded(cx.theme().radius_md)
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
+        // A `<button>`: a tab stop, Enter / Space click it.
+        .map(|this| crate::tiles::tab_stop(this, &[], cx))
         .cursor_pointer()
         .tooltip(title_tooltip(title))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

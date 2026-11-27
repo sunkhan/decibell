@@ -36,6 +36,14 @@ pub fn inset_outline(color: Hsla, radius: gpui::Pixels) -> impl IntoElement {
     div().absolute().top(px(-1.)).left(px(-1.)).right(px(-1.)).bottom(px(-1.)).rounded(radius).border_2().border_color(color)
 }
 
+/// A `role="button" tabIndex={0}` element (the stage's tiles): a tab stop that Enter / Space click
+/// (GPUI's keyboard click reaches `on_click`), drawn with `base` plus the theme's focus ring while
+/// focused from the keyboard.
+pub fn tab_stop(el: gpui::Stateful<gpui::Div>, base: &[gpui::BoxShadow], cx: &App) -> gpui::Stateful<gpui::Div> {
+    let shadow: Vec<gpui::BoxShadow> = base.iter().chain(cx.theme().shadow_ring.iter()).cloned().collect();
+    el.tab_index(0).focus_visible(move |s| s.shadow(shadow))
+}
+
 /// `ring-N ring-<color>`: a spread shadow of `width` around a box.
 pub fn ring(color: Hsla, width: f32) -> Vec<gpui::BoxShadow> {
     vec![gpui::BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(width), inset: false }]
@@ -211,6 +219,7 @@ impl Render for ParticipantTile {
             .border_color(theme.color_border)
             .bg(tint)
             .shadow(theme.shadow_raised.clone())
+            .map(|this| tab_stop(this, &theme.shadow_raised, cx))
             .cursor_pointer()
             .tooltip(title_tooltip(shown))
             .on_click(move |_: &ClickEvent, _, cx| open_profile_beside(uid, bounds.get(), server, cx))
@@ -593,6 +602,8 @@ impl Render for StreamTile {
             .border_color(theme.color_border)
             .bg(black(1.))
             .shadow(theme.shadow_raised.clone())
+            // `tabIndex={canWatch ? 0 : -1}`: Enter / Space run the click's action.
+            .when(can_watch, |this| tab_stop(this, &theme.shadow_raised, cx))
             .when(can_watch, |this| this.cursor_pointer())
             .when(!can_watch, |this| this.cursor_not_allowed())
             .tooltip(title_tooltip(d.blocked.clone().unwrap_or_else(|| label.clone())))
@@ -766,6 +777,7 @@ impl Render for OverflowTile {
             .border_color(theme.color_border)
             .bg(theme.color_bg_light)
             .shadow(theme.shadow_raised.clone())
+            .map(|this| tab_stop(this, &theme.shadow_raised, cx))
             .cursor_pointer()
             .tooltip(title_tooltip(SharedString::from(format!("{} more in {}", decibell_model::regional::Regional::get().group(count as u64), d.channel_name))))
             .on_mouse_down(
@@ -852,6 +864,7 @@ fn overflow_list(d: &OverflowData, cx: &mut Context<OverflowTile>) -> impl IntoE
                 .rounded(theme.radius_sm)
                 .px_2()
                 .hover(|s| s.bg(theme.color_surface_hover))
+                .map(|this| tab_stop(this, &[], cx))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     open_profile_beside(uid, row_bounds.get(), server, cx);
