@@ -81,6 +81,11 @@ pub fn release_on_blur(window: &mut Window, cx: &mut Context<Root>) -> Subscript
 
 // ── The self-test ────────────────────────────────────────────────────────────────────────────
 
+/// What the joins' self-test (`joins.rs`: type to compose beside the focused fallback) drives the
+/// hotkeys with.
+#[cfg(feature = "dev")]
+pub(crate) use selftest::{Injected, binding, recording_backend, status};
+
 /// Development builds only (feature `dev`).
 #[cfg(feature = "dev")]
 mod selftest {
