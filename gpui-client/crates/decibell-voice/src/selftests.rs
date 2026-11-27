@@ -314,6 +314,18 @@ async fn settle_drawn(cx: &TestCx) -> Result<Frames> {
     }
 }
 
+/// The start of an at-rest window: drawing stopped, what changes from here on watched, and the
+/// frame counters taken 100 ms later. A change notified just before the watch (the peer's MLS epoch
+/// ending, a relayout) draws its frame within those 100 ms instead of being charged to the window
+/// unexplained; one in them is counted, whether its frame lands before the counters or after.
+async fn at_rest(cx: &TestCx) -> Result<(Changes, StoreCounts, Vec<gpui::Subscription>, Frames)> {
+    settle_drawn(cx).await?;
+    let changes = Changes::start(cx)?;
+    let (stores, subscriptions) = Changes::watch_all(cx)?;
+    cx.sleep(Duration::from_millis(100)).await;
+    Ok((changes, stores, subscriptions, cx.frames()?))
+}
+
 /// One change: the frames it drew, then a second without one.
 async fn frames_of(cx: &TestCx, what: &str, act: impl AsyncFnOnce(&TestCx) -> Result<()>) -> Result<Frames> {
     let before = settle_drawn(cx).await?;
@@ -663,19 +675,16 @@ async fn check_join(cx: TestCx) -> Result<()> {
     ensure!(left.drawn >= 1, "the peer's leaving drew nothing");
     // At rest: nothing drawn beyond what changed. Another window taking or giving the desktop's
     // focus redraws ours (the window's activation is in the frame): such a try is taken again.
-    let mut last = String::new();
     let mut result = Err(decibell_harness::inconclusive("no try"));
     for attempt in 1..=3 {
-        let before = settle_drawn(&cx).await?;
-        let changes = Changes::start(&cx)?;
-        let (stores, _all) = Changes::watch_all(&cx)?;
+        let (changes, stores, _all, before) = at_rest(&cx).await?;
         let active = cx.update(|window, _| window.is_window_active())?;
         log::info!("[voice-test] idle window starts");
         let disturbed = cx.watched_sleep(Duration::from_secs(5)).await?;
         log::info!("[voice-test] idle window ends");
         let idle = cx.frames()?.since(before);
         let notified: Vec<String> = stores.borrow().iter().map(|(k, n)| format!("{k} {n}")).collect();
-        last = format!(
+        let last = format!(
             "try {attempt}: then {} drawn / {} presented in 5 s; {}; stores that notified: [{}]; window active {active}{}",
             idle.drawn,
             idle.presented,
@@ -709,10 +718,9 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     let mut last = String::new();
     let (mut passed, mut measured_failure) = (false, false);
     for attempt in 1..=4 {
-        let before = settle_drawn(&cx).await?;
+        let (changes, _, _subscriptions, before) = at_rest(&cx).await?;
         let events_before = cx.update(|_, cx| model(cx).pump_stats().events)?;
         let active = cx.update(|window, _| window.is_window_active())?;
-        let changes = Changes::start(&cx)?;
         let disturbed = cx.watched_sleep(Duration::from_secs(10)).await?;
         let frames = cx.frames()?.since(before);
         let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events_before;
