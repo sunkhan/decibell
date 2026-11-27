@@ -148,7 +148,20 @@ struct EmptyBus {
 }
 
 impl EmptyBus {
+    /// The environment that points a child at this bus. Nothing off Linux, where the client
+    /// has no session bus to be kept away from.
+    fn environment(&self) -> Vec<(&'static str, String)> {
+        if self.address.is_empty() {
+            Vec::new()
+        } else {
+            vec![("DBUS_SESSION_BUS_ADDRESS", self.address.clone())]
+        }
+    }
+
     fn start(dir: &Path) -> Result<EmptyBus> {
+        if !cfg!(target_os = "linux") {
+            return Ok(EmptyBus { pid: 0, address: String::new() });
+        }
         let socket = dir.join("bus");
         let config = dir.join("bus.conf");
         std::fs::write(
@@ -176,7 +189,9 @@ impl EmptyBus {
 
 impl Drop for EmptyBus {
     fn drop(&mut self) {
-        let _ = Command::new("kill").arg(self.pid.to_string()).status();
+        if self.pid != 0 {
+            let _ = Command::new("kill").arg(self.pid.to_string()).status();
+        }
     }
 }
 
@@ -205,7 +220,7 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
     command
         .args(["--check", check, "--login", ACCOUNT])
         .env("DECIBELL_USER_DATA_DIR", profile.0.join("profile"))
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .envs(bus.environment())
         .env("DECIBELL_TEST_DESKTOP_BUS", std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default())
         .env("DECIBELL_CENTRAL", &stack.central)
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
@@ -263,7 +278,7 @@ async fn fixture_parent(cx: TestCx, check: &'static str) -> Result<()> {
     command
         .args(["--check", check])
         .env("DECIBELL_USER_DATA_DIR", profile.0.join("profile"))
-        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .envs(bus.environment())
         .env("DECIBELL_CENTRAL", "127.0.0.1:9")
         // Nothing a self-test plays is audible: the players render into a sink that discards.
         .env("DECIBELL_MEDIA_OUTPUT", "null")

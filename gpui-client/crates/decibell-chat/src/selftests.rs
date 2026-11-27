@@ -547,7 +547,8 @@ async fn follow(h: &Harness, name: &str, inputs: &[(u64, f64)], kind: ScrollKind
             let delta = inputs[next].1;
             match kind {
                 // One notch is 3 GPUI lines (120 px); + is towards the top.
-                ScrollKind::Wheel => h.wheel(-(delta / 40.) as f32)?,
+                // Wheel lines for `delta` px: 40 px a line on Linux, 33.3 on Windows (Chromium's steps).
+                ScrollKind::Wheel => h.wheel(-(delta / decibell_ui::scroll::PX_PER_GPUI_LINE) as f32)?,
                 ScrollKind::Key => h.key(if delta > 100. { "pagedown" } else { "down" })?,
             }
             // The reference gets the input at the instant the element gave it to its animator.
@@ -771,6 +772,14 @@ struct RegionalCase {
 /// from glibc's data for each locale.
 async fn regional(cx: TestCx) -> Result<()> {
     use decibell_model::regional::LocalTime;
+    if !cfg!(target_os = "linux") {
+        // The cases below set `LC_*` for a child and expect glibc's formats. Windows takes the
+        // formats from the user's regional settings, which a test must not change: what it
+        // reads there is `regional-read`'s to print and the owner's to compare
+        // (docs/windows-owner-checks.md).
+        cx.log("SKIPPED: drives the C library's locale environment (Linux); run regional-read to see what this system gives");
+        return Ok(());
+    }
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     fn de(t: &LocalTime) -> String {
         format!("{:02}.{:02}.{}, at {:02}:{:02}", t.date.day, t.date.month, t.date.year, t.hour, t.minute)
