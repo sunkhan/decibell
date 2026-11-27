@@ -290,15 +290,17 @@ a change applies at the next start, as Electron), a DSN baked (`resources/sentry
 **What**: a **panic**. The release profile unwinds (as the Electron addon's: the core's guarded workers
 catch a panic and carry on), and one panic hook, installed first thing in every build
 (`crash::install_panic_hook`), decides by who catches (`decibell_panic::here`: the core's guarded threads,
-its runtime, a section of ours run through `decibell_panic::catch`):
+its runtime's blocking pool, a section of ours run through `decibell_panic::catch`):
 - **caught**: a report at level `error` (`handled: true`, tag `recovered`: `core-thread`, `runtime`,
   `guarded`), written and sent in the background without holding the panicking thread up, once per panic
   location and at most five per run; the unwind goes on to its catch and the app carries on;
-- **nothing catches it** (the UI thread, GPUI's workers, our own threads, the core's unguarded threads): the
-  envelope is written to `<profile>/crash-reports/<event id>.envelope`, sent within **2 s** (Electron's flush
-  timeout, `@sentry/node`'s `shutdownTimeout`), and the process **aborts**, as the aborting profile did: no
-  thread dies silently. A caught panic that `rt::run` resumes on the UI thread ends there (`boot`'s
-  `AbortOnUnwind` guard) with a fatal report tagged `resumed_from`.
+- **nothing catches it** (the UI thread, GPUI's workers, our own threads, the core's unguarded threads and
+  its runtime's async tasks): the envelope is written to `<profile>/crash-reports/<event id>.envelope`, sent
+  within **2 s** (Electron's flush timeout, `@sentry/node`'s `shutdownTimeout`), and the process **aborts**,
+  as the aborting profile did: no thread dies silently. The async tasks are fatal because tokio would
+  swallow a detached one's panic (a half-alive app) and resume an awaited one's on the UI thread through
+  `rt::run`, where unwinding GPUI's stack crashed the process (SIGSEGV in the release tests); `boot`'s
+  `AbortOnUnwind` guard stays as a backstop for any other `resume_unwind` there.
 
 What couldn't be sent goes at the next start (at most 10 kept, 30 days). A **native crash** (SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT; on
 Windows an unhandled SEH exception — a fault in a driver, like the NVIDIA one at exit): an

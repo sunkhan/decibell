@@ -49,10 +49,23 @@ struct Running {
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 static STARTED: AtomicBool = AtomicBool::new(false);
 
+/// The core's runtime workers (async tasks) and its blocking pool, by name: the panic hook treats
+/// them differently (`decibell-panic`). Tokio starts the workers first, as its first threads (they
+/// are blocking-pool threads that never end); every later thread is the blocking pool's.
+const RUNTIME_WORKERS: usize = 2;
+
 fn build_runtime() -> Result<tokio::runtime::Runtime> {
+    use std::sync::atomic::AtomicUsize;
+    static THREADS: AtomicUsize = AtomicUsize::new(0);
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("decibell-rt")
+        .worker_threads(RUNTIME_WORKERS)
+        .thread_name_fn(|| {
+            if THREADS.fetch_add(1, Ordering::Relaxed) < RUNTIME_WORKERS {
+                decibell_panic::RUNTIME_WORKER.to_string()
+            } else {
+                decibell_panic::RUNTIME_BLOCKING.to_string()
+            }
+        })
         .enable_all()
         .build()
         .context("building the core's runtime")

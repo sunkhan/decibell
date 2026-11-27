@@ -797,9 +797,10 @@ What a released build does on its own and how it is packed: `PACKAGING.md`.
   carried by the installer's shortcut (`--create-shortcut`): change both together.
 - **Panics**: the release profile unwinds (as the Electron addon), so the core's guarded workers recover;
   the one panic hook (`decibell_release::crash::install_panic_hook`, first thing in `main`, every build)
-  asks `decibell_panic::here()` who catches: a guarded core thread (by name), the core's runtime
-  (`decibell-rt`), or a section of ours run through `decibell_panic::catch` → a recovered report and the
-  unwind goes on to the catch; anything else → the fatal report, then `abort`. A `catch_unwind` of ours that
+  asks `decibell_panic::here()` who catches: a guarded core thread (by name), the core runtime's blocking
+  pool (`decibell-rt-blocking`; its async workers `decibell-rt` are fatal), or a section of ours run through
+  `decibell_panic::catch` → a recovered report and the unwind goes on to the catch; anything else → the
+  fatal report, then `abort`. A `catch_unwind` of ours that
   recovers must be `decibell_panic::catch` (a bare one is overruled: the hook aborts first). A new guarded
   core thread goes in `CORE_GUARDED_THREADS` (a test reads the core's sources and fails until it does).
   `boot::run` holds `crash::AbortOnUnwind` for a panic resumed on the UI thread.

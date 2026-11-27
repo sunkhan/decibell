@@ -13,12 +13,12 @@
 //!   `<profile>/crash-reports/<event id>.envelope`, sends it within [`SEND_BUDGET`] (Electron's
 //!   flush timeout, `@sentry/node`'s default `shutdownTimeout`) and **aborts the process**, as the
 //!   aborting profile did: no thread dies silently. One that couldn't be sent goes at the next start;
-//! - a **recovered panic** (one the core's guarded workers, its runtime or a section of ours run
+//! - a **recovered panic** (one the core's guarded workers, its runtime's blocking pool or a section of ours run
 //!   through `decibell_panic::catch` catch: the app carries on, as Electron's addon does): a report
 //!   at level `error`, `handled: true`, tag `recovered`, written and sent in the background without
 //!   holding the panicking thread up; at most [`RECOVERED_PER_RUN`] per run, one per panic location.
-//!   A panic the runtime caught that `rt::run` resumes on the UI thread ends the process there
-//!   ([`abort_after_unwind`]) with a fatal report naming the original panic;
+//!   A recovered panic that something resumes on the UI thread (`resume_unwind` calls no hook) ends
+//!   the process there through the app's guard ([`abort_after_unwind`]), as a backstop;
 //! - a **native crash** (SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT on Linux, an unhandled SEH
 //!   exception on Windows: a fault in a driver, as once in NVIDIA's at exit): an async-signal-safe
 //!   handler records the signal, the faulting address, the instruction pointer and the mapping it
@@ -411,7 +411,7 @@ pub fn active() -> bool {
 /// guards (the process ends); `main:<message>` on the main thread; `guarded:<message>` on that
 /// thread inside [`decibell_panic::catch`] (recovered: the app starts as usual); `segv` writes
 /// through a null pointer; `wait-pending` waits for the reports earlier runs left to be sent, then
-/// exits. (`runtime:` and `resumed:` are the app's: they need the core and the UI thread.)
+/// exits. (`runtime:` and `runtime-task:` are the app's: they need the core.)
 /// `DECIBELL_TEST_CRASH_NAMES=a,b` registers names first, as a signed-in app does.
 #[cfg(feature = "test-hooks")]
 pub fn panic_for_test() {
@@ -444,7 +444,7 @@ pub fn panic_for_test() {
             }
             std::process::exit(0);
         }
-        other if other.starts_with("runtime:") || other.starts_with("resumed:") => {}
+        other if other.starts_with("runtime:") || other.starts_with("runtime-task:") => {}
         other => match other.split_once(':') {
             Some(("main", message)) => panic!("{message}"),
             Some(("guarded", message)) => on_test_thread(true, message.to_string()),
@@ -831,7 +831,7 @@ mod tests {
                 let core = on("decibell-video-recv", || {
                     assert!(std::panic::catch_unwind(|| panic!("core worker")).is_err());
                 });
-                let runtime = on("decibell-rt", || {
+                let runtime = on("decibell-rt-blocking", || {
                     assert!(std::panic::catch_unwind(|| panic!("runtime task")).is_err());
                 });
                 let ours = on("decibell-media", || {
@@ -874,7 +874,7 @@ mod tests {
         recovered.sort();
         assert_eq!(
             recovered,
-            [("decibell-media".into(), "guarded".into()), ("decibell-rt".into(), "runtime".into()), ("decibell-video-recv".into(), "core-thread".into())],
+            [("decibell-media".into(), "guarded".into()), ("decibell-rt-blocking".into(), "runtime".into()), ("decibell-video-recv".into(), "core-thread".into())],
             "one recovered report per caught panic"
         );
         assert!(events.iter().all(|e| e["level"] == "error" && e["exception"]["values"][0]["mechanism"]["handled"] == true));

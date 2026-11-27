@@ -443,22 +443,22 @@ def crash_cases(binary, work):
     # Caught: the app carries on (its window opens), one report at level error, handled.
     ok, detail = recovered("guarded", "guarded:read failed in a guarded section", "first-frame", "decibell-test-panic", "guarded")
     check("crash: a panic in a section of ours that catches it is reported as recovered, the app carries on", ok, detail)
-    ok, detail = recovered("runtime", "runtime:a task of the core panicked", "crash-test alive after the runtime panic", "decibell-rt", "runtime")
-    check("crash: a panic in a task on the core's runtime (a core worker) is caught there, reported as recovered, the app carries on", ok, detail)
+    ok, detail = recovered("runtime", "runtime:a blocking task of the core panicked", "crash-test alive after the runtime panic", "decibell-rt-blocking", "runtime")
+    check("crash: a panic on the core runtime's blocking pool (where the encoder probe runs) is caught there, reported as recovered, the app carries on", ok, detail)
 
-    # A caught panic resumed on the UI thread (what rt::run does with an awaited task's): the
-    # process ends, with a fatal report naming where the panic began.
-    profile = work / "resumed"
+    # An async task of the core's runtime: fatal, as before (tokio would swallow it, or rt::run would
+    # resume it on the UI thread, whose unwinding crashed the process).
+    profile = work / "runtime-task"
     profile.mkdir(parents=True)
     before = len(received)
     lines, code = run_app(binary, profile, {"DECIBELL_TEST_INSTALL_KIND": "tarball", "DECIBELL_TEST_CRASH_DSN": dsn,
-                                            "DECIBELL_TEST_PANIC": "resumed:a task the UI thread waited for panicked"}, lambda ls: False, timeout=40)
+                                            "DECIBELL_TEST_PANIC": "runtime-task:an async task of the core panicked"}, lambda ls: False, timeout=40)
     time.sleep(0.5)
     events = [json.loads(b.split(b"\n")[2]) for (_, _, b) in received[before:]]
-    fatal = [e for e in events if e["level"] == "fatal"]
-    check("crash: a caught panic resumed on the UI thread ends the process with a fatal report",
-          code in (-6, 134) and len(fatal) == 1 and fatal[0]["tags"].get("resumed_from") == "decibell-rt" and fatal[0]["tags"]["thread"] == "main",
-          f"exit {code}, {[(e['level'], e['tags'].get('thread'), e['tags'].get('resumed_from')) for e in events]}")
+    check("crash: a panic in an async task of the core's runtime ends the process with one fatal report",
+          code in (-6, 134) and len(events) == 1 and events[0]["level"] == "fatal" and events[0]["tags"]["thread"] == "decibell-rt"
+          and not any("crash-test alive" in l for l in lines),
+          f"exit {code}, {[(e['level'], e['tags'].get('thread')) for e in events]}")
 
     _, _, _, got = run("toggle-off", {"DECIBELL_TEST_CRASH_DSN": dsn}, config={"settings": {"crash_reporting_enabled": False}})
     check("crash: Privacy toggle off → nothing sent, no connection", len(got) == 0 and not any(p for p, _, _ in got))

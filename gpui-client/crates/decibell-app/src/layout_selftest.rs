@@ -2,9 +2,11 @@
 //! renderer's come from `navigator.keyboard.getLayoutMap()`.
 //!
 //! - **X11, in private Xvfb servers** this test starts (its own display numbers; stopped by their
-//!   pids): `setxkbmap` there sets German, French and Turkish layouts in turn (never the session's),
-//!   and the app's `--layout-labels` child, on that display with Wayland off, prints what it would
-//!   label each writing-system key with; the labels are checked against what those layouts type.
+//!   pids), one per layout: each reads a private copy of the system's XKB data whose default `us`
+//!   symbols are German, French or Turkish (`Xvfb -xkbdir`; `setxkbmap` doesn't take on this Xvfb,
+//!   and nothing of the session's is touched), and the app's `--layout-labels` child, on that display
+//!   with Wayland off, prints what it would label each writing-system key with; the labels are
+//!   checked against what those layouts type.
 //! - **The session's own display** (Wayland here), read only: the child prints the labels the
 //!   compositor's keymap gives; each letter key has a one-character label.
 //! - **Windows** (`ToUnicodeEx`) is compiled only: `docs/windows-owner-checks.md`.
@@ -31,9 +33,11 @@ struct Xvfb {
 }
 
 impl Xvfb {
-    fn start(log: &Path) -> Result<Xvfb> {
+    fn start(log: &Path, xkb: &Path) -> Result<Xvfb> {
         use std::io::BufRead as _;
         let mut child = Command::new("Xvfb")
+            .arg("-xkbdir")
+            .arg(xkb)
             .args(["-displayfd", "1", "-nolisten", "tcp", "-screen", "0", "640x480x24"])
             .stdout(Stdio::piped())
             .stderr(Stdio::from(std::fs::File::create(log)?))
@@ -59,6 +63,32 @@ impl Drop for Xvfb {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// A copy of the system's XKB data (symbolic links followed), for a server of our own.
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let (source, target) = (entry.path(), to.join(entry.file_name()));
+        if std::fs::metadata(&source)?.is_dir() {
+            copy_tree(&source, &target)?;
+        } else {
+            std::fs::copy(&source, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// The copy's default symbols (`us`, what the server loads) made `layout`'s.
+fn default_layout(xkb: &Path, original_us: &str, layout: &str) -> Result<()> {
+    let text = if layout == "us" {
+        original_us.to_string()
+    } else {
+        format!("default partial alphanumeric_keys modifier_keys\nxkb_symbols \"basic\" {{\n    include \"{layout}(basic)\"\n}};\n")
+    };
+    std::fs::write(xkb.join("symbols/us"), text)?;
+    Ok(())
 }
 
 /// The child's labels: `(layout name, [(code, label)])`.
@@ -97,7 +127,7 @@ async fn run(cx: TestCx) -> Result<()> {
         cx.log("SKIP: the X11 / Wayland layouts are Linux's (Windows: docs/windows-owner-checks.md)");
         return Ok(());
     }
-    for tool in ["Xvfb", "setxkbmap"] {
+    for tool in ["Xvfb"] {
         if Command::new("which").arg(tool).stdout(Stdio::null()).status().map_or(true, |s| !s.success()) {
             cx.log(format_args!("SKIP: no {tool} (the private X server the layouts are set in)"));
             return Ok(());
@@ -129,14 +159,14 @@ async fn run(cx: TestCx) -> Result<()> {
         ("fr", &[("KeyQ", "A"), ("KeyA", "Q"), ("KeyW", "Z"), ("KeyZ", "W"), ("Digit1", "&"), ("Digit2", "É"), ("Semicolon", "M")]),
         ("tr", &[("KeyI", "I"), ("Quote", "I"), ("Semicolon", "Ş"), ("BracketLeft", "Ğ"), ("Comma", "Ö"), ("Period", "Ç")]),
     ];
-    let xvfb = Xvfb::start(&dir.join("xvfb.log"))?;
+    let xkb = dir.join("xkb");
+    copy_tree(Path::new("/usr/share/X11/xkb"), &xkb).context("copying /usr/share/X11/xkb")?;
+    let original_us = std::fs::read_to_string(xkb.join("symbols/us"))?;
     for (layout, expected) in cases {
-        let status = Command::new("setxkbmap")
-            .args(["-display", &xvfb.display, "-layout", layout])
-            .status()
-            .context("setxkbmap")?;
-        ensure!(status.success(), "setxkbmap {layout} on {} failed", xvfb.display);
+        default_layout(&xkb, &original_us, layout)?;
+        let xvfb = Xvfb::start(&dir.join(format!("xvfb-{layout}.log")), &xkb)?;
         let (name, pairs) = labels(&[("DISPLAY", xvfb.display.as_str()), ("WAYLAND_DISPLAY", "")], &[])?;
+        drop(xvfb);
         let wrong: Vec<String> = expected
             .iter()
             .filter(|(code, want)| label_of(&pairs, code) != *want)
@@ -146,7 +176,6 @@ async fn run(cx: TestCx) -> Result<()> {
         cx.log(format_args!("X11 {layout} ({name}): {}", shown.join(" ")));
         ensure!(wrong.is_empty(), "X11 {layout}: {}", wrong.join("; "));
     }
-    drop(xvfb);
     // The session's own display, read only (its layout is the owner's: whatever it is, every
     // letter key gets a one-character label from the compositor's keymap).
     let (name, pairs) = labels(&[], &[])?;

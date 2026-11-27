@@ -1999,6 +1999,7 @@ dependencies = [
  "chrono",
  "decibell-attachments",
  "decibell-core",
+ "decibell-panic",
  "decibell-theme",
  "decibell-unfurl",
  "dirs",

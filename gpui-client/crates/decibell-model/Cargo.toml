@@ -20,6 +20,8 @@ path = "src/bin/headless.rs"
 local-central = ["decibell-core/local-central"]
 
 [dependencies]
+# The runtime's thread names the panic hook reads.
+decibell-panic.workspace = true
 gpui.workspace = true
 # Only the headless binary uses it (the platform with no windowing).
 gpui_platform.workspace = true

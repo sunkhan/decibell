@@ -13,14 +13,17 @@
 //!   it runs: decibell-media's FFmpeg read / seek callbacks);
 //! - a core thread whose whole body is guarded ([`CORE_GUARDED_THREADS`], by name: the core can't
 //!   mark its own sections without a change to `crates/decibell-core`);
-//! - the core's tokio runtime ([`RUNTIME_THREAD`]): tokio catches every task's panic, as it does in
-//!   the addon. A task whose result nobody awaits is lost with it (Electron's addon behaves the same);
-//!   one that `decibell_core::rt::run` awaits resumes the panic in its caller, which on the UI
-//!   thread ends the process (`decibell-app`'s boot guard).
+//! - the core's runtime's **blocking pool** ([`RUNTIME_BLOCKING`]): where the encoder probe's
+//!   guarded test encodes run, and whose other panics tokio hands to the waiting core code as an error
+//!   (every `rt::spawn_blocking` result is mapped to one).
 //!
-//! Anything else (the UI thread, GPUI's workers, our own threads, the core's unguarded threads,
-//! the audio callback threads of the sound libraries) is fatal: the hook writes the crash report
-//! and aborts.
+//! Anything else is fatal: the hook writes the crash report and aborts. That includes the runtime's
+//! **async workers** ([`RUNTIME_WORKER`]): tokio would catch a task's panic there too, but a task
+//! nobody awaits would vanish leaving the app half alive, and one that `decibell_core::rt::run`
+//! awaits resumes the panic on the UI thread, and unwinding GPUI's stack from there crashed the
+//! process (a SIGSEGV, seen in the release tests). So, as with the aborting profile: the
+//! UI thread, GPUI's workers, our own threads, the core's unguarded threads and its async tasks, the
+//! sound libraries' callback threads.
 
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
@@ -41,9 +44,12 @@ pub const CORE_GUARDED_THREADS: &[&str] = &[
     "decibell-dxgi-capture",
 ];
 
-/// The name of every thread of the core's tokio runtime (`decibell_model::core::build_runtime`:
-/// its workers and its blocking pool, where the encoder probe's guarded test encodes run).
-pub const RUNTIME_THREAD: &str = "decibell-rt";
+/// The core's tokio runtime's async workers (`decibell_model::core::build_runtime`): a panic
+/// there is fatal.
+pub const RUNTIME_WORKER: &str = "decibell-rt";
+/// The core's tokio runtime's blocking pool: a panic there is caught (by the encoder probe's own
+/// `catch_unwind`, else by tokio, whose error the waiting code handles).
+pub const RUNTIME_BLOCKING: &str = "decibell-rt-blocking";
 
 /// Who catches a panic on this thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +58,7 @@ pub enum Catcher {
     Guarded,
     /// A guarded core thread ([`CORE_GUARDED_THREADS`]).
     CoreThread(&'static str),
-    /// The core's runtime ([`RUNTIME_THREAD`]): tokio.
+    /// The core's runtime's blocking pool ([`RUNTIME_BLOCKING`]).
     Runtime,
 }
 
@@ -92,7 +98,7 @@ pub fn here() -> Option<Catcher> {
     }
     let thread = std::thread::current();
     let name = thread.name()?;
-    if name == RUNTIME_THREAD {
+    if name == RUNTIME_BLOCKING {
         return Some(Catcher::Runtime);
     }
     CORE_GUARDED_THREADS.iter().find(|t| **t == name).map(|t| Catcher::CoreThread(t))
@@ -109,7 +115,8 @@ mod tests {
     #[test]
     fn threads_and_sections() {
         assert_eq!(on_thread("decibell-video-recv", here), Some(Catcher::CoreThread("decibell-video-recv")));
-        assert_eq!(on_thread("decibell-rt", here), Some(Catcher::Runtime));
+        assert_eq!(on_thread("decibell-rt-blocking", here), Some(Catcher::Runtime));
+        assert_eq!(on_thread("decibell-rt", here), None, "the async workers: fatal");
         assert_eq!(on_thread("decibell-media", here), None);
         assert_eq!(on_thread("decibell-media", || catch(here).unwrap()), Some(Catcher::Guarded));
         assert_eq!(on_thread("decibell-media", || catch(|| catch(here).unwrap()).unwrap()), Some(Catcher::Guarded));
