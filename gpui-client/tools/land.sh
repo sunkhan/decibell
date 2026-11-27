@@ -13,7 +13,9 @@
 set -euo pipefail
 
 COMMON=$(cd "$(dirname "$0")" && cd "$(git rev-parse --git-common-dir)" && pwd)
-LAND="$(dirname "$COMMON")/.worktrees/land"
+# DECIBELL_LAND_TREE names another landing tree (a second one stacks the next agent while the first is
+# being built and tested).
+LAND="${DECIBELL_LAND_TREE:-$(dirname "$COMMON")/.worktrees/land}"
 [ -d "$LAND" ] || { echo "no landing tree at $LAND (git worktree add .worktrees/land -b wip/land gpui-client)" >&2; exit 1; }
 QUEUE="$(git -C "$LAND" rev-parse --absolute-git-dir)/land-queue"
 G=(git -C "$LAND" -c user.name=sunkhan -c user.email=gunhanserhat@gmail.com -c core.editor=true)
