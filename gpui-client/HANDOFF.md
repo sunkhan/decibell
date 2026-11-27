@@ -41,19 +41,46 @@ attachment playback (first pass), interface sounds / mic test / device events in
 first checkpoint (§1c). Last full verification, on `0687ee3`: 758 unit tests pass, 24 of 25 key self-tests pass
 one at a time (`media-idle` fails: with the media second pass), Electron's bar green, `tools/win-check.sh` clean.
 
-**Merged since the crash (2026-11-27), each verified and pushed:** the Windows batch's second checkpoint (the
-DirectWrite font-family fix, Go Live's source grid, every self-test group running in CI: `23f9adb`, Windows
-run 45983095122 green, first Windows results in §1c); auto-away by idle time on X11 (`86c1b34`); packaging,
-auto-update, crash reports and the ship flavour (`ba96e9e`: 690 unit tests, ship binary 80.4 MB passing
-`packaging/check-ship.sh`, 14 of 14 release tests against loopback fakes; the first dry run of
-`gpui-release.yml` started with that push).
+**Merged since the crash (2026-11-27):** the Windows batch's second and third checkpoints (the DirectWrite
+font-family fix, Go Live's source grid, every self-test group running in CI, Windows expectations for the
+Chromium text vectors); auto-away by idle time on X11; packaging, auto-update, crash reports and the ship
+flavour; the cross-crate joins (type-to-compose beside the focused root, the avatar editor in Settings →
+Account, layering inside modals, the legacy refusal rows, the regional sweep: 39 of 40 self-tests through the
+lock, the six that failed before among them); attachment playback's second pass (rotation, 10-bit and HDR,
+VP9 on the GPU, the cards' missing pieces, the output-device rule, GPUI patches `0030`–`0032`, a rebuilt FFmpeg
+prefix: **every worktree runs `tools/fetch-gpui.sh --force` and `cargo clean -p ffmpeg-sys-next` after taking
+it**).
 
-**In flight (§1a has the worktrees):** cross-crate joins and self-test triage (`wip/integrate-d`); attachment
-playback's second pass (`wip/media2`); the Windows batch's third round (`wip/windows`). Land each with
-`tools/land.sh pick wip/<name>` (then `git merge --ff-only wip/land` in the main tree), run the `cargo check`
-configurations (default, `capture`, `dev-local`, and `--no-default-features --features ship --release`),
-`tools/win-check.sh`, the unit tests and the key self-tests (Electron's bar too when `crates/decibell-core`
-changed), push `gpui-client`, read the Windows Native Check and the Native Client Release dry run.
+**The Windows executable did not link from the packaging merge until `1e5b2e1`** (two application manifests:
+GPUI embeds its own, `gpui_platform` switches it on; ours is gone), and the Windows Native Check stayed green
+through it because the self-test step, which built the binary, may fail. The job now builds `decibell.exe` in
+a step of its own that fails it. The release workflow's first dry run failed on the same link error and on a
+test script that needed bash (`apply.rs`: fixed). **Read both workflows' results on the head before trusting
+"green".**
+
+**The parity audit (2026-11-27) is the map of what is left.** Three auditors read every FEATURES §1–§9 row rule
+by rule against Electron's code and this client's, and ran each row's self-tests: **10 rows `done`, 1 `needs
+owner`, 83 `partial`** (`PARITY.md`; the gap lists with sizes are `docs/parity-audit-a.md` §1–§3, `-b.md`
+§4–§6, `-c.md` §7–§9). Most `partial` rows are built and miss a test for one or two rules or differ from
+Electron in something small; the real product gaps the audit found: the sign-in / sign-up page took no typing
+(only a saved sign-in or `--login` signed in), auto-away on Wayland up to one threshold late, server nicknames
+missing where the member isn't loaded, "Auto" codec pinning H.264 so the software encoder was unreachable,
+watched streams decoding while minimised, `panic = "abort"` defeating the core's `catch_unwind` recovery,
+uploads carrying no media probe (no poster / size / duration), the emoji info popover, the code panel.
+
+**In flight (§1a has the worktrees), seven fix agents by area, each closing its audit findings and writing the
+missing self-tests:** `wip/fix-signin` (§1), `wip/fix-people` (§2), `wip/fix-dm` (§3), `wip/fix-servers`
+(§4–§5), `wip/fix-chat` (§6), `wip/fix-voice` (§7–§8), `wip/fix-app` (§9); plus `wip/integrate-d` (suite-level
+triage: test isolation, the `shell-signin` flake) and the Windows batch (`wip/windows`, between rounds: the
+next round reads the first Windows run that links again). Land each with `tools/land.sh pick wip/<name>` (then
+`git merge --ff-only wip/land` in the main tree), run the `cargo check` configurations (default, `capture`,
+`dev-local`, and `--no-default-features --features ship --release`), `tools/win-check.sh --shaders`, the unit
+tests, the ship build with `packaging/check-ship.sh`, the release tests under the self-test lock
+(`flock --close ~/.cache/decibell-dev/selftest.lock python3 -I packaging/tests/release_e2e.py --binary
+target/release/decibell`) and the key self-tests (Electron's bar too when `crates/decibell-core` changed),
+push `gpui-client`, read the Windows Native Check and the Native Client Release dry run. When the fix agents
+report, **audit again** (the same three-way split, fresh agents) before filling the final checklist: the first
+audit found the sign-in page untypable after every earlier check had passed.
 
 **Self-tests go through `tools/selftest.sh <name>…`** (every agent, every session): one test window at a time on
 the machine, each test in its own process with a fresh profile, the lock taken per test so sessions interleave.
@@ -185,10 +212,9 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
+| `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage: its first 15 commits are merged (`52d32cc`); still running on the suite-level items (test isolation, idle checks on a shared desktop, the `shell-signin` flake); told it may rebase onto the head |
+| `.worktrees/fix-signin`, `fix-people`, `fix-dm`, `fix-servers`, `fix-chat`, `fix-voice`, `fix-app` / `wip/fix-*` | the audit's findings by area (FEATURES §1, §2, §3, §4–§5, §6, §7–§8, §9): product gaps first, then the missing self-tests, then their `PARITY.md` rows. Each has `vendor/` linked and its own `vendor/gpui-src` from before patches `0030`–`0032` (its base): after merging, nothing to do there; a worktree that rebases onto the head rebuilds it |
 | `.worktrees/windows` / `wip/windows` | the Windows batch, in rounds (§1c): checkpoints 1 and 2 merged; round 3 = the six self-tests and two `decibell-text` unit tests that fail on the Windows runner (run 45983095122: `chat-history`, `chat-switch`, `input-typing`, `input-ime`, `input-atoms`, `render-cost`; `input_vectors`' word stops), the groups skipped there, the rest of its gap table. After each checkpoint: merge, push, send it the run's logs from `origin/ci/win-gpui-check-log` |
-| `.worktrees/media2` / `wip/media2` | attachment playback, second pass (rotation, 10-bit, VP9 hardware, UI pieces, sealed live test, retained memory, Electron comparison, captures) |
-| `.worktrees/parity-a`, `-b`, `-c` / `wip/parity-*` | the parity audit (FEATURES §1–§3, §4–§6, §7–§9): each fills its sections of `PARITY.md` (columns: Status, Evidence / what is left, Windows) and writes `docs/parity-audit-<x>.md`, the gap list with sizes; they change no product code and run the frozen build in `~/.cache/decibell-dev/parity-root` |
 | `.worktrees/land` / `wip/land` | the architect's landing tree, driven by `tools/land.sh` (pick an agent's commits, resolve, then fast-forward the main tree): empty of unmerged work when this was written |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
