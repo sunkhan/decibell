@@ -1,0 +1,8 @@
+[package]
+name = "decibell-panic"
+description = "Which panics this client survives: the threads and sections whose panic something catches and recovers from (the core's guarded workers, its runtime, our own guarded callbacks), read by the panic hook (decibell-release) to decide between a recovered report and ending the process"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

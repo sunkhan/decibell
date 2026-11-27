@@ -7,10 +7,18 @@
 //! Electron). Otherwise nothing is installed: no hook, no handler, never a socket.
 //!
 //! **What** is reported:
-//! - a **panic** (the ship profile aborts on panic): a hook writes the report to
-//!   `<profile>/crash-reports/<event id>.envelope`, then sends it within [`SEND_BUDGET`] (Electron's
-//!   flush timeout, `@sentry/node`'s default `shutdownTimeout`) before the process aborts; one that
-//!   couldn't be sent goes at the next start;
+//! - a **panic nothing catches** (the UI thread, GPUI's workers, our threads, the core's unguarded
+//!   threads: [`decibell_panic::here`] says who catches): the panic hook ([`install_panic_hook`],
+//!   installed in every build, reporting or not) writes the report to
+//!   `<profile>/crash-reports/<event id>.envelope`, sends it within [`SEND_BUDGET`] (Electron's
+//!   flush timeout, `@sentry/node`'s default `shutdownTimeout`) and **aborts the process**, as the
+//!   aborting profile did: no thread dies silently. One that couldn't be sent goes at the next start;
+//! - a **recovered panic** (one the core's guarded workers, its runtime or a section of ours run
+//!   through `decibell_panic::catch` catch: the app carries on, as Electron's addon does): a report
+//!   at level `error`, `handled: true`, tag `recovered`, written and sent in the background without
+//!   holding the panicking thread up; at most [`RECOVERED_PER_RUN`] per run, one per panic location.
+//!   A panic the runtime caught that `rt::run` resumes on the UI thread ends the process there
+//!   ([`abort_after_unwind`]) with a fatal report naming the original panic;
 //! - a **native crash** (SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT on Linux, an unhandled SEH
 //!   exception on Windows: a fault in a driver, as once in NVIDIA's at exit): an async-signal-safe
 //!   handler records the signal, the faulting address, the instruction pointer and the mapping it
@@ -238,9 +246,111 @@ static REPORTER: OnceLock<Arc<Reporter>> = OnceLock::new();
 static NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// A crash is being reported: a second panic, or the abort that follows a panic, adds nothing.
 pub(crate) static REPORTING: AtomicBool = AtomicBool::new(false);
+/// Recovered panics reported in this run, by location (a panic in a loop is reported once).
+static RECOVERED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The last recovered panic: what [`abort_after_unwind`] reports when it comes back to the UI
+/// thread (`resume_unwind` calls no hook).
+static LAST_RECOVERED: Mutex<Option<Recovered>> = Mutex::new(None);
 
-/// Starts reporting: the panic hook, the native handlers, and the sending of what earlier runs
-/// left. Once per process.
+/// At most this many recovered panics are reported per run.
+pub const RECOVERED_PER_RUN: usize = 5;
+
+#[derive(Clone)]
+struct Recovered {
+    message: String,
+    location: Option<(String, u32)>,
+    thread: String,
+    frames: Vec<usize>,
+}
+
+/// The one panic hook, installed first thing at start in every build (whether reports are sent or
+/// not): the usual message on stderr, then a recovered report and back to the catcher, or a fatal
+/// report and the end of the process ([`decibell_panic::here`] decides). Idempotent.
+pub fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // The usual message on stderr first, as before.
+            previous(info);
+            match decibell_panic::here() {
+                Some(catcher) => {
+                    let recovered = Recovered::from(info);
+                    if let Ok(mut last) = LAST_RECOVERED.lock() {
+                        *last = Some(recovered.clone());
+                    }
+                    if !REPORTING.load(Ordering::SeqCst)
+                        && let Some(reporter) = REPORTER.get()
+                    {
+                        reporter.recovered(recovered, catcher);
+                    }
+                    log::warn!("[crash] a panic on {} is caught there ({}); the app carries on", thread_name(), catcher.as_str());
+                }
+                None => {
+                    if !REPORTING.swap(true, Ordering::SeqCst)
+                        && let Some(reporter) = REPORTER.get()
+                    {
+                        reporter.fatal(Recovered::from(info), None);
+                    }
+                    std::process::abort();
+                }
+            }
+        }));
+    });
+}
+
+/// A panic came back to the UI thread after a catcher let it go on (`decibell_core::rt::run`
+/// resumes a task's panic in its caller, and `resume_unwind` calls no hook): the fatal report of
+/// the panic it carries (the last recovered one), then the end of the process. The app's boot
+/// calls it from a guard on the UI thread's stack.
+pub fn abort_after_unwind() -> ! {
+    if !REPORTING.swap(true, Ordering::SeqCst)
+        && let Some(reporter) = REPORTER.get()
+    {
+        let last = LAST_RECOVERED.lock().ok().and_then(|l| l.clone());
+        let (event, original) = match last {
+            Some(last) => {
+                let original = last.thread.clone();
+                (last, Some(original))
+            }
+            None => (
+                Recovered { message: "a panic reached the main thread".into(), location: None, thread: thread_name(), frames: Vec::new() },
+                None,
+            ),
+        };
+        reporter.fatal(Recovered { thread: thread_name(), ..event }, original.as_deref());
+    }
+    std::process::abort();
+}
+
+fn thread_name() -> String {
+    std::thread::current().name().unwrap_or("<unnamed>").to_string()
+}
+
+impl Recovered {
+    fn from(info: &std::panic::PanicHookInfo<'_>) -> Recovered {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "Box<dyn Any>".into());
+        let mut frames = Vec::new();
+        backtrace::trace(|frame| {
+            frames.push(frame.ip() as usize);
+            frames.len() < 100
+        });
+        Recovered {
+            message,
+            location: info.location().map(|l| (l.file().to_string(), l.line())),
+            thread: thread_name(),
+            frames,
+        }
+    }
+}
+
+/// Starts reporting: the native handlers, and the sending of what earlier runs left (the panic
+/// hook is [`install_panic_hook`]'s, which reports through what this sets up). Once per process.
 pub fn init(config: Config) {
     let image = image::main_image();
     let tags = json!({
@@ -256,17 +366,8 @@ pub fn init(config: Config) {
     }
     let _ = std::fs::create_dir_all(&reporter.config.dir);
     native::install(&reporter.config.dir, &reporter.image);
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        // The usual message on stderr first, as before.
-        previous(info);
-        if REPORTING.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if let Some(reporter) = REPORTER.get() {
-            reporter.panic(info);
-        }
-    }));
+    // In case the app didn't (it does, first thing): reports need the hook.
+    install_panic_hook();
     send_pending(reporter);
 }
 
@@ -284,10 +385,12 @@ pub fn active() -> bool {
 }
 
 /// The release tests' child (`gpui-client/packaging/tests/release_e2e.py`), after `init`:
-/// `DECIBELL_TEST_PANIC=<message>` panics on a thread named `decibell-test-panic` (the ship profile
-/// aborts); `segv` writes through a null pointer; `wait-pending` waits for the reports earlier runs
-/// left to be sent, then exits. `DECIBELL_TEST_CRASH_NAMES=a,b` registers names first, as a signed-in
-/// app does.
+/// `DECIBELL_TEST_PANIC=<message>` panics on a thread named `decibell-test-panic` that nothing
+/// guards (the process ends); `main:<message>` on the main thread; `guarded:<message>` on that
+/// thread inside [`decibell_panic::catch`] (recovered: the app starts as usual); `segv` writes
+/// through a null pointer; `wait-pending` waits for the reports earlier runs left to be sent, then
+/// exits. (`runtime:` and `resumed:` are the app's: they need the core and the UI thread.)
+/// `DECIBELL_TEST_CRASH_NAMES=a,b` registers names first, as a signed-in app does.
 #[cfg(feature = "test-hooks")]
 pub fn panic_for_test() {
     let Ok(what) = std::env::var("DECIBELL_TEST_PANIC") else { return };
@@ -295,6 +398,19 @@ pub fn panic_for_test() {
     if let Ok(names) = std::env::var("DECIBELL_TEST_CRASH_NAMES") {
         set_names(names.split(',').map(str::to_string).collect());
     }
+    let on_test_thread = |guarded: bool, message: String| {
+        let _ = std::thread::Builder::new()
+            .name("decibell-test-panic".into())
+            .spawn(move || {
+                if guarded {
+                    let caught = decibell_panic::catch(|| -> () { panic!("{message}") });
+                    println!("decibell: crash-test guarded panic caught: {}", caught.is_err());
+                } else {
+                    panic!("{message}")
+                }
+            })
+            .map(|t| t.join());
+    };
     match what.as_str() {
         "segv" => {
             // SAFETY: none: the test wants a real segmentation fault.
@@ -306,13 +422,12 @@ pub fn panic_for_test() {
             }
             std::process::exit(0);
         }
-        message => {
-            let message = message.to_string();
-            let _ = std::thread::Builder::new()
-                .name("decibell-test-panic".into())
-                .spawn(move || panic!("{message}"))
-                .map(|t| t.join());
-        }
+        other if other.starts_with("runtime:") || other.starts_with("resumed:") => {}
+        other => match other.split_once(':') {
+            Some(("main", message)) => panic!("{message}"),
+            Some(("guarded", message)) => on_test_thread(true, message.to_string()),
+            _ => on_test_thread(false, other.to_string()),
+        },
     }
 }
 
@@ -324,30 +439,50 @@ impl Reporter {
         scrub::Scrubber::from_env(NAMES.lock().map(|n| n.clone()).unwrap_or_default())
     }
 
-    fn panic(&self, info: &std::panic::PanicHookInfo<'_>) {
-        let message = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "Box<dyn Any>".into());
+    /// A panic that ends the process: written, then sent within [`SEND_BUDGET`].
+    /// `resumed_from`: the thread whose caught panic came back to this one.
+    fn fatal(&self, panic: Recovered, resumed_from: Option<&str>) {
         let scrubber = self.scrubber();
-        let location = info.location().map(|l| scrubber.location(l.file(), l.line()));
-        let mut frames = Vec::new();
-        backtrace::trace(|frame| {
-            frames.push(frame.ip() as usize);
-            frames.len() < 100
-        });
-        let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
-        let event = self.event(
-            Exception { kind: "panic", value: scrubber.text(&message), mechanism: json!({"type": "panic", "handled": false}) },
-            &frames,
+        let location = panic.location.as_ref().map(|(file, line)| scrubber.location(file, *line));
+        let mut event = self.event(
+            Exception { kind: "panic", value: scrubber.text(&panic.message), mechanism: json!({"type": "panic", "handled": false}) },
+            &panic.frames,
             location,
-            &thread,
+            &panic.thread,
             now_secs(),
         );
+        if let Some(from) = resumed_from {
+            event["tags"]["resumed_from"] = json!(from);
+        }
         let Some(path) = self.write(&event) else { return };
         send_now(self.config.clone(), path, SEND_BUDGET);
+    }
+
+    /// A panic a catcher recovers from: level `error`, `handled: true`, tagged with who caught it;
+    /// written, then sent on a thread of its own (the panicking thread goes on to its catch at
+    /// once). Once per location, at most [`RECOVERED_PER_RUN`] per run.
+    fn recovered(&self, panic: Recovered, catcher: decibell_panic::Catcher) {
+        let scrubber = self.scrubber();
+        let location = panic.location.as_ref().map(|(file, line)| scrubber.location(file, *line));
+        let key = location.clone().unwrap_or_else(|| panic.thread.clone());
+        {
+            let Ok(mut seen) = RECOVERED.lock() else { return };
+            if seen.len() >= RECOVERED_PER_RUN || seen.contains(&key) {
+                return;
+            }
+            seen.push(key);
+        }
+        let mut event = self.event(
+            Exception { kind: "panic", value: scrubber.text(&panic.message), mechanism: json!({"type": "panic", "handled": true}) },
+            &panic.frames,
+            location,
+            &panic.thread,
+            now_secs(),
+        );
+        event["level"] = json!("error");
+        event["tags"]["recovered"] = json!(catcher.as_str());
+        let Some(path) = self.write(&event) else { return };
+        send_later(self.config.clone(), path);
     }
 
     fn event(&self, exception: Exception, frames: &[usize], location: Option<String>, thread: &str, timestamp: f64) -> Value {
@@ -478,6 +613,14 @@ fn send_now(config: Config, path: PathBuf, budget: Duration) {
     }
 }
 
+/// From a thread that carries on (a recovered panic): send on a helper thread, don't wait. What
+/// isn't sent when the process ends goes at the next start.
+fn send_later(config: Config, path: PathBuf) {
+    let _ = std::thread::Builder::new().name("decibell-crash-send".into()).spawn(move || {
+        send_file(&config, &path);
+    });
+}
+
 /// What earlier runs left (reports not sent, native crash records): turned into envelopes and
 /// sent on a thread that ends when they are done. Nothing to send, no thread.
 fn send_pending(reporter: Arc<Reporter>) {
@@ -594,6 +737,84 @@ mod tests {
         assert!(!boot_settings(dir.path()).0, "the toggle off");
         let empty = tempfile::tempdir().unwrap();
         assert!(boot_settings(empty.path()).0, "default on, as Electron");
+    }
+
+    /// The hook in a child process (it aborts on a fatal panic, so never in the test binary
+    /// itself): panics on the core's guarded threads, its runtime's and inside
+    /// `decibell_panic::catch` are reported as recovered and the process carries on; a panic on
+    /// any other thread is reported as fatal and ends the process (SIGABRT, as the aborting
+    /// profile did).
+    #[cfg(unix)]
+    #[test]
+    fn caught_panics_carry_on_and_the_rest_end_the_process() {
+        const TEST: &str = "crash::tests::caught_panics_carry_on_and_the_rest_end_the_process";
+        if let Some(mode) = std::env::var_os("DECIBELL_TEST_HOOK_CHILD") {
+            let dir = PathBuf::from(std::env::var_os("DECIBELL_TEST_HOOK_DIR").unwrap());
+            install_panic_hook();
+            // A DSN nobody listens on: the reports stay on disk for the parent to read.
+            let dsn = Dsn::parse("http://0123456789abcdef@127.0.0.1:9/42").unwrap();
+            init(Config { dir, dsn, install_id: "test".into() });
+            let on = |name: &str, f: fn()| std::thread::Builder::new().name(name.into()).spawn(f).unwrap().join();
+            if mode == "caught" {
+                // As the core's receive loop guards its body.
+                let core = on("decibell-video-recv", || {
+                    assert!(std::panic::catch_unwind(|| panic!("core worker")).is_err());
+                });
+                let runtime = on("decibell-rt", || {
+                    assert!(std::panic::catch_unwind(|| panic!("runtime task")).is_err());
+                });
+                let ours = on("decibell-media", || {
+                    assert!(decibell_panic::catch(|| panic!("guarded section")).is_err());
+                });
+                assert!(core.is_ok() && runtime.is_ok() && ours.is_ok());
+                std::thread::sleep(Duration::from_millis(300));
+                println!("ALIVE");
+                std::process::exit(0);
+            }
+            // Ours, unguarded: the process ends.
+            let _ = on("decibell-media", || panic!("unguarded"));
+            println!("STILL RUNNING");
+            std::process::exit(0);
+        }
+        use std::os::unix::process::ExitStatusExt as _;
+        let run = |mode: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env("DECIBELL_TEST_HOOK_CHILD", mode)
+                .env("DECIBELL_TEST_HOOK_DIR", dir.path())
+                .output()
+                .unwrap();
+            let events: Vec<Value> = std::fs::read_dir(dir.path())
+                .map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "envelope")).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .iter()
+                .map(|e| serde_json::from_slice::<Value>(std::fs::read(e.path()).unwrap().split(|b| *b == b'\n').nth(2).unwrap()).unwrap())
+                .collect();
+            (out, events, dir)
+        };
+        let (out, events, _dir) = run("caught");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && stdout.contains("ALIVE"), "the process carried on: {} {stdout}", out.status);
+        let mut recovered: Vec<(String, String)> = events
+            .iter()
+            .map(|e| (e["tags"]["thread"].as_str().unwrap().to_string(), e["tags"]["recovered"].as_str().unwrap_or("").to_string()))
+            .collect();
+        recovered.sort();
+        assert_eq!(
+            recovered,
+            [("decibell-media".into(), "guarded".into()), ("decibell-rt".into(), "runtime".into()), ("decibell-video-recv".into(), "core-thread".into())],
+            "one recovered report per caught panic"
+        );
+        assert!(events.iter().all(|e| e["level"] == "error" && e["exception"]["values"][0]["mechanism"]["handled"] == true));
+
+        let (out, events, _dir) = run("fatal");
+        assert_eq!(out.status.signal(), Some(libc::SIGABRT), "a panic nothing catches ends the process: {}", out.status);
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("STILL RUNNING"));
+        assert_eq!(events.len(), 1, "one fatal report");
+        assert_eq!(events[0]["level"], "fatal");
+        assert_eq!(events[0]["tags"]["thread"], "decibell-media");
+        assert_eq!(events[0]["exception"]["values"][0]["mechanism"]["handled"], false);
     }
 
     #[test]

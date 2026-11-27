@@ -18,6 +18,7 @@ ship = []
 test-hooks = []
 
 [dependencies]
+decibell-panic.workspace = true
 log.workspace = true
 base64 = "0.22"
 # Instruction pointers of a panicking thread (no symbolication: the shipped binary is stripped and

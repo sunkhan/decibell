@@ -29,6 +29,7 @@ members = [
     "crates/decibell-platform",
     "crates/decibell-media",
     "crates/decibell-release",
+    "crates/decibell-panic",
 ]
 # Path dependencies under the workspace directory would otherwise become members: GPUI's
 # crates must keep resolving `workspace = true` against Zed's own root manifest.
@@ -68,6 +69,7 @@ decibell-servers = { path = "crates/decibell-servers" }
 decibell-platform = { path = "crates/decibell-platform" }
 decibell-media = { path = "crates/decibell-media" }
 decibell-release = { path = "crates/decibell-release" }
+decibell-panic = { path = "crates/decibell-panic" }
 anyhow = "1"
 futures = "0.3"
 libc = "0.2"
@@ -85,7 +87,11 @@ khronos-egl = { git = "https://github.com/zed-industries/khronos-egl", rev = "42
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, as the Electron addon does: the core's guarded workers (decoder, encoder, capture, the
+# voice and video receive loops, the encoder probe) catch a panic and carry on. A panic nothing
+# catches still ends the process, with its crash report: the panic hook decides
+# (decibell-release `crash::install_panic_hook`, decibell-panic). Cost measured in PACKAGING.md §9.2.
+panic = "unwind"
 strip = true
 debug = false
 

@@ -48,8 +48,9 @@ unsafe extern "C" fn read_packet(opaque: *mut c_void, buffer: *mut u8, size: c_i
     if io.abort.load(Ordering::Relaxed) {
         return ff::AVERROR_EXIT;
     }
-    // A panic must not cross into C.
-    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| io.source.read(buffer)));
+    // A panic must not cross into C; the read fails and the player shows why (and the panic hook
+    // reports it as recovered: `decibell_panic::catch` marks the section).
+    let read = decibell_panic::catch(|| io.source.read(buffer));
     match read {
         Ok(Ok(0)) => ff::AVERROR_EOF,
         Ok(Ok(count)) => count as c_int,
@@ -67,7 +68,7 @@ unsafe extern "C" fn read_packet(opaque: *mut c_void, buffer: *mut u8, size: c_i
 unsafe extern "C" fn seek(opaque: *mut c_void, offset: i64, whence: c_int) -> i64 {
     // Safety: as in `read_packet`.
     let io = unsafe { &mut *opaque.cast::<Io>() };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = decibell_panic::catch(|| {
         if whence & ff::AVSEEK_SIZE as c_int != 0 {
             let here = io.source.stream_position()?;
             let size = io.source.seek(SeekFrom::End(0))?;
@@ -81,7 +82,7 @@ unsafe extern "C" fn seek(opaque: *mut c_void, offset: i64, whence: c_int) -> i6
             _ => return Err(std::io::Error::other("unknown seek origin")),
         };
         io.source.seek(to)
-    }));
+    });
     match result {
         Ok(Ok(position)) => position as i64,
         Ok(Err(error)) => {

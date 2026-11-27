@@ -12,6 +12,7 @@ publish.workspace = true
 # by decibell-app's build script.
 
 [dependencies]
+decibell-panic.workspace = true
 decibell-video.workspace = true
 anyhow.workspace = true
 log.workspace = true

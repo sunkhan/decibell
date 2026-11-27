@@ -8,6 +8,10 @@ use std::process::ExitCode;
 use decibell_app::{args::Args, boot};
 
 fn main() -> ExitCode {
+    // First: the panic hook that decides between "caught, carry on" and "report and end the
+    // process" (the release profile unwinds so the core's guarded workers recover, as in Electron;
+    // a panic nothing catches still ends the process: decibell_release::crash).
+    decibell_release::crash::install_panic_hook();
     decibell_harness::perf::start();
     // SVT-AV1 (the software screen-share encoder of last resort) prints its whole configuration to
     // stderr every time it opens unless told otherwise; level 1 keeps its errors. A value the user

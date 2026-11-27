@@ -30,6 +30,8 @@ enum Mode {
 
 /// Runs the app until its last window closes (or its self-tests finish).
 pub fn run(args: Args) -> ExitCode {
+    // A panic that unwinds the UI thread to here ends the process with a report (see the guard).
+    let _abort_on_unwind = crate::crash::AbortOnUnwind;
     if args.help {
         println!("{}", usage());
         return ExitCode::SUCCESS;
@@ -261,6 +263,8 @@ fn start(
             crate::app::start_core(&model, cues, cx);
             // The names a crash report must never carry (the account, the communities).
             crate::crash::watch_names(&model, cx);
+            #[cfg(feature = "dev")]
+            crate::crash::panic_in_app_for_test(cx);
             #[cfg(feature = "dev-local")]
             {
                 crate::dev::print_markers(cx);
