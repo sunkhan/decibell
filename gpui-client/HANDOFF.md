@@ -525,6 +525,12 @@ Electron runs as an X11 client under XWayland here (as the shipped launcher star
 private session bus (`tools/perf/electron-local.sh`). Take the real baseline on a quiet machine:
 `tools/dev/local-stack.sh up && tools/perf/scenarios.sh electron all` (~24 min) → `tools/perf/results/electron-baseline.md`.
 
+**The ship build** (2026-11-27, `PACKAGING.md` §9: the `ship` flavour of this client at base `9605d9f`, stripped,
+outside a package, at the sign-in page): install **77.1 MB** (Electron 417.0), first frame **159 ms**, idle
+**70.1 MB** private (30.9 dirty, PSS 87.3), 0.012 % of a core, **0 own wakeups / s**, **0 frames / s** at rest; no
+network at all without a saved sign-in. Size levers measured there (the ship flavour −7.0 MB, packed relocations
+−2.6 MB, opt-level `s` −22 MB but the list's paint ~1.75×, thin LTO +17.5 MB): the release profile is unchanged.
+
 **Electron findings from the baseline work** (for `main`; nothing here was changed in the client):
 - The active server tile's breathing glow (`ActiveTileGlow`, an infinite opacity animation) makes the whole
   client composite at the display's refresh rate whenever the window is visible: ~15 % of a core and ~4,300
