@@ -30,7 +30,7 @@ use gpui::{
 use super::{SettingsTab, TabContext};
 use crate::member_search::MemberSearch;
 use crate::requests::{self, Request};
-use crate::ui::{InputBox, SearchBox, caps_label, heading};
+use crate::ui::{Focuses, InputBox, SearchBox, caps_label, focusable, heading, menu_keys_then};
 
 pub const SERVER_NAME_MAX_BYTES: usize = 64;
 pub const SERVER_DESCRIPTION_MAX_BYTES: usize = 512;
@@ -91,6 +91,8 @@ pub struct OverviewTab {
     transferring: bool,
     owner_picker: Option<OwnerPicker>,
     picker_trigger: BoundsCell,
+    /// The owner picker's trigger: a tab stop (a `<button>` there).
+    focus: Focuses,
     _watch: Watch,
     _subs: Vec<Subscription>,
 }
@@ -175,6 +177,7 @@ impl OverviewTab {
             transferring: false,
             owner_picker: None,
             picker_trigger: BoundsCell::new(),
+            focus: Focuses::default(),
             _watch: watch,
             _subs: subs,
         }
@@ -205,6 +208,18 @@ impl OverviewTab {
                 Meta { name, description }
             }
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    /// Type `text` into the name box, as a person would (the self-tests).
+    pub(crate) fn type_name(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.name.update(cx, |s, cx| s.set_value(text, cx));
+    }
+
+    #[cfg(feature = "fixtures")]
+    /// A flip of the public listing is waiting for the server's echo.
+    pub(crate) fn saving_public(&self) -> bool {
+        self.public_save.saving()
     }
 
     #[cfg(feature = "fixtures")]
@@ -629,9 +644,11 @@ impl Render for OverviewTab {
                                 ),
                         )
                         .child(
-                            Switch::new("server-public", public)
-                                .disabled(self.public_save.saving())
-                                .on_toggle(cx.listener(|this, _: &bool, _, cx| this.toggle_public(cx))),
+                            div().relative().flex_none().children(decibell_harness::probes::probe("server-public")).child(
+                                Switch::new("server-public", public)
+                                    .disabled(self.public_save.saving())
+                                    .on_toggle(cx.listener(|this, _: &bool, _, cx| this.toggle_public(cx))),
+                            ),
                         ),
                 );
         } else {
@@ -786,7 +803,7 @@ impl Render for OverviewTab {
                                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_picture(window, cx))),
                                 )
                                 .when(has_picture, |this| {
-                                    this.child(Button::new("picture-remove", "Remove").variant(ButtonVariant::Ghost).on_click(cx.listener(
+                                    this.child(Button::new("picture-remove", "Remove").variant(ButtonVariant::Ghost).probe("picture-remove").on_click(cx.listener(
                                         |this, _: &ClickEvent, _, cx| {
                                             this.confirm_remove = true;
                                             cx.notify();
@@ -839,8 +856,14 @@ impl Render for OverviewTab {
                     .into_any_element(),
             };
             let open = self.owner_picker.is_some();
-            let trigger = div()
-                .id("owner-picker-trigger")
+            let trigger = focusable(div().id("owner-picker-trigger"), &self.focus.get("owner-trigger", cx), cx)
+                // ↓ opens the picker too (`onKeyDown` ArrowDown).
+                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                    if e.keystroke.key == "down" && !e.keystroke.modifiers.modified() && this.owner_picker.is_none() {
+                        cx.stop_propagation();
+                        this.open_owner_picker(window, cx);
+                    }
+                }))
                 .relative()
                 .mt_3()
                 .flex()
@@ -855,6 +878,7 @@ impl Render for OverviewTab {
                 .px_3()
                 .cursor_pointer()
                 .child(self.picker_trigger.probe())
+                .children(decibell_harness::probes::probe("owner-picker-trigger"))
                 .child(trigger_label)
                 .child(Icon::new(IconName::SelectChevron).size(px(14.)).color(theme.color_text_muted))
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_owner_picker(window, cx)));
@@ -882,7 +906,7 @@ impl Render for OverviewTab {
                         .child(trigger)
                         .when(!target_name.is_empty(), |this| {
                             this.child(
-                                div().mt_2().child(
+                                div().mt_2().relative().children(decibell_harness::probes::probe("transfer-confirm")).child(
                                     InputBox::new("transfer-confirm", &self.transfer_confirm).text(13., 400).pad(12., 8.).focus_border(theme.color_error).no_ring(),
                                 ),
                             )
@@ -893,6 +917,7 @@ impl Render for OverviewTab {
                                         if self.transferring { "Transferring…".to_string() } else { format!("Transfer ownership to {target_name}") },
                                     )
                                     .variant(ButtonVariant::Danger)
+                                    .probe("transfer-run")
                                     .full_width()
                                     .weight(500.)
                                     .disabled(!can_run)
@@ -943,6 +968,11 @@ impl OverviewTab {
         cx.notify();
     }
 
+    /// The picture editor while it is open (the self-tests wait for its picture).
+    pub(crate) fn editor(&self) -> Option<Entity<PictureEditor>> {
+        self.editor.clone()
+    }
+
     /// The `picture-editor` screen: an editor already open.
     pub fn fixture_editor(&mut self, editor: Entity<PictureEditor>, cx: &mut Context<Self>) {
         self.editor = Some(editor);
@@ -961,6 +991,10 @@ impl OverviewTab {
         let entity = cx.weak_entity();
         let search = picker.search.clone();
         let rows = shown.len();
+        // Each member a tab stop; ↓ from the search field reaches the first, ↑ / ↓ move between them.
+        let items: Vec<gpui::FocusHandle> = shown.iter().map(|m| self.focus.get(format!("owner-option:{}", m.uid), cx)).collect();
+        let items = std::rc::Rc::new(items);
+        let row_focus = items.clone();
         let mut extra: Vec<(&'static str, SharedString, gpui::Hsla)> = Vec::new();
         if !loaded {
             extra.push(("searching", "Searching…".into(), theme.color_text_muted));
@@ -987,8 +1021,9 @@ impl OverviewTab {
                             let primary: SharedString = if m.nickname.is_empty() { name.clone() } else { m.nickname.clone() };
                             let weak = entity.clone();
                             let hover = theme.color_surface_hover;
-                            div()
-                                .id(("owner-option", m.uid as u64))
+                            focusable(div().id(("owner-option", m.uid as u64)), &row_focus[i], cx)
+                                .relative()
+                                .children(decibell_harness::probes::probe(format!("owner-option:{}", m.uid)))
                                 .flex()
                                 .h_full()
                                 .w_full()
@@ -1058,7 +1093,15 @@ impl OverviewTab {
                 this.owner_picker = None;
                 cx.notify();
             }))
-            .child(div().flex().flex_col().w(px(320.)).p_2().child(picker.query.field("owner-search")).child(div().mt_2().child(list)))
+            .child(
+                menu_keys_then(div().flex().flex_col().w(px(320.)).p_2(), items, {
+                    // The list is windowed: the row the focus goes to is scrolled in first.
+                    let scroll = picker.scroll.clone();
+                    move |i, _, _| scroll.scroll_into_view(px(36.) * i as f32, px(36.), decibell_ui::ScrollAlign::Nearest)
+                })
+                .child(picker.query.field("owner-search"))
+                .child(div().mt_2().child(list)),
+            )
             .into_any_element()
     }
 }

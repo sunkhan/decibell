@@ -752,6 +752,8 @@ impl EmbedsSlot {
             let target = open_id.or_else(|| host_key.as_ref().map(|k| ServerId::from_wire(k)));
             div()
                 .id(SharedString::from(format!("invite-open-{}-{}", message.id, view.code)))
+                .relative()
+                .children(decibell_harness::probes::probe(format!("invite-card-open:{}", view.code)))
                 .flex_none()
                 .px_4()
                 .py_2()
@@ -781,6 +783,8 @@ impl EmbedsSlot {
             let fade = |c: Hsla| if disabled { card.blend(c.opacity(0.5)) } else { c };
             div()
                 .id(SharedString::from(format!("invite-join-{}-{}", message.id, view.code)))
+                .relative()
+                .children(decibell_harness::probes::probe(format!("invite-card-join:{}{}", view.code, if disabled { ":disabled" } else { "" })))
                 .flex_none()
                 .px_4()
                 .py_2()

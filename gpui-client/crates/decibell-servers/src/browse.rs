@@ -700,4 +700,19 @@ impl BrowseView {
     pub fn invite_error(&self) -> Option<SharedString> {
         self.invite_error.clone()
     }
+
+    /// For the self-tests: the names of the cards the search leaves.
+    pub fn shown_names(&self, cx: &App) -> Vec<String> {
+        self.filtered(cx).iter().map(|s| s.name.to_string()).collect()
+    }
+
+    /// For the self-tests: a code typed with the host and port of an unlisted community (the
+    /// manual fields shown, as their toggle shows them).
+    pub fn set_manual(&mut self, code: &str, host: &str, port: u16, cx: &mut Context<Self>) {
+        self.show_manual_host = true;
+        self.invite.update(cx, |s, cx| s.set_value(code, cx));
+        self.host.update(cx, |s, cx| s.set_value(host, cx));
+        self.port.update(cx, |s, cx| s.set_value(&port.to_string(), cx));
+        cx.notify();
+    }
 }

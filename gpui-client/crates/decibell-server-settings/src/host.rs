@@ -11,7 +11,8 @@ use decibell_model::{ChannelId, Model, ServerId};
 use gpui::{App, AppContext as _, Context, Entity, Global, IntoElement, ParentElement as _, Render, Task, WeakEntity, Window, div};
 
 use crate::channel::ChannelSettingsWindow;
-use crate::server::ServerSettingsWindow;
+use crate::server::{ServerSettingsWindow, TabId};
+use decibell_model::stores::navigation::ActiveView;
 
 /// How long a closing window keeps drawing (the modal's fade).
 const FADE: Duration = Duration::from_millis(300);
@@ -39,8 +40,14 @@ pub fn channel_window(cx: &App) -> Option<Entity<ChannelSettingsWindow>> {
 pub struct ServerSettingsHost {
     window: Option<Entity<ServerSettingsWindow>>,
     open: bool,
+    /// The tab the window was on when it last closed. The renderer's modal stays mounted (its
+    /// `activeTab` state with it) while the server sidebar is: reopened, on this community or
+    /// another, it shows the same tab when the permissions allow it, else Overview. Leaving the
+    /// server view unmounts it there; here that forgets the tab.
+    last_tab: Option<TabId>,
     _closing: Option<Task<()>>,
     _watch: Watch,
+    _nav: gpui::Subscription,
 }
 
 impl ServerSettingsHost {
@@ -52,7 +59,12 @@ impl ServerSettingsHost {
         let hosts = cx.default_global::<Hosts>();
         hosts.server.retain(|h| h.upgrade().is_some());
         hosts.server.push(me);
-        let mut this = ServerSettingsHost { window: None, open: false, _closing: None, _watch: watch };
+        let nav = cx.observe(&model.nav, |this: &mut Self, nav, cx| {
+            if nav.read(cx).active_view != ActiveView::Server {
+                this.last_tab = None;
+            }
+        });
+        let mut this = ServerSettingsHost { window: None, open: false, last_tab: None, _closing: None, _watch: watch, _nav: nav };
         this.sync(window, cx);
         this
     }
@@ -70,10 +82,19 @@ impl ServerSettingsHost {
                 Some(w) => w.update(cx, |w, cx| w.set_open(true, cx)),
                 None => {
                     let Some(server) = model.nav.read(cx).active_server else { return };
-                    self.window = Some(cx.new(|cx| ServerSettingsWindow::new(server, window, cx)));
+                    let last = self.last_tab;
+                    self.window = Some(cx.new(|cx| {
+                        let mut w = ServerSettingsWindow::new(server, window, cx);
+                        // `show` opens only a tab the permissions allow (else Overview stays).
+                        if let Some(tab) = last {
+                            w.show(tab, window, cx);
+                        }
+                        w
+                    }));
                 }
             }
         } else if let Some(w) = &self.window {
+            self.last_tab = Some(w.read(cx).tab().id());
             w.update(cx, |w, cx| w.set_open(false, cx));
             let delay = if cx.reduce_motion() { Duration::ZERO } else { FADE };
             self._closing = Some(cx.spawn(async move |this, cx| {

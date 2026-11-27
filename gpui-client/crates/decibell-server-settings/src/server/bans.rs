@@ -15,6 +15,7 @@ use gpui::{App, Context, IntoElement, Render, SharedString, Window, div, prelude
 use super::{SettingsTab, TabContext};
 use crate::requests::{self, Request};
 use crate::rows::PaneRows;
+use crate::ui::{Focuses, focusable};
 
 /// A row (`py-2.5`, a 36 px avatar) and the list's `gap-1`.
 const ROW: f32 = 56. + 4.;
@@ -23,6 +24,8 @@ pub struct BansTab {
     ctx: TabContext,
     error: Option<SharedString>,
     pending: HashSet<Uid>,
+    /// Each row's Unban: a tab stop (a `<button>` there).
+    focus: Focuses,
     _watch: Watch,
 }
 
@@ -40,7 +43,7 @@ impl BansTab {
         if let Some(community) = model.community(ctx.server, cx) {
             watch.store(&community.moderation, cx).store(&community.roles, cx).store(&community.meta, cx);
         }
-        BansTab { ctx, error: None, pending: HashSet::new(), _watch: watch }
+        BansTab { ctx, error: None, pending: HashSet::new(), focus: Focuses::default(), _watch: watch }
     }
 
     pub(crate) fn unban(&mut self, uid: Uid, username: SharedString, cx: &mut Context<Self>) {
@@ -137,6 +140,7 @@ impl Render for BansTab {
         }
         let pending = self.pending.clone();
         let weak = cx.weak_entity();
+        let focus = self.focus.clone();
         let count = bans.len();
         out.child(PaneRows::uniform(&self.ctx.scroll, count, px(ROW), move |range, _, cx| {
             let theme = cx.theme();
@@ -168,8 +172,7 @@ impl Render for BansTab {
                         .when(can_ban, |this| {
                             let bg = theme.color_bg_light;
                             this.child(
-                                div()
-                                    .id(("unban", b.uid as u64))
+                                focusable(div().id(("unban", b.uid as u64)), &focus.get(format!("unban:{uid}"), cx), cx)
                                     .rounded(theme.radius_sm)
                                     .bg(bg)
                                     .px_2p5()

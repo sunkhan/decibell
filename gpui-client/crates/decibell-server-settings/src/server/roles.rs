@@ -4,6 +4,7 @@
 //! below your highest are editable; `everyone`'s permissions by any manager. Switching role with
 //! unsaved changes shakes the save bar (owner decision): they are never dropped silently.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use decibell_common::{AvatarDot, BoundsCell, UserAvatar, Watch, presence_of, user_name};
@@ -19,8 +20,8 @@ use decibell_ui::{
     Label, Popover, SaveBar, SectionLabel, TextField,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, Hsla, IntoElement, MouseButton, Pixels, Point,
-    Render, SharedString, Subscription, Window, div, point, prelude::*, px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, Hsla, IntoElement, KeyDownEvent,
+    MouseButton, Pixels, Point, Render, SharedString, Subscription, Window, div, point, prelude::*, px,
 };
 
 use super::color_picker::{ColorPicker, ColorPickerEvent, PICKER_W, custom_tile, on_swatch};
@@ -29,12 +30,10 @@ use super::{SettingsTab, TabContext};
 use crate::member_search::MemberSearch;
 use crate::requests::{self, Request};
 use crate::rows::PaneRows;
-use crate::ui::{RoleChip, SearchBox, dot, error_banner, notice, outline_button, perm_row, plural, role_color};
+use crate::ui::{Focuses, RoleChip, SearchBox, dot, error_banner, focusable, menu_keys, notice, outline_button, perm_row, plural, role_color};
 
 pub const ROLE_NAME_MAX_BYTES: usize = 64;
 pub const ROLE_COLOR_PRESETS: [u32; 10] = [0, 0xe74c3c, 0xe67e22, 0xf1c40f, 0x2ecc71, 0x1abc9c, 0x3498db, 0x9b59b6, 0xe91e63, 0x95a5a6];
-/// The server's cap on roles (review B: 250 a community).
-pub const MAX_ROLES: usize = 250;
 /// A hierarchy row (`h-9`) and the list's `gap-0.5`.
 const ROLE_ROW: f32 = 36. + 2.;
 /// A holder row (`h-12`).
@@ -151,6 +150,11 @@ pub struct RolesTab {
     created_id: Option<i64>,
     confirm_delete: Option<Role>,
     drag_drop: Option<(i64, Option<usize>)>,
+    /// Each hierarchy row is a tab stop (the renderer's rows are buttons), keyed by the role: a
+    /// reorder moves the row and the focus with it, as React keeps a keyed button's focus.
+    row_focus: HashMap<i64, FocusHandle>,
+    /// The other hand-built buttons (create, the section tabs, the swatches, a holder's ✕).
+    focus: Focuses,
     save: EchoSave<SentRole>,
     perm_query: SearchBox,
     holders: Option<(i64, Entity<MemberSearch>, Subscription)>,
@@ -227,6 +231,8 @@ impl RolesTab {
             created_id: None,
             confirm_delete: None,
             drag_drop: None,
+            row_focus: HashMap::new(),
+            focus: Focuses::default(),
             save: EchoSave::default(),
             perm_query,
             holders: None,
@@ -520,6 +526,29 @@ impl RolesTab {
         );
     }
 
+    /// Alt+↑ / Alt+↓ on a focused row (`RoleRow`'s `onKeyDown`): one place up or down, for a role
+    /// you can edit, within the same limits as a drag. The list re-sorts on the server's echo;
+    /// the row keeps its focus handle, so the focus follows it.
+    pub fn move_by(&mut self, id: i64, up: bool, cx: &mut Context<Self>) {
+        let roles = self.roles(cx);
+        let Some(r) = roles.iter().find(|r| r.id == id && !r.is_default).cloned() else { return };
+        if !self.can_edit_role(&r, &roles, cx) {
+            return;
+        }
+        self.move_to(&r, if up { r.position + 1 } else { r.position - 1 }, cx);
+    }
+
+    /// The self-tests: the Add members picker's (shown, picked) counts while it is open.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn add_picker_state(&self, cx: &App) -> Option<(usize, usize)> {
+        self.add_picker.as_ref().map(|p| (p.search.read(cx).members.len(), p.picked.len()))
+    }
+
+    /// The focus handle of a role's hierarchy row (made the first time it is drawn).
+    pub fn row_focus(&self, id: i64) -> Option<FocusHandle> {
+        self.row_focus.get(&id).cloned()
+    }
+
     fn drop_role(&mut self, cx: &mut Context<Self>) {
         let Some((id, Some(drop))) = self.drag_drop.take() else {
             self.drag_drop = None;
@@ -660,6 +689,10 @@ impl Render for RolesTab {
         // Counts come from the server (role-list pushes), so they include offline members the
         // sidebar never loaded.
         let count_of = |r: &Role| if r.is_default { total_members } else { r.member_count };
+        self.row_focus.retain(|id, _| roles.iter().any(|r| r.id == *id));
+        for r in &roles {
+            self.row_focus.entry(r.id).or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
         let roles_for_edit = roles.clone();
         let can_edit = |r: &Role| self.can_edit_role(r, &roles_for_edit, cx);
 
@@ -668,7 +701,8 @@ impl Render for RolesTab {
         let edits = self.edits.clone();
         let drag = self.drag_drop;
         let weak = cx.weak_entity();
-        let rows: Rc<Vec<(Role, bool)>> = Rc::new(ranked.iter().map(|r| (r.clone(), can_edit(r))).collect());
+        let focus_of = |id: i64| self.row_focus.get(&id).cloned().expect("made above");
+        let rows: Rc<Vec<(Role, bool, FocusHandle)>> = Rc::new(ranked.iter().map(|r| (r.clone(), can_edit(r), focus_of(r.id))).collect());
         let n = rows.len();
         let list = {
             let rows = rows.clone();
@@ -676,7 +710,7 @@ impl Render for RolesTab {
             PaneRows::uniform(&self.ctx.scroll, n, px(ROLE_ROW), move |range, _, cx| {
                 range
                     .map(|i| {
-                        let (r, editable) = &rows[i];
+                        let (r, editable, focus) = &rows[i];
                         let is_selected = selected == Some(Selected::Role(r.id));
                         let (name, color) = match (&edits, is_selected) {
                             (Some(e), true) => (if e.name.is_empty() { r.name.clone() } else { e.name.clone().into() }, e.color),
@@ -705,6 +739,7 @@ impl Render for RolesTab {
                             drag.is_some_and(|(id, _)| id == r.id),
                             drop_line,
                             i,
+                            focus,
                             &weak,
                             cx,
                         )
@@ -734,8 +769,7 @@ impl Render for RolesTab {
                     .when(can_manage, |this| {
                         let (muted, primary, hover) = (theme.color_text_muted, theme.color_text_primary, theme.color_surface_hover);
                         this.child(
-                            div()
-                                .id("role-create")
+                            focusable(div().id("role-create"), &self.focus.get("create", cx), cx)
                                 .group("role-create")
                                 .flex()
                                 .size_7()
@@ -745,7 +779,6 @@ impl Render for RolesTab {
                                 .cursor_pointer()
                                 .hover(move |s| s.bg(hover))
                                 .tooltip(decibell_ui::title_tooltip("Create role"))
-                                .when(ranked.len() >= MAX_ROLES, |this| this.opacity(0.4))
                                 .child(Icon::new(IconName::SettingsPlus).size(px(15.)).stroke_width(2.25).color(muted).group_hover("role-create", primary))
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_create(window, cx))),
                         )
@@ -765,9 +798,12 @@ impl Render for RolesTab {
             )
             .when_some(everyone.clone(), |this, everyone| {
                 let id = everyone.id;
+                let ring = theme.shadow_ring.clone();
                 this.child(div().mx_2().my_2().h(px(1.)).bg(theme.color_border_divider)).child(
                     role_row_plain("@everyone".into(), 0, "All".into(), selected == Some(Selected::Role(id)), false, cx)
                         .id("role-everyone")
+                        .track_focus(&focus_of(id))
+                        .focus_visible(move |s| s.shadow(ring))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.select(Selected::Role(id), cx))),
                 )
             })
@@ -883,9 +919,11 @@ impl Render for RolesTab {
                 Section::Display => None,
             };
             let (primary, muted, secondary, accent) = (theme.color_text_primary, theme.color_text_muted, theme.color_text_secondary, theme.color_accent);
+            let tab_focus = self.focus.get(format!("section:{}", s.label()), cx);
             tabs = tabs.child(
-                div()
-                    .id(SharedString::from(format!("role-section-{}", s.label())))
+                focusable(div().id(SharedString::from(format!("role-section-{}", s.label()))), &tab_focus, cx)
+                    .relative()
+                    .children(decibell_harness::probes::probe(format!("role-section:{}", s.label())))
                     .mb(px(-1.))
                     .flex()
                     .items_center()
@@ -986,11 +1024,13 @@ fn role_row(
     dragging: bool,
     drop_line: Option<bool>,
     index: usize,
+    focus: &FocusHandle,
     weak: &gpui::WeakEntity<RolesTab>,
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
     let id = r.id;
+    let ring = theme.shadow_ring.clone();
     let group: SharedString = format!("role-row-{id}").into();
     let w = weak.clone();
     let w2 = weak.clone();
@@ -998,6 +1038,9 @@ fn role_row(
     let row = role_row_body(name.clone(), color, meta.into(), selected, false, Some((group.clone(), draggable, locked)), cx)
         .id(("role-row", id as u64))
         .group(group)
+        .track_focus(focus)
+        .focus_visible(move |s| s.shadow(ring))
+        .when_some(decibell_harness::probes::probe(format!("role-row:{id}")), |this, probe| this.child(probe))
         .when(dragging, |this| this.opacity(0.4))
         .when_some(drop_line, |this, above| {
             this.child(div().absolute().left_1().right_1().h(px(2.)).rounded_full().bg(accent).map(|d| if above { d.top(px(-1.)) } else { d.bottom(px(-1.)) }))
@@ -1006,7 +1049,20 @@ fn role_row(
             let _ = w.update(cx, |this, cx| this.select(Selected::Role(id), cx));
         })
         .when(draggable, |this| {
-            this.tooltip(decibell_ui::title_tooltip("Drag to reorder (Alt+↑/↓)"))
+            let w4 = weak.clone();
+            this.on_key_down(move |e: &KeyDownEvent, _, cx| {
+                if !e.keystroke.modifiers.alt {
+                    return;
+                }
+                let up = match e.keystroke.key.as_str() {
+                    "up" => true,
+                    "down" => false,
+                    _ => return,
+                };
+                cx.stop_propagation();
+                let _ = w4.update(cx, |this, cx| this.move_by(id, up, cx));
+            })
+            .tooltip(decibell_ui::title_tooltip("Drag to reorder (Alt+↑/↓)"))
                 .on_drag(RoleDrag { id, name: name.clone(), color }, move |d, _, _, cx| {
                     let (name, color) = (d.name.clone(), d.color);
                     let _ = w2.update(cx, |this, cx| {
@@ -1143,9 +1199,11 @@ impl RolesTab {
                     )
                 })
                 .when(on, |this| this.child(Icon::new(IconName::SettingsCheck).size(px(15.)).stroke_width(3.).color(mark)));
+            let swatch_focus = self.focus.get(format!("swatch:{c}"), cx);
             swatches = swatches.child(
                 div()
                     .id(("role-color", c as u64))
+                    .when(editable, |this| focusable(this, &swatch_focus, cx))
                     .flex_none()
                     .rounded(theme.radius_md + px(4.))
                     .p(px(if on { 2. } else { 0. }))
@@ -1161,7 +1219,9 @@ impl RolesTab {
         swatches = swatches.child(div().mx_0p5().h_5().w(px(1.)).bg(theme.color_border_divider)).child(
             div()
                 .id("role-color-custom")
+                .when(editable, |this| focusable(this, &self.focus.get("swatch:custom", cx), cx))
                 .relative()
+                .children(decibell_harness::probes::probe("role-color-custom"))
                 .flex_none()
                 .child(self.custom_tile.probe())
                 .child(custom_tile(custom_active, self.color_picker.is_some(), fields.color, false, cx))
@@ -1372,6 +1432,7 @@ impl RolesTab {
                                 move |s| s.bg(h)
                             })
                             .child(self.add_button.probe())
+                            .children(decibell_harness::probes::probe("holders-add"))
                             .child(Icon::new(IconName::SettingsUserPlus).size(px(15.)).color(theme.color_on_accent))
                             .child(Label::new("Add members").size(13.).weight(600.).color(theme.color_on_accent))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_add_picker(role_id, window, cx))),
@@ -1390,6 +1451,7 @@ impl RolesTab {
         let rows = Rc::new(members.clone());
         let weak = cx.weak_entity();
         let busy = self.busy;
+        let focus = self.focus.clone();
         let (role_id, role_name) = (role.id, role.name.clone());
         let n = rows.len();
         let list = PaneRows::uniform(&self.ctx.scroll, n, px(HOLDER_ROW), move |range, _, cx| {
@@ -1405,6 +1467,8 @@ impl RolesTab {
                     let title = format!("Remove {role_name} from {shown}");
                     div()
                         .id(("holder", m.uid as u64))
+                        .relative()
+                        .children(decibell_harness::probes::probe(format!("holder:{}", m.uid)))
                         .group(group.clone())
                         .flex()
                         .h(px(HOLDER_ROW))
@@ -1428,8 +1492,9 @@ impl RolesTab {
                             let (muted, error) = (theme.color_text_muted, theme.color_error);
                             let off = busy == Some(m.uid);
                             this.child(
-                                div()
-                                    .id(("holder-remove", m.uid as u64))
+                                focusable(div().id(("holder-remove", m.uid as u64)), &focus.get(format!("holder-remove:{}", m.uid), cx), cx)
+                                    .relative()
+                                    .children(decibell_harness::probes::probe(format!("holder-remove:{}", m.uid)))
                                     .flex()
                                     .size_8()
                                     .items_center()
@@ -1483,14 +1548,19 @@ impl RolesTab {
         let picked: Vec<Uid> = p.picked.iter().map(|m| m.uid).collect();
         let theme = cx.theme();
         let mut list = div().id("add-members-list").flex().flex_col().max_h(px(256.)).overflow_y_scroll();
+        // Each row a tab stop; ↓ from the search field reaches the first, ↑ / ↓ move between them.
+        let mut items: Vec<FocusHandle> = Vec::new();
         for m in shown.iter().cloned() {
             let on = picked.contains(&m.uid);
             let name = user_name(m.uid, &m.username, cx);
             let primary: SharedString = if m.nickname.is_empty() { name.clone() } else { m.nickname.clone() };
             let hover = theme.color_surface_hover;
+            let h = self.focus.get(format!("add-member:{}", m.uid), cx);
+            items.push(h.clone());
             list = list.child(
-                div()
-                    .id(("add-member", m.uid as u64))
+                focusable(div().id(("add-member", m.uid as u64)), &h, cx)
+                    .relative()
+                    .children(decibell_harness::probes::probe(format!("add-member:{}", m.uid)))
                     .flex()
                     .w_full()
                     .items_center()
@@ -1557,15 +1627,11 @@ impl RolesTab {
                 cx.notify();
             }))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w(px(288.))
-                    .p_2()
+                menu_keys(div().flex().flex_col().w(px(288.)).p_2(), Rc::new(items))
                     .child(p.query.field("add-members-search"))
                     .child(div().mt_2().child(list))
                     .child(
-                        div().mt_2().child(Button::new("add-members-run", label).full_width().disabled(count == 0).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        div().mt_2().child(Button::new("add-members-run", label).probe("add-members-run").full_width().disabled(count == 0).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             let Some(p) = this.add_picker.take() else { return };
                             for m in p.picked {
                                 this.set_role_holding(&m, role_id, true, cx);

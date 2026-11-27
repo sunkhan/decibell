@@ -23,7 +23,7 @@ use decibell_ui::{
     Modal, Popover, SectionLabel, Select, SelectIcon, SelectOption,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Pixels, Point,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, IntoElement, MouseButton, MouseDownEvent, Pixels, Point,
     Render, SharedString, Styled, Subscription, Task, Window, div, point, prelude::*, px,
 };
 
@@ -32,7 +32,7 @@ use crate::member_search::MemberSearch;
 use crate::requests::{self, Request};
 use crate::rows::{PaneRows, StickyTop};
 use crate::sentence::{self, Base, Run, Sentence, Shaped};
-use crate::ui::{InputBox, RoleChip, SearchBox, dot, error_banner, menu_divider, menu_item, outline_button, plural, role_color};
+use crate::ui::{Focuses, InputBox, RoleChip, SearchBox, dot, error_banner, focusable, menu_divider, menu_item, menu_keys, outline_button, plural, role_color};
 
 /// Visible role chips per row before the rest fold into "+N".
 const MAX_CHIPS: usize = 3;
@@ -208,6 +208,11 @@ pub struct MembersTab {
     _assign_timer: Option<Task<()>>,
     /// Where each row's ⋯ and + buttons were laid out (popups open under them).
     buttons: Rc<RefCell<HashMap<(Uid, u8), BoundsCell>>>,
+    /// The rows' ⋯ and + and the confirmation's duration chips: tab stops (`<button>`s there).
+    focus: Focuses,
+    /// A menu or the role picker just opened: its first item takes the focus when drawn (the
+    /// renderer's popovers do, so the arrow keys work straight away).
+    focus_first: bool,
     count_line: RefCell<Option<(String, Rc<Shaped>)>>,
     _watch: Watch,
     _subs: Vec<Subscription>,
@@ -296,6 +301,8 @@ impl MembersTab {
             assigning: HashMap::new(),
             _assign_timer: None,
             buttons: Rc::default(),
+            focus: Focuses::default(),
+            focus_first: false,
             count_line: RefCell::new(None),
             _watch: watch,
             _subs: subs,
@@ -415,7 +422,7 @@ impl MembersTab {
         }
     }
 
-    fn end_timeout(&mut self, m: &Member, cx: &mut Context<Self>) {
+    pub(crate) fn end_timeout(&mut self, m: &Member, cx: &mut Context<Self>) {
         let name = user_name(m.uid, &m.username, cx).to_string();
         self.run(
             format!("timeout:{}", m.uid),
@@ -423,6 +430,16 @@ impl MembersTab {
             true,
             cx,
         );
+    }
+
+    /// The confirmation's choices as its selects set them (the self-tests): the ban's length and
+    /// how much history it deletes, the time-out's length (seconds).
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn set_mod_options(&mut self, ban_duration: i64, purge: i32, timeout: i64, cx: &mut Context<Self>) {
+        self.ban_duration = ban_duration;
+        self.purge = purge;
+        self.timeout = timeout;
+        cx.notify();
     }
 
     pub(crate) fn open_confirm(&mut self, kind: ModKind, m: Member, cx: &mut Context<Self>) {
@@ -713,11 +730,12 @@ impl Render for MembersTab {
             let nick = self.nick.clone();
             let nick_saving = self.nick_save.saving();
             let buttons = self.buttons.clone();
+            let focus = self.focus.clone();
             let count = rows.len();
             let list = PaneRows::uniform(&self.ctx.scroll, count, px(ROW), move |range, _, cx| {
                 range
                     .map(|i| {
-                        member_row(&rows[i], nick_open == Some(rows[i].member.uid), &nick, nick_saving, &buttons, &weak, now, pref, cx)
+                        member_row(&rows[i], nick_open == Some(rows[i].member.uid), &nick, nick_saving, &buttons, &focus, &weak, now, pref, cx)
                     })
                     .collect()
             });
@@ -757,6 +775,7 @@ fn member_row(
     nick: &Entity<InputState>,
     nick_saving: bool,
     buttons: &Rc<RefCell<HashMap<(Uid, u8), BoundsCell>>>,
+    focus: &Focuses,
     weak: &gpui::WeakEntity<MembersTab>,
     now: i64,
     pref: decibell_model::stores::settings::TimeFormat,
@@ -893,8 +912,7 @@ fn member_row(
         let open = r.picker_open;
         let (w, add_cell) = (weak.clone(), cell(1));
         let (muted, bright, accent, border) = (theme.color_text_muted, theme.color_accent_bright, theme.color_accent, theme.color_border);
-        let button = div()
-            .id(("member-add-role", uid as u64))
+        let button = focusable(div().id(("member-add-role", uid as u64)), &focus.get(format!("add-role:{uid}"), cx), cx)
             .relative()
             .flex()
             .h_6()
@@ -957,6 +975,7 @@ fn member_row(
                 let at = add_cell.get();
                 let _ = w.update(cx, |this, cx| {
                     this.menu = None;
+                    this.focus_first = true;
                     this.role_picker = if this.role_picker.as_ref().is_some_and(|t| t.uid == uid) {
                         None
                     } else {
@@ -996,8 +1015,7 @@ fn member_row(
             .flex()
             .justify_end()
             .child(
-                div()
-                    .id(("member-more", uid as u64))
+                focusable(div().id(("member-more", uid as u64)), &focus.get(format!("more:{uid}"), cx), cx)
                     .group(SharedString::from(format!("member-more-{uid}")))
                     .relative()
                     .flex()
@@ -1019,6 +1037,7 @@ fn member_row(
                         let at = more_cell.get();
                         let _ = w.update(cx, |this, cx| {
                             this.role_picker = None;
+                            this.focus_first = true;
                             this.menu = if this.menu.as_ref().is_some_and(|t| t.uid == uid) {
                                 None
                             } else {
@@ -1058,8 +1077,9 @@ fn member_row(
 }
 
 impl MembersTab {
-    fn popups(&mut self, gates: &Gates, now: i64, _: decibell_model::stores::settings::TimeFormat, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn popups(&mut self, gates: &Gates, now: i64, _: decibell_model::stores::settings::TimeFormat, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
+        let mut first: Option<FocusHandle> = None;
         let theme = cx.theme();
         // The row menu.
         if let Some(target) = self.menu.clone()
@@ -1090,56 +1110,84 @@ impl MembersTab {
                         ),
                 )
                 .child(menu_divider(cx));
+            // Every entry is a tab stop; ↑ / ↓ move between them; the first takes the focus on open.
+            let mut items: Vec<FocusHandle> = Vec::new();
+            let mut keyed = |key: &'static str, cx: &App| {
+                let h = self.focus.get(key, cx);
+                items.push(h.clone());
+                h
+            };
             if acts.nick {
                 let m2 = m.clone();
-                menu = menu.child(
+                let h = keyed("menu:nick", cx);
+                menu = menu.child(focusable(
                     menu_item("menu-nick", IconName::SettingsPencil, if m.nickname.is_empty() { "Set nickname" } else { "Change nickname" }, false, cx)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_nick(&m2, window, cx))),
-                );
+                    &h,
+                    cx,
+                ));
             }
             if acts.roles {
                 let at = target.at;
-                menu = menu.child(menu_item("menu-roles", IconName::SettingsTag, "Edit roles", false, cx).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
+                let h = keyed("menu:roles", cx);
+                menu = menu.child(focusable(
+                    menu_item("menu-roles", IconName::SettingsTag, "Edit roles", false, cx).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.role_picker = Some(Target { uid: target.uid, at });
+                        this.focus_first = true;
                         this.menu = None;
                         cx.notify();
-                    },
-                )));
+                    })),
+                    &h,
+                    cx,
+                ));
             }
             if acts.timeout {
                 let m2 = m.clone();
-                menu = menu.child(
+                let h = keyed("menu:timeout", cx);
+                menu = menu.child(focusable(
                     menu_item("menu-timeout", IconName::SettingsClock, "Time out…", false, cx)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_confirm(ModKind::Timeout, m2.clone(), cx))),
-                );
+                    &h,
+                    cx,
+                ));
             }
             if acts.end_timeout {
                 let m2 = m.clone();
-                menu = menu.child(menu_item("menu-end-timeout", IconName::SettingsClock, "End timeout", false, cx).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
+                let h = keyed("menu:end-timeout", cx);
+                menu = menu.child(focusable(
+                    menu_item("menu-end-timeout", IconName::SettingsClock, "End timeout", false, cx).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.end_timeout(&m2, cx);
                         this.menu = None;
-                    },
-                )));
+                    })),
+                    &h,
+                    cx,
+                ));
             }
             if acts.kick || acts.ban {
                 menu = menu.child(menu_divider(cx));
             }
             if acts.kick {
                 let m2 = m.clone();
-                menu = menu.child(
+                let h = keyed("menu:kick", cx);
+                menu = menu.child(focusable(
                     menu_item("menu-kick", IconName::SettingsUserX, format!("Kick {name}…"), true, cx)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_confirm(ModKind::Kick, m2.clone(), cx))),
-                );
+                    &h,
+                    cx,
+                ));
             }
             if acts.ban {
                 let m2 = m.clone();
-                menu = menu.child(
+                let h = keyed("menu:ban", cx);
+                menu = menu.child(focusable(
                     menu_item("menu-ban", IconName::SettingsBan, format!("Ban {name}…"), true, cx)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_confirm(ModKind::Ban, m2.clone(), cx))),
-                );
+                    &h,
+                    cx,
+                ));
             }
+            first = first.or(items.first().cloned());
+            let menu = menu_keys(menu, Rc::new(items));
             out.push(
                 Popover::new("member-menu", target.at)
                     .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
@@ -1158,13 +1206,19 @@ impl MembersTab {
             let ids = self.role_ids_of(&m);
             let busy = self.pending_action.as_deref() == Some(&format!("assign:{}", m.uid));
             let mut picker = div().w(px(240.)).p_1p5().child(div().px_2().pb_1p5().pt_1().child(SectionLabel::new("Roles")));
+            let mut items: Vec<FocusHandle> = Vec::new();
             for role in &gates.assignable {
                 let has = ids.contains(&role.id);
                 let (uid, id) = (m.uid, role.id);
                 let hover = theme.color_surface_hover;
+                let h = self.focus.get(format!("picker-role:{}", role.id), cx);
+                if !busy {
+                    items.push(h.clone());
+                }
                 picker = picker.child(
                     div()
                         .id(("picker-role", role.id as u64))
+                        .when(!busy, |this| focusable(this, &h, cx))
                         .flex()
                         .w_full()
                         .items_center()
@@ -1186,6 +1240,8 @@ impl MembersTab {
                     ),
                 );
             }
+            first = first.or(items.first().cloned());
+            let picker = menu_keys(picker, Rc::new(items));
             out.push(
                 Popover::new("member-role-picker", target.at)
                     .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| {
@@ -1195,6 +1251,13 @@ impl MembersTab {
                     .child(picker)
                     .into_any_element(),
             );
+        }
+        // The renderer's popovers focus their first item as they open.
+        if self.focus_first {
+            self.focus_first = false;
+            if let Some(h) = first {
+                window.focus(&h, cx);
+            }
         }
         // The kick / ban / timeout dialog.
         let open = self.confirm.is_some();
@@ -1288,9 +1351,9 @@ impl MembersTab {
                         theme.color_text_secondary,
                         theme.color_surface_hover,
                     );
+                    let chip_focus = self.focus.get(format!("timeout:{value}"), cx);
                     grid = grid.child(
-                        div()
-                            .id(("timeout-option", value as u64))
+                        focusable(div().id(("timeout-option", value as u64)), &chip_focus, cx)
                             .flex()
                             .flex_1()
                             .justify_center()

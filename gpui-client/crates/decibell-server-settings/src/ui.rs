@@ -2,14 +2,15 @@
 //! the toolbar search field, menu rows, the role chip, the error banner, the channel settings'
 //! groups, rows, notices and pills, and the permission row.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use decibell_text::input::{InputEvent, InputState};
 use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, Switch, TextField};
 use gpui::{
-    AnyElement, App, AppContext as _, Focusable as _, ClickEvent, Context, ElementId, Entity, Hsla, IntoElement, RenderOnce, SharedString,
-    Subscription, Window, div, prelude::*, px,
+    AnyElement, App, AppContext as _, Focusable as _, ClickEvent, Context, ElementId, Entity, FocusHandle, Hsla, IntoElement, RenderOnce,
+    SharedString, Subscription, Window, div, prelude::*, px,
 };
 
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -17,6 +18,60 @@ type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 /// A role's colour (`roleColor`): 0xRRGGBB, or the muted token for "no colour".
 pub fn role_color(color: u32, cx: &App) -> Hsla {
     decibell_common::role_color(color).unwrap_or(cx.theme().color_text_muted)
+}
+
+/// The focus handles of a view's hand-built controls, made the first time each is drawn and kept
+/// by the view: each is a tab stop, as the renderer's `<button>` is (rows of windowed lists too,
+/// whose builders have no window to keep element state in).
+#[derive(Clone, Default)]
+pub struct Focuses(Rc<RefCell<HashMap<SharedString, FocusHandle>>>);
+
+impl Focuses {
+    pub fn get(&self, key: impl Into<SharedString>, cx: &App) -> FocusHandle {
+        self.0.borrow_mut().entry(key.into()).or_insert_with(|| cx.focus_handle().tab_stop(true)).clone()
+    }
+
+    /// Forget the controls no longer drawn (`keep` says which keys stay).
+    pub fn retain(&self, keep: impl Fn(&str) -> bool) {
+        self.0.borrow_mut().retain(|k, _| keep(k));
+    }
+}
+
+/// A hand-built control as the renderer's `<button>`: in the tab order, pressed by Enter / Space
+/// (GPUI clicks a focused element on them), the focus ring on keyboard focus
+/// (`focus-visible:shadow-ring`).
+pub fn focusable<E: InteractiveElement>(el: E, focus: &FocusHandle, cx: &App) -> E {
+    let ring = cx.theme().shadow_ring.clone();
+    el.track_focus(focus).focus_visible(move |s| s.shadow(ring))
+}
+
+/// A menu's keys (`settingsUi.tsx` `Popover`): ↑ / ↓ move the focus through `items` in order,
+/// wrapping, as `list[(at + step + n) % n]` with `at` = -1 when the focus is elsewhere (a field
+/// inside: ↓ goes to the first item).
+pub fn menu_keys<E: InteractiveElement>(el: E, items: Rc<Vec<FocusHandle>>) -> E {
+    menu_keys_then(el, items, |_, _, _| {})
+}
+
+/// [`menu_keys`], calling `moved` with the index the focus went to (a windowed list scrolls it
+/// into view there, as Chromium's `focus()` does).
+pub fn menu_keys_then<E: InteractiveElement>(el: E, items: Rc<Vec<FocusHandle>>, moved: impl Fn(usize, &mut Window, &mut App) + 'static) -> E {
+    el.on_key_down(move |e: &gpui::KeyDownEvent, window, cx| {
+        let k = &e.keystroke;
+        if k.modifiers.modified() || items.is_empty() {
+            return;
+        }
+        let step: i64 = match k.key.as_str() {
+            "down" => 1,
+            "up" => -1,
+            _ => return,
+        };
+        let n = items.len() as i64;
+        let at = items.iter().position(|h| h.is_focused(window)).map_or(-1, |i| i as i64);
+        let next = ((at + step + n) % n) as usize;
+        moved(next, window, cx);
+        window.focus(&items[next], cx);
+        cx.stop_propagation();
+    })
 }
 
 /// A colour dot of `size` px.
@@ -181,13 +236,16 @@ impl RoleChip {
 }
 
 impl RenderOnce for RoleChip {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let remove_focus = self
+            .on_remove
+            .is_some()
+            .then(|| window.use_keyed_state((self.id.clone(), "remove-focus"), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone());
         let theme = cx.theme();
         let color = role_color(self.color, cx);
         let group: SharedString = format!("chip-{}", self.id).into();
         let slot = match self.on_remove {
-            Some(handler) => div()
-                .id((self.id.clone(), "remove"))
+            Some(handler) => focusable(div().id((self.id.clone(), "remove")), remove_focus.as_ref().expect("made with the handler"), cx)
                 .flex()
                 .flex_none()
                 .size_3()

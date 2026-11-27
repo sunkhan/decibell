@@ -359,6 +359,7 @@ impl Render for ColorPicker {
             .id("color-field")
             .track_focus(&focus_field)
             .relative()
+            .children(decibell_harness::probes::probe("color-field"))
             .h(px(144.))
             .rounded(theme.radius_md)
             .bg(hue(hsv.h))

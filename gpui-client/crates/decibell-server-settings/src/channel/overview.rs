@@ -33,6 +33,9 @@ fn frac(k: i32) -> f32 {
 impl ChannelSettingsWindow {
     pub(crate) fn overview_tab(&mut self, channel: &Channel, editable: bool, cx: &mut Context<Self>) -> AnyElement {
         let Some(draft) = self.fields(cx) else { return div().into_any_element() };
+        // `<textarea disabled={!editable}>`: the topic box reads the state's flag (the kit's
+        // TextField sets it itself).
+        self.topic.update(cx, |s, cx| s.set_disabled(!editable, cx));
         let theme = cx.theme();
         let is_text = channel.kind == ChannelKind::Text;
         let is_voice = channel.kind == ChannelKind::Voice;
@@ -47,6 +50,7 @@ impl ChannelSettingsWindow {
         );
         if is_text {
             let theme = cx.theme();
+            decibell_harness::probes::flag("channel-topic-unencrypted-note", channel.encrypted);
             let hint: AnyElement = if channel.encrypted {
                 div()
                     .flex()
@@ -132,6 +136,8 @@ impl ChannelSettingsWindow {
                     this.child(
                         div()
                             .id("bitrate-reset")
+                            .relative()
+                            .children(decibell_harness::probes::probe("bitrate-reset"))
                             .rounded(theme.radius_sm)
                             .px_2()
                             .py_1()

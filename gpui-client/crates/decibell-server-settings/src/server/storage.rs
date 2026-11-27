@@ -11,6 +11,7 @@ use decibell_model::save_echo::EchoSave;
 use decibell_model::{Model, ServerId};
 use decibell_text::input::{InputEvent, InputState};
 use decibell_ui::{ActiveTheme as _, Label, SaveBar};
+use gpui::Focusable as _;
 use gpui::{AnyElement, App, AppContext as _, ClickEvent, Context, Entity, IntoElement, Render, SharedString, Subscription, Window, div, prelude::*, px};
 
 use super::overview::toast_error;
@@ -94,7 +95,12 @@ impl StorageTab {
         if let Some(community) = model.community(server, cx) {
             watch.store(&community.channels, cx);
         }
-        let min_free = cx.new(|cx| InputState::single_line(window, cx).accept(decibell_text::input::numeric));
+        let min_free = cx.new(|cx| {
+            let mut state = InputState::single_line(window, cx).accept(decibell_text::input::numeric);
+            // `<input type="number" min={0} step="0.5">`: ↑ / ↓ step it (handled on the box).
+            state.pass_keys(|k: &gpui::Keystroke| !k.modifiers.modified() && (k.key == "up" || k.key == "down"));
+            state
+        });
         let mut subs = vec![cx.subscribe(&min_free, |this: &mut Self, _, e: &InputEvent, cx| {
             if *e == InputEvent::Change && !this.syncing {
                 cx.notify();
@@ -154,6 +160,33 @@ impl StorageTab {
         }
     }
 
+    /// The self-tests: the headroom box's text, and its save bar's Save.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn min_free_text(&self, cx: &App) -> String {
+        self.min_free.read(cx).value().to_string()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn type_min_free(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.min_free.update(cx, |s, cx| s.set_value(text, cx));
+        cx.notify();
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn saving(&self) -> bool {
+        self.save.saving()
+    }
+
+    /// ↑ / ↓ in the headroom box, as Chromium steps `<input type="number" min=0 step=0.5>`: to
+    /// the next multiple of 0.5 in that direction (an empty box counts as 0), never below 0.
+    pub(crate) fn step_min_free(&mut self, up: bool, cx: &mut Context<Self>) {
+        let value = parse_float(self.min_free.read(cx).value()).filter(|v| v.is_finite()).unwrap_or(0.);
+        let next = step_number(value, 0.5, up).max(0.);
+        let text = js_number(next);
+        self.min_free.update(cx, |s, cx| s.set_value(&text, cx));
+        cx.notify();
+    }
+
     fn save_min_free(&mut self, cx: &mut Context<Self>) {
         let gb = parse_float(self.min_free.read(cx).value());
         let Some(gb) = gb.filter(|g| g.is_finite() && *g >= 0.) else {
@@ -176,6 +209,26 @@ impl StorageTab {
             },
         );
     }
+}
+
+/// `stepUp` / `stepDown` from `value` on a grid of `step` from 0: an aligned value moves one
+/// step, an unaligned one goes to the grid line in that direction.
+pub fn step_number(value: f64, step: f64, up: bool) -> f64 {
+    let n = value / step;
+    let aligned = (n - n.round()).abs() < 1e-9;
+    let k = match (aligned, up) {
+        (true, true) => n.round() + 1.,
+        (true, false) => n.round() - 1.,
+        (false, true) => n.ceil(),
+        (false, false) => n.floor(),
+    };
+    k * step
+}
+
+/// A number as JavaScript prints it in an `<input type="number">` (`2`, `1.5`).
+pub fn js_number(v: f64) -> String {
+    let s = format!("{v}");
+    s.strip_suffix(".0").map_or(s.clone(), str::to_string)
 }
 
 fn section(title: impl Into<SharedString>, body: impl IntoElement, cx: &App) -> gpui::Div {
@@ -300,7 +353,25 @@ impl Render for StorageTab {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(112.)).child(InputBox::new("storage-min-free", &self.min_free).text(13., 400).pad(10., 6.).bg(theme.color_bg_light).no_ring()))
+                    .child(
+                        div()
+                            .w(px(112.))
+                            .relative()
+                            .children(decibell_harness::probes::probe("storage-min-free"))
+                            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                                let k = &e.keystroke;
+                                if k.modifiers.modified() || !this.min_free.read(cx).focus_handle(cx).is_focused(window) {
+                                    return;
+                                }
+                                match k.key.as_str() {
+                                    "up" => this.step_min_free(true, cx),
+                                    "down" => this.step_min_free(false, cx),
+                                    _ => return,
+                                }
+                                cx.stop_propagation();
+                            }))
+                            .child(InputBox::new("storage-min-free", &self.min_free).text(13., 400).pad(10., 6.).bg(theme.color_bg_light).no_ring()),
+                    )
                     .child(Label::new("GB").size(13.).color(theme.color_text_secondary)),
             );
 
@@ -376,6 +447,19 @@ mod tests {
         assert_eq!(parse_float(""), None);
         assert_eq!(parse_float("abc"), None);
         assert_eq!(parse_float("1."), Some(1.));
+    }
+
+    #[test]
+    fn arrows_step_like_a_number_input() {
+        // Aligned values move one step; unaligned ones go to the grid line that way.
+        assert_eq!(step_number(5., 0.5, true), 5.5);
+        assert_eq!(step_number(5.5, 0.5, true), 6.);
+        assert_eq!(step_number(1.2, 0.5, true), 1.5);
+        assert_eq!(step_number(1.2, 0.5, false), 1.);
+        assert_eq!(step_number(0., 0.5, false).max(0.), 0.);
+        assert_eq!(js_number(6.), "6");
+        assert_eq!(js_number(5.5), "5.5");
+        assert_eq!(js_number(0.), "0");
     }
 
     #[test]

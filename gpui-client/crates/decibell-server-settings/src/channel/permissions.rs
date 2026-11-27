@@ -13,13 +13,13 @@ use decibell_model::stores::community::{Channel, ChannelKind, Member, Overwrite,
 use decibell_model::stores::permissions::{PermissionGroup, channel_overwrite_permissions, has_bits, perm, toggle_bit};
 use decibell_model::{Model, Uid};
 use decibell_ui::{ActiveTheme as _, DismissEvent, EmptyState, FontRole, Icon, IconName, Label, Popover, SectionLabel, Switch};
-use gpui::{AnyElement, App, AppContext as _, ClickEvent, Context, Entity, Hsla, IntoElement, Pixels, Point, SharedString, Subscription, Window, div, point, prelude::*, px};
+use gpui::{AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Hsla, IntoElement, Pixels, Point, SharedString, Subscription, Window, div, point, prelude::*, px};
 
 use super::ChannelSettingsWindow;
 use crate::member_search::MemberSearch;
 use crate::requests::{self, Request};
 use crate::server::overview::toast_error;
-use crate::ui::{SearchBox, dot, notice, outline_button, role_color};
+use crate::ui::{Focuses, SearchBox, dot, focusable, menu_keys, notice, outline_button, role_color};
 
 /// Allow / deny masks of one overwrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -100,6 +100,8 @@ pub struct PermDraft {
     picked_names: HashMap<Uid, SharedString>,
     busy: bool,
     add_button: BoundsCell,
+    /// The hand-built buttons (targets, +, the three-way switches, Sync): tab stops.
+    focus: Focuses,
 }
 
 impl PermDraft {
@@ -422,6 +424,9 @@ impl ChannelSettingsWindow {
                 .when_some(action, |this, action| {
                     let disabled = busy || draft_dirty;
                     let mut b = outline_button("perm-sync", action, disabled, true, cx);
+                    if !disabled {
+                        b = focusable(b, &self.perms.focus.get("sync", cx), cx);
+                    }
                     if let Some(t) = sync_title {
                         b = b.tooltip(decibell_ui::title_tooltip(t));
                     }
@@ -556,7 +561,7 @@ impl ChannelSettingsWindow {
             let c = counts(self.bits_of(&f, k));
             let key = k.clone();
             list = list.child(
-                target_row(k, &info, c, self.perms.pending_bits(k).is_some(), f.locked(k), *k == target, cx)
+                focusable(target_row(k, &info, c, self.perms.pending_bits(k).is_some(), f.locked(k), *k == target, cx), &self.perms.focus.get(format!("target:{k}"), cx), cx)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.perms.selected = key.clone();
                         cx.notify();
@@ -583,8 +588,9 @@ impl ChannelSettingsWindow {
                     .when(f.can_edit, |this| {
                         let (muted, primary, hover) = (theme.color_text_muted, theme.color_text_primary, theme.color_surface_hover);
                         this.child(
-                            div()
-                                .id("perm-add-target")
+                            focusable(div().id("perm-add-target"), &self.perms.focus.get("add-target", cx), cx)
+                                .relative()
+                                .children(decibell_harness::probes::probe("perm-add-target"))
                                 .group("perm-add-target")
                                 .flex()
                                 .size_7()
@@ -605,7 +611,7 @@ impl ChannelSettingsWindow {
             let c = counts(self.bits_of(&f, &everyone_key));
             let key = everyone_key.clone();
             aside = aside.child(div().mx_2().my_2().h(px(1.)).bg(theme.color_border_divider)).child(
-                target_row(&everyone_key, &info, c, self.perms.pending_bits(&everyone_key).is_some(), false, target == everyone_key, cx).on_click(cx.listener(
+                focusable(target_row(&everyone_key, &info, c, self.perms.pending_bits(&everyone_key).is_some(), false, target == everyone_key, cx), &self.perms.focus.get(format!("target:{everyone_key}"), cx), cx).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.perms.selected = key.clone();
                         cx.notify();
@@ -783,9 +789,13 @@ impl ChannelSettingsWindow {
             let (muted, hover, primary) = (theme.color_text_muted, theme.color_surface_hover, theme.color_text_primary);
             let target = target.to_string();
             let gname: SharedString = format!("tri-{bit}-{label}").into();
+            let tri_focus = self.perms.focus.get(format!("tri:{bit}:{label}"), cx);
             group = group.child(
                 div()
                     .id(SharedString::from(format!("tri-{bit}-{label}")))
+                    .when(!disabled, |this| focusable(this, &tri_focus, cx))
+                    .relative()
+                    .children(decibell_harness::probes::probe(format!("tri:{bit}:{label}")))
                     .group(gname.clone())
                     .flex()
                     .h_7()
@@ -843,6 +853,8 @@ impl ChannelSettingsWindow {
         let theme = cx.theme();
         let hover = theme.color_surface_hover;
         let mut list = div().id("perm-target-list").flex().flex_col().max_h(px(288.)).overflow_y_scroll();
+        // Each row a tab stop; ↓ from the search field reaches the first, ↑ / ↓ move between them.
+        let mut items: Vec<FocusHandle> = Vec::new();
         let everyone = f.everyone_key.clone();
         let targets_owned: Vec<String> = targets.to_vec();
         if !roles.is_empty() {
@@ -850,9 +862,10 @@ impl ChannelSettingsWindow {
             for r in roles.iter() {
                 let key = format!("role:{}", r.id);
                 let (everyone, targets_owned) = (everyone.clone(), targets_owned.clone());
+                let h = self.perms.focus.get(format!("pick:{key}"), cx);
+                items.push(h.clone());
                 list = list.child(
-                    div()
-                        .id(("perm-target-role", r.id as u64))
+                    focusable(div().id(("perm-target-role", r.id as u64)), &h, cx)
                         .flex()
                         .w_full()
                         .items_center()
@@ -875,9 +888,12 @@ impl ChannelSettingsWindow {
                 let primary: SharedString = if m.nickname.is_empty() { name.clone() } else { m.nickname.clone() };
                 let key = format!("member:{}", m.uid);
                 let (everyone, targets_owned, picked) = (everyone.clone(), targets_owned.clone(), name.clone());
+                let h = self.perms.focus.get(format!("pick:{key}"), cx);
+                items.push(h.clone());
                 list = list.child(
-                    div()
-                        .id(("perm-target-member", m.uid as u64))
+                    focusable(div().id(("perm-target-member", m.uid as u64)), &h, cx)
+                        .relative()
+                        .children(decibell_harness::probes::probe(format!("perm-pick:{}", m.uid)))
                         .flex()
                         .w_full()
                         .items_center()
@@ -931,7 +947,7 @@ impl ChannelSettingsWindow {
                 this.perms.picker = None;
                 cx.notify();
             }))
-            .child(div().flex().flex_col().w(px(288.)).p_2().child(p.query.field("perm-target-search")).child(div().mt_2().child(list)))
+            .child(menu_keys(div().flex().flex_col().w(px(288.)).p_2(), std::rc::Rc::new(items)).child(p.query.field("perm-target-search")).child(div().mt_2().child(list)))
             .into_any_element()
     }
 }

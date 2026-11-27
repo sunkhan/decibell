@@ -294,6 +294,14 @@ impl ServerSettingsWindow {
     pub fn nudge(&self) -> u32 {
         self.nudge.get()
     }
+
+    /// The self-tests: the pane scrolled to its end (what lies below the fold, e.g. Transfer
+    /// ownership), as a wheel would take it there.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn scroll_pane_to_bottom(&self, cx: &mut Context<Self>) {
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
 }
 
 impl Render for ServerSettingsWindow {
@@ -328,12 +336,13 @@ impl Render for ServerSettingsWindow {
         for id in tabs {
             frame = frame.item(
                 NavItem::new(gpui::ElementId::Name(format!("server-tab-{}", id.key()).into()), id.icon(), id.label())
+                    .probe(format!("server-tab:{}", id.key()))
                     .active(id == active)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.select(id, window, cx))),
             );
         }
         if !is_owner {
-            frame = frame.foot_item(NavItem::new("server-leave", IconName::SettingsLogout, "Leave Server").danger().on_click(
+            frame = frame.foot_item(NavItem::new("server-leave", IconName::SettingsLogout, "Leave Server").probe("server-leave").danger().on_click(
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.leave_confirm = true;
                     cx.notify();

@@ -189,6 +189,32 @@ impl JoinOverlay {
     pub fn error_for_tests(&self) -> (bool, Option<SharedString>) {
         (self.joining, self.local_error.clone())
     }
+
+    /// For the self-tests: the error line as drawn.
+    pub(crate) fn shown_error(&self, cx: &App) -> Option<SharedString> {
+        self.error_text(&self.state(cx), cx)
+    }
+
+    /// For the self-tests: whether Accept would join.
+    pub(crate) fn can_accept(&self, cx: &App) -> bool {
+        let state = self.state(cx);
+        state.server_id().is_some() && !self.joining && !state.invalid
+    }
+
+    fn error_text(&self, state: &JoinState, cx: &App) -> Option<SharedString> {
+        let key = state.server_key();
+        let server = state.server_id();
+        let inline = self.model.overlays.read(cx).auth_error.clone().filter(|e| server.is_some_and(|s| e.server == s));
+        match inline {
+            Some(e) => Some(e.message.clone()),
+            None => self
+                .local_error
+                .clone()
+                .or_else(|| state.invalid.then(|| "This invite is unknown, expired, or used up.".into()))
+                .or_else(|| state.resolve_error.clone().filter(|_| key.is_empty())),
+        }
+        .filter(|e| !e.is_empty())
+    }
 }
 
 impl Render for JoinOverlay {
@@ -222,16 +248,7 @@ impl JoinOverlay {
                 "Couldn't resolve invite".into()
             }
         });
-        let inline = self.model.overlays.read(cx).auth_error.clone().filter(|e| server.is_some_and(|s| e.server == s));
-        let error_text: Option<SharedString> = match inline {
-            Some(e) => Some(e.message.clone()),
-            None => self
-                .local_error
-                .clone()
-                .or_else(|| state.invalid.then(|| "This invite is unknown, expired, or used up.".into()))
-                .or_else(|| state.resolve_error.clone().filter(|_| key.is_empty())),
-        }
-        .filter(|e| !e.is_empty());
+        let error_text = self.error_text(state, cx);
         let members = if state.member_count > 0 {
             format!("{} members · ", Regional::get().group(state.member_count as u64))
         } else {
@@ -336,6 +353,8 @@ impl JoinOverlay {
                                 let ring = ring.clone();
                                 move |s| s.shadow(ring)
                             })
+                            .relative()
+                            .children(decibell_shell::probes::probe("join-cancel"))
                             .flex_1()
                             .flex()
                             .justify_center()

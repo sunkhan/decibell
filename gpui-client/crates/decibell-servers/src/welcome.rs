@@ -9,12 +9,18 @@
 //! top of it, so the list's row heights and anchoring never see it: it goes as the first message
 //! arrives.
 //!
-//! Not mirrored: the dashed ring around the hash turns forever in the renderer
-//! (`welcome-spin-slow`, 20 s a turn); here it stands still, so an empty channel at rest draws
-//! no frames.
+//! The dashed ring around the hash turns forever in the renderer (`welcome-spin-slow`, 20 s a
+//! turn, `linear infinite`), which makes Chromium composite the window at the display's rate for
+//! as long as an empty channel is open. Here it turns too, while the window is visible (not
+//! minimised) and motion isn't reduced: the ring is one SVG sprite drawn once, turned by a timed
+//! transformation that re-presents the retained scene at most [`SPIN_FPS`] times a second without
+//! re-rendering anything (as the server bar's glow breathes, `decibell-shell/src/glow.rs`). Its
+//! edge moves 13 px a second, so a step is under half a pixel. Hidden, it stands still and the
+//! window presents nothing. `docs/electron-quirks.md` #26 has the cost.
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use decibell_common::Watch;
 use decibell_model::stores::overlays::modal;
@@ -23,8 +29,8 @@ use decibell_model::{ChannelId, Model, ServerId};
 use decibell_ui::motion::{self, Transition};
 use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label};
 use gpui::{
-    AnyView, App, AppContext as _, BoxShadow, ClickEvent, Context, IntoElement, Render, SharedString, Window, canvas, div,
-    point, prelude::*, px,
+    AnyView, App, AppContext as _, BoxShadow, ClickEvent, Context, IntoElement, Render, SharedString, Subscription,
+    TimedTransformation, Transformation, Window, canvas, div, point, prelude::*, px, svg,
 };
 
 use crate::follow::Follow;
@@ -35,6 +41,38 @@ const MAX_WIDTH: f32 = 480.;
 const PAD_X: f32 = 20.;
 /// `animation: welcome-fadeUp 0.5s ease` (`translateY(16px)` → 0, opacity 0 → 1).
 const FADE_UP: Transition = Transition::new(500, motion::EASE);
+/// `.welcome-icon-wrap::after`: `inset: -6px` around the 72 px wrap, `border: 1.5px dashed`.
+const RING_BOX: f32 = 84.;
+const RING_WIDTH: f32 = 1.5;
+/// One turn (`animation: welcome-spin-slow 20s linear infinite`).
+pub const SPIN_PERIOD: Duration = Duration::from_secs(20);
+/// How often the turning ring may present while it is the only thing moving. The ring's edge moves
+/// 2π × 41.25 px / 20 s ≈ 13 px/s: at 30 fps a step is 0.43 px, under what the eye resolves on a
+/// dashed line at 25 % opacity.
+pub const SPIN_FPS: f32 = 30.;
+
+/// The ring as an SVG (alpha only, tinted when drawn): a circle on the border's centre line, dashed
+/// as GPUI's dashed border was before the ring turned (a dash twice the width, a gap of one width,
+/// a whole number of periods around), so the ring at rest looks as it did.
+pub fn ring_svg() -> Vec<u8> {
+    let r = (RING_BOX - RING_WIDTH) / 2.;
+    let circumference = std::f32::consts::TAU * r;
+    let periods = (circumference / (3. * RING_WIDTH)).round().max(1.);
+    let period = circumference / periods;
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{b}" height="{b}" viewBox="0 0 {b} {b}"><circle cx="{c}" cy="{c}" r="{r}" fill="none" stroke="#fff" stroke-width="{w}" stroke-dasharray="{dash:.4} {gap:.4}"/></svg>"##,
+        b = RING_BOX,
+        c = RING_BOX / 2.,
+        w = RING_WIDTH,
+        dash = period * 2. / 3.,
+        gap = period / 3.,
+    )
+    .into_bytes()
+}
+
+thread_local! {
+    static RING: Rc<[u8]> = ring_svg().into();
+}
 
 pub struct WelcomeBanner {
     server: ServerId,
@@ -43,22 +81,30 @@ pub struct WelcomeBanner {
     width: Rc<Cell<f32>>,
     follow: Follow,
     _watch: Watch,
+    /// The ring turns only while the window is visible: re-render when that changes.
+    _visibility: Subscription,
 }
 
 /// The chat pane's welcome slot.
-pub fn build(server: ServerId, channel: ChannelId, _: &mut Window, cx: &mut App) -> AnyView {
-    cx.new(|cx| WelcomeBanner::new(server, channel, cx)).into()
+pub fn build(server: ServerId, channel: ChannelId, window: &mut Window, cx: &mut App) -> AnyView {
+    cx.new(|cx| WelcomeBanner::new(server, channel, window, cx)).into()
 }
 
 impl WelcomeBanner {
-    pub fn new(server: ServerId, channel: ChannelId, cx: &mut Context<Self>) -> Self {
+    pub fn new(server: ServerId, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = Model::global(cx).clone();
         let mut watch = Watch::new();
         watch.store(&model.communities, cx);
         let mut follow = Follow::default();
         follow.set(Some(server), cx);
-        Self { server, channel, width: Rc::new(Cell::new(0.)), follow, _watch: watch }
+        let visibility = cx.observe_window_visibility(window, |_, _, _, cx| cx.notify());
+        Self { server, channel, width: Rc::new(Cell::new(0.)), follow, _watch: watch, _visibility: visibility }
     }
+}
+
+/// Whether the ring turns: the window is visible and motion isn't reduced (captures reduce it).
+pub fn ring_turns(window: &Window, cx: &App) -> bool {
+    window.is_visible() && !cx.reduce_motion()
 }
 
 impl Render for WelcomeBanner {
@@ -74,8 +120,13 @@ impl Render for WelcomeBanner {
         let invite = model.has_permission(server, perm::CREATE_INVITE, cx) || model.has_permission(server, perm::MANAGE_INVITES, cx);
         let manage = model.channel_permission(server, &channel, perm::MANAGE_CHANNELS, cx)
             || model.channel_permission(server, &channel, perm::MANAGE_ROLES, cx);
+        decibell_harness::probes::flag("welcome-shown", true);
+        decibell_harness::probes::flag("welcome-invite-shown", invite);
+        decibell_harness::probes::flag("welcome-manage-shown", manage);
 
         let shown = motion::transition_from(window, cx, "welcome-fade-up", 0., 1., FADE_UP);
+        let turns = ring_turns(window, cx);
+        decibell_harness::probes::flag("welcome-ring-turns", turns);
         let width = match self.width.get() {
             w if w > 0. => w,
             _ => MAX_WIDTH,
@@ -183,17 +234,16 @@ impl Render for WelcomeBanner {
                         .justify_center()
                         .rounded_full()
                         .bg(accent_soft)
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(-6.))
-                                .left(px(-6.))
-                                .size(px(84.))
-                                .rounded_full()
-                                .border(px(1.5))
-                                .border_dashed()
-                                .border_color(accent.opacity(0.25)),
-                        )
+                        .child(div().absolute().top(px(-6.)).left(px(-6.)).size(px(RING_BOX)).child({
+                            let ring = svg().data(&RING.with(Rc::clone)).size_full().text_color(accent.opacity(0.25));
+                            if turns {
+                                ring.with_timed_transformation(
+                                    TimedTransformation::rotation(SPIN_PERIOD, Transformation::default()).with_max_fps(SPIN_FPS),
+                                )
+                            } else {
+                                ring
+                            }
+                        }))
                         .child(Label::new("#").font(FontRole::Display).size(30.).line_height(45.).weight(700.).color(accent_bright)),
                 ),
             )

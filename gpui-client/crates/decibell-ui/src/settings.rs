@@ -422,7 +422,13 @@ impl RenderOnce for SettingsPane {
                     }),
             )
             .child(
-                div().relative().children(decibell_harness::probes::probe("settings-pane-close")).child(
+                // The wrapper only carries the self-tests' probes (two tests name it differently: one
+                // settings window is open at a time); it lays out as the button alone.
+                div()
+                    .relative()
+                    .children(decibell_harness::probes::probe("settings-pane-close"))
+                    .children(decibell_harness::probes::probe("settings-close"))
+                    .child(
                     IconButton::new((id.clone(), "close"), IconName::Close).on_click(move |_, window, cx| {
                         if let Some(handler) = &on_close {
                             handler(CloseRequest::Escape, window, cx);
@@ -666,6 +672,7 @@ impl RenderOnce for SaveBar {
                         (id.clone(), "save"),
                         if self.saving { SharedString::new_static("Saving…") } else { self.save_label },
                     )
+                    .probe(format!("{id}-save"))
                     .disabled(self.saving || self.save_disabled)
                     .on_click(move |event, window, cx| {
                         if let Some(handler) = &on_save {

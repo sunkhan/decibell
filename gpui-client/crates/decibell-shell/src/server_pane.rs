@@ -93,6 +93,7 @@ impl Render for ServerPane {
         let header = self.channel.as_ref().map(|(_, id)| {
             let name = channel.as_ref().map_or_else(|| id.clone(), |c| c.name.clone());
             let topic = channel.as_ref().map(|c| c.topic.clone()).filter(|t| !t.is_empty());
+            decibell_harness::probes::text("channel-header-topic", &topic.clone().unwrap_or_default());
             let encrypted = channel.as_ref().is_some_and(|c| c.encrypted);
             let title = |text: SharedString, color| {
                 Label::new(text)

@@ -378,6 +378,16 @@ impl ChannelSettingsWindow {
         }
     }
 
+    /// The self-tests: scroll the pane so that `bounds` (window coordinates, as last laid out) is
+    /// in view.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn reveal(&self, bounds: gpui::Bounds<gpui::Pixels>, cx: &mut Context<Self>) {
+        let viewport = self.scroll.viewport_bounds();
+        let top = bounds.top() - viewport.top() + self.scroll.offset();
+        self.scroll.scroll_into_view(top, bounds.size.height, decibell_ui::ScrollAlign::Center);
+        cx.notify();
+    }
+
     pub fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         // Tabs share one draft: switching keeps it (no guard needed).
         self.tab = tab;

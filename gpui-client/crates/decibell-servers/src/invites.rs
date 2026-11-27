@@ -761,6 +761,8 @@ fn invite_row(
                 .child(
                     div()
                         .id("invite-code")
+                        .relative()
+                        .children(decibell_shell::probes::probe(format!("invite-copy-code:{code}")))
                         .group(group.clone())
                         .flex()
                         .items_center()
