@@ -20,6 +20,7 @@ gpui.workspace = true
 decibell-theme.workspace = true
 decibell-harness.workspace = true
 decibell-ui.workspace = true
+decibell-text.workspace = true
 decibell-model.workspace = true
 decibell-common.workspace = true
 # Only for the payload types of the core's events (the fixture) and `UiError`'s cert fields.
@@ -30,6 +31,9 @@ anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
 base64 = "0.22"
+# The sign-up form's email: an internationalised domain is sent in its ASCII form, as Chromium's
+# email input holds it (`validation.rs`). Already in the lock through `url`.
+idna = "1"
 serde_json = { version = "1", optional = true }
 
 [dev-dependencies]

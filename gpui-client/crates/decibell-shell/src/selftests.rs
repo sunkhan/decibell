@@ -64,15 +64,18 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(no_keyring(cx)),
         },
     ]
+    .into_iter()
+    .chain(crate::account_tests::selftests())
+    .collect()
 }
 
 /// The stack as `accounts.json` describes it.
-struct Stack {
-    central: String,
-    password: String,
+pub(crate) struct Stack {
+    pub(crate) central: String,
+    pub(crate) password: String,
 }
 
-fn stack() -> Result<Option<Stack>> {
+pub(crate) fn stack() -> Result<Option<Stack>> {
     let dev = std::env::var_os("DECIBELL_DEV_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/decibell-dev"));
@@ -92,10 +95,10 @@ fn stack() -> Result<Option<Stack>> {
 }
 
 /// A temporary profile, removed when dropped.
-struct Profile(PathBuf);
+pub(crate) struct Profile(pub(crate) PathBuf);
 
 impl Profile {
-    fn new(name: &str) -> Result<Profile> {
+    pub(crate) fn new(name: &str) -> Result<Profile> {
         let dir = std::env::temp_dir().join(format!("decibell-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
@@ -110,14 +113,14 @@ impl Drop for Profile {
 }
 
 /// How a child ended.
-enum Child {
+pub(crate) enum Child {
     Passed,
     /// The binary has no `--login` (not built with `dev-local`).
     NoDevLogin,
 }
 
 /// Run `decibell --check <check>` (signing in as perf1 when `login`) and relay its log.
-async fn run_child(cx: &TestCx, check: &str, login: bool, stack: &Stack, profile: &Path, env: &[(&str, String)]) -> Result<Child> {
+pub(crate) async fn run_child(cx: &TestCx, check: &str, login: bool, stack: &Stack, profile: &Path, env: &[(&str, String)]) -> Result<Child> {
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
     command.arg("--check").arg(check);
@@ -267,10 +270,13 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "shell-signout", about: "(in the app) Log out", run: |cx| Box::pin(check_signout(cx)) },
         SelfTest { name: "shell-no-keyring", about: "(in the app) sign-in and saved sign-in without a keychain", run: |cx| Box::pin(check_no_keyring(cx)) },
     ]
+    .into_iter()
+    .chain(crate::account_tests::checks())
+    .collect()
 }
 
 /// Poll `ready` every 50 ms for at most `limit`.
-async fn wait_for(cx: &TestCx, limit: Duration, what: &str, ready: impl Fn(&mut App) -> bool) -> Result<Duration> {
+pub(crate) async fn wait_for(cx: &TestCx, limit: Duration, what: &str, ready: impl Fn(&mut App) -> bool) -> Result<Duration> {
     let started = Instant::now();
     loop {
         if cx.update(|_, cx| ready(cx))? {
@@ -281,7 +287,7 @@ async fn wait_for(cx: &TestCx, limit: Duration, what: &str, ready: impl Fn(&mut 
     }
 }
 
-fn model(cx: &App) -> Model {
+pub(crate) fn model(cx: &App) -> Model {
     Model::global(cx).clone()
 }
 
@@ -295,14 +301,14 @@ fn centre(bounds: Bounds<gpui::Pixels>) -> Point<gpui::Pixels> {
 
 /// Click the middle of a probed element, then rest the pointer where nothing reacts to it (a
 /// pointer left on a tile would open its tooltip, a frame that isn't the click's).
-async fn click_probe(cx: &TestCx, key: &str) -> Result<()> {
+pub(crate) async fn click_probe(cx: &TestCx, key: &str) -> Result<()> {
     let bounds = wait_probe(cx, key).await?;
     cx.click(centre(bounds))?;
     park_pointer(cx)
 }
 
 /// The pointer over the pane's empty middle (the chat placeholder; Home's list ends above it).
-fn park_pointer(cx: &TestCx) -> Result<()> {
+pub(crate) fn park_pointer(cx: &TestCx) -> Result<()> {
     let at = cx.update(|window, _| {
         let size = window.viewport_size();
         point(size.width * 0.55, size.height * 0.85)
@@ -310,7 +316,7 @@ fn park_pointer(cx: &TestCx) -> Result<()> {
     cx.mouse_move(at)
 }
 
-async fn wait_probe(cx: &TestCx, key: &str) -> Result<Bounds<gpui::Pixels>> {
+pub(crate) async fn wait_probe(cx: &TestCx, key: &str) -> Result<Bounds<gpui::Pixels>> {
     let key_owned = key.to_string();
     wait_for(cx, Duration::from_secs(10), &format!("{key} on screen"), move |_| probes::bounds(&key_owned).is_some()).await?;
     probes::bounds(key).context("probe vanished")
@@ -735,7 +741,7 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     Ok(())
 }
 
-async fn saved_username() -> Result<Option<String>> {
+pub(crate) async fn saved_username() -> Result<Option<String>> {
     let config = decibell_core::api::settings::load_config().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(config["saved_username"].as_str().map(str::to_string))
 }

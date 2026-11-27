@@ -5,7 +5,7 @@ use decibell_harness::Screen;
 use decibell_ui::AssumeClientDecorations;
 use gpui::{App, AppContext as _};
 
-use crate::auth::{AuthMode, AuthView};
+use crate::auth::{AuthField, AuthMode, AuthView};
 use crate::fixture::{self, Scene};
 use crate::shell::Shell;
 
@@ -39,10 +39,26 @@ pub fn screens() -> Vec<Screen> {
         Screen {
             name: "auth-register",
             about: "The sign-up page",
-            build: |_, cx| {
+            build: |window, cx| {
                 settle_motion_for_capture(cx);
                 signed_out(cx);
-                cx.new(|cx| AuthView::new(AuthMode::Register, cx)).into()
+                cx.new(|cx| AuthView::new(AuthMode::Register, window, cx)).into()
+            },
+        },
+        Screen {
+            name: "auth-register-refused",
+            about: "The sign-up form refused by the browser's checks: Chromium's bubble under the email",
+            build: |window, cx| {
+                settle_motion_for_capture(cx);
+                signed_out(cx);
+                let view = cx.new(|cx| AuthView::new(AuthMode::Register, window, cx));
+                view.update(cx, |v, cx| {
+                    v.set_field(AuthField::Username, "newuser", cx);
+                    v.set_field(AuthField::Email, "abc", cx);
+                    v.set_field(AuthField::Password, "hunter22", cx);
+                    v.submit(window, cx);
+                });
+                view.into()
             },
         },
         Screen {

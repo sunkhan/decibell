@@ -116,7 +116,7 @@ impl Render for CertMismatchOverlay {
                         .mt_5()
                         .flex()
                         .gap_2p5()
-                        .child(div().flex_1().child(Button::new("cert-cancel", "Cancel").variant(ButtonVariant::Secondary).full_width().on_click({
+                        .child(div().flex_1().child(Button::new("cert-cancel", "Cancel").variant(ButtonVariant::Secondary).full_width().probe("cert-cancel").on_click({
                             let close = close.clone();
                             move |_: &ClickEvent, _, cx| close(cx)
                         })))
@@ -126,10 +126,18 @@ impl Render for CertMismatchOverlay {
                                     .variant(ButtonVariant::Danger)
                                     .full_width()
                                     .disabled(self.busy)
+                                    .probe("cert-trust")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.busy = true;
                                         cx.notify();
-                                        actions::servers::trust_certificate(cert.clone(), retry.clone(), cx);
+                                        // `finally { setBusy(false) }`: a failure leaves the prompt open again.
+                                        let view = cx.weak_entity();
+                                        actions::servers::trust_certificate(cert.clone(), retry.clone(), cx, move |cx| {
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.busy = false;
+                                                cx.notify();
+                                            });
+                                        });
                                     })),
                             ),
                         ),
@@ -139,7 +147,12 @@ impl Render for CertMismatchOverlay {
             self.busy = false;
         }
         Modal::new("cert-mismatch", open)
-            .on_close(move |_: &CloseRequest, _, cx| close(cx))
+            // A press on the backdrop cancels; the renderer's prompt has no Escape.
+            .on_close(move |request: &CloseRequest, _, cx| {
+                if *request == CloseRequest::Backdrop {
+                    close(cx)
+                }
+            })
             .children(card)
     }
 }

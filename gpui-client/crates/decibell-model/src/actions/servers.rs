@@ -102,6 +102,20 @@ pub fn redeem_invite(
     cx: &mut App,
     done: impl FnOnce(Result<(), UiError>, &mut App) + 'static,
 ) {
+    redeem_invite_retrying(host, port, code, None, cx, done)
+}
+
+/// [`redeem_invite`] whose certificate prompt, when the community's certificate no longer
+/// matches its pin, runs `retry` after "Trust new certificate" (`handleCertMismatch(err, join)`:
+/// an invite card's Join joins again). The prompt counts as handled: `done` gets `Ok`.
+pub fn redeem_invite_retrying(
+    host: String,
+    port: u16,
+    code: String,
+    retry: Option<Retry>,
+    cx: &mut App,
+    done: impl FnOnce(Result<(), UiError>, &mut App) + 'static,
+) {
     let server = ServerId::from_wire(&format!("{host}:{port}"));
     let args = api::servers::RedeemInviteArgs {
         server_id: server.wire(),
@@ -109,14 +123,26 @@ pub fn redeem_invite(
         port: port as i32,
         invite_code: code,
     };
-    call(cx, api::servers::redeem_invite(args), move |result, cx| match result {
+    call(cx, api::servers::redeem_invite(args), move |result, cx| settle_redeem(server, result, retry, cx, done));
+}
+
+/// What a redeem's answer does: open the community, or offer the re-trust prompt (with `retry`),
+/// or hand the error on.
+pub(crate) fn settle_redeem(
+    server: ServerId,
+    result: Result<(), UiError>,
+    retry: Option<Retry>,
+    cx: &mut App,
+    done: impl FnOnce(Result<(), UiError>, &mut App) + 'static,
+) {
+    match result {
         Ok(()) => {
             open_server(server, cx);
             done(Ok(()), cx);
         }
-        Err(e) if offer_retrust(&e, None, cx) => done(Ok(()), cx),
+        Err(e) if offer_retrust(&e, retry, cx) => done(Ok(()), cx),
         Err(e) => done(Err(e), cx),
-    });
+    }
 }
 
 /// Leave a community. The answer is `mod_action_responded` with action `leave`, which
@@ -155,23 +181,33 @@ pub fn fetch_server_picture(server: ServerId, cx: &mut App) {
     });
 }
 
-/// Trust the certificate a server now presents (the re-trust prompt's confirm), then run
-/// the notice's retry.
-pub fn trust_certificate(cert: CertMismatch, retry: Option<Retry>, cx: &mut App) {
+/// Trust the certificate a server now presents (the re-trust prompt's confirm,
+/// `CertMismatchModal.trust`): the prompt closes and the notice's retry runs; a failure is a
+/// toast and the prompt stays. `done` runs either way (the prompt's busy state ends).
+pub fn trust_certificate(cert: CertMismatch, retry: Option<Retry>, cx: &mut App, done: impl FnOnce(&mut App) + 'static) {
     let args = api::servers::TrustCertificateArgs {
         host: cert.host.to_string(),
         port: cert.port,
     };
-    call(cx, api::servers::trust_certificate(args), move |result, cx| match result {
-        Ok(()) => {
-            if let Some(model) = cx.try_global::<Model>().cloned() {
-                model.overlays.update(cx, |o, cx| o.set_cert_mismatch(None, cx));
+    call(cx, api::servers::trust_certificate(args), move |result, cx| {
+        match result {
+            Ok(()) => {
+                if let Some(model) = cx.try_global::<Model>().cloned() {
+                    model.overlays.update(cx, |o, cx| o.set_cert_mismatch(None, cx));
+                }
+                if let Some(retry) = retry {
+                    retry(cx);
+                }
             }
-            if let Some(retry) = retry {
-                retry(cx);
+            // `toast.error("Couldn't re-trust certificate", String(err))`: the body keeps JS's
+            // "Error: " prefix, as `String(err)` gives it.
+            Err(e) => {
+                if let Some(model) = cx.try_global::<Model>().cloned() {
+                    model.toasts.update(cx, |t, cx| t.error("Couldn't re-trust certificate", Some(e.js_string()), cx));
+                }
             }
         }
-        Err(e) => crate::call::show_error(&e, "Couldn't trust the certificate", cx),
+        done(cx);
     });
 }
 
@@ -246,3 +282,75 @@ pub(crate) fn request_drop_membership(server: ServerId, cx: &mut App) {
     });
 }
 
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use decibell_core::api::CoreError;
+    use gpui::TestAppContext;
+
+    use super::*;
+    use crate::stores::toasts::Severity;
+
+    /// `handleCertMismatch(err, join)`: a community whose certificate no longer matches its pin
+    /// opens the prompt holding the join as its retry, and the join counts as handled.
+    #[gpui::test]
+    fn a_refused_certificate_offers_the_prompt_with_the_join_as_its_retry(cx: &mut TestAppContext) {
+        let model = cx.update(|cx| Model::init(cx, None));
+        let ran = Rc::new(Cell::new(0));
+        let retry: Retry = {
+            let ran = ran.clone();
+            Rc::new(move |_: &mut App| ran.set(ran.get() + 1))
+        };
+        let error: UiError = CoreError::other("connect: CERT_MISMATCH:127.0.0.12:8082:ab12").into();
+        let settled = Rc::new(Cell::new(None));
+        cx.update(|cx| {
+            let settled = settled.clone();
+            settle_redeem(ServerId::from_wire("127.0.0.12:8082"), Err(error), Some(retry), cx, move |r, _| settled.set(Some(r.is_ok())))
+        });
+        assert_eq!(settled.get(), Some(true), "the prompt is the answer: no error under the card");
+        let notice = model.overlays.read_with(cx, |o, _| o.cert_mismatch.clone()).expect("the prompt");
+        assert_eq!((&*notice.cert.host, notice.cert.port, &*notice.cert.fingerprint), ("127.0.0.12", 8082, "ab12"));
+        cx.update(|cx| (notice.retry.expect("the join as the retry"))(cx));
+        assert_eq!(ran.get(), 1);
+
+        // Any other failure is the caller's to show; no prompt.
+        model.overlays.update(cx, |o, cx| o.set_cert_mismatch(None, cx));
+        cx.update(|cx| {
+            let settled = settled.clone();
+            settle_redeem(ServerId::from_wire("127.0.0.12:8082"), Err(CoreError::other("Invalid invite").into()), None, cx, move |r, _| {
+                settled.set(Some(r.is_ok()))
+            })
+        });
+        assert_eq!(settled.get(), Some(false));
+        assert!(model.overlays.read_with(cx, |o, _| o.cert_mismatch.is_none()));
+    }
+
+    /// `toast.error("Couldn't re-trust certificate", String(err))`, and the prompt's wait ends
+    /// (`finally { setBusy(false) }`); the prompt stays open.
+    #[gpui::test]
+    fn a_failed_re_trust_is_the_renderers_toast(cx: &mut TestAppContext) {
+        let model = cx.update(|cx| Model::init(cx, None));
+        let cert = CertMismatch { host: "127.0.0.1".into(), port: 18080, fingerprint: "ab".into() };
+        model.overlays.update(cx, |o, cx| {
+            o.set_cert_mismatch(Some(crate::stores::overlays::CertMismatchNotice { cert: cert.clone(), retry: None }), cx)
+        });
+        let ended = Rc::new(Cell::new(false));
+        cx.update(|cx| {
+            let ended = ended.clone();
+            trust_certificate(cert, None, cx, move |_| ended.set(true))
+        });
+        cx.run_until_parked();
+        assert!(ended.get());
+        let toasts: Vec<(Severity, String, Option<String>)> = model.toasts.read_with(cx, |t, _| {
+            t.toasts().iter().map(|t| (t.severity, t.title.to_string(), t.body.as_ref().map(|b| b.to_string()))).collect()
+        });
+        assert_eq!(
+            toasts,
+            vec![(Severity::Error, "Couldn't re-trust certificate".to_string(), Some("Error: Not connected to central server".to_string()))]
+        );
+        assert!(model.overlays.read_with(cx, |o, _| o.cert_mismatch.is_some()), "the prompt stays");
+    }
+}

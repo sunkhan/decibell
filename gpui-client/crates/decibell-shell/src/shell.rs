@@ -70,7 +70,7 @@ impl Render for Shell {
             Page::SignIn => {
                 // Nothing of the signed-in layout carries over to the next account.
                 self.main = None;
-                Some(self.auth.get_or_insert_with(|| cx.new(|cx| AuthView::new(AuthMode::Login, cx))).clone().into())
+                Some(self.auth.get_or_insert_with(|| cx.new(|cx| AuthView::new(AuthMode::Login, window, cx))).clone().into())
             }
             Page::Main => {
                 self.auth = None;

@@ -840,7 +840,12 @@ fn join(joins: Rc<RefCell<HashMap<SharedString, Join>>>, code: SharedString, hos
     joins.borrow_mut().insert(code.clone(), Join { joining: true, error: None, _timeout: Some(timeout) });
     decibell_chat::invalidate_slots(cx);
     let done_joins = joins.clone();
-    actions::servers::redeem_invite(host, port, code.to_string(), cx, move |result, cx| {
+    // `handleCertMismatch(err, join)`: after "Trust new certificate" the card joins again.
+    let retry: decibell_model::stores::overlays::Retry = {
+        let (joins, code, host) = (joins.clone(), code.clone(), host.clone());
+        Rc::new(move |cx: &mut App| join(joins.clone(), code.clone(), host.clone(), port, cx))
+    };
+    actions::servers::redeem_invite_retrying(host, port, code.to_string(), Some(retry), cx, move |result, cx| {
         if let Some(j) = done_joins.borrow_mut().get_mut(&code) {
             match result {
                 // Connected: the card shows "Joined" from the connections store.

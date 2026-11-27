@@ -9,6 +9,7 @@
 //!   conversation).
 //! - [`titlebar_title`], [`window_title`]: what the title bar and the OS window show.
 
+mod account_tests;
 mod auth;
 mod channels;
 mod conversations;
@@ -33,6 +34,7 @@ mod shell;
 mod sidebar;
 mod slots;
 mod user_panel;
+mod validation;
 
 pub use auth::{AuthField, AuthMode, AuthView};
 pub use channels::{ChannelSidebar, MemberDrag};

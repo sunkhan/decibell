@@ -2188,10 +2188,12 @@ dependencies = [
  "decibell-harness",
  "decibell-model",
  "decibell-richtext",
+ "decibell-text",
  "decibell-theme",
  "decibell-ui",
  "futures",
  "gpui",
+ "idna",
  "log",
  "serde_json",
 ]
