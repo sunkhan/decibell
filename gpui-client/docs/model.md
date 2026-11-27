@@ -310,7 +310,7 @@ listens while it is open (`cx.subscribe(&model.answers, |this, _, event: &CoreEv
 | 83 | `call_connected` | `events/calls.rs` |
 | 84 | `call_failed` | `events/calls.rs` |
 | 85 | `call_dropped` | `events/calls.rs` |
-| 86 | `system_idle_changed` | ignored (only after `api::presence::subscribe_system_idle`, not called yet: auto-away still asks `system_idle_state`) |
+| 86 | `system_idle_changed` | `live.presence.auto_away` (`AutoAway::pushed`: Away / back at once; comes after `CoreIdleSource` subscribed with the threshold, Wayland with `ext-idle-notify`) |
 | 87 | `audio_devices_changed` | `events/voice.rs` (`voice.devices.hotplug`; comes only while a view watches the device lists, M3.2) |
 | — | `stream_thumbnail` (the sink's own method) | `events/voice.rs` (`todo::m3::stream_thumbnail`) |
 | — | `stream_frame`, `stream_frame_sink_removed` | `StreamFrameSink`, off the UI thread (the video crate) |
@@ -879,7 +879,7 @@ creating / dropping hundreds of entities with their observers.
 | Sounds and attention | (wired: `decibell-app/src/audio.rs`) subscribe to `model.live.cues` | `Cue::Play(Sound)` → the core's `api::audio::play_sound`, `StartRing` / `StopRing` → `start_ring` / `stop_ring` with `call_ring.wav`; `Flash` (taskbar flash / dock bounce without focus) is still only logged. The WAVs (`Sound::asset()` → `assets/sounds/*.wav`) are embedded in the app and loaded on first use, the two 44.1 kHz ones resampled off the UI thread. Sounds play in the voice / call output's mix while there is one, else on the OS default output through a stream that closes by itself; no thread, timer or stream at idle. The model plays nothing. Under `--selftest` / `--check` the player never calls the core unless `DECIBELL_CUE_SINK` names a test sink that is also the saved output device (development builds honour the variable too; `off` silences them). |
 | Decode capabilities | `codecs.update(|c, _| c.set_decoder_probe(Rc<dyn DecoderProbe>))`, then `actions::voice::load_decode_caps(cx)` once the first frame is up, after the core booted, and whenever the answer may have changed | `DecoderProbe::probe(force) -> DecodeReport`: what to advertise, the decoder each codec's streams get (`DecoderInfo`: "Vulkan Video", …), what was tried and given up (`SkippedDecoder`). The video crate's real probe, kept by it per GPU and driver; the model adds the H.264 fallback, keeps the report in `voice.codecs` (`decode`, `decoders`, `skipped_decoders`, `decode_probed`), ships `decode` to the core and re-derives the advertised encoders. Without a probe (headless) only H.264 is advertised. |
 | Codec caps (encode + decode) | `actions::voice::init_codec_caps(force, cx)` when first needed: the first voice session, Go Live, Settings → Codecs; `force` for "Refresh" | **The one loader, never at start** (the encoder probe opens encoder sessions): the decode probe, then the encoders (`ui.json` `extra["native_encoder_caps.v3"]`, else the core's `probe_native_encoders`; one re-probe 15 s after a cached load, for the next session), kept whole in `voice.codecs.encoders` (`EncoderCap`: backend, label, limits, a software encoder's pixel rate) with `encode` the ones we also decode, both shipped to the core. One load at a time: callers while one runs share it (`CodecCaps::begin_load`), a forced one asked for meanwhile runs after it, a plain one is a no-op once `loaded`. |
-| Idle source | `auto_away.update(|a, cx| a.set_source(Rc::new(CoreIdleSource), cx))` or the platform's own `IdleSource` | The core's answers Wayland + GNOME, "unsupported" on X11 / Windows / macOS (Electron used `powerMonitor`): the app supplies its own there, with `idle_for` (`decibell_platform::idle`: X11 the server's SYNC `IDLETIME` alarms, which push both edges as `poke()`s and so report `pushes_resume`; Windows `GetLastInputInfo`; macOS none yet). Also `set_locked(bool)` on lock / sleep, `poke()` on resume pushes and on input in our window. |
+| Idle source | `auto_away.update(|a, cx| a.set_source(Rc::new(CoreIdleSource::new()), cx))` or the platform's own `IdleSource` | The core's answers Wayland (pushing the compositor's edges once subscribed: `SystemIdleChanged` → `AutoAway::pushed`) + GNOME, "unsupported" on X11 / Windows / macOS (Electron used `powerMonitor`): the app supplies its own there, with `idle_for` (`decibell_platform::idle`: X11 the server's SYNC `IDLETIME` alarms, which push both edges as `poke()`s and so report `pushes_resume`; Windows `GetLastInputInfo`; macOS none yet). Also `set_locked(bool)` on lock / sleep, `poke()` on resume pushes and on input in our window. |
 | Device hot-plug | done by the model: a view that shows the lists holds `devices.update(|d, cx| d.watch(cx))` … `d.unwatch()` (Settings → Audio, the user panel's device menu) | The first watch lists again and switches the core's notifications on (`api::audio::watch_devices`: PipeWire's registry, `IMMNotificationClient`, CoreAudio; its listener thread exists only meanwhile), the last switches them off. `audio_devices_changed` → `hotplug`: 400 ms debounce, timer only while pending. Nothing for the app. |
 | Mic test outside voice | `decibell_settings::SettingsHooks::set_mic_test(Rc::new(CoreMicTest), cx)` once the core runs | `CoreMicTest` is the core's `api::audio::start_mic_test` / `stop_mic_test` with the user's AEC / noise suppression / gain control, so the meter shows what a voice session would send. Refused while a voice session or call holds the microphone (the tab uses the session's `voice_input_level` then). |
 | Downloads | `transfers.update(|t, cx| t.attach_downloads(Rc<dyn DownloadControl>, cx))` → `DownloadEvents`; give `move |e| events.push(e)` to `DownloadManager::new` | `ManagerControl { manager, runtime }` implements the trait. Then `actions::transfers::configure_downloads`. A view starts one with `start_download(actions::chat::download_request(server, attachment_id, Some(&attachment), save_to, cx), cx)`. |
@@ -906,9 +906,11 @@ The self-move expiry (only while a move is pending), the 45 s ring (only while r
 clear-after (only while a deadline is set), the watch set's 600 ms flush (only while a change waits), the
 friend list's 10 s reply timeout (only while waiting), the friends error's 5 s (only while shown), the device
 hot-plug 400 ms (only while pending), the revocation notice's 8 s, the encoder re-probe 15 s after a cached load
-(once), and **auto-away's one timer**: active with a known idle time → `threshold − idle_for`; unknown (the
-core's Wayland flag) → one threshold (Away may then show up to one threshold late: core gap 1); speaking holds
-it off; Away on a source that can't push resumes → 1 s re-reads (the renderer's rate) for that sole reason.
+(once), and **auto-away's one timer**, only on a source that can't push its edges (a pushing one, the core's
+Wayland watcher or X11's SYNC alarms, keeps none): active with a known idle time → `threshold − idle_for`;
+unknown (GNOME's IdleMonitor through the core) → one threshold (Away may then show up to one threshold late
+there: core gap 1); speaking holds an idle reading off until speech's own threshold runs out; Away on a source
+that can't push → 1 s re-reads (the renderer's rate) for that sole reason.
 Nothing of M3 polls at idle: signed in with nothing on screen, no M3 timer exists.
 
 ### M3.5 Renderer → here
@@ -962,8 +964,13 @@ Nothing of M3 polls at idle: signed in with nothing on screen, no M3 timer exist
 
 ### M3.7 Core and platform gaps
 
-1. `system_idle` is a query: no push of the compositor's `idled` / `resumed`, so auto-away either lags (≤ one
-   threshold) or re-reads; a push from `system_idle.rs`'s watcher would make it exact and timer-free.
+1. ~~`system_idle` is a query~~: on Wayland with `ext-idle-notify` the core's watcher pushes `idled` /
+   `resumed` (`subscribe_system_idle`, `SystemIdleChanged`), which `CoreIdleSource` subscribes to (2026-11-27):
+   exact and timer-free. Left: GNOME (Mutter, no `ext-idle-notify`) is still a query answering only idle /
+   active, so Away there may lag up to one threshold; Mutter's `IdleMonitor.AddIdleWatch` /
+   `AddUserActiveWatch` (or `GetIdletime`'s milliseconds through the api) would close it: a core change. The
+   watcher also stays subscribed (one blocked thread) after auto-away is switched off: the api has no
+   unsubscribe; the model ignores its edges then.
 2. ~~No out-of-voice mic test~~: the core has `api::audio::start_mic_test` (the voice path's capture and
    processing, no output stream); Settings → Audio uses it through `CoreMicTest`.
 3. ~~No device-change notification from the core~~: `api::audio::watch_devices` + `audio_devices_changed`

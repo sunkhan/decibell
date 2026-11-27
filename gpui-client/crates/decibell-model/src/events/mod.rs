@@ -92,9 +92,11 @@ pub fn route(model: &Model, event: CoreEvent, cx: &mut App) {
         E::UserListUpdated(p) => todo::m3::user_list_updated(model, &p, cx),
         E::PresenceDelta(p) => todo::m3::presence_delta(model, &p, cx),
         E::OwnPresence(p) => todo::m3::own_presence(model, &p, cx),
-        // Comes only after `api::presence::subscribe_system_idle`, which the
-        // model doesn't call yet (auto-away still asks `system_idle_state`).
-        E::SystemIdleChanged(_) => {}
+        // The compositor's idle edges, after `CoreIdleSource` subscribed (Wayland).
+        E::SystemIdleChanged(p) => {
+            let threshold = std::time::Duration::from_secs(u64::from(p.threshold_seconds));
+            model.live.presence.auto_away.update(cx, |a, cx| a.pushed(p.idle, threshold, cx));
+        }
         E::FriendListReceived(p) => todo::m3::friend_list_received(model, &p, cx),
         E::FriendActionResponded(p) => todo::m3::friend_action_responded(model, &p, cx),
 

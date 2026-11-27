@@ -2,7 +2,9 @@
 //! in `idle.ts`), chosen by the display server GPUI runs on:
 //!
 //! - **Wayland** (GPUI's choice whenever `WAYLAND_DISPLAY` is set and not empty) and GNOME: the core's
-//!   `system_idle` (the compositor's `ext-idle-notify`, GNOME's IdleMonitor).
+//!   `system_idle` (`CoreIdleSource`). With the compositor's `ext-idle-notify` the core's watcher pushes
+//!   the `idled` / `resumed` edges (`SystemIdleChanged` → `AutoAway::pushed`): no timer, Away at the
+//!   threshold; GNOME's IdleMonitor is only asked.
 //! - **X11** (an X11 session, or XWayland when the client is started with `WAYLAND_DISPLAY` unset or
 //!   empty): [`x11`], the X server's `IDLETIME` counter through SYNC alarms (a thread woken only at the
 //!   threshold and at the next input), MIT-SCREEN-SAVER's `QueryInfo` on a server without them.
@@ -34,7 +36,7 @@ pub fn source(model: &Model, cx: &mut App) -> Rc<dyn IdleSource> {
     #[cfg(windows)]
     let (name, source): (_, Rc<dyn IdleSource>) = ("windows", Rc::new(last_input::LastInput));
     #[cfg(not(windows))]
-    let (name, source): (_, Rc<dyn IdleSource>) = ("core", Rc::new(decibell_model::actions::presence::CoreIdleSource));
+    let (name, source): (_, Rc<dyn IdleSource>) = ("core", Rc::new(decibell_model::actions::presence::CoreIdleSource::new()));
     crate::marker(format_args!("idle source {name}"));
     source
 }

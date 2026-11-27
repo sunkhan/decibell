@@ -122,14 +122,37 @@ pub fn release(uids: impl IntoIterator<Item = Uid>, cx: &mut App) {
 
 /// The idle source the core offers: Wayland's `ext-idle-notify` and GNOME's IdleMonitor,
 /// the screensaver's lock flag; "unsupported" on X11, Windows and macOS, where the app
-/// supplies its own source. The core's answer carries no idle duration and nothing is
-/// pushed, so `AutoAway` re-reads one threshold later (see its module doc).
-pub struct CoreIdleSource;
+/// supplies its own source.
+///
+/// On Wayland the core's watcher **pushes** the compositor's `idled` / `resumed` for the
+/// threshold it was subscribed with (`SystemIdleChanged`, which the router hands to
+/// `AutoAway::pushed`): the first read for a threshold subscribes with it, so a new threshold
+/// re-subscribes, and the source then reports [`IdleSource::pushes_resume`] and `AutoAway`
+/// keeps no timer. Where the core can't push (GNOME: no `ext-idle-notify`), its answer carries
+/// no idle duration and `AutoAway` re-reads one threshold later (see its module doc).
+#[derive(Default)]
+pub struct CoreIdleSource {
+    /// The threshold (seconds) the core's watcher was last subscribed with, and whether it
+    /// pushes for it.
+    subscribed: std::rc::Rc<std::cell::Cell<Option<(u32, bool)>>>,
+}
+
+impl CoreIdleSource {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl IdleSource for CoreIdleSource {
     fn read(&self, threshold: Duration) -> LocalBoxFuture<'static, IdleReading> {
         let threshold_seconds = threshold.as_secs().min(u64::from(u32::MAX)) as u32;
+        let subscribed = self.subscribed.clone();
         Box::pin(async move {
+            if subscribed.get().map(|(at, _)| at) != Some(threshold_seconds) {
+                let args = api::presence::SystemIdleArgs { threshold_seconds };
+                let pushes = core(api::presence::subscribe_system_idle(args)).await.unwrap_or(false);
+                subscribed.set(Some((threshold_seconds, pushes)));
+            }
             match core(api::presence::system_idle_state(api::presence::SystemIdleArgs { threshold_seconds })).await.as_deref() {
                 Ok("idle") => IdleReading::Idle,
                 Ok("active") => IdleReading::Active { idle_for: None },
@@ -140,6 +163,6 @@ impl IdleSource for CoreIdleSource {
     }
 
     fn pushes_resume(&self) -> bool {
-        false
+        self.subscribed.get().is_some_and(|(_, pushes)| pushes)
     }
 }

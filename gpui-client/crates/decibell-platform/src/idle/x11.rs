@@ -30,11 +30,11 @@
 //! The path a server took is logged once per start (`[idle] X11: …`).
 //!
 //! **The contract with `AutoAway`** (`decibell_model::live::presence::auto_away`): `read` answers
-//! `Idle` or `Active { idle_for: Some(d) }` from a fresh read of the counter, on a background thread,
-//! so the model's one timer lands where the threshold can first be reached; every alarm is an
-//! [`Edge`] the app turns into `AutoAway::poke` (a fresh read: an edge is a hint, the reading is the
-//! answer); `pushes_resume` is true while the alarms are watched, so the model keeps no timer while
-//! Away. Lock and sleep are `crate::session`'s. Across sleep the counter stands still (the server's
+//! `Idle` or `Active { idle_for: Some(d) }` from a fresh read of the counter, on a background thread
+//! (on the fallback the model's one timer lands where the threshold can first be reached); every
+//! alarm is an [`Edge`] the app turns into `AutoAway::poke` (a fresh read: an edge is a hint, the
+//! reading is the answer); `pushes_resume` is true while the alarms are watched (both edges come), so
+//! the model keeps no timer, active or Away. Lock and sleep are `crate::session`'s. Across sleep the counter stands still (the server's
 //! clock is monotonic) while the session watcher holds us Away; a locked screen counts on until the
 //! unlock's typing.
 //!

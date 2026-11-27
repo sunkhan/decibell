@@ -594,6 +594,61 @@ fn presence_routing(cx: &mut TestAppContext) {
     cx.read(|cx| assert_eq!(model.live.presence.display(ME, 3, true, cx), DisplayStatus::Online));
 }
 
+/// The compositor's idle edges (`SystemIdleChanged`, which comes once `CoreIdleSource`
+/// subscribed on Wayland) drive auto-away at once: Away on `idled`, back on `resumed`, our own
+/// idle flag following, no timer either way; an edge for another threshold is only a reason to
+/// read again.
+#[gpui::test]
+fn system_idle_edges_drive_auto_away(cx: &mut TestAppContext) {
+    use crate::live::presence::{IdleReading, IdleSource};
+    struct Pushing(Rc<std::cell::Cell<u32>>);
+    impl IdleSource for Pushing {
+        fn read(&self, _: Duration) -> LocalBoxFuture<'static, IdleReading> {
+            self.0.set(self.0.get() + 1);
+            Box::pin(async { IdleReading::Active { idle_for: None } })
+        }
+        fn pushes_resume(&self) -> bool {
+            true
+        }
+    }
+    let model = signed_in(cx);
+    let reads = Rc::new(std::cell::Cell::new(0));
+    model.live.presence.auto_away.update(cx, |a, cx| a.set_source(Rc::new(Pushing(reads.clone())), cx));
+    deliver(
+        &model,
+        cx,
+        [CoreEvent::OwnPresence(OwnPresencePayload {
+            supported: true,
+            status: "online".into(),
+            status_text: String::new(),
+            status_emoji: String::new(),
+            status_clear_in: 0.0,
+            dm_friends_only: false,
+            account_idle: false,
+        })],
+    );
+    let threshold_seconds = model.settings.read_with(cx, |s, _| s.get().away_after_minutes) * 60;
+    assert!(threshold_seconds > 0);
+    assert_eq!(reads.get(), 1, "configured: one read");
+    let edge = |idle: bool, threshold_seconds: u32| {
+        CoreEvent::SystemIdleChanged(SystemIdleChangedPayload { idle, threshold_seconds })
+    };
+    let state = |model: &Model, cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let away = model.live.presence.auto_away.read(cx);
+            (away.idle(), model.live.presence.own.read(cx).idle, away.timer_armed())
+        })
+    };
+    deliver(&model, cx, [edge(true, threshold_seconds)]);
+    assert_eq!(state(&model, cx), (true, true, false), "Away at the edge, no timer");
+    deliver(&model, cx, [edge(false, threshold_seconds)]);
+    assert_eq!(state(&model, cx), (false, false, false), "back at the resume edge");
+    assert_eq!(reads.get(), 1, "edges are readings: nothing read");
+    deliver(&model, cx, [edge(true, threshold_seconds + 60)]);
+    assert_eq!(state(&model, cx), (false, false, false), "another threshold's edge is not believed");
+    assert_eq!(reads.get(), 2, "but read again");
+}
+
 /// Press actions route to the voice and call actions; holds and releases do nothing here.
 #[gpui::test]
 fn hotkey_actions_route(cx: &mut TestAppContext) {
