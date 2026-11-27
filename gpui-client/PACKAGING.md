@@ -382,10 +382,13 @@ None of these is test-only code: the ship build's development code is gone (§9.
 | symbols stripped (`strip`, the packaging step) | (unstripped 130.66) | −51.1 MB: Rust symbols and the C libraries' DWARF (~39 MB); kept as the `.debug` file | none (never mapped) |
 | **opt-level `s`** (profile `release-s`; development flavour, compared with the same at opt-level 3) | 64.55 vs 86.62 MB | **−22.1 MB** (−25 %): `.text` 62.4 → 47.1 MB; the C codecs keep their own `-O3` | first frame 188 ms (175–248, load 12.8 → 2.0) vs 170 ms (163–171, load ~1); scroll at 280 Hz, 1000 / 3000 px/s: frame interval p50 3.57 ms both, p99 3.80 / 3.89 vs 3.89 / 4.41 ms, but **the list's paint 456 / 416 µs p50, 1033 / 1036 µs p99 vs 260 / 232, 591 / 578 µs**, missed vsyncs 6 / 4 vs 3 / 2 of 2,239 |
 
+| **thin LTO, 16 codegen units** (instead of fat LTO, 1 unit; development flavour) | 104.16 vs 86.62 MB | **+17.5 MB** (+20 %): `.text` 81.3 MB; link in 3 min instead of ~10 | first frame 149 ms (visible 147) vs 170–188 ms for fat LTO in the same hour (load 4–8: within the noise); scroll: paint p50 290 / 257 µs, p99 624 / 609 µs (fat: 260 / 232, 591 / 578), missed 1 / 0 |
+| `panic = "abort"` (kept, not rebuilt with `unwind`) | — | unwinding would add landing pads to every function that owns a value (and `.gcc_except_table`); the crash reporter's panic hook needs no unwinding (it runs before the abort), and `.eh_frame` stays either way for backtraces | — |
+
 **Decision: the ship profile stays at opt-level 3** (fat LTO, one codegen unit, abort). `s` is a quarter
 smaller but the message list's paint costs ~1.75× as much per frame (it still fits a 280 Hz frame here, with
-less headroom on a slower CPU), and startup is no faster: a smaller but slower binary is not a win. A middle
-way left open: `[profile.release.package.<cold crate>] opt-level = "s"` for code off the frame path (zbus /
+less headroom on a slower CPU), and startup is no faster: a smaller but slower binary is not a win. Fat LTO with one codegen unit stays too: 17 % smaller and ~10 % faster in the list's
+paint than thin LTO. A middle way left open: `[profile.release.package.<cold crate>] opt-level = "s"` for code off the frame path (zbus /
 zvariant, prost, tokio, openmls, rustls, hyper, accesskit, serde_json, regex), worth ~3–5 MB by the table
 above; one build to measure it.
 
@@ -431,6 +434,7 @@ the development build's signed-in rows are HANDOFF §4's "Shell" table.
 | Idle private memory (`tools/perf/measure.sh`, 20 s settle + 40 s) | 341.7 MB (`#general`) | ≤ 114 MB | **70.1 MB** at the sign-in page (private dirty 30.9, PSS 87.3, RSS 130.7; GPU memory 58.2 MB) |
 | Idle CPU | 14.5 % / 0.5 % | ≤ 1.45 % | **0.012 %** of a core |
 | Own wakeups at rest | 4,292 / s | ≤ 30 / s | **0.0 / s** (NVIDIA's `[vkps] Update` 4.0 / s, one unnamed driver thread 0.5 / s); 37 threads |
+| Frames at rest (KWin's damage events; the app's own counters on `SIGUSR1`) | 276 / s | 0 | **0 / s** over 40 s (the app's counters: 3 frames drawn in the minute after its first 5 s, all during the settle; load 7–8 at that run, private memory 73.9 MB then) |
 
 ## 10. Read-only and isolated runs
 
