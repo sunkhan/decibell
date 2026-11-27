@@ -1,0 +1,57 @@
+# Maintainer: sunkhan
+# The native (GPUI) Decibell client, from the tarball its release workflow builds
+# (.github/workflows/gpui-release.yml, tags native-v<version>; gpui-client/PACKAGING.md).
+# Never published from the repository: the owner pushes it to the AUR (PACKAGING.md, "AUR").
+pkgname=decibell-native-bin
+_pkgname=decibell
+pkgver=0.9.4
+pkgrel=1
+pkgdesc="Decentralized text, voice chat, and streaming app (native client)"
+arch=('x86_64')
+url="https://github.com/sunkhan/decibell"
+# As decibell-bin's PKGBUILD says; the repository has no LICENSE file yet (PACKAGING.md, decisions).
+license=('MIT')
+depends=(
+    'glibc'
+    'gcc-libs'
+    'libxkbcommon'
+    'libxkbcommon-x11'
+    'libxcb'
+    'libva'
+    'libdrm'
+    'opus'
+    'libpipewire'
+    'alsa-lib'
+    'vulkan-icd-loader'
+    'hicolor-icon-theme'
+)
+optdepends=(
+    'nvidia-utils: NVENC / NVDEC hardware video (loaded at run time)'
+    'vulkan-driver: Vulkan rendering and Vulkan Video decoding'
+    'libva-mesa-driver: VA-API video on AMD'
+    'intel-media-driver: VA-API video on Intel'
+)
+provides=('decibell')
+# The Electron client's package installs the same command and handles decibell:// too.
+conflicts=('decibell' 'decibell-bin' 'decibell-git')
+options=('!strip' '!debug')
+
+source=("${_pkgname}-${pkgver}-linux-x86_64.tar.xz::https://github.com/sunkhan/decibell/releases/download/native-v${pkgver}/decibell-${pkgver}-linux-x86_64.tar.xz")
+sha256sums=('SKIP')
+
+package() {
+    local src="${srcdir}/decibell-${pkgver}-linux-x86_64"
+    install -Dm0755 "${src}/decibell" "${pkgdir}/usr/lib/${_pkgname}/decibell"
+    # pacman owns these files: the updater reports "notify-only" (About links the release page).
+    install -Dm0644 /dev/stdin "${pkgdir}/usr/lib/${_pkgname}/resources/install.json" <<< "{\"kind\":\"aur\",\"version\":\"${pkgver}\"}"
+    for f in sentry.json gifs.json; do
+        if [ -f "${src}/resources/${f}" ]; then
+            install -Dm0644 "${src}/resources/${f}" "${pkgdir}/usr/lib/${_pkgname}/resources/${f}"
+        fi
+    done
+    install -dm0755 "${pkgdir}/usr/bin"
+    ln -s "/usr/lib/${_pkgname}/decibell" "${pkgdir}/usr/bin/decibell"
+    install -Dm0644 "${src}/share/applications/decibell.desktop" "${pkgdir}/usr/share/applications/decibell.desktop"
+    cp -r --no-preserve=ownership "${src}/share/icons" "${pkgdir}/usr/share/"
+    install -Dm0644 "${src}/licenses/THIRD_PARTY_LICENSES.md" "${pkgdir}/usr/share/licenses/${pkgname}/THIRD_PARTY_LICENSES.md"
+}
