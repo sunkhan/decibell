@@ -77,8 +77,8 @@ conflicts with `decibell-electron-client` (both install `/usr/bin/decibell` and 
 
 **The installer** is NSIS, as Electron's (electron-builder generates its script and cannot package a native
 executable, so `packaging/windows/decibell.nsi` is written by hand with the same behaviour): per user, no
-administrator rights, `%LOCALAPPDATA%\Programs\Decibell Native` (Electron's install owns
-`Programs\Decibell` while both ship), a Start menu shortcut, an "Apps & features" entry
+administrator rights, `%LOCALAPPDATA%\Programs\Decibell Native` (Electron's one-click installer uses
+`Programs\decibell-electron-client`, its package name, and the shortcut "Decibell"), a Start menu shortcut, an "Apps & features" entry
 (`HKCU\…\Uninstall\DecibellNative`), and the `decibell://` keys HANDOFF.md §6 lists, under
 `HKCU\Software\Classes\decibell`: `(Default)` = `URL:Decibell`, `URL Protocol` = `""`,
 `DefaultIcon\(Default)` = `"<dir>\decibell.exe",0`, `shell\open\command\(Default)` =
@@ -90,10 +90,13 @@ Electron ships no portable zip; neither does this.
 the DLLs by walking the PE import tables**
 (`packaging/windows/dlls.py`, normal and delay-load imports, recursively) through vcpkg's
 `installed\x64-windows\bin` — so the list is whatever the overlay's install tree really holds
-(expected: FFmpeg's `avcodec`, `avformat`, `avutil`, `swscale`, `swresample`, `avfilter`, `avdevice`
-DLLs, `dav1d.dll`, `SvtAv1Enc.dll` and anything they import) — and copies the Visual C++ runtime
-(`vcruntime140*.dll`, `msvcp140.dll`) app-local from Visual Studio's redistributable folder. A DLL found
-nowhere fails the build. The list is in the workflow's `dlls.txt` artifact. Then it runs `check-ship.sh`
+(the green dry run's: FFmpeg's `avcodec`, `avdevice`, `avfilter`, `avformat`, `avutil`, `swresample`,
+`swscale`, then `dav1d.dll`, `SvtAv1Enc.dll` and its `fastfeat.dll`; §9.5 says which import pulls each in)
+— and copies the Visual C++ runtime (`vcruntime140*.dll`, `msvcp140.dll`) app-local from Visual Studio's
+redistributable folder. A DLL found nowhere fails the build. Each DLL is printed with its size and the
+modules that import it (`dlls: ship avfilter-11.dll  3,858,432 bytes  <- avdevice-62.dll`; "(delay)" marks
+a delay-load import), and the same lines are the workflow's `dlls.txt` artifact; the package step then
+lists the staged files with their sizes. Then it runs `check-ship.sh`
 with Git for Windows' `bash.exe` by its path (a bare `bash` on a hosted runner can be WSL's launcher):
 on a PE file it checks the development strings, `--version` (which loads every imported DLL, so it runs
 once they are beside the executable) and the GUI subsystem (no console window); the ELF checks (build id,
@@ -166,8 +169,9 @@ AOM Patent License 1.0) and dav1d (BSD-2-Clause) need their notices reproduced: 
 
 Jobs: `version`; `linux` (Ubuntu 24.04: GPUI fetch + patches, the client's FFmpeg from
 `tools/build-ffmpeg.sh` (cached with its sources), the assets (`tools/fetch-assets.mjs`), `cargo test -p
-decibell-release`, the ship build, `package.sh` with appimagetool + the type-2 runtime, checks: tarball
-contents, `dpkg-deb --info/--contents`, `desktop-file-validate`, the AppImage's `--version`, `install-size.sh`);
+decibell-release`, the ship build, `package.sh` with appimagetool + the type-2 runtime, checks: the
+tarball's and the `.deb`'s files, the kind and version in each package's `resources/install.json` (the
+AppImage's from `--appimage-extract`), `desktop-file-validate`, the AppImage's `--version`, `install-size.sh`);
 `windows` (the same vcpkg pin, overlay and binary cache key as the Windows Native Check's gpui-client job,
 the ship build, `package.ps1`, `test-install.ps1`, `tools/perf/windows/install-size.ps1` on the staged
 tree); `publish` (tags only): the feed (`packaging/feed.py`), signed when the `UPDATE_SIGNING_KEY` secret
@@ -186,8 +190,10 @@ downloads `latest.yml` / `latest-linux.yml` / `latest-mac.yml` from it. **A nati
 - native releases are created with `--latest=false` (never the default) and are **not** pre-releases (they
   are real releases of this client; a pre-release flag would also hide them from people browsing);
 - the channel release `native-latest` is a **pre-release** (it can never be "latest") holding only the feed;
-- after publishing, the workflow reads `releases/latest` back and **fails loudly** if it names a `native-*`
-  tag, printing the repair: `gh release edit <the newest ev* tag> --latest --repo sunkhan/decibell`;
+- after publishing, the workflow reads `releases/latest` back and **fails loudly** unless it names an `ev*`
+  tag, printing the repair: `gh release edit <the newest ev* tag> --latest --repo sunkhan/decibell`; a read
+  that fails five times fails the run too (with the command to check by hand), so an unchecked release never
+  looks checked;
 - the native updater **never asks for `releases/latest`** and ignores Electron's tags and assets (§6).
 
 ## 6. Updates
@@ -363,7 +369,9 @@ it for the next start. Nothing at rest: the sender thread exists while a report 
 
 ## 9. Measurements
 
-See the tables below (this machine; filled by the packaging work, 2026-11-26).
+See the tables below (this machine; filled by the packaging work, 2026-11-26). Install sizes are
+`tools/perf/install-size.sh` / `install-size.ps1` figures, whose "MB" is 2^20 bytes (Electron's 417.0 MB
+too); download and binary sizes are 10^6 bytes, with the byte counts beside them.
 
 ### 9.1 Size by crate (ship build, `packaging/size-by-crate.py`)
 
@@ -373,6 +381,10 @@ before this target directory's first build, so `cargo clean -p ffmpeg-sys-next` 
 profile `release` (opt-level 3, fat LTO, 1 codegen unit, abort on panic, as it then was: unwinding since
 `wip/fix-app` adds 9.9 MB, §9.2): **79.6 MB stripped**
 (79,590,608 bytes; `.text` 62.4 MB, `.rodata` 10.9 MB, `.eh_frame` + header 4.1 MB, `.data.rel.ro` 1.9 MB).
+**On the branch head (`95b52d40`, 2026-11-27) the stripped ship binary is 90.65 MB** (90,654,928 bytes; the
+CI build of the same commit 90.03 MB, 90,032,248 bytes, Ubuntu's toolchain): +9.93 MB from the unwinding
+profile (§9.2), +1.1 MB from what merged since `9605d9f` (`decibell-media`, the core's audio work and the
+rest). The breakdown below is still the one of `9605d9f` (not re-run on the head).
 Its sized symbols (67.8 MB of it; the rest is section overhead and data without symbols), by crate:
 
 | Share | Crate (Rust) or archive ([C]) |
@@ -394,8 +406,10 @@ Inside libavcodec: the VP9 software decoder 1.72 MB, H.264 1.33 MB, shared DSP 0
 0.13 MB.
 
 **Could go (listed, not changed: the FFmpeg prefix and GPUI's features are shared work):**
-- `libavdevice`: built into the prefix, nothing of it reaches the binary — `--disable-avdevice` only
-  shortens the FFmpeg build;
+- `libavdevice`: 47 bytes reach the binary — `avdevice_register_all`, which `ffmpeg_next::init()` calls
+  because the core keeps ffmpeg-next's `device` feature, registering nothing (the prefix is built with no
+  device); `--disable-avdevice` would need that feature off (§9.5) and saves nothing but FFmpeg build time.
+  `libavfilter`'s 0.10 MB is used: the VAAPI encoder's `scale` / `scale_vaapi` graph (`encoder_vaapi.rs`);
 - GPUI enables every `image` format through Zed's workspace manifest (`vendor/zed/Cargo.toml`: `exr`,
   `tiff`, `dds`, `hdr`, `tga`, `pnm`, `qoi`, `ff`, `rayon`); the client decodes JPEG / PNG / GIF / WebP / BMP:
   **~0.7 MB** (EXR + TIFF and the rest) with a GPUI patch to that list;
@@ -460,17 +474,115 @@ throwaway profile, no saved sign-in: the window shows the sign-in page. The app 
 without services (a ship build would otherwise put its at-rest key in the session keyring: §10). Electron's
 numbers are HANDOFF §4's (0.9.4 on this machine); its startup and memory rows are taken signed in with
 `#general` open, which the ship build cannot do against the test stack (it never honours `DECIBELL_CENTRAL`):
-the development build's signed-in rows are HANDOFF §4's "Shell" table.
+the development build's signed-in rows are HANDOFF §4's "Shell" table. The install and download rows were
+re-measured on the branch head's ship build (`95b52d40`, unwinding, 2026-11-27, `packaging/linux/package.sh
+--kinds tarball,deb`; the AppImage only in CI, which has the AppImage tools); the startup, memory, CPU, wakeup
+and frame rows are still `9605d9f`'s (abort on panic): §9.2's unwinding comparison found no difference in
+startup or memory.
 
 | Target | Electron 0.9.4 | Target | Ship build |
 |---|---|---|---|
-| Install size (`tools/perf/install-size.sh` on the unpacked tarball) | 417.0 MB | ≤ 104 MB | **77.1 MB** (14 files: the binary 75.9, the licences 1.1) — 0.18 × Electron |
-| Download | — | — | tarball 23.2 MB (xz), `.deb` 24.1 MB |
+| Install size (`tools/perf/install-size.sh` on the unpacked tarball) | 417.0 MB | ≤ 104 MB | **87.6 MB** on the head's ship build (14 files: the binary 86.5, the licences 1.1; on disk 87.7) — 0.21 × Electron; CI's build of the same commit 87.0 MB. (77.1 MB at `9605d9f` with abort on panic.) Windows: §9.5 |
+| Download | — | — | head, here: tarball 26.5 MB (26,542,704 bytes, xz), `.deb` 27.7 MB (27,742,720; Installed-Size 90,881 KiB); CI (§10): tarball 26.3 MB, `.deb` 27.5 MB, AppImage 37.0 MB (squashfs, less compressed than the xz tarball), Windows installer 28.3 MB. (Tarball 23.2 MB and `.deb` 24.1 MB at `9605d9f`.) |
 | Startup: launch → first frame presented (`tools/perf/startup.sh`, the app's `first-frame` marker; median of 5 warm runs, 1 discarded) | 671 ms (saved sign-in) | ≤ 224 ms | **159 ms** (158–176) at the sign-in page; the development build of the same commit: 170 ms (163–171) |
 | Idle private memory (`tools/perf/measure.sh`, 20 s settle + 40 s) | 341.7 MB (`#general`) | ≤ 114 MB | **70.1 MB** at the sign-in page (private dirty 30.9, PSS 87.3, RSS 130.7; GPU memory 58.2 MB) |
 | Idle CPU | 14.5 % / 0.5 % | ≤ 1.45 % | **0.012 %** of a core |
 | Own wakeups at rest | 4,292 / s | ≤ 30 / s | **0.0 / s** (NVIDIA's `[vkps] Update` 4.0 / s, one unnamed driver thread 0.5 / s); 37 threads |
 | Frames at rest (KWin's damage events; the app's own counters on `SIGUSR1`) | 276 / s | 0 | **0 / s** over 40 s (the app's counters: 3 frames drawn in the minute after its first 5 s, all during the settle; load 7–8 at that run, private memory 73.9 MB then) |
+
+### 9.5 The Windows install
+
+The dry run's staged install (run 46016294456, §10; what the installer puts in
+`%LOCALAPPDATA%\Programs\Decibell Native`, less the uninstaller): **99.6 MB in 15 files** (104,488,403
+bytes; `tools/perf/windows/install-size.ps1`). **The target is a quarter of Electron's Windows install,
+which nobody has measured yet** (on the same machine: `tools\perf\windows\install-size.ps1
+"$env:LOCALAPPDATA\Programs\decibell-electron-client"`). If it is as large as Electron's Linux install
+(417.0 MB) the limit is 104.25 MB and this is 0.24 × Electron, 4.6 MB under; it is over if Electron's
+Windows install is under 398.6 MB.
+
+| File | Bytes | MB | Share | Imported by |
+|---|---|---|---|---|
+| `decibell.exe` | 73,023,488 | 69.64 | 69.9 % | — |
+| `avcodec-62.dll` | 14,661,632 | 13.98 | 14.0 % | the exe, avformat, avdevice, avfilter |
+| `SvtAv1Enc.dll` | 5,374,976 | 5.13 | 5.1 % | avcodec (`libsvtav1`) |
+| `avfilter-11.dll` | 3,858,432 | 3.68 | 3.7 % | **avdevice** (below) |
+| `avformat-62.dll` | 2,488,320 | 2.37 | 2.4 % | the exe (attachment playback), avdevice, avfilter |
+| `dav1d.dll` | 1,817,600 | 1.73 | 1.7 % | avcodec (`libdav1d`) |
+| `licenses/THIRD_PARTY_LICENSES.md` | 1,008,345 | 0.96 | 1.0 % | — |
+| `avutil-60.dll` | 1,001,472 | 0.96 | 1.0 % | the exe and every FFmpeg DLL |
+| `swscale-9.dll` | 750,592 | 0.72 | 0.7 % | **avfilter** (its `scale` filter); nothing of ours calls it on Windows (the core's swscale is the Linux encoder's) |
+| `vcruntime140.dll`, `vcruntime140_1.dll` | 176,488 + 50,544 | 0.22 | 0.2 % | the exe and the MSVC-built DLLs (`_1`: C++ exception handling); the log lost which size is which file |
+| `swresample-6.dll` | 128,512 | 0.12 | 0.1 % | the exe (attachment audio), avfilter |
+| `avdevice-62.dll` | 74,752 | 0.07 | 0.1 % | **the exe** (below) |
+| `fastfeat.dll` | 73,216 | 0.07 | 0.1 % | **SvtAv1Enc** (below) |
+| `resources/install.json` | 34 | 0.00 | — | — |
+
+The sizes are the run's (its staged listing lost the file names, so the names come from the same sizes in
+the vcpkg step's `bin` listing and the walk's order; `package.ps1` now prints them). The importers are read
+from the code and the FFmpeg and SVT-AV1 sources, not from that run, whose walk printed no importers (the
+column lists only the certain ones): `dlls.py` now prints every importer, so the next dry run's `dlls: ship`
+lines confirm or correct it.
+
+**The three that look unused:**
+- **`avdevice-62.dll` ← `decibell.exe`.** The core's Windows dependency is `ffmpeg-next = "8"`
+  (`crates/decibell-core/Cargo.toml`), with ffmpeg-next's default features, `device` and `filter` among them
+  (`cargo tree --target x86_64-pc-windows-msvc -e features -i ffmpeg-sys-next` on the ship build: they
+  come from `decibell-core` alone; `decibell-video` and `decibell-media` ask for avcodec / avformat /
+  swresample only). With `device` on, `ffmpeg_next::init()` calls `avdevice_register_all`, and the core
+  calls `init()` (`encoder_probe::build_id`, the encoders), so the exe imports avdevice. On Linux the same
+  call is the 47 bytes of libavdevice in §9.1. Nothing of ours opens a device through FFmpeg (capture is
+  WGC / DXGI and WASAPI). The same DLL pulls in `AVICAP32.dll` (Windows' own, free: its `vfwcap` device).
+- **`avfilter-11.dll` ← `avdevice-62.dll`.** vcpkg builds avdevice with its input devices, `lavfi` among
+  them (`lavfi_indev_deps="avfilter"`), and FFmpeg's configure then links libavdevice against libavfilter
+  (`enabled lavfi_indev && prepend avdevice_deps "avfilter"`). The exe calls nothing in it:
+  `ffmpeg_next::init()` registers filters only before FFmpeg 5, and the core's one filter graph (the VAAPI
+  encoder's) is Linux-only. FFmpeg's configure also links libavfilter against libswscale, libswresample,
+  libavformat and libavcodec for the filters that use them (`scale`, `aresample`, `movie`, …), which is
+  how **`swscale-9.dll`** gets in: the core calls swscale only in the Linux encoder (`encoder_linux.rs`),
+  and nothing in the client's crates calls it.
+- **`fastfeat.dll` ← `SvtAv1Enc.dll`: used.** SVT-AV1's global motion search finds corners with FAST
+  (`Source/Lib/Codec/corner_detect.c` → `svt_aom_fast9_detect_nonmax`, from `global_me.c`); the overlay's
+  svt-av1 port (vcpkg's `unvendor-fastfeat.diff`) links it from the separate `fastfeat` port instead of
+  compiling SVT-AV1's own copy in. Dropping that patch would move the same code into `SvtAv1Enc.dll`: one
+  file fewer, a few KB of PE overhead saved. Not worth a port change.
+
+**Dropping avdevice and avfilter saves 3.93 MB of install (3.75 in the table's MB: 99.6 → 95.9 MB), and
+with them `swscale-9.dll` if the next run's walk shows avfilter as its only importer: 4.68 MB (4.47; 99.6 →
+95.2 MB)**. The installer's saving is not measured (LZMA, perhaps 1.5–2 MB). What it takes:
+1. **The core's Windows dependency without `device` and `filter`**:
+   `ffmpeg-next = { version = "8", default-features = false, features = ["codec", "format",
+   "software-resampling", "software-scaling"] }` in `crates/decibell-core/Cargo.toml`'s Windows section (the
+   Linux section keeps `filter`: the VAAPI encoder uses it). Then nothing imports avdevice and the DLL walk
+   drops it, avfilter and whatever only avfilter imported, by itself. **Not made**: the core is shared with
+   the Electron addon. It has to pass Electron's whole bar (CLAUDE.md: `npx napi build`, `smoke-load.cjs`,
+   both crates' `cargo test --lib`) on Linux and on Windows (CLAUDE.md's Windows bar: the addon built and
+   loaded there), the Windows Native Check (its addon job compiles the core against upstream
+   `ffmpeg[nvcodec,amf,qsv]`; its gpui-client job builds and runs this client against the overlay),
+   Electron's Windows package (electron-builder ships `native/*.dll`, whatever the build put there: the addon
+   must still load from the installed app), this workflow's dry run (the `dlls: ship` lines, check-ship's and
+   the installed app's `--version`) and, on Windows hardware, the owner's encoder checks
+   (`crates/decibell-core/tools/verify-encoders.md`: the probe calls `init()`, which would no longer register
+   devices).
+2. Then, optionally, the vcpkg install without them (`ffmpeg[core,avcodec,avformat,swresample,swscale,
+   nvcodec,amf,qsv,dav1d,svt-av1]` in this workflow and the Windows Native Check's gpui-client job): only a
+   shorter FFmpeg build. **This alone fails the build**: with its `avdevice` feature on, ffmpeg-sys-next
+   generates bindings from `libavdevice/avdevice.h` and, when vcpkg has none, from `/usr/include/...`
+   (`build.rs`'s `search_include`), so it can't come before step 1. Nothing confined to the overlay or the
+   client's crates removes the import: the feature is the core's, and a delay-load would only move the
+   failure to run time.
+
+**The larger Windows lever is FFmpeg's own build.** vcpkg's FFmpeg is a general build (every decoder,
+encoder, demuxer and filter its features allow): the seven FFmpeg DLLs take 21.9 MB, against 9.2 MB for
+the same libraries in the Linux binary, built `--disable-everything` with the client's list
+(`tools/build-ffmpeg.sh`) and dead-stripped by the link. The overlay's `portfile.cmake` could take the
+same list plus Windows' own parts (NVENC / AMF / Quick Sync encoders, D3D11VA / D3D12VA and NVDEC
+hwaccels, `libsvtav1`, `libdav1d`, the attachment demuxers and decoders): it is this client's alone
+(Electron installs upstream FFmpeg without the overlay). DLLs keep their exports and aren't stripped across
+libraries, so expect less than the 12.7 MB difference; measure it. Not made: a component left out fails a
+vendor path only at run time, on hardware the dry run doesn't have, so it needs the owner's Windows checks
+per vendor (`docs/windows-owner-checks.md`) before it ships. `decibell.exe` itself (69.6 MB) is the Rust
+code: about the Linux binary's 86.5 MB less its 17.5 MB of C codecs; §9.2's levers (cold crates at
+opt-level `s`) apply to both.
 
 ## 10. Read-only and isolated runs
 
@@ -544,6 +656,53 @@ throwaway keyring holds **one item, label `Decibell`, `url decibell://e2ee-local
 key is created at the first start, before any sign-in (§11, item 10); the profile holds only
 `instance.lock`, `instance.sock` and `video-decoders.txt`.
 
+**The release workflow's dry run is green: run
+[46016294456](https://github.com/sunkhan/decibell/actions/runs/46016294456) on `95b52d40`** (2026-11-27,
+a push to `gpui-client`, the fourth round; the earlier ones failed on, among others, the Linux build's
+system packages, the order of the Windows DLL copy and check, and `licenses.py` decoding as Windows' code
+page). `PUBLISH` was false: no `publish` job, nothing baked, no release, tag or channel. What it proved:
+
+- **Version**: 0.9.4, read from `electron-client/package.json`.
+- **Linux** (Ubuntu 24.04): `tools/build-ffmpeg.sh` built the client's static FFmpeg 8.1.3 / dav1d 1.5.3 /
+  SVT-AV1 4.2.0; `cargo test -p decibell-release` passed; the ship build linked with the workflow's package
+  list; `check-ship.sh` accepted it (a ship build of 0.9.4: build id, no RPATH, only the allowed shared
+  libraries, no development strings); `package.sh` stripped it to 90,032,248 bytes (build id `4cefcc53…`,
+  symbols in a 48,413,568-byte `.debug`), wrote the licences (662 crates, 1,159 KiB) and built the tarball
+  (26,337,260 bytes), the AppImage (36,956,664) and the `.deb` (27,533,732; Installed-Size 90,276 KiB, its
+  Depends computed); the tarball holds the program, its `install.json`, desktop entry, icon and licences;
+  `dpkg-deb` reads the `.deb`; the desktop entry validates; **the AppImage runs** (`--version` printed
+  `decibell 0.9.4` through `APPIMAGE_EXTRACT_AND_RUN`, which needs no FUSE); the unpacked tarball is
+  **87.0 MB in 14 files** (`install-size.sh`). The FFmpeg, dav1d and SVT-AV1 source archives (11,732,036, 1,217,030 and
+  11,070,537 bytes) and `build-ffmpeg.sh` were attached. Artifact `gpui-linux`: 129,076,884 bytes.
+- **The AppImage tools** (no pins set, so the dry run printed them): appimagetool sha256
+  `e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03`, type-2 runtime sha256
+  `617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46` (GitHub's `continuous` builds as
+  fetched that day; §11, item 3).
+- **Windows** (`windows-latest`): vcpkg at `e5a1490e` with this client's overlay built FFmpeg 8.0.1 with
+  NVENC / AMF / Quick Sync, dav1d and SVT-AV1 4.2.0; `cargo test -p decibell-release` passed; the ship build
+  linked (icon and version resources, GPUI's manifest); the DLL walk shipped 12 DLLs (ten from vcpkg, the
+  two Visual C++ runtime files from Visual Studio 18's MSVC 14.52 redistributable) and found nothing missing;
+  `check-ship.sh` (Git for Windows' bash) accepted the staged exe: no development strings, `--version` with
+  every imported DLL loading, the GUI subsystem; licences 540 crates (984 KiB); **NSIS built
+  `Decibell-0.9.4-x64-setup.exe`, 28,301,700 bytes**; `test-install.ps1` installed it silently into a
+  temporary folder, found the files, the `decibell://` keys and the Apps & features entry, **the Start menu
+  shortcut's AppUserModelID `com.decibell.native`**, ran `decibell 0.9.4` from the install, uninstalled
+  silently and found nothing left; the staged install is **99.6 MB in 15 files** (§9.5). Artifact
+  `gpui-windows`: 28,295,887 bytes.
+- **Not proved by a dry run**: the `publish` job (the feed, its signature, `gh release create
+  --latest=false`, the channel, the `releases/latest` guard: tags only; the guard's script was run here
+  against a stand-in `gh` answering an `ev*` tag, a `native-*` tag, a `v*` tag, an empty answer and an error);
+  the app beyond `--version` on Windows (the owner's checks); an AppImage updating itself on a desktop;
+  the Windows install size against its target (§9.5).
+
+Changed since that run (this round; the next dry run checks them): the package checks also read each
+package's `install.json` (kind and version; the AppImage's through `--appimage-extract`) and the `.deb`'s file
+list; the vcpkg step fails on a failed `git fetch` / `checkout` / bootstrap (pwsh doesn't stop on a native
+command's exit code: a failed checkout would have built from the runner's own vcpkg, unpinned, and passed);
+the install-size step runs `install-size.ps1` unconditionally (it passed with a message when the script
+was missing); the guard fails when it can't read `releases/latest` (it passed) and on any latest that
+isn't an `ev*` tag (it failed only on `native-*`); `dlls.py` prints each DLL's size and importers; `package.ps1` lists the staged files with their names (the run's listing printed sizes only).
+
 ## 11. Decisions and work for the owner
 
 1. **The tag pattern and version rule**: `native-v<VER>`, `VER` = `electron-client/package.json`'s version at
@@ -552,10 +711,22 @@ key is created at the first start, before any sign-in (§11, item 10); the profi
    with it).
 2. **The signing key** (§6): make it, set `UPDATE_PUBLIC_KEY` (variable) and either `UPDATE_SIGNING_KEY`
    (secret) or sign by hand. Until then feeds are unsigned and trusted as Electron trusts its own.
-3. **Pin the AppImage tools**: the dry run prints `appimagetool sha256 …` and `runtime sha256 …`; put them in
-   the variables `APPIMAGETOOL_SHA256` / `APPIMAGE_RUNTIME_SHA256` (and, to stop following GitHub's
-   `continuous` builds, `APPIMAGETOOL_URL` / `APPIMAGE_RUNTIME_URL` at a versioned release). A tag run
-   refuses to package without the hashes.
+3. **Pin the AppImage tools.** The green dry run (§10) printed, for GitHub's `continuous` builds as fetched on
+   2026-11-27:
+
+   | Repository variable | Value |
+   |---|---|
+   | `APPIMAGETOOL_SHA256` | `e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03` |
+   | `APPIMAGE_RUNTIME_SHA256` | `617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46` |
+
+   Where: github.com/sunkhan/decibell → **Settings → Secrets and variables → Actions → the Variables tab** →
+   New repository variable, once per name (variables, not secrets: the workflow reads `vars.…`; a secret of
+   that name is never read). Or `gh variable set APPIMAGETOOL_SHA256 --repo sunkhan/decibell --body <value>`,
+   the same for the runtime. Once set, every run (dry runs too) refuses a download with another hash, and a
+   tag run refuses to package without both. `continuous` is rebuilt upstream from time to time, so these
+   pins will one day fail a run loudly: then either check the new build and pin the hash the run printed, or
+   set `APPIMAGETOOL_URL` / `APPIMAGE_RUNTIME_URL` to a numbered release's file (same Variables tab) and
+   pin that file's hash, which the next dry run prints.
 4. **Publishing**: push the first `native-v<VER>` tag when the client should reach users; the workflow
    creates the release (never "latest") and the channel. Nothing was published from this work.
 5. **The project's licence**: the repository has no `LICENSE` file; `aur/PKGBUILD` (Electron) says MIT,
@@ -567,8 +738,8 @@ key is created at the first start, before any sign-in (§11, item 10); the profi
    the name `decibell-bin`.
 7. **Windows naming while both clients ship**: install folder and shortcut "Decibell Native",
    AppUserModelID `com.decibell.native`, uninstall key `DecibellNative` (`decibell.nsi`,
-   `APP_USER_MODEL_ID`). At the switch-over they can become Electron's (`Programs\Decibell`,
-   `com.decibell.app`), which also moves existing pins. **Code signing**: neither client is signed;
+   `APP_USER_MODEL_ID`). At the switch-over they can take Electron's (`Programs\decibell-electron-client`, the
+   shortcut "Decibell", `com.decibell.app`), which also moves existing pins. **Code signing**: neither client is signed;
    SmartScreen warns on a new unsigned installer. An Authenticode certificate would be applied after
    `makensis` (`signtool sign` on `decibell.exe` before packing and on the installer).
 8. **How often to check**: Electron checks once per start and on "Check now"; so does this client
@@ -598,6 +769,13 @@ key is created at the first start, before any sign-in (§11, item 10); the profi
     In every case: what happens to `releases/latest` (Electron's until its last release), the AUR names
     (`decibell-bin` → native?), and the profile (the native client starts with a fresh one).
 12. **Size levers left on the table** (§9): the items listed there under "could go".
+13. **The Windows install against its target** (§9.5): 99.6 MB, against a quarter of Electron's Windows
+    install, which needs measuring on the same Windows machine (`tools\perf\windows\install-size.ps1
+    "$env:LOCALAPPDATA\Programs\decibell-electron-client"`): under it if Electron's is 398.6 MB or more. If it
+    is over: the core's Windows FFmpeg dependency without `device` / `filter` drops avdevice and avfilter
+    (and probably swscale): 3.9–4.7 MB, a change to the shared core with Electron's bar (§9.5); trimming the
+    overlay's FFmpeg build to the client's codec list is the larger lever, checked per vendor on Windows
+    hardware.
 
 ## 12. macOS
 

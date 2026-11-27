@@ -620,7 +620,8 @@ private session bus (`tools/perf/electron-local.sh`). Take the real baseline on 
 `tools/dev/local-stack.sh up && tools/perf/scenarios.sh electron all` (~24 min) → `tools/perf/results/electron-baseline.md`.
 
 **The ship build** (2026-11-27, `PACKAGING.md` §9: the `ship` flavour of this client at base `9605d9f`, stripped,
-outside a package, at the sign-in page): install **77.1 MB** (Electron 417.0), first frame **159 ms**, idle
+outside a package, at the sign-in page): install **77.1 MB** (Electron 417.0; **87.6 MB** on the branch head's ship
+build, unwinding and the merges since: `PACKAGING.md` §9.4; Windows 99.6 MB, §9.5), first frame **159 ms**, idle
 **70.1 MB** private (30.9 dirty, PSS 87.3), 0.012 % of a core, **0 own wakeups / s**, **0 frames / s** at rest; no
 network at all without a saved sign-in. Size levers measured there (the ship flavour −7.0 MB, packed relocations
 −2.6 MB, opt-level `s` −22 MB but the list's paint ~1.75×, thin LTO +17.5 MB): the release profile is unchanged.
@@ -1294,9 +1295,16 @@ Release build, RTX 4080 (NVIDIA 595), KDE Wayland; other agents' builds ran besi
 
 Things only the owner can do; nothing here blocks the rest.
 
-- **Shipping the native client** (`PACKAGING.md` §11): the tag pattern (`native-v<VER>`), the update signing
+- **Shipping the native client** (`PACKAGING.md` §11). The release workflow's dry run is green (run 46016294456
+  on `95b52d40`, `PACKAGING.md` §10: Linux tarball / AppImage / `.deb` built and checked, the AppImage runs;
+  Windows installer built, installed, run and uninstalled on the runner; nothing published). For the owner: the
+  tag pattern (`native-v<VER>`), the update signing
   key (`UPDATE_PUBLIC_KEY` variable + `UPDATE_SIGNING_KEY` secret, or signing by hand), pinning the AppImage
-  tools' hashes from the dry run's log, the project's licence (no `LICENSE` file; the LGPL needs one that
+  tools: repository variables (Settings → Secrets and variables → Actions → Variables) `APPIMAGETOOL_SHA256` =
+  `e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03` and `APPIMAGE_RUNTIME_SHA256` =
+  `617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46` (§11 item 3), measuring Electron's
+  Windows install: the native one is 99.6 MB against a quarter of it (`PACKAGING.md` §9.5, §11 item 13), the
+  project's licence (no `LICENSE` file; the LGPL needs one that
   allows relinking), the AUR name `decibell-native-bin`, Windows names and code signing while both clients
   ship, the re-check interval, Sentry debug-file uploads, and how Electron users move over. On Windows (never
   run here): install, `decibell://`, the shortcut's taskbar grouping, an update with its trial start and a

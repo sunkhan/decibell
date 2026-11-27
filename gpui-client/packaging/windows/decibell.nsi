@@ -32,8 +32,9 @@ Unicode true
 !insertmacro REQUIRE OUTFILE
 
 !define PRODUCT "Decibell"
-; While the Electron client ships, its installer owns %LOCALAPPDATA%\Programs\Decibell and its
-; shortcut "Decibell": the native client installs beside it (owner decision at the switch-over).
+; While the Electron client ships, its installer owns %LOCALAPPDATA%\Programs\decibell-electron-client
+; (electron-builder's one-click default: the package name) and the shortcut "Decibell": the native client
+; installs beside it under its own names (owner decision at the switch-over).
 !define DIR_NAME "Decibell Native"
 !define SHORTCUT "Decibell Native"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DecibellNative"
