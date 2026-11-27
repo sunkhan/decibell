@@ -217,22 +217,36 @@ async fn themes(cx: TestCx) -> Result<()> {
     let original = cx.update(|_, cx| cx.theme().id)?;
     let start = original.index();
     // Every other theme in turn, ending back on the one we started with.
+    // The desktop is shared: the window's activation changing (the compositor activating a
+    // window just opened, another window taking the focus) or the pointer crossing it during a
+    // switch redraws it too. Such a switch is measured again from the theme before it.
+    let desktop = |cx: &TestCx| cx.update(|window, _| (window.is_window_active(), window.mouse_position()));
     for step in 1..=ThemeId::ALL.len() {
         let id = ThemeId::ALL[(start + step) % ThemeId::ALL.len()];
-        let before = cx.settle().await?;
-        cx.update(|_, cx| Theme::set(cx, id))?;
-        let after = cx.settle().await?;
-        let frames = after.since(before);
-        ensure!(
-            cx.update(|_, cx| cx.theme().id)? == id,
-            "the theme did not change to {id}"
-        );
-        ensure!(
-            frames.drawn == 1 && frames.presented == 1,
-            "switching to {id} drew {} and presented {} frames, expected 1 and 1",
-            frames.drawn,
-            frames.presented
-        );
+        let previous = cx.update(|_, cx| cx.theme().id)?;
+        for attempt in 1..=3 {
+            let before = cx.settle().await?;
+            let state = desktop(&cx)?;
+            cx.update(|_, cx| Theme::set(cx, id))?;
+            let after = cx.settle().await?;
+            let frames = after.since(before);
+            ensure!(
+                cx.update(|_, cx| cx.theme().id)? == id,
+                "the theme did not change to {id}"
+            );
+            if frames.drawn == 1 && frames.presented == 1 {
+                break;
+            }
+            let what = format!("switching to {id} drew {} and presented {} frames, expected 1 and 1", frames.drawn, frames.presented);
+            if desktop(&cx)? == state {
+                bail!("{what}");
+            }
+            if attempt == 3 {
+                return Err(decibell_harness::inconclusive(format!("{what}, and the desktop disturbed the window on three tries")));
+            }
+            cx.log(format_args!("{what} while the window's focus or the pointer changed: again"));
+            cx.update(|_, cx| Theme::set(cx, previous))?;
+        }
     }
     cx.log("7 switches, one frame each");
 
