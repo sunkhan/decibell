@@ -77,6 +77,12 @@ pub struct Layout {
 
 /// Lays out `message`'s attachments for `space` (see the module doc).
 pub fn layout(message: &Message, space: SlotSpace, style: &ContentStyle) -> Layout {
+    layout_with(message, space, style, None)
+}
+
+/// [`layout`] while the audio attachment `failed.0` shows why it cannot be played: its card is
+/// taller by that line (`AudioItem`'s `<p>` under the transport row).
+pub fn layout_with(message: &Message, space: SlotSpace, style: &ContentStyle, failed: Option<&(i64, SharedString)>) -> Layout {
     if message.attachments.is_empty() {
         return Layout::default();
     }
@@ -168,7 +174,11 @@ pub fn layout(message: &Message, space: SlotSpace, style: &ContentStyle) -> Layo
         } else if a.kind == AttachmentKind::Audio {
             // `mt-2 p-3 gap-2.5`: a 40 px head (or its text, if taller), a 32 px transport row.
             let head = (style.line(&style.audio_name) + style.line(&style.meta_105)).max(40.);
-            let h = 2. + 24. + head + 10. + 32.;
+            let mut h = 2. + 24. + head + 10. + 32.;
+            if let Some((_, reason)) = failed.filter(|failed| failed.0 == a.id) {
+                // `gap-2.5`, then `text-[11px]` wrapping in the card's content box.
+                h += 10. + style.height(&audio_error_text(reason), &style.error, decibell_text::Wrapping::NORMAL, card_w - 2. - 24.);
+            }
             pieces.push(Piece::Audio { y: y + MEDIA_MARGIN, w: card_w, h, index });
             y += MEDIA_MARGIN + h;
         } else {
@@ -180,6 +190,18 @@ pub fn layout(message: &Message, space: SlotSpace, style: &ContentStyle) -> Layo
         }
     }
     Layout { height: y, pieces, sorted }
+}
+
+/// `Failed to load: {error}`.
+fn audio_error_text(reason: &str) -> String {
+    format!("Failed to load: {reason}")
+}
+
+/// The layout as the slot draws it now: with the failed audio attachment's line.
+fn layout_now(message: &Message, space: SlotSpace, style: &ContentStyle, cx: &App) -> Layout {
+    let playback = crate::playback::Playback::global(cx);
+    let failed = playback.as_ref().and_then(|playback| playback.read(cx).failed_audio());
+    layout_with(message, space, style, failed)
 }
 
 /// `formatFileSize`.
@@ -355,16 +377,16 @@ impl RowSlot for AttachmentSlot {
         if message.attachments.is_empty() {
             return 0.;
         }
-        layout(message, space, &ContentStyle::get(cx, space.scale)).height
+        layout_now(message, space, &ContentStyle::get(cx, space.scale), cx).height
     }
 
     fn element(&self, message: &Arc<Message>, server: Option<ServerId>, space: SlotSpace, window: &mut Window, cx: &mut App) -> AnyElement {
         let style = ContentStyle::get(cx, space.scale);
-        let layout = layout(message, space, &style);
+        let layout = layout_now(message, space, &style, cx);
         let list = window.current_view();
         let mut root = div().relative().w(px(space.width)).h(px(layout.height));
         for piece in &layout.pieces {
-            root = root.child(self.piece(message, server, &layout, piece, space, list, &style, cx));
+            root = root.child(self.piece(message, server, &layout, piece, space, list, &style, window, cx));
         }
         root.into_any_element()
     }
@@ -442,6 +464,7 @@ impl AttachmentSlot {
         space: SlotSpace,
         list: EntityId,
         style: &Rc<ContentStyle>,
+        window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -457,7 +480,7 @@ impl AttachmentSlot {
                     }
                     Media::Video { y, w, h, poster, index } => {
                         let a = &layout.sorted[*index];
-                        row_div = row_div.child(video_card(message, server, a, *y, *w, *h, *poster, space, style, cx));
+                        row_div = row_div.child(video_card(message, server, a, *y, *w, *h, *poster, space, style, window, cx));
                     }
                     Media::Grid { y, w, h, cells } => {
                         let radius = theme.radius_md - px(1.);
@@ -471,7 +494,7 @@ impl AttachmentSlot {
                                 bottom_left: if cell.corners[3] { radius } else { px(0.) },
                             };
                             let child = if a.kind == AttachmentKind::Video {
-                                grid_video(message, server, a, cell, corners, space, style, cx)
+                                grid_video(message, server, a, cell, corners, space, style, window, cx)
                             } else {
                                 self.image(message, server, a, cell.x, cell.y, cell.w, cell.h, space, list, true, corners, cx)
                             };
@@ -674,9 +697,9 @@ impl AttachmentSlot {
 /// with the play button, the bar with the name and size (`VideoItem`). Playing is the persistent
 /// player's (another crate): a click sets `chat.video`'s active attachment.
 #[allow(clippy::too_many_arguments)]
-fn video_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, y: f32, w: f32, h: f32, poster: f32, space: SlotSpace, style: &Rc<ContentStyle>, cx: &mut App) -> AnyElement {
+fn video_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, y: f32, w: f32, h: f32, poster: f32, space: SlotSpace, style: &Rc<ContentStyle>, window: &mut Window, cx: &mut App) -> AnyElement {
     let inner = cx.theme().radius_lg - px(1.);
-    let surface = video_surface(message, server, a, w - 2., poster, false, Corners { top_left: inner, top_right: inner, ..Corners::default() }, space, style, cx);
+    let surface = video_surface(message, server, a, w - 2., poster, false, Corners { top_left: inner, top_right: inner, ..Corners::default() }, space, style, window, cx);
     let theme = cx.theme();
     // `metaRight`: where it was left, else its size.
     let bar_meta = crate::playback::paused_label(&message.channel, a.id, cx).unwrap_or_else(|| format_file_size(a.size_bytes));
@@ -709,14 +732,14 @@ fn video_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn grid_video(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, cell: &GridCell, corners: Corners<Pixels>, space: SlotSpace, style: &Rc<ContentStyle>, cx: &mut App) -> AnyElement {
+fn grid_video(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, cell: &GridCell, corners: Corners<Pixels>, space: SlotSpace, style: &Rc<ContentStyle>, window: &mut Window, cx: &mut App) -> AnyElement {
     div()
         .absolute()
         .left(px(cell.x))
         .top(px(cell.y))
         .w(px(cell.w))
         .h(px(cell.h))
-        .child(video_surface(message, server, a, cell.w, cell.h, true, corners, space, style, cx))
+        .child(video_surface(message, server, a, cell.w, cell.h, true, corners, space, style, window, cx))
         .into_any_element()
 }
 
@@ -733,16 +756,21 @@ fn video_surface(
     corners: Corners<Pixels>,
     space: SlotSpace,
     style: &Rc<ContentStyle>,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     // Playing: the picture and its controls take the box (`PersistentVideoLayer`).
-    if let Some(stage) = crate::playback::video_stage(a.id, server.map(|server| (server, a.clone())), corners, false, style, cx) {
+    if let Some(stage) = crate::playback::video_stage(a.id, server.map(|server| (server, a.clone())), corners, false, style, window, cx) {
         return stage;
     }
     let theme = cx.theme();
     let black = gpui::black();
+    // After it was played: the frame it stopped on (`setVideoPoster`), kept in the slot it was
+    // decoded into and drawn from there. It replaces the upload's thumbnail, which is then not
+    // fetched for this box.
+    let played = crate::playback::poster(&message.channel, a.id, cx);
     let key = server
-        .filter(|s| endpoint_known(*s, cx))
+        .filter(|s| played.is_none() && endpoint_known(*s, cx))
         .and_then(|server| poster_source(server, a, w, h, space.scale))
         .map(|source| PicKey::new(source, Spec { width: w, height: h, scale: space.scale, fit: Fit::Cover, upscale: true }));
     let has_poster = key.is_some();
@@ -762,7 +790,7 @@ fn video_surface(
         |_, _, _| {},
         move |b, _, window, cx| {
             painted.set(b);
-            crate::player::host_drawn(host, b, cx);
+            crate::player::host_drawn(host, b, window, cx);
             tile.paint(b, window, cx);
         },
     )
@@ -779,7 +807,24 @@ fn video_surface(
         .justify_center()
         .when(!active, |d| d.cursor_pointer())
         .tooltip(title_tooltip(a.filename.clone()))
-        .child(surface);
+        .child(surface)
+        .children(played.map(|still| {
+            div()
+                .absolute()
+                .inset_0()
+                .child(decibell_video::StillView::new(&still).fit(decibell_video::Fit::Cover).corner_radii(corners))
+                // `bg-black/30` over a poster, as over the thumbnail.
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded_tl(corners.top_left)
+                        .rounded_tr(corners.top_right)
+                        .rounded_bl(corners.bottom_left)
+                        .rounded_br(corners.bottom_right)
+                        .bg(gpui::Hsla { a: 0.3, ..black }),
+                )
+        }));
     if !active {
         out = out.child(
             div()
@@ -858,7 +903,26 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
         (s.media_audio_volume.unwrap_or(1.) as f32, s.media_audio_muted)
     });
     let shown_volume = if muted { 0. } else { volume };
-    let (attachment, message) = (a.clone(), message.clone());
+    let playback = crate::playback::Playback::global(cx);
+    // A player that could not open or decode the file (the renderer's `error`, which it only
+    // sets when the address cannot be built).
+    let error = playback.as_ref().and_then(|playback| playback.read(cx).audio_error(a.id));
+    // `tabIndex={-1}`: the card that was pressed last has the keys.
+    let focus = playback.as_ref().and_then(|playback| {
+        let (handle, focused) = playback.read(cx).audio_focus();
+        (focused == Some(a.id)).then(|| handle.clone())
+    });
+    let (seek_group, volume_group): (SharedString, SharedString) = (format!("audio-seek-{}", a.id).into(), format!("audio-volume-{}", a.id).into());
+    let id = a.id;
+    // `onPlay`: this attachment becomes the playing one, or the playing one toggles.
+    let play: Rc<dyn Fn(&mut App)> = {
+        let (attachment, message) = (a.clone(), message.clone());
+        Rc::new(move |cx| {
+            if let Some(server) = server {
+                crate::player::play_audio(server, &message, &attachment, cx);
+            }
+        })
+    };
     let download = {
         let a = a.clone();
         move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
@@ -867,7 +931,8 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
             }
         }
     };
-    div()
+    let mut card = div()
+        .id(("audio-card", id as u64))
         .absolute()
         .left(px(0.))
         .top(px(y))
@@ -882,6 +947,32 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
         .border_color(theme.color_border)
         .bg(theme.color_bg_light)
         .shadow(theme.shadow_float.clone())
+        .children(crate::player::probe(format!("audio-card-{id}")))
+        // `onMouseDownCapture={() => wrapperRef.current?.focus()}`: a press anywhere on the
+        // card, its buttons included.
+        .capture_any_mouse_down({
+            let playback = playback.clone();
+            move |_, window, cx| {
+                if let Some(playback) = &playback {
+                    playback.update(cx, |playback, cx| playback.focus_audio(id, window, cx));
+                }
+            }
+        })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        // `onWrapperKeyDown`: Space, nothing else. The focus is the card's, never a text field's.
+        .on_key_down({
+            let play = play.clone();
+            move |event, _, cx| {
+                if event.keystroke.key == "space" {
+                    cx.stop_propagation();
+                    play(cx);
+                }
+            }
+        });
+    if let Some(focus) = &focus {
+        card = card.track_focus(focus);
+    }
+    card
         .child(
             div()
                 .flex()
@@ -934,17 +1025,27 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                         .bg(theme.color_accent)
                         .hover(|s| s.bg(theme.color_accent_hover))
                         .cursor_pointer()
-                        .tooltip(title_tooltip(if playing { "Pause" } else { "Play" }))
-                        .child(Icon::new(if playing { IconName::ContentPause } else { IconName::ContentPlay }).size(px(14.)).color(theme.color_on_accent))
+                        .tooltip(title_tooltip(if error.is_some() {
+                            "Try again"
+                        } else if playing {
+                            "Pause"
+                        } else {
+                            "Play"
+                        }))
+                        .child(if error.is_some() {
+                            // The renderer's 11 px cross (its button is disabled there; here a
+                            // click opens the player again).
+                            Icon::new(IconName::ContentErrorX).size(px(11.)).color(theme.color_on_accent)
+                        } else {
+                            Icon::new(if playing { IconName::ContentPause } else { IconName::ContentPlay }).size(px(14.)).color(theme.color_on_accent)
+                        })
+                        .children(crate::player::probe(format!("audio-play-{id}")))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _, cx| {
-                            if let Some(server) = server {
-                                crate::player::play_audio(server, &message, &attachment, cx);
-                            }
-                        }),
+                        .on_click(move |_, _, cx| play(cx)),
                 )
                 .child(
                     div()
+                        .group(seek_group.clone())
                         .relative()
                         .h_3()
                         .flex_1()
@@ -952,6 +1053,8 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                         .items_center()
                         .child(div().absolute().left_0().right_0().h(px(4.)).rounded_full().bg(theme.color_bg_lighter))
                         .child(div().absolute().left_0().h(px(4.)).w(gpui::relative(progress)).rounded_full().bg(theme.color_accent))
+                        // `h-3 w-3 … bg-bg-light`, with the glow.
+                        .child(crate::playback::thumb(progress, 12., theme.color_bg_light, true, seek_group, cx))
                         // `onScrubDown`: the active attachment's, once its duration is known.
                         .children(crate::playback::audio_scrub(a.id, cx)),
                 )
@@ -983,6 +1086,7 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                 )
                 .child(
                     div()
+                        .group(volume_group.clone())
                         .relative()
                         .h_3()
                         .w_16()
@@ -991,10 +1095,13 @@ fn audio_card(message: &Arc<Message>, server: Option<ServerId>, a: &Attachment, 
                         .items_center()
                         .child(div().absolute().left_0().right_0().h(px(3.)).rounded_full().bg(theme.color_bg_lighter))
                         .child(div().absolute().left_0().h(px(3.)).w(gpui::relative(shown_volume)).rounded_full().bg(theme.color_accent))
+                        // `h-2.5 w-2.5 … bg-bg-light`, no glow.
+                        .child(crate::playback::thumb(shown_volume, 10., theme.color_bg_light, false, volume_group, cx))
                         // `onVolumeMouseDown` and the wheel: a setting, so before anything plays too.
                         .children(crate::playback::audio_volume_track(cx)),
                 ),
         )
+        .children(error.map(|reason| label(audio_error_text(&reason), &style.error, decibell_text::Wrapping::NORMAL)))
         .into_any_element()
 }
 

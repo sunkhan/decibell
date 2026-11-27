@@ -29,6 +29,11 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(check_ten_bit(cx)),
         },
         SelfTest {
+            name: "media-output-device",
+            about: "attachment sound follows Settings → Audio (two PipeWire null sinks, nothing audible): the voice output device with the separate stream output off, the stream-output device with it on, moved while playing; the clip's clicks arrive on the sink's monitor and no stream of ours is on the desktop's default device",
+            run: |cx| Box::pin(check_output_device(cx)),
+        },
+        SelfTest {
             name: "media-vp9-hw",
             about: "a VP9 file on each hardware decoder of this machine's order: the lazy probe, the first picture against software pixel for pixel, the file played to its end; then the order as it is (which decoder a VP9 file gets)",
             run: |cx| Box::pin(check_vp9_hw(cx)),
@@ -420,5 +425,164 @@ async fn check_rotation(cx: TestCx) -> Result<()> {
         stage.close();
         result?;
     }
+    Ok(())
+}
+
+// ── The output device (a null sink of our own: `decibell_harness::test_audio` on the branch
+// head has the same pattern; use it when the two meet) ──────────────────────────────────────
+
+fn pactl(args: &[&str]) -> Result<String> {
+    let out = std::process::Command::new("pactl").args(args).output().context("running pactl (is PipeWire / PulseAudio installed?)")?;
+    ensure!(out.status.success(), "pactl {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// A null sink, unloaded when dropped. Nothing played on it is audible.
+struct NullSink {
+    name: String,
+    module: String,
+}
+
+impl NullSink {
+    fn load(tag: &str) -> Result<NullSink> {
+        let name = format!("decibell-selftest-{}-{tag}", std::process::id());
+        let module = pactl(&["load-module", "module-null-sink", &format!("sink_name={name}"), "rate=48000", "channels=2", &format!("sink_properties=device.description={name}")])?;
+        Ok(NullSink { name, module: module.trim().to_string() })
+    }
+}
+
+impl Drop for NullSink {
+    fn drop(&mut self) {
+        let _ = pactl(&["unload-module", &self.module]);
+    }
+}
+
+/// The sinks this process's playback streams sit on, by name.
+fn our_sinks() -> Result<Vec<String>> {
+    let sinks: Vec<(String, String)> = pactl(&["list", "short", "sinks"])?
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            Some((columns.next()?.to_string(), columns.next()?.to_string()))
+        })
+        .collect();
+    let pid = format!("application.process.id = \"{}\"", std::process::id());
+    let mut found = Vec::new();
+    for input in pactl(&["list", "sink-inputs"])?.split("Sink Input #").skip(1) {
+        if !input.contains(&pid) {
+            continue;
+        }
+        let sink = input.lines().find_map(|line| line.trim().strip_prefix("Sink: ")).unwrap_or("?").trim().to_string();
+        found.push(sinks.iter().find(|(index, _)| *index == sink).map_or(format!("#{sink}"), |(_, name)| name.clone()));
+    }
+    Ok(found)
+}
+
+/// The largest sample (0..1) heard on a sink's monitor over `seconds`.
+async fn monitor_peak(cx: &TestCx, sink: &str, seconds: f64) -> Result<f32> {
+    let monitor = format!("{sink}.monitor");
+    let mut child = std::process::Command::new("parec")
+        .args(["--device", &monitor, "--format=s16le", "--rate=48000", "--channels=1", "--raw", "--latency-msec=40"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("running parec")?;
+    cx.sleep(Duration::from_secs_f64(seconds)).await;
+    let _ = child.kill();
+    let output = child.wait_with_output()?;
+    Ok(output.stdout.as_chunks::<2>().0.iter().map(|sample| (i16::from_le_bytes(*sample) as f32 / 32768.).abs()).fold(0., f32::max))
+}
+
+async fn check_output_device(cx: TestCx) -> Result<()> {
+    use decibell_model::Model;
+    if !cfg!(target_os = "linux") || pactl(&["info"]).is_err() {
+        cx.log("SKIPPED: needs pactl (PipeWire / PulseAudio)");
+        return Ok(());
+    }
+    ensure!(std::env::var("DECIBELL_MEDIA_OUTPUT").is_err(), "this test plays on null sinks of its own: run it without DECIBELL_MEDIA_OUTPUT");
+    let default_sink = pactl(&["get-default-sink"])?.trim().to_string();
+    let (voice, stream) = (NullSink::load("voice")?, NullSink::load("stream")?);
+    ensure!(pactl(&["get-default-sink"])?.trim() == default_sink, "loading a null sink moved the desktop's default sink");
+    let (model, playback) = cx.app().update(|cx| (cx.global::<Model>().clone(), crate::playback::Playback::global(cx)));
+    let playback = playback.context("no playback")?;
+    let saved = cx.app().update(|cx| model.settings.read(cx).get().clone());
+    let set = |change: Box<dyn FnOnce(&mut decibell_core::config::AppSettings)>| {
+        cx.app().update(|cx| model.settings.update(cx, |settings, cx| settings.change(change, cx)));
+    };
+    // The voice output is one sink, the stream output the other; the switch is off.
+    let (voice_name, stream_name) = (voice.name.clone(), stream.name.clone());
+    set(Box::new(move |values| {
+        values.output_device = Some(voice_name);
+        values.stream_output_device = Some(stream_name);
+        values.separate_stream_output = false;
+        // Quiet even on a null sink; the clicks are still far above the monitor's silence.
+        values.media_audio_volume = Some(0.25);
+        values.media_audio_muted = false;
+    }));
+    let clip: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(include_bytes!("../../decibell-media/tests/assets/sync60.mp4").to_vec());
+    let media = decibell_model::chat::viewers::ActiveMedia {
+        attachment_id: 990_001,
+        server: decibell_model::ServerId::from_wire("media-output-test"),
+        channel: decibell_model::ChannelId::from("media-output-test"),
+        filename: "clip".into(),
+        width: 0,
+        height: 0,
+    };
+    cx.app().update(|cx| {
+        playback.update(cx, |playback, _| {
+            playback.set_source_provider(std::rc::Rc::new(move |_, _, _| Some(Box::new(std::io::Cursor::new(clip.to_vec())) as Box<dyn decibell_media::Source>)))
+        });
+        model.chat.audio.update(cx, |audio, cx| audio.set_active(Some(media), cx));
+    });
+    let result = async {
+        // The clip's first click is half a second in: where the stream sits is known before.
+        let on = |what: &'static str, expected: String| {
+            let cx = cx.clone();
+            let default_sink = default_sink.clone();
+            async move {
+                let started = Instant::now();
+                loop {
+                    let sinks = our_sinks()?;
+                    ensure!(!sinks.contains(&default_sink), "{what}: a stream of ours is on the desktop's default sink ({default_sink})");
+                    if sinks == [expected.clone()] {
+                        return Ok(started.elapsed());
+                    }
+                    ensure!(started.elapsed() < Duration::from_secs(5), "{what}: our streams are on {sinks:?}, expected [{expected}]");
+                    cx.sleep(Duration::from_millis(40)).await;
+                }
+            }
+        };
+        let took = on("the switch off", voice.name.clone()).await?;
+        let (heard, other) = (monitor_peak(&cx, &voice.name, 1.6).await?, monitor_peak(&cx, &stream.name, 0.6).await?);
+        cx.log(format_args!("separate stream output off: the stream is on the voice output sink after {:.0} ms; its monitor peaks at {heard:.3}, the stream-output sink's at {other:.3}", took.as_secs_f64() * 1e3));
+        ensure!(heard > 0.02 && other < 0.002, "the clip is not (only) on the voice output sink: {heard:.3} / {other:.3}");
+        let before = cx.app().update(|cx| model.chat.audio.read(cx).time_secs);
+        // The switch on, while playing: the sound moves to the stream-output sink.
+        set(Box::new(|values| values.separate_stream_output = true));
+        let took = on("the switch on", stream.name.clone()).await?;
+        let (heard, other) = (monitor_peak(&cx, &stream.name, 1.6).await?, monitor_peak(&cx, &voice.name, 0.6).await?);
+        cx.log(format_args!("separate stream output on: moved to the stream-output sink in {:.0} ms; its monitor peaks at {heard:.3}, the voice sink's at {other:.3}", took.as_secs_f64() * 1e3));
+        ensure!(heard > 0.02 && other < 0.002, "the clip is not (only) on the stream-output sink: {heard:.3} / {other:.3}");
+        // The device behind the switch changes: back to the first sink by its name.
+        let name = voice.name.clone();
+        set(Box::new(move |values| values.stream_output_device = Some(name)));
+        let took = on("another stream-output device", voice.name.clone()).await?;
+        let heard = monitor_peak(&cx, &voice.name, 1.6).await?;
+        let after = cx.app().update(|cx| model.chat.audio.read(cx).time_secs);
+        cx.log(format_args!("the stream-output device changed: moved in {:.0} ms; its monitor peaks at {heard:.3}; the file went from {before:.1} s to {after:.1} s meanwhile", took.as_secs_f64() * 1e3));
+        ensure!(heard > 0.02, "no sound on the new device ({heard:.3})");
+        ensure!(after - before > 3.0, "the file stood still across the moves ({before:.1} s to {after:.1} s)");
+        ensure!(pactl(&["get-default-sink"])?.trim() == default_sink, "the desktop's default sink moved");
+        anyhow::Ok(())
+    }
+    .await;
+    // The player goes before its sinks do (a stream whose sink disappears is moved to the default).
+    cx.app().update(|cx| model.chat.audio.update(cx, |audio, cx| audio.set_active(None, cx)));
+    cx.sleep(Duration::from_millis(900)).await;
+    let left = our_sinks().unwrap_or_default();
+    cx.app().update(|cx| model.settings.update(cx, |settings, cx| settings.change(move |values| *values = saved, cx)));
+    drop((voice, stream));
+    result?;
+    ensure!(left.is_empty(), "streams of ours were still open after the player was dropped: {left:?}");
     Ok(())
 }

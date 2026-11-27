@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -28,6 +29,47 @@ const PIECE: usize = 64 * 1024;
 const PIECES: usize = READ_AHEAD_BYTES / PIECE;
 /// A forward seek this short reads through instead of re-requesting.
 const SKIP_THROUGH: u64 = 256 * 1024;
+
+/// What every [`MediaReader`] of this process has pulled so far (self-tests and measurements:
+/// that a player reads by range, and how much of a sealed file a seek opens). Four relaxed
+/// atomic adds per 64 KiB piece; nothing reads them in the app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReaderTotals {
+    /// Range requests opened (the first read, and each seek outside what was buffered).
+    pub ranges: u64,
+    /// Plaintext bytes the pumps received from the server, read-ahead included.
+    pub fetched: u64,
+    /// Sealed chunks those bytes came out of (a chunk opened by two requests counts twice).
+    pub chunks: u64,
+    /// Plaintext bytes handed to the decoders.
+    pub read: u64,
+}
+
+impl ReaderTotals {
+    pub fn since(self, before: ReaderTotals) -> ReaderTotals {
+        ReaderTotals {
+            ranges: self.ranges - before.ranges,
+            fetched: self.fetched - before.fetched,
+            chunks: self.chunks - before.chunks,
+            read: self.read - before.read,
+        }
+    }
+}
+
+static RANGES: AtomicU64 = AtomicU64::new(0);
+static FETCHED: AtomicU64 = AtomicU64::new(0);
+static CHUNKS: AtomicU64 = AtomicU64::new(0);
+static READ: AtomicU64 = AtomicU64::new(0);
+
+/// The totals now.
+pub fn reader_totals() -> ReaderTotals {
+    ReaderTotals {
+        ranges: RANGES.load(Ordering::Relaxed),
+        fetched: FETCHED.load(Ordering::Relaxed),
+        chunks: CHUNKS.load(Ordering::Relaxed),
+        read: READ.load(Ordering::Relaxed),
+    }
+}
 
 struct Pump {
     rx: mpsc::Receiver<Result<Vec<u8>, Error>>,
@@ -121,6 +163,10 @@ impl MediaReader {
             let _ = free_tx.try_send(Vec::with_capacity(PIECE));
         }
         let stop2 = stop.clone();
+        RANGES.fetch_add(1, Ordering::Relaxed);
+        // For the totals: where the next piece starts and the sealed chunk last counted.
+        let chunk_bytes = self.svc.key(&self.server_id, self.id).map(|k| k.chunk_bytes).filter(|c| *c > 0);
+        let (mut at, mut counted) = (self.pos, None::<u64>);
         self.svc.rt.spawn(async move {
             let mut piece = match free_rx.recv().await {
                 Some(p) => p,
@@ -149,6 +195,16 @@ impl MediaReader {
                             let n = data.len().min(PIECE - piece.len());
                             piece.extend_from_slice(&data[..n]);
                             data = &data[n..];
+                            FETCHED.fetch_add(n as u64, Ordering::Relaxed);
+                            if let Some(chunk) = chunk_bytes {
+                                let (first, last) = (at / chunk, (at + n as u64 - 1) / chunk);
+                                let first = counted.map_or(first, |c| first.max(c + 1));
+                                if last >= first {
+                                    CHUNKS.fetch_add(last + 1 - first, Ordering::Relaxed);
+                                    counted = Some(last);
+                                }
+                            }
+                            at += n as u64;
                             if tx.send(Ok(piece)).await.is_err() {
                                 return;
                             }
@@ -182,6 +238,7 @@ impl MediaReader {
                 buf[..n].copy_from_slice(&self.cur[self.cur_pos..self.cur_pos + n]);
                 self.cur_pos += n;
                 self.pos += n as u64;
+                READ.fetch_add(n as u64, Ordering::Relaxed);
                 return Ok(n);
             }
             if self.pump.is_none() {
@@ -221,6 +278,20 @@ impl MediaReader {
     pub fn blocking(self) -> BlockingMediaReader {
         let rt = self.svc.rt.clone();
         BlockingMediaReader { inner: self, rt }
+    }
+}
+
+impl Attachments {
+    /// Attachment `id` exactly as the server holds it, no key applied: a sealed file's
+    /// ciphertext (checks that what is stored is not the plaintext). Blocks on the service's
+    /// runtime: never call it from inside the runtime.
+    pub fn stored_blocking(self: &Arc<Self>, server_id: &str, id: i64) -> Result<Vec<u8>, Error> {
+        self.rt.block_on(async {
+            let mut stream = self.open_with_key(server_id, id, None, 0, None, None).await?;
+            let mut out = Vec::new();
+            stream.read_to_end(&mut out).await?;
+            Ok(out)
+        })
     }
 }
 

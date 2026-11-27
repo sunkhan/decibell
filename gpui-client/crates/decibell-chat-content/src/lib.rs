@@ -21,6 +21,12 @@ pub mod playback;
 pub mod player;
 pub mod probes;
 #[cfg(feature = "fixtures")]
+mod media_live_selftests;
+#[cfg(feature = "fixtures")]
+mod media_perf;
+#[cfg(feature = "fixtures")]
+mod media_selftests;
+#[cfg(feature = "fixtures")]
 mod selftests;
 #[cfg(feature = "fixtures")]
 mod screens;
@@ -115,7 +121,7 @@ pub fn screens() -> Vec<decibell_harness::Screen> {
 /// The content self-tests (local stack; each runs a `--check` child).
 pub fn selftests() -> Vec<decibell_harness::SelfTest> {
     #[cfg(feature = "fixtures")]
-    return selftests::selftests();
+    return selftests::selftests().into_iter().chain(media_selftests::selftests()).collect();
     #[cfg(not(feature = "fixtures"))]
     Vec::new()
 }

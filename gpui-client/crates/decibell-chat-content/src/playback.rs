@@ -14,7 +14,9 @@
 //! * **Frames**: a picture costs one present of the kept scene (the video crate's presenter),
 //!   never a render. The list is redrawn for the controls only: four times a second while
 //!   they show a running time (the audio card always, the video's while the pointer is on
-//!   it), and not at all while a video plays with its controls hidden.
+//!   it), and not at all while a video plays with its controls hidden. The controls come and go
+//!   in 300 ms (`decibell_ui::motion::transition`): the list is redrawn while that value moves
+//!   and never after.
 //! * **Timers**, each with a live reason: that 250 ms tick, the three seconds after which a
 //!   resting pointer hides the video's controls (and, in fullscreen, the cursor), and the
 //!   220 ms a single click waits for a second one.
@@ -29,7 +31,8 @@ use decibell_attachments::media::{BlockingMediaReader, MediaReader};
 use decibell_media::{Open, Phase, Player, Status};
 use decibell_model::chat::Attachment;
 use decibell_model::chat::viewers::{ActiveMedia, MediaMenuKind};
-use decibell_model::{ChannelId, Model, ServerId};
+use decibell_model::{ChannelId, Model, ServerId, Uid};
+use decibell_ui::motion::{self, Transition};
 use decibell_ui::{ActiveTheme as _, Icon, IconName, title_tooltip};
 use decibell_video::{VideoHub, VideoView};
 use futures::StreamExt as _;
@@ -47,6 +50,11 @@ const TICK: Duration = Duration::from_millis(250);
 const IDLE: Duration = Duration::from_millis(3000);
 /// A single click toggles play this long after it, unless a second one came (`handleSingleClick`).
 const CLICK: Duration = Duration::from_millis(220);
+/// The controls and the fullscreen download button come and go with
+/// `transition-all duration-300 ease-out` (Tailwind's `ease-out`).
+const FADE: Transition = Transition::new(300, motion::EASE_OUT);
+/// `translate-y-2`: how far they slide while they fade.
+const SLIDE: f32 = 8.;
 /// Positions kept per channel (`MAX_PER_CHANNEL`).
 const RESUME_PER_CHANNEL: usize = 5;
 
@@ -80,13 +88,30 @@ pub struct Playback {
     video_visible: bool,
     audio_visible: bool,
     focus: FocusHandle,
+    /// The audio cards' focus (`tabIndex={-1}` on `AudioItem`'s wrapper): one handle, tracked by
+    /// the card that was pressed last.
+    audio_focus: FocusHandle,
+    audio_focused: Option<i64>,
+    /// The audio attachment whose player failed, with why: its card is taller by that line.
+    audio_failed: Option<(i64, SharedString)>,
+    /// How opaque the video's controls were drawn last (self-tests).
+    controls_drawn: std::cell::Cell<f32>,
     ticker: Option<Task<()>>,
     idle_timer: Option<Task<()>>,
     click_timer: Option<Task<()>>,
     provider: Option<SourceProvider>,
     changed: futures::channel::mpsc::UnboundedSender<()>,
     channel: Option<ChannelId>,
+    /// The open DM conversation (`model.dm.list.active_peer`).
+    conversation: Option<Uid>,
     volumes: (f64, bool, f64, bool),
+    /// The saved name of the device players open their sound on ([`output_device`]).
+    output: Option<String>,
+    /// (channel, attachment, picture): the frame each played video stopped on, newest last
+    /// (`setVideoPoster`; as many per channel as positions, gone with the channel).
+    posters: Vec<(ChannelId, i64, decibell_video::Still)>,
+    /// The channel that was left last: nothing of it is kept, whatever stops after the change.
+    left: Option<ChannelId>,
     _pump: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -141,6 +166,21 @@ fn core_source(server: ServerId, id: i64) -> Box<dyn decibell_media::Source> {
     })
 }
 
+/// The output device attachment sound plays on, by its saved name (`None`: the system's
+/// default). Owner, 2026-11-26: attachments are routed like other people's stream audio: the
+/// separate stream-output device when that option is on in Settings → Audio, else the voice
+/// output device (`set_separate_stream_output` / `set_output_device` in the core's pipeline).
+/// Never Chromium's "default output whatever the settings say" (`electron-quirks.md` row 19).
+pub fn output_device(cx: &App) -> Option<String> {
+    let model = cx.try_global::<Model>()?;
+    let settings = model.settings.read(cx).get();
+    if settings.separate_stream_output {
+        settings.stream_output_device.clone()
+    } else {
+        settings.output_device.clone()
+    }
+}
+
 fn volumes(cx: &App) -> (f64, bool, f64, bool) {
     cx.try_global::<Model>().map_or((1., false, 1., false), |model| {
         let settings = model.settings.read(cx).get();
@@ -178,6 +218,10 @@ impl Playback {
                     let channel = nav.read(cx).active_channel.clone();
                     this.channel_changed(channel, cx);
                 }),
+                cx.observe(&model.dm.list, |this, list, cx| {
+                    let peer = list.read(cx).active_peer;
+                    this.conversation_changed(peer, cx);
+                }),
                 cx.observe(&model.settings, |this, _, cx| this.volumes_changed(cx)),
             ];
             Playback {
@@ -191,13 +235,21 @@ impl Playback {
                 video_visible: true,
                 audio_visible: true,
                 focus: cx.focus_handle(),
+                audio_focus: cx.focus_handle(),
+                audio_focused: None,
+                audio_failed: None,
+                controls_drawn: std::cell::Cell::new(0.),
                 ticker: None,
                 idle_timer: None,
                 click_timer: None,
                 provider: None,
                 changed,
                 channel: model.nav.read(cx).active_channel.clone(),
+                conversation: model.dm.list.read(cx).active_peer,
                 volumes: volumes(cx),
+                output: output_device(cx),
+                posters: Vec::new(),
+                left: None,
                 _pump: pump,
                 _subscriptions: subscriptions,
             }
@@ -232,7 +284,7 @@ impl Playback {
             video: video.then(|| VideoHub::global(cx)),
             // Never a uid: the hub's live streams are keyed by those.
             key: format!("media:{}:{}", media.server.wire(), media.attachment_id),
-            output: decibell_media::system_output(),
+            output: decibell_media::device_output(self.output.clone()),
             start_at,
             play: true,
             volume: if video { video_volume } else { audio_volume } as f32,
@@ -256,6 +308,26 @@ impl Playback {
             _ => playing.player.position(),
         };
         let (channel, id) = (playing.media.channel.clone(), playing.media.attachment_id);
+        if self.left.as_ref() == Some(&channel) {
+            // Stopped by leaving its channel (`clearChannel` drops the channel's entries).
+            self.resume.retain(|entry| entry.0 != channel);
+            self.posters.retain(|entry| entry.0 != channel);
+            return;
+        }
+        // The frame a video stopped on becomes its card's poster (`PersistentVideoLayer`'s
+        // unmount capture): the slot the picture is in, kept; nothing is read back.
+        if playing.status.video.is_some()
+            && playing.status.has_picture
+            && let Some(still) = playing.player.still()
+        {
+            self.posters.retain(|entry| !(entry.0 == channel && entry.1 == id));
+            self.posters.push((channel.clone(), id, still));
+            if self.posters.iter().filter(|entry| entry.0 == channel).count() > RESUME_PER_CHANNEL
+                && let Some(oldest) = self.posters.iter().position(|entry| entry.0 == channel)
+            {
+                self.posters.remove(oldest);
+            }
+        }
         self.resume.retain(|entry| !(entry.0 == channel && entry.1 == id));
         self.resume.push((channel.clone(), id, position));
         let kept = self.resume.iter().filter(|entry| entry.0 == channel).count();
@@ -300,6 +372,7 @@ impl Playback {
             self.audio_visible = true;
             self.audio = active.map(|media| self.open(&media, false, cx));
             self.mirror_audio(cx);
+            self.audio_failure(cx);
         } else if let Some(playing) = &self.audio
             && playing.player.is_playing() != wanted
             && !matches!(playing.status.phase, Phase::Loading | Phase::Failed(_))
@@ -319,12 +392,55 @@ impl Playback {
         let Some(model) = cx.try_global::<Model>().cloned() else { return };
         model.chat.video.update(cx, |video, cx| video.set_active(None, cx));
         model.chat.audio.update(cx, |audio, cx| audio.set_active(None, cx));
-        if let Some(left) = left {
-            self.resume.retain(|entry| entry.0 != left);
+        if let Some(left) = &left {
+            self.resume.retain(|entry| entry.0 != *left);
+            self.posters.retain(|entry| entry.0 != *left);
+        }
+        self.left = left;
+    }
+
+    /// Another DM conversation was opened (or the open one closed): what plays stops, as on a
+    /// channel change. A conversation holds no attachments, so there is no position of its own
+    /// to forget.
+    fn conversation_changed(&mut self, peer: Option<Uid>, cx: &mut Context<Self>) {
+        if peer == self.conversation {
+            return;
+        }
+        self.conversation = peer;
+        let Some(model) = cx.try_global::<Model>().cloned() else { return };
+        model.chat.video.update(cx, |video, cx| video.set_active(None, cx));
+        model.chat.audio.update(cx, |audio, cx| audio.set_active(None, cx));
+    }
+
+    /// Keeps `audio_failed` in step with the audio player; the card's height follows it.
+    fn audio_failure(&mut self, cx: &mut Context<Self>) {
+        let failed = self.audio.as_ref().and_then(|audio| match &audio.status.phase {
+            Phase::Failed(reason) => Some((audio.media.attachment_id, SharedString::from(reason.clone()))),
+            _ => None,
+        });
+        if failed != self.audio_failed {
+            self.audio_failed = failed;
+            decibell_chat::invalidate_slots(cx);
+            cx.notify();
+        }
+    }
+
+    /// Settings → Audio changed which device attachment sound belongs on (the device, the
+    /// separate-stream-output switch, or the device behind it): what plays moves there, without
+    /// a pop and without the picture waiting (`Player::set_output`).
+    fn output_changed(&mut self, cx: &mut Context<Self>) {
+        let now = output_device(cx);
+        if now == self.output {
+            return;
+        }
+        self.output = now;
+        for playing in self.video.iter().chain(&self.audio) {
+            playing.player.set_output(decibell_media::device_output(self.output.clone()));
         }
     }
 
     fn volumes_changed(&mut self, cx: &mut Context<Self>) {
+        self.output_changed(cx);
         let now = volumes(cx);
         if now == self.volumes {
             return;
@@ -358,6 +474,7 @@ impl Playback {
         }
         if changed {
             self.mirror_audio(cx);
+            self.audio_failure(cx);
             self.timers(cx);
             cx.notify();
         }
@@ -492,11 +609,43 @@ impl Playback {
 
     /// Why the audio attachment cannot be played, if it is the active one and failed.
     pub fn audio_error(&self, attachment: i64) -> Option<SharedString> {
-        let audio = self.audio.as_ref().filter(|audio| audio.media.attachment_id == attachment)?;
-        match &audio.status.phase {
-            Phase::Failed(reason) => Some(reason.clone().into()),
-            _ => None,
+        self.audio_failed.as_ref().filter(|failed| failed.0 == attachment).map(|failed| failed.1.clone())
+    }
+
+    /// The audio attachment whose player failed, and why (the card's "Failed to load" line).
+    pub fn failed_audio(&self) -> Option<&(i64, SharedString)> {
+        self.audio_failed.as_ref()
+    }
+
+    /// Opens the failed audio attachment's player again (its play button, Space on its card).
+    pub fn retry_audio(&mut self, cx: &mut Context<Self>) {
+        if let Some(old) = self.audio.take() {
+            self.audio = Some(self.open(&old.media, false, cx));
+            self.mirror_audio(cx);
+            self.audio_failure(cx);
+            self.timers(cx);
+            cx.notify();
         }
+    }
+
+    /// The audio cards' focus handle, and the card that tracks it.
+    pub fn audio_focus(&self) -> (&FocusHandle, Option<i64>) {
+        (&self.audio_focus, self.audio_focused)
+    }
+
+    /// A press on an audio card: the keys go to it (`onMouseDownCapture` → `focus()`).
+    pub fn focus_audio(&mut self, attachment: i64, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.audio_focus, cx);
+        if self.audio_focused != Some(attachment) {
+            self.audio_focused = Some(attachment);
+            cx.notify();
+        }
+    }
+
+    /// Whether the video's controls are wanted (`controlsVisible`), and how opaque they were
+    /// drawn last: 1 shown, 0 gone, in between while they fade (self-tests).
+    pub fn controls(&self) -> (bool, f32) {
+        (self.video.is_some() && self.controls_visible(), self.controls_drawn.get())
     }
 
     /// The playing video's position and duration, microseconds (self-tests).
@@ -506,6 +655,11 @@ impl Playback {
 
     pub fn video_phase(&self) -> Option<Phase> {
         self.video.as_ref().map(|video| video.status.phase.clone())
+    }
+
+    /// The playing video's counters and what the player reports of the file (`media_perf`).
+    pub fn video_report(&self) -> Option<(decibell_media::PlayStats, Status)> {
+        self.video.as_ref().map(|video| (video.player.stats(), video.player.status()))
     }
 
     pub fn seek_video_to(&mut self, micros: i64, cx: &mut Context<Self>) {
@@ -596,6 +750,16 @@ impl Playback {
 fn clock(micros: i64) -> String {
     let seconds = (micros.max(0) / 1_000_000) as u64;
     format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// The frame a played video stopped on, for its card at rest (`getCachedVideo(…).posterUrl`).
+pub fn poster(channel: &ChannelId, attachment: i64, cx: &App) -> Option<decibell_video::Still> {
+    let playback = Playback::global(cx)?.read(cx);
+    playback
+        .posters
+        .iter()
+        .find(|entry| entry.0 == *channel && entry.1 == attachment)
+        .map(|entry| entry.2.clone())
 }
 
 /// "Paused at 0:06" for a video card's bar, when that attachment was left part-way.
@@ -773,10 +937,39 @@ fn icon_button(id: &'static str, icon: IconName, title: &'static str, on_click: 
         })
 }
 
-fn bar(ratio: f32, cx: &App) -> gpui::Div {
+/// The dot at a bar's fill end, there while the pointer is on the bar (`group-hover:opacity-100`
+/// on `h-3 w-3 -translate-x-1/2 rounded-full border-2 border-accent`; `glow` is the scrub
+/// thumbs' `shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent)_30%,transparent)]`). The bar
+/// is `.group(group)`.
+pub fn thumb(ratio: f32, size: f32, fill: gpui::Hsla, glow: bool, group: impl Into<SharedString>, cx: &App) -> gpui::Div {
+    let accent = cx.theme().color_accent;
+    div()
+        .absolute()
+        .left(gpui::relative(ratio.clamp(0., 1.)))
+        .ml(px(-size / 2.))
+        .size(px(size))
+        .rounded_full()
+        .border_2()
+        .border_color(accent)
+        .bg(fill)
+        .when(glow, |thumb| {
+            thumb.shadow(vec![gpui::BoxShadow {
+                color: gpui::Hsla { a: accent.a * 0.3, ..accent },
+                offset: gpui::point(px(0.), px(0.)),
+                blur_radius: px(6.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+        })
+        .opacity(0.)
+        .group_hover(group, |style| style.opacity(1.))
+}
+
+fn bar(ratio: f32, group: &'static str, cx: &App) -> gpui::Div {
     let theme = cx.theme();
     let white = gpui::white();
     div()
+        .group(group)
         .relative()
         .h_3()
         .flex()
@@ -784,23 +977,44 @@ fn bar(ratio: f32, cx: &App) -> gpui::Div {
         // `bg-white/15` on the scrim, the fill in the accent.
         .child(div().absolute().left_0().right_0().h(px(4.)).rounded_full().bg(gpui::Hsla { a: 0.15, ..white }))
         .child(div().absolute().left_0().h(px(4.)).w(gpui::relative(ratio.clamp(0., 1.))).rounded_full().bg(theme.color_accent))
+        .child(thumb(ratio, 12., gpui::black(), true, group, cx))
 }
 
 /// What the video card's surface draws while its attachment is the playing one: the picture
 /// and, over it, the controls. `None`: this attachment is not playing (the card draws its
 /// poster and play button).
-pub fn video_stage(attachment: i64, menu: Option<(ServerId, Attachment)>, corners: Corners<Pixels>, fullscreen: bool, style: &Rc<ContentStyle>, cx: &mut App) -> Option<AnyElement> {
+#[allow(clippy::too_many_arguments)]
+pub fn video_stage(
+    attachment: i64,
+    menu: Option<(ServerId, Attachment)>,
+    corners: Corners<Pixels>,
+    fullscreen: bool,
+    style: &Rc<ContentStyle>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let playback = Playback::global(cx)?;
-    let state = playback.read(cx);
-    let video = state.video.as_ref().filter(|video| video.media.attachment_id == attachment)?;
-    if state.fullscreen != fullscreen {
-        // The picture is in the fullscreen layer; the card keeps its box black meanwhile.
-        return Some(div().size_full().bg(gpui::black()).into_any_element());
+    {
+        let state = playback.read(cx);
+        state.video.as_ref().filter(|video| video.media.attachment_id == attachment)?;
+        if state.fullscreen != fullscreen {
+            // The picture is in the fullscreen layer; the card keeps its box black meanwhile.
+            return Some(div().size_full().bg(gpui::black()).into_any_element());
+        }
     }
+    // `transition-all duration-300 ease-out`: 1 shown, 0 gone. Asked for on every draw of the
+    // stage, so the value is kept while the controls are away; it asks for the next frame only
+    // while it moves.
+    let wanted = playback.read(cx).controls_visible();
+    let shown = motion::transition_flag(window, cx, (if fullscreen { "media-controls-full" } else { "media-controls" }, attachment as u64), wanted, FADE);
+    let state = playback.read(cx);
+    state.controls_drawn.set(shown);
+    let video = state.video.as_ref().filter(|video| video.media.attachment_id == attachment)?;
     let theme = cx.theme();
     let black = gpui::black();
     let playing = state.video_playing() || (video.status.phase == Phase::Loading && video.player.is_playing());
-    let controls = state.controls_visible();
+    let server = video.media.server;
+    let filename = video.media.filename.clone();
     let duration = video.status.duration;
     let position = video.player.position();
     let progress = if duration > 0 { position as f32 / duration as f32 } else { 0. };
@@ -827,6 +1041,8 @@ pub fn video_stage(attachment: i64, menu: Option<(ServerId, Attachment)>, corner
         .rounded_tr(corners.top_right)
         .rounded_bl(corners.bottom_left)
         .rounded_br(corners.bottom_right)
+        // The wrapper's `overflow-hidden`: the controls slide in from under its edge.
+        .overflow_hidden()
         .cursor_pointer()
         .children(picture.map(|picture| div().absolute().inset_0().child(picture)));
     {
@@ -886,8 +1102,49 @@ pub fn video_stage(attachment: i64, menu: Option<(ServerId, Attachment)>, corner
             crate::menu::show_for_attachment(server, &a, event.position, MediaMenuKind::Video, cx);
         });
     }
-    if !controls {
+    if shown <= 0. {
         return Some(stage.into_any_element());
+    }
+    let slide = px(SLIDE * (1. - shown));
+    if fullscreen {
+        // `right-4 top-4`, fullscreen only: `h-10 w-10 rounded-sm bg-black/70 text-white/85
+        // hover:bg-black/85 hover:text-white`, sliding down into place.
+        let white = gpui::white();
+        stage = stage.child(
+            div()
+                .id("media-download")
+                .group("media-download")
+                .absolute()
+                .right_4()
+                .top(px(16.) - slide)
+                .size_10()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(theme.radius_sm)
+                .bg(gpui::Hsla { a: 0.7, ..black })
+                .hover(|style| style.bg(gpui::Hsla { a: 0.85, ..black }))
+                .opacity(shown)
+                .cursor_pointer()
+                .tooltip(title_tooltip("Download"))
+                .child(Icon::new(IconName::ViewerDownload).size(px(16.)).color(gpui::Hsla { a: 0.85, ..white }).group_hover("media-download", white))
+                .children(crate::player::probe("media-download"))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    // `handleDownload`: the attachment as the loaded messages have it, else
+                    // by the playing one's name.
+                    let target = crate::actions::Target {
+                        server: Some(server),
+                        attachment_id: Some(attachment),
+                        filename: filename.clone(),
+                        mime: None,
+                        url: None,
+                        page_url: None,
+                    };
+                    crate::actions::save(&target, decibell_attachments::AttachmentKind::Video, false, cx);
+                }),
+        );
     }
 
     let seek = {
@@ -938,7 +1195,9 @@ pub fn video_stage(attachment: i64, menu: Option<(ServerId, Attachment)>, corner
         .absolute()
         .left_0()
         .right_0()
-        .bottom_0()
+        // `translate-y-2 opacity-0` ↔ `translate-y-0 opacity-100`.
+        .bottom(-slide)
+        .opacity(shown)
         .flex()
         .flex_col()
         .px(px(14.))
@@ -952,7 +1211,7 @@ pub fn video_stage(attachment: i64, menu: Option<(ServerId, Attachment)>, corner
             gpui::linear_color_stop(gpui::Hsla { a: 0.85, ..black }, 0.),
             gpui::linear_color_stop(gpui::Hsla { a: 0., ..black }, 1.),
         ))
-        .child(bar(progress, cx).mb(px(10.)).child(seek))
+        .child(bar(progress, "media-seek-bar", cx).mb(px(10.)).child(seek))
         .child(
             div()
                 .flex()
@@ -973,7 +1232,7 @@ pub fn video_stage(attachment: i64, menu: Option<(ServerId, Attachment)>, corner
                             mute,
                             cx,
                         ))
-                        .child(bar(shown_volume, cx).w_20().child(volume_track)),
+                        .child(bar(shown_volume, "media-volume-bar", cx).w_20().child(volume_track)),
                 )
                 .child(icon_button(
                     "media-fullscreen",
@@ -1004,7 +1263,7 @@ impl FullscreenLayer {
 }
 
 impl Render for FullscreenLayer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(playback) = self.playback.clone() else {
             return div().into_any_element();
         };
@@ -1013,7 +1272,7 @@ impl Render for FullscreenLayer {
             return div().into_any_element();
         };
         let (attachment, style) = (video.media.attachment_id, ContentStyle::get(cx, 1.));
-        let stage = video_stage(attachment, None, Corners::default(), true, &style, cx);
+        let stage = video_stage(attachment, None, Corners::default(), true, &style, window, cx);
         div()
             .absolute()
             .inset_0()

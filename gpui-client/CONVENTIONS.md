@@ -729,9 +729,21 @@ matrix, the engine, the no-pop rule and its tests).
 - **Where bytes come from**: `MediaReader::blocking()` behind the player's AVIO (range reads, sealed files
   opened in memory). Never a temp file, never a URL handed to FFmpeg. Fixtures and self-tests replace it with
   `Playback::set_source_provider`.
-- **Sound is its own stream on the system's default output** (`decibell_media::system_output()`), as the
-  renderer's media elements play on Chromium's default sink. Never route it through the voice engine, its
-  mixer or its device streams, and never touch those to play a file.
+- **Sound is its own stream on the device Settings → Audio says** (owner, 2026-11-26; Electron plays on
+  Chromium's default sink whatever the settings say): the separate stream-output device when that option is
+  on, else the voice output device, `None` meaning the system's default (`playback::output_device`, opened
+  through `decibell_media::device_output(name)`, which resolves a saved name as the core resolves a voice
+  device). A settings change while something plays goes through `Player::set_output`, never by reopening the
+  player. Never route attachment sound through the voice engine, its mixer or its device streams, and never
+  touch those to play a file.
+- **A file's picture can be turned, deep and HDR; a stream's is none of them.** The demuxer says so before the
+  first packet (`Stream::set_orientation`, `Stream::set_deep`); sizes given out are the turned ones; decoders
+  and slots never know about rotation (the draw turns it, GPUI patch `0030`). A 10-bit file that fails on a
+  hardware decoder is that file's failure, not the codec's. A codec only files use (VP9) is not in the start-up
+  probe: add its test keyframe to `probe.rs` and it is probed on first use (`file_codec_works`).
+- **A card at rest never has a decoder.** The after-played poster is a `decibell_video::Still` (the slot the last
+  picture is in, kept): take it from the player before dropping it (`Playback::remember`), draw it with
+  `StillView`, drop it with the channel.
 - **No pops is a property of `render.rs`, kept by its tests**: whatever is handed to a device is
   `sample × shape(envelope) × volume` with both slewed. Anything that would start, stop, skip or re-level
   sound goes through the renderer's controls (`set_playing`, `set_gate`, `set_volume`, a new epoch through
@@ -748,6 +760,10 @@ matrix, the engine, the no-pop rule and its tests).
   the frame number and a click track. A new container or codec in the matrix gets a file there, a row in
   `every_file_of_the_matrix_plays_to_its_end`, its components in `tools/build-ffmpeg.sh` **and** in
   `decibell-app/build.rs`'s lists, and a line in `media-design.md` §2 saying that Chromium plays it.
+- Engine self-tests on the real renderer, each in a window of its own with the frame read back from the GPU
+  and a null `TestOutput` (`media_selftests.rs`): `media-rotation`, `media-10bit`, `media-vp9-hw` (every
+  decoder of the order against software, pixel for pixel), `media-output-device` (two PipeWire null sinks it
+  loads and unloads: the one place a self-test opens a real device stream, never on the desktop's default).
 - Self-tests `media-idle`, `media-video-play`, `media-audio-play`, `media-persist` (the content fixture's
   `#clips` channel, memory sources; `DECIBELL_MEDIA_CLIP=<file>` makes the video cards play that file) and
   `media-live` (the local stack as `perf2`: uploads a clip to `#off-topic`, plays it from the attachment

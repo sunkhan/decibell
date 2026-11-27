@@ -75,6 +75,8 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "#off-topic (local stack): a clip uploaded as perf2 plays from the attachment service's range reader (picture, sound into the null sink, a seek), then the message is deleted",
             run: |cx| Box::pin(parent(cx, "media-live")),
         },
+        crate::media_live_selftests::SEALED,
+        crate::media_live_selftests::MEMORY,
         SelfTest {
             name: "media-idle",
             about: "video and audio cards on screen, nothing playing: 0 frames in 5 s, no player, decoder or sink thread",
@@ -95,6 +97,16 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "a playing video's row scrolled away: the file plays on, no picture is presented; scrolled back: pictures again; another channel: stopped (the renderer's clearChannel); a second video replaces the first, audio plays beside video",
             run: |cx| Box::pin(fixture_parent(cx, "media-persist")),
         },
+        SelfTest {
+            name: "media-poster",
+            about: "a played video's card shows the frame it stopped on (the slot kept, no read-back): there after it stops, 0 frames at rest with it on screen, the next play resumes, gone with the channel and its textures with it",
+            run: |cx| Box::pin(fixture_parent(cx, "media-poster")),
+        },
+        SelfTest {
+            name: "media-keys",
+            about: "the audio card's focus and Space, its Failed to load line and the retry; the video's keys (Space, the arrows, F, Escape), the fullscreen download button, the controls' 300 ms fade and 0 list frames after it (fixture, null audio sink)",
+            run: |cx| Box::pin(fixture_parent(cx, "media-keys")),
+        },
     ]
 }
 
@@ -110,10 +122,15 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "content-rows", about: "(in the app)", run: |cx| Box::pin(check_rows(cx)) },
         SelfTest { name: "content-scroll-fixture", about: "(in the app)", run: |cx| Box::pin(check_scroll_fixture(cx)) },
         SelfTest { name: "media-live", about: "(in the app)", run: |cx| Box::pin(check_media_live(cx)) },
+        SelfTest { name: "media-sealed", about: "(in the app)", run: |cx| Box::pin(crate::media_live_selftests::check_sealed(cx)) },
+        SelfTest { name: "media-memory", about: "(in the app)", run: |cx| Box::pin(crate::media_live_selftests::check_memory(cx)) },
+        crate::media_perf::CHECK,
         SelfTest { name: "media-idle", about: "(in the app)", run: |cx| Box::pin(check_media_idle(cx)) },
         SelfTest { name: "media-video-play", about: "(in the app)", run: |cx| Box::pin(check_media_video(cx)) },
         SelfTest { name: "media-audio-play", about: "(in the app)", run: |cx| Box::pin(check_media_audio(cx)) },
         SelfTest { name: "media-persist", about: "(in the app)", run: |cx| Box::pin(check_media_persist(cx)) },
+        SelfTest { name: "media-poster", about: "(in the app)", run: |cx| Box::pin(check_media_poster(cx)) },
+        SelfTest { name: "media-keys", about: "(in the app)", run: |cx| Box::pin(check_media_keys(cx)) },
     ]
 }
 
@@ -204,6 +221,11 @@ impl Drop for Profile {
 }
 
 async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
+    parent_as(cx, check, ACCOUNT).await
+}
+
+/// [`parent`] signed in as another account of the stack.
+pub(crate) async fn parent_as(cx: TestCx, check: &'static str, account: &'static str) -> Result<()> {
     let Some(stack) = stack()? else {
         cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
         return Ok(());
@@ -218,7 +240,7 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
     let design_invite = stack.accounts["communities"].as_array().and_then(|c| c.iter().find(|c| c["name"] == "Design Lab")).and_then(|c| c["invite"].as_str()).unwrap_or_default().to_string();
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args(["--check", check, "--login", ACCOUNT])
+        .args(["--check", check, "--login", account])
         .env("DECIBELL_USER_DATA_DIR", profile.0.join("profile"))
         .envs(bus.environment())
         .env("DECIBELL_TEST_DESKTOP_BUS", std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default())
@@ -285,6 +307,10 @@ async fn fixture_parent(cx: TestCx, check: &'static str) -> Result<()> {
         .env_remove("DECIBELL_PERF")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if check == "media-keys" {
+        // It presses the audio card and the fullscreen download button where they were drawn.
+        command.env("DECIBELL_TEST_PROBES", "1");
+    }
     let output = cx.app().background_executor().spawn(async move { command.output() }).await?;
     drop(bus);
     for line in String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.starts_with("selftest:")) {
@@ -301,6 +327,11 @@ async fn fixture_parent(cx: TestCx, check: &'static str) -> Result<()> {
 
 /// A window on a fixture channel of the content crate (its own, closed by the caller).
 fn fixture_window(cx: &TestCx, channel: &'static str) -> Result<(TestCx, Entity<crate::screens::ContentPane>)> {
+    fixture_window_with(cx, channel, false)
+}
+
+/// [`fixture_window`], with the shell's fullscreen video overlay over it when `fullscreen_layer`.
+fn fixture_window_with(cx: &TestCx, channel: &'static str, fullscreen_layer: bool) -> Result<(TestCx, Entity<crate::screens::ContentPane>)> {
     use gpui::{AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, size};
     let (handle, pane) = cx.app().update(|cx| -> Result<(gpui::AnyWindowHandle, Entity<crate::screens::ContentPane>)> {
         let bounds = Bounds::centered(None, decibell_ui::outer_window_size(size(px(1280.), px(800.))), cx);
@@ -315,15 +346,22 @@ fn fixture_window(cx: &TestCx, channel: &'static str) -> Result<(TestCx, Entity<
         let window = cx.open_window(options, |window, cx| {
             let view = cx.new(|cx| crate::screens::ContentPane::new(channel, window, cx));
             pane = Some(view.clone());
-            cx.new(|_| Framed(view.into()))
+            let over = fullscreen_layer.then(|| cx.new(crate::playback::FullscreenLayer::new).into());
+            cx.new(|_| Framed(view.into(), over))
         })?;
+        // The app's main window shows the same fixture channel (the shell's fixture state): only
+        // this window's cards say where they are (`VideoHosts::only`), else whichever of the
+        // two drew last would ("no video card at rest in the fixture channel").
+        let hosts = cx.default_global::<crate::player::VideoHosts>();
+        hosts.only.set(Some(gpui::AnyWindowHandle::from(window).window_id()));
+        hosts.bounds.borrow_mut().clear();
         Ok((window.into(), pane.context("no pane")?))
     })?;
     Ok((TestCx::new(cx.app().clone(), handle), pane))
 }
 
 /// The pane in the app's window frame and title bar (as the screens and the app draw it).
-struct Framed(gpui::AnyView);
+struct Framed(gpui::AnyView, Option<gpui::AnyView>);
 
 impl gpui::Render for Framed {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
@@ -331,6 +369,7 @@ impl gpui::Render for Framed {
         use gpui::{ParentElement as _, Styled as _};
         let theme = cx.theme();
         let content = gpui::div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -338,7 +377,8 @@ impl gpui::Render for Framed {
             .text_size(px(theme.scaled.text_body))
             .text_color(theme.color_text_primary)
             .child(decibell_ui::TitleBar::new("Decibell content test"))
-            .child(gpui::div().flex_1().min_h_0().child(self.0.clone().cached(gpui::StyleRefinement::default().size_full())));
+            .child(gpui::div().flex_1().min_h_0().child(self.0.clone().cached(gpui::StyleRefinement::default().size_full())))
+            .children(self.1.clone());
         decibell_ui::window_frame(content, window, cx)
     }
 }
@@ -440,15 +480,15 @@ async fn check_rows(cx: TestCx) -> Result<()> {
 
 // ── Helpers inside the app ──────────────────────────────────────────────────────────────────
 
-fn model(cx: &App) -> Model {
+pub(crate) fn model(cx: &App) -> Model {
     Model::global(cx).clone()
 }
 
-fn daily_gaming() -> ServerId {
+pub(crate) fn daily_gaming() -> ServerId {
     ServerId::from_central(1)
 }
 
-async fn wait_for(cx: &TestCx, limit: Duration, what: &str, ready: impl Fn(&mut App) -> bool) -> Result<Duration> {
+pub(crate) async fn wait_for(cx: &TestCx, limit: Duration, what: &str, ready: impl Fn(&mut App) -> bool) -> Result<Duration> {
     let started = Instant::now();
     loop {
         if cx.update(|_, cx| ready(cx))? {
@@ -465,9 +505,9 @@ fn shown(cx: &App) -> Option<Entity<decibell_chat::MessageList>> {
 }
 
 /// Signed in, Daily Gaming connected, `name` open as the channel list opens it; the list.
-async fn open_channel(cx: &TestCx, name: &str) -> Result<(ChannelId, Entity<decibell_chat::MessageList>)> {
+pub(crate) async fn open_channel(cx: &TestCx, name: &str) -> Result<(ChannelId, Entity<decibell_chat::MessageList>)> {
     let t = wait_for(cx, Duration::from_secs(30), "the sign-in", |cx| model(cx).auth.read(cx).is_authenticated).await?;
-    cx.log(format_args!("signed in as {ACCOUNT} after {} ms", t.as_millis()));
+    cx.log(format_args!("signed in after {} ms", t.as_millis()));
     wait_for(cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
     // The attachment endpoint arrives with the community's answer.
     wait_for(cx, Duration::from_secs(15), "Daily Gaming's attachment endpoint", |_| {
@@ -560,7 +600,7 @@ fn tops(list: &Entity<decibell_chat::MessageList>, cx: &App) -> Vec<(i64, f32)> 
 }
 
 /// Private memory of this process (`Private_Clean + Private_Dirty`), MB.
-fn private_mb() -> f64 {
+pub(crate) fn private_mb() -> f64 {
     let mut text = String::new();
     let _ = std::fs::File::open("/proc/self/smaps_rollup").and_then(|mut f| f.read_to_string(&mut text));
     let kb = |name: &str| text.lines().find(|l| l.starts_with(name)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.);
@@ -1048,7 +1088,7 @@ fn media_setup(w: &TestCx) -> Result<Entity<crate::playback::Playback>> {
 }
 
 /// Names of this process's threads that belong to playback.
-fn media_threads() -> Vec<String> {
+pub(crate) fn media_threads() -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
         for task in tasks.flatten() {
@@ -1430,6 +1470,332 @@ async fn check_media_persist(cx: TestCx) -> Result<()> {
     }
     .await;
     let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+async fn check_media_poster(cx: TestCx) -> Result<()> {
+    let (w, pane) = fixture_window(&cx, crate::fixture::ATTACHMENTS)?;
+    let result = async {
+        let playback = media_setup(&w)?;
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        let (id, at) = find_video(&w, &list).await?;
+        w.settle().await?;
+        let hub = w.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+        ensure!(hub.live_textures() == 0, "{} plane textures before anything played", hub.live_textures());
+        w.click(at)?;
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(10), "a second and a half of the video", move |cx| p.read(cx).video_times().0 > 1_500_000).await?;
+        let media = w.update(|_, cx| model(cx).chat.video.read(cx).active.clone())?.context("no active video")?;
+        ensure!(w.update(|_, cx| crate::playback::poster(&media.channel, id, cx).is_none())?, "a poster while the video plays");
+        // It stops (another attachment would do the same): the card is at rest again.
+        w.update(|_, cx| model(cx).chat.video.update(cx, |v, cx| v.set_active(None, cx)))?;
+        wait_for(&w, Duration::from_secs(10), "the player's threads to end", |_| media_threads().is_empty()).await?;
+        w.mouse_move(point(px(4.), px(4.)))?;
+        w.sleep(Duration::from_millis(600)).await;
+        w.settle().await?;
+        let (channel, still) = (media.channel.clone(), w.update(|_, cx| crate::playback::poster(&media.channel, id, cx))?);
+        let still = still.context("the played video's card has no poster")?;
+        let paused = w.update(|_, cx| crate::playback::paused_label(&channel, id, cx))?;
+        let frames = frames_at_rest(&w, 3).await?;
+        cx.log(format_args!(
+            "stopped after 1.5 s: the card's poster is the last picture ({}x{}), kept in its slot ({} plane textures alive, no decoder thread: {}); {:?}; 3 s at rest with it on screen: {} frames drawn, {} presented",
+            still.size().0,
+            still.size().1,
+            hub.live_textures(),
+            hub.decoder_threads(),
+            paused,
+            frames.drawn,
+            frames.presented
+        ));
+        ensure!(hub.live_textures() > 0 && hub.live_textures() <= 2 * 5, "{} plane textures kept for one poster", hub.live_textures());
+        ensure!(hub.decoder_threads() == 0, "a decoder thread for a card at rest");
+        ensure!(frames.drawn == 0 && frames.presented == 0, "{} frames drawn, {} presented with a poster at rest", frames.drawn, frames.presented);
+        ensure!(paused.is_some_and(|label| label.starts_with("Paused at")), "no \"Paused at\" beside the poster");
+        drop(still);
+        // The next play resumes where it was, and the poster gives way to the picture.
+        w.click(at)?;
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(10), "the resumed video", move |cx| p.read(cx).video_phase() == Some(decibell_media::Phase::Playing) && p.read(cx).video_times().0 > 1_400_000).await?;
+        // Leaving the channel: stopped, and nothing of the channel is kept.
+        w.update(|_, cx| model(cx).nav.update(cx, |nav, cx| nav.set_active_channel(Some(ChannelId::from("elsewhere")), cx)))?;
+        wait_for(&w, Duration::from_secs(10), "the player's threads to end", |_| media_threads().is_empty()).await?;
+        let (h, c) = (hub.clone(), channel.clone());
+        wait_for(&w, Duration::from_secs(10), "the poster and its textures to go", move |cx| crate::playback::poster(&c, id, cx).is_none() && h.live_textures() == 0).await?;
+        cx.log("played again: resumed past 1.4 s; another channel: no poster, 0 plane textures alive");
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    result
+}
+
+/// A source nothing can be read from (a file the service refuses).
+struct Refused;
+
+impl std::io::Read for Refused {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("refused by the self-test"))
+    }
+}
+
+impl std::io::Seek for Refused {
+    fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::other("refused by the self-test"))
+    }
+}
+
+async fn check_media_keys(cx: TestCx) -> Result<()> {
+    use decibell_media::Phase;
+    use decibell_shell::probes;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    /// The fixture's voice note (`attachment_payloads`: row 10, second file).
+    const NOTE: i64 = 101;
+    ensure!(probes::enabled(), "media-keys runs with DECIBELL_TEST_PROBES=1");
+    let (w, pane) = fixture_window_with(&cx, crate::fixture::ATTACHMENTS, true)?;
+    let result = async {
+        let playback = media_setup(&w)?;
+        // The same clip, through a provider that can be told to refuse, counting what it opens.
+        let (refuse, opened) = (std::sync::Arc::new(AtomicBool::new(false)), std::sync::Arc::new(AtomicUsize::new(0)));
+        let clip = media_clip();
+        let (r, o) = (refuse.clone(), opened.clone());
+        w.update(|_, cx| {
+            playback.update(cx, |p, _| {
+                p.set_source_provider(Rc::new(move |_, _, _| {
+                    o.fetch_add(1, Ordering::SeqCst);
+                    Some(if r.load(Ordering::SeqCst) {
+                        Box::new(Refused) as Box<dyn decibell_media::Source>
+                    } else {
+                        Box::new(std::io::Cursor::new(clip.to_vec()))
+                    })
+                }))
+            })
+        })?;
+        let list = w.update(|_, cx| pane.read(cx).list.clone())?;
+        rest(&w, &list).await?;
+        let audio = w.update(|_, cx| model(cx).chat.audio.clone())?;
+        let card_key = format!("audio-card-{NOTE}");
+        let play_key = format!("audio-play-{NOTE}");
+        let key = card_key.clone();
+        wait_for(&w, Duration::from_secs(5), "the voice note's card", move |_| probes::bounds(&key).is_some()).await?;
+        let card = probes::bounds(&card_key).context("the audio card")?;
+        ensure!(card.top() > px(60.) && card.bottom() < px(720.), "the voice note's card is not on screen ({card:?})");
+
+        // ── The audio card: a press focuses it, Space plays and pauses ──
+        // On its name: no button there.
+        w.click(point(card.left() + px(150.), card.top() + px(24.)))?;
+        w.settle().await?;
+        let focused = w.update(|window, cx| {
+            let (handle, card) = playback.read(cx).audio_focus();
+            (handle.is_focused(window), card)
+        })?;
+        ensure!(focused == (true, Some(NOTE)), "a press on the audio card did not focus it: {focused:?}");
+        ensure!(w.update(|_, cx| audio.read(cx).active.is_none())?, "a press on the card's name started it");
+        w.keystroke("k")?;
+        w.sleep(Duration::from_millis(100)).await;
+        ensure!(w.update(|_, cx| audio.read(cx).active.is_none())?, "a key other than Space started the audio");
+        w.keystroke("space")?;
+        let a = audio.clone();
+        let t = wait_for(&w, Duration::from_secs(10), "Space to start the audio", move |cx| {
+            let a = a.read(cx);
+            a.active.as_ref().is_some_and(|m| m.attachment_id == NOTE) && a.playing && a.time_secs > 0.3
+        })
+        .await?;
+        cx.log(format_args!("audio card focused by a press; Space: playing, 0.3 s in after {} ms", t.as_millis()));
+        w.keystroke("space")?;
+        let a = audio.clone();
+        wait_for(&w, Duration::from_secs(3), "Space to pause the audio", move |cx| !a.read(cx).playing).await?;
+        w.sleep(Duration::from_millis(400)).await;
+        let paused_at = w.update(|_, cx| audio.read(cx).time_secs)?;
+        w.sleep(Duration::from_millis(500)).await;
+        let later = w.update(|_, cx| audio.read(cx).time_secs)?;
+        ensure!((later - paused_at).abs() < 0.01, "the audio went on after Space paused it ({paused_at} → {later})");
+        w.keystroke("space")?;
+        let a = audio.clone();
+        wait_for(&w, Duration::from_secs(3), "Space to resume the audio", move |cx| a.read(cx).playing && a.read(cx).time_secs > paused_at + 0.2).await?;
+        cx.log(format_args!("Space: paused at {paused_at:.2} s (still there 0.5 s later); Space: playing again"));
+
+        // ── A source that fails: the line under the card, and the retry ──
+        w.update(|_, cx| audio.update(cx, |a, cx| a.set_active(None, cx)))?;
+        rest(&w, &list).await?;
+        let height_before = probes::bounds(&card_key).context("the audio card")?.size.height;
+        refuse.store(true, Ordering::SeqCst);
+        let opened_before = opened.load(Ordering::SeqCst);
+        let button = probes::bounds(&play_key).context("the audio card's play button")?;
+        w.click(button.center())?;
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(10), "the failure", move |cx| p.read(cx).audio_error(NOTE).is_some()).await?;
+        rest(&w, &list).await?;
+        let reason = w.update(|_, cx| playback.read(cx).audio_error(NOTE))?.unwrap_or_default();
+        let height_failed = probes::bounds(&card_key).context("the audio card")?.size.height;
+        cx.log(format_args!(
+            "a source that refuses: \"Failed to load: {reason}\"; the card is {} px tall ({} px before)",
+            f32::from(height_failed),
+            f32::from(height_before)
+        ));
+        ensure!(height_failed > height_before + px(20.), "the card did not grow for its error line");
+        ensure!(opened.load(Ordering::SeqCst) == opened_before + 1, "the source was opened {} times", opened.load(Ordering::SeqCst) - opened_before);
+        ensure!(!w.update(|_, cx| audio.read(cx).playing)?, "a failed attachment counts as playing");
+        // Space on the card tries again (and is refused again).
+        w.keystroke("space")?;
+        let (o, n) = (opened.clone(), opened_before + 2);
+        wait_for(&w, Duration::from_secs(5), "Space to open the player again", move |_| o.load(Ordering::SeqCst) == n).await?;
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(10), "the second failure", move |cx| p.read(cx).audio_error(NOTE).is_some()).await?;
+        // A click on the button tries again; this time the file is there.
+        refuse.store(false, Ordering::SeqCst);
+        rest(&w, &list).await?;
+        let button = probes::bounds(&play_key).context("the audio card's play button")?;
+        w.click(button.center())?;
+        let a = audio.clone();
+        wait_for(&w, Duration::from_secs(10), "the retry to play", move |cx| a.read(cx).playing && a.read(cx).time_secs > 0.3).await?;
+        rest(&w, &list).await?;
+        let height_after = probes::bounds(&card_key).context("the audio card")?.size.height;
+        ensure!(w.update(|_, cx| playback.read(cx).audio_error(NOTE))?.is_none(), "the error stayed after a retry that plays");
+        ensure!(height_after == height_before, "the card kept its error line's height ({height_after:?})");
+        ensure!(opened.load(Ordering::SeqCst) == opened_before + 3, "the retries opened {} sources", opened.load(Ordering::SeqCst) - opened_before);
+        cx.log(format_args!(
+            "Space: opened again (refused again); a click on the button: opened again, plays, the line is gone (the card is {} px again)",
+            f32::from(height_after)
+        ));
+        w.update(|_, cx| audio.update(cx, |a, cx| a.set_active(None, cx)))?;
+
+        // ── The video's keys ──
+        let (id, at) = find_video(&w, &list).await?;
+        w.settle().await?;
+        let hub = w.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+        let stream = hub.stream(&format!("media:{}:{id}", daily_gaming().wire()));
+        w.click(at)?;
+        let s = stream.clone();
+        wait_for(&w, Duration::from_secs(10), "the first picture", move |_| s.stats().presented > 0).await?;
+        let phase = |want: Phase| {
+            let p = playback.clone();
+            move |cx: &mut App| p.read(cx).video_phase() == Some(want.clone())
+        };
+        wait_for(&w, Duration::from_secs(5), "the video to play", phase(Phase::Playing)).await?;
+        // A press on the player gives it the keys (and, 220 ms later, pauses it).
+        w.click(at)?;
+        wait_for(&w, Duration::from_secs(3), "the click to pause", phase(Phase::Paused)).await?;
+        w.keystroke("space")?;
+        wait_for(&w, Duration::from_secs(3), "Space to play the video", phase(Phase::Playing)).await?;
+        w.keystroke("space")?;
+        wait_for(&w, Duration::from_secs(3), "Space to pause the video", phase(Phase::Paused)).await?;
+        let before = w.update(|_, cx| playback.read(cx).video_times().0)?;
+        let near = |target: i64| {
+            let p = playback.clone();
+            move |cx: &mut App| (p.read(cx).video_times().0 - target).abs() < 300_000
+        };
+        w.keystroke("right")?;
+        wait_for(&w, Duration::from_secs(5), "Right to seek 5 s on", near(before + 5_000_000)).await?;
+        w.keystroke("right")?;
+        wait_for(&w, Duration::from_secs(5), "Right again", near(before + 10_000_000)).await?;
+        let ahead = w.update(|_, cx| playback.read(cx).video_times().0)?;
+        w.keystroke("left")?;
+        wait_for(&w, Duration::from_secs(5), "Left to seek 5 s back", near(before + 5_000_000)).await?;
+        let back = w.update(|_, cx| playback.read(cx).video_times().0)?;
+        cx.log(format_args!(
+            "video keys: Space plays and pauses; paused at {:.2} s, Right Right: {:.2} s, Left: {:.2} s",
+            before as f64 / 1e6,
+            ahead as f64 / 1e6,
+            back as f64 / 1e6
+        ));
+        w.keystroke("space")?;
+        wait_for(&w, Duration::from_secs(3), "Space to play the video again", phase(Phase::Playing)).await?;
+
+        // ── The controls' fade: the pointer rests on the playing video ──
+        w.mouse_move(point(at.x + px(3.), at.y))?;
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(2), "the controls", move |cx| p.read(cx).controls() == (true, 1.)).await?;
+        let rested = Instant::now();
+        let p = playback.clone();
+        wait_for(&w, Duration::from_secs(5), "the resting pointer to hide the controls", move |cx| !p.read(cx).controls().0).await?;
+        let hidden_after = rested.elapsed();
+        let (fading, frames_before) = (Instant::now(), w.frames()?);
+        let mut between: Vec<f32> = Vec::new();
+        let faded = loop {
+            let drawn = w.update(|_, cx| playback.read(cx).controls().1)?;
+            if drawn <= 0. {
+                break fading.elapsed();
+            }
+            if drawn < 1. && between.last() != Some(&drawn) {
+                between.push(drawn);
+            }
+            ensure!(fading.elapsed() < Duration::from_secs(2), "the controls were still drawn ({drawn}) 2 s after they were to go");
+            w.sleep(Duration::from_millis(8)).await;
+        };
+        let fade_frames = w.frames()?.since(frames_before).drawn;
+        cx.log(format_args!(
+            "pointer resting on the playing video: controls to go after {} ms; faded out in {} ms over {fade_frames} frames ({} values between 1 and 0 seen, first {:.2}, last {:.2})",
+            hidden_after.as_millis(),
+            faded.as_millis(),
+            between.len(),
+            between.first().copied().unwrap_or(1.),
+            between.last().copied().unwrap_or(0.)
+        ));
+        ensure!(hidden_after >= Duration::from_millis(2900) && hidden_after < Duration::from_millis(3600), "the controls went after {} ms", hidden_after.as_millis());
+        ensure!(between.len() >= 3, "the controls did not fade ({between:?})");
+        ensure!(between.windows(2).all(|pair| pair[1] < pair[0]), "the fade is not monotonic: {between:?}");
+        ensure!(faded >= Duration::from_millis(200) && faded < Duration::from_millis(600), "the fade took {} ms", faded.as_millis());
+        w.sleep(Duration::from_millis(100)).await;
+        // Faded out: a picture is a present again, never a frame of the list.
+        let (frames_before, stats_before) = (w.frames()?, stream.stats());
+        w.sleep(Duration::from_secs(2)).await;
+        let (frames, stats) = (w.frames()?.since(frames_before), stream.stats());
+        cx.log(format_args!(
+            "2 s after the fade, playing, the pointer still on the video: {} frames drawn, {} pictures published",
+            frames.drawn,
+            stats.published - stats_before.published
+        ));
+        ensure!(w.update(|_, cx| playback.read(cx).controls())? == (false, 0.), "the controls came back by themselves");
+        ensure!(stats.published > stats_before.published, "the video stopped");
+        ensure!(frames.drawn == 0, "{} frames drawn in 2 s after the controls faded out", frames.drawn);
+        // The pointer moves: they fade back in.
+        let frames_before = w.frames()?;
+        w.mouse_move(point(at.x - px(3.), at.y))?;
+        let p = playback.clone();
+        let back = wait_for(&w, Duration::from_secs(2), "the controls to come back", move |cx| p.read(cx).controls() == (true, 1.)).await?;
+        cx.log(format_args!("the pointer moved: the controls faded in in {} ms over {} frames", back.as_millis(), w.frames()?.since(frames_before).drawn));
+        ensure!(back >= Duration::from_millis(200) && back < Duration::from_millis(600), "the controls came back in {} ms", back.as_millis());
+
+        // ── Fullscreen: F, the download button, Escape ──
+        w.keystroke("f")?;
+        ensure!(w.update(|_, cx| playback.read(cx).fullscreen)?, "F did not go fullscreen");
+        wait_for(&w, Duration::from_secs(5), "the fullscreen download button", |_| probes::bounds("media-download").is_some()).await?;
+        w.sleep(Duration::from_millis(900)).await;
+        let (button, viewport, is_fullscreen) = w.update(|window, _| (probes::bounds("media-download"), window.viewport_size(), window.is_fullscreen()))?;
+        let button = button.context("the download button")?;
+        cx.log(format_args!(
+            "F: fullscreen (the window says {is_fullscreen}, {}x{}); the download button is {}x{}, {} px from the right, {} px from the top",
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+            f32::from(button.size.width),
+            f32::from(button.size.height),
+            f32::from(viewport.width - button.right()),
+            f32::from(button.top())
+        ));
+        ensure!(button.size.width == px(40.) && button.size.height == px(40.), "the download button is {:?}", button.size);
+        // A click on it is the button's, not the picture's (which would pause 220 ms later).
+        w.click(button.center())?;
+        w.sleep(Duration::from_millis(500)).await;
+        ensure!(
+            w.update(|_, cx| playback.read(cx).fullscreen && playback.read(cx).video_phase() == Some(Phase::Playing))?,
+            "the download button's click reached the picture"
+        );
+        w.keystroke("escape")?;
+        ensure!(!w.update(|_, cx| playback.read(cx).fullscreen)?, "Escape did not leave fullscreen");
+        w.sleep(Duration::from_millis(900)).await;
+        ensure!(w.update(|_, cx| active_video(cx))? == Some(id), "the video stopped with fullscreen");
+        cx.log("the download button takes its click (still fullscreen, still playing); Escape: back in the card");
+        w.update(|_, cx| model(cx).chat.video.update(cx, |v, cx| v.set_active(None, cx)))?;
+        wait_for(&w, Duration::from_secs(10), "the players' threads to end", |_| media_threads().is_empty()).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| {
+        if window.is_fullscreen() {
+            window.toggle_fullscreen();
+        }
+        window.remove_window()
+    });
     result
 }
 

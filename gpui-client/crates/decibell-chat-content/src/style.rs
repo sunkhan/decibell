@@ -33,6 +33,8 @@ pub struct ContentStyle {
     pub tombstone: TextStyle,
     /// `text-[11px]` (a grid video's scrim line).
     pub scrim: TextStyle,
+    /// `text-[11px] text-error` (an audio card's "Failed to load" line).
+    pub error: TextStyle,
     /// Site card: `font-meta text-micro` (site name), `text-body font-semibold leading-body`
     /// (title, accent), `text-meta leading-body` (description).
     pub site_name: TextStyle,
@@ -81,6 +83,7 @@ impl ContentStyle {
             upload_status: text(FontRole::Sans, 10., 400., theme.color_text_muted),
             tombstone,
             scrim: text(FontRole::Sans, 11., 400., theme.color_text_secondary),
+            error: text(FontRole::Sans, 11., 400., theme.color_error),
             site_name: text(FontRole::Meta, scaled.text_micro, 400., theme.color_text_muted),
             site_title: text(FontRole::Sans, scaled.text_body, 600., theme.color_accent).leading(leading),
             site_description: text(FontRole::Sans, scaled.text_meta, 400., theme.color_text_secondary).leading(leading),

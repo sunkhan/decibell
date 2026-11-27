@@ -45,6 +45,14 @@ pub fn probe(key: impl Into<SharedString>) -> Option<impl IntoElement> {
     )
 }
 
+/// Records bounds under `key` directly: for a probe that decides for itself whether a paint
+/// counts (one drawn in two windows, of which a test drives one).
+pub fn record(key: impl Into<SharedString>, bounds: Bounds<Pixels>) {
+    if enabled() {
+        BOUNDS.with(|b| b.borrow_mut().insert(key.into(), bounds));
+    }
+}
+
 /// Record a view's state as of its last render.
 pub fn flag(key: &'static str, on: bool) {
     if enabled() {
