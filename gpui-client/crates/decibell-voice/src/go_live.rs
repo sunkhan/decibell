@@ -542,6 +542,8 @@ impl Render for GoLiveDialog {
 
         let go_live_button = div()
             .id("go-live-start")
+            .relative()
+            .children(decibell_shell::probes::probe("go-live-start"))
             .flex()
             .flex_none()
             .items_center()

@@ -364,6 +364,7 @@ fn participant_badges(live: bool, local_mute: bool, state: VoiceUserState, t: &I
 /// A member dropped on a voice channel's row or list: moved there (`memberDropHandlers.onDrop`).
 fn member_drop(server: ServerId, target: ChannelId) -> impl Fn(&MemberDrag, &mut Window, &mut App) + 'static {
     move |drag: &MemberDrag, _, cx| {
+        log::info!("[memberDrag] {} dropped on {target} (from {})", drag.uid, drag.from);
         if drag.lands_on(server, &target) {
             actions::voice::drag_move_member(server, drag.uid, target.clone(), cx);
         }
@@ -650,6 +651,7 @@ impl Render for ChannelSidebar {
                         let sidebar = sidebar.clone();
                         this.on_drag(drag, move |drag: &MemberDrag, _, _, cx| {
                             // The channels it may land on pulse until the ghost goes.
+                            log::info!("[memberDrag] {} picked up in {}", drag.uid, drag.from);
                             let _ = sidebar.update(cx, |this, cx| {
                                 this.member_drag = Some(drag.clone());
                                 cx.notify();

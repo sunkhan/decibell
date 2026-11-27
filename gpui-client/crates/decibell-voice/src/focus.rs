@@ -262,6 +262,9 @@ pub fn rest_cursor(cx: &mut App) {
 /// Times [`rest_cursor`] hid the cursor (self-tests).
 pub static CURSOR_RESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Times the focused view grew out of the mini-player (self-tests).
+pub static GROWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The global stream-audio gain as the focused view drives it (`StreamViewPanel.tsx`'s
 /// `streamVolume` and its own-preview effect): the slider's value, and whether the preview of our
 /// own stream holds it at 0. Each change returns the gain to hand the core when it moves.
@@ -306,11 +309,22 @@ impl StreamGain {
     }
 }
 
+/// The last stream-audio gain handed to the core (`f64` bits; NaN: none yet), for the self-tests:
+/// the core has no getter.
+pub static STREAM_GAIN_SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x7ff8_0000_0000_0000);
+
+/// [`STREAM_GAIN_SENT`] as a number (`None`: nothing sent yet).
+pub fn stream_gain_sent() -> Option<f64> {
+    let gain = f64::from_bits(STREAM_GAIN_SENT.load(std::sync::atomic::Ordering::Relaxed));
+    (!gain.is_nan()).then_some(gain)
+}
+
 /// `set_stream_volume` (the global stream-audio gain).
 pub fn set_stream_volume(volume: f64, cx: &mut App) {
     if !decibell_model::core::is_running() {
         return;
     }
+    STREAM_GAIN_SENT.store(volume.to_bits(), std::sync::atomic::Ordering::Relaxed);
     cx.background_executor()
         .spawn(async move {
             let _ = api::voice::set_stream_volume(api::voice::SetStreamVolumeArgs { volume }).await;
@@ -487,7 +501,10 @@ impl Render for FocusView {
             match grow.to.get() {
                 None => {} // laid out this frame: the video waits, the next frame starts
                 Some(to) => {
-                    let started = *grow.started.get_or_insert_with(std::time::Instant::now);
+                    let started = *grow.started.get_or_insert_with(|| {
+                        GROWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        std::time::Instant::now()
+                    });
                     let t = (started.elapsed().as_secs_f32() / GROW.as_secs_f32()).min(1.);
                     if t >= 1. {
                         growing = false;

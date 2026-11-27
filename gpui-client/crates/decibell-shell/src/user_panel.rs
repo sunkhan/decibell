@@ -294,6 +294,7 @@ impl Render for UserPanel {
                             move |_: &ClickEvent, window, cx| user_panel_action(PanelAction::Latency, bounds.get(), window, cx)
                         })
                         .child(self.latency_bounds.probe())
+                        .children(crate::probes::probe("user-panel-latency"))
                         .child(Label::new(latency).size(11.).weight(500.).color(latency_color)),
                 )
         });

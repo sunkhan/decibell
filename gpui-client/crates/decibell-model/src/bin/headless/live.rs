@@ -43,6 +43,9 @@ Live steps (voice, people, calls):
   wait voice <channel> <user>     shown in that voice channel of the open community
   wait voice-gone <channel> <user>
   wait voice-state <user> <muted|unmuted|deafened>   in our session's participants
+  wait stream <user> <h264|h265|av1|any> [unlocked]   their stream is live in our voice channel
+                                  (in that codec; `unlocked`: announced with no enforced codec)
+  wait stream-gone <user>         no stream of theirs in our voice channel
   wait mls <joining|ready|...>    the connected channel's MLS state
   wait e2ee <unavailable|not_set_up|locked|ready>
   wait presence <user> <online|away|dnd|offline>
@@ -88,6 +91,8 @@ pub enum LiveStep {
 pub enum LiveWait {
     Voice { channel: String, user: String, present: bool },
     VoiceState(String, String),
+    Stream { user: String, codec: String, unlocked: bool },
+    StreamGone(String),
     Mls(String),
     E2ee(String),
     Presence(String, String),
@@ -169,6 +174,17 @@ pub fn parse_wait(what: &str, it: &mut Args) -> Result<Option<LiveWait>, String>
             present: what == "voice",
         },
         "voice-state" => LiveWait::VoiceState(next(&w(what), it)?, next(&w(what), it)?),
+        "stream" => {
+            let user = next(&w(what), it)?;
+            let codec = next(&w(what), it)?;
+            // An optional last word.
+            let unlocked = it.as_slice().first().is_some_and(|a| a == "unlocked");
+            if unlocked {
+                it.next();
+            }
+            LiveWait::Stream { user, codec, unlocked }
+        }
+        "stream-gone" => LiveWait::StreamGone(next(&w(what), it)?),
         "mls" => LiveWait::Mls(next(&w(what), it)?),
         "e2ee" => LiveWait::E2ee(next(&w(what), it)?),
         "presence" => LiveWait::Presence(next(&w(what), it)?, next(&w(what), it)?),
@@ -419,6 +435,27 @@ pub fn holds(wait: &LiveWait, model: &Model, cx: &App) -> bool {
                         _ => false,
                     }
             })
+        }
+        LiveWait::Stream { user, codec, unlocked } => {
+            let Some(uid) = uid_of(model, user, cx) else { return false };
+            let session = model.live.voice.session.read(cx);
+            let streams = model.live.voice.streams.read(cx).session(session.connected().as_ref(), session.call_peer.is_some());
+            streams.iter().any(|s| {
+                s.owner_uid == uid
+                    && match codec.as_str() {
+                        "h264" => matches!(s.current_codec, VideoCodec::H264Hw | VideoCodec::H264Sw),
+                        "h265" => s.current_codec == VideoCodec::H265,
+                        "av1" => s.current_codec == VideoCodec::Av1,
+                        _ => true,
+                    }
+                    && (!*unlocked || s.enforced_codec == VideoCodec::Unknown)
+            })
+        }
+        LiveWait::StreamGone(user) => {
+            let Some(uid) = uid_of(model, user, cx) else { return false };
+            let session = model.live.voice.session.read(cx);
+            let streams = model.live.voice.streams.read(cx).session(session.connected().as_ref(), session.call_peer.is_some());
+            !streams.iter().any(|s| s.owner_uid == uid)
         }
         LiveWait::Mls(phase) => model.live.voice.session.read(cx).e2ee.as_ref().is_some_and(|e| e.phase == VoiceE2eePhase::parse(phase)),
         LiveWait::E2ee(s) => E2eeStatus::parse(s) == model.live.e2ee.read(cx).status,

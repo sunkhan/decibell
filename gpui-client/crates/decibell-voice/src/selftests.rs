@@ -60,6 +60,9 @@ const TESTS: &[(&str, &str)] = &[
     ("voice-cues", "in Lounge on a null sink: a sound and the looping ring play in the session's own output stream (no second stream, no cue thread) and show on the session's input meter; the mic test is refused; nothing is left open after leaving"),
     ("voice-switch", "switching voice channels shows us in the new one at once"),
     ("voice-stall", "watching a stream on the decoder the probe found; fullscreen hides the cursor with the overlays; the streamer stops sending: Reconnecting… after 3 s, gone with the next picture"),
+    ("voice-watch-hidden", "a watched stream (1080p60 H.264 from a headless peer) stops decoding while the window is minimised: CPU and decoded pictures with the window shown, minimised as before the pause (measured), minimised now (no decoder thread, nothing decoded, the watch goes on); restored, a keyframe is asked for and the picture comes back"),
+    ("voice-member-drag", "as alice (Daily Gaming's owner, out of voice): perf4 in Lounge is dragged from the sidebar onto Squad; while the drag is in flight the channels it may land on pulse; dropped, perf4 is moved there; then the user menu's voice moderation: server mute and unmute reach the roster, Disconnect from voice takes perf4 out"),
+    ("voice-golive-software", "DECIBELL_ENCODER=software (no hardware encoder): Go Live with Auto reaches SVT-AV1 through the real capture path (a fake ScreenCast portal on a private bus handing over a test-pattern PipeWire node, never the desktop); the greyed preset moves to an encodable one; a refused picker's error is gone on reopen; the peer sees an AV1 stream announced unlocked; our preview decodes it and mutes the stream gain, which comes back when the preview goes; the desktop ending the capture ends the stream; the dialog closes when the session ends"),
 ];
 
 fn about(name: &str) -> &'static str {
@@ -77,6 +80,9 @@ pub fn selftests() -> Vec<SelfTest> {
         SelfTest { name: "voice-cues", about: about("voice-cues"), run: |cx| Box::pin(parent(cx, "voice-cues")) },
         SelfTest { name: "voice-switch", about: about("voice-switch"), run: |cx| Box::pin(parent(cx, "voice-switch")) },
         SelfTest { name: "voice-stall", about: about("voice-stall"), run: |cx| Box::pin(parent(cx, "voice-stall")) },
+        SelfTest { name: "voice-golive-software", about: about("voice-golive-software"), run: |cx| Box::pin(parent_golive(cx, "voice-golive-software")) },
+        SelfTest { name: "voice-watch-hidden", about: about("voice-watch-hidden"), run: |cx| Box::pin(parent(cx, "voice-watch-hidden")) },
+        SelfTest { name: "voice-member-drag", about: about("voice-member-drag"), run: |cx| Box::pin(parent_env(cx, "voice-member-drag", "alice", Vec::new())) },
     ]
 }
 
@@ -144,6 +150,10 @@ fn headless_exe() -> Option<PathBuf> {
 }
 
 async fn parent(cx: TestCx, name: &'static str) -> Result<()> {
+    parent_env(cx, name, ACCOUNT, Vec::new()).await
+}
+
+async fn parent_env(cx: TestCx, name: &'static str, account: &str, extra: Vec<(String, String)>) -> Result<()> {
     let Some(stack) = stack()? else {
         cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
         return Ok(());
@@ -175,12 +185,13 @@ async fn parent(cx: TestCx, name: &'static str) -> Result<()> {
         .arg("--check")
         .arg(name)
         .arg("--login")
-        .arg(ACCOUNT)
+        .arg(account)
         .env("DECIBELL_USER_DATA_DIR", &profile.0)
         .env("DECIBELL_CENTRAL", &stack.central)
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
         .env("DECIBELL_TEST_PROBES", "1")
         .env_remove("DECIBELL_PERF")
+        .envs(extra)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let started = Instant::now();
@@ -201,6 +212,11 @@ async fn parent(cx: TestCx, name: &'static str) -> Result<()> {
         })
         .await;
     let status = status?;
+    // `DECIBELL_TEST_CHILD_LOG=<file>`: the child's whole log kept (its renders with
+    // `DECIBELL_VOICE_TRACE=1`), for a failure to be read afterwards.
+    if let Some(path) = std::env::var_os("DECIBELL_TEST_CHILD_LOG") {
+        let _ = std::fs::write(&path, err.join("\n"));
+    }
     // The child has ended: its streams are closed.
     let unloaded = sink.map(test_audio::NullSink::unload);
     for line in out.iter().filter(|l| !l.starts_with("selftest:")) {
@@ -251,6 +267,9 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "voice-cues", about: "(in the app) sounds in a voice session", run: |cx| Box::pin(check_cues(cx)) },
         SelfTest { name: "voice-switch", about: "(in the app) switching channels", run: |cx| Box::pin(check_switch(cx)) },
         SelfTest { name: "voice-stall", about: "(in the app) the probed decoder, the fullscreen cursor, a stalled stream", run: |cx| Box::pin(check_stall(cx)) },
+        SelfTest { name: "voice-golive-software", about: "(in the app) Go Live on the software encoder", run: |cx| Box::pin(check_golive_software(cx)) },
+        SelfTest { name: "voice-watch-hidden", about: "(in the app) a watched stream while minimised", run: |cx| Box::pin(check_watch_hidden(cx)) },
+        SelfTest { name: "voice-member-drag", about: "(in the app) drag a voice member to another channel", run: |cx| Box::pin(check_member_drag(cx)) },
     ]
 }
 
@@ -483,7 +502,7 @@ impl Changes {
                 let c = c.clone();
                 move || c.set(c.get() + 1)
             };
-            let (b1, b2, b3, b4) = (bump(&other), bump(&other), bump(&other), bump(&other));
+            let (b1, b2, b3, b4, b5) = (bump(&other), bump(&other), bump(&other), bump(&other), bump(&other));
             let subs = vec![
                 cx.observe(&m.live.voice.stats, {
                     let latency = latency.clone();
@@ -509,6 +528,8 @@ impl Changes {
                 cx.observe(&m.live.voice.rosters, move |_, _| b2()),
                 cx.observe(&m.live.voice.streams, move |_, _| b3()),
                 cx.observe(&m.live.presence.statuses, move |_, _| b4()),
+                // A toast coming or going is drawn too.
+                cx.observe(&m.toasts, move |_, _| b5()),
             ];
             Changes { latency, e2ee, other, _subs: subs }
         })
@@ -647,7 +668,11 @@ fn steps(list: &[&str]) -> Vec<String> {
 async fn check_join(cx: TestCx) -> Result<()> {
     ready(&cx).await?;
     let me = me(&cx)?;
+    let cues = CueLog::start(&cx)?;
     frames_of(&cx, "joining Lounge from the sidebar", async |cx| join(cx, LOUNGE).await).await?;
+    let heard = cues.take();
+    cx.log(format_args!("joining played {heard:?}"));
+    ensure!(heard.contains(&Cue::Play(Sound::Connect)), "no Connect sound for our own join: {heard:?}");
     ensure!(cx.update(|_, cx| model(cx).nav.read(cx).active_view == ActiveView::Voice)?, "the voice view didn't open");
     wait_probe(&cx, &format!("participant-tile:{me}")).await?;
     cx.log("our tile is on the stage");
@@ -701,7 +726,21 @@ async fn check_join(cx: TestCx) -> Result<()> {
         break;
     }
     peer.cue("quit")?;
-    leave(&cx).await?;
+    // The connection-stats popover opens from the user panel's latency readout and doesn't
+    // outlive the session (`ConnectionStatsPopover` sits in the in-session block).
+    click_probe(&cx, "user-panel-latency").await?;
+    let stats_open = |cx: &mut App| {
+        crate::state::VoiceUi::try_global(cx).is_some_and(|ui| matches!(ui.read(cx).popover, Some(crate::state::PanelPopover::Stats(_))))
+    };
+    wait_for(&cx, Duration::from_secs(5), "the connection-stats popover", stats_open).await?;
+    cx.log("the latency readout opened the connection-stats popover");
+    // Leave by the user panel's Disconnect: our Disconnect sound, and the popover goes too.
+    click_probe(&cx, "user-panel-disconnect").await?;
+    wait_for(&cx, Duration::from_secs(10), "leaving voice", |cx| !model(cx).live.voice.session.read(cx).media_session_active()).await?;
+    let heard = cues.take();
+    ensure!(heard.contains(&Cue::Play(Sound::Disconnect)), "no Disconnect sound for our own leave: {heard:?}");
+    wait_for(&cx, Duration::from_secs(5), "the popover to close with the session", move |cx| !stats_open(cx)).await?;
+    cx.log(format_args!("left by the user panel's Disconnect: played {heard:?}; the stats popover closed with the session"));
     result
 }
 
@@ -715,38 +754,99 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     wait_probe(&cx, &format!("participant-tile:{}", account_uid(PEER)?)).await?;
     // Nobody speaks (both muted): the stage draws nothing. Measured as the window is (focused
     // or not); the server bar's active tile glow may re-present while focused (it draws nothing).
+    let result = idle_tries(&cx, "as the desktop has it").await;
+    // Then unfocused for sure: a small window of this process takes the focus (the desktop gives
+    // a new window of the active app the focus; nothing else on it is touched).
+    let other = cx.update(|_, cx| {
+        let bounds = gpui::Bounds::new(point(gpui::px(0.), gpui::px(0.)), gpui::size(gpui::px(240.), gpui::px(120.)));
+        cx.open_window(
+            gpui::WindowOptions { window_bounds: Some(gpui::WindowBounds::Windowed(bounds)), ..Default::default() },
+            |_, cx| gpui::AppContext::new(cx, |_| FocusTaker),
+        )
+    })??;
+    let unfocused = {
+        let started = Instant::now();
+        loop {
+            if !cx.update(|window, _| window.is_window_active())? {
+                break true;
+            }
+            if started.elapsed() > Duration::from_secs(3) {
+                break false;
+            }
+            cx.sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let second = if unfocused {
+        Some(idle_tries(&cx, "unfocused (our own window took the focus)").await)
+    } else {
+        cx.log("the desktop didn't give our second window the focus: the unfocused case wasn't measured");
+        None
+    };
+    cx.update(move |_, cx| {
+        let _ = other.update(cx, |_, window, _| window.remove_window());
+    })?;
+    peer.cue("quit")?;
+    leave(&cx).await?;
+    result?;
+    if let Some(second) = second {
+        second?;
+    }
+    Ok(())
+}
+
+/// A blank window that only takes the focus from the app's main window.
+struct FocusTaker;
+
+impl gpui::Render for FocusTaker {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        gpui::div()
+    }
+}
+
+/// Up to four 10 s windows at rest: the voice view passes when it drew no more frames than the
+/// things on screen that changed (see [`Changes`]).
+async fn idle_tries(cx: &TestCx, label: &str) -> Result<()> {
     let mut last = String::new();
     let (mut passed, mut measured_failure) = (false, false);
+    let visibility = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let _visibility = {
+        let visibility = visibility.clone();
+        cx.update(move |window, _| window.observe_window_visibility(move |_, _, _| visibility.set(visibility.get() + 1)))?
+    };
     for attempt in 1..=4 {
-        let (changes, _, _subscriptions, before) = at_rest(&cx).await?;
+        // The change watch first, then 100 ms, then the window's first frame count (`at_rest`): a frame
+        // already asked for when drawing seemed to stop lands before the measurement.
+        let (changes, stores, _subscriptions, before) = at_rest(cx).await?;
         let events_before = cx.update(|_, cx| model(cx).pump_stats().events)?;
         let active = cx.update(|window, _| window.is_window_active())?;
+        let flips = visibility.get();
+        log::info!("[voice-test] idle window starts ({label})");
         let disturbed = cx.watched_sleep(Duration::from_secs(10)).await?;
+        log::info!("[voice-test] idle window ends");
         let frames = cx.frames()?.since(before);
         let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events_before;
+        let notified: Vec<String> = stores.borrow().iter().map(|(k, n)| format!("{k} {n}")).collect();
+        let shown = visibility.get() - flips;
         last = format!(
-            "try {attempt}: {} drawn, {} presented in 10 s ({}); {events} core events (voice pings / stats every ~2 s); {}{}",
+            "{label}, try {attempt}: {} drawn, {} presented in 10 s ({}); {events} core events (voice pings / stats every ~2 s); {}; {shown} visibility changes; stores that notified: [{}]{}",
             frames.drawn,
             frames.presented,
             if active { "focused" } else { "unfocused" },
             changes.describe(),
+            notified.join(", "),
             disturbed.as_ref().map_or(String::new(), |d| format!(" (disturbed: {d})"))
         );
         cx.log(&last);
-        if frames.drawn as u32 <= changes.count() {
+        if frames.drawn as u32 <= changes.count() + shown {
             passed = true;
             break;
         }
-        measured_failure |= disturbed.is_none();
+        measured_failure |= disturbed.is_none() && shown == 0;
     }
     if !passed && !measured_failure {
-        peer.cue("quit")?;
-        leave(&cx).await?;
-        return Err(decibell_harness::inconclusive(format_args!("every try was disturbed by the desktop's focus ({last})")));
+        return Err(decibell_harness::inconclusive(format_args!("every try was disturbed by the desktop ({last})")));
     }
     ensure!(passed, "the voice view drew while nothing on screen changed: {last}");
-    peer.cue("quit")?;
-    leave(&cx).await?;
     Ok(())
 }
 
@@ -856,6 +956,14 @@ async fn check_watch(cx: TestCx) -> Result<()> {
     ensure!(frames.drawn < 30, "the watched stream drew {} frames (a picture should cost a present, not a draw)", frames.drawn);
     // The stats overlay shows the codec and the size.
     click_probe(&cx, "focus-stats").await.ok();
+    // Escape steps back to the grid; a click on the tile focuses the stream again.
+    let focused = move |cx: &mut App| model(cx).live.voice.watching.read(cx).focused;
+    cx.keystroke("escape")?;
+    wait_for(&cx, Duration::from_secs(5), "Escape back to the grid", move |cx| focused(cx).is_none()).await?;
+    ensure!(cx.update(move |_, cx| model(cx).live.voice.watching.read(cx).is_watching(peer_uid))?, "Escape stopped the watch");
+    cx.log("Escape: back to the grid, still watching");
+    click_probe(&cx, &format!("stream-tile:{peer_uid}")).await?;
+    wait_for(&cx, Duration::from_secs(5), "the stream focused again", move |cx| focused(cx) == Some(peer_uid)).await?;
     // Leave the voice view: the mini-player keeps the same pictures coming.
     click_probe(&cx, "channel:general").await?;
     wait_for(&cx, Duration::from_secs(5), "the mini-player", |_| probes::flag_set("mini-player")).await?;
@@ -865,8 +973,24 @@ async fn check_watch(cx: TestCx) -> Result<()> {
     let mini = (b.presented - a.presented) as f64 / 3.;
     cx.log(format_args!("mini-player: {mini:.1} pictures/s presented"));
     ensure!(mini > fps * 0.9, "the mini-player presented {mini:.1} pictures/s");
-    // Stop watching from the mini-player: the decoder goes.
-    click_probe(&cx, "mini-player").await.ok();
+    // A click on the mini-player returns to the stream, which grows back out of it.
+    let grows = crate::focus::GROWS.load(std::sync::atomic::Ordering::Relaxed);
+    // Press, a frame (the release is a window listener the press's frame installs), release.
+    let mini = wait_probe(&cx, "mini-player").await?;
+    cx.mouse_down(mini.center(), 1, gpui::Modifiers::default())?;
+    cx.sleep(Duration::from_millis(100)).await;
+    cx.mouse_up(mini.center())?;
+    wait_for(&cx, Duration::from_secs(5), "the voice view with the stream focused", move |cx| {
+        model(cx).nav.read(cx).active_view == ActiveView::Voice && focused(cx) == Some(peer_uid)
+    })
+    .await?;
+    wait_for(&cx, Duration::from_secs(5), "the mini-player to go", |_| !probes::flag_set("mini-player")).await?;
+    wait_for(&cx, Duration::from_secs(2), "the video to grow out of the mini-player", move |_| {
+        crate::focus::GROWS.load(std::sync::atomic::Ordering::Relaxed) > grows
+    })
+    .await?;
+    cx.log("the mini-player's click returned to the focused stream, which grew out of it");
+    // Stop watching: the decoder goes.
     cx.update(|_, cx| actions::voice::stop_watching_stream(peer_uid, cx))?;
     let t = wait_for(&cx, Duration::from_secs(5), "the decoder to stop", {
         let hub = hub.clone();
@@ -1040,12 +1164,22 @@ async fn check_golive(cx: TestCx) -> Result<()> {
     })?;
     let settings = |cx: &mut App| decibell_model::live::voice::go_live::StreamSettings::of(model(cx).settings.read(cx).get());
     let start = cx.update(|_, cx| settings(cx))?;
+    // Smooth chosen (the default), past this fake encoder's ceiling.
+    cx.update(|_, cx| {
+        actions::voice::update_stream_settings(|s| s.apply_preset(&decibell_model::live::voice::go_live::STREAM_PRESETS[0]), cx)
+    })?;
     frames_of(&cx, "the Go Live dialog opens", async |cx| {
         click_probe(cx, "dock-share").await?;
         wait_for(cx, Duration::from_secs(5), "the dialog", |_| probes::flag_set("go-live-open")).await?;
         Ok(())
     })
     .await?;
+    // A greyed preset can't stay chosen: the encodable one with the most pixels a second.
+    wait_for(&cx, Duration::from_secs(3), "the greyed Smooth to give way to Data saver", move |cx| {
+        settings(cx).preset().is_some_and(|p| p.id == "saver")
+    })
+    .await?;
+    cx.log("Smooth was chosen and is greyed: Data saver chosen as the dialog opened");
     // Slides and Data saver encode in software: they switch.
     for preset in ["slides", "saver"] {
         click_probe(&cx, &format!("preset:{preset}")).await?;
@@ -1064,6 +1198,643 @@ async fn check_golive(cx: TestCx) -> Result<()> {
     // Put the settings back as they were.
     cx.update(move |_, cx| actions::voice::update_stream_settings(|s| *s = start.clone(), cx))?;
     leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-member-drag ───────────────────────────────────────────────────────────────────
+
+/// As alice, who owns Daily Gaming and isn't in voice (no E2EE needed: she never joins): drag
+/// perf4's row in the sidebar's Lounge roster onto Squad.
+async fn check_member_drag(cx: TestCx) -> Result<()> {
+    wait_for(&cx, Duration::from_secs(30), "the sign-in", |cx| model(cx).auth.read(cx).is_authenticated).await?;
+    wait_for(&cx, Duration::from_secs(30), "Daily Gaming to connect", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await?;
+    let opened = |cx: &mut App| {
+        let m = model(cx);
+        m.nav.read(cx).active_server == Some(daily_gaming()) && m.community(daily_gaming(), cx).is_some_and(|c| !c.channels.read(cx).list().is_empty())
+    };
+    let started = Instant::now();
+    loop {
+        click_probe(&cx, "server-tile:1").await?;
+        if wait_for(&cx, Duration::from_secs(1), "Daily Gaming's channels", opened).await.is_ok() {
+            break;
+        }
+        ensure!(started.elapsed() < Duration::from_secs(15), "timed out after 15 s waiting for Daily Gaming's channels");
+    }
+    let peer_uid = account_uid(PEER)?;
+    let peer = Peer::start(&steps(&[
+        "voice-join", "Lounge", "wait", "mls", "ready", "print", "joined",
+        "wait", "voice", "Squad", PEER, "print", "moved",
+        "wait", "voice-gone", "Squad", PEER, "print", "disconnected",
+        "wait-file", "@cue:quit", "logout",
+    ]))?;
+    peer.wait_line(&cx, "MARK joined", Duration::from_secs(60)).await?;
+    wait_for(&cx, Duration::from_secs(10), "perf4 in Lounge's roster", move |cx| in_channel(cx, LOUNGE, peer_uid)).await?;
+    // The floating user panel covers the sidebar's bottom: fold the text categories so the voice
+    // channels sit above it (a drop lands only where the pointer really is over the row).
+    for category in ["information", "text-channels"] {
+        click_probe(&cx, &format!("category:{category}")).await?;
+    }
+    cx.sleep(Duration::from_millis(300)).await;
+    let row = wait_probe(&cx, &format!("voice-member:{peer_uid}")).await?;
+    let target = wait_probe(&cx, &format!("voice:{SQUAD}")).await?;
+    if let Some(panel) = probes::bounds("user-panel-settings") {
+        ensure!(target.bottom() < panel.top() - gpui::px(40.), "Squad's row ({target:?}) is under the user panel ({panel:?})");
+    }
+    cx.log(format_args!("perf4's row at {:?}, Squad's at {:?}", row.center(), target.center()));
+    // Press, move past the drag threshold, then over Squad in steps (a drag's moves).
+    cx.mouse_down(row.center(), 1, gpui::Modifiers::default())?;
+    let (from, to) = (row.center(), target.center());
+    for step in 1..=12 {
+        let f = step as f32 / 12.;
+        cx.mouse_drag(point(from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f))?;
+        cx.sleep(Duration::from_millis(30)).await;
+    }
+    let pulsing = probes::flag_set("member-drag");
+    cx.log(format_args!("dragging over Squad: the drop targets pulse ({pulsing})"));
+    ensure!(pulsing, "no drag in flight after moving perf4's row onto Squad");
+    cx.mouse_up(to)?;
+    let moved = wait_for(&cx, Duration::from_secs(10), "perf4 in Squad", move |cx| in_channel(cx, SQUAD, peer_uid)).await;
+    let toasts: Vec<String> =
+        cx.update(|_, cx| model(cx).toasts.read(cx).toasts().iter().map(|t| format!("{} {:?}", t.title, t.body)).collect())?;
+    if !toasts.is_empty() {
+        cx.log(format_args!("toasts after the drop: {toasts:?}"));
+    }
+    let t = moved?;
+    cx.log(format_args!("dropped on Squad: perf4 moved there {} ms later", t.as_millis()));
+    peer.wait_line(&cx, "MARK moved", Duration::from_secs(10)).await?;
+    wait_for(&cx, Duration::from_secs(5), "the drag to end", |_| !probes::flag_set("member-drag")).await?;
+    cx.log("the peer sees itself in Squad; the pulse ended with the drag");
+
+    // The user menu's voice moderation (the owner may moderate anyone): server mute and unmute
+    // show on the roster, Disconnect takes perf4 out of voice.
+    let squad_key = (daily_gaming(), decibell_model::ChannelId::from(SQUAD));
+    // The menu closes when its window loses the focus; other windows share this desktop.
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(Some(true), cx))?;
+    let menu = |entry: &'static str| {
+        let cx = cx.clone();
+        async move {
+            wait_for(&cx, Duration::from_secs(5), "the last menu to close", |cx| model(cx).overlays.read(cx).context_menu.is_none()).await?;
+            cx.update(move |_, cx| decibell_common::open_user_menu(peer_uid, point(gpui::px(700.), gpui::px(200.)), Some(daily_gaming()), cx))?;
+            wait_for(&cx, Duration::from_secs(5), "the user menu", |cx| model(cx).overlays.read(cx).context_menu.is_some()).await?;
+            // Its rows are where this menu drew them (not the last one's).
+            settle_drawn(&cx).await?;
+            click_probe(&cx, &format!("user-menu:{entry}")).await
+        }
+    };
+    for (entry, muted) in [("menu-voice-mute", true), ("menu-voice-mute", false)] {
+        menu(entry).await?;
+        let key = squad_key.clone();
+        wait_for(&cx, Duration::from_secs(10), if muted { "perf4 server muted" } else { "perf4 server unmuted" }, move |cx| {
+            model(cx).live.voice.rosters.read(cx).channel(&key).is_some_and(|c| c.state(peer_uid).server_muted == muted)
+        })
+        .await?;
+        cx.log(format_args!("the user menu's {}: the roster shows it", if muted { "Server mute" } else { "Server unmute" }));
+    }
+    menu("menu-voice-disconnect").await?;
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(None, cx))?;
+    wait_for(&cx, Duration::from_secs(10), "perf4 out of voice", move |cx| !in_channel(cx, SQUAD, peer_uid)).await?;
+    peer.wait_line(&cx, "MARK disconnected", Duration::from_secs(10)).await?;
+    cx.log("the user menu's Disconnect from voice: perf4 left voice, and sees it");
+    for category in ["information", "text-channels"] {
+        click_probe(&cx, &format!("category:{category}")).await?;
+    }
+    peer.cue("quit")?;
+    Ok(())
+}
+
+// ── voice-watch-hidden ──────────────────────────────────────────────────────────────────
+
+/// `tools/perf/winctl.sh <verb> <our pid>` (KWin scripting), found above the binary.
+fn winctl(verb: &str) -> Result<bool> {
+    let exe = std::env::current_exe()?;
+    let Some(script) = exe.ancestors().map(|dir| dir.join("tools/perf/winctl.sh")).find(|path| path.exists()) else {
+        return Ok(false);
+    };
+    let status = Command::new(script).arg(verb).arg(std::process::id().to_string()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    Ok(status.success())
+}
+
+/// CPU time of this process and of its threads whose name starts with `prefix`, in clock ticks.
+fn cpu_ticks(prefix: &str) -> (u64, u64) {
+    fn ticks(stat: &str) -> u64 {
+        // Fields after the `(comm)`: state is the 1st, utime the 12th, stime the 13th.
+        let rest = stat.rsplit_once(')').map_or("", |(_, r)| r);
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        fields.get(11).and_then(|u| u.parse::<u64>().ok()).unwrap_or(0) + fields.get(12).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0)
+    }
+    let process = std::fs::read_to_string("/proc/self/stat").map(|s| ticks(&s)).unwrap_or(0);
+    let mut threads = 0;
+    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+        for task in tasks.flatten() {
+            let comm = std::fs::read_to_string(task.path().join("comm")).unwrap_or_default();
+            if comm.trim().starts_with(prefix) {
+                threads += std::fs::read_to_string(task.path().join("stat")).map(|s| ticks(&s)).unwrap_or(0);
+            }
+        }
+    }
+    (process, threads)
+}
+
+/// Wait until the window's visibility (`Window::is_visible`) is `visible`.
+async fn window_visible(cx: &TestCx, visible: bool, limit: Duration) -> Result<Duration> {
+    let started = Instant::now();
+    loop {
+        if cx.update(|window, _| window.is_visible())? == visible {
+            return Ok(started.elapsed());
+        }
+        ensure!(started.elapsed() < limit, "the window didn't become {} in {} s", if visible { "visible" } else { "hidden" }, limit.as_secs());
+        cx.sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Over `window`: the process's and the decoder threads' CPU (% of one core), and the pictures
+/// decoded per second.
+async fn measure(cx: &TestCx, stream: &decibell_video::Stream, window: Duration) -> (f64, f64, f64) {
+    let hz = 100.; // USER_HZ on Linux
+    let (p0, t0) = cpu_ticks("decibell-video");
+    let d0 = stream.stats().decoded;
+    cx.sleep(window).await;
+    let (p1, t1) = cpu_ticks("decibell-video");
+    let d1 = stream.stats().decoded;
+    let secs = window.as_secs_f64();
+    ((p1 - p0) as f64 / hz / secs * 100., (t1.saturating_sub(t0)) as f64 / hz / secs * 100., (d1 - d0) as f64 / secs)
+}
+
+async fn check_watch_hidden(cx: TestCx) -> Result<()> {
+    let Some(file) = stream_file() else {
+        cx.log("SKIP: vendor/streams/*.dbv not found above the binary");
+        return Ok(());
+    };
+    if !std::env::current_exe()?.ancestors().any(|dir| dir.join("tools/perf/winctl.sh").exists()) {
+        cx.log("SKIP: tools/perf/winctl.sh isn't above the binary: a minimised window can't be restored from here");
+        return Ok(());
+    }
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    let peer_uid = account_uid(PEER)?;
+    let path = file.display().to_string();
+    let peer = Peer::start(&steps(&[
+        "voice-join", "Lounge", "wait", "mls", "ready", "stream-file", &path, "print", "streaming",
+        "wait-file", "@cue:stop", "stream-stop", "voice-leave", "logout",
+    ]))?;
+    peer.wait_line(&cx, "STREAMING", Duration::from_secs(60)).await?;
+    click_probe(&cx, &format!("stream-tile:{peer_uid}")).await?;
+    let state = move |cx: &mut App| crate::video_events::StreamStates::global(cx).read(cx).get(peer_uid);
+    wait_for(&cx, Duration::from_secs(15), "the first picture", move |cx| state(cx).picture.is_some()).await?;
+    cx.sleep(Duration::from_secs(2)).await;
+    let hub = cx.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+    let stream = hub.stream(&peer_uid.to_string());
+    let window = Duration::from_secs(5);
+
+    let (shown_cpu, shown_decoder, shown_rate) = measure(&cx, &stream, window).await;
+    cx.log(format_args!("shown: process {shown_cpu:.1} % of a core, decoder threads {shown_decoder:.1} %, {shown_rate:.1} pictures/s decoded"));
+    ensure!(shown_rate > 50., "only {shown_rate:.1} pictures/s decoded while shown");
+
+    // Minimised (the platform's visibility: KWin suspends a minimised window).
+    cx.update(|window, _| window.minimize_window())?;
+    let t = window_visible(&cx, false, Duration::from_secs(5)).await?;
+    cx.log(format_args!("minimised: hidden {} ms later", t.as_millis()));
+    // As before the pause existed (the measurement's baseline): decoding goes on.
+    cx.update(|_, _| hub.set_pause_when_hidden(false))?;
+    cx.sleep(Duration::from_secs(1)).await;
+    let (old_cpu, old_decoder, old_rate) = measure(&cx, &stream, window).await;
+    cx.log(format_args!("minimised, without the pause (before): process {old_cpu:.1} %, decoder threads {old_decoder:.1} %, {old_rate:.1} pictures/s decoded"));
+    // Now: paused.
+    let requests = stream.stats().keyframe_requests;
+    cx.update(|_, _| hub.set_pause_when_hidden(true))?;
+    wait_for(&cx, Duration::from_secs(5), "the decoder thread to leave", {
+        let hub = hub.clone();
+        move |_| hub.decoder_threads() == 0
+    })
+    .await?;
+    cx.sleep(Duration::from_secs(1)).await;
+    let (new_cpu, new_decoder, new_rate) = measure(&cx, &stream, window).await;
+    cx.log(format_args!(
+        "minimised, paused (after): process {new_cpu:.1} %, decoder threads {new_decoder:.1} %, {new_rate:.1} pictures/s decoded, {} decoder threads",
+        hub.decoder_threads()
+    ));
+    ensure!(new_rate == 0., "{new_rate:.1} pictures/s decoded while minimised");
+    ensure!(hub.decoder_threads() == 0, "a decoder thread runs while minimised");
+    ensure!(!cx.update(move |_, cx| state(cx).stalled)?, "a pause shows as a stall");
+    let watching = cx.update(move |_, cx| model(cx).live.voice.watching.read(cx).is_watching(peer_uid))?;
+    ensure!(watching, "the watch (and the stream's sound with it) ended while minimised");
+
+    // Restored: a keyframe is asked for at once and decoding picks up from it.
+    let decoded = stream.stats().decoded;
+    ensure!(winctl("activate")?, "winctl.sh activate failed");
+    let restored = Instant::now();
+    window_visible(&cx, true, Duration::from_secs(5)).await?;
+    wait_for(&cx, Duration::from_secs(5), "pictures again", {
+        let stream = stream.clone();
+        move |_| stream.stats().decoded > decoded + 5
+    })
+    .await?;
+    let asked = stream.stats().keyframe_requests - requests;
+    cx.log(format_args!("restored: {asked} keyframe request(s), decoding again {} ms after the restore", restored.elapsed().as_millis()));
+    ensure!(asked >= 1, "no keyframe was asked for on the return");
+    let (_, _, back_rate) = measure(&cx, &stream, Duration::from_secs(2)).await;
+    ensure!(back_rate > 50., "only {back_rate:.1} pictures/s after the restore");
+    cx.log(format_args!(
+        "decoder CPU while minimised: {old_decoder:.1} % of a core before, {new_decoder:.1} % now (process {old_cpu:.1} % → {new_cpu:.1} %)"
+    ));
+    cx.update(|_, cx| actions::voice::stop_watching_stream(peer_uid, cx))?;
+    peer.cue("stop")?;
+    if let Ok(line) = peer.wait_line(&cx, "STREAM-STOPPED", Duration::from_secs(15)).await {
+        cx.log(format_args!("the streamer: {line}"));
+    }
+    leave(&cx).await?;
+    Ok(())
+}
+
+// ── voice-golive-software ───────────────────────────────────────────────────────────────
+
+/// What a Go Live needs on this desktop without touching it: a private session bus with nothing
+/// on it but a fake ScreenCast portal (`fake_screencast_portal.py`), which hands the core a
+/// PipeWire node this rig made (a GStreamer test pattern, 1280×720 at 30 fps). Every process is
+/// ours and killed by its pid when the rig is dropped; the node goes with its process.
+struct GoLiveRig {
+    dir: Profile,
+    bus_pid: u32,
+    address: String,
+    source: Child,
+    portal: Child,
+    node: u32,
+}
+
+const PORTAL_SCRIPT: &str = include_str!("fake_screencast_portal.py");
+/// The portal's control files (`refuse`, `close`), for the check inside the app.
+const PORTAL_CONTROL_ENV: &str = "DECIBELL_TEST_PORTAL_CONTROL";
+
+impl GoLiveRig {
+    fn start() -> Result<GoLiveRig> {
+        let dir = Profile::new("golive-rig")?;
+        let config = dir.0.join("bus.conf");
+        std::fs::write(
+            &config,
+            format!(
+                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><type>session</type><listen>unix:path={}</listen>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>"#,
+                dir.0.join("bus").display()
+            ),
+        )?;
+        // No service directories: nothing can be activated on it (not the real portal).
+        let out = Command::new("dbus-daemon")
+            .arg(format!("--config-file={}", config.display()))
+            .args(["--fork", "--print-pid=1", "--print-address=1"])
+            .output()
+            .context("starting dbus-daemon")?;
+        ensure!(out.status.success(), "dbus-daemon: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        let address = lines.next().context("dbus-daemon printed no address")?.to_string();
+        let bus_pid: u32 = lines.next().and_then(|l| l.trim().parse().ok()).context("dbus-daemon printed no pid")?;
+        let kill_bus = || {
+            let _ = Command::new("kill").arg(bus_pid.to_string()).status();
+        };
+        let node_name = format!("decibell-test-screen-{}", std::process::id());
+        let source = Command::new("gst-launch-1.0")
+            .args([
+                "-q",
+                "videotestsrc",
+                "is-live=true",
+                "pattern=ball",
+                "!",
+                "video/x-raw,format=BGRx,width=1280,height=720,framerate=30/1",
+                "!",
+                "pipewiresink",
+                "mode=provide",
+                &format!("client-name={node_name}"),
+                &format!("stream-properties=props,node.name={node_name},media.class=Video/Source"),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(dir.0.join("source.log"))?)
+            .spawn();
+        let mut source = match source {
+            Ok(source) => source,
+            Err(e) => {
+                kill_bus();
+                bail!("starting the test source: {e}");
+            }
+        };
+        let started = Instant::now();
+        let node = loop {
+            if let Some(id) = pipewire_node(&node_name) {
+                break id;
+            }
+            if started.elapsed() > Duration::from_secs(5) {
+                let _ = source.kill();
+                let _ = source.wait();
+                kill_bus();
+                bail!("the test source's PipeWire node {node_name} never appeared");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let script = dir.0.join("fake_screencast_portal.py");
+        std::fs::write(&script, PORTAL_SCRIPT)?;
+        std::fs::create_dir_all(dir.0.join("portal-control"))?;
+        let portal = Command::new("python3")
+            .arg("-I")
+            .arg(&script)
+            .args(["--bus", &address, "--node", &node.to_string(), "--control"])
+            .arg(dir.0.join("portal-control"))
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(dir.0.join("portal.log"))?)
+            .stderr(std::fs::File::create(dir.0.join("portal.stderr"))?)
+            .spawn();
+        let portal = match portal {
+            Ok(portal) => portal,
+            Err(e) => {
+                let _ = source.kill();
+                let _ = source.wait();
+                kill_bus();
+                bail!("starting the fake portal: {e}");
+            }
+        };
+        let rig = GoLiveRig { dir, bus_pid, address, source, portal, node };
+        let started = Instant::now();
+        while !rig.portal_log().contains("PORTAL ready") {
+            ensure!(
+                started.elapsed() < Duration::from_secs(5),
+                "the fake portal never got ready: {}",
+                std::fs::read_to_string(rig.dir.0.join("portal.stderr")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(rig)
+    }
+
+    fn portal_log(&self) -> String {
+        std::fs::read_to_string(self.dir.0.join("portal.log")).unwrap_or_default()
+    }
+
+    /// The app's environment: the private bus, the software encoder only, the portal's controls.
+    fn env(&self) -> Vec<(String, String)> {
+        vec![
+            ("DBUS_SESSION_BUS_ADDRESS".into(), self.address.clone()),
+            ("DECIBELL_ENCODER".into(), "software".into()),
+            (PORTAL_CONTROL_ENV.into(), self.dir.0.join("portal-control").display().to_string()),
+        ]
+    }
+}
+
+impl Drop for GoLiveRig {
+    fn drop(&mut self) {
+        for child in [&mut self.portal, &mut self.source] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = Command::new("kill").arg(self.bus_pid.to_string()).status();
+    }
+}
+
+/// The id of the PipeWire node named `name` (`pw-cli ls Node`).
+fn pipewire_node(name: &str) -> Option<u32> {
+    let out = Command::new("pw-cli").args(["ls", "Node"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut id = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("id ") {
+            id = rest.split(',').next().and_then(|n| n.trim().parse().ok());
+        } else if line == format!("node.name = \"{name}\"") {
+            return id;
+        }
+    }
+    None
+}
+
+async fn parent_golive(cx: TestCx, name: &'static str) -> Result<()> {
+    let have = |program: &str, args: &[&str]| {
+        Command::new(program).args(args).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    };
+    for (program, args, what) in [
+        ("python3", &["-I", "-c", "import dbus, gi"][..], "python3 with dbus-python and PyGObject"),
+        ("gst-inspect-1.0", &["pipewiresink"][..], "GStreamer's pipewiresink"),
+        ("pw-cli", &["--version"][..], "pw-cli"),
+        ("dbus-daemon", &["--version"][..], "dbus-daemon"),
+    ] {
+        if !have(program, args) {
+            cx.log(format_args!("SKIP: {what} is missing (the fake portal and the test source need it)"));
+            return Ok(());
+        }
+    }
+    if stack()?.is_none() {
+        cx.log("SKIP: the local stack is down (tools/dev/local-stack.sh up)");
+        return Ok(());
+    }
+    let rig = GoLiveRig::start()?;
+    cx.log(format_args!("rig: a private bus, the test pattern as PipeWire node {}, the fake portal", rig.node));
+    let result = parent_env(cx.clone(), name, ACCOUNT, rig.env()).await;
+    for line in rig.portal_log().lines() {
+        cx.log(format_args!("│ {line}"));
+    }
+    drop(rig);
+    cx.log("rig stopped (portal, test source, bus)");
+    result
+}
+
+fn portal_control(file: &str) -> Result<PathBuf> {
+    let dir = std::env::var(PORTAL_CONTROL_ENV).context("no portal control directory")?;
+    Ok(PathBuf::from(dir).join(file))
+}
+
+async fn check_golive_software(cx: TestCx) -> Result<()> {
+    use decibell_model::live::voice::VideoCodec;
+    use decibell_model::live::voice::go_live::{STREAM_PRESETS, StreamSettings};
+    use decibell_model::live::voice::streams::OwnStreamPhase;
+    let settings = |cx: &mut App| StreamSettings::of(model(cx).settings.read(cx).get());
+    let start = cx.update(|_, cx| settings(cx))?;
+    ready(&cx).await?;
+    join(&cx, LOUNGE).await?;
+    let me = me(&cx)?;
+    let peer = Peer::start(&steps(&[
+        "voice-join", "Lounge", "wait", "mls", "ready", "print", "joined",
+        "wait", "stream", ACCOUNT, "av1", "unlocked", "print", "saw-av1-unlocked",
+        "wait", "stream-gone", ACCOUNT, "print", "saw-end",
+        "wait", "stream", ACCOUNT, "av1", "unlocked", "print", "saw-again",
+        "wait-file", "@cue:squad", "voice-join", "Squad", "wait", "mls", "ready", "print", "in-squad",
+        "wait", "stream", ACCOUNT, "av1", "unlocked", "print", "saw-carried",
+        "wait-file", "@cue:quit", "voice-leave", "logout",
+    ]))?;
+    peer.wait_line(&cx, "MARK joined", Duration::from_secs(60)).await?;
+
+    // The core's probe with DECIBELL_ENCODER=software: only the software encoder.
+    cx.update(|_, cx| crate::codecs::ensure_caps(cx))?;
+    wait_for(&cx, Duration::from_secs(30), "the encoder caps", |cx| {
+        let e = crate::codecs::Encoders::global(cx);
+        let e = e.read(cx);
+        e.loaded && !e.caps.is_empty()
+    })
+    .await?;
+    let caps = cx.update(|_, cx| crate::codecs::Encoders::global(cx).read(cx).caps.clone())?;
+    for c in &caps {
+        cx.log(format_args!("encoder: {} on {} ({}), ≤ {}x{} at {} fps, {} px/s", c.codec.human_name(), c.label, if c.hardware { "hardware" } else { "software" }, c.max_width, c.max_height, c.max_fps, c.max_pixel_rate));
+    }
+    ensure!(cx.update(|_, cx| crate::codecs::Encoders::global(cx).read(cx).software_only())?, "DECIBELL_ENCODER=software left a hardware encoder");
+    // Auto, no sound (the sound tap would hear the desktop's apps), and the default Smooth, which
+    // the software encoder can't keep up with.
+    cx.update(|_, cx| {
+        actions::voice::update_stream_settings(
+            |s| {
+                s.share_audio = false;
+                s.enforced_codec = VideoCodec::Unknown;
+                s.apply_preset(&STREAM_PRESETS[0]);
+            },
+            cx,
+        )
+    })?;
+    let codecs = cx.update(|_, cx| {
+        let first = model(cx).live.voice.codecs.read(cx).encoders.first().map(|e| e.codec);
+        settings(cx).start_codecs(first)
+    })?;
+    cx.log(format_args!("Auto asks for {} unpinned", codecs.0.human_name()));
+    ensure!(codecs == (VideoCodec::Av1, VideoCodec::Unknown), "Auto on a software-only machine asks for {codecs:?}");
+    let smooth_fits = cx.update(|_, cx| {
+        crate::codecs::Encoders::global(cx).read(cx).can_encode(decibell_model::live::voice::go_live::StreamResolution::P1080, 60)
+    })?;
+    click_probe(&cx, "dock-share").await?;
+    wait_for(&cx, Duration::from_secs(5), "the Go Live dialog", |_| probes::flag_set("go-live-open")).await?;
+    if smooth_fits {
+        // A CPU with room for 1080p60 in software (the ceiling grows with the core count): nothing
+        // is greyed, and Smooth stays. The test pattern is 720p30: stream it as Data saver.
+        cx.sleep(Duration::from_millis(500)).await;
+        ensure!(cx.update(|_, cx| settings(cx).preset().map(|p| p.id))? == Some("smooth"), "Smooth moved although this CPU can encode it");
+        cx.log("this CPU encodes Smooth in software: nothing greyed, Smooth kept; Data saver chosen for the 720p30 test pattern");
+        click_probe(&cx, "preset:saver").await?;
+        wait_for(&cx, Duration::from_secs(3), "Data saver", move |cx| settings(cx).preset().is_some_and(|p| p.id == "saver")).await?;
+    } else {
+        let t = wait_for(&cx, Duration::from_secs(5), "the greyed Smooth to give way", move |cx| settings(cx).preset().is_some_and(|p| p.id == "saver")).await?;
+        cx.log(format_args!("Smooth is past the software encoder: Data saver chosen {} ms after the dialog opened", t.as_millis()));
+    }
+    let planned = cx.update(|_, cx| {
+        let s = settings(cx);
+        crate::codecs::Encoders::global(cx).read(cx).planned(&s).map(|c| c.label.to_string())
+    })?;
+    ensure!(planned.as_deref() == Some("Software (SVT-AV1)"), "the dialog plans {planned:?}");
+
+    // A refused picker: its error shows; reopened, the dialog starts without it.
+    std::fs::write(portal_control("refuse")?, b"")?;
+    click_probe(&cx, "go-live-start").await?;
+    wait_for(&cx, Duration::from_secs(15), "the refusal in the dialog", |cx| model(cx).live.voice.own_stream.read(cx).error.is_some()).await?;
+    let error = cx.update(|_, cx| model(cx).live.voice.own_stream.read(cx).error.clone())?.unwrap_or_default();
+    cx.log(format_args!("the picker refused: \"{error}\" in the dialog"));
+    ensure!(!error.contains("not available") && !error.contains("No hardware encoder"), "the start failed on the encoder, not at the picker: {error}");
+    std::fs::remove_file(portal_control("refuse")?)?;
+    click_probe(&cx, "go-live-close").await?;
+    wait_for(&cx, Duration::from_secs(5), "the dialog to close", |_| !probes::flag_set("go-live-open")).await?;
+    cx.sleep(Duration::from_millis(400)).await;
+    click_probe(&cx, "dock-share").await?;
+    wait_for(&cx, Duration::from_secs(5), "the Go Live dialog", |_| probes::flag_set("go-live-open")).await?;
+    ensure!(cx.update(|_, cx| model(cx).live.voice.own_stream.read(cx).error.is_none())?, "the last attempt's error is still in the reopened dialog");
+    cx.log("reopened: no stale error");
+
+    // Go Live: the core falls through to SVT-AV1 and the capture runs on the test pattern.
+    click_probe(&cx, "go-live-start").await?;
+    let t = wait_for(&cx, Duration::from_secs(30), "the stream to go live", |cx| {
+        let o = model(cx).live.voice.own_stream.read(cx);
+        o.is_live() || (o.phase == OwnStreamPhase::Idle && o.error.is_some())
+    })
+    .await?;
+    let (live, error) = cx.update(|_, cx| {
+        let o = model(cx).live.voice.own_stream.read(cx);
+        (o.live().cloned(), o.error.clone())
+    })?;
+    let live = live.with_context(|| format!("Go Live failed: {error:?}"))?;
+    cx.log(format_args!(
+        "live {} ms after Go Live: {} on \"{}\", {}x{} at {} fps, announced {}",
+        t.as_millis(),
+        live.codec.human_name(),
+        live.encoder,
+        live.width,
+        live.height,
+        live.fps,
+        if live.enforced == VideoCodec::Unknown { "unlocked" } else { "locked" }
+    ));
+    ensure!(live.codec == VideoCodec::Av1, "the stream encodes in {}", live.codec.human_name());
+    ensure!(live.encoder.as_ref() == "Software (SVT-AV1)", "the stream's encoder is {:?}", live.encoder);
+    ensure!(live.enforced == VideoCodec::Unknown, "an Auto stream was announced locked");
+    ensure!((live.width, live.height) == (1280, 720), "encodes at {}x{}", live.width, live.height);
+    wait_for(&cx, Duration::from_secs(5), "the dialog to close once live", |_| !probes::flag_set("go-live-open")).await?;
+    peer.wait_line(&cx, "MARK saw-av1-unlocked", Duration::from_secs(15)).await?;
+    cx.log("the peer sees our stream: AV1, no enforced codec");
+
+    // Our preview: the app decodes its own SVT-AV1 stream; the stream gain is 0 meanwhile and
+    // back to the slider's value when the preview goes.
+    cx.update(|_, cx| actions::voice::focus_stream(me, cx))?;
+    let state = move |cx: &mut App| crate::video_events::StreamStates::global(cx).read(cx).get(me);
+    let t = wait_for(&cx, Duration::from_secs(15), "our preview's first picture", move |cx| state(cx).picture.is_some()).await?;
+    let hub = cx.update(|_, cx| decibell_video::VideoHub::global(cx))?;
+    let stream = hub.stream(&me.to_string());
+    let a = stream.stats();
+    cx.sleep(Duration::from_secs(3)).await;
+    let b = stream.stats();
+    let decoded = (b.decoded - a.decoded) as f64 / 3.;
+    cx.log(format_args!(
+        "preview: first picture {} ms after focusing; {} decoded with {} at {decoded:.1} pictures/s; stream gain sent {:?}",
+        t.as_millis(),
+        b.codec.map(|c| c.label()).unwrap_or("?"),
+        b.backend.map(|d| d.display_name(b.codec.unwrap_or(decibell_video::Codec::Av1))).unwrap_or("?"),
+        crate::focus::stream_gain_sent()
+    ));
+    ensure!(b.codec == Some(decibell_video::Codec::Av1), "the preview isn't AV1");
+    ensure!(decoded > 20., "the preview decoded {decoded:.1} pictures/s of a 30 fps stream");
+    ensure!(crate::focus::stream_gain_sent() == Some(0.0), "the preview didn't mute the stream gain");
+    cx.update(|_, cx| actions::voice::stop_watching_stream(me, cx))?;
+    wait_for(&cx, Duration::from_secs(5), "the stream gain back after the preview", |_| crate::focus::stream_gain_sent() == Some(1.0)).await?;
+    cx.log("preview closed: the stream gain is back to 100 %");
+
+    // The desktop ends the capture (its "stop sharing"): the stream ends, announced as ended.
+    std::fs::write(portal_control("close")?, b"")?;
+    let t = wait_for(&cx, Duration::from_secs(10), "the stream to end with its capture", |cx| {
+        model(cx).live.voice.own_stream.read(cx).phase == OwnStreamPhase::Idle
+    })
+    .await?;
+    cx.log(format_args!("the portal closed the session: the stream ended {} ms later", t.as_millis()));
+    peer.wait_line(&cx, "MARK saw-end", Duration::from_secs(15)).await?;
+    cx.log("the peer saw it end");
+
+    // Take stream with me (Settings → Codecs): a same-community switch while live carries the
+    // stream (capture and encoder keep running) into the new channel; without it the switch ends it.
+    click_probe(&cx, "dock-share").await?;
+    wait_for(&cx, Duration::from_secs(5), "the Go Live dialog", |_| probes::flag_set("go-live-open")).await?;
+    click_probe(&cx, "go-live-start").await?;
+    wait_for(&cx, Duration::from_secs(30), "the stream to go live again", |cx| model(cx).live.voice.own_stream.read(cx).is_live()).await?;
+    // The dialog closes once live and takes every click until it has faded out.
+    wait_for(&cx, Duration::from_secs(5), "the dialog to close once live", |_| !probes::flag_set("go-live-open")).await?;
+    cx.sleep(Duration::from_millis(400)).await;
+    peer.wait_line(&cx, "MARK saw-again", Duration::from_secs(15)).await?;
+    peer.cue("squad")?;
+    peer.wait_line(&cx, "MARK in-squad", Duration::from_secs(30)).await?;
+    let take_along = |on: bool, cx: &mut App| {
+        model(cx).settings.update(cx, |s, cx| s.change(|v| v.take_stream_on_channel_switch = on, cx))
+    };
+    cx.update(move |_, cx| take_along(true, cx))?;
+    join(&cx, SQUAD).await?;
+    let squad = decibell_model::ChannelId::from(SQUAD);
+    let t = wait_for(&cx, Duration::from_secs(15), "the stream carried into Squad", move |cx| {
+        model(cx).live.voice.own_stream.read(cx).live().is_some_and(|l| l.channel.as_ref() == Some(&squad))
+    })
+    .await?;
+    peer.wait_line(&cx, "MARK saw-carried", Duration::from_secs(15)).await?;
+    cx.log(format_args!("switched to Squad with Take stream with me: carried ({} ms), the peer there sees it", t.as_millis()));
+    cx.update(move |_, cx| take_along(false, cx))?;
+    join(&cx, LOUNGE).await?;
+    wait_for(&cx, Duration::from_secs(10), "the stream to end on the switch", |cx| {
+        model(cx).live.voice.own_stream.read(cx).phase == OwnStreamPhase::Idle
+    })
+    .await?;
+    cx.log("switched back without it: the stream ended");
+
+    // The dialog doesn't outlive the session.
+    click_probe(&cx, "dock-share").await?;
+    wait_for(&cx, Duration::from_secs(5), "the Go Live dialog", |_| probes::flag_set("go-live-open")).await?;
+    leave(&cx).await?;
+    wait_for(&cx, Duration::from_secs(5), "the dialog to close with the session", |_| !probes::flag_set("go-live-open")).await?;
+    cx.log("left voice: the Go Live dialog closed with the session");
+    peer.cue("quit")?;
+    cx.update(move |_, cx| actions::voice::update_stream_settings(|s| *s = start.clone(), cx))?;
     Ok(())
 }
 
