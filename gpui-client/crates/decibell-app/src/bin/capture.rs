@@ -159,8 +159,17 @@ fn capture(args: &Args) -> anyhow::Result<()> {
         cx.set_global(decibell_ui::AssumeClientDecorations);
         decibell_ui::init(cx, args.themes[0])?;
         // What the crates hand each other through the app (the DM composer, …): the screens
-        // build the rest themselves (the capture skips the app's boot).
-        registry::join_features(cx);
+        // build the rest themselves (the capture skips the app's boot). The shell's whole-window
+        // screens (`main-*`) show the panes the features register, as the app does: their
+        // crates' `init` (which joins them too).
+        if args.screen.starts_with("main-") {
+            if cx.try_global::<decibell_model::Model>().is_none() {
+                decibell_model::Model::init(cx, None);
+            }
+            registry::init_features(cx);
+        } else {
+            registry::join_features(cx);
+        }
         anyhow::Ok(())
     })?;
 

@@ -1124,6 +1124,11 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   test window got the focus). A test that could not measure returns `decibell_harness::inconclusive(reason)`
   and is reported INCONCLUSIVE, apart from passes and failures; a parent relaying a `--check` child's
   INCONCLUSIVE line is INCONCLUSIVE too.
+- **Feature `init`s are not all idempotent**: `decibell-chat`, `-composer`, `-home`, `-chat-content`,
+  `-server-settings` and `-search` register again when called twice (voice, servers and settings keep a once
+  guard). The capture tool now calls `registry::init_features` for the shell's `main-*` screens (their panes are
+  the features', as in the app: `main-home` 0.27–0.40 %, `main-server` 0.46–0.54 % against Electron); the other
+  screens still join only (they install their own crate).
 
 - **Leaving a community right after joining it** (owner's side agent, 2026-11-26). Central tells every device of
   an account "you joined" (MEMBERSHIP_ADDED) a moment after a join, the joining device included; the core waits
