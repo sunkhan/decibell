@@ -41,11 +41,25 @@ attachment playback (first pass), interface sounds / mic test / device events in
 first checkpoint (§1c). Last full verification, on `0687ee3`: 758 unit tests pass, 24 of 25 key self-tests pass
 one at a time (`media-idle` fails: with the media second pass), Electron's bar green, `tools/win-check.sh` clean.
 
-**In flight (§1a has the worktrees):** cross-crate joins and self-test triage; packaging, auto-update, crash
-reports and the ship build's size; attachment playback's second pass; auto-away on X11; the Windows batch's
-second round. Land each with `tools/land.sh pick wip/<name>` (then `git merge --ff-only wip/land` in the main
-tree), run the three `cargo check` configurations, `tools/win-check.sh`, the unit tests and the key self-tests
-(Electron's bar too when `crates/decibell-core` changed), push `gpui-client`, read the Windows Native Check.
+**Merged since the crash (2026-11-27), each verified and pushed:** the Windows batch's second checkpoint (the
+DirectWrite font-family fix, Go Live's source grid, every self-test group running in CI: `23f9adb`, Windows
+run 45983095122 green, first Windows results in §1c); auto-away by idle time on X11 (`86c1b34`); packaging,
+auto-update, crash reports and the ship flavour (`ba96e9e`: 690 unit tests, ship binary 80.4 MB passing
+`packaging/check-ship.sh`, 14 of 14 release tests against loopback fakes; the first dry run of
+`gpui-release.yml` started with that push).
+
+**In flight (§1a has the worktrees):** cross-crate joins and self-test triage (`wip/integrate-d`); attachment
+playback's second pass (`wip/media2`); the Windows batch's third round (`wip/windows`). Land each with
+`tools/land.sh pick wip/<name>` (then `git merge --ff-only wip/land` in the main tree), run the `cargo check`
+configurations (default, `capture`, `dev-local`, and `--no-default-features --features ship --release`),
+`tools/win-check.sh`, the unit tests and the key self-tests (Electron's bar too when `crates/decibell-core`
+changed), push `gpui-client`, read the Windows Native Check and the Native Client Release dry run.
+
+**Frame-count self-tests need a quiet desktop.** `idle-frames`, `kit-idle`, `themes` and the other tests that
+count frames fail when another test window opens beside them or the pointer crosses them (a focus change is
+"3 drawn, 2 presented"): with several agents running self-tests at once they flake; rerun alone before
+believing a failure. `shell-signin` failed once in the same conditions ("timed out after 10 s waiting for
+Daily Gaming's channels", passing on every rerun): watch for it in the final runs.
 
 **Then the final phase, on a quiet machine (nothing else building):**
 1. `PARITY.md`: every `docs/FEATURES.md` §1–§9 row "done" with evidence or "needs owner" with what to test.
@@ -153,7 +167,7 @@ screens in all seven themes beside Electron's.
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
 | Desktop integration (`crates/decibell-platform`, GPUI patches `0015`–`0019`; branch `wip/platform`) | done on Linux (2026-11-26), Windows written for real and compiled only, every job of Electron's main process accounted for in §1b: one instance per profile (a second start hands its `decibell://` link or `--hotkey` over in ~20 ms and exits), links as the pending invite before sign-in, `--hotkey` from a second start, the taskbar flash on an incoming call (not under DND), launcher progress, the upload quit guard and paused downloads at quit, window state, sleep / lock → Away, Copy image on Wayland and X11 (patch `0015`), the keyring label `Decibell` (`0016`), development builds off the shipped profile. Self-tests `content-copy-image`, `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`, `keyring-label`, `window-state`, `profile-guard` (results: §4 "Desktop integration"). Windows: §5 "Windows batch". By hand: §6 |
-| Packaging, auto-update, crash reports (`crates/decibell-release`, `packaging/`, `.github/workflows/gpui-release.yml`, `aur/decibell-native-bin`; branch `wip/packaging`) | done on Linux (2026-11-26), Windows compiled (type-checked with `tools/win-check.sh`) and checked by the release workflow's dry run: the **ship build** (`--no-default-features --features ship`: no screens, self-tests, fixtures, probes or `DECIBELL_CENTRAL`; `packaging/check-ship.sh`), one version from `electron-client/package.json`, tarball / AppImage / `.deb` / AUR recipe, the NSIS installer (per user, the `decibell://` keys, DLLs found by walking the imports, the shortcut's AppUserModelID), the executable's icon / version / manifest, `THIRD_PARTY_LICENSES.md` with the LGPL answer, the updater (signed fixed-channel feed, SHA-512, resume, trial start + rollback) and crash reports (scrubbed Sentry envelopes, native crash records). Everything in `PACKAGING.md`; the owner's list in its §11 |
+| Packaging, auto-update, crash reports (`crates/decibell-release`, `packaging/`, `.github/workflows/gpui-release.yml`, `aur/decibell-native-bin`; merged `ba96e9e`: on the merged tree the ship binary is 80.4 MB, `check-ship.sh` passes and refuses the development binary, 14 of 14 release tests pass) | done on Linux (2026-11-26), Windows compiled (type-checked with `tools/win-check.sh`) and checked by the release workflow's dry run: the **ship build** (`--no-default-features --features ship`: no screens, self-tests, fixtures, probes or `DECIBELL_CENTRAL`; `packaging/check-ship.sh`), one version from `electron-client/package.json`, tarball / AppImage / `.deb` / AUR recipe, the NSIS installer (per user, the `decibell://` keys, DLLs found by walking the imports, the shortcut's AppUserModelID), the executable's icon / version / manifest, `THIRD_PARTY_LICENSES.md` with the LGPL answer, the updater (signed fixed-channel feed, SHA-512, resume, trial start + rollback) and crash reports (scrubbed Sentry envelopes, native crash records). Everything in `PACKAGING.md`; the owner's list in its §11 |
 
 ## 1a. Worktrees in use (check `git worktree list`; merge or remove each when its work reports)
 
@@ -168,10 +182,8 @@ linked (all git-excluded through `.git/info/exclude`).
 | Worktree / branch | Work |
 |---|---|
 | `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage (edits many crates; not `decibell-video`, the media cards or `copy_image`) |
-| `.worktrees/windows` / `wip/windows` | the Windows batch, in rounds: checkpoint 1 merged (`873fac7` + `704dff0`): GPUI patches `0020` (Direct3D 11 surfaces) and `0021` (the vsync thread parks), `decibell-video/src/windows/` (D3D11VA → software), the title bar's caption buttons, `tools/win-check.sh`, `tools/perf/windows/`, the CI job's run steps, `docs/windows-owner-checks.md`. Next round: Go Live's source grid, fixes from the CI logs. (Its `vendor/gpui-src` was rebuilt by the architect after an accidental removal: its patches were committed, nothing lost.) |
+| `.worktrees/windows` / `wip/windows` | the Windows batch, in rounds (§1c): checkpoints 1 and 2 merged; round 3 = the six self-tests and two `decibell-text` unit tests that fail on the Windows runner (run 45983095122: `chat-history`, `chat-switch`, `input-typing`, `input-ime`, `input-atoms`, `render-cost`; `input_vectors`' word stops), the groups skipped there, the rest of its gap table. After each checkpoint: merge, push, send it the run's logs from `origin/ci/win-gpui-check-log` |
 | `.worktrees/media2` / `wip/media2` | attachment playback, second pass (rotation, 10-bit, VP9 hardware, UI pieces, sealed live test, retained memory, Electron comparison, captures) |
-| `.worktrees/platform2` / `wip/platform2` | auto-away by idle time on X11 (SYNC `IDLETIME` alarms, event-driven; tested in a private Xvfb) |
-| `.worktrees/packaging` / `wip/packaging` | the ship build and its size, Linux and Windows packages, `gpui-release.yml` (dry run on the branch), auto-update, crash reports, the Windows executable's identity |
 | `.worktrees/land` / `wip/land` | the architect's landing tree, driven by `tools/land.sh` (pick an agent's commits, resolve, then fast-forward the main tree): empty of unmerged work when this was written |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
