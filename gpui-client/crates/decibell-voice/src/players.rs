@@ -92,8 +92,10 @@ impl Players {
         }
         match next {
             Some(uid) if self.pip.as_ref().map(|(u, _)| *u) != Some(uid) => {
-                // The new viewer first, then the old one goes.
-                let viewer = viewer(uid, cx);
+                // The new viewer first, then the old one goes. It is never drawn itself (the
+                // places that show the stream hold their own): a keeper, so a hidden window still
+                // pauses the stream.
+                let viewer = VideoHub::global(cx).stream(&uid.to_string()).keeper();
                 self.pip = Some((uid, viewer));
             }
             None => self.pip = None,

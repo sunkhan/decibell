@@ -182,6 +182,9 @@ impl StreamTarget {
 struct ViewerEntry {
     id: u64,
     window: Option<AnyWindowHandle>,
+    /// Holds the decoder across moves without being drawn itself ([`Stream::keeper`]): it is in
+    /// no window, so for the pause it counts as shown while any window of the app is.
+    keeper: bool,
 }
 
 pub(crate) struct StreamShared {
@@ -265,8 +268,9 @@ pub(crate) struct HubInner {
     started: Instant,
     unknown_frames: AtomicU64,
     presenter: Mutex<Option<gpui::Task<()>>>,
-    /// Windows that aren't shown (minimised, suspended): their viewers don't count.
-    hidden_windows: Mutex<Vec<AnyWindowHandle>>,
+    /// The app's windows the hub was told about, and whether each is shown (not minimised or
+    /// suspended): viewers in hidden ones don't count.
+    windows: Mutex<Vec<(AnyWindowHandle, bool)>>,
     /// Streams pause while only hidden windows view them (off: the old behaviour, for
     /// measurements).
     pause_hidden: AtomicBool,
@@ -361,7 +365,7 @@ impl VideoHub {
                 started: Instant::now(),
                 unknown_frames: AtomicU64::new(0),
                 presenter: Mutex::new(None),
-                hidden_windows: Mutex::new(Vec::new()),
+                windows: Mutex::new(Vec::new()),
                 pause_hidden: AtomicBool::new(true),
             }),
         }
@@ -565,14 +569,11 @@ impl VideoHub {
     /// change of its windows; costs nothing when it changes nothing.
     pub fn set_window_visible(&self, window: AnyWindowHandle, visible: bool) {
         {
-            let mut hidden = self.inner.hidden_windows.lock();
-            let at = hidden.iter().position(|w| *w == window);
-            match (visible, at) {
-                (true, Some(at)) => {
-                    hidden.swap_remove(at);
-                }
-                (false, None) => hidden.push(window),
-                _ => return,
+            let mut windows = self.inner.windows.lock();
+            match windows.iter_mut().find(|(w, _)| *w == window) {
+                Some((_, shown)) if *shown == visible => return,
+                Some((_, shown)) => *shown = visible,
+                None => windows.push((window, visible)),
             }
         }
         log::info!("video: window {:?} {}", window.window_id(), if visible { "shown" } else { "hidden" });
@@ -710,6 +711,10 @@ fn present_windows(cx: &mut gpui::AsyncApp, windows: &[AnyWindowHandle]) {
 }
 
 impl HubInner {
+    fn any_window_hidden(&self) -> bool {
+        self.windows.lock().iter().any(|(_, shown)| !*shown)
+    }
+
     /// Pause or resume every stream as its viewers' windows are now (see [`Self::reconsider`]).
     fn reconsider_all(&self) {
         let streams: Vec<Arc<StreamShared>> = self.streams.read().values().cloned().collect();
@@ -726,11 +731,14 @@ impl HubInner {
             return;
         }
         let hide = self.pause_hidden.load(RELAXED) && {
-            // Lock order: the hidden windows, then the stream's viewers (nothing takes them the
-            // other way round).
-            let hidden = self.hidden_windows.lock();
+            // Lock order: the windows, then the stream's viewers (nothing takes them the other
+            // way round).
+            let windows = self.windows.lock();
+            let hidden = |w: AnyWindowHandle| windows.iter().any(|(h, shown)| *h == w && !*shown);
+            let all_hidden = !windows.is_empty() && windows.iter().all(|(_, shown)| !*shown);
             let viewers = stream.viewers.lock();
-            !viewers.is_empty() && viewers.iter().all(|v| v.window.is_some_and(|w| hidden.contains(&w)))
+            !viewers.is_empty()
+                && viewers.iter().all(|v| if v.keeper { all_hidden } else { v.window.is_some_and(hidden) })
         };
         if hide {
             if stream.viewer_count.load(RELAXED) > 0 && !stream.paused.swap(true, Ordering::AcqRel) {
@@ -1262,10 +1270,22 @@ impl Stream {
     /// last one stops the decoder and frees its textures. Moving a stream between two places
     /// (grid tile to mini-player): create the new viewer before dropping the old one.
     pub fn viewer(&self) -> Viewer {
+        self.make_viewer(false)
+    }
+
+    /// A viewer that is never drawn itself but keeps the stream's decoder while the stream moves
+    /// between the places that draw it (the voice view's persistent player). For the pause of
+    /// hidden windows it is in every window: the stream pauses with it only when all the app's
+    /// windows are hidden.
+    pub fn keeper(&self) -> Viewer {
+        self.make_viewer(true)
+    }
+
+    fn make_viewer(&self, keeper: bool) -> Viewer {
         let id = self.hub.next_viewer.fetch_add(1, RELAXED);
         let first = {
             let mut viewers = self.shared.viewers.lock();
-            viewers.push(ViewerEntry { id, window: None });
+            viewers.push(ViewerEntry { id, window: None, keeper });
             self.shared
                 .viewer_count
                 .store(viewers.len() as u32, RELAXED);
@@ -1438,7 +1458,7 @@ impl Viewer {
                 _ => false,
             }
         };
-        if changed && !self.inner.stream.hub.hidden_windows.lock().is_empty() {
+        if changed && self.inner.stream.hub.any_window_hidden() {
             // Its window is known now: it may be a hidden one.
             self.inner.stream.hub.reconsider(&self.inner.stream.shared);
         }
@@ -1495,7 +1515,7 @@ impl Drop for ViewerInner {
                 .release_pending
                 .store(true, Ordering::Release);
             self.stream.hub.signal.notify();
-        } else if !last && !self.stream.hub.hidden_windows.lock().is_empty() {
+        } else if !last && self.stream.hub.any_window_hidden() {
             // The viewers left may all be in hidden windows.
             self.stream.hub.reconsider(shared);
         }
@@ -1803,10 +1823,29 @@ mod tests {
         wait_for("pictures after the return", || stream.stats().published == published + 10);
         assert!(!log.lock().iter().any(|line| line.contains("Stalled")), "a pause is not a stall: {:?}", log.lock());
 
+        // A keeper (the persistent player: never drawn) pauses with the app's every window hidden.
+        let keeper = stream.keeper();
+        log.lock().clear();
+        hub.set_window_visible(main, false);
+        hub.set_window_visible(other, false);
+        assert_eq!(*log.lock(), ["interest 9 false"], "a keeper and a viewer, every window hidden: paused");
+        hub.set_window_visible(other, true);
+        assert_eq!(log.lock().last().map(String::as_str), Some("keyframe 9"), "a window shown: the keeper counts as shown");
+        hub.set_window_visible(other, false);
+        drop(keeper);
+        hub.set_window_visible(main, true);
+        log.lock().clear();
+
         // The measurement switch: off, a hidden window decodes as before.
+        let published = stream.stats().published;
+        let mut file = StreamFile::open(&path).unwrap();
+        push_frames(&hub, &stream, &mut file, 10);
+        wait_for("pictures again", || stream.stats().published >= published + 10);
         hub.set_pause_when_hidden(false);
         hub.set_window_visible(main, false);
-        assert_eq!(hub.decoder_threads(), 1);
+        let before = stream.stats().decoded;
+        push_frames(&hub, &stream, &mut file, 5);
+        wait_for("decoding while hidden with the pause off", || stream.stats().decoded >= before + 5);
         hub.set_pause_when_hidden(true);
         wait_for("the decoder thread to leave", || hub.decoder_threads() == 0);
         drop(viewer);
