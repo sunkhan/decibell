@@ -257,6 +257,17 @@ jobs:
       # from its fixture, and `video-probe` (software decode into Direct3D textures, a row read
       # back, the surface drawn: GPUI patch 0020 and the video crate's Windows backend on
       # WARP). One process per group, so a crash or a hang costs one group.
+      # A hosted runner's desktop is 1024 x 768: the client's 1280 x 800 window does not fit and
+      # opens at 1024 x 720, where fixtures laid out for the usual window put things off screen.
+      - name: A desktop the window fits on
+        if: always() && steps.check.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Add-Type -AssemblyName System.Windows.Forms
+          "primary screen: $([System.Windows.Forms.Screen]::PrimaryScreen.Bounds)"
+
       - name: Self-tests
         if: always() && steps.check.outcome == 'success'
         continue-on-error: true
@@ -280,6 +291,13 @@ jobs:
               "kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast" \
               "input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle" \
               "chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover" \
+              "chat-scroll-spec" \
+              "input-clipboard,input-password" \
+              "hotkeys-focused,hotkeys-layout" \
+              "join-status-picker,join-dm-composer" \
+              "picture-editor,settings-narrow,server-settings-idle" \
+              "content-scroll-fixture,content-rows" \
+              "profile-guard,single-instance,deep-link-arg,hotkey-cli,attention,taskbar-progress,keyring-label,window-state" \
               "render-cost,encoder-software"; do
             echo "=== decibell --selftest $group" | tee -a selftests.log
             timeout 600 target/debug/decibell.exe --selftest "$group" >> selftests.log 2>&1
