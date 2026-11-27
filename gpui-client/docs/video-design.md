@@ -72,13 +72,19 @@ hub.skipped_decoders()                                        // what was tried 
 | Displayed and receiving | one `AVCodecContext`; with hardware decode the process's `AVHWDeviceContext` | `decibell-video-<n>` | 5 slots (10 plane textures) | yes |
 | No picture for 3 s (`STALLED_AFTER`: a stall, or ended without `remove`) | freed | exited | the last picture's slot stays on screen, the other 4 freed; `StreamEvent::Stalled` once, a keyframe asked for; `Resumed` with the next picture (§0.4a) | yes |
 | Last viewer dropped, or `hub.remove(key)` | freed | exited | all freed (§0.6) | no |
+| Every viewer in a hidden window (minimised, suspended: `VideoHub::set_window_visible`) | freed | exited | the last picture stays for the return; no stall | no; shown again: yes, and a keyframe is asked for at once |
 
 The decision for a stream with no visible view: **it is not decoded.** A frame pushed for it is counted
 (`unwatched`) and dropped at `push`, and `HubCallbacks::interest(key, false)` lets the app clear the core's
 frame-sink flag so the frames stop arriving at all, which is what the renderer does through its preload's
 subscriber count. A view that comes back gets a keyframe request and shows nothing (its backdrop) until the
 keyframe arrives; moving a stream between two places (grid tile to mini-player) means creating the new viewer
-before dropping the old one, and then nothing restarts. Thread names: Linux truncates a thread's name to 15
+before dropping the old one, and then nothing restarts. A window that isn't shown counts as no view
+(`StreamVideoPlayer.tsx` stops decoding while `document.hidden`): the app tells the hub each visibility change
+of its window (`decibell-app/src/video.rs` `follow_window_visibility`); a stream whose viewers are all in hidden
+windows is paused (no decoder thread, the core told to stop delivering), keeps its last picture, and asks for a
+keyframe the moment one of them is shown. The watch itself goes on, so the stream's sound (played by the core)
+never stops (self-test `voice-watch-hidden`). Thread names: Linux truncates a thread's name to 15
 characters, so `/proc` and `tools/perf` show `decibell-video-` for every decoder thread.
 
 ### 0.3 The life of one frame

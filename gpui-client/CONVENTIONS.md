@@ -1003,6 +1003,13 @@ joined into it by the app (`registry::join_features`), so neither crate depends 
   `stream-resume`: a streamer whose frames stop arriving) and `tools/perf/streambot.sh` stream `.dbv` recordings into
   a channel through the real path.
   `DECIBELL_VOICE_TRACE=1` logs every render of the voice views (which view drew a frame).
+- **Go Live in a self-test never captures the desktop**: `voice-golive-software` runs the app on a private session
+  bus with nothing on it but a fake ScreenCast portal (`src/fake_screencast_portal.py`, `GoLiveRig`) that hands the
+  core a PipeWire node the test made (a GStreamer test pattern), with `DECIBELL_ENCODER=software`; share sound stays
+  off (the sound tap would hear the desktop's apps). The portal's control files make it refuse the picker
+  (`refuse`) or end the capture as the desktop's "stop sharing" does (`close`).
+- **Hidden windows decode nothing**: a stream whose views are all in a hidden window is paused by the hub (see
+  `docs/video-design.md` §0); a view never has to stop its viewer for that.
 
 ## Search and channel header (`decibell-search`)
 
