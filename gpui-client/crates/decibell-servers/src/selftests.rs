@@ -944,7 +944,10 @@ async fn check_join_link(cx: TestCx) -> Result<()> {
         for _ in 0..tabs {
             cx.keystroke("tab")?;
         }
-        cx.keystroke("enter")?;
+        // A key's press and release: GPUI presses a focused button on the release.
+        let enter = gpui::Keystroke::parse("enter")?;
+        cx.key_event(enter.clone(), gpui::KeyCode::Unknown, true)?;
+        cx.key_event(enter, gpui::KeyCode::Unknown, false)?;
         wait_for(&cx, Duration::from_secs(5), &format!("{what} (Tab, Enter) to close the dialog"), move |cx| !pending(cx)).await?;
         cx.log(format_args!("an unknown code's dialog: Invalid invite, Accept disabled; {what} pressed from the keyboard closed it"));
     }
