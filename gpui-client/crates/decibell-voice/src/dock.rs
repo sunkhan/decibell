@@ -178,9 +178,7 @@ impl Render for Dock {
                             if streaming {
                                 actions::voice::stop_stream(cx);
                             } else {
-                                crate::codecs::ensure_caps(cx);
-                                let ui = VoiceUi::global(cx);
-                                ui.update(cx, |u, cx| u.open_go_live(cx));
+                                crate::state::open_go_live(cx);
                             }
                         },
                     ))

@@ -32,7 +32,7 @@ use decibell_ui::{
 };
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, ImageSource, IntoElement, ObjectFit, Render, RenderImage,
-    SharedString, Task, Window, div, img, prelude::*, px,
+    SharedString, Subscription, Task, Window, div, img, prelude::*, px,
 };
 
 use crate::sources::{self, ListedSource, SourceKind};
@@ -88,6 +88,7 @@ pub struct GoLiveDialog {
     sources_loaded: bool,
     sources_error: Option<SharedString>,
     sources_task: Option<Task<()>>,
+    _fit: Subscription,
     _watch: Watch,
 }
 
@@ -105,6 +106,12 @@ impl GoLiveDialog {
             .store_if(&model.live.voice.stream_audio_apps, cx, |this: &mut Self, _, _| this.open)
             .store_if(&encoders, cx, |this: &mut Self, _, _| this.open)
             .store_if(&model.live.voice.session, cx, |this: &mut Self, _, _| this.open);
+        // Caps that arrive while the dialog is open may grey the chosen preset out.
+        let fit = cx.observe(&encoders, |this, _, cx| {
+            if this.open {
+                fit_to_encoders(cx);
+            }
+        });
         // Closed until the first render sees it open (so an open-at-creation runs the opening).
         Self {
             ui,
@@ -117,6 +124,7 @@ impl GoLiveDialog {
             sources_loaded: false,
             sources_error: None,
             sources_task: None,
+            _fit: fit,
             _watch: watch,
         }
     }
@@ -277,6 +285,39 @@ fn settings(cx: &App) -> StreamSettings {
     StreamSettings::of(Model::global(cx).settings.read(cx).get())
 }
 
+/// On a machine whose only encoder is software, settings past its ceiling are greyed out (the
+/// presets, Advanced's resolution and frame rate) and can't stay chosen: they become the
+/// encodable preset with the most pixels a second (Data saver on a typical CPU), as a click on
+/// that card would make them. The renderer has no software encoder and greys nothing; with
+/// hardware encoders this does nothing.
+fn fit_to_encoders(cx: &mut App) {
+    let entity = Encoders::global(cx);
+    let target = {
+        let encoders = entity.read(cx);
+        let s = settings(cx);
+        if !encoders.software_only() || encoders.can_encode(s.resolution, s.fps) {
+            return;
+        }
+        best_encodable_preset(|r, f| encoders.can_encode(r, f))
+    };
+    if let Some(preset) = target {
+        log::info!("go live: {} fits this machine's software encoder: chosen", preset.label);
+        actions::voice::update_stream_settings(|st| st.apply_preset(preset), cx);
+    }
+}
+
+/// The encodable preset with the most pixels a second ("Source" judged at 1440p, as
+/// [`Encoders::can_encode`] does).
+fn best_encodable_preset(can_encode: impl Fn(StreamResolution, u32) -> bool) -> Option<&'static StreamPreset> {
+    STREAM_PRESETS.iter().filter(|p| can_encode(p.resolution, p.fps)).max_by_key(|p| {
+        let (w, h) = match p.resolution.request_size() {
+            (0, 0) => (2560, 1440),
+            size => size,
+        };
+        w as u64 * h as u64 * p.fps as u64
+    })
+}
+
 /// The preset the settings match (`matchPreset`).
 fn active_preset(s: &StreamSettings) -> Option<&'static StreamPreset> {
     s.preset()
@@ -291,6 +332,8 @@ impl Render for GoLiveDialog {
             let forced = self.ui.read(cx).advanced_on_open;
             self.advanced = forced.unwrap_or_else(|| active_preset(&settings(cx)).is_none());
             self.started = false;
+            // A greyed preset can't stay the choice.
+            cx.defer(fit_to_encoders);
         }
         self.open = open;
         decibell_shell::probes::flag("go-live-open", open);
@@ -1223,13 +1266,13 @@ fn advanced_panel(
         let sw = c.codec != VideoCodec::H264Sw && !c.hardware;
         codec_segments.push(Segment::new(c.codec, SharedString::from(format!("{}{}", codec_label(c.codec), if sw { " SW" } else { "" }))));
     }
+    // A software-only machine greys what its encoder can't keep up with, as the presets do.
     let resolution = SegmentedControl::new(
         "go-live-resolution",
-        vec![
-            Segment::new(StreamResolution::P720, "720p"),
-            Segment::new(StreamResolution::P1080, "1080p"),
-            Segment::new(StreamResolution::Source, "Source"),
-        ],
+        [StreamResolution::P720, StreamResolution::P1080, StreamResolution::Source]
+            .into_iter()
+            .map(|r| Segment::new(r, r.label()).disabled(!encoders.read(cx).can_encode(r, s.fps)))
+            .collect(),
         s.resolution,
     )
     .disabled(disabled)
@@ -1247,7 +1290,10 @@ fn advanced_panel(
     });
     let fps = SegmentedControl::new(
         "go-live-fps",
-        [5u32, 15, 30, 60, 120].into_iter().map(|f| Segment::new(f, SharedString::from(f.to_string()))).collect(),
+        [5u32, 15, 30, 60, 120]
+            .into_iter()
+            .map(|f| Segment::new(f, SharedString::from(f.to_string())).disabled(!encoders.read(cx).can_encode(s.resolution, f)))
+            .collect(),
         s.fps,
     )
     .disabled(disabled)
@@ -1495,6 +1541,29 @@ fn list_names(names: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_software_only_machine_gets_the_encodable_preset_with_the_most_pixels() {
+        let mut e = Encoders::default();
+        e.loaded = true;
+        e.caps = vec![crate::codecs::EncoderCap {
+            codec: decibell_model::live::voice::VideoCodec::Av1,
+            hardware: false,
+            backend: "software".into(),
+            label: "Software (SVT-AV1)".into(),
+            max_width: 3840,
+            max_height: 2160,
+            max_fps: 60,
+            max_pixel_rate: 1920 * 1080 * 30,
+        }];
+        assert!(!e.can_encode(StreamResolution::P1080, 60), "Smooth is past the ceiling");
+        let best = best_encodable_preset(|r, f| e.can_encode(r, f)).map(|p| p.id);
+        assert_eq!(best, Some("saver"), "720p30 (27.6 Mpx/s) over Slides (1440p5: 18.4 Mpx/s)");
+        assert!(best_encodable_preset(|_, _| false).is_none());
+        assert_eq!(best_encodable_preset(|_, _| true).map(|p| p.id), Some("smooth"));
+    }
+
     #[test]
     fn names_are_listed_as_the_renderer_does() {
         assert_eq!(super::list_names(&["a".into()]), "a");

@@ -74,6 +74,20 @@ impl VoiceUi {
         cx.notify();
     }
 
+    /// The voice session ended: the popovers of the session's controls (connection stats, stream
+    /// audio) and the Go Live dialog close, as the renderer unmounts them with its in-session
+    /// block. A device menu stays (mute and deafen exist outside voice too).
+    pub fn session_ended(&mut self, cx: &mut Context<Self>) {
+        let session_popover = matches!(self.popover, Some(PanelPopover::Stats(_) | PanelPopover::StreamAudio(_)));
+        if session_popover {
+            self.popover = None;
+        }
+        if session_popover || self.go_live {
+            self.go_live = false;
+            cx.notify();
+        }
+    }
+
     pub fn close_popover(&mut self, cx: &mut Context<Self>) {
         if self.popover.take().is_some() {
             cx.notify();
@@ -90,14 +104,27 @@ impl VoiceUi {
     }
 }
 
+/// Open the Go Live dialog, as the renderer mounts `CaptureSourcePicker`: its error line and the
+/// picked source are component state there, so each opening starts without the last attempt's
+/// error or source (unless a start is still under way); the encoder caps load.
+pub fn open_go_live(cx: &mut App) {
+    crate::codecs::ensure_caps(cx);
+    if let Some(model) = cx.try_global::<decibell_model::Model>().cloned() {
+        model.live.voice.own_stream.update(cx, |o, cx| {
+            if o.phase == decibell_model::live::voice::streams::OwnStreamPhase::Idle {
+                o.set_error(None, cx);
+                o.set_source(None, cx);
+            }
+        });
+    }
+    VoiceUi::global(cx).update(cx, |u, cx| u.open_go_live(cx));
+}
+
 /// The user panel's voice controls (registered with the shell in [`crate::init`]).
 pub fn panel_action(action: PanelAction, anchor: Bounds<Pixels>, cx: &mut App) {
     let ui = VoiceUi::global(cx);
     match action {
-        PanelAction::GoLive => {
-            crate::codecs::ensure_caps(cx);
-            ui.update(cx, |u, cx| u.open_go_live(cx));
-        }
+        PanelAction::GoLive => open_go_live(cx),
         PanelAction::Latency => ui.update(cx, |u, cx| u.toggle_popover(PanelPopover::Stats(anchor), cx)),
         PanelAction::StreamAudio => ui.update(cx, |u, cx| u.toggle_popover(PanelPopover::StreamAudio(anchor), cx)),
         PanelAction::InputDevices | PanelAction::OutputDevices => {
@@ -131,5 +158,23 @@ mod tests {
             u.open_go_live(cx);
         });
         ui.read_with(cx, |u, _| assert!(u.go_live && u.popover.is_none()));
+    }
+
+    #[gpui::test]
+    fn the_session_ending_closes_its_popovers_and_go_live_but_not_a_device_menu(cx: &mut TestAppContext) {
+        let ui = cx.new(|_| VoiceUi::default());
+        let at = Bounds::new(point(px(10.), px(10.)), size(px(20.), px(20.)));
+        for popover in [PanelPopover::Stats(at), PanelPopover::StreamAudio(at)] {
+            ui.update(cx, |u, cx| u.toggle_popover(popover, cx));
+            ui.update(cx, |u, cx| u.session_ended(cx));
+            ui.read_with(cx, |u, _| assert!(u.popover.is_none(), "{popover:?} outlived the session"));
+        }
+        ui.update(cx, |u, cx| u.open_go_live(cx));
+        ui.update(cx, |u, cx| u.session_ended(cx));
+        ui.read_with(cx, |u, _| assert!(!u.go_live, "Go Live outlived the session"));
+        let menu = PanelPopover::Devices { input: false, anchor: at };
+        ui.update(cx, |u, cx| u.toggle_popover(menu, cx));
+        ui.update(cx, |u, cx| u.session_ended(cx));
+        ui.read_with(cx, |u, _| assert_eq!(u.popover, Some(menu)));
     }
 }

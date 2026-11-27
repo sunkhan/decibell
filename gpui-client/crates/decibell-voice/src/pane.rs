@@ -34,7 +34,6 @@ use crate::dock::{Dock, HeaderStats};
 use crate::focus::FocusView;
 use crate::layout::{self, Mode, Stage, TILE_GAP};
 use crate::people::{People, PeopleHost, TileContext};
-use crate::state::VoiceUi;
 use crate::tiles::{StreamData, StreamTile};
 
 /// Padding of the stage's scroll box (`px-6 pb-24 pt-6`): the measured content box is inside it.
@@ -568,11 +567,7 @@ impl VoicePane {
                 .px_4()
                 .py_2()
                 .cursor_pointer()
-                .on_click(|_: &ClickEvent, _, cx| {
-                    crate::codecs::ensure_caps(cx);
-                    let ui = VoiceUi::global(cx);
-                    ui.update(cx, |u, cx| u.open_go_live(cx));
-                })
+                .on_click(|_: &ClickEvent, _, cx| crate::state::open_go_live(cx))
                 .child(Icon::new(IconName::StageScreen).size(px(16.)).color(theme.color_text_primary))
                 .child(Label::new("Share screen").size(13.).weight(600.).color(theme.color_text_primary).nowrap())
         });

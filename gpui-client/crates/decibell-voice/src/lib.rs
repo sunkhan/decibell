@@ -74,11 +74,19 @@ pub fn init(cx: &mut App) {
     decibell_shell::register_overlay(cx, |_, cx| cx.new(calls::IncomingCall::new).into());
     decibell_shell::register_user_panel_action(cx, |action, anchor, _, cx| state::panel_action(action, anchor, cx));
     // The first voice session needs the codec caps (decode, and the encoder probe for Go Live).
+    // When a session ends (left, hung up, disconnected by a moderator), what the renderer draws
+    // inside its in-session block goes with it: the connection-stats and stream-audio popovers,
+    // and the Go Live dialog (`showPicker && inSession`).
     if let Some(model) = cx.try_global::<decibell_model::Model>().cloned() {
-        cx.observe(&model.live.voice.session, |session, cx| {
-            if session.read(cx).media_session_active() {
+        let mut was_active = model.live.voice.session.read(cx).media_session_active();
+        cx.observe(&model.live.voice.session, move |session, cx| {
+            let active = session.read(cx).media_session_active();
+            if active {
                 codecs::ensure_caps(cx);
+            } else if was_active {
+                state::VoiceUi::global(cx).update(cx, |ui, cx| ui.session_ended(cx));
             }
+            was_active = active;
         })
         .detach();
     }

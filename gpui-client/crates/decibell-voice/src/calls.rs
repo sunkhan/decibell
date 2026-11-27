@@ -36,7 +36,6 @@ use crate::dock::{Tone, dock_button, dock_divider, latency_tone};
 use crate::focus::{overlay_button, set_stream_volume, stats_overlay};
 use crate::layout::{MAX_TILE_W, TILE_ASPECT, TILE_GAP, fit_grid, tile_height};
 use crate::scrim::{self, LiveSize, black, on_video_green, white};
-use crate::state::VoiceUi;
 use crate::tiles::{ParticipantTile, PersonData, StreamData, StreamTile};
 use crate::volume::VolumeControl;
 
@@ -652,9 +651,7 @@ impl Render for CallStage {
                             if streaming {
                                 actions::voice::stop_stream(cx);
                             } else {
-                                crate::codecs::ensure_caps(cx);
-                                let ui = VoiceUi::global(cx);
-                                ui.update(cx, |u, cx| u.open_go_live(cx));
+                                crate::state::open_go_live(cx);
                             }
                         },
                     ))
