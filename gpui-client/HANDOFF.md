@@ -103,7 +103,7 @@ believing a failure. `--bin <path>` runs another build (the parity audit's froze
 how Electron users move to the native client and its update path; the second-device half of the leave race
 (needs a server change); the encoder's 10 s keyframe interval and 133 ms rate buffer; the user menu's native-only entries
 (Profile, Message, the friend actions with "Block", the Moderation section incl. one's own nickname, Copy
-username: Electron's right-click menu holds voice entries only, quirk #26); quirks #12 / #13 (`docs/electron-quirks.md`); a channel switch stops attachment playback (FEATURES
+username: Electron's right-click menu holds voice entries only, quirk #34); quirks #12 / #13 (`docs/electron-quirks.md`); a channel switch stops attachment playback (FEATURES
 says it survives, Electron's code stops it); "7 Nov 2026" against Qt's "7 11 2026"; spellcheck and zoom (not
 built); click-audit entry 11; the listening and by-eye checks; the Windows hardware checks
 (`docs/windows-owner-checks.md`); a real X11 session; quirks #27 (the mic test meters through the user's own
