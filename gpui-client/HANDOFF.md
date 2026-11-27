@@ -17,13 +17,20 @@ fat-LTO release binary or building the workspace's tests at once) and the sessio
 branch was lost: `gpui-client` was pushed at `641bec1` with the Windows Native Check green on it. Five agents
 were cut off with work uncommitted in their worktrees (§1a); they were resumed on 2026-11-27.
 
-**The rule that came out of it (every agent, every session):**
-- `CARGO_BUILD_JOBS=4` on every cargo command.
-- One heavy build at a time on the machine, through a lock:
-  `flock ~/.cache/decibell-dev/heavy-build.lock cargo build --release …`. Heavy = any release build (ship,
-  development, `decibell-headless`), `cargo test --workspace`, any build or test of `decibell-app` (debug too),
-  `tools/win-check.sh`. `cargo check`, clippy and one small crate's tests don't need it.
-- Less than 8 GB available in `free -g`: wait before a release build. One app or self-test process at a time.
+**The rule that came out of it (every agent, every session):** builds go through `gpui-client/tools/heavy.sh`.
+- `tools/heavy.sh <command…>` for a heavy build: a release build (ship, development, `decibell-headless`),
+  `cargo test --workspace`, any build or test of `decibell-app` (debug too), `tools/win-check.sh`. It takes one
+  of three slots (the fourth waits) and sets `CARGO_BUILD_JOBS=8`.
+- `tools/heavy.sh --light <command…>` for everything else that compiles (`cargo check`, clippy, one crate's
+  tests): no slot.
+- Both run the command in one systemd user slice with a memory ceiling shared by all builds (slowed above
+  18 GB, the largest killed above 21 GB): a build that outgrows it fails alone and is rerun; the desktop and
+  the terminal survive. Self-tests and the app itself run outside it, as many as the work needs.
+- What the kernel log of that night showed (three kills: 17:47, 23:39, 02:00): 13 to 23 `rustc` processes
+  holding 24 to 25 GB. Swap on this machine is zram (compressed RAM, not disk) and `/tmp` is tmpfs, so the
+  machine has 31 GB, not 62: large files belong under `~/.cache/decibell-dev/`, never `/tmp`.
+- The first answer to the crash was one build at a time with 4 jobs; that left 25 GB idle with five builds
+  queued (owner, 2026-11-27: "a little bit too safe"), hence the slots and the ceiling.
 - Commit after each finished item; nothing that matters lives only under `/tmp` (a reboot empties it: write
   measurements into this file or `docs/` as they are taken).
 
