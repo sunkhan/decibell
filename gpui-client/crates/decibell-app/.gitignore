@@ -1,0 +1,2 @@
+# The repository ignores every `build/` directory (CMake output); this one holds the build script's modules.
+!/build/
