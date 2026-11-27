@@ -320,7 +320,7 @@ and the job's summary counts PASS / FAIL / SKIP / INCONCLUSIVE separately.
   failure): `boot`, `idle-frames`, `themes`, `window-frame`, `video-probe`, the seven `kit-*`, the seven
   `input-*` of the first group, `input-clipboard`, `input-password`, the seven `chat-*`, `chat-scroll-spec`,
   `hotkeys-focused`, `hotkeys-layout`, `join-status-picker`, `join-dm-composer`, `picture-editor`,
-  `settings-narrow`, `server-settings-idle`, `content-scroll-fixture`, `content-rows`, `profile-guard`,
+  `server-settings-narrow`, `server-settings-idle`, `content-scroll-fixture`, `content-rows`, `profile-guard`,
   `single-instance`, `deep-link-arg`, `hotkey-cli`, `render-cost`, `encoder-software`. (The four groups that
   failed in run 45998066577 have passed once since, not twice; they are fatal with the list's one retry.)
 - *Allowed*: `window-state` (saving the size, reopening at it, saving and reopening maximised all work on
