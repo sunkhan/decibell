@@ -7,7 +7,7 @@ use decibell_harness::Screen;
 use decibell_ui::AssumeClientDecorations;
 use gpui::{AnyView, App, AppContext as _, Window};
 
-use crate::fixture::{self, Stage};
+use crate::fixture::{self, Stage, UpdateCase};
 use crate::tabs::TabId;
 
 /// Captures render one frame on a clock that doesn't run: entrances show their end.
@@ -48,5 +48,13 @@ pub fn screens() -> Vec<Screen> {
         screen!("passphrase-unlock", "The passphrase dialog unlocking a backup, over Settings → Privacy", Stage::PassphraseUnlock),
         screen!("rename-modal", "Change username, over Settings → Account", Stage::Rename),
         screen!("password-modal", "Change password, over Settings → Account", Stage::Password),
+        screen!("settings-about-up-to-date", "About: up to date (Check now)", Stage::About(UpdateCase::UpToDate)),
+        screen!("settings-about-checking", "About: checking for updates", Stage::About(UpdateCase::Checking)),
+        screen!("settings-about-available-notify", "About: a package manager's install learns of 0.9.5 (Open release page)", Stage::About(UpdateCase::AvailableNotify)),
+        screen!("settings-about-available-preparing", "About: a self-updating install found 0.9.5", Stage::About(UpdateCase::AvailablePreparing)),
+        screen!("settings-about-downloading", "About: downloading 0.9.5, 42 %", Stage::About(UpdateCase::Downloading)),
+        screen!("settings-about-ready", "About: 0.9.5 downloaded (Restart)", Stage::About(UpdateCase::Ready)),
+        screen!("settings-about-error", "About: the check failed (Try again)", Stage::About(UpdateCase::Error)),
+        screen!("settings-about-disabled", "About: updates disabled (a development build)", Stage::About(UpdateCase::Disabled)),
     ]
 }

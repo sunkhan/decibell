@@ -48,6 +48,96 @@ pub enum Stage {
     Rename,
     /// The change-password dialog over Account.
     Password,
+    /// About with the updater in one of its states (`AboutTab.tsx` `UpdateStatusRow`).
+    About(UpdateCase),
+}
+
+/// The updater's states as About shows them, one screen each (`settings-about-<case>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCase {
+    UpToDate,
+    Checking,
+    /// A package manager's install (notify-only): "Open release page".
+    AvailableNotify,
+    /// A self-updating install, before the download starts.
+    AvailablePreparing,
+    Downloading,
+    Ready,
+    Error,
+    /// A development build.
+    Disabled,
+}
+
+impl UpdateCase {
+    pub const ALL: [UpdateCase; 8] = [
+        UpdateCase::UpToDate,
+        UpdateCase::Checking,
+        UpdateCase::AvailableNotify,
+        UpdateCase::AvailablePreparing,
+        UpdateCase::Downloading,
+        UpdateCase::Ready,
+        UpdateCase::Error,
+        UpdateCase::Disabled,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            UpdateCase::UpToDate => "up-to-date",
+            UpdateCase::Checking => "checking",
+            UpdateCase::AvailableNotify => "available-notify",
+            UpdateCase::AvailablePreparing => "available-preparing",
+            UpdateCase::Downloading => "downloading",
+            UpdateCase::Ready => "ready",
+            UpdateCase::Error => "error",
+            UpdateCase::Disabled => "disabled",
+        }
+    }
+
+    /// The state and mode (the model's), and the same as the renderer's store takes them.
+    pub fn state(self) -> (UpdateStatus, UpdateMode, serde_json::Value, &'static str) {
+        let v: SharedString = "0.9.5".into();
+        let (status, mode, json, mode_name) = match self {
+            UpdateCase::UpToDate => (
+                UpdateStatus::NotAvailable { checked_at: NOW - 3600 },
+                UpdateMode::SelfUpdate,
+                serde_json::json!({ "state": "not-available", "checkedAt": (NOW - 3600) * 1000 }),
+                "self-update",
+            ),
+            UpdateCase::Checking => (UpdateStatus::Checking, UpdateMode::SelfUpdate, serde_json::json!({ "state": "checking" }), "self-update"),
+            UpdateCase::AvailableNotify => (
+                UpdateStatus::Available { version: v.clone() },
+                UpdateMode::NotifyOnly,
+                serde_json::json!({ "state": "available", "version": "0.9.5" }),
+                "notify-only",
+            ),
+            UpdateCase::AvailablePreparing => (
+                UpdateStatus::Available { version: v.clone() },
+                UpdateMode::SelfUpdate,
+                serde_json::json!({ "state": "available", "version": "0.9.5" }),
+                "self-update",
+            ),
+            UpdateCase::Downloading => (
+                UpdateStatus::Downloading { pct: 42.4, version: v.clone() },
+                UpdateMode::SelfUpdate,
+                serde_json::json!({ "state": "downloading", "pct": 42.4, "version": "0.9.5" }),
+                "self-update",
+            ),
+            UpdateCase::Ready => (
+                UpdateStatus::Downloaded { version: v.clone() },
+                UpdateMode::SelfUpdate,
+                serde_json::json!({ "state": "downloaded", "version": "0.9.5" }),
+                "self-update",
+            ),
+            UpdateCase::Error => (
+                UpdateStatus::Error { message: "couldn't reach github.com".into() },
+                UpdateMode::SelfUpdate,
+                serde_json::json!({ "state": "error", "message": "couldn't reach github.com" }),
+                "self-update",
+            ),
+            UpdateCase::Disabled => (UpdateStatus::Idle, UpdateMode::Disabled, serde_json::json!({ "state": "idle" }), "disabled"),
+        };
+        (status, mode, json, mode_name)
+    }
 }
 
 pub fn devices() -> Vec<Device> {
@@ -202,9 +292,11 @@ pub fn apply(stage: Stage, cx: &mut App) -> Model {
         c.set_toggles(true, true, cx);
         c.set_caps(encode, decode, cx);
     });
-    model.update.update(cx, |u, cx| {
-        u.set(UpdateStatus::NotAvailable { checked_at: NOW - 3600 }, UpdateMode::SelfUpdate, SharedString::default(), cx)
-    });
+    let (update_status, update_mode, ..) = match stage {
+        Stage::About(case) => case.state(),
+        _ => UpdateCase::UpToDate.state(),
+    };
+    model.update.update(cx, |u, cx| u.set(update_status, update_mode, SharedString::default(), cx));
 
     // The E2EE state: ready, except where a screen shows another.
     let e2ee = match stage {
@@ -228,6 +320,7 @@ pub fn apply(stage: Stage, cx: &mut App) -> Model {
         Stage::PrivacyLocked | Stage::PassphraseSetup | Stage::PassphraseUnlock => TabId::Privacy,
         Stage::KeybindsRecording => TabId::Keybinds,
         Stage::Rename | Stage::Password => TabId::Account,
+        Stage::About(_) => TabId::About,
     };
     model.nav.update(cx, |n, cx| n.set_settings_tab(tab.id(), cx));
     model.overlays.update(cx, |o, cx| o.open_modal(modal::SETTINGS, cx));
@@ -260,6 +353,11 @@ pub fn json(stage: Stage) -> serde_json::Value {
         Stage::PrivacyLocked | Stage::PassphraseSetup | Stage::PassphraseUnlock => TabId::Privacy,
         Stage::KeybindsRecording => TabId::Keybinds,
         Stage::Rename | Stage::Password => TabId::Account,
+        Stage::About(_) => TabId::About,
+    };
+    let (_, _, update_status, update_mode) = match stage {
+        Stage::About(case) => case.state(),
+        _ => UpdateCase::UpToDate.state(),
     };
     serde_json::json!({
         "shell": decibell_shell::fixture::json(Scene::Home),
@@ -284,7 +382,7 @@ pub fn json(stage: Stage) -> serde_json::Value {
             "encode": encode.iter().map(cap_json).collect::<Vec<_>>(),
             "decode": decode.iter().map(cap_json).collect::<Vec<_>>(),
         },
-        "update": { "status": { "state": "not-available", "checkedAt": (NOW - 3600) * 1000 }, "mode": "self-update", "currentVersion": "0.1.0" },
+        "update": { "status": update_status, "mode": update_mode, "currentVersion": "0.1.0" },
         "tab": tab.id(),
         "dialog": match stage {
             Stage::PassphraseSetup => "passphrase-setup",

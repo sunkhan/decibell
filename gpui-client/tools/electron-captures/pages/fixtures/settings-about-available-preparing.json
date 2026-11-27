@@ -1,0 +1,1399 @@
+{
+  "shell": {
+    "scene": "home",
+    "me": {
+      "uid": 6,
+      "username": "perf1"
+    },
+    "events": [
+      {
+        "event": "login_succeeded",
+        "payload": {
+          "username": "perf1",
+          "uid": 6,
+          "renames": true,
+          "devices": true
+        }
+      },
+      {
+        "event": "own_presence",
+        "payload": {
+          "supported": true,
+          "status": "online",
+          "statusText": "",
+          "statusEmoji": "",
+          "statusClearIn": 0.0,
+          "dmFriendsOnly": false,
+          "accountIdle": false
+        }
+      },
+      {
+        "event": "memberships_received",
+        "payload": {
+          "memberships": [
+            {
+              "id": 1,
+              "name": "Daily Gaming",
+              "description": "Games every night",
+              "hostIp": "127.0.0.11",
+              "port": 8082,
+              "memberCount": 298,
+              "pictureVersion": ""
+            },
+            {
+              "id": 2,
+              "name": "Rustaceans",
+              "description": "Systems programming",
+              "hostIp": "127.0.0.12",
+              "port": 8082,
+              "memberCount": 29,
+              "pictureVersion": ""
+            },
+            {
+              "id": 3,
+              "name": "Design Lab",
+              "description": "Pixels and type",
+              "hostIp": "127.0.0.13",
+              "port": 8082,
+              "memberCount": 42,
+              "pictureVersion": "fixture-design-lab-v1"
+            }
+          ]
+        }
+      },
+      {
+        "event": "community_auth_responded",
+        "payload": {
+          "serverId": "1",
+          "requestedServerId": "1",
+          "host": "127.0.0.11",
+          "port": 8082,
+          "success": true,
+          "message": "",
+          "channels": [
+            {
+              "id": "cat-information",
+              "name": "Information",
+              "type": "category",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 24576,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "welcome",
+              "name": "welcome",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 24576,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "announcements",
+              "name": "announcements",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 24576,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": "News from the mods"
+            },
+            {
+              "id": "cat-text-channels",
+              "name": "Text Channels",
+              "type": "category",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 24576,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "general",
+              "name": "general",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": "Anything goes \u2014 be nice"
+            },
+            {
+              "id": "clips",
+              "name": "clips",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "off-topic",
+              "name": "off-topic",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": "Everything else"
+            },
+            {
+              "id": "slow-lane",
+              "name": "slow-lane",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 30,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "vault",
+              "name": "vault",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": true,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "cat-voice-channels",
+              "name": "Voice Channels",
+              "type": "category",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 24576,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "lounge",
+              "name": "Lounge",
+              "type": "voice",
+              "voiceBitrateKbps": 64,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "squad",
+              "name": "Squad",
+              "type": "voice",
+              "voiceBitrateKbps": 64,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            },
+            {
+              "id": "afk",
+              "name": "AFK",
+              "type": "voice",
+              "voiceBitrateKbps": 64,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            }
+          ],
+          "errorCode": "",
+          "serverName": "Daily Gaming",
+          "serverDescription": "Games every night",
+          "ownerUsername": "alice",
+          "ownerUid": 1,
+          "attachmentPort": 8085,
+          "maxAttachmentBytes": 104857600,
+          "publicListing": true
+        }
+      },
+      {
+        "event": "community_auth_responded",
+        "payload": {
+          "serverId": "2",
+          "requestedServerId": "2",
+          "host": "127.0.0.12",
+          "port": 8082,
+          "success": true,
+          "message": "",
+          "channels": [
+            {
+              "id": "general",
+              "name": "general",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            }
+          ],
+          "errorCode": "",
+          "serverName": "Rustaceans",
+          "serverDescription": "Systems programming",
+          "ownerUsername": "bob",
+          "ownerUid": 2,
+          "attachmentPort": 8085,
+          "maxAttachmentBytes": 104857600,
+          "publicListing": true
+        }
+      },
+      {
+        "event": "community_auth_responded",
+        "payload": {
+          "serverId": "3",
+          "requestedServerId": "3",
+          "host": "127.0.0.13",
+          "port": 8082,
+          "success": true,
+          "message": "",
+          "channels": [
+            {
+              "id": "general",
+              "name": "general",
+              "type": "text",
+              "voiceBitrateKbps": 0,
+              "retentionDaysText": 0,
+              "retentionDaysImage": 0,
+              "retentionDaysVideo": 0,
+              "retentionDaysDocument": 0,
+              "retentionDaysAudio": 0,
+              "myPermissions": 31521792,
+              "slowmodeSeconds": 0,
+              "encrypted": false,
+              "permissionsSynced": false,
+              "categorySync": false,
+              "topic": ""
+            }
+          ],
+          "errorCode": "",
+          "serverName": "Design Lab",
+          "serverDescription": "Pixels and type",
+          "ownerUsername": "carol",
+          "ownerUid": 3,
+          "attachmentPort": 8085,
+          "maxAttachmentBytes": 104857600,
+          "publicListing": true
+        }
+      },
+      {
+        "event": "server_picture_received",
+        "payload": {
+          "serverId": 3,
+          "version": "fixture-design-lab-v1",
+          "data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAAAsCAIAAAAigicJAABCN0lEQVR4AQEsQtO9AOhddedddeddduZdduZdduVcduRcd+Rcd+Ncd+JceOJceOFceOFceOBced9bed9bed5bet1bet1betxbetxbe9tbe9pae9pafNlafNhafNhafNdafddafdZafdVaftVZftRZftNZftNZf9JZf9JZf9FZgNBZgNBZgM9YgM5Ygc5Ygc1Ygc1YgsxYgstYgstYg8pYg8pXg8lXg8hXhMhXhMdXhMZXhcZXhcVXhcVWhcRWhsNWhsNWhsJWh8FWh8FWh8BWh8BWiL9ViL5ViL5Vib1VibxVibxVibtVirtVirpVirlUi7lUi7hUi7dUi7dUjLZUjLZUjLVUjbRUjbRTjbNTjbNTjrJTjrFTjrFTj7BTj69Tj69Sj65SkK5SkK1SkKxSkaxSkatSkapSkapSkqlRkqlRkqhRk6dRk6dRk6ZRk6VRlKVRlKRRlKRQlaNQlaJQlaJQlaFQlqBQlqBQlp9Ql59Ql55Pl51Pl51PmJxPmJtPmJtPmZpPmZpPmZlPmgDmXXbmXXblXHbkXHfkXHfjXHfiXHjiXHjhXHjhXHjgXHnfW3nfW3neW3rdW3rdW3rcW3rcW3vbW3vaWnvaWnzZWnzYWnzYWnzXWn3XWn3WWn3VWn7VWX7UWX7UWX7TWX/SWX/SWX/RWYDQWYDQWYDPWIDPWIHOWIHNWIHNWILMWILLWILLWILKWIPKV4PJV4PIV4TIV4THV4TGV4XGV4XFV4XFVoXEVobDVobDVobCVofBVofBVofAVofAVoi/VYi+VYi+VYm9VYm8VYm8VYm7VYq7VYq6VYq5VIu5VIu4VIu4VIu3VIy2VIy2VIy1VI20VI20U42zU42zU46yU46xU46xU4+wU4+vU4+vU4+uUpCuUpCtUpCsUpGsUpGrUpGqUpGqUpKpUZKpUZKoUZOnUZOnUZOmUZOlUZSlUZSkUZSkUJWjUJWiUJWiUJWhUJagUJagUJafUJefUJeeT5edT5edT5icT5icT5ibT5maT5maT5mZT5mYTpqYTpqXTpoA5Fx35Fx341x34lx44lx44Vx44Vx44Fx531t531t53lt63Vt63Vt63Ft63Ft721t72lp72lp82Vp82Vp82Fp811p911p91lp91Vp+1Vl+1Fl+1Fl+01l/0ll/0ll/0VmA0FmA0FmAz1iAz1iBzliBzViBzViCzFiCy1iCy1iCyliDyleDyVeDyFeEyFeEx1eExleExleFxVeFxVeFxFaGw1aGw1aGwlaHwVaHwVaHwFaHwFaIv1WIvlWIvlWJvVWJvVWJvFWJu1WKu1WKulWKuVSLuVSLuFSLuFSLt1SMtlSMtlSMtVSNtFSNtFONs1ONs1OOslOOsVOOsVOPsFOPr1OPr1OPrlKQrlKQrVKQrFKRrFKRq1KRqlKRqlKSqVGSqVGSqFGTp1GTp1GTplGTpVGUpVGUpFGUpFCVo1CVolCVolCVoVCWoVCWoFCWn1CXn1CXnk+XnU+XnU+YnE+YnE+Ym0+Zmk+Zmk+ZmU+ZmE6amE6al06al06blk6blU6bAOJceOJceOFceOFceOBced9bed9bed5bet5bet1betxbetxbe9tbe9pbe9pafNlafNlafNhafNdafddafdZafdVaftVZftRZftRZftNZf9JZf9JZf9FZgNBZgNBZgM9YgM9Ygc5Ygc1Ygc1YgsxYgstYgstYgspYg8pXg8lXg8hXhMhXhMdXhMZXhMZXhcVXhcVXhcRWhsNWhsNWhsJWhsJWh8FWh8BWh8BWiL9ViL5ViL5Vib1Vib1VibxVibtVirtVirpVirlUi7lUi7hUi7hUi7dUjLZUjLZUjLVUjbRUjbRTjbNTjbNTjrJTjrFTjrFTj7BTj69Tj69Tj65SkK5SkK1SkKxSkaxSkatSkatSkapSkqlRkqlRkqhRk6dRk6dRk6ZRk6ZRlKVRlKRRlKRQlaNQlaJQlaJQlaFQlqFQlqBQlp9Ql59Ql55Pl51Pl51PmJxPmJxPmJtPmZpPmZpPmZlPmZhOmphOmpdOmpdOm5ZOm5VOm5VOm5ROnJNNnADhXHjgXHnfW3nfW3neW3reW3rdW3rcW3rcW3vbW3vaW3vaWnzZWnzZWnzYWnzXWn3XWn3WWn3VWn7VWX7UWX7UWX7TWX/SWX/SWX/RWYDQWYDQWYDPWIDPWIHOWIHNWIHNWILMWILMWILLWILKWIPKV4PJV4PIV4TIV4THV4THV4TGV4XFV4XFV4XEVobDVobDVobCVobCVofBVofAVofAVoi/VYi+VYi+VYi9VYm9VYm8VYm7VYq7VYq6VYq5VIu5VIu4VIu4VIu3VIy2VIy2VIy1VI20VI20U42zU42zU46yU46xU46xU4+wU4+wU4+vU4+uUpCuUpCtUpCsUpGsUpGrUpGrUpGqUpKpUZKpUZKoUZOnUZOnUZOmUZOmUZSlUZSkUZSkUJWjUJWiUJWiUJWhUJahUJagUJafUJefUJeeT5edT5edT5icT5icT5ibT5maT5maT5mZT5mYTpqYTpqXTpqXTpuWTpuVTpuVTpuUTpyUTZyTTZySTZ2STZ0A31t53lt63lt63Vt63Ft63Ft721t72lt72lp82Vp82Vp82Fp811p911p91lp91Vp+1Vl+1Fl+1Fl+01l/0ll/0ll/0VmA0VmA0FmAz1iAz1iBzliBzViBzViCzFiCzFiCy1iCyliDyleDyVeDyFeEyFeEx1eEx1eExleFxVeFxVeFxFaGw1aGw1aGwlaGwlaHwVaHwFaHwFaIv1WIvlWIvlWIvVWJvVWJvFWJu1WKu1WKulWKuVSKuVSLuFSLuFSLt1SMtlSMtlSMtVSNtVSNtFONs1ONs1OOslOOsVOOsVOPsFOPsFOPr1OPrlKQrlKQrVKQrFKRrFKRq1KRq1KRqlKSqVGSqVGSqFGTp1GTp1GTplGTplGUpVGUpFGUpFCVo1CVolCVolCVoVCWoVCWoFCWn1CXn1CXnk+XnU+XnU+YnE+YnE+Ym0+Zmk+Zmk+ZmU+ZmU6amE6al06al06blk6blU6blU6blE6clE2ck02ckk2dkk2dkU2dkE2dkE2eAN1betxbetxbe9tbe9pbe9pafNlafNlafNhafNdafddafdZafdZaftVZftRZftRZftNZf9JZf9JZf9FZgNFZgNBZgM9YgM9Ygc5Ygc1Ygc1YgsxYgsxYgstYgspYg8pXg8lXg8hXhMhXhMdXhMdXhMZXhcVXhcVXhcRWhsNWhsNWhsJWhsJWh8FWh8BWh8BWiL9ViL5ViL5ViL1Vib1VibxVibtVirtVirpVirpUirlUi7hUi7hUi7dUjLZUjLZUjLVUjLVUjbRTjbNTjbNTjrJTjrFTjrFTjrBTj7BTj69Tj65SkK5SkK1SkKxSkaxSkatSkatSkapSkqlSkqlRkqhRk6dRk6dRk6ZRk6ZRlKVRlKRRlKRQlaNQlaNQlaJQlaFQlqFQlqBQlp9Ql59Ql55Pl55Pl51PmJxPmJxPmJtPmZpPmZpPmZlPmZlOmphOmpdOmpdOm5ZOm5VOm5VOm5ROnJROnJNNnJJNnZJNnZFNnZBNnZBNno9Nno9Nno5MnwDbW3vbW3vaWnzZWnzZWnzYWnzXWn3XWn3WWn3WWn7VWX7UWX7UWX7TWX/SWX/SWX/RWYDRWYDQWYDPWIDPWIHOWIHNWIHNWILMWILMWILLWILKWIPKV4PJV4PIV4TIV4THV4THV4TGV4XFV4XFV4XEVobEVobDVobCVobCVofBVofAVofAVoi/Voi/VYi+VYi9VYm9VYm8VYm7VYq7VYq6VYq6VIq5VIu4VIu4VIu3VIy2VIy2VIy1VIy1VI20U42zU42zU46yU46xU46xU46wU4+wU4+vU4+uUpCuUpCtUpCsUpCsUpGrUpGrUpGqUpKpUpKpUZKoUZOoUZOnUZOmUZOmUZSlUZSkUZSkUJWjUJWjUJWiUJWhUJahUJagUJafUJefUJeeT5eeT5edT5icT5icT5ibT5maT5maT5mZT5mZTpqYTpqXTpqXTpuWTpuVTpuVTpuUTpyUTpyTTZySTZ2STZ2RTZ2QTZ2QTZ6PTZ6PTZ6OTJ+NTJ+NTJ+MTJ8A2Vp82Vp82Fp811p911p91lp91lp+1Vp+1Fl+1Fl+01l/0ll/0ll/0VmA0VmA0FmAz1iAz1iBzliBzViBzViCzFiCzFiCy1iCyliDyleDyVeDyVeEyFeEx1eEx1eExleFxVeFxVeFxFaGxFaGw1aGwlaGwlaHwVaHwFaHwFaIv1aIv1WIvlWIvVWJvVWJvFWJu1WKu1WKulWKulSKuVSLuFSLuFSLt1SMtlSMtlSMtVSMtVSNtFONs1ONs1OOslOOsVOOsVOOsFOPsFOPr1OPrlKQrlKQrVKQrVKQrFKRq1KRq1KRqlKSqVKSqVGSqFGSqFGTp1GTplGTplGUpVGUpFGUpFCVo1CVo1CVolCVoVCWoVCWoFCWn1CXn1CXnk+Xnk+XnU+YnE+YnE+Ym0+Zmk+Zmk+ZmU+ZmU6amE6al06al06blk6blU6blU6blE6clE6ck02ckk2dkk2dkU2dkU2dkE2ej02ej02ejkyfjUyfjUyfjEyfjEygi0ygikygANdafddafdZafdZaftVaftRZftRZftNZf9JZf9JZf9FZgNFZgNBZgM9YgM9Ygc5Ygc5Ygc1YgsxYgsxYgstYgspYg8pXg8lXg8lXhMhXhMdXhMdXhMZXhcVXhcVXhcRWhsRWhsNWhsJWhsJWh8FWh8BWh8BWiL9WiL9ViL5ViL1Vib1VibxVibtVirtVirpVirpUirlUi7hUi7hUi7dUjLZUjLZUjLVUjLVUjbRTjbNTjbNTjrJTjrJTjrFTjrBTj7BTj69Tj65SkK5SkK1SkK1SkKxSkatSkatSkapSkqlSkqlRkqhRkqhRk6dRk6ZRk6ZRlKVRlKRRlKRQlKNQlaNQlaJQlaFQlqFQlqBQlp9Ql59Ql55Pl55Pl51PmJxPmJxPmJtPmZtPmZpPmZlPmZlOmphOmpdOmpdOm5ZOm5ZOm5VOm5ROnJROnJNNnJJNnZJNnZFNnZFNnZBNno9Nno9Nno5Mn41Mn41Mn4xMn4xMoItMoIpMoIpMoYlMoYhLoQDWWn3VWn7UWX7UWX7TWX/TWX/SWX/RWYDRWYDQWYDPWIDPWIHOWIHOWIHNWILMWILMWILLWILKWIPKV4PJV4PJV4TIV4THV4THV4TGV4XFV4XFV4XEVobEVobDVobCVobCVofBVofAVofAVoi/Voi/VYi+VYi9VYm9VYm8VYm8VYq7VYq6VYq6VIq5VIu4VIu4VIu3VIy3VIy2VIy1VIy1VI20U42zU42zU46yU46yU46xU46wU4+wU4+vU4+uUpCuUpCtUpCtUpCsUpGrUpGrUpGqUpKpUpKpUZKoUZKoUZOnUZOmUZOmUZSlUZSkUZSkUJSjUJWjUJWiUJWhUJahUJagUJagUJafUJeeT5eeT5edT5icT5icT5ibT5mbT5maT5mZT5mZTpqYTpqXTpqXTpuWTpuWTpuVTpuUTpyUTpyTTZySTZ2STZ2RTZ2RTZ2QTZ6PTZ6PTZ6OTJ+NTJ+NTJ+MTJ+MTKCLTKCKTKCKTKGJTKGIS6GIS6GHS6KHS6IA1Fl+01l/01l/0ll/0Vl/0VmA0FmAz1iAz1iBzliBzliBzViBzFiCzFiCy1iCyliDyleDyVeDyVeEyFeEx1eEx1eExleFxVeFxVeFxFaGxFaGw1aGwlaGwlaHwVaHwVaHwFaIv1aIv1WIvlWIvVWJvVWJvFWJvFWKu1WKulWKulSKuVSLuFSLuFSLt1SMt1SMtlSMtVSMtVSNtFONs1ONs1OOslOOslOOsVOOsFOPsFOPr1OPrlKQrlKQrVKQrVKQrFKRq1KRq1KRqlKSqVKSqVGSqFGSqFGTp1GTplGTplGUpVGUpVGUpFCUo1CVo1CVolCVoVCWoVCWoFCWoFCWn1CXnk+Xnk+XnU+YnE+YnE+Ym0+Ym0+Zmk+ZmU+ZmU6amE6al06al06blk6blk6blU6blE6clE6ck02ckk2dkk2dkU2dkU2dkE2ej02ej02ejk2fjUyfjUyfjEyfjEygi0ygikygikyhiUyhiUuhiEuhh0uih0uihkuihUujhUujANJZf9FZf9FZgNBZgM9YgM9Ygc5Ygc5Ygc1YgcxYgsxYgstYgspYg8pXg8lXg8lXg8hXhMdXhMdXhMZXhcZXhcVXhcRWhsRWhsNWhsJWhsJWh8FWh8FWh8BWiL9WiL9ViL5ViL1Vib1VibxVibxVirtVirpVirpVirlUi7hUi7hUi7dUjLdUjLZUjLVUjLVUjbRTjbNTjbNTjrJTjrJTjrFTjrBTj7BTj69Tj65SkK5SkK1SkK1SkKxSkatSkatSkapSkqpSkqlRkqhRkqhRk6dRk6ZRk6ZRlKVRlKVRlKRRlKNQlaNQlaJQlaFQlqFQlqBQlqBQlp9Ql55Pl55Pl51PmJxPmJxPmJtPmJtPmZpPmZlPmZlOmphOmpdOmpdOmpZOm5ZOm5VOm5ROnJROnJNNnJNNnZJNnZFNnZFNnZBNno9Nno9Nno5Nn45Mn41Mn4xMn4xMoItMoIpMoIpMoYlMoYlLoYhLoYdLoodLooZLooVLo4VLo4RLo4RLo4NKpADQWYDPWYDPWIHOWIHOWIHNWIHMWILMWILLWILLWIPKV4PJV4PJV4PIV4THV4THV4TGV4XGV4XFV4XEVoXEVobDVobCVobCVofBVofBVofAVoi/Voi/VYi+VYi9VYm9VYm8VYm8VYq7VYq6VYq6VYq5VIu4VIu4VIu3VIy3VIy2VIy1VIy1VI20U420U42zU46yU46yU46xU46wU4+wU4+vU4+vUpCuUpCtUpCtUpCsUpGrUpGrUpGqUpKqUpKpUZKoUZKoUZOnUZOmUZOmUZSlUZSlUZSkUZSjUJWjUJWiUJWhUJahUJagUJagUJafUJeeT5eeT5edT5icT5icT5ibT5ibT5maT5mZT5mZTpqYTpqYTpqXTpqWTpuWTpuVTpuUTpyUTpyTTZyTTZySTZ2RTZ2RTZ2QTZ6PTZ6PTZ6OTZ6OTJ+NTJ+MTJ+MTKCLTKCKTKCKTKGJTKGJS6GIS6GHS6KHS6KGS6KFS6OFS6OES6OES6ODSqSCSqSCSqSBSqUAzliBzliBzViBzFiCzFiCy1iCy1iDyleDyVeDyVeDyFeEx1eEx1eExleFxleFxVeFxFaFxFaGw1aGwlaGwlaHwVaHwVaHwFaHv1aIv1WIvlWIvVWJvVWJvFWJvFWKu1WKulWKulWKuVSLuVSLuFSLt1SMt1SMtlSMtVSMtVSNtFONtFONs1OOslOOslOOsVOOsFOPsFOPr1OPr1KQrlKQrVKQrVKQrFKRq1KRq1KRqlKSqlKSqVGSqFGSqFGTp1GTplGTplGUpVGUpVGUpFGUo1CVo1CVolCVoVCWoVCWoFCWoFCWn1CXnk+Xnk+XnU+YnU+YnE+Ym0+Ym0+Zmk+ZmU+ZmU6amE6amE6al06alk6blk6blU6blE6clE6ck02ck02ckk2dkU2dkU2dkE2ej02ej02ejk2ejkyfjUyfjEyfjEygi0ygikygikygiUyhiUuhiEuhh0uih0uihkuihUujhUujhEujhEujg0qkgkqkgkqkgUqlgUqlgEqlf0qlAMxYgsxYgstYgstYg8pXg8lXg8lXg8hXhMdXhMdXhMZXhcZXhcVXhcRWhcRWhsNWhsJWhsJWh8FWh8FWh8BWh79WiL9ViL5ViL5Vib1VibxVibxVibtVirpVirpVirlUi7lUi7hUi7dUjLdUjLZUjLVUjLVUjbRTjbRTjbNTjrJTjrJTjrFTjrBTj7BTj69Tj69SkK5SkK1SkK1SkKxSkatSkatSkapSkqpSkqlRkqhRkqhRk6dRk6ZRk6ZRlKVRlKVRlKRRlKNQlaNQlaJQlaJQlqFQlqBQlqBQlp9Ql55Pl55Pl51PmJ1PmJxPmJtPmJtPmZpPmZlPmZlOmphOmphOmpdOmpZOm5ZOm5VOm5ROnJROnJNNnJNNnJJNnZFNnZFNnZBNno9Nno9Nno5Nno5Mn41Mn4xMn4xMoItMoItMoIpMoIlMoYlLoYhLoYdLoodLooZLooZLooVLo4RLo4RLo4NKpIJKpIJKpIFKpYFKpYBKpX9KpX9Kpn5Kpn1JpgDLWIPKV4PJV4PJV4PIV4THV4THV4TGV4XGV4XFV4XEVoXEVobDVobDVobCVofBVofBVofAVoe/Voi/VYi+VYi+VYm9VYm8VYm8VYm7VYq6VYq6VYq5VIu5VIu4VIu3VIu3VIy2VIy1VIy1VI20U420U42zU46yU46yU46xU46wU4+wU4+vU4+vUpCuUpCtUpCtUpCsUpGsUpGrUpGqUpKqUpKpUZKoUZKoUZOnUZOnUZOmUZSlUZSlUZSkUZSjUJWjUJWiUJWiUJahUJagUJagUJafUJeeT5eeT5edT5idT5icT5ibT5ibT5maT5mZT5mZTpqYTpqYTpqXTpqWTpuWTpuVTpuUTpyUTpyTTZyTTZySTZ2RTZ2RTZ2QTZ6QTZ6PTZ6OTZ6OTJ+NTJ+MTJ+MTKCLTKCLTKCKTKCJTKGJTKGIS6GHS6KHS6KGS6KGS6KFS6OES6OES6ODSqSCSqSCSqSBSqSBSqWASqV/SqV/SqZ+SqZ9SaZ9Sad8Sad8SacAyVeDyFeEyFeEx1eExleFxleFxVeFxFaFxFaGw1aGw1aGwlaHwVaHwVaHwFaHv1aIv1WIvlWIvlWJvVWJvFWJvFWJu1WKulWKulWKuVSLuVSLuFSLt1SLt1SMtlSMtVSMtVSNtFONtFONs1ONslOOslOOsVOOsVOPsFOPr1OPr1KQrlKQrVKQrVKQrFKRrFKRq1KRqlKSqlKSqVGSqFGSqFGTp1GTp1GTplGUpVGUpVGUpFGUo1CVo1CVolCVolCWoVCWoFCWoFCWn1CXnlCXnk+XnU+YnU+YnE+Ym0+Ym0+Zmk+ZmU+ZmU6amE6amE6al06alk6blk6blU6blU6clE6ck02ck02ckk2dkU2dkU2dkE2ekE2ej02ejk2ejkyfjUyfjEyfjEygi0ygi0ygikygiUyhiUyhiEuhh0uih0uihkuihkuihUujhEujhEujg0qkgkqkgkqkgUqkgUqlgEqlf0qlf0qmfkqmfUmmfUmmfEmnfEmne0mnekmoekmoAMdXhMZXhcZXhcVXhcRWhcRWhsNWhsNWhsJWh8FWh8FWh8BWh79WiL9ViL5ViL5Vib1VibxVibxVibtVirpVirpVirlUi7lUi7hUi7dUi7dUjLZUjLZUjLVUjbRUjbRTjbNTjbJTjrJTjrFTjrFTj7BTj69Tj69Sj65SkK1SkK1SkKxSkaxSkatSkapSkapSkqlRkqhRkqhRk6dRk6dRk6ZRlKVRlKVRlKRRlKNQlaNQlaJQlaJQlqFQlqBQlqBQlp9Ql55Ql55Pl51PmJ1PmJxPmJtPmJtPmZpPmZpPmZlOmphOmphOmpdOmpZOm5ZOm5VOm5VOnJROnJNNnJNNnJJNnZFNnZFNnZBNnpBNno9Nno5Nno5Mn41Mn4xMn4xMoItMoItMoIpMoIlMoYlMoYhLoYdLoodLooZLooZLooVLo4RLo4RLo4NKpINKpIJKpIFKpIFKpYBKpX9KpX9Kpn5Kpn5Jpn1JpnxJp3xJp3tJp3pJqHpJqHlJqHlJqHhIqQDFV4XEVoXEVobDVobDVobCVofBVofBVofAVoe/Voi/VYi+VYi+VYm9VYm8VYm8VYm7VYq7VYq6VYq5VIu5VIu4VIu3VIu3VIy2VIy2VIy1VI20VI20U42zU42yU46yU46xU46xU4+wU4+vU4+vUo+uUpCtUpCtUpCsUpGsUpGrUpGqUpGqUpKpUZKoUZKoUZOnUZOnUZOmUZOlUZSlUZSkUZSkUJWjUJWiUJWiUJahUJagUJagUJafUJefUJeeT5edT5idT5icT5ibT5ibT5maT5maT5mZTpqYTpqYTpqXTpqWTpuWTpuVTpuVTpyUTpyTTZyTTZySTZ2RTZ2RTZ2QTZ6QTZ6PTZ6OTZ6OTJ+NTJ+MTJ+MTKCLTKCLTKCKTKCJTKGJTKGIS6GIS6KHS6KGS6KGS6KFS6OES6OES6ODSqSDSqSCSqSBSqSBSqWASqV/SqV/SqZ+SqZ+SaZ9SaZ8Sad8Sad7Sad6Sah6Sah5Sah5Sah4SKl3SKl3SKl2SKoAw1aGw1aGwlaHwVaHwVaHwFaHwFaIv1WIvlWIvlWJvVWJvFWJvFWJu1WKu1WKulWKuVSLuVSLuFSLt1SLt1SMtlSMtlSMtVSNtFSNtFONs1ONslOOslOOsVOOsVOPsFOPr1OPr1KPrlKQrVKQrVKQrFKRrFKRq1KRqlKRqlKSqVGSqVGSqFGTp1GTp1GTplGTpVGUpVGUpFGUpFCVo1CVolCVolCVoVCWoFCWoFCWn1CXn1CXnk+XnU+YnU+YnE+Ym0+Ym0+Zmk+Zmk+ZmU6amE6amE6al06alk6blk6blU6blU6clE6ck02ck02ckk2dkU2dkU2dkE2ekE2ej02ejk2ejkyfjUyfjUyfjEygi0ygi0ygikygiUyhiUyhiEuhiEuih0uihkuihkuihUujhEujhEujg0qkg0qkgkqkgUqkgUqlgEqlf0qlf0qmfkqmfkmmfUmmfEmnfEmne0mnekmoekmoeUmoeUmoeEipd0ipd0ipdkiqdUiqdUiqdEiqAMFWh8FWh8BWh8BWiL9ViL5ViL5Vib1VibxVibxVibtVirtVirpVirlUi7lUi7hUi7dUi7dUjLZUjLZUjLVUjbRUjbRTjbNTjbJTjrJTjrFTjrFTj7BTj69Tj69Sj65SkK5SkK1SkKxSkaxSkatSkapSkapSkqlRkqlRkqhRk6dRk6dRk6ZRk6VRlKVRlKRRlKRQlaNQlaJQlaJQlaFQlqBQlqBQlp9Ql59Ql55Pl51Pl51PmJxPmJtPmJtPmZpPmZpPmZlOmphOmphOmpdOmpZOm5ZOm5VOm5VOnJROnJNNnJNNnJJNnZJNnZFNnZBNnpBNno9Nno5Nno5Mn41Mn41Mn4xMoItMoItMoIpMoIlMoYlMoYhLoYhLoodLooZLooZLooVLo4RLo4RLo4NLpINKpIJKpIFKpIFKpYBKpX9KpX9Kpn5Kpn5Jpn1JpnxJp3xJp3tJp3tJqHpJqHlJqHlJqHhIqXdIqXdIqXZIqnZIqnVIqnRIqnRIq3NIq3JHqwDAVoi/VYi+VYi+VYm9VYm8VYm8VYm7VYq7VYq6VYq5VIu5VIu4VIu3VIu3VIy2VIy2VIy1VI20VI20U42zU42zU46yU46xU46xU4+wU4+vU4+vUo+uUpCuUpCtUpCsUpGsUpGrUpGqUpGqUpKpUZKpUZKoUZOnUZOnUZOmUZOlUZSlUZSkUZSkUJWjUJWiUJWiUJWhUJagUJagUJafUJefUJeeT5edT5edT5icT5icT5ibT5maT5maT5mZT5mYTpqYTpqXTpqXTpuWTpuVTpuVTpyUTpyTTZyTTZySTZ2STZ2RTZ2QTZ6QTZ6PTZ6OTZ6OTJ+NTJ+NTJ+MTKCLTKCLTKCKTKCJTKGJTKGIS6GIS6KHS6KGS6KGS6KFS6OES6OES6ODS6SDSqSCSqSBSqSBSqWASqWASqV/SqZ+SqZ+SaZ9SaZ8Sad8Sad7Sad7Sah6Sah5Sah5Sah4SKl3SKl3SKl2SKp2SKp1SKp0SKp0SKtzSKtyR6tyR6xxR6xxR6wAvlWJvVWJvVWJvFWJu1WKu1WKulWKuVSLuVSLuFSLuFSLt1SMtlSMtlSMtVSNtFSNtFONs1ONs1OOslOOsVOOsVOPsFOPr1OPr1OPrlKQrlKQrVKQrFKRrFKRq1KRqlKRqlKSqVGSqVGSqFGTp1GTp1GTplGTpVGUpVGUpFGUpFCVo1CVolCVolCVoVCWoVCWoFCWn1CXn1CXnk+XnU+XnU+YnE+YnE+Ym0+Zmk+Zmk+ZmU+ZmE6amE6al06al06blk6blU6blU6blE6ck02ck02ckk2dkk2dkU2dkE2ekE2ej02ejk2ejkyfjUyfjUyfjEygi0ygi0ygikygiUyhiUyhiEuhiEuih0uihkuihkuihUujhUujhEujg0ukg0qkgkqkgUqkgUqlgEqlgEqlf0qmfkqmfkmmfUmmfEmnfEmne0mne0moekmoeUmoeUmoeEipd0ipd0ipdkiqdkiqdUiqdEiqdEirc0irckerckescUescUescEesb0etb0etALxVibtVirtVirpVirlUi7lUi7hUi7hUi7dUjLZUjLZUjLVUjbRUjbRTjbNTjbNTjrJTjrFTjrFTj7BTj69Tj69Tj65SkK5SkK1SkKxSkaxSkatSkapSkapSkqlRkqlRkqhRk6dRk6dRk6ZRk6ZRlKVRlKRRlKRQlaNQlaJQlaJQlaFQlqFQlqBQlp9Ql59Ql55Pl51Pl51PmJxPmJxPmJtPmZpPmZpPmZlPmZhOmphOmpdOmpdOm5ZOm5VOm5VOm5ROnJNNnJNNnJJNnZJNnZFNnZBNnZBNno9Nno5Nno5Mn41Mn41Mn4xMoItMoItMoIpMoIpMoYlMoYhLoYhLoodLooZLooZLooVLo4VLo4RLo4NLpINKpIJKpIFKpIFKpYBKpYBKpX9Kpn5Kpn5Jpn1JpnxJp3xJp3tJp3tJqHpJqHlJqHlJqHhIqXdIqXdIqXZIqnZIqnVIqnRIqnRIq3NIq3NHq3JHrHFHrHFHrHBHrG9HrW9HrW5HrW5Hrm1GrgC6VYq5VIu5VIu4VIu4VIu3VIy2VIy2VIy1VI20VI20U42zU42zU46yU46xU46xU4+wU4+vU4+vU4+uUpCuUpCtUpCsUpGsUpGrUpGrUpGqUpKpUZKpUZKoUZOnUZOnUZOmUZOmUZSlUZSkUZSkUJWjUJWiUJWiUJWhUJahUJagUJafUJefUJeeT5edT5edT5icT5icT5ibT5maT5maT5mZT5mYTpqYTpqXTpqXTpuWTpuVTpuVTpuUTpyUTZyTTZySTZ2STZ2RTZ2QTZ2QTZ6PTZ6PTZ6OTJ+NTJ+NTJ+MTJ+LTKCLTKCKTKCKTKGJTKGIS6GIS6KHS6KGS6KGS6KFS6OFS6OES6ODS6SDSqSCSqSBSqSBSqWASqWASqV/SqZ+SqZ+SaZ9SaZ8Sad8Sad7Sad7Sah6Sah5Sah5Sah4SKl4SKl3SKl2SKp2SKp1SKp0SKp0SKtzSKtzR6tyR6xxR6xxR6xwR6xvR61vR61uR61uR65tRq5sRq5sRq5rRq8AuFSLuFSLt1SMtlSMtlSMtVSNtVSNtFONs1ONs1OOslOOsVOOsVOPsFOPsFOPr1OPrlKQrlKQrVKQrFKRrFKRq1KRq1KRqlKSqVGSqVGSqFGTp1GTp1GTplGTplGUpVGUpFGUpFCVo1CVolCVolCVoVCWoVCWoFCWn1CXn1CXnk+XnU+XnU+YnE+YnE+Ym0+Zmk+Zmk+ZmU+ZmU6amE6al06al06blk6blU6blU6blE6clE2ck02ckk2dkk2dkU2dkE2dkE2ej02ej02ejkyfjUyfjUyfjEyfi0ygi0ygikygikyhiUyhiEuhiEuhh0uihkuihkuihUujhUujhEujg0ujg0qkgkqkgUqkgUqlgEqlgEqlf0qmfkqmfkqmfUmmfUmnfEmne0mne0moekmoeUmoeUmoeEipeEipd0ipdkiqdkiqdUiqdEiqdEirc0irc0erckescUescUescEesb0etb0etbketbkeubUaubEaubEaua0avakavakavaUawALZUjLZUjLVUjLVUjbRTjbNTjbNTjrJTjrFTjrFTj7BTj7BTj69Tj65SkK5SkK1SkKxSkaxSkatSkatSkapSkqlRkqlRkqhRk6dRk6dRk6ZRk6ZRlKVRlKRRlKRQlaNQlaJQlaJQlaFQlqFQlqBQlp9Ql59Ql55Pl55Pl51PmJxPmJxPmJtPmZpPmZpPmZlPmZlOmphOmpdOmpdOm5ZOm5VOm5VOm5ROnJROnJNNnJJNnZJNnZFNnZBNnZBNno9Nno9Nno5Mn41Mn41Mn4xMn4tMoItMoIpMoIpMoYlMoYhLoYhLoYdLooZLooZLooVLo4VLo4RLo4NLo4NKpIJKpIJKpIFKpYBKpYBKpX9KpX5Kpn5Kpn1Jpn1Jp3xJp3tJp3tJqHpJqHlJqHlJqHhIqXhIqXdIqXZIqnZIqnVIqnRIqnRIq3NIq3NHq3JHrHFHrHFHrHBHrG9HrW9HrW5HrW5Hrm1GrmxGrmxGrmtGr2tGr2pGr2lGsGlGsGhGsGdFsAC1VI20U42zU42zU46yU46xU46xU46wU4+wU4+vU4+uUpCuUpCtUpCsUpGsUpGrUpGrUpGqUpKpUpKpUZKoUZOnUZOnUZOmUZOmUZSlUZSkUZSkUJWjUJWjUJWiUJWhUJahUJagUJafUJefUJeeT5eeT5edT5icT5icT5ibT5maT5maT5mZT5mZTpqYTpqXTpqXTpuWTpuVTpuVTpuUTpyUTpyTTZySTZ2STZ2RTZ2QTZ2QTZ6PTZ6PTZ6OTJ+NTJ+NTJ+MTJ+MTKCLTKCKTKCKTKGJTKGIS6GIS6GHS6KHS6KGS6KFS6OFS6OES6ODS6ODSqSCSqSCSqSBSqWASqWASqV/SqV+SqZ+SqZ9SaZ9Sad8Sad7Sad7Sad6Sah5Sah5Sah4SKl4SKl3SKl2SKp2SKp1SKp0SKp0SKtzSKtzR6tyR6xxR6xxR6xwR6xwR61vR61uR61uR65tRq5sRq5sRq5rRq9rRq9qRq9pRrBpRrBoRrBnRbBnRbFmRbFmRbEAs1OOslOOsVOOsVOOsFOPsFOPr1OPrlKQrlKQrVKQrVKQrFKRq1KRq1KRqlKSqVKSqVGSqFGTqFGTp1GTplGTplGUpVGUpFGUpFCVo1CVo1CVolCVoVCWoVCWoFCWn1CXn1CXnk+Xnk+XnU+YnE+YnE+Ym0+Zmk+Zmk+ZmU+ZmU6amE6al06al06blk6blU6blU6blE6clE6ck02ckk2dkk2dkU2dkU2dkE2ej02ej02ejkyfjUyfjUyfjEyfjEygi0ygikygikyhiUyhiEuhiEuhh0uih0uihkuihUujhUujhEujg0ujg0qkgkqkgkqkgUqlgEqlgEqlf0qlfkqmfkqmfUmmfUmnfEmne0mne0mnekmoeUmoeUmoeEipeEipd0ipdkipdkiqdUiqdUiqdEirc0irc0erckescUescUescEescEetb0etbketbkeubUaubEaubEaua0ava0avakavaUawaUawaEawZ0WwZ0WxZkWxZkWxZUWyZEWyZEWyALFTjrBTj7BTj69Tj65SkK5SkK1SkK1SkKxSkatSkatSkapSkqlSkqlRkqhRkqhRk6dRk6ZRk6ZRlKVRlKRRlKRQlaNQlaNQlaJQlaFQlqFQlqBQlp9Ql59Ql55Pl55Pl51PmJxPmJxPmJtPmZpPmZpPmZlPmZlOmphOmpdOmpdOm5ZOm5ZOm5VOm5ROnJROnJNNnJJNnZJNnZFNnZFNnZBNno9Nno9Nno5Mn41Mn41Mn4xMn4xMoItMoIpMoIpMoYlMoYhLoYhLoYdLoodLooZLooVLo4VLo4RLo4NLo4NKpIJKpIJKpIFKpYBKpYBKpX9KpX5Kpn5Kpn1Jpn1Jp3xJp3tJp3tJp3pJqHpJqHlJqHhIqXhIqXdIqXZIqXZIqnVIqnVIqnRIq3NIq3NHq3JHq3FHrHFHrHBHrHBHrW9HrW5HrW5Hrm1GrmxGrmxGrmtGr2tGr2pGr2lGsGlGsGhGsGdFsGdFsWZFsWZFsWVFsmRFsmRFsmNFsmNEs2JEswCvU4+uUpCuUpCtUpCtUpCsUpGrUpGrUpGqUpKpUpKpUZKoUZKoUZOnUZOmUZOmUZSlUZSkUZSkUJSjUJWjUJWiUJWhUJahUJagUJafUJafUJeeT5eeT5edT5icT5icT5ibT5mbT5maT5mZT5mZTpqYTpqXTpqXTpuWTpuWTpuVTpuUTpyUTpyTTZySTZ2STZ2RTZ2RTZ2QTZ6PTZ6PTZ6OTJ+NTJ+NTJ+MTJ+MTKCLTKCKTKCKTKGJTKGIS6GIS6GHS6KHS6KGS6KFS6OFS6OES6OES6ODSqSCSqSCSqSBSqWASqWASqV/SqV/SqZ+SqZ9SaZ9Sad8Sad7Sad7Sad6Sah6Sah5Sah4SKl4SKl3SKl2SKl2SKp1SKp1SKp0SKtzSKtzR6tyR6txR6xxR6xwR6xwR61vR61uR61uR61tRq5sRq5sRq5rRq9rRq9qRq9pRrBpRrBoRrBoRbBnRbFmRbFmRbFlRbJkRbJkRbJjRbJjRbNiRLNhRLNhRLRgRLQArVKQrVKQrFKRq1KRq1KRqlKSqVKSqVGSqFGSqFGTp1GTplGTplGUpVGUpVGUpFCUo1CVo1CVolCVoVCWoVCWoFCWoFCWn1CXnk+Xnk+XnU+YnE+YnE+Ym0+Ym0+Zmk+ZmU+ZmU6amE6al06al06blk6blk6blU6blE6clE6ck02ckk2dkk2dkU2dkU2dkE2ej02ej02ejk2fjUyfjUyfjEyfjEygi0ygikygikyhiUyhiUuhiEuhh0uih0uihkuihUujhUujhEujhEujg0qkgkqkgkqkgUqlgEqlgEqlf0qlf0qmfkqmfUmmfUmnfEmne0mne0mnekmoekmoeUmoeEmpeEipd0ipdkipdkiqdUiqdUiqdEirc0irc0erckercUescUescEescEetb0etbketbketbUaubUaubEaua0ava0avakavaUavaUawaEawaEWwZ0WxZkWxZkWxZUWyZEWyZEWyY0WyY0WzYkSzYUSzYUS0YES0X0S0X0S0XkS1AKtSkatSkapSkqpSkqlRkqhRkqhRk6dRk6ZRk6ZRlKVRlKVRlKRRlKNQlaNQlaJQlaFQlqFQlqBQlqBQlp9Ql55Pl55Pl51PmJxPmJxPmJtPmJtPmZpPmZlPmZlOmphOmpdOmpdOmpZOm5ZOm5VOm5ROnJROnJNNnJJNnZJNnZFNnZFNnZBNno9Nno9Nno5Nn45Mn41Mn4xMn4xMoItMoIpMoIpMoYlMoYlLoYhLoYdLoodLooZLooVLo4VLo4RLo4RLo4NKpIJKpIJKpIFKpYBKpYBKpX9KpX9Kpn5Kpn1Jpn1Jp3xJp3tJp3tJp3pJqHpJqHlJqHhJqXhIqXdIqXZIqXZIqnVIqnVIqnRIq3NIq3NHq3JHq3JHrHFHrHBHrHBHrW9HrW5HrW5HrW1Grm1GrmxGrmtGr2tGr2pGr2lGr2lGsGhGsGhFsGdFsWZFsWZFsWVFsWRFsmRFsmNFsmNFs2JEs2FEs2FEs2BEtF9EtF9EtF5EtV5EtV1DtVxDtgCqUpKpUZKoUZKoUZOnUZOmUZOmUZSlUZSlUZSkUZSjUJWjUJWiUJWhUJahUJagUJagUJafUJeeT5eeT5edT5icT5icT5ibT5ibT5maT5mZT5mZTpqYTpqXTpqXTpqWTpuWTpuVTpuUTpyUTpyTTZyTTZySTZ2RTZ2RTZ2QTZ6PTZ6PTZ6OTZ+OTJ+NTJ+MTJ+MTKCLTKCKTKCKTKGJTKGJS6GIS6GHS6KHS6KGS6KFS6OFS6OES6OES6ODSqSCSqSCSqSBSqWASqWASqV/SqV/SqZ+SqZ9SaZ9Sad8Sad8Sad7Sad6Sah6Sah5Sah4Sal4SKl3SKl3SKl2SKp1SKp1SKp0SKtzSKtzR6tyR6tyR6xxR6xwR6xwR61vR61uR61uR61tRq5tRq5sRq5rRq9rRq9qRq9pRq9pRrBoRrBoRbBnRbFmRbFmRbFlRbFkRbJkRbJjRbJjRbNiRLNhRLNhRLNgRLRgRLRfRLReRLVeRLVdQ7VcQ7VcQ7ZbQ7ZbQ7YAqFGTp1GTplGTplGUpVGUpVGUpFGUo1CVo1CVolCVoVCWoVCWoFCWoFCWn1CXnk+Xnk+XnU+YnU+YnE+Ym0+Ym0+Zmk+ZmU+ZmU6amE6amE6al06alk6blk6blU6blE6clE6ck02ck02ckk2dkU2dkU2dkE2ej02ej02ejk2ejkyfjUyfjEyfjEygi0ygikygikyhiUyhiUuhiEuhh0uih0uihkuihUujhUujhEujhEujg0qkgkqkgkqkgUqlgUqlgEqlf0qlf0qmfkqmfUmmfUmnfEmnfEmne0mnekmoekmoeUmoeEmpeEipd0ipd0ipdkiqdUiqdUiqdEirc0irc0erckerckescUescEescEetb0etbketbketbUaubUaubEaua0ava0avakavaUavaUawaEawaEWwZ0WxZkWxZkWxZUWxZUWyZEWyY0WyY0WzYkSzYUSzYUSzYES0YES0X0S0XkS1XkS1XUO1XEO1XEO2W0O2W0O2WkO3WUO3WUO3AKZRlKVRlKVRlKRRlKNQlaNQlaJQlaJQlqFQlqBQlqBQlp9Ql55Pl55Pl51PmJ1PmJxPmJtPmJtPmZpPmZlPmZlOmphOmphOmpdOmpZOm5ZOm5VOm5ROnJROnJNNnJNNnJJNnZFNnZFNnZBNno9Nno9Nno5Nno5Mn41Mn4xMn4xMoItMoIpMoIpMoIlMoYlLoYhLoYdLoodLooZLooZLo4VLo4RLo4RLo4NKpIJKpIJKpIFKpYFKpYBKpX9KpX9Kpn5Kpn1Jpn1Jp3xJp3xJp3tJp3pJqHpJqHlJqHhJqXhIqXdIqXdIqXZIqnVIqnVIqnRIq3NIq3NHq3JHq3JHrHFHrHBHrHBHrW9HrW5HrW5HrW1Grm1GrmxGrmtGr2tGr2pGr2pGr2lGsGhGsGhFsGdFsWZFsWZFsWVFsWVFsmRFsmNFsmNFs2JEs2FEs2FEs2BEtGBEtF9EtF5EtV5EtV1EtVxDtVxDtltDtltDtlpDt1lDt1lDt1hDt1dCuFdCuACkUZSjUJWjUJWiUJWiUJahUJagUJagUJafUJeeT5eeT5edT5idT5icT5ibT5ibT5maT5mZT5mZTpqYTpqYTpqXTpqWTpuWTpuVTpuUTpyUTpyTTZyTTZySTZ2RTZ2RTZ2QTZ6PTZ6PTZ6OTZ6OTJ+NTJ+MTJ+MTKCLTKCLTKCKTKCJTKGJS6GIS6GHS6KHS6KGS6KGS6KFS6OES6OES6ODSqSCSqSCSqSBSqWBSqWASqV/SqV/SqZ+SqZ9SaZ9Sad8Sad8Sad7Sad6Sah6Sah5Sah4Sal4SKl3SKl3SKl2SKp1SKp1SKp0SKt0SKtzSKtyR6tyR6xxR6xwR6xwR61vR61vR61uR61tRq5tRq5sRq5rRq9rRq9qRq9qRq9pRrBoRrBoRbBnRbFmRbFmRbFlRbFlRbJkRbJjRbJjRbNiRLNhRLNhRLNgRLRgRLRfRLReRLVeRLVdRLVcQ7VcQ7ZbQ7ZbQ7ZaQ7dZQ7dZQ7dYQ7dYQrhXQrhWQrhWQrlVQrkAolCVolCWoVCWoFCWoFCWn1CXnlCXnk+XnU+YnU+YnE+Ym0+Ym0+Zmk+ZmU+ZmU6amE6amE6al06alk6blk6blU6blU6clE6ck02ck02ckk2dkU2dkU2dkE2ekE2ej02ejk2ejkyfjUyfjEyfjEygi0ygi0ygikygiUyhiUyhiEuhh0uih0uihkuihkuihUujhEujhEujg0qkgkqkgkqkgUqkgUqlgEqlf0qlf0qmfkqmfUmmfUmmfEmnfEmne0mnekmoekmoeUmoeUmpeEipd0ipd0ipdkiqdUiqdUiqdEirdEirc0irckerckescUescEescEetb0etb0etbketbUaubUaubEaua0ava0avakavakavaUawaEawaEWwZ0WxZkWxZkWxZUWxZUWyZEWyY0WyY0WzYkSzYUSzYUSzYES0YES0X0S0XkS1XkS1XUS1XUO1XEO2W0O2W0O2WkO3WUO3WUO3WEO3WEK4V0K4VkK4VkK5VUK5VEK5VEK5U0K6AKBQlqBQlp9Ql55Ql55Pl51PmJ1PmJxPmJtPmJtPmZpPmZpPmZlOmphOmphOmpdOmpZOm5ZOm5VOm5VOnJROnJNNnJNNnJJNnZFNnZFNnZBNnpBNno9Nno5Nno5Mn41Mn4xMn4xMoItMoItMoIpMoIlMoYlMoYhLoYdLoodLooZLooZLooVLo4RLo4RLo4NKpIJKpIJKpIFKpIFKpYBKpX9KpX9Kpn5Kpn5Jpn1JpnxJp3xJp3tJp3pJqHpJqHlJqHlJqHhIqXdIqXdIqXZIqnVIqnVIqnRIq3RIq3NIq3JHq3JHrHFHrHBHrHBHrW9HrW9HrW5HrW1Grm1GrmxGrmtGr2tGr2pGr2pGr2lGsGhGsGhFsGdFsWZFsWZFsWVFsWVFsmRFsmNFsmNFs2JEs2JEs2FEs2BEtGBEtF9EtF5EtV5EtV1EtV1DtVxDtltDtltDtlpDt1lDt1lDt1hDt1hCuFdCuFZCuFZCuVVCuVRCuVRCuVNCulNCulJBulFBuwCfUJeeT5edT5idT5icT5ibT5ibT5maT5maT5mZTpqYTpqYTpqXTpqWTpuWTpuVTpuVTpyUTpyTTZyTTZySTZ2RTZ2RTZ2QTZ6QTZ6PTZ6OTZ6OTJ+NTJ+MTJ+MTKCLTKCLTKCKTKCJTKGJTKGIS6GHS6KHS6KGS6KGS6KFS6OES6OES6ODSqSDSqSCSqSBSqSBSqWASqV/SqV/SqZ+SqZ+SaZ9SaZ8Sad8Sad7Sad6Sah6Sah5Sah5Sah4SKl3SKl3SKl2SKp1SKp1SKp0SKp0SKtzSKtyR6tyR6xxR6xwR6xwR61vR61vR61uR61tRq5tRq5sRq5sRq9rRq9qRq9qRq9pRrBoRrBoRbBnRbFnRbFmRbFlRbFlRbJkRbJjRbJjRbNiRLNiRLNhRLNgRLRgRLRfRLReRLVeRLVdRLVdQ7VcQ7ZbQ7ZbQ7ZaQ7dZQ7dZQ7dYQ7dYQrhXQrhWQrhWQrlVQrlUQrlUQrlTQrpTQrpSQbpRQbtRQbtQQbtQQbsAnU+YnE+Ym0+Ym0+Zmk+Zmk+ZmU6amE6amE6al06alk6blk6blU6blU6clE6ck02ck02ckk2dkU2dkU2dkE2ekE2ej02ejk2ejkyfjUyfjUyfjEygi0ygi0ygikygiUyhiUyhiEuhiEuih0uihkuihkuihUujhEujhEujg0qkg0qkgkqkgUqkgUqlgEqlf0qlf0qmfkqmfkmmfUmmfEmnfEmne0mnekmoekmoeUmoeUmoeEipd0ipd0ipdkiqdUiqdUiqdEiqdEirc0irckerckescUescUescEesb0etb0etbketbUaubUaubEaubEava0avakavakavaUawaEawaEWwZ0WxZ0WxZkWxZUWxZUWyZEWyY0WyY0WzYkSzYkSzYUSzYES0YES0X0S0XkS1XkS1XUS1XUO1XEO2W0O2W0O2WkO3WUO3WUO3WEO3WEO4V0K4VkK4VkK5VUK5VUK5VEK5U0K6U0K6UkG6UUG7UUG7UEG7UEG7T0G8TkG8TkG8AJtPmZpPmZpPmZlOmphOmphOmpdOmpZOm5ZOm5VOm5VOnJROnJNNnJNNnJJNnZJNnZFNnZBNnpBNno9Nno5Nno5Mn41Mn41Mn4xMoItMoItMoIpMoIlMoYlMoYhLoYhLoodLooZLooZLooVLo4RLo4RLo4NKpINKpIJKpIFKpIFKpYBKpX9KpX9Kpn5Kpn5Jpn1JpnxJp3xJp3tJp3pJqHpJqHlJqHlJqHhIqXdIqXdIqXZIqnZIqnVIqnRIqnRIq3NIq3JHq3JHrHFHrHFHrHBHrG9HrW9HrW5HrW1Hrm1GrmxGrmxGrmtGr2pGr2pGr2lGsGhGsGhFsGdFsWdFsWZFsWVFsWVFsmRFsmNFsmNFs2JEs2JEs2FEs2BEtGBEtF9EtF5EtV5EtV1EtV1DtVxDtltDtltDtlpDt1pDt1lDt1hDt1hDuFdCuFZCuFZCuVVCuVVCuVRCuVNCulNCulJBulFBu1FBu1BBu1BBu09BvE5BvE5BvE1BvUxAvUxAvQCZT5qYTpqYTpqXTpqXTpuWTpuVTpuVTpyUTpyTTZyTTZySTZ2STZ2RTZ2QTZ6QTZ6PTZ6OTZ6OTJ+NTJ+NTJ+MTKCLTKCLTKCKTKCJTKGJTKGIS6GIS6KHS6KGS6KGS6KFS6OES6OES6ODS6SDSqSCSqSBSqSBSqWASqV/SqV/SqZ+SqZ+SaZ9SaZ8Sad8Sad7Sad7Sah6Sah5Sah5Sah4SKl3SKl3SKl2SKp2SKp1SKp0SKp0SKtzSKtyR6tyR6xxR6xxR6xwR6xvR61vR61uR61tR65tRq5sRq5sRq5rRq9qRq9qRq9pRrBoRrBoRbBnRbBnRbFmRbFlRbFlRbJkRbJkRbJjRbNiRLNiRLNhRLNgRLRgRLRfRLRfRLVeRLVdRLVdQ7VcQ7ZbQ7ZbQ7ZaQ7daQ7dZQ7dYQ7dYQ7hXQrhWQrhWQrlVQrlVQrlUQrlTQrpTQrpSQbpRQbtRQbtQQbtQQbtPQbxOQbxOQbxNQb1MQL1MQL1LQL1LQL5KQL71EhfyvjZ50AAAAABJRU5ErkJggg=="
+        }
+      },
+      {
+        "event": "role_list_received",
+        "payload": {
+          "serverId": "1",
+          "success": true,
+          "message": "",
+          "roles": [
+            {
+              "id": 2,
+              "name": "Admin",
+              "color": 15158332,
+              "position": 3,
+              "permissions": 1,
+              "isDefault": false,
+              "manageEachOther": false,
+              "memberCount": 1
+            },
+            {
+              "id": 3,
+              "name": "Moderator",
+              "color": 3447003,
+              "position": 2,
+              "permissions": 1179728,
+              "isDefault": false,
+              "manageEachOther": false,
+              "memberCount": 4
+            },
+            {
+              "id": 4,
+              "name": "Member",
+              "color": 3066993,
+              "position": 1,
+              "permissions": 0,
+              "isDefault": false,
+              "manageEachOther": false,
+              "memberCount": 204
+            },
+            {
+              "id": 1,
+              "name": "everyone",
+              "color": 0,
+              "position": 0,
+              "permissions": 31521792,
+              "isDefault": true,
+              "manageEachOther": false,
+              "memberCount": 298
+            }
+          ]
+        }
+      },
+      {
+        "event": "member_list_received",
+        "payload": {
+          "serverId": "1",
+          "success": true,
+          "message": "",
+          "members": [
+            {
+              "username": "alice",
+              "uid": 1,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": true,
+              "isOnline": true,
+              "roleIds": [],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "bob",
+              "uid": 2,
+              "joinedAt": 1760000000,
+              "nickname": "Bobby",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                2
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "carol",
+              "uid": 3,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                3
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "dave",
+              "uid": 4,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "perf1",
+              "uid": 6,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "perf2",
+              "uid": 7,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "erin",
+              "uid": 5,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "perf3",
+              "uid": 8,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "perf4",
+              "uid": 9,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "aurora",
+              "uid": -1000,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "blaze",
+              "uid": -1001,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "cinder",
+              "uid": -1002,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "drift",
+              "uid": -1003,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "ember",
+              "uid": -1004,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "flux",
+              "uid": -1005,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "glimmer",
+              "uid": -1006,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "halo",
+              "uid": -1007,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "iris",
+              "uid": -1008,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "jolt",
+              "uid": -1009,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "kestrel",
+              "uid": -1010,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "lumen",
+              "uid": -1011,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "mosaic",
+              "uid": -1012,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "nova",
+              "uid": -1013,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": true,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "onyx",
+              "uid": -2000,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "pixel",
+              "uid": -2001,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "quartz",
+              "uid": -2002,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "raven",
+              "uid": -2003,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "sable",
+              "uid": -2004,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "talon",
+              "uid": -2005,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "umbra",
+              "uid": -2006,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "vesper",
+              "uid": -2007,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "willow",
+              "uid": -2008,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "xenon",
+              "uid": -2009,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "yarrow",
+              "uid": -2010,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            },
+            {
+              "username": "zephyr",
+              "uid": -2011,
+              "joinedAt": 1760000000,
+              "nickname": "",
+              "isOwner": false,
+              "isOnline": false,
+              "roleIds": [
+                4
+              ],
+              "timedOutUntil": 0
+            }
+          ],
+          "revision": 1,
+          "totalMembers": 298,
+          "hasMore": true,
+          "nextAfter": "zephyr",
+          "firstPage": true,
+          "onlineCount": 20,
+          "onlineComplete": true,
+          "extra": [],
+          "lookupUids": []
+        }
+      },
+      {
+        "event": "voice_presence_updated",
+        "payload": {
+          "serverId": "1",
+          "channelId": "lounge",
+          "participants": [
+            "alice",
+            "bob",
+            "carol",
+            "dave"
+          ],
+          "participantUids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "userStates": [
+            {
+              "username": "alice",
+              "uid": 1,
+              "isMuted": false,
+              "isDeafened": false,
+              "isServerMuted": false,
+              "isServerDeafened": false,
+              "isSuppressed": false
+            },
+            {
+              "username": "bob",
+              "uid": 2,
+              "isMuted": true,
+              "isDeafened": false,
+              "isServerMuted": false,
+              "isServerDeafened": false,
+              "isSuppressed": false
+            },
+            {
+              "username": "carol",
+              "uid": 3,
+              "isMuted": true,
+              "isDeafened": true,
+              "isServerMuted": false,
+              "isServerDeafened": false,
+              "isSuppressed": false
+            },
+            {
+              "username": "dave",
+              "uid": 4,
+              "isMuted": false,
+              "isDeafened": false,
+              "isServerMuted": true,
+              "isServerDeafened": false,
+              "isSuppressed": false
+            }
+          ],
+          "userCapabilities": []
+        }
+      },
+      {
+        "event": "voice_presence_updated",
+        "payload": {
+          "serverId": "1",
+          "channelId": "squad",
+          "participants": [
+            "perf2",
+            "perf1"
+          ],
+          "participantUids": [
+            7,
+            6
+          ],
+          "userStates": [
+            {
+              "username": "perf2",
+              "uid": 7,
+              "isMuted": false,
+              "isDeafened": false,
+              "isServerMuted": false,
+              "isServerDeafened": false,
+              "isSuppressed": false
+            },
+            {
+              "username": "perf1",
+              "uid": 6,
+              "isMuted": false,
+              "isDeafened": false,
+              "isServerMuted": false,
+              "isServerDeafened": false,
+              "isSuppressed": false
+            }
+          ],
+          "userCapabilities": []
+        }
+      },
+      {
+        "event": "stream_presence_updated",
+        "payload": {
+          "serverId": "1",
+          "channelId": "lounge",
+          "streams": [
+            {
+              "streamId": "3_screen",
+              "ownerUsername": "carol",
+              "ownerUid": 3,
+              "hasAudio": true,
+              "resolutionWidth": 1920,
+              "resolutionHeight": 1080,
+              "fps": 60,
+              "currentCodec": 1,
+              "enforcedCodec": 0,
+              "watcherCount": 2
+            }
+          ]
+        }
+      },
+      {
+        "event": "user_list_updated",
+        "payload": {
+          "users": [
+            {
+              "username": "alice",
+              "uid": 1,
+              "avatarVersion": "",
+              "status": "online",
+              "statusText": "",
+              "statusEmoji": ""
+            },
+            {
+              "username": "bob",
+              "uid": 2,
+              "avatarVersion": "",
+              "status": "dnd",
+              "statusText": "",
+              "statusEmoji": ""
+            },
+            {
+              "username": "carol",
+              "uid": 3,
+              "avatarVersion": "",
+              "status": "away",
+              "statusText": "Designing things",
+              "statusEmoji": ""
+            },
+            {
+              "username": "dave",
+              "uid": 4,
+              "avatarVersion": "",
+              "status": "online",
+              "statusText": "Back at 9",
+              "statusEmoji": ""
+            },
+            {
+              "username": "perf2",
+              "uid": 7,
+              "avatarVersion": "",
+              "status": "online",
+              "statusText": "",
+              "statusEmoji": ""
+            }
+          ],
+          "covered": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            7,
+            8,
+            9
+          ],
+          "avatars": []
+        }
+      },
+      {
+        "event": "dm_conversations_received",
+        "payload": {
+          "conversations": [
+            {
+              "peer": "perf2",
+              "peerUid": 7,
+              "lastMessageContent": "see you in Squad tonight?",
+              "lastMessageSender": "perf2",
+              "lastMessageSenderUid": 7,
+              "lastMessageId": 1788000600,
+              "lastTimestamp": 1788000600,
+              "unreadCount": 2,
+              "encrypted": false,
+              "decryptError": ""
+            },
+            {
+              "peer": "alice",
+              "peerUid": 1,
+              "lastMessageContent": "welcome to Daily Gaming!",
+              "lastMessageSender": "alice",
+              "lastMessageSenderUid": 1,
+              "lastMessageId": 1787000000,
+              "lastTimestamp": 1787000000,
+              "unreadCount": 0,
+              "encrypted": false,
+              "decryptError": ""
+            }
+          ]
+        }
+      },
+      {
+        "event": "friend_list_received",
+        "payload": {
+          "friends": [
+            {
+              "username": "perf2",
+              "uid": 7,
+              "status": "online",
+              "avatarVersion": ""
+            },
+            {
+              "username": "alice",
+              "uid": 1,
+              "status": "online",
+              "avatarVersion": ""
+            },
+            {
+              "username": "perf3",
+              "uid": 8,
+              "status": "offline",
+              "avatarVersion": ""
+            },
+            {
+              "username": "perf4",
+              "uid": 9,
+              "status": "pending_incoming",
+              "avatarVersion": ""
+            },
+            {
+              "username": "erin",
+              "uid": 5,
+              "status": "pending_outgoing",
+              "avatarVersion": ""
+            }
+          ]
+        }
+      }
+    ],
+    "nav": {
+      "view": "home",
+      "server": null,
+      "channel": null,
+      "voice": null
+    }
+  },
+  "now": 1764000000,
+  "settings": {
+    "friends_only_dms": false,
+    "stream_stereo": true,
+    "take_stream_on_channel_switch": false,
+    "input_device": "alsa_input.usb-Focusrite_Scarlett_Solo",
+    "output_device": null,
+    "separate_stream_output": true,
+    "stream_output_device": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+    "voice_threshold_db": -42.0,
+    "aec_enabled": true,
+    "noise_suppression_level": 1,
+    "agc_enabled": true,
+    "user_volumes_by_uid": {},
+    "local_muted_uids": [],
+    "upload_limit_bps": 5242880,
+    "download_limit_bps": 7864320,
+    "media_audio_volume": null,
+    "media_audio_muted": false,
+    "media_video_volume": null,
+    "media_video_muted": false,
+    "use_av1": true,
+    "use_h265": true,
+    "stream_resolution": null,
+    "stream_fps": null,
+    "stream_quality": null,
+    "stream_video_bitrate_kbps": null,
+    "stream_share_audio": null,
+    "stream_audio_bitrate_kbps": null,
+    "stream_audio_mode": null,
+    "stream_audio_apps": null,
+    "stream_enforced_codec": null,
+    "theme": "nocturne",
+    "text_size_px": 0.0,
+    "list_density": 0.0,
+    "time_format": "auto",
+    "crash_reporting_enabled": true,
+    "crash_reporting_install_id": null,
+    "crash_reporting_consent_shown": false,
+    "link_previews_enabled": true,
+    "gif_unfiltered": false,
+    "away_after_minutes": 10,
+    "download_dir": "",
+    "ask_download_location": false,
+    "hotkeys": [
+      {
+        "id": "fx-mute",
+        "action": "toggle_mute",
+        "keys": [
+          "Control",
+          "Shift",
+          "KeyM"
+        ]
+      },
+      {
+        "id": "fx-deafen",
+        "action": "toggle_deafen",
+        "keys": [
+          "Control",
+          "Shift",
+          "KeyD"
+        ]
+      },
+      {
+        "id": "fx-ptt",
+        "action": "push_to_talk",
+        "keys": [
+          "KeyV"
+        ]
+      },
+      {
+        "id": "fx-leave",
+        "action": "leave_voice",
+        "keys": [
+          "Mouse4"
+        ]
+      }
+    ],
+    "input_mode": "voice_activity",
+    "ptt_release_delay_ms": 120
+  },
+  "devices": [
+    {
+      "id": 11,
+      "name": "CachyOS",
+      "platform": "linux",
+      "appVersion": "0.1.0",
+      "address": "127.0.0.1",
+      "signedInAt": 1763481600,
+      "lastActiveAt": 1764000000,
+      "online": true,
+      "current": true
+    },
+    {
+      "id": 12,
+      "name": "Windows 11 Pro",
+      "platform": "windows",
+      "appVersion": "0.9.4",
+      "address": "192.168.1.24",
+      "signedInAt": 1760544000,
+      "lastActiveAt": 1763989200,
+      "online": false,
+      "current": false
+    },
+    {
+      "id": 13,
+      "name": "macOS Sequoia 15.1",
+      "platform": "macos",
+      "appVersion": "0.9.3",
+      "address": "203.0.113.7",
+      "signedInAt": 1757520000,
+      "lastActiveAt": 1763906400,
+      "online": false,
+      "current": false
+    },
+    {
+      "id": 14,
+      "name": "",
+      "platform": "linux",
+      "appVersion": "0.9.4",
+      "address": "",
+      "signedInAt": 1762963200,
+      "lastActiveAt": 1763999280,
+      "online": false,
+      "current": false
+    }
+  ],
+  "e2ee": {
+    "supported": true,
+    "status": "ready",
+    "keyId": 1,
+    "fingerprint": "K7QM 2XRD 5FTA LW4E HB3N P6CZ U7VY D2GS 5JMR TQ7K XE4W 3NAF"
+  },
+  "hotkeys": {
+    "bindings": [
+      {
+        "id": "fx-mute",
+        "action": "toggle_mute",
+        "keys": [
+          "Control",
+          "Shift",
+          "KeyM"
+        ]
+      },
+      {
+        "id": "fx-deafen",
+        "action": "toggle_deafen",
+        "keys": [
+          "Control",
+          "Shift",
+          "KeyD"
+        ]
+      },
+      {
+        "id": "fx-ptt",
+        "action": "push_to_talk",
+        "keys": [
+          "KeyV"
+        ]
+      },
+      {
+        "id": "fx-leave",
+        "action": "leave_voice",
+        "keys": [
+          "Mouse4"
+        ]
+      }
+    ],
+    "status": {
+      "backend": "portal",
+      "state": "active",
+      "detail": null,
+      "mouse": false,
+      "focusedFallback": false,
+      "canConfigure": true,
+      "triggers": {
+        "fx-deafen": "Ctrl+Alt+D",
+        "fx-mute": "Ctrl+Shift+M",
+        "fx-ptt": "V"
+      },
+      "failed": [],
+      "registered": []
+    },
+    "recording": false
+  },
+  "audio": {
+    "inputs": [
+      {
+        "name": "alsa_input.usb-Focusrite_Scarlett_Solo",
+        "label": "Scarlett Solo USB"
+      },
+      {
+        "name": "alsa_input.pci-0000_00_1f.3.analog-stereo",
+        "label": "Built-in Audio Analog Stereo"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "alsa_output.usb-Focusrite_Scarlett_Solo",
+        "label": "Scarlett Solo USB"
+      },
+      {
+        "name": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+        "label": "HDMI / DisplayPort (RTX 4080)"
+      },
+      {
+        "name": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+        "label": "Built-in Audio Analog Stereo"
+      }
+    ],
+    "level": -28.0
+  },
+  "codecs": {
+    "useAv1": true,
+    "useH265": true,
+    "encode": [
+      {
+        "codec": 4,
+        "maxWidth": 3840,
+        "maxHeight": 2160,
+        "maxFps": 120,
+        "hardware": true
+      },
+      {
+        "codec": 3,
+        "maxWidth": 3840,
+        "maxHeight": 2160,
+        "maxFps": 120,
+        "hardware": true
+      },
+      {
+        "codec": 1,
+        "maxWidth": 3840,
+        "maxHeight": 2160,
+        "maxFps": 120,
+        "hardware": true
+      }
+    ],
+    "decode": [
+      {
+        "codec": 4,
+        "maxWidth": 3840,
+        "maxHeight": 2160,
+        "maxFps": 120,
+        "hardware": true
+      },
+      {
+        "codec": 3,
+        "maxWidth": 3840,
+        "maxHeight": 2160,
+        "maxFps": 120,
+        "hardware": true
+      },
+      {
+        "codec": 1,
+        "maxWidth": 3840,
+        "maxHeight": 2160,
+        "maxFps": 120,
+        "hardware": true
+      }
+    ]
+  },
+  "update": {
+    "status": {
+      "state": "available",
+      "version": "0.9.5"
+    },
+    "mode": "self-update",
+    "currentVersion": "0.1.0"
+  },
+  "tab": "about",
+  "dialog": "",
+  "downloadsDefault": "/home/perf1/Downloads"
+}

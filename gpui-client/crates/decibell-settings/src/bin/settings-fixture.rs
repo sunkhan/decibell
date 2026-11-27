@@ -2,7 +2,7 @@
 //! `settings-fixture <dir>` → `<dir>/settings-<stage>.json` (see `decibell_settings::fixture::json`).
 
 use decibell_settings::TabId;
-use decibell_settings::fixture::{Stage, json};
+use decibell_settings::fixture::{Stage, UpdateCase, json};
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
@@ -23,6 +23,8 @@ fn main() {
         ("rename", Stage::Rename),
         ("password", Stage::Password),
     ];
+    let about = UpdateCase::ALL.map(|case| (format!("about-{}", case.name()), Stage::About(case)));
+    let stages = stages.into_iter().map(|(name, stage)| (name.to_string(), stage)).chain(about);
     for (name, stage) in stages {
         let path = std::path::Path::new(&dir).join(format!("settings-{name}.json"));
         std::fs::write(&path, serde_json::to_string_pretty(&json(stage)).expect("json")).expect("write");
