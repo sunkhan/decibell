@@ -8,8 +8,8 @@
 //! |---|---|---|
 //! | `Decibell Inter` | Inter at optical size 14 | 400 500 600 700 |
 //! | `Decibell Sans` | Mona Sans, width 100 | 400 500 600 700 |
-//! | `Decibell Sans SemiExpanded` | Mona Sans, width 112.5 (server tiles) | 400 500 600 700 |
-//! | `Decibell Sans Expanded` | Mona Sans, width 125 (the wordmark) | 600 |
+//! | `Decibell Sans Plus` | Mona Sans, width 112.5 (server tiles) | 400 500 600 700 |
+//! | `Decibell Sans Max` | Mona Sans, width 125 (the wordmark) | 600 |
 //! | `Decibell Mono` | JetBrains Mono | 400 500 600 700 |
 //!
 //! View code never names a family: it asks the theme (`cx.theme().font(FontRole::Meta)`).
@@ -65,8 +65,8 @@ pub fn register(cx: &App) -> Result<()> {
 /// `"JetBrains Mono"`) at a CSS `font-stretch` percentage. Only Mona Sans has widths.
 pub fn family(token_family: &str, stretch: f32) -> &'static str {
     match token_family {
-        "Mona Sans" if stretch >= 118.75 => "Decibell Sans Expanded",
-        "Mona Sans" if stretch >= 106.25 => "Decibell Sans SemiExpanded",
+        "Mona Sans" if stretch >= 118.75 => "Decibell Sans Max",
+        "Mona Sans" if stretch >= 106.25 => "Decibell Sans Plus",
         "Mona Sans" => "Decibell Sans",
         "JetBrains Mono" => "Decibell Mono",
         other => {
@@ -206,14 +206,14 @@ mod tests {
         // The wordmark family has one weight; every request lands on it.
         let wordmark = resolve(
             &text_system,
-            "Decibell Sans Expanded",
+            "Decibell Sans Max",
             600.,
             FontStyle::Normal,
         );
         assert_eq!(
             resolve(
                 &text_system,
-                "Decibell Sans Expanded",
+                "Decibell Sans Max",
                 400.,
                 FontStyle::Normal
             ),
@@ -225,8 +225,8 @@ mod tests {
     fn theme_families_map_to_bundled_ones() {
         assert_eq!(family("Inter", 100.), "Decibell Inter");
         assert_eq!(family("Mona Sans", 100.), "Decibell Sans");
-        assert_eq!(family("Mona Sans", 112.5), "Decibell Sans SemiExpanded");
-        assert_eq!(family("Mona Sans", 125.), "Decibell Sans Expanded");
+        assert_eq!(family("Mona Sans", 112.5), "Decibell Sans Plus");
+        assert_eq!(family("Mona Sans", 125.), "Decibell Sans Max");
         assert_eq!(family("JetBrains Mono", 112.5), "Decibell Mono");
     }
 }

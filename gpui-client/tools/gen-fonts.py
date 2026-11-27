@@ -8,9 +8,18 @@ gets its own family name, with ordinary weight classes inside:
 
     Decibell Inter              Inter at opsz 14 (the renderer never varies opsz)   400 500 600 700
     Decibell Sans               Mona Sans at wdth 100                               400 500 600 700
-    Decibell Sans SemiExpanded  Mona Sans at wdth 112.5 (server tiles)              400 500 600 700
-    Decibell Sans Expanded      Mona Sans at wdth 125 (the wordmark)                600
+    Decibell Sans Plus  Mona Sans at wdth 112.5 (server tiles)              400 500 600 700
+    Decibell Sans Max      Mona Sans at wdth 125 (the wordmark)                600
     Decibell Mono               JetBrains Mono (already static), renamed            400 500 600 700
+
+The two wide families are "Plus" and "Max", not "SemiExpanded" and "Expanded": DirectWrite sorts
+faces into weight-stretch-style families by reading the family name, takes a word it knows as
+a width ("Expanded", "Condensed", "Wide", …) out of the name and makes it the face's stretch.
+"Decibell Sans SemiExpanded" was therefore no family on Windows: its faces were "Decibell Sans"
+at stretch semi-expanded, which GPUI (always asking for normal stretch) never selects, and
+every wide label fell back to another font (first seen on the Windows CI runner, 2026-11-26).
+A family name must not contain a weight, width or slope word; OS/2 fsSelection bit 8 (the
+names already are a weight-stretch-style family) is set as well.
 
 The families are renamed because (a) Mona Sans reserves the font name "Mona" for unmodified
 copies (OFL-MonaSans.txt), and an instance is a modified copy, and (b) a font of the same name
@@ -41,8 +50,8 @@ UI_WEIGHTS = (400, 500, 600, 700)
 FAMILIES = [
     ("Decibell Inter", "DecibellInter", "InterVariable.ttf", {"opsz": 14}, UI_WEIGHTS),
     ("Decibell Sans", "DecibellSans", "MonaSansVariable.ttf", {"wdth": 100}, UI_WEIGHTS),
-    ("Decibell Sans SemiExpanded", "DecibellSansSemiExpanded", "MonaSansVariable.ttf", {"wdth": 112.5}, UI_WEIGHTS),
-    ("Decibell Sans Expanded", "DecibellSansExpanded", "MonaSansVariable.ttf", {"wdth": 125}, (600,)),
+    ("Decibell Sans Plus", "DecibellSansPlus", "MonaSansVariable.ttf", {"wdth": 112.5}, UI_WEIGHTS),
+    ("Decibell Sans Max", "DecibellSansMax", "MonaSansVariable.ttf", {"wdth": 125}, (600,)),
     ("Decibell Mono", "DecibellMono", "JetBrainsMono-{style}.ttf", None, UI_WEIGHTS),
 ]
 
@@ -68,9 +77,12 @@ def rename(font, family, weight):
         name.setName(value, name_id, 3, 1, 0x409)
     os2 = font["OS/2"]
     os2.usWeightClass = weight
-    os2.usWidthClass = 5  # the width is in the family name; GPUI always asks for normal width
+    os2.usWidthClass = 5  # each width is a family of its own; GPUI always asks for normal width
     # fsSelection: bit 0 italic, 5 bold, 6 regular; keep the others (use-typo-metrics, …)
     os2.fsSelection = (os2.fsSelection & ~0b110_0001) | (1 << 5 if weight == 700 else 1 << 6 if weight == 400 else 0)
+    # Bit 8, WWS: "the name strings are a weight / width / slope family as they stand".
+    os2.fsSelection |= 1 << 8
+    os2.version = max(os2.version, 4)
     font["head"].macStyle = 1 if weight == 700 else 0
 
 

@@ -101,8 +101,8 @@ fontTools' instancer, and gives each width its own family name with ordinary wei
 |---|---|---|---|
 | `Decibell Inter` | `InterVariable.ttf` at `opsz` 14 | 400 500 600 700 | ~342,000 |
 | `Decibell Sans` | `MonaSansVariable.ttf` at `wdth` 100 | 400 500 600 700 | ~101,000 |
-| `Decibell Sans SemiExpanded` | … at `wdth` 112.5 (server tiles) | 400 500 600 700 | ~101,000 |
-| `Decibell Sans Expanded` | … at `wdth` 125 (the wordmark) | 600 | ~101,000 |
+| `Decibell Sans Plus` | … at `wdth` 112.5 (server tiles) | 400 500 600 700 | ~101,000 |
+| `Decibell Sans Max` | … at `wdth` 125 (the wordmark) | 600 | ~101,000 |
 | `Decibell Mono` | the four `JetBrainsMono-*.ttf`, renamed only | 400 500 600 700 | ~112,000 |
 
 17 files, 2.73 MB. The families are renamed because Mona Sans reserves the font name "Mona" for unmodified copies
