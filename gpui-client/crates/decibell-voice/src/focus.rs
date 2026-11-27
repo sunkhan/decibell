@@ -63,9 +63,26 @@ pub struct FocusView {
     filmstrip: Entity<Filmstrip>,
     /// The owner's nickname in the voice session's community (the label).
     nickname: NicknameWatch,
+    /// Growing the video back out of the mini-player (returning to the voice view out of it).
+    grow: Option<Grow>,
     _subs: Vec<Subscription>,
     _watch: Watch,
 }
+
+/// The renderer's mount effect: the video slot starts where the mini-player was and springs to its
+/// place (`translate + scale`, 340 ms `cubic-bezier(0.34, 1.32, 0.64, 1)`); the overlays and the
+/// filmstrip stay put. GPUI has no transforms: the video is drawn in a layer at the interpolated
+/// rect meanwhile, its place in the panel waiting empty. Frames only while it moves.
+struct Grow {
+    from: gpui::Bounds<gpui::Pixels>,
+    /// The video box's own rect, once laid out (the animation starts the frame after).
+    to: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    started: Option<std::time::Instant>,
+}
+
+/// `transform 340ms cubic-bezier(0.34, 1.32, 0.64, 1)` (the mini-player's own entrance curve).
+const GROW: Duration = Duration::from_millis(340);
+const GROW_EASE: motion::CubicBezier = motion::CubicBezier::new(0.34, 1.32, 0.64, 1.);
 
 impl FocusView {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -94,6 +111,7 @@ impl FocusView {
             rates: None,
             filmstrip: cx.new(Filmstrip::new),
             nickname: NicknameWatch::default(),
+            grow: None,
             _subs: subs,
             _watch: watch,
         };
@@ -107,6 +125,13 @@ impl FocusView {
         })
         .detach();
         this.follow(cx);
+        // Mount only (switching streams here doesn't grow): out of the mini-player's last spot.
+        if this.shown.is_some() && !cx.reduce_motion() {
+            let from = crate::state::VoiceUi::try_global(cx).and_then(|ui| ui.update(cx, |u, _| u.take_grow_from()));
+            this.grow = from
+                .filter(|r| r.size.width >= px(1.))
+                .map(|from| Grow { from, to: Rc::default(), started: None });
+        }
         this
     }
 
@@ -435,18 +460,62 @@ impl Render for FocusView {
         })
         .absolute()
         .size_0();
-        // Where the video sits, for the mini-player's shrink.
+        // Where the video sits, for the mini-player's shrink (and the grow out of it).
         let ui = VoiceUi::try_global(cx);
+        let grow_to = self.grow.as_ref().map(|g| g.to.clone());
         let record = canvas(
-            move |bounds, _, cx| {
+            move |bounds, window, cx| {
                 if let Some(ui) = &ui {
                     ui.update(cx, |u, _| u.record_full_rect(bounds));
+                }
+                if let Some(to) = &grow_to
+                    && to.get().is_none()
+                {
+                    to.set(Some(bounds));
+                    window.request_animation_frame();
                 }
             },
             |_, _, _, _| {},
         )
         .absolute()
         .size_full();
+        // The grow out of the mini-player: where the video is this frame (None: in its place).
+        let mut grow_layer = None;
+        let mut growing = false;
+        if let Some(grow) = &mut self.grow {
+            growing = true;
+            match grow.to.get() {
+                None => {} // laid out this frame: the video waits, the next frame starts
+                Some(to) => {
+                    let started = *grow.started.get_or_insert_with(std::time::Instant::now);
+                    let t = (started.elapsed().as_secs_f32() / GROW.as_secs_f32()).min(1.);
+                    if t >= 1. {
+                        growing = false;
+                    } else {
+                        let e = GROW_EASE.y(t as f64) as f32;
+                        let lerp = |a: gpui::Pixels, b: gpui::Pixels| a + (b - a) * e;
+                        let (from, at) = (grow.from, gpui::point(lerp(grow.from.left(), to.left()), lerp(grow.from.top(), to.top())));
+                        let size = gpui::size(lerp(from.size.width, to.size.width), lerp(from.size.height, to.size.height));
+                        grow_layer = Some(decibell_ui::layer(
+                            5,
+                            gpui::anchored().position(at).child(
+                                div()
+                                    .w(size.width)
+                                    .h(size.height)
+                                    .overflow_hidden()
+                                    .rounded(radius)
+                                    .bg(black(1.))
+                                    .child(VideoView::new(&viewer).fit(Fit::Contain).rounded(radius - px(1.))),
+                            ),
+                        ));
+                        window.request_animation_frame();
+                    }
+                }
+            }
+        }
+        if !growing && self.grow.take().is_some() {
+            window.request_animation_frame();
+        }
 
         let video_box = div()
             .id("focus-video")
@@ -485,11 +554,10 @@ impl Render for FocusView {
             .children(decibell_shell::probes::probe("focus-video"))
             .child(record)
             .child(keys)
-            .child(
-                div().size_full().child(
-                    VideoView::new(&viewer).fit(Fit::Contain).when(!fullscreen, |v| v.rounded(radius - px(1.))),
-                ),
-            )
+            .child(div().size_full().when(!growing, |this| {
+                this.child(VideoView::new(&viewer).fit(Fit::Contain).when(!fullscreen, |v| v.rounded(radius - px(1.))))
+            }))
+            .children(grow_layer)
             .when(!has_picture, |this| {
                 this.child(
                     div()

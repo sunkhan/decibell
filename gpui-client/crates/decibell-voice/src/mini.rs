@@ -168,6 +168,12 @@ impl MiniPlayer {
             self.spring = None;
             self.resize = None;
             self.entrance = None;
+            if self.visible {
+                // The full view made next grows out of where this was.
+                if let Some(ui) = VoiceUi::try_global(cx) {
+                    ui.update(cx, |u, _| u.mini_left());
+                }
+            }
         }
         if changed {
             cx.notify();

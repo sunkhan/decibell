@@ -26,6 +26,9 @@ pub struct VoiceUi {
     pub full_rect: Option<Bounds<Pixels>>,
     /// Where the mini-player last sat: the focused view grows back out of it (`recordMiniRect`).
     pub mini_rect: Option<Bounds<Pixels>>,
+    /// When the mini-player last stopped showing (the voice view opened over it): a focused view
+    /// made right after grows out of [`Self::mini_rect`].
+    pub mini_left: Option<std::time::Instant>,
     /// Open Advanced with the dialog regardless of the preset (screens and self-tests).
     pub advanced_on_open: Option<bool>,
 }
@@ -102,6 +105,19 @@ impl VoiceUi {
     pub fn record_mini_rect(&mut self, rect: Bounds<Pixels>) {
         self.mini_rect = Some(rect);
     }
+
+    /// The mini-player stopped showing.
+    pub fn mini_left(&mut self) {
+        self.mini_left = Some(std::time::Instant::now());
+    }
+
+    /// For a focused view being made now: the mini-player's last rect when the mini-player went
+    /// away just before (returning to the voice view out of it), once. The renderer's panel
+    /// grows out of `getMiniRect()` on mount.
+    pub fn take_grow_from(&mut self) -> Option<Bounds<Pixels>> {
+        let left = self.mini_left.take()?;
+        (left.elapsed() < std::time::Duration::from_millis(500)).then_some(self.mini_rect).flatten()
+    }
 }
 
 /// Open the Go Live dialog, as the renderer mounts `CaptureSourcePicker`: its error line and the
@@ -158,6 +174,22 @@ mod tests {
             u.open_go_live(cx);
         });
         ui.read_with(cx, |u, _| assert!(u.go_live && u.popover.is_none()));
+    }
+
+    #[gpui::test]
+    fn the_full_view_grows_out_of_the_mini_player_only_right_after_it_left(cx: &mut TestAppContext) {
+        let ui = cx.new(|_| VoiceUi::default());
+        let rect = Bounds::new(point(px(900.), px(600.)), size(px(320.), px(180.)));
+        ui.update(cx, |u, _| u.record_mini_rect(rect));
+        // The mini-player is still showing (or never left): nothing to grow from.
+        ui.update(cx, |u, _| assert_eq!(u.take_grow_from(), None));
+        // It just left (the voice view opened): once.
+        ui.update(cx, |u, _| u.mini_left());
+        ui.update(cx, |u, _| assert_eq!(u.take_grow_from(), Some(rect)));
+        ui.update(cx, |u, _| assert_eq!(u.take_grow_from(), None));
+        // Left long ago (a stream focused later from the grid): no grow.
+        ui.update(cx, |u, _| u.mini_left = Some(std::time::Instant::now() - std::time::Duration::from_secs(2)));
+        ui.update(cx, |u, _| assert_eq!(u.take_grow_from(), None));
     }
 
     #[gpui::test]
