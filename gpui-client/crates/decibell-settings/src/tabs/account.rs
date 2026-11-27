@@ -358,6 +358,7 @@ impl Render for AccountTab {
             Button::new("account-log-out", "Log Out")
                 .variant(ButtonVariant::DangerSoft)
                 .size(ButtonSize::Lg)
+                .probe("account-log-out")
                 .on_click(|_, _, cx| actions::auth::log_out(cx)),
         );
 

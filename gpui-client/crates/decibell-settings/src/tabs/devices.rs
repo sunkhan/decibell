@@ -300,6 +300,7 @@ impl Render for DevicesTab {
                         Button::new("devices-sign-out-all", "Sign out of all other devices")
                             .variant(ButtonVariant::DangerSoft)
                             .disabled(busy)
+                            .probe("devices-sign-out-all")
                             .on_click(move |_, _, cx| confirm(Some(Confirming::AllOthers { count }), cx)),
                     ),
                 );

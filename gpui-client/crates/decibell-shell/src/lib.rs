@@ -13,6 +13,7 @@ mod account_tests;
 mod auth;
 mod channels;
 mod conversations;
+mod device_tests;
 mod dm_rows;
 #[cfg(feature = "fixtures")]
 pub mod fixture;

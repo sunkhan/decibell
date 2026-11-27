@@ -315,10 +315,13 @@ impl Render for RevokedNoticeOverlay {
 }
 
 /// The model's toasts (pushed by event handlers) shown in the kit's toast stack: each new one is
-/// pushed there with its lifetime and action, and taken down when the model drops it.
+/// pushed there with its lifetime and action, and taken down when the model drops it; one the
+/// person closes (its ✕ or its action) leaves the model too, as `toast.dismiss` empties the
+/// renderer's store (else the model's copy would swallow the same toast pushed again while it
+/// lives: identical toasts don't stack).
 pub struct ToastMirror {
     shown: HashMap<u64, ToastId>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 impl ToastMirror {
@@ -326,8 +329,28 @@ impl ToastMirror {
         use gpui::AppContext as _;
         cx.new(|cx| {
             let model = Model::global(cx).clone();
-            ToastMirror { shown: HashMap::new(), _subscription: cx.observe(&model.toasts, |this: &mut ToastMirror, toasts, cx| this.sync(&toasts, cx)) }
+            let kit = Toasts::store(cx);
+            ToastMirror {
+                shown: HashMap::new(),
+                _subscriptions: [
+                    cx.observe(&model.toasts, |this: &mut ToastMirror, toasts, cx| this.sync(&toasts, cx)),
+                    cx.observe(&kit, |this: &mut ToastMirror, _, cx| this.closed(cx)),
+                ],
+            }
         })
+    }
+
+    /// Toasts the kit no longer shows: closed by the person (or timed out there): out of the model.
+    fn closed(&mut self, cx: &mut Context<Self>) {
+        let gone: Vec<u64> = self.shown.iter().filter(|(_, kit)| !Toasts::is_shown(cx, **kit)).map(|(id, _)| *id).collect();
+        if gone.is_empty() {
+            return;
+        }
+        let toasts = Model::global(cx).toasts.clone();
+        for id in gone {
+            self.shown.remove(&id);
+            toasts.update(cx, |t, cx| t.dismiss(id, cx));
+        }
     }
 
     fn sync(&mut self, toasts: &gpui::Entity<decibell_model::stores::toasts::Toasts>, cx: &mut Context<Self>) {
@@ -371,6 +394,25 @@ impl ToastMirror {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A toast the person closes leaves the model too, so the same toast pushed again shows again
+    /// (identical toasts don't stack while one lives).
+    #[gpui::test]
+    fn a_toast_closed_in_the_stack_leaves_the_model(cx: &mut gpui::TestAppContext) {
+        let model = cx.update(|cx| Model::init(cx, None));
+        let _mirror = cx.update(ToastMirror::install);
+        let first = model.toasts.update(cx, |t, cx| t.warning("New sign-in to your account", Some("Linux".into()), cx));
+        cx.run_until_parked();
+        assert_eq!(cx.update(Toasts::count), 1);
+        // The ✕ (or the action): the kit's dismiss.
+        cx.update(|cx| Toasts::dismiss_all(cx));
+        cx.run_until_parked();
+        assert!(model.toasts.read_with(cx, |t, _| t.toasts().is_empty()), "the model kept the closed toast");
+        let again = model.toasts.update(cx, |t, cx| t.warning("New sign-in to your account", Some("Linux".into()), cx));
+        cx.run_until_parked();
+        assert_ne!(first, again);
+        assert_eq!(cx.update(Toasts::count), 1, "the same toast pushed again shows again");
+    }
 
     #[test]
     fn fingerprints_read_like_the_renderer() {

@@ -31,6 +31,10 @@ Live steps (voice, people, calls):
   peer-info <user>                one line `DUMP peer-info <json>` (keys, safety number)
   devices                         load the account's device list
   device-sign-out <id | @file>    sign one device out (the id, or a file holding it)
+  friends-only <on|off>           Settings → Privacy's friends-only DMs (the account's)
+  join <community>                join a public community of central's directory (as Browse's Join)
+  audio-devices <input> <output>  the voice / call devices (a test's null sink and its monitor)
+  leave <community>               leave one of our communities
   call <user> | answer | decline | hangup
   watch <user>[,<user>...]        register presence interest (as a view showing them); a user is a
                                   name, or #<uid> (a throwaway account another client made)
@@ -48,7 +52,8 @@ Live steps (voice, people, calls):
   wait friend <user> <status|none>   (a|b: either)
   wait call <idle|outgoing|incoming|connecting|active>   (a|b: either)
   wait incoming-ended             another device of ours took / declined the ringing call
-  wait devices                    the device list is loaded";
+  wait devices                    the device list is loaded
+  wait name <user> <name>         the users store names that user so (a rename reached us)";
 
 #[derive(Debug, Clone)]
 pub enum LiveStep {
@@ -73,6 +78,10 @@ pub enum LiveStep {
     Watch(Vec<String>),
     WatchRoster(String, usize),
     Codecs,
+    FriendsOnly(bool),
+    Join(String),
+    Leave(String),
+    AudioDevices(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +97,7 @@ pub enum LiveWait {
     IncomingEnded,
     Devices,
     Avatar(String, String),
+    Name(String, String),
 }
 
 type Args = std::vec::IntoIter<String>;
@@ -137,6 +147,14 @@ pub fn parse(arg: &str, it: &mut Args) -> Result<Option<LiveStep>, String> {
             LiveStep::WatchRoster(community, n)
         }
         "codecs" => LiveStep::Codecs,
+        "friends-only" => LiveStep::FriendsOnly(match next(arg, it)?.as_str() {
+            "on" => true,
+            "off" => false,
+            other => return Err(format!("friends-only: on or off, not {other:?}")),
+        }),
+        "join" => LiveStep::Join(next(arg, it)?),
+        "leave" => LiveStep::Leave(next(arg, it)?),
+        "audio-devices" => LiveStep::AudioDevices(next(arg, it)?, next(arg, it)?),
         _ => return Ok(None),
     }))
 }
@@ -160,6 +178,7 @@ pub fn parse_wait(what: &str, it: &mut Args) -> Result<Option<LiveWait>, String>
         "incoming-ended" => LiveWait::IncomingEnded,
         "devices" => LiveWait::Devices,
         "avatar" => LiveWait::Avatar(next(&w(what), it)?, next(&w(what), it)?),
+        "name" => LiveWait::Name(next(&w(what), it)?, next(&w(what), it)?),
         _ => return Ok(None),
     }))
 }
@@ -336,6 +355,41 @@ pub async fn run(step: &LiveStep, model: &Model, timeout: Duration, cx: &mut Asy
             cx.update(|cx| actions::presence::retain(uids, cx));
         }
         LiveStep::Codecs => cx.update(|cx| actions::voice::init_codec_caps(false, cx)),
+        LiveStep::FriendsOnly(on) => {
+            let on = *on;
+            cx.update(|cx| actions::dm::set_friends_only_dms(on, cx));
+        }
+        LiveStep::Join(name) => {
+            // The directory arrives after the sign-in (`request_server_list`).
+            let started = Instant::now();
+            let server = loop {
+                let found = cx.update(|cx| {
+                    model.servers.read(cx).discoverable().iter().find(|s| &*s.name == name.as_str()).map(|s| (s.id, s.host.to_string(), s.port))
+                });
+                if let Some(found) = found {
+                    break found;
+                }
+                if started.elapsed() > timeout {
+                    return Err(format!("join: {name:?} is not in central's directory"));
+                }
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+            };
+            let (tx, rx) = futures::channel::oneshot::channel();
+            cx.update(|cx| actions::servers::connect(server.0, server.1, server.2, cx, move |r, _| drop(tx.send(r))));
+            rx.await.map_err(|_| "join: no answer".to_string())?.map_err(|e| format!("join {name:?}: {e}"))?;
+        }
+        LiveStep::AudioDevices(input, output) => {
+            let (input, output) = (input.clone(), output.clone());
+            cx.update(|cx| {
+                actions::voice::set_input_device(Some(input), cx);
+                actions::voice::set_output_device(Some(output), cx);
+            });
+        }
+        LiveStep::Leave(name) => {
+            let id = cx.update(|cx| model.servers.read(cx).servers().iter().find(|s| &*s.name == name.as_str()).map(|s| s.id));
+            let id = id.ok_or(format!("leave: {name:?} is not one of our communities"))?;
+            cx.update(|cx| actions::servers::leave(id, cx));
+        }
     }
     Ok(())
 }
@@ -390,6 +444,9 @@ pub fn holds(wait: &LiveWait, model: &Model, cx: &App) -> bool {
         }
         LiveWait::IncomingEnded => model.live.calls.read(cx).incoming_ended.is_some(),
         LiveWait::Devices => model.live.devices.read(cx).list.is_some(),
+        LiveWait::Name(user, name) => {
+            uid_of(model, user, cx).is_some_and(|uid| model.name_of(uid, &SharedString::default(), cx).as_ref() == name.as_str())
+        }
         LiveWait::Avatar(user, want) => uid_of(model, user, cx).is_some_and(|uid| {
             let avatars = model.live.presence.avatars.read(cx);
             let version = avatars.get(uid).map(|e| e.version.to_string()).unwrap_or_default();

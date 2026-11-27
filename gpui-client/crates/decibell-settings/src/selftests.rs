@@ -110,6 +110,9 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(perf1(cx, "settings-close-ways", Phases::One)),
         },
     ]
+    .into_iter()
+    .chain(accounts::selftests())
+    .collect()
 }
 
 /// The stack as `accounts.json` describes it.
@@ -472,6 +475,9 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "settings-idle", about: "(in the app) every tab at rest", run: |cx| Box::pin(check_idle(cx)) },
         SelfTest { name: "settings-close-ways", about: "(in the app) ✕, the backdrop, About's notice", run: |cx| Box::pin(check_close_ways(cx)) },
     ]
+    .into_iter()
+    .chain(accounts::checks())
+    .collect()
 }
 
 fn model(cx: &App) -> Model {
@@ -1654,3 +1660,6 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     cx.keystroke("escape")?;
     log_out(&cx).await
 }
+
+// The account flows with other devices (devices, the password, renames, Log Out).
+mod accounts;

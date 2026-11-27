@@ -66,6 +66,7 @@ pub fn selftests() -> Vec<SelfTest> {
     ]
     .into_iter()
     .chain(crate::account_tests::selftests())
+    .chain(crate::device_tests::selftests())
     .collect()
 }
 
@@ -272,6 +273,7 @@ pub fn checks() -> Vec<SelfTest> {
     ]
     .into_iter()
     .chain(crate::account_tests::checks())
+    .chain(crate::device_tests::checks())
     .collect()
 }
 

@@ -153,6 +153,11 @@ impl Toasts {
     pub fn count(cx: &mut App) -> usize {
         Self::store(cx).read(cx).shown.len()
     }
+
+    /// Whether toast `id` is still shown (not dismissed by its ✕, its action or its timer).
+    pub fn is_shown(cx: &mut App, id: ToastId) -> bool {
+        Self::store(cx).read(cx).shown.iter().any(|shown| shown.id == id)
+    }
 }
 
 impl ToastStore {
@@ -305,14 +310,20 @@ fn toast_card(id: ToastId, toast: Toast, cx: &App) -> impl IntoElement {
                     )
                 })
                 .when_some(toast.action, |this, action| {
+                    let probe = decibell_harness::probes::probe(SharedString::from(format!("toast-action:{}", action.label)));
                     this.child(
-                        div().mt_1p5().child(
-                            LinkButton::new((element_id.clone(), "action"), action.label).on_click(
-                                move |_, window, cx| {
-                                    Toasts::dismiss(cx, id);
-                                    (action.run)(window, cx);
-                                },
-                            ),
+                        div().mt_1p5().flex().child(
+                            // A flex box: the probe's canvas (absolute, no insets) sits on the link.
+                            div()
+                                .relative()
+                                .flex()
+                                .child(LinkButton::new((element_id.clone(), "action"), action.label).on_click(
+                                    move |_, window, cx| {
+                                        Toasts::dismiss(cx, id);
+                                        (action.run)(window, cx);
+                                    },
+                                ))
+                                .children(probe),
                         ),
                     )
                 }),
