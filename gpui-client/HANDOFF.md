@@ -166,6 +166,7 @@ screens in all seven themes beside Electron's.
 | Stream playback (`crates/decibell-video`) | built, tested and measured on Linux (2026-11-26): Vulkan Video on GPUI's device, software fallback, `VideoHub` / `VideoView`, device-loss recovery, patches `0005` + `0006`, `tools/build-ffmpeg.sh`, `tools/streamgen/`; six self-tests (`video-*`); numbers in §4. Wired to the model and the voice view since (the row "Stream playback, joined to the voice view" below). Windows: D3D11VA + software backend and GPUI patch `0020` written, not run on a GPU (§1c, `docs/video-design.md` §8) |
 | Stream playback, joined to the voice view (`wip/integrate-b`) | done on Linux / NVIDIA (2026-11-26): the capability probe runs after the first frame and is what the client advertises, uses and shows (Settings → Codecs names each codec's decoder and what was given up); encoder caps with backend, label and limits in the model, one loader; the decoder queue holds 100 ms of frames (a deliberate difference from Electron: `docs/electron-quirks.md` #14); "Reconnecting…" over a stalled stream without a timer; the cursor hidden in fullscreen (GPUI patch `0013`); clean cached views nested in a dirty one are replayed (GPUI patch `0014`); decoder threads stopped before the process exits; `perf5` on the local stack for two-stream measurements. Self-tests `video-starve`, `video-stall`, `voice-stall`, `render-cost`; numbers in §4 "Stream playback in the app". AMD / Intel and Windows unrun (§6) |
 | Attachment playback (`crates/decibell-media`, `decibell-chat-content/src/playback.rs`; `wip/media`) | built and tested on Linux / NVIDIA (2026-11-26), **not heard by anyone** (§6): video and audio attachments play in their cards; the engine demuxes through a custom AVIO over `MediaReader`, decodes video on `decibell-video`'s decoders as a timed stream (Vulkan Video here; VP8 / VP9 in software) and audio into its own output stream on the default device, synced to the audio clock, every transition a 10 ms ramp. `tools/build-ffmpeg.sh` gained the demuxers and decoders of the codec matrix (**`vendor/ffmpeg` was rebuilt and swapped; the old prefix is `vendor/ffmpeg.old`; every target directory needs `cargo clean -p ffmpeg-sys-next`**). Tests: 21 matrix files, sync, seek, pops, allocations, sealed reader; self-tests `media-idle`, `media-video-play`, `media-audio-play`, `media-persist` (fixture, memory sources) and `media-live` (a clip uploaded to the local stack's `#off-topic` as `perf2`, played from the attachment service's range reader, deleted again). Design, the renderer's rules and the list of what is missing: `docs/media-design.md`; numbers in §4 "Attachment playback". Not run: a sealed attachment against the stack, the Electron comparison, captures, AMD / Intel, Windows (§5) |
+| Attachment playback, second pass (`wip/media2`, 2026-11-27) | built and tested on Linux / NVIDIA, **not heard or looked at by anyone** (§6): rotation (the display matrix, turned in the surface's draw: GPUI patch `0030`), 10-bit HEVC / AV1 / VP9 (16-bit planes, patch `0031`; Vulkan Video and software) with PQ / HLG brought to the SDR target in the shader, VP9 on the GPU (Vulkan Video, NVDEC; VA-API and D3D11VA written), the cards' fade / thumbs / fullscreen download / audio keys / error line and retry, the after-played poster (the last picture's slot kept: `Still`, patch `0032`), playback stopped by a DM conversation change, attachment sound on the device Settings → Audio says with a pop-free move while playing, the allocator trimmed at a player's end. Self-tests `media-rotation`, `media-10bit`, `media-vp9-hw`, `media-output-device`, `media-poster`, `media-sealed`, `media-memory`, `media-keys` (**fails**: `docs/media-design.md` §8); `tools/perf` scenarios `media-play-h264` / `media-play-vp9` for both clients. **This worktree has an FFmpeg prefix of its own** (`vendor/ffmpeg`, with the VP9 hwaccels); the shared one is rebuilt by `tools/build-ffmpeg.sh` when this merges (then `cargo clean -p ffmpeg-sys-next` everywhere); until then VP9 plays in software there. Not done: the captures against Electron pages (§5) |
 | Chat (list, rich text, selection, composer, wheel) | not started |
 | Sign-in, servers, channels, DMs + E2EE, voice + MLS | not started |
 | Remaining parity rows | not started |
@@ -989,22 +990,34 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   makes** (`decibell_harness::test_audio`, `DECIBELL_CUE_SINK`); before, they opened the desktop's real
   devices muted. `CONVENTIONS.md`'s voice / settings self-test notes don't say this yet.
 
+### Attachment playback, second pass (`wip/media2`, 2026-11-27)
+
+Release build, RTX 4080 (NVIDIA 595), KDE Wayland; other agents' builds ran beside every number (load average
+1.2 to 3.9, noted per row). `docs/media-design.md` has the design.
+
+| | |
+|---|---|
+| `media-rotation` (the window's frame read back) | 90 / 180 / 270: the box has the turned aspect (360 × 640 px for a stored 128 × 72), the stored picture's marked corners are where the turned picture has them (white 255, black 0, grey 93), Vulkan Video |
+| `media-vp9-hw` | Vulkan Video and NVDEC each draw exactly what software draws (mean difference 0.000, largest 0 of 255), 50 of 50 pictures, 0 late; by itself a VP9 file gets Vulkan Video |
+| `media-10bit` | HEVC Main 10, AV1 10-bit, VP9 profile 2: Vulkan Video = software, pixel for pixel; grey drawn at 93.0 (SDR value 93.2). PQ: 88.0 (the formula: 88.3). HLG: 91.0 (91.5). NVDEC refuses 10-bit (software then); 16-bit planes: yes |
+| `media-output-device` (two null sinks) | switch off: on the voice output sink after 156 ms, its monitor peaks at 0.200, the other at 0.000; switch on: moved in 349 ms; the device behind it changed: moved in 394 ms; nothing of ours on the desktop's default sink at any point; the file went on (2.2 → 6.8 s) |
+| A device change, sample by sample (`cargo test -p decibell-media`) | 250 ms without sound on either device (the old stream's settle), the file advanced 590.0 ms in 590.2 ms of wall clock across it (−0.24 ms), the largest step on either device within the ramp's |
+| `media-poster` | the card shows the last picture (two plane textures kept, no decoder thread), 0 frames in 3 s with it on screen, "Paused at 0:01", the next play resumes; another channel: no poster, 0 textures |
+| `media-sealed`, 1080p60 clip (42.7 MB, 652 chunks) in `#vault` | the server holds 42,691,631 B of ciphertext and none of the clip's bytes; first picture 25 ms after the click; open + first picture 4 % of the file (25 chunks), a seek to 25.5 s: 1 range request, 7 % (43 chunks), picture after 151 ms, +0.0 ms from the target; no plaintext in the profile's 7 files (3 KB), in what the process wrote to the temp directory, or in a file it holds open |
+| `media-memory`, the same clip from the attachment service, three play / drop cycles | 80.3 MB before; 102.9 MB playing; after each drop 80.2 / 81.5 / 82.0 MB (was +12.3 MB after one: glibc's arenas of the exited threads, now trimmed at the player's end; 0.15 to 0.44 ms) |
+| `tools/perf` `media-play-h264` (1080p60), main window, focused / unfocused | GPUI: Vulkan Video, 60.0 pictures / s of 60, 0 late, 0 dropped, 0 window frames drawn, 4.0 / 4.9 % of a core, 575 / 525 own wakeups / s, GPU decoder 10 %, 181.5 MB private (107.3 after). Electron: 59.97 of 60, 49.4 / 53.1 % of a core, 6696 / 6728 wakeups / s, GPU decoder 0 % (software decode), 460 / 466 MB |
+| `media-play-vp9` (1080p30) | GPUI: Vulkan Video, 29.98 of 30, 0 late, 3.1 / 2.8 % of a core, 374 / 328 wakeups / s, 116.8 MB. Electron: 29.99 of 30, 40.1 / 37.5 % of a core, 6927 / 6908 wakeups / s, 406.9 MB |
+
 ## 5. Open items
 
-- **Attachment playback: what was not run or built** (`docs/media-design.md` §8 has the reasons).
-  *Not run*: a sealed attachment end to end against the local stack (`media-sealed`: upload into an encrypted
-  channel, play, grep the temp and profile directories; the engine's sealed test reads through a fake
-  decrypting reader, and a plain attachment plays from the real service in `media-live`: what is unproven is
-  only `MediaReader`'s sealed branch under a player, which pictures and downloads already use);
-  `tools/perf/measure.sh` on a playing clip and the Electron comparison (`electron-local.sh`
-  has no attachment scenario; the self-test's own per-thread CPU and wakeup table stands in); the captures of
-  the playing states in seven themes and their Electron pages (a capture renders one frame on a headless
-  renderer, where no picture is decoded: the playing card needs a still injected into the stage first);
-  AMD / Intel; Windows (compiles in principle: cpal's WASAPI output and the default-device change are unrun,
-  and pictures draw nothing there until `gpui_windows` draws surfaces).
-  *Not built*: the controls' 300 ms fade, the bars' hover thumbs, the fullscreen download button, Space on a
-  focused audio card, the audio card's error line, the last-frame poster, 10-bit video, rotation metadata,
-  VP9 / VP8 hardware decode, stopping on a DM conversation change.
+- **Attachment playback: what is open after the second pass** (`docs/media-design.md` §8). `media-keys` fails
+  half-way (not root-caused); the captures of the cards in seven themes beside Electron pages are not made (a
+  capture renders one headless frame and no picture is decoded there: a `decibell_video::Still` is what a
+  capture screen would be handed, from a fixture frame uploaded into a slot); 10-bit on NVDEC / VA-API /
+  D3D11VA falls to software; HDR is an unseen approximation; a video uploaded by this client has no size,
+  duration or poster (`MediaProbe` has no implementor); deleting the only message of an encrypted channel
+  leaves its row drawn (seen by `media-sealed` in `#vault`; the server did delete it); AMD / Intel and Windows
+  unrun. The shared FFmpeg prefix needs its rebuild for VP9 on the GPU.
 - **Every thread the client spawns gets a name.** `measure.sh` classes threads as own / driver / unnamed; NVIDIA's
   GL threads are unnamed, so an unnamed thread of ours would be counted with the driver's.
 - **Pre-existing Electron bug found by the split's smoke test (for `main`, not fixed here)**:
@@ -1292,16 +1305,31 @@ Things only the owner can do; nothing here blocks the rest.
   5. **volume**: drag the volume bar, use the wheel on it, mute and unmute while a tone plays (no zipper noise);
   6. **an underrun**: play a large attachment with Settings → Network's download cap set low enough that it
      stalls (the sound should fade out and come back, not stutter);
-  7. **a device change**: unplug headphones / switch the system's default output while it plays, and plug back
+  7. **the output device from Settings → Audio**: with a headset chosen there and speakers as the system's
+     default, a video and an audio attachment play in the headset, never the speakers; with "separate stream
+     output" on, they play on that device instead; change the device, and flip the switch, while a tone plays:
+     the sound leaves one device and arrives on the other after about a third of a second without a click on
+     either, and the picture does not stop meanwhile; then pick a device at another sample rate (44.1 kHz
+     against 48 kHz): the picture may hitch once (a seek), the sound must still arrive clean;
+  8. **a device that goes away**: unplug headphones / switch the system's default output while it plays, and plug back
      (the old device's last few milliseconds are the hardware's; the new one must start cleanly);
-  8. **close**: switch channel while it plays; sign out while it plays; quit while it plays;
-  9. **with voice**: in a voice channel, play an attachment: voice must sound exactly as before (the attachment is
+  9. **close**: switch channel while it plays; sign out while it plays; quit while it plays;
+  10. **with voice**: in a voice channel, play an attachment: voice must sound exactly as before (the attachment is
      a separate output stream; nothing of the voice path was changed), and both are heard together.
   Also by eye, on a film or anything with speech: **lips and sound together** (the measured error of the clock is
   0.14 ms; what the display adds is up to one refresh), no judder on a 24 fps file, the first picture after a seek
   is the one asked for, a paused video resumes without a repeated or skipped frame.
+  **And by eye, the second pass**: a phone's portrait video stands upright in its card, in fullscreen and as
+  the poster it leaves behind; a 10-bit file (HEVC Main 10 from a phone, an AV1 or VP9 profile 2 download) shows
+  no banding that the same file in the Electron client does not; **an HDR file (HDR10 / PQ, and HLG from a
+  phone) beside the Electron client on the same SDR screen**: skin and sky neither washed out nor dark, bright
+  highlights rolled off rather than clipped to white, saturated colours not shifted (the conversion is an
+  approximation with a fixed 1000-nit peak, `docs/media-design.md` §2a: say where it differs from Chromium's);
+  the controls fade in and out over a third of a second; the poster of a played video is the frame it stopped
+  on.
 - **Decide** `docs/electron-quirks.md` #17 (a channel switch stops playback: `FEATURES.md` says it survives, the
-  renderer's code stops it; this client follows the code) and #21 (no last-frame poster yet).
+  renderer's code stops it; this client follows the code; `docs/media-design.md` §9 lists the navigations
+  through which the renderer's playback survives, by accident of what its listeners key on).
 - **Watch a stream in the Electron client built from this branch before it merges to `main`.** The core's video
   receive path was reworked for this client (frames reach the napi sink directly from the receive thread, one
   hop fewer; the Linux self-preview moves its buffer instead of copying; reassembly and FEC no longer copy
