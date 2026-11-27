@@ -347,7 +347,13 @@ impl OverviewTab {
     }
 
     fn choose_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+            filters: decibell_picture_editor::picture_filters(),
+        });
         let window_handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else { return };

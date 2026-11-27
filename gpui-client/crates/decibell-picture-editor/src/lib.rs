@@ -45,6 +45,29 @@ pub use picture::{Fill, Picture, PictureError};
 pub use previews::{Crop, CropState};
 pub use view::{PictureEditor, PictureEditorEvent, PictureSource};
 
+/// The picture dialogs' file types: `<input type="file" accept={PICTURE_ACCEPT}>`
+/// (`image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp`), which Chromium shows as
+/// the type list's first entry with "All files" after it (GPUI patch 0041 passes it to the portal
+/// and to Windows' dialog).
+pub fn picture_filters() -> Vec<gpui::PathFilter> {
+    const TYPES: [(&str, &[&str]); 6] = [
+        ("image/png", &["*.png"]),
+        ("image/jpeg", &["*.jpg", "*.jpeg", "*.jfif", "*.pjpeg", "*.pjp"]),
+        ("image/webp", &["*.webp"]),
+        ("image/gif", &["*.gif"]),
+        ("image/avif", &["*.avif"]),
+        ("image/bmp", &["*.bmp"]),
+    ];
+    vec![
+        gpui::PathFilter {
+            name: "Images".into(),
+            mime_types: TYPES.iter().map(|(m, _)| (*m).into()).collect(),
+            patterns: TYPES.iter().flat_map(|(_, p)| p.iter().map(|p| (*p).into())).collect(),
+        },
+        gpui::PathFilter { name: "All files".into(), mime_types: Vec::new(), patterns: vec!["*".into()] },
+    ]
+}
+
 use std::rc::Rc;
 
 use decibell_ui::Presence;

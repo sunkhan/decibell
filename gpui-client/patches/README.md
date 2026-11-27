@@ -29,6 +29,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0031-gpui-surface-depth-transfer.patch` | `SurfaceColor` gains `depth` (8, or 10 / 12 with the code in the high bits of 16-bit plane textures) and `transfer` (`SurfaceTransfer`: SDR, PQ, HLG, BT.2020 SDR); the Y'CbCr matrix is scaled for the depth (8-bit numbers unchanged, bit for bit); the surface fragment shaders bring PQ / HLG / BT.2020 pictures to the SDR target (`surface_to_sdr`, both renderers); the wgpu device asks for `TEXTURE_FORMAT_16BIT_NORM` when the adapter has it. | 10-bit video files (HEVC Main 10, AV1, VP9 profile 2), which Chromium plays, need `R16` / `RG16` planes to keep their depth, and HDR files drawn through the SDR matrix alone come out washed out. |
 | `0032-gpui-surface-latest-frame.patch` | `WgpuSurface::latest_frame()` / `D3d11Surface::latest_frame()`: the newest picture's `Arc`, for showing it in another surface. | A played video's card shows the frame it stopped on (the renderer's canvas capture): the client keeps the slot the last picture is in and draws it from a surface of its own (`decibell_video::Still`), with no read-back and no copy. |
 | `0040-gpui-keyboard-key-text.patch` | `App::keyboard_key_text(code)` (`Platform::key_text`, default `None`): what the current keyboard layout types for a physical key (`KeyCode` of `0012`) with no modifier held, a dead key giving its accent: on Linux from the xkb keymap GPUI already holds (Wayland: the compositor's `wl_keyboard.keymap` at the layout last in effect; X11: the server's keymap and group), a fresh `xkb_state` with no modifiers; on Windows `MapVirtualKeyExW` + `ToUnicodeEx` (flag 4: the dead-key state untouched) with the UI thread's layout. | Settings → Keybinds labels keys as the layout labels them (`Z` on the German key in Y's place), as the renderer does through `navigator.keyboard.getLayoutMap()`; the keymap lives inside GPUI on Linux. Reads the layout only, listens to no key (CLAUDE.md, hotkeys). |
+| `0041-gpui-file-dialog-filters.patch` | `PathPromptOptions::filters` (`PathFilter { name, mime_types, patterns }`; the struct now derives `Default`): the open dialog's type list, the first entry selected: the desktop portal's `filters` / `current_filter` (MIME types and globs) on Linux, `IFileOpenDialog::SetFileTypes` (the patterns) on Windows. | The picture pickers (avatar, server picture, the editor's "choose another") offer pictures first, as the renderer's `<input type="file" accept={PICTURE_ACCEPT}>` does; GPUI's dialogs took no filter. |
 
 ## How the patches are applied
 
@@ -841,3 +842,13 @@ clients and `display_connection.rs` route to it), `gpui_windows` (`keyboard.rs`:
 `xkb_state` reads when the layout changes. Checked by `keybind-labels-layout` (German, French and Turkish in
 a private Xvfb; the session's compositor keymap read only); Windows compiled only. Upstream: Zed's Linux
 `KeyboardMapper` is a dummy at the pin; a per-key text query is small enough to be offered.
+
+## 0041: file dialog type filters
+
+`crates/gpui/src/platform.rs` (`PathFilter`, `PathPromptOptions::filters`, `Default`), `app/test_context.rs`
+(its two literals), `gpui_linux/src/linux/platform.rs` (the portal request), `gpui_windows/src/platform.rs`
+(`file_open_dialog`), +62. Callers that name no filter write `..Default::default()`. The client's picture
+filter is `decibell_picture_editor::picture_filters()` ("Images": PNG, JPEG, WebP, GIF, AVIF, BMP; then "All
+files", as Chromium lists an `accept` list). Not run by a self-test: a portal dialog is the desktop's own
+window (the owner checks it: `gpui-client/HANDOFF.md` §6); Windows compiled only. Upstream: Zed's file
+pickers have no type lists; small and self-contained.

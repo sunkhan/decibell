@@ -256,7 +256,13 @@ impl PictureEditor {
         if self.saving {
             return;
         }
-        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+            filters: crate::picture_filters(),
+        });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else { return };
             let Some(path) = paths.into_iter().next() else { return };

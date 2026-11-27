@@ -1,0 +1,129 @@
+diff --git a/crates/gpui/src/app/test_context.rs b/crates/gpui/src/app/test_context.rs
+index 2114535..850bb20 100644
+--- a/crates/gpui/src/app/test_context.rs
++++ b/crates/gpui/src/app/test_context.rs
+@@ -1527,6 +1527,7 @@ mod tests {
+                 directories: true,
+                 multiple: true,
+                 prompt: None,
++                filters: Vec::new(),
+             })
+         });
+         assert!(cx.did_prompt_for_paths());
+@@ -1553,6 +1554,7 @@ mod tests {
+                 directories: false,
+                 multiple: false,
+                 prompt: None,
++                filters: Vec::new(),
+             })
+         });
+ 
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 8a4f400..616dfda 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -3042,8 +3042,20 @@ pub enum TextRenderingMode {
+     Grayscale,
+ }
+ 
++/// One entry of a file dialog's type list ("Images": these types). The portal matches MIME types
++/// and patterns, Windows the patterns.
++#[derive(Clone, Debug, Default)]
++pub struct PathFilter {
++    /// What the dialog's type list shows.
++    pub name: SharedString,
++    /// MIME types (`image/png`), for the desktop portal.
++    pub mime_types: Vec<SharedString>,
++    /// Shell patterns (`*.png`).
++    pub patterns: Vec<SharedString>,
++}
++
+ /// The options that can be configured for a file dialog prompt
+-#[derive(Clone, Debug)]
++#[derive(Clone, Debug, Default)]
+ pub struct PathPromptOptions {
+     /// Should the prompt allow files to be selected?
+     pub files: bool,
+@@ -3053,6 +3065,8 @@ pub struct PathPromptOptions {
+     pub multiple: bool,
+     /// The prompt to show to a user when selecting a path
+     pub prompt: Option<SharedString>,
++    /// The type list (the first entry is selected); empty: every file.
++    pub filters: Vec<PathFilter>,
+ }
+ 
+ /// What kind of prompt styling to show
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index 958b8d0..4826852 100644
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -848,6 +848,22 @@ impl Platform for LinuxPlatform {
+                     "Open File"
+                 };
+ 
++                let filters: Vec<ashpd::desktop::file_chooser::FileFilter> = options
++                    .filters
++                    .iter()
++                    .map(|filter| {
++                        let mut file_filter =
++                            ashpd::desktop::file_chooser::FileFilter::new(&filter.name);
++                        for mime_type in &filter.mime_types {
++                            file_filter = file_filter.mimetype(mime_type);
++                        }
++                        for pattern in &filter.patterns {
++                            file_filter = file_filter.glob(pattern);
++                        }
++                        file_filter
++                    })
++                    .collect();
++                let current_filter = filters.first().cloned();
+                 let request = match ashpd::desktop::file_chooser::OpenFileRequest::default()
+                     .identifier(identifier.await)
+                     .modal(true)
+@@ -855,6 +871,8 @@ impl Platform for LinuxPlatform {
+                     .accept_label(options.prompt.as_ref().map(gpui::SharedString::as_str))
+                     .multiple(options.multiple)
+                     .directory(options.directories)
++                    .filters(filters)
++                    .current_filter(current_filter)
+                     .send()
+                     .await
+                 {
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index 44faf3f..5332589 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -1638,6 +1638,33 @@ fn file_open_dialog(
+             folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
+         }
+ 
++        // The type list: the strings live until the dialog has been shown.
++        let filters: Vec<(HSTRING, HSTRING)> = options
++            .filters
++            .iter()
++            .filter(|filter| !filter.patterns.is_empty())
++            .map(|filter| {
++                let spec = filter
++                    .patterns
++                    .iter()
++                    .map(|pattern| pattern.as_ref())
++                    .collect::<Vec<&str>>()
++                    .join(";");
++                (HSTRING::from(filter.name.as_ref()), HSTRING::from(spec))
++            })
++            .collect();
++        if !filters.is_empty() && !options.directories {
++            let specs: Vec<Common::COMDLG_FILTERSPEC> = filters
++                .iter()
++                .map(|(name, spec)| Common::COMDLG_FILTERSPEC {
++                    pszName: windows::core::PCWSTR(name.as_ptr()),
++                    pszSpec: windows::core::PCWSTR(spec.as_ptr()),
++                })
++                .collect();
++            folder_dialog.SetFileTypes(&specs)?;
++            folder_dialog.SetFileTypeIndex(1)?;
++        }
++
+         if let Err(error) = folder_dialog.Show(window) {
+             if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) {
+                 return Ok(None);

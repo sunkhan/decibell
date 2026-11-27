@@ -319,12 +319,7 @@ impl NetworkTab {
 
     fn pick_folder(&mut self, cx: &mut Context<Self>) {
         let default = self.default_dir.clone();
-        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, ..Default::default() });
         cx.spawn(async move |_, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(path) = paths.into_iter().next() else { return };

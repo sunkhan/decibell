@@ -569,7 +569,8 @@ impl Composer {
 
     /// The attach button (`handlePickFiles`): the system's file dialog, every file kind.
     pub fn pick_files(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        // Any file (`pickFiles({ multiple: true })` names no filters).
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, ..Default::default() });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else { return };
             let _ = this.update(cx, |this, cx| {
