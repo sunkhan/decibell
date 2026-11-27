@@ -11,7 +11,7 @@
 #
 # The binary defaults to this tree's `target/release/decibell` (a `dev-local` release build; the headless
 # client beside it must be current: HANDOFF "Self-tests need the headless client"). DECIBELL_CENTRAL defaults
-# to the local stack. Exit status: 0 when every test passed; a test that printed SKIPPED (a missing fixture or
+# to the local stack. Exit status: 0 when every test passed; a test that printed SKIP (a missing fixture or
 # helper) is reported as SKIP and fails the run.
 set -uo pipefail
 
@@ -48,14 +48,14 @@ for name in "$@"; do
     timeout "${DECIBELL_SELFTEST_TIMEOUT:-420}" "$bin" --selftest "$name" >"$log" 2>&1
   rc=$?
   took=$(( $(date +%s) - start ))
-  if [ $rc = 0 ] && grep -aq 'SKIPPED' "$log"; then
+  if [ $rc = 0 ] && grep -aqE 'SKIP:|SKIPPED' "$log"; then
     # A test that could not run (no fixture, no KWin helper, the stack down) exits 0: never count it as a pass.
-    skipped+=("$name"); echo "SKIP $name: $(grep -a 'SKIPPED' "$log" | head -2 | cut -c1-300 | tr '\n' '|')"
+    skipped+=("$name"); echo "SKIP $name: $(grep -aE 'SKIP:|SKIPPED' "$log" | head -2 | cut -c1-300 | tr '\n' '|')"
   elif [ $rc = 0 ]; then
     pass=$((pass + 1)); echo "PASS $name (${took}s, with the wait for the lock)"
   else
     failed+=("$name")
-    echo "FAIL $name rc=$rc (${took}s): $(grep -aE 'FAIL|panicked|SKIPPED' "$log" | head -3 | cut -c1-300 | tr '\n' '|')"
+    echo "FAIL $name rc=$rc (${took}s): $(grep -aE 'FAIL|panicked|SKIP:|SKIPPED' "$log" | head -3 | cut -c1-300 | tr '\n' '|')"
   fi
   [ -z "$logs" ] || cp "$log" "$logs/$name.log"
 done
