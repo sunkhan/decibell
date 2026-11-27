@@ -501,9 +501,27 @@ pub fn leave_voice_or_call(cx: &mut App) {
 /// `mod_action_responded`). `action`: "server_mute" | "server_unmute" | "server_deafen"
 /// | "server_undeafen" | "move" | "disconnect".
 pub fn voice_mod(server: ServerId, uid: Uid, action: &'static str, to_channel: Option<ChannelId>, cx: &mut App) {
+    // The user menu's wording (`UserContextMenu.tsx`).
+    voice_mod_or_toast(server, uid, action, to_channel, "Voice moderation failed", cx);
+}
+
+/// A member dragged onto another voice channel (`memberDrag.ts`): the "move" of [`voice_mod`],
+/// with the drag's own failure toast.
+pub fn drag_move_member(server: ServerId, uid: Uid, to_channel: ChannelId, cx: &mut App) {
+    voice_mod_or_toast(server, uid, "move", Some(to_channel), "Couldn't move member", cx);
+}
+
+fn voice_mod_or_toast(
+    server: ServerId,
+    uid: Uid,
+    action: &'static str,
+    to_channel: Option<ChannelId>,
+    failure: &'static str,
+    cx: &mut App,
+) {
     crate::call::call_or_toast(
         cx,
-        "Couldn't do that",
+        failure,
         api::community::voice_mod(api::community::VoiceModArgs {
             server_id: server.wire(),
             username: None,

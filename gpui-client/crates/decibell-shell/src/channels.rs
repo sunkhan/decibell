@@ -19,7 +19,7 @@ use decibell_model::live::voice::streams::StreamsChanged;
 use decibell_model::stores::community::{Channel, ChannelKind, Community};
 use decibell_model::stores::navigation::ActiveView;
 use decibell_model::stores::overlays::modal;
-use decibell_model::stores::permissions::{has_bits, perm};
+use decibell_model::stores::permissions::{Hierarchy, has_bits, perm};
 use decibell_model::{ChannelId, Model, ServerId, Uid, actions, call::call_or_toast};
 use decibell_ui::{
     ActiveTheme as _, ConfirmModal, ConfirmTone, ContextMenu, DismissEvent, FontRole, Icon, IconName, Label, MenuEntry,
@@ -45,6 +45,33 @@ pub struct MemberDrag {
     name: SharedString,
 }
 
+impl MemberDrag {
+    /// `isTarget`: another voice channel of the same community.
+    fn lands_on(&self, server: ServerId, channel: &str) -> bool {
+        self.server == server && &*self.from != channel
+    }
+}
+
+/// `canMoveMember`: never ourselves or the community's owner; MOVE_MEMBERS in the member's channel
+/// unless we own the community; and the hierarchy (above them, or a peer whose highest role lets
+/// its members manage each other). A row that fails this isn't draggable: a refused drag never
+/// starts (the server checks again).
+pub fn can_move_member(
+    me: Uid,
+    owner: Uid,
+    uid: Uid,
+    move_members_in_channel: bool,
+    hierarchy: &decibell_model::stores::permissions::Hierarchy,
+) -> bool {
+    if me <= 0 || uid <= 0 || uid == me || uid == owner {
+        return false;
+    }
+    if owner != me && !move_members_in_channel {
+        return false;
+    }
+    hierarchy.can_manage(uid)
+}
+
 /// What the sidebar shows of the stores it doesn't redraw for wholesale.
 #[derive(Default, PartialEq)]
 struct Shown {
@@ -53,6 +80,8 @@ struct Shown {
     invite: bool,
     /// Nicknames of the people in the voice lists.
     nicknames: Vec<(Uid, SharedString)>,
+    /// The people in the voice lists the hierarchy lets us move (a role change redraws).
+    manageable: Vec<Uid>,
 }
 
 pub struct ChannelSidebar {
@@ -75,6 +104,9 @@ pub struct ChannelSidebar {
     community: Option<(ServerId, Vec<Subscription>)>,
     /// Drag to reorder, when a feature registered it (`slots::ChannelReorder`).
     reorder: Option<Rc<dyn ChannelReorder>>,
+    /// A voice member is being dragged (the channels it may land on pulse): set as the drag
+    /// starts, cleared when its ghost goes (a drop anywhere, or a release over nothing).
+    member_drag: Option<MemberDrag>,
     _subscriptions: Vec<Subscription>,
     _watch: Watch,
 }
@@ -138,6 +170,7 @@ impl ChannelSidebar {
             resize: ResizeDrag::new(width),
             community: None,
             reorder,
+            member_drag: None,
             _subscriptions: subscriptions,
             _watch: watch,
         };
@@ -166,8 +199,15 @@ impl ChannelSidebar {
         self.community = community.map(|c| {
             let subscriptions = vec![
                 cx.observe(&c.channels, |_, _, cx| cx.notify()),
-                cx.observe(&c.meta, |_, _, cx| cx.notify()),
-                cx.observe(&c.roles, |_, _, cx| cx.notify()),
+                // The owner and the roles decide who can be moved: the shown state follows.
+                cx.observe(&c.meta, |this, _, cx| {
+                    this.shown = this.compute_shown(cx);
+                    cx.notify()
+                }),
+                cx.observe(&c.roles, |this, _, cx| {
+                    this.shown = this.compute_shown(cx);
+                    cx.notify()
+                }),
                 // Every presence flip of every member: redraw only when a permission or a
                 // nickname shown here moved.
                 cx.observe(&c.roster, |this, _, cx| {
@@ -187,20 +227,30 @@ impl ChannelSidebar {
         let Some(server) = self.nav.1 else { return Shown::default() };
         let model = &self.model;
         let mut nicknames: Vec<(Uid, SharedString)> = Vec::new();
+        let mut manageable: Vec<Uid> = Vec::new();
         if let Some(community) = model.community(server, cx) {
             let roster = community.roster.read(cx);
+            let me = model.auth.read(cx).uid;
+            let owner = community.meta.read(cx).owner;
+            let roles = community.roles.read(cx);
+            let hierarchy = Hierarchy::new(me, owner, roles.list(), Some(roster.members()));
             for uid in &self.people {
                 if let Some(nick) = roster.nickname(*uid) {
                     nicknames.push((*uid, nick.clone()));
                 }
+                if can_move_member(me, owner, *uid, true, &hierarchy) {
+                    manageable.push(*uid);
+                }
             }
         }
         nicknames.sort();
+        manageable.sort();
         Shown {
             manage_channels: model.has_permission(server, perm::MANAGE_CHANNELS, cx),
             invite: model.has_permission(server, perm::CREATE_INVITE, cx)
                 || model.has_permission(server, perm::MANAGE_INVITES, cx),
             nicknames,
+            manageable,
         }
     }
 
@@ -304,6 +354,52 @@ fn participant_badges(live: bool, local_mute: bool, state: VoiceUserState, t: &I
         })
 }
 
+/// A member dropped on a voice channel's row or list: moved there (`memberDropHandlers.onDrop`).
+fn member_drop(server: ServerId, target: ChannelId) -> impl Fn(&MemberDrag, &mut Window, &mut App) + 'static {
+    move |drag: &MemberDrag, _, cx| {
+        if drag.lands_on(server, &target) {
+            actions::voice::drag_move_member(server, drag.uid, target.clone(), cx);
+        }
+    }
+}
+
+/// `.drop-pulse::after`: a 1.5 px accent ring (60 %) with a soft 22 px glow (22 %), its opacity
+/// breathing 0.4 → 1 → 0.4 over 1.6 s (`@keyframes breathe`, `ease-in-out`). Drawn only while a
+/// member drag is in flight (the window redraws on every pointer move then anyway).
+fn drop_pulse(accent: Hsla, radius: Pixels) -> impl IntoElement {
+    use gpui::{Animation, AnimationExt as _};
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(radius)
+        .shadow(vec![
+            gpui::BoxShadow {
+                color: accent.opacity(0.6),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(0.),
+                spread_radius: px(1.5),
+                inset: false,
+            },
+            // CSS blur radius 22 px is GPUI's 11 (CONVENTIONS "Theme").
+            gpui::BoxShadow {
+                color: accent.opacity(0.22),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(11.),
+                spread_radius: px(4.),
+                inset: false,
+            },
+        ])
+        .with_animation(
+            "drop-pulse",
+            Animation::new(std::time::Duration::from_millis(1600)).repeat(),
+            |el, delta| {
+                // 0 % and 100 % at 0.4, 50 % at 1, each half eased in and out.
+                let half = if delta < 0.5 { delta * 2. } else { (1. - delta) * 2. };
+                el.opacity(0.4 + 0.6 * decibell_ui::motion::EASE_IN_OUT.y(half as f64) as f32)
+            },
+        )
+}
+
 /// What the drag of a voice member shows under the pointer.
 struct DragGhost {
     name: SharedString,
@@ -392,6 +488,15 @@ impl Render for ChannelSidebar {
         let settings = model.settings.read(cx).get().clone();
         let participants = voice.participants.read(cx).list().to_vec();
         let can_move_in = |channel: &str| server.is_some_and(|s| is_owner || model.channel_permission(s, channel, perm::MOVE_MEMBERS, cx));
+        // `canMoveMember`'s hierarchy, once per render (the roster, the roles and the owner are
+        // observed: `Shown::manageable`).
+        let owner = community.as_ref().map_or(0, |c| c.meta.read(cx).owner);
+        let roles = community.as_ref().map(|c| c.roles.read(cx).list().to_vec()).unwrap_or_default();
+        let roster = community.as_ref().map(|c| c.roster.clone());
+        let roster = roster.as_ref().map(|r| r.read(cx));
+        let hierarchy = Hierarchy::new(me, owner, &roles, roster.map(|r| r.members()));
+        let member_drag = self.member_drag.clone();
+        let sidebar = cx.weak_entity();
 
         let mut people = HashSet::new();
         let mut speakers = HashSet::new();
@@ -412,10 +517,19 @@ impl Render for ChannelSidebar {
             let manageable = row_manageable(c);
             let group: SharedString = format!("voice-row-{}", c.id).into();
             let drop_target = c.id.clone();
+            // A member dragged from another channel could land here: the row pulses
+            // (`drop-pulse bg-accent-soft/30`), the hovered one fills with the accent.
+            let drop_open = member_drag.as_ref().is_some_and(|d| d.lands_on(server, &c.id));
+            let (bg, fg, icon) = if drop_open {
+                (Some(t.color_accent_soft.opacity(0.3)), t.color_text_secondary, t.color_accent)
+            } else {
+                (bg, fg, icon)
+            };
             let row = channel_row(gpui::ElementId::Name(c.id.clone()), scale, &t)
                 .group(group.clone())
                 .when_some(bg, |this, bg| this.bg(bg))
                 .when(bg.is_none(), |this| this.hover(|s| s.bg(t.color_surface_hover)))
+                .when(drop_open, |this| this.child(drop_pulse(t.color_accent, t.radius_sm)))
                 .children(crate::probes::probe(format!("voice:{}", c.id)))
                 .when_some(reorder.clone(), |this, reorder| {
                     let (id, list) = (channel_id.clone(), list_scroll.clone());
@@ -447,17 +561,10 @@ impl Render for ChannelSidebar {
                     let target = drop_target.clone();
                     let (accent, on_accent) = (t.color_accent, t.color_on_accent);
                     move |style, drag: &MemberDrag, _, _| {
-                        if drag.server == server && drag.from != target { style.bg(accent).text_color(on_accent) } else { style }
+                        if drag.lands_on(server, &target) { style.bg(accent).text_color(on_accent) } else { style }
                     }
                 })
-                .on_drop::<MemberDrag>({
-                    let target = drop_target.clone();
-                    move |drag: &MemberDrag, _, cx| {
-                        if drag.server == server && drag.from != target {
-                            actions::voice::voice_mod(server, drag.uid, "move", Some(target.clone()), cx);
-                        }
-                    }
-                })
+                .on_drop::<MemberDrag>(member_drop(server, drop_target.clone()))
                 .child(channel_icon(text_channel, icon, true))
                 .child(
                     div().min_w_0().text_color(fg).child(
@@ -530,8 +637,27 @@ impl Render for ChannelSidebar {
                         cx.stop_propagation();
                         open_user_menu(uid, e.position, Some(server), cx);
                     })
-                    .when(movable && uid != me && uid > 0, |this| {
-                        this.on_drag(drag, |drag: &MemberDrag, _, _, cx| cx.new(|_| DragGhost { name: drag.name.clone() }))
+                    .when(can_move_member(me, owner, uid, movable, &hierarchy), |this| {
+                        let sidebar = sidebar.clone();
+                        this.on_drag(drag, move |drag: &MemberDrag, _, _, cx| {
+                            // The channels it may land on pulse until the ghost goes.
+                            let _ = sidebar.update(cx, |this, cx| {
+                                this.member_drag = Some(drag.clone());
+                                cx.notify();
+                            });
+                            let sidebar = sidebar.clone();
+                            cx.new(move |cx| {
+                                cx.on_release(move |_, cx| {
+                                    let _ = sidebar.update(cx, |this, cx| {
+                                        if this.member_drag.take().is_some() {
+                                            cx.notify();
+                                        }
+                                    });
+                                })
+                                .detach();
+                                DragGhost { name: drag.name.clone() }
+                            })
+                        })
                     })
                     .child(
                         div()
@@ -572,7 +698,21 @@ impl Render for ChannelSidebar {
                     .child(participant_badges(live, local_mute, state, &t));
                 items.push(row.into_any_element());
             }
-            rows.push(div().flex().flex_col().gap_0p5().pb_1().pl_5().children(items).into_any_element());
+            // The member list is part of the channel's drop zone (`memberDropHandlers` on the row
+            // and its list together).
+            let target = c.id.clone();
+            rows.push(
+                div()
+                    .id(gpui::ElementId::Name(format!("voice-list-{}", c.id).into()))
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .pb_1()
+                    .pl_5()
+                    .on_drop::<MemberDrag>(member_drop(server, target))
+                    .children(items)
+                    .into_any_element(),
+            );
         };
 
         let text_row = |c: &Channel, rows: &mut Vec<AnyElement>| {
@@ -1086,4 +1226,27 @@ fn channel_context_menu(
         extra.extend(extension(&target, cx));
     }
     decibell_ui::chrome_scope(menu.entries(extra))
+}
+
+#[cfg(test)]
+mod member_drag_tests {
+    use decibell_model::stores::permissions::Hierarchy;
+
+    use super::can_move_member;
+
+    #[test]
+    fn a_drag_starts_only_where_can_move_member_allows_it() {
+        // We own the community (uid 1): anyone but ourselves, MOVE_MEMBERS or not.
+        let owner = Hierarchy::new(1, 1, &[], None);
+        assert!(can_move_member(1, 1, 5, false, &owner));
+        assert!(!can_move_member(1, 1, 1, true, &owner), "ourselves");
+        assert!(!can_move_member(1, 1, 0, true, &owner), "no uid");
+        assert!(!can_move_member(0, 1, 5, true, &owner), "signed out");
+        // Someone else owns it (uid 9): never the owner; MOVE_MEMBERS in their channel and the
+        // hierarchy both needed (with no roles nobody outranks anybody).
+        let member = Hierarchy::new(2, 9, &[], None);
+        assert!(!can_move_member(2, 9, 9, true, &member), "the owner");
+        assert!(!can_move_member(2, 9, 5, false, &member), "no MOVE_MEMBERS");
+        assert!(!can_move_member(2, 9, 5, true, &member), "not above them");
+    }
 }
