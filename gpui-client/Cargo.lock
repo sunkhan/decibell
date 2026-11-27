@@ -1744,6 +1744,7 @@ dependencies = [
  "decibell-model",
  "decibell-picture-editor",
  "decibell-platform",
+ "decibell-release",
  "decibell-search",
  "decibell-server-settings",
  "decibell-servers",
@@ -2044,6 +2045,29 @@ dependencies = [
  "windows 0.62.2",
  "x11rb",
  "zbus",
+]
+
+[[package]]
+name = "decibell-release"
+version = "0.1.0"
+dependencies = [
+ "backtrace",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "httparse",
+ "libc",
+ "log",
+ "rcgen",
+ "regex",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "url",
+ "webpki-roots",
+ "windows 0.62.2",
 ]
 
 [[package]]

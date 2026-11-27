@@ -1,0 +1,67 @@
+[package]
+name = "decibell-release"
+description = "What a released build does on its own: the install's facts (the one version, the package kind, the baked resources), the updater (a signed feed, a verified download with resume, applied with a trial start and rolled back if it fails) and crash reports (Sentry envelopes, scrubbed)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+# Not a native library: `links` lets dependents' build scripts read what build.rs bakes
+# (`DEP_DECIBELL_RELEASE_VERSION`: decibell-app's Windows version resource).
+links = "decibell_release"
+
+[features]
+# The shipped build (`decibell-app`'s `ship`): the updater and the crash reporter run only here, and
+# only inside a package (an install stamp in `resources/install.json`).
+ship = []
+# Development builds' self-tests only, never a shipped build (`decibell-app` refuses both at once):
+# plain-HTTP 127.0.0.0/8 origins for the feed and the crash endpoint, and `DECIBELL_TEST_*`
+# environment overrides (install kind, feed, public key, DSN, a panic on demand).
+test-hooks = []
+
+[dependencies]
+log.workspace = true
+base64 = "0.22"
+# Instruction pointers of a panicking thread (no symbolication: the shipped binary is stripped and
+# Sentry symbolicates from the debug file). GPUI already links it.
+backtrace = "0.3"
+# The feed's signature (the core links it for its own keys).
+ed25519-dalek = "2"
+httparse = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf"] }
+# Random ids (event ids, the install id) from the OS: rustls already links ring.
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+url = "2.5"
+webpki-roots = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# The version GPUI's Windows platform uses (Cargo.lock: windows 0.62.2), as decibell-platform does.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+# The loopback HTTPS test's self-signed certificate (as decibell-unfurl's tests).
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
