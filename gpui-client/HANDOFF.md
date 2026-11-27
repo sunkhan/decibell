@@ -10,107 +10,135 @@ for every behaviour. Owner decision 2026-11-26: GPUI, not Qt (`qt-client/` is th
 (the stream path), `gpui-client/PARITY.md` (the checklist), `docs/FEATURES.md`, `ARCHITECTURE.md` §7.3,
 `electron-client/HANDOFF.md` §5 (native gotchas apply here too).
 
-## Resume here (state on 2026-11-27, written after a crash)
+## Resume here (state on 2026-11-27, evening: stopped on the owner's request, all agents told to stop)
 
-**What happened.** On the night of 2026-11-26 the machine ran out of memory (several agents each linking a
-fat-LTO release binary or building the workspace's tests at once) and the session was killed. Nothing on the
-branch was lost: `gpui-client` was pushed at `641bec1` with the Windows Native Check green on it. Five agents
-were cut off with work uncommitted in their worktrees (§1a); they were resumed on 2026-11-27.
+**Read this section, then `PARITY.md`, then the `docs/wip-*.md` notes of the worktrees below.** Nothing else is
+needed to continue. The local stack is up unless the machine restarted (`tools/dev/local-stack.sh status` /
+`up`); a reboot also empties `/tmp` (nothing that matters lives there now).
 
-**The rule that came out of it (every agent, every session):** builds go through `gpui-client/tools/heavy.sh`.
-- `tools/heavy.sh <command…>` for a heavy build: a release build (ship, development, `decibell-headless`),
-  `cargo test --workspace`, any build or test of `decibell-app` (debug too), `tools/win-check.sh`. It takes one
-  of three slots (the fourth waits) and sets `CARGO_BUILD_JOBS=8`.
-- `tools/heavy.sh --light <command…>` for everything else that compiles (`cargo check`, clippy, one crate's
-  tests): no slot.
-- Both run the command in one systemd user slice with a memory ceiling shared by all builds (slowed above
-  18 GB, the largest killed above 21 GB): a build that outgrows it fails alone and is rerun; the desktop and
-  the terminal survive. Self-tests and the app itself run outside it, as many as the work needs.
-- What the kernel log of that night showed (three kills: 17:47, 23:39, 02:00): 13 to 23 `rustc` processes
-  holding 24 to 25 GB. Swap on this machine is zram (compressed RAM, not disk) and `/tmp` is tmpfs, so the
-  machine has 31 GB, not 62: large files belong under `~/.cache/decibell-dev/`, never `/tmp`.
-- The first answer to the crash was one build at a time with 4 jobs; that left 25 GB idle with five builds
-  queued (owner, 2026-11-27: "a little bit too safe"), hence the slots and the ceiling.
-- Commit after each finished item; nothing that matters lives only under `/tmp` (a reboot empties it: write
-  measurements into this file or `docs/` as they are taken).
+### Where everything is
 
-**Where the work stands.** Merged and verified on the branch head: the core split, the skeleton and themes,
-stream playback (three hardware decoders + software), the chat list, sign-in, servers, channels, DMs with E2EE,
-voice with MLS, streams and Go Live, calls, settings, server and channel settings, search, the platform services,
-attachment playback (first pass), interface sounds / mic test / device events in the core, the Windows batch's
-first checkpoint (§1c). Last full verification, on `0687ee3`: 758 unit tests pass, 24 of 25 key self-tests pass
-one at a time (`media-idle` fails: with the media second pass), Electron's bar green, `tools/win-check.sh` clean.
+| What | Where | State |
+|---|---|---|
+| **The pushed head** | `gpui-client` = `origin/gpui-client` (see `git log -1`) | Everything below "merged" is on it. Windows Native Check and the Native Client Release dry run were green on `0eed848`; the later pushes (sign-in, the suite triage, Windows checkpoint 5, the Members crash fix) had their runs still going when work stopped: **read both workflows' results first.** |
+| **Voice, round 1** (18 commits + 1) | branch `wip/land3`, worktree `.worktrees/land3` (built: `vendor/` linked, `vendor/gpui-src`, `target/`) | Stacked on the head, compiles in all four configurations, `tools/win-check.sh --shaders` rc 0, unit tests 696 passed / 1 failed (`decibell-video` `hub::tests::a_short_starvation_is_ridden_out_and_a_long_one_sheds`: timing, at load average 23; passes 5 of 5 alone). **Release builds and self-tests not finished: verify, then land.** |
+| **DMs / calls, round 1** (4 commits + 2 merge fixes) | branch `wip/land4`, worktree `.worktrees/land4` (= `wip/land3` + the DM pass) | Compiles in all four configurations. **No tests run yet.** Verifying `land4` verifies `land3` too: do that one. |
+| **Communities / channels, round 1** | `wip/fix-servers`, `.worktrees/fix-servers` (base `52d32cc` + audit B's docs) | Stopped with its work committed and compiling: `e6064dac` (product), `cbf38701` (tests), `ee14806e` / `6e76c59e` (test fixes, PARITY §4–§5), `ab98c8dc` (`docs/wip-fix-servers.md`: what is done, what is next). **Open there: `server-settings-idle` fails on that branch, cause not found.** Not verified by me, not stacked. |
+| **Round 2** (rows still `partial` after round 1), stopped about an hour in; **none of its new tests has run** | `.worktrees/r2-*`, each with `docs/wip-r2-<name>.md` (finished / half done with file and function / not started / what was learned) | `wip/r2-signin` (base `99f9645`): `35a2de07` compiles, notes `24cb55f0` (the heartbeat interval for 1.5, how the unlisted throwaway community for 1.9 works). `wip/r2-people` (same base): `f7a686a5` (a fake FileChooser portal test for the avatar buttons), `e5392db3` (the 2.8 / 2.2 tests), notes `48ca18aa`; compile-checked except a last small audit-log edit. `wip/r2-chat` (same base): `89c7d709`, compiles except a few late probe edits; has the paging fix and a `search-paging-fixture` test, unrun. `wip/r2-app` (same base): `ce302b6c` compiles (a modal keeps a dropped focus, one opener for links, once-guarded feature inits, their tests), notes `abf29a0d`; the §9 rows themselves not started. `wip/r2-voice` (base `wip/land3`): `7bdc6a62`, **labelled "does not compile" because its compile check was cancelled: unverified**, notes `467b6486`. |
 
-**Merged since the crash (2026-11-27):** the Windows batch's second and third checkpoints (the DirectWrite
-font-family fix, Go Live's source grid, every self-test group running in CI, Windows expectations for the
-Chromium text vectors); auto-away by idle time on X11; packaging, auto-update, crash reports and the ship
-flavour; the cross-crate joins (type-to-compose beside the focused root, the avatar editor in Settings →
-Account, layering inside modals, the legacy refusal rows, the regional sweep: 39 of 40 self-tests through the
-lock, the six that failed before among them); attachment playback's second pass (rotation, 10-bit and HDR,
-VP9 on the GPU, the cards' missing pieces, the output-device rule, GPUI patches `0030`–`0032`, a rebuilt FFmpeg
-prefix: **every worktree runs `tools/fetch-gpui.sh --force` and `cargo clean -p ffmpeg-sys-next` after taking
-it**).
+Agents can be resumed with their context (their ids are in the session's transcript) or replaced by fresh ones
+briefed from the audit reports (`docs/parity-audit-{a,b,c}.md`), the `PARITY.md` rows and the WIP notes.
 
-**The Windows executable did not link from the packaging merge until `1e5b2e1`** (two application manifests:
-GPUI embeds its own, `gpui_platform` switches it on; ours is gone), and the Windows Native Check stayed green
-through it because the self-test step, which built the binary, may fail. The job now builds `decibell.exe` in
-a step of its own that fails it. The release workflow's first dry run failed on the same link error and on a
-test script that needed bash (`apply.rs`: fixed). **Read both workflows' results on the head before trusting
-"green".**
+### What to do next, in order
 
-**The parity audit (2026-11-27) is the map of what is left.** Three auditors read every FEATURES §1–§9 row rule
-by rule against Electron's code and this client's, and ran each row's self-tests: **10 rows `done`, 1 `needs
-owner`, 83 `partial`** (`PARITY.md`; the gap lists with sizes are `docs/parity-audit-a.md` §1–§3, `-b.md`
-§4–§6, `-c.md` §7–§9). Most `partial` rows are built and miss a test for one or two rules or differ from
-Electron in something small; the real product gaps the audit found: the sign-in / sign-up page took no typing
-(only a saved sign-in or `--login` signed in), auto-away on Wayland up to one threshold late, server nicknames
-missing where the member isn't loaded, "Auto" codec pinning H.264 so the software encoder was unreachable,
-watched streams decoding while minimised, `panic = "abort"` defeating the core's `catch_unwind` recovery,
-uploads carrying no media probe (no poster / size / duration), the emoji info popover, the code panel.
+1. **Verify and land `wip/land4`** (voice + DMs). In `.worktrees/land4/gpui-client`:
+   `SHIP=~/.cache/decibell-dev/target-ship-land tools/verify-tree.sh <log>`, then the self-tests through
+   `tools/selftest.sh` (every `voice-*`, `video-*`, `media-*`, `call-*`, `dm-*`, `server-settings-*`, plus
+   `boot idle-frames themes shell-signin settings-audio-meter search-paging`). Then in the main tree
+   `git merge --ff-only wip/land4` (rebase the landing branch onto the head first if the head moved),
+   `tools/fetch-gpui.sh --force`, push, read both workflows.
+2. **Fix the debug-build crash in selectable labels** (found by the sign-in agent, not fixed):
+   `decibell-text/src/label.rs` `listen_for_selection` calls `window.insert_hitbox` from the label's `paint`;
+   GPUI's `debug_assert_prepaint` aborts every debug build that draws one (Settings → Devices). Insert the
+   hitbox in `prepaint` and keep it for `paint`. Release builds don't assert, which is why every verification
+   passed.
+3. **Search results can stop paging** (`search-paging` fails intermittently: "paging stopped (100 results, has
+   more true, … asked false)"): `ResultsView::maybe_load_more` runs only when the view renders. The chat agent
+   found the cause (the render sees the previous frame's scroll position, so the last render before the end
+   can be short of the look-ahead and nothing renders again) and moved the ask onto a per-frame check, with the
+   member list and the GIF picker, which could stall the same way: `wip/r2-chat` `89c7d709`, **unrun**
+   (`docs/wip-r2-chat.md`; its new test is `search-paging-fixture`).
+4. **Finish round 1 for communities / channels and round 2 for the other areas**, landing each as before
+   (below), until **no `PARITY.md` row is `partial`**. Quirk numbers reserved for round 2 so parallel work
+   doesn't collide: sign-in 51–54, people 55–58, chat 59–64, app 65–70, voice 71–76 (`docs/electron-quirks.md`
+   ends at #49 on `wip/land4`; #37–#39 and #47 are unused).
+5. **Audit again** with three fresh agents (the first audit's brief is the model: every FEATURES §1–§9 row rule
+   by rule against Electron's code, the row's self-tests run through `tools/selftest.sh`). The first audit
+   found the sign-in page untypable after every earlier check had passed: don't skip this.
+6. **The final phase, on a quiet machine** (nothing else building): Electron's full baseline
+   (`tools/perf/scenarios.sh electron all`) and the table of the ship build against it for every §3 target
+   (idle RAM first; the driver's share beside it, per `CLAUDE.md`); captures of the main screens in all seven
+   themes beside Electron's; two clean full self-test runs through `tools/selftest.sh` (every name of
+   `--selftest list` except `content-copy-image-child`, which is a child entry); Electron's bar (the core was
+   not changed today, but run it), both `cargo test`s, both workflows; then print `PARITY.md`, the table and
+   the "Needs owner" list (§6).
 
-**In flight (§1a has the worktrees), seven fix agents by area, each closing its audit findings and writing the
-missing self-tests:** `wip/fix-signin` (§1), `wip/fix-people` (§2), `wip/fix-dm` (§3), `wip/fix-servers`
-(§4–§5), `wip/fix-chat` (§6), `wip/fix-voice` (§7–§8), `wip/fix-app` (§9); plus `wip/integrate-d` (suite-level
-triage: test isolation, the `shell-signin` flake) and the Windows batch (`wip/windows`, between rounds: the
-next round reads the first Windows run that links again). Land each with `tools/land.sh pick wip/<name>` (then
-`git merge --ff-only wip/land` in the main tree), run the `cargo check` configurations (default, `capture`,
-`dev-local`, and `--no-default-features --features ship --release`), `tools/win-check.sh --shaders`, the unit
-tests, the ship build with `packaging/check-ship.sh`, the release tests under the self-test lock
-(`flock --close ~/.cache/decibell-dev/selftest.lock python3 -I packaging/tests/release_e2e.py --binary
-target/release/decibell`) and the key self-tests (Electron's bar too when `crates/decibell-core` changed),
-push `gpui-client`, read the Windows Native Check and the Native Client Release dry run. When the fix agents
-report, **audit again** (the same three-way split, fresh agents) before filling the final checklist: the first
-audit found the sign-in page untypable after every earlier check had passed.
+### The checklist today
 
-**Self-tests go through `tools/selftest.sh <name>…`** (every agent, every session): one test window at a time on
-the machine, each test in its own process with a fresh profile, the lock taken per test so sessions interleave.
-Two test windows open at once take each other's focus and pointer: on 2026-11-27, with five agents testing side
-by side, `input-typing`, `kit-idle`, `idle-frames` and `themes` each failed and passed on alternate runs (a focus
-change is "3 drawn, 2 presented"), and `shell-signin` failed once ("timed out after 10 s waiting for Daily
-Gaming's channels"). The owner's own pointer over a test window still disturbs a frame count: rerun once before
-believing a failure. `--bin <path>` runs another build (the parity audit's frozen copy is
-`~/.cache/decibell-dev/parity-root/target/release/decibell`).
+`PARITY.md` on `wip/land4`: **21 rows `done`, 9 `needs owner`, 64 `partial`** of 94 (10 / 1 / 83 after the
+first audit this morning). By section (done / needs owner / partial): §1 5 / 0 / 4, §2 4 / 2 / 2, §3 3 / 4 / 0,
+§4 3 / 0 / 9, §5 4 / 0 / 5, §6 2 / 0 / 14, §7 0 / 0 / 11, §8 0 / 1 / 7, §9 0 / 2 / 12. Most `partial` rows are
+built and miss a test for one or two rules; each row's Evidence cell lists what.
 
-**Then the final phase, on a quiet machine (nothing else building):**
-1. `PARITY.md`: every `docs/FEATURES.md` §1–§9 row "done" with evidence or "needs owner" with what to test.
-2. Electron's full baseline (`tools/perf/scenarios.sh electron all`) and the table of this client against it for
-   every §3 target, with the ship build (idle RAM first; the driver's share reported beside it, per `CLAUDE.md`).
-3. Captures of the main screens in all seven themes beside Electron's.
-4. Two clean full self-test runs; Electron's bar, both `cargo test`s, the Windows Native Check, printed.
-5. The "Needs owner" list (§6), with the open decisions below.
+### Merged today (2026-11-27), each verified before or right after its push
 
-**Open owner decisions (collect, don't wait on them):** macOS (Electron ships it, the native client has none);
-how Electron users move to the native client and its update path; the second-device half of the leave race
-(needs a server change); the encoder's 10 s keyframe interval and 133 ms rate buffer; the user menu's native-only entries
-(Profile, Message, the friend actions with "Block", the Moderation section incl. one's own nickname, Copy
-username: Electron's right-click menu holds voice entries only, quirk #34); quirks #12 / #13 (`docs/electron-quirks.md`); a channel switch stops attachment playback (FEATURES
-says it survives, Electron's code stops it); "7 Nov 2026" against Qt's "7 11 2026"; spellcheck and zoom (not
-built); click-audit entry 11; the listening and by-eye checks; the Windows hardware checks
-(`docs/windows-owner-checks.md`); a real X11 session; quirks #27 (the mic test meters through the user's own
-processing), #29 (the updater and crash sender use no system proxy and Mozilla's roots, not the OS store) and #30
-(caught panics are reported as recovered errors; a panic on an unguarded thread ends the app where Electron's addon
-lost the thread silently); the release profile's unwinding (the cost is in `PACKAGING.md` §9.2: the architect's
-decision, to confirm).
+The Windows batch's checkpoints 2–5 (the DirectWrite font-family fix, Go Live's source grid, every self-test
+group running in CI with a fatal list, GPUI patch `0022`); auto-away by idle time on X11; packaging, auto-update,
+crash reports and the ship flavour, and the release workflow's dry run (green on both platforms: the Windows
+installer installs, runs and uninstalls on the runner); the cross-crate joins and the suite triage (171 of 172
+self-tests through the wrapper on its branch); attachment playback's second pass (GPUI patches `0030`–`0032`, a
+rebuilt FFmpeg prefix); the three-part parity audit; and round 1 of the audit's fixes for the app / settings
+rows (the release profile **unwinds** now: `decibell-panic`), people / presence, text chat (uploads carry
+Electron's media probe) and sign-in / accounts (the sign-in page takes typing). Server Settings → Members no
+longer crashes when a member without roles comes under a resting pointer (`CONVENTIONS.md`: never switch
+`display` by hover, press or focus).
+
+### How work is run (every agent, every session)
+
+- **Builds:** `tools/heavy.sh <command>` for a heavy build (any release build, `cargo test --workspace`, any
+  build or test of `decibell-app`, `tools/win-check.sh`): three slots machine-wide, 8 jobs each.
+  `tools/heavy.sh --light <command>` for everything else that compiles. Both run in one memory-capped systemd
+  user slice (slowed above 18 GB, the largest build killed above 21 GB): a build killed by a signal there is
+  rerun. Why: on 2026-11-26 some twenty `rustc` processes (25 GB) took the session down three times; swap here
+  is zram and `/tmp` is tmpfs, so the machine has 31 GB, not 62. Large files go under `~/.cache/decibell-dev/`.
+- **Self-tests:** only through `tools/selftest.sh <name>…` (`--bin <path>` for another build): one test window
+  at a time on the machine, a fresh profile each, the lock taken per test. It reports a test that printed
+  `SKIP:` or ended INCONCLUSIVE as such and fails the run (both used to count as passes). Anything else that
+  opens a window takes the same lock: `flock --close ~/.cache/decibell-dev/selftest.lock <command>` (the
+  release tests do). Don't edit `tools/selftest.sh` while a run of it is going: bash reads it as it runs.
+- **The Windows type-check** keeps one target directory per checkout (`tools/win-check.sh` picks it): a shared
+  one let one tree run another's build script.
+- **Landing an agent's commits:** `tools/land.sh pick wip/<name>` stacks them in `.worktrees/land`
+  (`DECIBELL_LAND_TREE=<another worktree>` for a second stack while the first is being tested); on a conflict
+  resolve and `tools/land.sh continue`. `tools/land.sh both <file>` keeps both sides (lists, struct fields);
+  `tools/land-quirks.py` renumbers incoming rows of `docs/electron-quirks.md` (then fix the incoming commits'
+  references to their old numbers, and drop a row that repeats one written in parallel);
+  `tools/land-parity.py gpui-client/PARITY.md` merges checklist rows three ways (every row is one line: the
+  incoming cells win where both changed a row, except the Windows cell, which stays HEAD's). Then the four
+  `cargo check` configurations (`--workspace`; `-p decibell-app --features capture`; `--features dev-local`;
+  `--no-default-features --features ship --release`; all `--all-targets`), `tools/verify-tree.sh <log>`, the
+  self-tests the change touches, `git merge --ff-only` in the main tree, `tools/fetch-gpui.sh --force` when a
+  patch came with it, push, and both workflows' results. Seams met today when two agents' work met: the same
+  helper added twice with different shapes (a headless step, a settings change, quirk rows), a struct that
+  gained a field (`LiveStream::enforced`, `Label`), test code that must be behind `cfg(feature = "dev")` for
+  the ship flavour.
+- **A "green" Windows check can hide a failure:** from the packaging merge until `1e5b2e1` the executable did
+  not link on Windows and the job stayed green (the step that built it was allowed to fail). The job builds
+  `decibell.exe` in a step of its own now and has a fatal list of self-test groups; still read the logs on
+  `origin/ci/win-gpui-check-log`, not only the colour.
+- Commit after each finished item; a worktree's `vendor/` is linked from the main tree and its
+  `vendor/gpui-src` built by `tools/fetch-gpui.sh` (`--force` after taking new patches; then
+  `cargo clean -p ffmpeg-sys-next` if the FFmpeg prefix changed).
+
+### Open owner decisions (collect, don't wait on them)
+
+macOS (Electron ships it, the native client has none); how Electron users move to the native client
+(`PACKAGING.md` §11: the tag pattern `native-v<VER>`, the update signing key, the two AppImage tool hashes to
+pin as repository variables, the project licence, the AUR name); **the unwinding release profile** (+9.9 MB of
+install for the core's recovery from decoder / encoder / capture panics, no startup or memory cost measured:
+kept; one line in `gpui-client/Cargo.toml` reverts it); **the Windows install is 99.6 MB** against a limit of a
+quarter of Electron's Windows install, which nobody has measured (`tools\perf\windows\install-size.ps1`; 3.9 to
+4.7 MB would go with a change to the core's `ffmpeg-next` features on Windows, described in `PACKAGING.md`
+§9.5, not made: it needs Electron's bar on Windows); three core changes described and not made (the same:
+`avdevice` / `avfilter`; `decibell-audio` runs `DefaultDeviceWatch::start` outside its `catch_unwind`; a stream
+start with codec 0 is announced as 0); the second-device half of the leave race (needs a server change); the
+encoder's 10 s keyframe interval and 133 ms rate buffer; the quirks that are choices rather than constraints
+(`docs/electron-quirks.md` #12, #13, #26–#36, #40–#49: among them a "Block" entry and the wider right-click
+menu on a person, the mic test metering through the user's own processing, Network applying a typed value on
+Esc, the greyed Go Live presets); a channel switch stops attachment playback (FEATURES says it survives,
+Electron's code stops it); "7 Nov 2026" against Qt's "7 11 2026"; spellcheck and zoom (not built); the
+listening and by-eye checks (§6); the Windows checks (`docs/windows-owner-checks.md` §3–§10); a real X11
+session and the KDE Wayland auto-away check.
 
 ## 0. The goal and its rules (owner's brief, 2026-11-26)
 
@@ -217,9 +245,11 @@ linked (all git-excluded through `.git/info/exclude`).
 
 | Worktree / branch | Work |
 |---|---|
-| `.worktrees/integrate-d` / `wip/integrate-d` | cross-crate joins and self-test triage: its first 15 commits are merged (`52d32cc`); still running on the suite-level items (test isolation, idle checks on a shared desktop, the `shell-signin` flake); told it may rebase onto the head |
-| `.worktrees/fix-signin`, `fix-people`, `fix-dm`, `fix-servers`, `fix-chat`, `fix-voice`, `fix-app` / `wip/fix-*` | the audit's findings by area (FEATURES §1, §2, §3, §4–§5, §6, §7–§8, §9): product gaps first, then the missing self-tests, then their `PARITY.md` rows. Each has `vendor/` linked and its own `vendor/gpui-src` from before patches `0030`–`0032` (its base): after merging, nothing to do there; a worktree that rebases onto the head rebuilds it |
-| `.worktrees/windows` / `wip/windows` | the Windows batch, in rounds (§1c): checkpoints 1 and 2 merged; round 3 = the six self-tests and two `decibell-text` unit tests that fail on the Windows runner (run 45983095122: `chat-history`, `chat-switch`, `input-typing`, `input-ime`, `input-atoms`, `render-cost`; `input_vectors`' word stops), the groups skipped there, the rest of its gap table. After each checkpoint: merge, push, send it the run's logs from `origin/ci/win-gpui-check-log` |
+| `.worktrees/land3`, `.worktrees/land4` / `wip/land3`, `wip/land4` | landing trees holding unpushed, stacked work: voice round 1, then DMs / calls round 1 on top ("Resume here" says what is verified) |
+| `.worktrees/fix-servers` / `wip/fix-servers` | communities / channels, round 1 of the audit's fixes: stopped mid-work, `docs/wip-fix-servers.md` there |
+| `.worktrees/r2-signin`, `r2-people`, `r2-chat`, `r2-app`, `r2-voice` / `wip/r2-*` | round 2 (the rows still `partial`): stopped about an hour in, `docs/wip-r2-<name>.md` in each |
+| `.worktrees/windows` / `wip/windows` | the Windows batch: checkpoints 1–5 merged, nothing unmerged; the agent says nothing is open on its side but `window-state`'s next result on the runner |
+| `.worktrees/fix-voice`, `.worktrees/fix-dm` / `wip/fix-voice`, `wip/fix-dm` | round 1's branches as the agents left them (their commits are stacked in `wip/land3` / `wip/land4`): remove once those have landed |
 | `.worktrees/land` / `wip/land` | the architect's landing tree, driven by `tools/land.sh` (pick an agent's commits, resolve, then fast-forward the main tree): empty of unmerged work when this was written |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
