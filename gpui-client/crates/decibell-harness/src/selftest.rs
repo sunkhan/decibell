@@ -285,8 +285,21 @@ impl TestCx {
     /// A line in the test's log. A parent relaying a `--check` child's log through here notes a
     /// child's INCONCLUSIVE: the parent's own pass then reads INCONCLUSIVE too (see
     /// [`run_selftests`]).
+    ///
+    /// A line that starts with `SKIP:` / `SKIPPED:` (or relays a child's `SKIP` result) marks the
+    /// test as skipped: a test that returns `Ok` after saying it could not run is reported as
+    /// SKIP with that reason, never as a pass.
     pub fn log(&self, message: impl std::fmt::Display) {
         let line = message.to_string();
+        let skip = skip_reason(&line);
+        if let Some(reason) = skip {
+            SKIPPED.with(|s| {
+                let mut s = s.borrow_mut();
+                if s.is_none() {
+                    *s = Some(reason);
+                }
+            });
+        }
         if let Some((_, reason)) = line.split_once(": INCONCLUSIVE (") {
             let reason = reason.split_once("): ").map_or(reason, |(_, r)| r).to_string();
             RELAYED_INCONCLUSIVE.with(|r| {
@@ -303,6 +316,45 @@ impl TestCx {
 thread_local! {
     /// A child's INCONCLUSIVE relayed by the test running now ([`TestCx::log`]).
     static RELAYED_INCONCLUSIVE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The reason a log line gives for a skipped test: `SKIP: why` / `SKIPPED: why` (also relayed
+/// from a child behind `│`), or a child's result line `selftest name: SKIP (n ms): why`.
+fn skip_reason(line: &str) -> Option<String> {
+    let said = line.trim_start().trim_start_matches('│').trim_start();
+    said.strip_prefix("SKIPPED:")
+        .or_else(|| said.strip_prefix("SKIP:"))
+        .map(|reason| reason.trim().to_string())
+        .or_else(|| {
+            let (_, rest) = said.split_once(": SKIP (")?;
+            Some(rest.split_once("): ").map_or(rest, |(_, reason)| reason).to_string())
+        })
+}
+
+#[cfg(test)]
+mod skip_tests {
+    use super::skip_reason;
+
+    #[test]
+    fn a_test_that_says_it_skipped_is_heard() {
+        assert_eq!(skip_reason("SKIP: the launcher entry is Linux's").as_deref(), Some("the launcher entry is Linux's"));
+        assert_eq!(skip_reason("SKIPPED: no test streams in vendor/streams").as_deref(), Some("no test streams in vendor/streams"));
+        // Relayed from a `--check` child: its own line, and its result line.
+        assert_eq!(skip_reason("│ SKIP: the local stack is down").as_deref(), Some("the local stack is down"));
+        assert_eq!(
+            skip_reason("│ selftest platform-attention: SKIP (0 ms): the local stack is down").as_deref(),
+            Some("the local stack is down")
+        );
+        // Not skips: a part that could not be checked, a word in passing.
+        assert_eq!(skip_reason("no KWin: the activation was requested (marker), not checked with the compositor"), None);
+        assert_eq!(skip_reason("the SKIP: prefix marks a skipped test"), None);
+        assert_eq!(skip_reason("selftest boot: PASS (130 ms)"), None);
+    }
+}
+
+thread_local! {
+    /// The reason the test running now said it skipped ([`TestCx::log`]).
+    static SKIPPED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Runs the tests named by `selection` (`all`, one name, or names separated by commas) in
@@ -327,11 +379,12 @@ pub async fn run_selftests(tests: Vec<SelfTest>, selection: &str, cx: TestCx) ->
         selected
     };
 
-    let (mut failed, mut unmeasured) = (0, 0);
+    let (mut failed, mut unmeasured, mut skipped) = (0, 0, 0);
     for test in &selected {
         println!("selftest {}: {}", test.name, test.about);
         let started = Instant::now();
         RELAYED_INCONCLUSIVE.with(|r| r.borrow_mut().take());
+        SKIPPED.with(|s| s.borrow_mut().take());
         let result = (test.run)(cx.clone()).await;
         let ms = started.elapsed().as_millis();
         // A parent whose child said INCONCLUSIVE passed only its own part: it is inconclusive too.
@@ -339,7 +392,14 @@ pub async fn run_selftests(tests: Vec<SelfTest>, selection: &str, cx: TestCx) ->
             (Ok(()), Some(reason)) => Err(inconclusive(format!("the app's check: {reason}"))),
             (result, _) => result,
         };
+        let skip = SKIPPED.with(|s| s.borrow_mut().take());
         match result {
+            // It said it could not run (a helper, a service or a fixture this machine lacks) and
+            // returned: that is not a pass, on any platform.
+            Ok(()) if skip.is_some() => {
+                skipped += 1;
+                println!("selftest {}: SKIP ({ms} ms): {}", test.name, skip.unwrap_or_default());
+            }
             Ok(()) => println!("selftest {}: PASS ({ms} ms)", test.name),
             Err(error) if error.downcast_ref::<Inconclusive>().is_some() => {
                 unmeasured += 1;
@@ -353,8 +413,8 @@ pub async fn run_selftests(tests: Vec<SelfTest>, selection: &str, cx: TestCx) ->
         }
     }
     println!(
-        "selftest: {} passed, {failed} failed, {unmeasured} inconclusive",
-        selected.len() - failed - unmeasured
+        "selftest: {} passed, {failed} failed, {skipped} skipped, {unmeasured} inconclusive",
+        selected.len() - failed - unmeasured - skipped
     );
     failed == 0
 }
