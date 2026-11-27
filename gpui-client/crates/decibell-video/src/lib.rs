@@ -162,4 +162,18 @@ impl VideoDevice {
         #[cfg(not(vk))]
         false
     }
+
+    /// The renderer's GPU, once a window drew: its name, PCI vendor id and driver (with the
+    /// driver's own version string), for crash reports' `contexts.gpu`. `None` before the first
+    /// window and where the renderer isn't wgpu's (Windows' Direct3D 11).
+    pub fn adapter() -> Option<(String, u32, String)> {
+        #[cfg(vk)]
+        {
+            let context = gpui_wgpu::shared_context()?;
+            let info = context.adapter.get_info();
+            Some((info.name, info.vendor, format!("{} {}", info.driver, info.driver_info).trim().to_string()))
+        }
+        #[cfg(not(vk))]
+        None
+    }
 }

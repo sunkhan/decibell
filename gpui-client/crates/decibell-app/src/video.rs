@@ -221,6 +221,7 @@ fn probe_attempt(window: &Window, attempt: u32) {
         }
         if !FIRST_FRAME.swap(true, Ordering::AcqRel) {
             actions::voice::load_decode_caps(cx);
+            crate::crash::note_gpu();
         }
     });
 }

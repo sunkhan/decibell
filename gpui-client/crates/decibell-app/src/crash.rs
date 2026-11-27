@@ -37,6 +37,21 @@ pub fn watch_names(model: &Model, cx: &mut App) {
     let on_servers = update.clone();
     cx.observe(&servers, move |_, cx| on_servers(cx)).detach();
     update(cx);
+    // The renderer's `connected_servers` tag.
+    let connections = model.connections.clone();
+    cx.observe(&connections, |connections, cx| {
+        decibell_release::crash::set_connected_servers(connections.read(cx).connected().count());
+    })
+    .detach();
+}
+
+/// The GPU the window draws with, for crash reports (`contexts.gpu`): once its first frame drew.
+pub fn note_gpu() {
+    if decibell_release::crash::active()
+        && let Some((name, vendor, driver)) = decibell_video::VideoDevice::adapter()
+    {
+        decibell_release::crash::set_gpu(&name, vendor, &driver);
+    }
 }
 
 /// Ends the process when a panic unwinds the UI thread to the bottom of its stack: a panic a

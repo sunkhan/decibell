@@ -252,6 +252,27 @@ static RECOVERED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// thread (`resume_unwind` calls no hook).
 static LAST_RECOVERED: Mutex<Option<Recovered>> = Mutex::new(None);
 
+/// Community servers connected now (the renderer's `connected_servers` tag).
+static CONNECTED_SERVERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The GPU the window draws with (`contexts.gpu`), once the app knows it.
+static GPU: Mutex<Option<Value>> = Mutex::new(None);
+/// When this process started (`contexts.app.app_start_time`).
+static STARTED_AT: OnceLock<String> = OnceLock::new();
+
+/// How many community servers are connected (the renderer's `Sentry.setTag("connected_servers")`:
+/// it helps reproduce "happens when N+ servers connected").
+pub fn set_connected_servers(count: usize) {
+    CONNECTED_SERVERS.store(count, Ordering::Relaxed);
+}
+
+/// The GPU the window draws with, for `contexts.gpu` (Sentry's GPU context: name, vendor id,
+/// driver).
+pub fn set_gpu(name: &str, vendor_id: u32, driver: &str) {
+    if let Ok(mut gpu) = GPU.lock() {
+        *gpu = Some(json!({ "name": name, "vendor_id": format!("0x{vendor_id:04x}"), "driver": driver }));
+    }
+}
+
 /// At most this many recovered panics are reported per run.
 pub const RECOVERED_PER_RUN: usize = 5;
 
@@ -269,6 +290,7 @@ struct Recovered {
 pub fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        let _ = STARTED_AT.set(rfc3339_now());
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             // The usual message on stderr first, as before.
@@ -454,6 +476,7 @@ impl Reporter {
         if let Some(from) = resumed_from {
             event["tags"]["resumed_from"] = json!(from);
         }
+        event["tags"]["connected_servers"] = json!(CONNECTED_SERVERS.load(Ordering::Relaxed).to_string());
         let Some(path) = self.write(&event) else { return };
         send_now(self.config.clone(), path, SEND_BUDGET);
     }
@@ -481,6 +504,7 @@ impl Reporter {
         );
         event["level"] = json!("error");
         event["tags"]["recovered"] = json!(catcher.as_str());
+        event["tags"]["connected_servers"] = json!(CONNECTED_SERVERS.load(Ordering::Relaxed).to_string());
         let Some(path) = self.write(&event) else { return };
         send_later(self.config.clone(), path);
     }
@@ -502,7 +526,7 @@ impl Reporter {
             "environment": "production",
             "user": { "id": self.config.install_id },
             "tags": tags,
-            "contexts": { "os": { "name": os_name(), "version": install::os_release() } },
+            "contexts": contexts(),
             "exception": { "values": [{
                 "type": exception.kind,
                 "value": exception.value,
@@ -528,6 +552,53 @@ struct Exception {
     kind: &'static str,
     value: String,
     mechanism: Value,
+}
+
+/// Sentry's contexts as the Electron SDK fills them, from what this process knows: the OS, the
+/// app (name, version, start), the device (architecture, CPUs, memory) and, once the app said, the
+/// GPU. Nothing that names the machine or the person.
+fn contexts() -> Value {
+    let mut contexts = json!({
+        "os": { "name": os_name(), "version": install::os_release() },
+        "app": { "app_name": "Decibell", "app_version": crate::VERSION },
+        "device": {
+            "family": "Desktop",
+            "arch": install::arch(),
+            "processor_count": std::thread::available_parallelism().map_or(0, |n| n.get()),
+        },
+    });
+    if let Some(started) = STARTED_AT.get() {
+        contexts["app"]["app_start_time"] = json!(started);
+    }
+    if let Some(bytes) = memory_size() {
+        contexts["device"]["memory_size"] = json!(bytes);
+    }
+    if let Some(gpu) = GPU.lock().ok().and_then(|g| g.clone()) {
+        contexts["gpu"] = gpu;
+    }
+    contexts
+}
+
+/// The machine's memory in bytes.
+fn memory_size() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: u64 = text.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+        Some(kb * 1024)
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+        // SAFETY: `status` is a valid MEMORYSTATUSEX with its length set, as the call requires.
+        unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+        Some(status.ullTotalPhys)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        None
+    }
 }
 
 fn os_name() -> &'static str {
