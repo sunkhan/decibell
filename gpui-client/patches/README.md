@@ -30,6 +30,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0032-gpui-surface-latest-frame.patch` | `WgpuSurface::latest_frame()` / `D3d11Surface::latest_frame()`: the newest picture's `Arc`, for showing it in another surface. | A played video's card shows the frame it stopped on (the renderer's canvas capture): the client keeps the slot the last picture is in and draws it from a surface of its own (`decibell_video::Still`), with no read-back and no copy. |
 | `0040-gpui-keyboard-key-text.patch` | `App::keyboard_key_text(code)` (`Platform::key_text`, default `None`): what the current keyboard layout types for a physical key (`KeyCode` of `0012`) with no modifier held, a dead key giving its accent: on Linux from the xkb keymap GPUI already holds (Wayland: the compositor's `wl_keyboard.keymap` at the layout last in effect; X11: the server's keymap and group), a fresh `xkb_state` with no modifiers; on Windows `MapVirtualKeyExW` + `ToUnicodeEx` (flag 4: the dead-key state untouched) with the UI thread's layout. | Settings → Keybinds labels keys as the layout labels them (`Z` on the German key in Y's place), as the renderer does through `navigator.keyboard.getLayoutMap()`; the keymap lives inside GPUI on Linux. Reads the layout only, listens to no key (CLAUDE.md, hotkeys). |
 | `0041-gpui-file-dialog-filters.patch` | `PathPromptOptions::filters` (`PathFilter { name, mime_types, patterns }`; the struct now derives `Default`): the open dialog's type list, the first entry selected: the desktop portal's `filters` / `current_filter` (MIME types and globs) on Linux, `IFileOpenDialog::SetFileTypes` (the patterns) on Windows. | The picture pickers (avatar, server picture, the editor's "choose another") offer pictures first, as the renderer's `<input type="file" accept={PICTURE_ACCEPT}>` does; GPUI's dialogs took no filter. |
+| `0050-wayland-clipboard-image-and-text.patch` | Reading the Wayland clipboard (and the primary selection) gives one item with the offer's picture first and its text after it, when it offers both, instead of the text alone. | Pasting a browser's "Copy image" (a picture and its HTML / URL text) into the message box pasted text: GPUI read the text and stopped. Chromium hands both to the page and the composer attaches the picture (`usePasteToAttach`); a text field still takes the text. |
 
 ## How the patches are applied
 
@@ -852,3 +853,22 @@ filter is `decibell_picture_editor::picture_filters()` ("Images": PNG, JPEG, Web
 files", as Chromium lists an `accept` list). Not run by a self-test: a portal dialog is the desktop's own
 window (the owner checks it: `gpui-client/HANDOFF.md` §6); Windows compiled only. Upstream: Zed's file
 pickers have no type lists; small and self-contained.
+## 0050: the Wayland clipboard keeps the picture beside the text
+
+`gpui_linux/src/linux/wayland/clipboard.rs` (+18 / −6), after `0015`.
+
+**What.** `Clipboard::read` and `read_primary` read the offer through `DataOffer::read_image_and_text`: the first
+image type offered (`ImageFormat::iter`'s order, as `read_image` did) as an image entry, then the first allowed text
+type as a string entry, both in one `ClipboardItem`; one of them alone when only one is offered. At the pin they
+read the text and fell back to the picture only when there was no text.
+
+**Why.** A browser's "Copy image" offers `image/png` with `text/html` (and sometimes `text/plain`): the composer was
+handed text and the picture was lost (parity audit B, row 6.6). With both entries the composer's paste hook
+(`decibell_text::input`'s `on_paste_non_text`, called when an item has a non-text entry) attaches the picture, as
+Chromium's `clipboardData.files` gave the renderer's `usePasteToAttach`; every other field pastes `item.text()`.
+
+**Cost.** A paste of such an offer reads both payloads (two pipe reads, the picture's bytes): only on a paste, and the
+result is cached until the offer changes, as before. X11 already reads image types first (`get_any`), returning the
+picture alone.
+
+Upstream: plausible (a behaviour change for Zed's editor, which pastes `item.text()` and would be unaffected).

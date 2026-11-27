@@ -1,0 +1,49 @@
+diff --git a/crates/gpui_linux/src/linux/wayland/clipboard.rs b/crates/gpui_linux/src/linux/wayland/clipboard.rs
+index ba5eda3..ba7cd85 100644
+--- a/crates/gpui_linux/src/linux/wayland/clipboard.rs
++++ b/crates/gpui_linux/src/linux/wayland/clipboard.rs
+@@ -149,6 +149,22 @@ impl<T: ReceiveData> DataOffer<T> {
+         Some(ClipboardItem::new_string(result))
+     }
+ 
++    /// What the offer holds, as one item: its picture first (when it offers one), then its text
++    /// (when it offers that too). A browser's "Copy image" offers both; reading the text first
++    /// and stopping there (as GPUI did) lost the picture. Each reader takes the entry it wants:
++    /// a field that attaches pictures the image, a text field the text (Chromium's paste).
++    fn read_image_and_text(&self, connection: &Connection) -> Option<ClipboardItem> {
++        let image = self.read_image(connection);
++        let text = self.read_text(connection);
++        match (image, text) {
++            (Some(mut image), Some(text)) => {
++                image.entries.extend(text.entries);
++                Some(image)
++            }
++            (image, text) => image.or(text),
++        }
++    }
++
+     fn read_image(&self, connection: &Connection) -> Option<ClipboardItem> {
+         for format in ImageFormat::iter() {
+             let mime_type = format.mime_type();
+@@ -236,9 +252,7 @@ impl Clipboard {
+             return self.contents.clone();
+         }
+ 
+-        let item = offer
+-            .read_text(&self.connection)
+-            .or_else(|| offer.read_image(&self.connection))?;
++        let item = offer.read_image_and_text(&self.connection)?;
+ 
+         self.cached_read = Some(item.clone());
+         Some(item)
+@@ -254,9 +268,7 @@ impl Clipboard {
+             return self.primary_contents.clone();
+         }
+ 
+-        let item = offer
+-            .read_text(&self.connection)
+-            .or_else(|| offer.read_image(&self.connection))?;
++        let item = offer.read_image_and_text(&self.connection)?;
+ 
+         self.cached_primary_read = Some(item.clone());
+         Some(item)
