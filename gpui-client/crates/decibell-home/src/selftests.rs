@@ -1192,8 +1192,20 @@ async fn friends_flow(cx: &TestCx, actor: &Actor, me: Uid) -> Result<()> {
             click_probe(cx, "friends-add").await?;
             quiet(cx).await?;
             cx.type_text(&actor.peer)?;
+            let typed = cx.update(|window, cx| {
+                let page = crate::hooks::shown::<crate::friends::FriendsPage>(cx).map(|page| page.read(cx).add_state(window, cx));
+                format!(
+                    "after typing: {}; a text field focused {}, window active {}",
+                    page.unwrap_or_else(|| "no Friends page".into()),
+                    decibell_text::input::text_field_focused(window),
+                    window.is_window_active()
+                )
+            })?;
             cx.keystroke("enter")?;
-            wait_for(cx, Duration::from_secs(10), "the outgoing request", move |cx| friend_status(peer, cx) == Some(FriendStatus::PendingOutgoing)).await?;
+            let sent = wait_for(cx, Duration::from_secs(10), "the outgoing request", move |cx| friend_status(peer, cx) == Some(FriendStatus::PendingOutgoing)).await;
+            if let Err(e) = sent {
+                bail!("{e:#} ({typed})");
+            }
             cx.log("request sent by name from the Add Friend form");
             actor.cue("a-requested", 1)?;
             actor.wait_cue(cx, "b-accepted").await?;

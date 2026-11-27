@@ -661,27 +661,39 @@ async fn check_join(cx: TestCx) -> Result<()> {
     })
     .await?;
     ensure!(left.drawn >= 1, "the peer's leaving drew nothing");
-    let before = settle_drawn(&cx).await?;
-    let changes = Changes::start(&cx)?;
-    let (stores, _all) = Changes::watch_all(&cx)?;
-    let active = cx.update(|window, _| window.is_window_active())?;
-    log::info!("[voice-test] idle window starts");
-    cx.sleep(Duration::from_secs(5)).await;
-    log::info!("[voice-test] idle window ends");
-    let idle = cx.frames()?.since(before);
-    let notified: Vec<String> = stores.borrow().iter().map(|(k, n)| format!("{k} {n}")).collect();
-    cx.log(format_args!(
-        "then {} drawn / {} presented in 5 s; {}; stores that notified: [{}]; window active {active} → {}",
-        idle.drawn,
-        idle.presented,
-        changes.describe(),
-        notified.join(", "),
-        cx.update(|window, _| window.is_window_active())?
-    ));
-    ensure!(idle.drawn as u32 <= changes.count(), "frames drawn while nothing on screen changed");
+    // At rest: nothing drawn beyond what changed. Another window taking or giving the desktop's
+    // focus redraws ours (the window's activation is in the frame): such a try is taken again.
+    let mut last = String::new();
+    let mut result = Err(decibell_harness::inconclusive("no try"));
+    for attempt in 1..=3 {
+        let before = settle_drawn(&cx).await?;
+        let changes = Changes::start(&cx)?;
+        let (stores, _all) = Changes::watch_all(&cx)?;
+        let active = cx.update(|window, _| window.is_window_active())?;
+        log::info!("[voice-test] idle window starts");
+        let disturbed = cx.watched_sleep(Duration::from_secs(5)).await?;
+        log::info!("[voice-test] idle window ends");
+        let idle = cx.frames()?.since(before);
+        let notified: Vec<String> = stores.borrow().iter().map(|(k, n)| format!("{k} {n}")).collect();
+        last = format!(
+            "try {attempt}: then {} drawn / {} presented in 5 s; {}; stores that notified: [{}]; window active {active}{}",
+            idle.drawn,
+            idle.presented,
+            changes.describe(),
+            notified.join(", "),
+            disturbed.as_ref().map_or(String::new(), |d| format!(" (disturbed: {d})"))
+        );
+        cx.log(&last);
+        if disturbed.is_some() {
+            result = Err(decibell_harness::inconclusive(format_args!("at rest after the peer left: no undisturbed try in three ({last})")));
+            continue;
+        }
+        result = if idle.drawn as u32 <= changes.count() { Ok(()) } else { Err(anyhow::anyhow!("frames drawn while nothing on screen changed: {last}")) };
+        break;
+    }
     peer.cue("quit")?;
     leave(&cx).await?;
-    Ok(())
+    result
 }
 
 // ── voice-speaking-idle ─────────────────────────────────────────────────────────────────
@@ -695,27 +707,34 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     // Nobody speaks (both muted): the stage draws nothing. Measured as the window is (focused
     // or not); the server bar's active tile glow may re-present while focused (it draws nothing).
     let mut last = String::new();
-    let mut passed = false;
+    let (mut passed, mut measured_failure) = (false, false);
     for attempt in 1..=4 {
         let before = settle_drawn(&cx).await?;
         let events_before = cx.update(|_, cx| model(cx).pump_stats().events)?;
         let active = cx.update(|window, _| window.is_window_active())?;
         let changes = Changes::start(&cx)?;
-        cx.sleep(Duration::from_secs(10)).await;
+        let disturbed = cx.watched_sleep(Duration::from_secs(10)).await?;
         let frames = cx.frames()?.since(before);
         let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events_before;
         last = format!(
-            "try {attempt}: {} drawn, {} presented in 10 s ({}); {events} core events (voice pings / stats every ~2 s); {}",
+            "try {attempt}: {} drawn, {} presented in 10 s ({}); {events} core events (voice pings / stats every ~2 s); {}{}",
             frames.drawn,
             frames.presented,
             if active { "focused" } else { "unfocused" },
-            changes.describe()
+            changes.describe(),
+            disturbed.as_ref().map_or(String::new(), |d| format!(" (disturbed: {d})"))
         );
         cx.log(&last);
         if frames.drawn as u32 <= changes.count() {
             passed = true;
             break;
         }
+        measured_failure |= disturbed.is_none();
+    }
+    if !passed && !measured_failure {
+        peer.cue("quit")?;
+        leave(&cx).await?;
+        return Err(decibell_harness::inconclusive(format_args!("every try was disturbed by the desktop's focus ({last})")));
     }
     ensure!(passed, "the voice view drew while nothing on screen changed: {last}");
     peer.cue("quit")?;

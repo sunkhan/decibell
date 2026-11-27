@@ -108,6 +108,27 @@ impl TestCx {
         self.cx.background_executor().timer(duration).await;
     }
 
+    /// Sleeps `duration` (looking every 50 ms) watching what draws frames that aren't the
+    /// window's own, on a desktop other windows share: its focus changing hands (GPUI redraws the
+    /// window) and the pointer moving over it. What happened, or `None`.
+    pub async fn watched_sleep(&self, duration: Duration) -> Result<Option<String>> {
+        let state = || self.update(|window, _| (window.is_window_active(), window.mouse_position()));
+        let mut last = state()?;
+        let (mut flips, mut moved) = (0, false);
+        let started = Instant::now();
+        while started.elapsed() < duration {
+            self.sleep(Duration::from_millis(50)).await;
+            let now = state()?;
+            flips += usize::from(now.0 != last.0);
+            moved |= now.1 != last.1;
+            last = now;
+        }
+        Ok(match (flips, moved) {
+            (0, false) => None,
+            (flips, moved) => Some(format!("{flips} focus changes{}", if moved { ", the pointer moved" } else { "" })),
+        })
+    }
+
     /// Waits until the window has drawn nothing for 250 ms and returns the counters: presented
     /// nothing either for 250 ms, or only presented (no draw) for 1.5 s since the last draw, as a
     /// present-only animation does (the active server tile's glow breathes while the window has

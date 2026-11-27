@@ -1283,20 +1283,26 @@ impl Render for TestRoot {
     }
 }
 
-/// Nothing drawn for `seconds` after drawing stopped (a pointer crossing the window draws: up to
-/// three tries). A focused window may present the shell's glow without drawing (at most its 30 fps
-/// cap; 0 unfocused), so presents are only bounded.
+/// Nothing drawn for `seconds` after drawing stopped. A focused window may present the shell's
+/// glow without drawing (at most its 30 fps cap; 0 unfocused), so presents are only bounded. A try
+/// the shared desktop disturbed (the focus changing hands, the pointer crossing the window) that
+/// drew is taken again; three such tries are inconclusive.
 async fn assert_idle(cx: &TestCx, seconds: u64, what: &str) -> Result<Frames> {
-    let mut last = Frames { drawn: 0, presented: 0 };
+    let mut last = String::new();
     for _ in 0..3 {
         let before = cx.settle_drawn().await?;
-        cx.sleep(Duration::from_secs(seconds)).await;
-        last = cx.frames()?.since(before);
-        if last.drawn == 0 && last.presented as f32 <= 31. * seconds as f32 {
-            return Ok(last);
+        let disturbed = cx.watched_sleep(Duration::from_secs(seconds)).await?;
+        let frames = cx.frames()?.since(before);
+        if frames.drawn == 0 && frames.presented as f32 <= 31. * seconds as f32 {
+            return Ok(frames);
+        }
+        last = format!("{} drawn, {} presented in {seconds} s", frames.drawn, frames.presented);
+        match disturbed {
+            Some(d) => last = format!("{last}; disturbed: {d}"),
+            None => bail!("{what}: not idle ({last})"),
         }
     }
-    bail!("{what}: not idle ({} drawn, {} presented in {seconds} s)", last.drawn, last.presented)
+    Err(decibell_harness::inconclusive(format_args!("{what}: three tries disturbed by the desktop ({last})")))
 }
 
 trait SettleDrawn {

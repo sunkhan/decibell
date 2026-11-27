@@ -992,6 +992,8 @@ async fn check_typing_cost(cx: TestCx) -> Result<()> {
         let (list_drew, arrived) = (list_frames()? - list_before, events()? - events_before);
         cx.log(format_args!("try {attempt}: frames per key {per_key:?}; the message list drew {list_drew} times meanwhile; {arrived} core events arrived"));
         ensure!(per_key.iter().all(|f| *f == 1), "a key drew {per_key:?} frames");
+        // The typed word selected, then away (`clear_box` expects the selection Ctrl+F leaves).
+        cx.keystroke("ctrl-a")?;
         clear_box(&cx).await?;
         if list_drew == 0 {
             return Ok(());

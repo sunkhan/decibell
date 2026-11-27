@@ -127,6 +127,19 @@ impl FriendsPage {
         self.filter
     }
 
+    /// What a self-test reports when a typed request went nowhere: the add form open, its field's
+    /// text and focus, the search field's text, the form's error.
+    pub(crate) fn add_state(&self, window: &Window, cx: &App) -> String {
+        format!(
+            "the add form open {}, its field {:?} (focused {}), the search field {:?}, the form's error {:?}",
+            self.add_open,
+            self.add.read(cx).value(),
+            gpui::Focusable::focus_handle(self.add.read(cx), cx).is_focused(window),
+            self.search.read(cx).value(),
+            self.add_error
+        )
+    }
+
     pub fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
         if self.filter != filter {
             self.filter = filter;

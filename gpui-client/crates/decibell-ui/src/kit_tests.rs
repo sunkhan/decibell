@@ -207,26 +207,6 @@ fn wheel(cx: &TestCx, position: Point<Pixels>, delta: ScrollDelta) -> Result<()>
     )
 }
 
-/// Sleeps `duration` watching what draws frames that aren't the window's own: the desktop's
-/// focus changing hands (GPUI redraws the whole window), the pointer moving over it.
-async fn watched_sleep(cx: &TestCx, duration: Duration) -> Result<Option<String>> {
-    let state = |cx: &TestCx| cx.update(|window, _| (window.is_window_active(), window.mouse_position()));
-    let mut last = state(cx)?;
-    let (mut flips, mut moved) = (0, false);
-    let started = Instant::now();
-    while started.elapsed() < duration {
-        cx.sleep(Duration::from_millis(50)).await;
-        let now = state(cx)?;
-        flips += usize::from(now.0 != last.0);
-        moved |= now.1 != last.1;
-        last = now;
-    }
-    Ok(match (flips, moved) {
-        (0, false) => None,
-        (flips, moved) => Some(format!("{flips} focus changes{}", if moved { ", the pointer moved" } else { "" })),
-    })
-}
-
 /// Waits for drawing to stop, then checks that nothing is drawn or presented for `window`. A try
 /// in which the desktop disturbed the window (its focus changed hands, the pointer moved) and it
 /// drew is taken again; three disturbed tries are inconclusive.
@@ -235,7 +215,7 @@ async fn assert_idle(cx: &TestCx, window: Duration, what: &str) -> Result<Frames
     let mut disturbed = 0;
     for _ in 0..3 {
         let before = cx.settle().await?;
-        let disturbance = watched_sleep(cx, window).await?;
+        let disturbance = cx.watched_sleep(window).await?;
         let frames = cx.frames()?.since(before);
         if frames.drawn == 0 && frames.presented == 0 {
             return Ok(frames);
@@ -321,7 +301,7 @@ async fn spinning_idle(cx: &TestCx) -> Result<String> {
     let mut last = String::new();
     for _ in 0..3 {
         let before = cx.frames()?;
-        let disturbance = watched_sleep(cx, Duration::from_secs(2)).await?;
+        let disturbance = cx.watched_sleep(Duration::from_secs(2)).await?;
         let frames = cx.frames()?.since(before);
         if frames.drawn == 0 {
             ensure!(frames.presented <= 2 * 62, "the spinners presented {} times in 2 s", frames.presented);

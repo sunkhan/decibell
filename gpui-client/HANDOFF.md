@@ -1136,7 +1136,10 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   desktop's focus, a speaking ring) and no longer keep it waiting (the content tests failed on that whenever the
   test window got the focus). A test that could not measure returns `decibell_harness::inconclusive(reason)`
   and is reported INCONCLUSIVE, apart from passes and failures; a parent relaying a `--check` child's
-  INCONCLUSIVE line is INCONCLUSIVE too.
+  INCONCLUSIVE line is INCONCLUSIVE too. Other agents' test windows share the desktop and take its focus
+  mid-measurement: `TestCx::watched_sleep` sleeps while watching the window's activation and the pointer, and the
+  idle checks (kit, shell, voice, server settings) take a disturbed try again, inconclusive after three (five in
+  `shell-idle`).
 - **Feature `init`s are not all idempotent**: `decibell-chat`, `-composer`, `-home`, `-chat-content`,
   `-server-settings` and `-search` register again when called twice (voice, servers and settings keep a once
   guard). The capture tool now calls `registry::init_features` for the shell's `main-*` screens (their panes are

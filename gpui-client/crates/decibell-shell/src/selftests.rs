@@ -349,12 +349,27 @@ async fn signed_in(cx: &TestCx) -> Result<()> {
 /// Daily Gaming open on `#general` by clicks, its channel list drawn.
 async fn open_general(cx: &TestCx) -> Result<()> {
     click_probe(cx, "server-tile:1").await?;
-    wait_for(cx, Duration::from_secs(10), "Daily Gaming's channels", |cx| {
+    let opened = wait_for(cx, Duration::from_secs(10), "Daily Gaming's channels", |cx| {
         let m = model(cx);
         m.nav.read(cx).active_server == Some(daily_gaming())
             && m.community(daily_gaming(), cx).is_some_and(|c| !c.channels.read(cx).list().is_empty())
     })
-    .await?;
+    .await;
+    if let Err(e) = opened {
+        // Where the click went: what the server bar's press opened, what lay over it.
+        let state = cx.update(|window, cx| {
+            let m = model(cx);
+            format!(
+                "active server {:?}, its channels {:?}, a modal {:?}, the tile at {:?}, window active {}",
+                m.nav.read(cx).active_server,
+                m.community(daily_gaming(), cx).map(|c| c.channels.read(cx).list().len()),
+                m.overlays.read(cx).active_modal,
+                probes::bounds("server-tile:1"),
+                window.is_window_active()
+            )
+        })?;
+        bail!("{e:#} ({state})");
+    }
     click_probe(cx, "channel:general").await?;
     wait_for(cx, Duration::from_secs(5), "#general", |cx| model(cx).nav.read(cx).active_channel.as_deref() == Some("general")).await?;
     Ok(())
@@ -672,7 +687,10 @@ async fn check_idle(cx: TestCx) -> Result<()> {
         measured = true;
         break;
     }
-    ensure!(measured, "unfocused, #general open: not idle ({last})");
+    // Every try disturbed (the desktop is shared): nothing measured, which is not a pass.
+    if !measured {
+        return Err(decibell_harness::inconclusive(format_args!("unfocused, #general open: no undisturbed try in five ({last})")));
+    }
 
     // Focused: the glow breathes by re-presenting, at most BREATHE_FPS a second; nothing drawn.
     let mut last = String::new();
@@ -711,7 +729,9 @@ async fn check_idle(cx: TestCx) -> Result<()> {
         measured = true;
         break;
     }
-    ensure!(measured, "focused, #general open: {last}");
+    if !measured {
+        return Err(decibell_harness::inconclusive(format_args!("focused, #general open: no undisturbed try in five ({last})")));
+    }
     Ok(())
 }
 
