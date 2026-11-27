@@ -268,8 +268,22 @@ jobs:
           Add-Type -AssemblyName System.Windows.Forms
           "primary screen: $([System.Windows.Forms.Screen]::PrimaryScreen.Bounds)"
 
-      - name: Self-tests
+      # The executable itself: `cargo check` above never links. A link failure (2026-11-27: two
+      # application manifests, "CVT1100 duplicate resource") must fail the job, not hide in the
+      # self-tests' log as fifteen groups that could not start.
+      - name: Build the app (links decibell.exe)
+        id: build
         if: always() && steps.check.outcome == 'success'
+        shell: bash
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          set -o pipefail
+          cargo build --locked -p decibell-app 2>&1 | tee build.log | tail -n 60
+          test -f target/debug/decibell.exe
+
+      - name: Self-tests
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -282,7 +296,7 @@ jobs:
           export PATH="$(cygpath "$VCPKG_ROOT")/installed/x64-windows/bin:$PATH"
           export DECIBELL_USER_DATA_DIR="$RUNNER_TEMP/decibell-profile"
           : > selftests.log
-          cargo build --locked -p decibell-app 2>&1 | tail -n 40 | tee -a selftests.log
+          tail -n 20 build.log >> selftests.log
           for group in \
               "boot" \
               "idle-frames" \
@@ -320,7 +334,7 @@ jobs:
       # thread ("VSyncProvider") sleep with nothing to draw (GPUI patch 0021): about 0 context
       # switches a second each, against the display's refresh rate without the patch.
       - name: Measure the window at rest
-        if: always() && steps.check.outcome == 'success'
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         shell: powershell
         run: |

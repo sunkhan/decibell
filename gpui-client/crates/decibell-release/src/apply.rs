@@ -463,8 +463,9 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// The trial fd is the value of `--update-trial=<fd>` (the script's last argument).
-    const SAYS_OK: &str = r#"for a in "$@"; do case "$a" in --update-trial=*) fd="${a#--update-trial=}";; esac; done; echo "$@" > "$(dirname "$0")/args"; eval "echo ok >&$fd""#;
+    /// The trial fd is the value of `--update-trial=<fd>` (the script's last argument). Written through
+    /// `/dev/fd`: dash (Ubuntu's `sh`, the CI runner's) refuses `>&N` for a descriptor above 9.
+    const SAYS_OK: &str = r#"for a in "$@"; do case "$a" in --update-trial=*) fd="${a#--update-trial=}";; esac; done; echo "$@" > "$(dirname "$0")/args"; echo ok > "/dev/fd/$fd""#;
 
     fn setup(old: &str, new: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().unwrap();

@@ -66,16 +66,14 @@ fn main() {
     }
 }
 
-// ── Windows: the executable's icon, version and manifest ────────────────────────────────────
+// ── Windows: the executable's icon and version ──────────────────────────────────────────────
 
 /// `decibell.exe`'s resources (build/winres.rs): written as a `.res` and handed to the linker for
-/// the `decibell` binary only.
+/// the `decibell` binary only. The application manifest is GPUI's own (see build/winres.rs).
 fn windows_resources() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let icon = manifest_dir.join("../../../electron-client/resources/icon.ico");
-    let manifest = manifest_dir.join("windows/decibell.manifest.xml");
     println!("cargo::rerun-if-changed={}", icon.display());
-    println!("cargo::rerun-if-changed={}", manifest.display());
     println!("cargo::rerun-if-changed=build/winres.rs");
     println!("cargo::rerun-if-env-changed=DEP_DECIBELL_RELEASE_VERSION");
     let text = std::env::var("DEP_DECIBELL_RELEASE_VERSION").unwrap_or_else(|_| fail("decibell-release did not say the version".into()));
@@ -84,8 +82,7 @@ fn windows_resources() {
         *slot = part.parse().unwrap_or(0);
     }
     let ico = std::fs::read(&icon).unwrap_or_else(|e| fail(format!("{}: {e}", icon.display())));
-    let manifest = std::fs::read(&manifest).unwrap_or_else(|e| fail(format!("{}: {e}", manifest.display())));
-    let res = winres::resource_file(&ico, &manifest, &winres::Version { text: &text, numbers })
+    let res = winres::resource_file(&ico, &winres::Version { text: &text, numbers })
         .unwrap_or_else(|e| fail(format!("the Windows resources: {e}")));
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join("decibell.res");
     std::fs::write(&out, res).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));

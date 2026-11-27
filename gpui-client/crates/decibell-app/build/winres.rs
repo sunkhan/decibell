@@ -1,6 +1,10 @@
 //! A Win32 resource file (`.res`) written by hand, for `decibell.exe`: the app icon (from
-//! `electron-client/resources/icon.ico`), the version information (from the one version site) and
-//! the application manifest (`windows/decibell.manifest.xml`). link.exe (and lld-link) take a
+//! `electron-client/resources/icon.ico`) and the version information (from the one version site).
+//! **No application manifest**: GPUI embeds its own as resource 1 (`gpui_platform` switches gpui's
+//! `windows-manifest` feature on for Windows whatever our features say: `gpui.manifest.xml`,
+//! PerMonitorV2 DPI awareness, Common Controls 6, the segment heap), and a second one fails the
+//! link (CVT1100 "duplicate resource. type:MANIFEST, name:1": the Windows runner, 2026-11-27).
+//! link.exe (and lld-link) take a
 //! `.res` as an input and convert it themselves, so the build needs no resource compiler: nothing
 //! beyond the Rust toolchain on the CI runner, and the file can be checked on Linux
 //! (`llvm-cvtres` + `llvm-readobj --coff-resources`).
@@ -8,12 +12,11 @@
 //! Layout (Microsoft's "Resource File Formats"): a 32-byte empty entry, then per resource a header
 //! (data size, header size, type, name, data version, memory flags, language, version,
 //! characteristics; DWORD-aligned) and the data (DWORD-aligned). GPUI loads the window icon as
-//! resource 1 (`gpui_windows::platform::load_icon`), Windows the manifest as resource 1.
+//! resource 1 (`gpui_windows::platform::load_icon`).
 
 const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 const RT_VERSION: u16 = 16;
-const RT_MANIFEST: u16 = 24;
 /// en-US.
 const LANGUAGE: u16 = 0x0409;
 /// MOVEABLE | PURE | DISCARDABLE, as rc.exe writes them for icons; PURE | MOVEABLE otherwise.
@@ -25,7 +28,7 @@ pub struct Version<'a> {
     pub numbers: [u16; 4],
 }
 
-pub fn resource_file(ico: &[u8], manifest: &[u8], version: &Version) -> Result<Vec<u8>, String> {
+pub fn resource_file(ico: &[u8], version: &Version) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     // The empty first entry every .res starts with.
     entry(&mut out, 0, 0, 0, 0, &[]);
@@ -43,7 +46,6 @@ pub fn resource_file(ico: &[u8], manifest: &[u8], version: &Version) -> Result<V
     }
     entry(&mut out, RT_GROUP_ICON, 1, ICON_FLAGS, LANGUAGE, &group);
     entry(&mut out, RT_VERSION, 1, FLAGS, LANGUAGE, &version_info(version));
-    entry(&mut out, RT_MANIFEST, 1, FLAGS, LANGUAGE, manifest);
     Ok(out)
 }
 

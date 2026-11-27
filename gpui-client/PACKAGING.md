@@ -105,10 +105,13 @@ written by the build script itself — no resource compiler, nothing to install 
 lld-link take a `.res` as input (checked on Linux with `llvm-cvtres` + `llvm-readobj --coff-resources`,
 and against `llvm-rc`'s output for the version block) — holding the app icon
 (`electron-client/resources/icon.ico`, resource 1, which GPUI's `load_icon` loads for the window), the
-version information (the one version) and an **application manifest** (`windows/decibell.manifest.xml`:
-PerMonitorV2 DPI awareness, Common Controls 6, long paths, the segment heap). GPUI is built without its
-own manifest (`default-features = false` drops its `windows-manifest` feature), so before this the window
-was DPI-unaware (stretched above 100 % scaling) and GPUI's task dialogs had no Common Controls 6. The
+version information (the one version). The **application manifest** is GPUI's own, not ours:
+`gpui_platform` switches gpui's `windows-manifest` feature on for Windows whatever the workspace's features
+say, so every build already embeds `gpui.manifest.xml` as resource 1 (PerMonitorV2 DPI awareness, Common
+Controls 6, the segment heap), and a second manifest in our `.res` failed the link on the runner (CVT1100
+"duplicate resource. type:MANIFEST, name:1", 2026-11-27: the first Windows link of this build script). What
+GPUI's lacks against the one first written here: `longPathAware` (paths over 260 characters; adding it is a
+GPUI patch to that file, not done) and an `assemblyIdentity`. The
 ship build opens no console (`windows_subsystem = "windows"`; development builds keep stderr). At start
 the process sets the AppUserModelID `com.decibell.native` (`decibell_release::APP_USER_MODEL_ID`), and
 the Start menu shortcut carries the same id: NSIS cannot set that property, so the installer runs
