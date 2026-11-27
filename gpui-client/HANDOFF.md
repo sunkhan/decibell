@@ -10,6 +10,52 @@ for every behaviour. Owner decision 2026-11-26: GPUI, not Qt (`qt-client/` is th
 (the stream path), `gpui-client/PARITY.md` (the checklist), `docs/FEATURES.md`, `ARCHITECTURE.md` §7.3,
 `electron-client/HANDOFF.md` §5 (native gotchas apply here too).
 
+## Resume here (state on 2026-11-27, written after a crash)
+
+**What happened.** On the night of 2026-11-26 the machine ran out of memory (several agents each linking a
+fat-LTO release binary or building the workspace's tests at once) and the session was killed. Nothing on the
+branch was lost: `gpui-client` was pushed at `641bec1` with the Windows Native Check green on it. Five agents
+were cut off with work uncommitted in their worktrees (§1a); they were resumed on 2026-11-27.
+
+**The rule that came out of it (every agent, every session):**
+- `CARGO_BUILD_JOBS=4` on every cargo command.
+- One heavy build at a time on the machine, through a lock:
+  `flock ~/.cache/decibell-dev/heavy-build.lock cargo build --release …`. Heavy = any release build (ship,
+  development, `decibell-headless`), `cargo test --workspace`, any build or test of `decibell-app` (debug too),
+  `tools/win-check.sh`. `cargo check`, clippy and one small crate's tests don't need it.
+- Less than 8 GB available in `free -g`: wait before a release build. One app or self-test process at a time.
+- Commit after each finished item; nothing that matters lives only under `/tmp` (a reboot empties it: write
+  measurements into this file or `docs/` as they are taken).
+
+**Where the work stands.** Merged and verified on the branch head: the core split, the skeleton and themes,
+stream playback (three hardware decoders + software), the chat list, sign-in, servers, channels, DMs with E2EE,
+voice with MLS, streams and Go Live, calls, settings, server and channel settings, search, the platform services,
+attachment playback (first pass), interface sounds / mic test / device events in the core, the Windows batch's
+first checkpoint (§1c). Last full verification, on `0687ee3`: 758 unit tests pass, 24 of 25 key self-tests pass
+one at a time (`media-idle` fails: with the media second pass), Electron's bar green, `tools/win-check.sh` clean.
+
+**In flight (§1a has the worktrees):** cross-crate joins and self-test triage; packaging, auto-update, crash
+reports and the ship build's size; attachment playback's second pass; auto-away on X11; the Windows batch's
+second round. Land each with `tools/land.sh pick wip/<name>` (then `git merge --ff-only wip/land` in the main
+tree), run the three `cargo check` configurations, `tools/win-check.sh`, the unit tests and the key self-tests
+(Electron's bar too when `crates/decibell-core` changed), push `gpui-client`, read the Windows Native Check.
+
+**Then the final phase, on a quiet machine (nothing else building):**
+1. `PARITY.md`: every `docs/FEATURES.md` §1–§9 row "done" with evidence or "needs owner" with what to test.
+2. Electron's full baseline (`tools/perf/scenarios.sh electron all`) and the table of this client against it for
+   every §3 target, with the ship build (idle RAM first; the driver's share reported beside it, per `CLAUDE.md`).
+3. Captures of the main screens in all seven themes beside Electron's.
+4. Two clean full self-test runs; Electron's bar, both `cargo test`s, the Windows Native Check, printed.
+5. The "Needs owner" list (§6), with the open decisions below.
+
+**Open owner decisions (collect, don't wait on them):** macOS (Electron ships it, the native client has none);
+how Electron users move to the native client and its update path; the second-device half of the leave race
+(needs a server change); the encoder's 10 s keyframe interval and 133 ms rate buffer; a "Block" entry in the
+user menu; quirks #12 / #13 (`docs/electron-quirks.md`); a channel switch stops attachment playback (FEATURES
+says it survives, Electron's code stops it); "7 Nov 2026" against Qt's "7 11 2026"; spellcheck and zoom (not
+built); click-audit entry 11; the listening and by-eye checks; the Windows hardware checks
+(`docs/windows-owner-checks.md`); a real X11 session.
+
 ## 0. The goal and its rules (owner's brief, 2026-11-26)
 
 Full feature parity with the Electron client, as a faster, leaner client: far less RAM, low CPU, GPU, wakeups,
@@ -119,8 +165,7 @@ linked (all git-excluded through `.git/info/exclude`).
 | `.worktrees/media2` / `wip/media2` | attachment playback, second pass (rotation, 10-bit, VP9 hardware, UI pieces, sealed live test, retained memory, Electron comparison, captures) |
 | `.worktrees/platform2` / `wip/platform2` | auto-away by idle time on X11 (SYNC `IDLETIME` alarms, event-driven; tested in a private Xvfb) |
 | `.worktrees/packaging` / `wip/packaging` | the ship build and its size, Linux and Windows packages, `gpui-release.yml` (dry run on the branch), auto-update, crash reports, the Windows executable's identity |
-| `.worktrees/core-audio` / `wip/core-audio` | interface sounds, mic test, device events, click fixes (touches `crates/decibell-core`: Electron's bar + Windows check after merging) |
-| `.worktrees/land` / `wip/land` | the architect's landing tree (see below): empty of unmerged work when this was written |
+| `.worktrees/land` / `wip/land` | the architect's landing tree, driven by `tools/land.sh` (pick an agent's commits, resolve, then fast-forward the main tree): empty of unmerged work when this was written |
 
 When landing work whose files overlap other agents' uncommitted edits in the main tree: build the commit in a
 clean worktree, then move the branch with `git update-ref refs/heads/gpui-client <new> <old> && git reset -q`
