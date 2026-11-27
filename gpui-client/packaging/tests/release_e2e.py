@@ -304,6 +304,7 @@ def apply_cases(binary, work):
 
 
 def crash_cases(binary, work):
+    binary = pathlib.Path(binary)
     received = []
 
     def sentry(method, path, headers, body):
@@ -344,7 +345,9 @@ def crash_cases(binary, work):
               and event["release"] == f"decibell@{VERSION}" and event["level"] == "fatal" and event["environment"] == "production"
               and event["user"] == {"id": install_id} and event["tags"]["is_packaged"] == "true" and event["tags"]["thread"] == "decibell-test-panic"
               and "server_name" not in event and "breadcrumbs" not in event and not leaks
-              and event["debug_meta"]["images"][0]["code_file"] == "decibell")
+              and event["debug_meta"]["images"][0]["code_file"] == binary.name
+              and len(event["debug_meta"]["images"][0].get("debug_id", "")) == 36
+              and event["exception"]["values"][0]["stacktrace"]["frames"])
         detail = f'value "{value}", tags {event["tags"]}, leaks {leaks}'
     check("crash: a panic sends exactly one envelope, scrubbed, with Electron's tags", ok, detail)
 

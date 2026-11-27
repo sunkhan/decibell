@@ -447,12 +447,32 @@ PASS crash: a segfault leaves a record and dies as SIGSEGV: exit -11, 1 record(s
 PASS crash: the next start sends the native crash, once: SIGSEGV at 0x8 in decibell
 ```
 
-The panic case sent exactly one envelope; its value read `cannot open <path> for perf1 with token <token> at <ip>:
-"<redacted>"` with tags `platform linux, arch x64, os_release 7.3.6-1-cachyos, is_packaged true, install_kind
-tarball, panic_location crates/decibell-release/src/crash/mod.rs:308, thread decibell-test-panic`: everything but
-the account name was taken out, because the scrubber learns the account's and communities' names at sign-in
-(`watch_names`) and this child panicked before signing in. The test now registers the names as a signed-in app
-does (`DECIBELL_TEST_CRASH_NAMES`).
+The panic case, rerun with the names registered as a signed-in app does (`DECIBELL_TEST_CRASH_NAMES`; the
+development `release-s` build of the same commit, which also aborts on panic):
+
+```text
+PASS crash: a panic sends exactly one envelope, scrubbed, with Electron's tags: value "cannot open <path> for <name>
+     with token <token> at <ip>: "<redacted>"", tags {platform: linux, arch: x64, os_release: 7.3.6-1-cachyos,
+     is_packaged: true, install_kind: tarball, panic_location: crates/decibell-release/src/crash/mod.rs:313,
+     thread: decibell-test-panic}, leaks []
+PASS crash: Privacy toggle off → nothing sent, no connection
+PASS crash: no DSN baked → nothing sent, no connection
+PASS crash: a segfault leaves a record and dies as SIGSEGV: exit -11, 1 record(s)
+PASS crash: the next start sends the native crash, once: SIGSEGV at 0x8 in decibell
+```
+
+The panic message held the home path, the account's name, a JWT, an address and a quoted message; the
+envelope carries none of them (the test greps its whole body), has `user` = the install id only, no
+`server_name`, no breadcrumbs, the instruction addresses and the image's debug id. (In the first run the
+account's name got through: that child panicked before any sign-in, when the scrubber cannot know the name.)
+
+**About in each of the updater's states** (`settings-about-{up-to-date, checking, available-notify,
+available-preparing, downloading, ready, error, disabled}`), captured with `decibell-capture --all-themes`
+and paired with the Electron renderer's real `AboutTab` seeded with the same state
+(`tools/electron-captures/pages/settings-about-*.tsx`, `pairs.mjs`): every state in every theme differs in
+0.13–0.16 % of pixels (text anti-aliasing), console-split in 2.4 % (that theme's whole settings window, the
+same in every state); the strings, buttons and colours are Electron's (`AboutTab.tsx`). The 56 pairs are
+in `~/.cache/decibell-dev/packaging/captures/pairs/index.html` on the build machine.
 
 **A packaged tree run read-only** (`packaging/tests/readonly-run.sh`; the tarball's layout with the same
 development `dev-local` build, since the ship build has neither self-tests nor `--login`; bubblewrap binds the
