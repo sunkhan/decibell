@@ -21,7 +21,7 @@ use decibell_ui::motion::mix;
 use decibell_ui::{ActiveTheme as _, DismissEvent, FontRole, Icon, IconName, Label, Popover, Side, Spinner, title_tooltip};
 use decibell_video::{Fit, VideoView, Viewer};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Hsla, ImageSource, IntoElement, MouseButton, MouseDownEvent, ObjectFit,
+    AnyElement, App, ClickEvent, Context, Hsla, ImageSource, IntoElement, MouseButton, MouseDownEvent, ObjectFit, Pixels, Point,
     Render, SharedString, Window, div, img, point, prelude::*, px,
 };
 
@@ -647,6 +647,12 @@ pub struct OverflowTile {
     bounds: BoundsCell,
     /// While the list is open: the community's roster (the rows' nicknames).
     roster: Option<gpui::Subscription>,
+    /// Where and when the list was last dismissed by a press: the list's outside-press runs
+    /// before the tile sees that press, and a press on the tile itself is the tile's toggle
+    /// (`OverflowPopover`: "The tile toggles itself").
+    dismissed: Option<(Point<Pixels>, std::time::Instant)>,
+    /// The press now on the tile is the one that dismissed the list: its click doesn't reopen it.
+    press_closed: bool,
     _watch: Watch,
 }
 
@@ -660,7 +666,7 @@ impl OverflowTile {
             // The open list shows each one's flags.
             .store_if(&model.live.voice.participants, cx, |this: &mut Self, _, _| this.open);
         let hidden = data.hidden.iter().copied().collect();
-        Self { data, hidden, open: false, bounds: BoundsCell::new(), roster: None, _watch: watch }
+        Self { data, hidden, open: false, bounds: BoundsCell::new(), roster: None, dismissed: None, press_closed: false, _watch: watch }
     }
 
     /// The open list names everyone hidden (`HiddenRow`'s `useDisplayName`): look up those the
@@ -718,7 +724,10 @@ impl Render for OverflowTile {
             let anchor = point(b.right(), b.top() - px(8.));
             Popover::new("overflow-list", anchor)
                 .prefer(Side::Above)
-                .on_dismiss(cx.listener(|this, _: &DismissEvent, _, cx| this.set_open(false, cx)))
+                .on_dismiss(cx.listener(|this, _: &DismissEvent, window, cx| {
+                    this.dismissed = Some((window.mouse_position(), std::time::Instant::now()));
+                    this.set_open(false, cx)
+                }))
                 .child(overflow_list(&d, cx))
         });
         let theme = cx.theme();
@@ -759,9 +768,21 @@ impl Render for OverflowTile {
             .shadow(theme.shadow_raised.clone())
             .cursor_pointer()
             .tooltip(title_tooltip(SharedString::from(format!("{} more in {}", decibell_model::regional::Regional::get().group(count as u64), d.channel_name))))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    // The same press that just closed the list (its outside-press ran first).
+                    this.press_closed = this.dismissed.take().is_some_and(|(at, when)| {
+                        at == event.position && when.elapsed() < std::time::Duration::from_millis(250)
+                    });
+                }),
+            )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 let _ = &bounds;
+                if std::mem::take(&mut this.press_closed) {
+                    return;
+                }
                 let open = !this.open;
                 this.set_open(open, cx);
             }))
