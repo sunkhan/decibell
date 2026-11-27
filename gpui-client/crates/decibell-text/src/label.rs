@@ -339,23 +339,6 @@ fn listen_for_selection(selection: &Entity<TextSelection>, layout: &Rc<Layout>, 
     });
 }
 
-#[cfg(test)]
-mod selection_tests {
-    use super::*;
-
-    #[test]
-    fn a_selection_is_a_byte_range_of_the_text() {
-        let mut s = TextSelection { text: "10.1.2.3 · Linux".into(), ..TextSelection::default() };
-        assert_eq!(s.range(), None);
-        s.set(8, 0);
-        assert_eq!(s.range(), Some((0, 8)), "a drag backwards selects the same");
-        assert_eq!(s.selected_text().as_deref(), Some("10.1.2.3"));
-        s.set(3, 3);
-        assert_eq!(s.selected_text(), None, "a caret selects nothing");
-        s.set(0, 200);
-        assert_eq!(s.range(), None, "past the text (it changed): nothing");
-    }
-}
 
 /// A layout the caller made, shown as it is: a code block's text, a paragraph a view keeps.
 /// The element is exactly as large as the layout (rounded up to whole device pixels).
@@ -447,5 +430,23 @@ impl Element for MathBlock {
     fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
         let baseline = gpui::point(bounds.origin.x, bounds.origin.y + px(self.math.ascent));
         self.math.paint(baseline, f32::from(bounds.size.width), &self.colors, window, cx);
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn a_selection_is_a_byte_range_of_the_text() {
+        let mut s = TextSelection { text: "10.1.2.3 · Linux".into(), ..TextSelection::default() };
+        assert_eq!(s.range(), None);
+        s.set(8, 0);
+        assert_eq!(s.range(), Some((0, 8)), "a drag backwards selects the same");
+        assert_eq!(s.selected_text().as_deref(), Some("10.1.2.3"));
+        s.set(3, 3);
+        assert_eq!(s.selected_text(), None, "a caret selects nothing");
+        s.set(0, 200);
+        assert_eq!(s.range(), None, "past the text (it changed): nothing");
     }
 }

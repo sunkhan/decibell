@@ -14,6 +14,9 @@ use decibell_model::Model;
 use decibell_ui::{CloseHandler, ConfirmModal, ConfirmTone};
 use gpui::{AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, IntoElement, Render, SharedString, Subscription, Window};
 
+/// What a quit asked for through [`QuitGuard::quit_app`] runs once it may go ahead.
+type PendingQuit = Box<dyn FnOnce(&mut App)>;
+
 pub struct QuitGuard {
     window: AnyWindowHandle,
     /// The question is showing.
@@ -24,7 +27,7 @@ pub struct QuitGuard {
     uploads: usize,
     /// The question was asked for [`QuitGuard::quit_app`]: what to do once "Quit anyway" is chosen
     /// ("Keep uploading" drops it).
-    pending_quit: Option<Box<dyn FnOnce(&mut App)>>,
+    pending_quit: Option<PendingQuit>,
     _subscriptions: Vec<Subscription>,
 }
 
