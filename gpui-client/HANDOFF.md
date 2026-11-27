@@ -311,39 +311,41 @@ build); with patch `0021` the gallery at rest reads 0 context switches / s and 0
 `decibell-text`, a 2 s deadline against Windows' slow refused connect in `decibell-unfurl`). Only `boot` ran of
 the self-tests (the step stopped at its failure: fixed), so `video-probe` and the rest are still to be read.
 
-**Which self-tests the Windows runner executes** (run 45998066577, the first in which every group ran: 44 passed,
-5 failed; 303 unit tests passed, 0 failed; at rest 27 MB private working set, 0 wakeups / s, 0 / 0 frames):
+**Which self-tests the Windows runner executes** (run 46016294369: 48 result lines said PASS and 1 FAIL, of which
+3 were skips printed as passes; 304 unit tests passed; at rest 27 MB private working set, 0 wakeups / s, 0 / 0
+frames). From that run on the harness prints `SKIP` for a test that said it could not run, on every platform,
+and the job's summary counts PASS / FAIL / SKIP / INCONCLUSIVE separately.
 
-- *Pass there, and fail the job if they fail twice in a row* (the workflow's `fatal` list): `boot`, `idle-frames`,
-  `themes`, `window-frame`, `video-probe`, the seven `kit-*`, `chat-history`, `chat-switch`, `chat-resize`,
-  `chat-selection`, `chat-rows`, `chat-idle`, `chat-hover`, `input-clipboard`, `input-password`,
-  `hotkeys-focused`, `hotkeys-layout`, `content-scroll-fixture`, `content-rows`, `render-cost`,
-  `encoder-software`. Linking the executable fails the job by itself.
-- *Run but may still fail* (the workflow's `allowed` list, each with its reason; a group moves to `fatal` once a
-  run has shown it passing):
-  - the `input-*` group and `join-status-picker`: `input-atoms` and the status picker's search failed because
-    the runner built **without the emoji pictures and data** (`assets/twemoji`, `assets/emoji-data` are fetched,
-    not committed). The job now runs `tools/fetch-assets.mjs` first; `input-atoms` says so itself when a binary
-    has no emoji pack. Not a Windows difference.
-  - `chat-scroll-spec`: its sum was compared exactly, and a wheel line is an `f32` (120 px is 3.6 of Windows'
-    33.3 px lines: 119.999997). A tolerance of a thousandth of a pixel. (No contradiction with `chat-history`'s
-    100 px notch: that test sends three lines per notch, this one sends amounts in px.)
-  - `server-settings-idle`: one frame drawn in its first 5 s window on the runner, undisturbed. The 114
-    presents are the active tile's glow in a focused window (allowed: ≤ 31 / s), not the failure. Whether the
-    frame is a late one-off (a request's failure arriving on a slow debug build) or a view that keeps drawing is
-    what the test now tells: it measures again and fails only if a second undisturbed window draws too.
-  - the platform crate's group: until now these **skipped on Windows and were counted as passes** ("PASS (0 ms)":
-    no development markers in the binary). The job now builds `--features dev-local` for the self-tests;
-    `profile-guard` is ported (Windows' `%LOCALAPPDATA%` / `%APPDATA%` in place of `HOME`), the private D-Bus
-    daemon is skipped off Linux. `attention`, `taskbar-progress`, `keyring-label` and `window-state` test Linux
-    services (KWin, the launcher entry, the Secret Service, X11) and say `SKIP` there by design: their Windows
-    sides are the owner's (checks §7).
+- *Fatal* (the workflow's `fatal` list: a group that fails twice in a row fails the job, as does a link
+  failure): `boot`, `idle-frames`, `themes`, `window-frame`, `video-probe`, the seven `kit-*`, the seven
+  `input-*` of the first group, `input-clipboard`, `input-password`, the seven `chat-*`, `chat-scroll-spec`,
+  `hotkeys-focused`, `hotkeys-layout`, `join-status-picker`, `join-dm-composer`, `picture-editor`,
+  `settings-narrow`, `server-settings-idle`, `content-scroll-fixture`, `content-rows`, `profile-guard`,
+  `single-instance`, `deep-link-arg`, `hotkey-cli`, `render-cost`, `encoder-software`. (The four groups that
+  failed in run 45998066577 have passed once since, not twice; they are fatal with the list's one retry.)
+- *Allowed*: `window-state` (saving the size, reopening at it, saving and reopening maximised all work on
+  Windows; restoring through `Window::zoom_window` did not, because GPUI's Windows `zoom` only maximised: GPUI
+  patch `0022`, not yet run; the off-screen placement phase has not been reached there yet), and `attention`,
+  `taskbar-progress`, `keyring-label`, which say SKIP on the runner by design (the stack, Linux's launcher
+  entry and Secret Service).
+- `server-settings-idle` on the runner draws one frame in its first 5 s window after Overview opens and none
+  in the second; on Linux (release and debug) its first window is clean. What the frame is was not found: the
+  test only counts frames. The test's definition stands as "an undisturbed quiet window among up to three,
+  every failed try logged"; something that keeps drawing fails every try.
 - *Cannot run there*: everything that signs in (the local stack is Linux servers): the owner's sitting is
   checks §10, by PARITY section. `regional` (glibc locales, by design), `idle-x11`, `video-nvdec`,
   `video-vaapi`, `video-fastpath` are Linux only.
 - *Could run with some work*: the stream tests (`video-hw`, `-sw`, `-idle`, `-two`, `-switch`, `-order`,
   `-recover`, `-starve`, `-stall`) need `vendor/streams` (made with NVENC on Linux, not in the repository): a
   small software-encoded set generated in the job would play real streams through the software path there.
+
+**What only the owner can settle on Windows** is `docs/windows-owner-checks.md`, all of it on a real machine:
+§3 hardware decode per GPU vendor and the picture's colours; §4 and §9 the numbers against Electron and the
+touchpad check for patch `0021`; §5 the title bar (caption buttons, snap layouts, restore); §6 Go Live's grid
+against real monitors, windows and a fullscreen game, and stream sound per app; §7 the desktop services
+(single instance, `decibell://`, attention, taskbar progress, window state, lock and auto-away, Copy image,
+the keyring entry); §8 fonts, emoji, IME, regional formats, hotkeys, files, devices, DPI, calls; §10 the
+signed-in self-tests from WSL2's stack, by PARITY section, with their by-hand steps.
 
 GPUI patches `0030`–`0032` (orientation, bit depth and transfer, the kept last frame) extended patch `0020`'s
 Direct3D path; read against it on 2026-11-27: the constant buffer still packs as HLSL packs it (160 bytes: the
