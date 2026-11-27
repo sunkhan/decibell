@@ -358,10 +358,19 @@ impl Render for GoLiveDialog {
         }
         let starting = phase == OwnStreamPhase::Starting;
         let error = model.live.voice.own_stream.read(cx).error.clone();
-        let wide = f32::from(decibell_ui::visible_window_bounds(window, cx).size.width) >= 880.;
+        // Windows (our own source grid, `NEEDS_CUSTOM_PICKER`): the renderer's `split` layout.
+        let split = sources::supported();
+        let viewport = f32::from(decibell_ui::visible_window_bounds(window, cx).size.width);
+        // The options panel fits beside the dialog (`withPanel`: 74rem with the grid, 55rem without).
+        let wide = viewport >= if split { 1184. } else { 880. };
+        // Tailwind's `lg:` (the grid fills its column, three window columns, side by side).
+        let lg = viewport >= 1024.;
+        let picked = split.then(|| model.live.voice.own_stream.read(cx).source_id.clone()).flatten();
+        let picked_source = picked.as_deref().and_then(|id| self.sources.iter().find(|s| s.id.as_ref() == id)).map(|s| (s.name.clone(), s.still.clone()));
         let this = cx.entity().downgrade();
 
-        let presets = quality_presets(&s, starting, cx);
+        let presets = quality_presets(&s, starting, false, cx);
+        let presets_row = (wide && split).then(|| quality_presets(&s, starting, true, cx));
         let options = option_rows(&s, sound_available, starting, cx);
         let advanced = advanced(&s, self.advanced, share_audio, starting, wide, this.clone(), cx);
         let panel_rows = wide.then(|| {
@@ -375,8 +384,8 @@ impl Render for GoLiveDialog {
         });
         let close_click = cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx));
         let cancel_click = cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx));
-        let source = if sources::supported() {
-            self.source_grid(starting, cx)
+        let source = if split {
+            self.source_grid(starting, lg, cx)
         } else {
             system_picker_note(cx).into_any_element()
         };
@@ -445,7 +454,58 @@ impl Render for GoLiveDialog {
                     ),
             );
 
-        let body: AnyElement = if wide {
+        let body: AnyElement = if wide && split {
+            // The grid over a row of the four quality cards; only the grid scrolls.
+            div()
+                .id("go-live-body")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .border_t_1()
+                .border_color(theme.color_border_divider)
+                .child(source)
+                .child(
+                    div()
+                        .flex_none()
+                        .border_t_1()
+                        .border_color(theme.color_border_divider)
+                        .px_5()
+                        .pt_4()
+                        .pb_5()
+                        .child(field("Quality", None, None, presets_row.expect("wide split"), cx)),
+                )
+                .into_any_element()
+        } else if split && lg {
+            // One card, the grid beside a 400 px column of settings (`lg:flex-row`).
+            div()
+                .id("go-live-body")
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .border_t_1()
+                .border_color(theme.color_border_divider)
+                .child(source)
+                .child(
+                    div()
+                        .id("go-live-settings")
+                        .flex()
+                        .flex_none()
+                        .flex_col()
+                        .gap_5()
+                        .w(px(400.))
+                        .px_5()
+                        .pt_5()
+                        .pb_5()
+                        .border_l_1()
+                        .border_color(theme.color_border_divider)
+                        .overflow_y_scroll()
+                        .child(field("Quality", None, None, presets, cx))
+                        .child(group("Options", options.into_iter().map(|r| r.into_any_element()).collect(), cx))
+                        .child(advanced),
+                )
+                .into_any_element()
+        } else if wide {
             div()
                 .id("go-live-body")
                 .flex()
@@ -490,8 +550,9 @@ impl Render for GoLiveDialog {
             .bg(theme.color_accent)
             .px_4()
             .py_2()
-            .when(starting, |this| this.opacity(0.5))
-            .when(!starting, |this| {
+            // `disabled={starting || (NEEDS_CUSTOM_PICKER && !picked)}`.
+            .when(starting || (split && picked.is_none()), |this| this.opacity(0.5))
+            .when(!starting && !(split && picked.is_none()), |this| {
                 this.hover(|st| st.bg(theme.color_accent_hover)).cursor_pointer().on_click(go_live_click)
             })
             .child(if starting {
@@ -528,7 +589,37 @@ impl Render for GoLiveDialog {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().child(Label::new(SharedString::from(summary)).size(12.).line_height(lh(12., cx)).color(theme.color_text_muted).truncate()))
+                    .child(div().flex().flex_1().min_w_0().items_center().gap_2p5().map(|this| {
+                        if !split {
+                            this.child(Label::new(SharedString::from(summary)).size(12.).line_height(lh(12., cx)).color(theme.color_text_muted).truncate())
+                        } else if let Some((name, still)) = picked_source {
+                            // The picked source: its still (`h-7 w-12 object-contain`), its name over the summary.
+                            this.when_some(still, |this, still| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .w_12()
+                                        .h_7()
+                                        .rounded(theme.radius_sm)
+                                        .bg(theme.color_bg_darkest)
+                                        .overflow_hidden()
+                                        .child(img(ImageSource::Render(still)).size_full().object_fit(ObjectFit::Contain)),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("go-live-picked")
+                                    .min_w_0()
+                                    .tooltip(title_tooltip(name.clone()))
+                                    .relative()
+                                    .children(decibell_shell::probes::probe("go-live-picked"))
+                                    .child(Label::new(name).size(13.).weight(500.).color(theme.color_text_primary).truncate())
+                                    .child(Label::new(SharedString::from(summary)).size(12.).color(theme.color_text_muted).truncate()),
+                            )
+                        } else {
+                            this.child(Label::new("Pick a screen or window to share.").size(12.).line_height(lh(12., cx)).color(theme.color_text_muted).truncate())
+                        }
+                    }))
                     .child(
                         div()
                             .id("go-live-cancel")
@@ -559,7 +650,15 @@ impl Render for GoLiveDialog {
             .border_color(theme.color_border)
             .bg(theme.color_bg_secondary)
             .shadow(theme.shadow_modal.clone())
-            .map(|this| if wide { this.w(px(460.)) } else { this.w_full().max_w(px(520.)) })
+            .map(|this| match (wide, split) {
+                // `w-[760px] h-[min(720px,calc(100vh-3rem))]`
+                (true, true) => this.w(px(760.)).h(max_h.min(px(720.))),
+                (true, false) => this.w(px(460.)),
+                // `w-full max-w-[560px] lg:h-[min(760px,calc(100vh-3rem))] lg:max-w-[1040px]`
+                (false, true) if lg => this.w_full().max_w(px(1040.)).h(max_h.min(px(760.))),
+                (false, true) => this.w_full().max_w(px(560.)),
+                (false, false) => this.w_full().max_w(px(520.)),
+            })
             .child(header)
             .child(body)
             .child(footer);
@@ -571,7 +670,8 @@ impl Render for GoLiveDialog {
                 .flex_col()
                 .flex_none()
                 .w(px(336.))
-                .max_h(max_h)
+                // Never taller than the Windows card beside it.
+                .max_h(if split { max_h.min(px(720.)) } else { max_h })
                 .overflow_hidden()
                 .rounded(theme.radius_xl)
                 .border_1()
@@ -607,7 +707,7 @@ impl Render for GoLiveDialog {
 impl GoLiveDialog {
     /// "What to share" (`goLive/SourceGrid.tsx`): the Screens / Windows tabs and a grid of
     /// tiles, each a still in a 16:9 frame over the source's name. A click picks the source.
-    fn source_grid(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn source_grid(&self, disabled: bool, lg: bool, cx: &mut Context<Self>) -> AnyElement {
         let mut to_tab = [SourceKind::Screen, SourceKind::Window]
             .map(|kind| Some(cx.listener(move |this, _: &ClickEvent, _, cx| this.show_source_tab(kind, cx))));
         let theme = cx.theme();
@@ -669,9 +769,8 @@ impl GoLiveDialog {
             .child(tabs);
 
         let shown: Vec<&GridSource> = self.sources.iter().filter(|s| s.kind == tab).collect();
-        // Two columns: the card is 460 px wide here (the renderer's third column for windows
-        // belongs to its 760 px Windows card).
-        let columns = 2;
+        // `grid-cols-2` for screens (few and wide), `grid-cols-2 lg:grid-cols-3` for windows.
+        let columns = if tab == SourceKind::Window && lg { 3 } else { 2 };
         let content: AnyElement = if !self.sources_loaded {
             // The renderer's skeleton: two tiles for screens, six for windows.
             let tiles = if tab == SourceKind::Screen { 2 } else { 6 };
@@ -724,7 +823,9 @@ impl GoLiveDialog {
                 .grid()
                 .grid_cols(columns)
                 .gap_2()
-                .max_h(px(300.))
+                // `max-h-[300px] … lg:max-h-none lg:min-h-0 lg:flex-1`: the column's height, only
+                // the grid scrolling, where the dialog lays it out side by side.
+                .map(|this| if lg { this.min_h_0().flex_1() } else { this.max_h(px(300.)) })
                 .overflow_y_scroll()
                 .pr_1()
                 .when(disabled, |this| this.opacity(0.6))
@@ -831,6 +932,8 @@ impl GoLiveDialog {
             .gap_3()
             .px_5()
             .pb_5()
+            // `lg:min-w-0 lg:flex-1 lg:pt-5`
+            .when(lg, |this| this.min_w_0().flex_1().min_h_0().pt_5())
             .child(header)
             .child(content)
             .when(tab == SourceKind::Screen && self.sources_loaded && self.sources_error.is_none(), |this| {
@@ -993,7 +1096,9 @@ fn hint_text(text: impl Into<SharedString>, cx: &App) -> AnyElement {
 
 /// `QualityPresets`: four cards, two by two; the sentence under them is the picked preset's
 /// blurb, or "Custom: …, set under Advanced." Presets this machine can't encode are greyed.
-fn quality_presets(s: &StreamSettings, disabled: bool, cx: &mut Context<GoLiveDialog>) -> impl IntoElement + use<> {
+/// `QualityPresets`: two by two, or the four in one row (`row`: the Windows card beside its
+/// options panel).
+fn quality_presets(s: &StreamSettings, disabled: bool, row: bool, cx: &mut Context<GoLiveDialog>) -> impl IntoElement + use<> {
     let encoders = Encoders::global(cx).read(cx);
     let theme = cx.theme();
     let active = active_preset(s).map(|p| p.id);
@@ -1055,12 +1160,17 @@ fn quality_presets(s: &StreamSettings, disabled: bool, cx: &mut Context<GoLiveDi
                 .into_any_element()
         })
         .collect();
-    let mut cards = cards.into_iter();
-    let row = |a: Option<AnyElement>, b: Option<AnyElement>| {
-        div().flex().gap_2().child(div().flex_1().min_w_0().children(a)).child(div().flex_1().min_w_0().children(b))
+    let grid: AnyElement = if row {
+        div().flex().gap_2().children(cards.into_iter().map(|c| div().flex_1().min_w_0().child(c))).into_any_element()
+    } else {
+        let mut cards = cards.into_iter();
+        let pair = |a: Option<AnyElement>, b: Option<AnyElement>| {
+            div().flex().gap_2().child(div().flex_1().min_w_0().children(a)).child(div().flex_1().min_w_0().children(b))
+        };
+        let first = pair(cards.next(), cards.next());
+        let second = pair(cards.next(), cards.next());
+        div().flex().flex_col().gap_2().child(first).child(second).into_any_element()
     };
-    let first = row(cards.next(), cards.next());
-    let second = row(cards.next(), cards.next());
     let note: AnyElement = match active_preset(s) {
         Some(p) => hint_text(p.blurb, cx),
         None => div()
@@ -1073,7 +1183,7 @@ fn quality_presets(s: &StreamSettings, disabled: bool, cx: &mut Context<GoLiveDi
             ))
             .into_any_element(),
     };
-    div().child(div().flex().flex_col().gap_2().child(first).child(second)).child(div().mt_2p5().child(note))
+    div().child(grid).child(div().mt_2p5().child(note))
 }
 
 /// `Row`: an icon tile, the title and description, the control; `below` spans the width.
