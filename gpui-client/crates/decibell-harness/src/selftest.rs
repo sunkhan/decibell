@@ -112,6 +112,20 @@ impl TestCx {
     /// window's own, on a desktop other windows share: its focus changing hands (GPUI redraws the
     /// window) and the pointer moving over it. What happened, or `None`.
     pub async fn watched_sleep(&self, duration: Duration) -> Result<Option<String>> {
+        // Every activation change, also one undone between two looks (another window taking the
+        // focus and giving it back within 50 ms still redraws this one twice).
+        struct Watcher;
+        let observed = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let (_watcher, _subscription) = {
+            let observed = observed.clone();
+            self.update(move |window, cx| {
+                let watcher = gpui::AppContext::new(cx, |_| Watcher);
+                let subscription = watcher.update(cx, |_, cx| {
+                    cx.observe_window_activation(window, move |_, _, _| observed.set(observed.get() + 1))
+                });
+                (watcher, subscription)
+            })?
+        };
         let state = || self.update(|window, _| (window.is_window_active(), window.mouse_position()));
         let mut last = state()?;
         let (mut flips, mut moved) = (0, false);
@@ -123,6 +137,7 @@ impl TestCx {
             moved |= now.1 != last.1;
             last = now;
         }
+        let flips = flips.max(observed.get());
         Ok(match (flips, moved) {
             (0, false) => None,
             (flips, moved) => Some(format!("{flips} focus changes{}", if moved { ", the pointer moved" } else { "" })),
