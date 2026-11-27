@@ -727,6 +727,32 @@ matrix, the engine, the no-pop rule and its tests).
   `media-live` (the local stack as `perf2`: uploads a clip to `#off-topic`, plays it from the attachment
   service, deletes the message).
 
+## Release (`decibell-release`) and packaging (`packaging/`)
+
+What a released build does on its own and how it is packed: `PACKAGING.md`.
+
+- **Two flavours of `decibell-app`**: `dev` (the default: screens, self-tests, fixtures, the release
+  crate's test hooks) and `ship` (`--no-default-features --features ship`). A screen, self-test, check,
+  fixture or test-only switch goes behind `dev` (in the app) or `fixtures` (in a feature crate) so the
+  ship build doesn't link it; `packaging/check-ship.sh` fails on development strings in the binary
+  (`DECIBELL_CENTRAL`, `DECIBELL_TEST_`, `DECIBELL_DEV_*`, self-test names). Check both flavours build
+  without warnings (`cargo check --release -p decibell-app --no-default-features --features ship`): a
+  module that only the fixtures reach gets `cfg` gates, or `#![cfg_attr(not(feature = "fixtures"),
+  allow(dead_code))]` with a comment saying so (`decibell-chat/src/live.rs`).
+- **The version** is `decibell_release::VERSION` (`crate::VERSION` in the app): never `CARGO_PKG_VERSION`.
+- **The release crate is GPUI-free** and blocking (its HTTP client runs on threads that exist only while
+  they work, and in a panic hook); the app's `updater` / `crash` modules are the GPUI glue. Nothing in it
+  runs at rest: no timer, no thread between checks or reports.
+- **Hosts**: the updater may contact `github.com` and its two download hosts only, the crash reporter the
+  DSN's host only (`http::Rule`); tests use loopback fixtures through `test-hooks` (plain HTTP to
+  127.0.0.0/8, compiled out of `ship`). Never GitHub's API, Sentry or a real feed from a test.
+- **Windows**: the executable's resources are written by `build/winres.rs` (no resource compiler); a new
+  resource goes there. The AppUserModelID is `decibell_release::APP_USER_MODEL_ID`, set at start and
+  carried by the installer's shortcut (`--create-shortcut`): change both together.
+- **Tests**: `cargo test -p decibell-release`; `packaging/tests/release_e2e.py --binary <dev release build>`
+  (the updater, apply and crash reports through the real binary); `packaging/tests/ship-isolated.sh`
+  (a ship binary on a private bus and keyring, network calls logged).
+
 ## GPUI gotchas met so far
 
 (`docs/gpui-notes.md` §12 has the survey's list; these were hit while building the skeleton.)
