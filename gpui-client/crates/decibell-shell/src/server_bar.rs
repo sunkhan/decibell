@@ -274,9 +274,11 @@ fn tile(
         .rounded(chrome.radius_md)
         .px_3()
         .tooltip(title_tooltip(title))
-        .children(crate::probes::probe(format!("server-tile:{}", id.get())))
         .when(!pending, |this| {
-            this.cursor_pointer()
+            // The probe marks a tile a click opens: a pending one ("Connecting…") is inert, and a
+            // self-test clicking it in the frame before the bar redraws it live opened nothing.
+            this.children(crate::probes::probe(format!("server-tile:{}", id.get())))
+                .cursor_pointer()
                 .on_click(move |_: &ClickEvent, _, cx| actions::servers::open_server(id, cx))
         });
 
