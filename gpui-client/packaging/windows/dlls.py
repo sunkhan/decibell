@@ -2,7 +2,8 @@
 """Finds every DLL `decibell.exe` needs that Windows doesn't provide, by walking the PE import
 tables (normal and delay-load) from the executable through each DLL found, and copies them beside
 it. The list therefore comes from the install tree vcpkg built (FFmpeg's, dav1d's, SVT-AV1's DLLs
-and whatever they import), never from memory.
+and whatever they import), never from memory. Each DLL is printed with its size and the modules that
+import it (`<-`; "delay" for a delay-load import), so the log answers why a DLL ships.
 
     python -I packaging/windows/dlls.py --exe stage/decibell.exe --search "$VCPKG_ROOT/installed/x64-windows/bin" \
         [--redist "<VS>\\VC\\Redist\\MSVC\\<v>\\x64\\Microsoft.VC143.CRT"] [--system C:\\Windows\\System32] \
@@ -23,6 +24,7 @@ VC_RUNTIME = ("vcruntime140", "msvcp140", "concrt140", "vccorlib140")
 
 
 def imports(path: pathlib.Path) -> list:
+    """The DLL names `path` imports, as (name, delay-loaded) pairs."""
     data = path.read_bytes()
     if data[:2] != b"MZ":
         raise ValueError(f"{path}: not a PE file")
@@ -53,7 +55,7 @@ def imports(path: pathlib.Path) -> list:
 
     names = []
     # Directory 1: imports (20-byte descriptors, Name at +12); 13: delay-load (32 bytes, Name at +4).
-    for index, size, name_at in ((1, 20, 12), (13, 32, 4)):
+    for index, size, name_at, delayed in ((1, 20, 12, False), (13, 32, 4, True)):
         rva, length = struct.unpack_from("<II", data, directories + 8 * index)
         if not rva or not length:
             continue
@@ -64,7 +66,7 @@ def imports(path: pathlib.Path) -> list:
                 break
             name_rva = struct.unpack_from("<I", entry, name_at)[0]
             if name_rva:
-                names.append(cstring(name_rva))
+                names.append((cstring(name_rva), delayed))
             at += size
     return names
 
@@ -90,12 +92,16 @@ def main() -> int:
     args = parser.parse_args()
 
     shipped, missing, system = {}, [], set()
+    importers = {}  # DLL (lower case) -> the modules that import it, in walk order
     queue = [args.exe]
     seen = set()
     while queue:
         module = queue.pop()
-        for name in imports(module):
+        for name, delayed in imports(module):
             key = name.lower()
+            who = f"{module.name} (delay)" if delayed else module.name
+            if who not in importers.setdefault(key, []):
+                importers[key].append(who)
             if key in seen:
                 continue
             seen.add(key)
@@ -118,13 +124,18 @@ def main() -> int:
                 system.add(name)
             else:
                 missing.append(name)
+    rows = []
     for key, path in sorted(shipped.items()):
-        print(f"dlls: ship {path.name}  ({path})")
+        row = f"{path.name}  {path.stat().st_size:,} bytes  <- {', '.join(importers[key])}"
+        rows.append(row)
+        print(f"dlls: ship {row}  ({path})")
         if args.copy_to:
             shutil.copy2(path, args.copy_to / path.name)
+    total = sum(p.stat().st_size for p in shipped.values())
+    print(f"dlls: {len(shipped)} DLLs, {total:,} bytes")
     print(f"dlls: Windows provides {', '.join(sorted(system)) or '(not checked)'}")
     if args.list:
-        args.list.write_text("".join(f"{p.name}\n" for _, p in sorted(shipped.items())), encoding="utf-8")
+        args.list.write_text("".join(f"{row}\n" for row in rows), encoding="utf-8")
     if missing:
         print("dlls: not found anywhere: " + ", ".join(missing), file=sys.stderr)
         return 1

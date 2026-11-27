@@ -68,5 +68,8 @@ $setup = Join-Path $Out "Decibell-$version-x64-setup.exe"
 & makensis /V2 "/DVERSION=$version" "/DVERSION4=$version4" "/DSTAGE=$stage" `
   "/DICON=$repo\electron-client\resources\icon.ico" "/DOUTFILE=$setup" "$client\packaging\windows\decibell.nsi"
 if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
-Get-Item $setup | Select-Object Name, Length
-Get-ChildItem $stage -Recurse -File | Select-Object @{n='File';e={$_.FullName.Substring($stage.Length + 1)}}, Length
+# Two tables, each formatted on its own: piped to the default formatter together, the second list took
+# the first one's columns (Name, Length) and printed its file names blank (the fourth dry run's log).
+Get-Item $setup | Select-Object Name, Length | Format-Table -AutoSize | Out-String -Width 300
+Get-ChildItem $stage -Recurse -File | Sort-Object Length -Descending |
+  Select-Object @{n='File';e={$_.FullName.Substring($stage.Length + 1)}}, Length | Format-Table -AutoSize | Out-String -Width 300
