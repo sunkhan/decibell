@@ -315,6 +315,15 @@ async fn click_probe(cx: &TestCx, key: &str) -> Result<()> {
     park_pointer(cx)
 }
 
+/// Draws what is pending now (a key event draws a pending frame before it is dispatched, and a
+/// window in the background may not draw by itself): a click then reaches this state's handlers,
+/// not the last frame's (CONVENTIONS, GPUI gotcha 14).
+fn draw_pending(cx: &TestCx) -> Result<()> {
+    cx.update(|window, cx| {
+        window.dispatch_event(gpui::PlatformInput::ModifiersChanged(gpui::ModifiersChangedEvent::default()), cx);
+    })
+}
+
 /// Waits until nothing has been drawn for 1 s and returns the counters.
 async fn settle_drawn(cx: &TestCx) -> Result<Frames> {
     let started = Instant::now();
@@ -1797,6 +1806,9 @@ async fn check_golive_software(cx: TestCx) -> Result<()> {
 
     // Take stream with me (Settings → Codecs): a same-community switch while live carries the
     // stream (capture and encoder keep running) into the new channel; without it the switch ends it.
+    // (The dock's button stopped sharing until the stream ended: a click goes to the last frame
+    // drawn, so let the window draw the ended stream first.)
+    draw_pending(&cx)?;
     click_probe(&cx, "dock-share").await?;
     wait_for(&cx, Duration::from_secs(5), "the Go Live dialog", |_| probes::flag_set("go-live-open")).await?;
     click_probe(&cx, "go-live-start").await?;
@@ -1828,6 +1840,7 @@ async fn check_golive_software(cx: TestCx) -> Result<()> {
     cx.log("switched back without it: the stream ended");
 
     // The dialog doesn't outlive the session.
+    draw_pending(&cx)?;
     click_probe(&cx, "dock-share").await?;
     wait_for(&cx, Duration::from_secs(5), "the Go Live dialog", |_| probes::flag_set("go-live-open")).await?;
     leave(&cx).await?;
