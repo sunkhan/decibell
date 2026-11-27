@@ -751,7 +751,7 @@ async fn check_paging(cx: TestCx) -> Result<()> {
             let state = cx.update(|window, cx| {
                 let st = model(cx).chat.search.read(cx);
                 format!(
-                    "{} results, has more {}, loading more {}, status {:?}, error {:?}, next cursor {} / offset {}; {} rows laid out; {scrolls} scrolls; window active {}",
+                    "{} results, has more {}, loading more {}, status {:?}, error {:?}, next cursor {} / offset {}; {} rows laid out, {}; {scrolls} scrolls; window active {}",
                     st.results.len(),
                     st.has_more,
                     st.loading_more,
@@ -760,6 +760,7 @@ async fn check_paging(cx: TestCx) -> Result<()> {
                     st.next_cursor,
                     st.next_offset,
                     crate::shown_results(cx).map_or(0, |r| r.read(cx).built_rows()),
+                    crate::shown_results(cx).map_or_else(|| "no panel".into(), |r| r.read(cx).paging()),
                     window.is_window_active()
                 )
             })?;

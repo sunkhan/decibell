@@ -243,6 +243,20 @@ impl ResultsView {
         self.rows.as_ref().map_or(0, |rows| rows.built.borrow().len())
     }
 
+    /// Where paging stands, for a self-test that saw it stop: the scroll offset, its maximum, the
+    /// viewport's height, the list's height to the sentinel, and whether the next page was asked for.
+    pub fn paging(&self) -> String {
+        let total = self.list.as_ref().and_then(|l| l.offsets.last().copied()).unwrap_or_default();
+        format!(
+            "offset {:?} of max {:?}, viewport {:?}, list {:?}, asked {}",
+            self.scroll.offset(),
+            self.scroll.max_offset(),
+            self.scroll.viewport_height(),
+            total,
+            self.asked
+        )
+    }
+
     /// Results whose heights are known (one number each).
     pub fn measured(&self) -> usize {
         self.heights.len()

@@ -1432,10 +1432,11 @@ impl Render for TestRoot {
     }
 }
 
-/// Nothing drawn for `seconds` after drawing stopped. A focused window may present the shell's
-/// glow without drawing (at most its 30 fps cap; 0 unfocused), so presents are only bounded. A try
-/// the shared desktop disturbed (the focus changing hands, the pointer crossing the window) that
-/// drew is taken again; three such tries are inconclusive.
+/// Nothing drawn for `seconds` after drawing stopped, in one of three tries (a late answer from the
+/// stack may draw once after the first quiet second: a tab that keeps drawing fails all three). A
+/// focused window may present the shell's glow without drawing (at most its 30 fps cap; 0
+/// unfocused), so presents are only bounded. When every try drew while the shared desktop disturbed
+/// the window (the focus changing hands, the pointer crossing it), nothing was measured: inconclusive.
 async fn assert_idle(cx: &TestCx, seconds: u64, what: &str) -> Result<Frames> {
     let mut last = String::new();
     let mut undisturbed: Vec<String> = Vec::new();
@@ -1460,8 +1461,9 @@ async fn assert_idle(cx: &TestCx, seconds: u64, what: &str) -> Result<Frames> {
         // runner drew one frame in its first window, 2026-11-27) only the first.
         cx.log(format_args!("{what}: not idle in a try ({last}); measuring again"));
     }
-    if undisturbed.len() >= 2 {
-        bail!("{what}: not idle ({})", undisturbed.join("; then "));
+    // No try was quiet. One that drew with nothing disturbing it is evidence; three disturbed ones are not.
+    if !undisturbed.is_empty() {
+        bail!("{what}: not idle in three tries ({})", undisturbed.join("; then "));
     }
     Err(decibell_harness::inconclusive(format_args!("{what}: three tries disturbed by the desktop ({last})")))
 }
