@@ -183,7 +183,7 @@ impl AttachmentService for ScreenUploads {
             }), receiver);
         }
         let result = if name.starts_with("failed") {
-            Err(UploadError { message: "the file is larger than this server allows".into(), cancelled: false })
+            Err(UploadError { message: "init failed: HTTP 413 Payload Too Large".into(), cancelled: false })
         } else {
             Ok(UploadedAttachment { id: 9001, kind: file.kind, filename: name, mime: file.mime.clone(), size_bytes: total, thumbnail_sizes_mask: 0, encrypted: None })
         };

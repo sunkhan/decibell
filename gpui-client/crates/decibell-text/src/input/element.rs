@@ -134,7 +134,17 @@ impl Element for InputElement {
                     return size(px(0.), px((state.display.height() * scale).ceil() / scale));
                 }
                 let height = measure(state, width, scale, cx);
-                let width = if width.is_finite() { width } else { state.display.width() + 1. };
+                // A multi-line field that doesn't wrap (`wrap="off"`: a code field) is as wide as
+                // its longest line and the caret, at least its container: the container scrolls
+                // sideways.
+                let unwrapped = state.buffer.rules().multiline && state.style.is_some_and(|style| style.wrapping == Wrapping::PRE);
+                let width = if !width.is_finite() {
+                    state.display.width() + 1.
+                } else if unwrapped {
+                    width.max(state.display.width() + state.style.map_or(1., |style| style.caret_width))
+                } else {
+                    width
+                };
                 // Whole device pixels, so the box is never lower than its text.
                 size(px(width), px((height * scale).ceil() / scale))
             })

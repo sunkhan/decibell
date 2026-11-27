@@ -452,6 +452,14 @@ fn rows_json(s: &MessageSlice) -> Value {
                     "id": m.id, "senderUid": m.sender_uid, "content": &*m.content, "pending": m.pending,
                     "edited": f.edited, "own": f.own, "grouped": f.grouped, "newDay": f.new_day,
                     "replyTo": m.reply_to(), "attachments": m.attachments.len(), "encrypted": m.encrypted,
+                    "decryptError": format!("{:?}", m.decrypt_error),
+                    // What the server sent (or the envelope, sealed) about each file.
+                    "files": m.attachments.iter().map(|a| json!({
+                        "id": a.id, "kind": format!("{:?}", a.kind), "filename": &*a.filename, "mime": &*a.mime,
+                        "size": a.size_bytes, "width": a.width, "height": a.height, "durationMs": a.duration_ms,
+                        "thumbnailSizesMask": a.thumbnail_sizes_mask, "placeholder": &*a.placeholder,
+                        "encrypted": a.encrypted, "key": a.key_b64.is_some(), "chunkBytes": a.chunk_bytes,
+                    })).collect::<Vec<_>>(),
                 })
             })
             .collect(),

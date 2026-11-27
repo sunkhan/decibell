@@ -1809,6 +1809,7 @@ dependencies = [
  "decibell-text",
  "decibell-theme",
  "decibell-ui",
+ "decibell-unfurl",
  "futures",
  "gpui",
  "gpui_platform",

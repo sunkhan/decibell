@@ -30,6 +30,9 @@ decibell-text.workspace = true
 decibell-model.workspace = true
 decibell-common.workspace = true
 decibell-richtext = { path = "../decibell-richtext" }
+# A clicked link goes to the browser only as `decibell:shell:openExternal` lets it (http(s), at most
+# 2048 characters): `links::external_link_target`.
+decibell-unfurl = { path = "../decibell-unfurl" }
 decibell-highlight = { path = "../decibell-highlight" }
 decibell-attachments = { path = "../decibell-attachments" }
 # Only for the payload types of the core's events (the fixtures). zbus on async-io, as every

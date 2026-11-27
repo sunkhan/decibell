@@ -517,29 +517,7 @@ impl Render for KitDialogs {
                 ConfirmModal::new("confirm", self.confirm, "Delete message", "Delete")
                     .tone(ConfirmTone::Danger)
                     .message("Delete this message? This cannot be undone.")
-                    .child(
-                        div()
-                            .mt_3()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_1()
-                            .child(Label::new("Tip: hold").size(11.).color(theme.color_text_muted))
-                            .child(
-                                div()
-                                    .rounded(theme.radius_sm)
-                                    .border_1()
-                                    .border_color(theme.color_border)
-                                    .bg(theme.color_bg_darkest)
-                                    .px_1p5()
-                                    .child(Label::new("Shift").font(crate::FontRole::Mono).size(10.).color(theme.color_text_secondary)),
-                            )
-                            .child(
-                                Label::new("while clicking the trash icon to skip this confirmation next time.")
-                                    .size(11.)
-                                    .color(theme.color_text_muted),
-                            ),
-                    )
+                    .child(crate::delete_message_tip(cx))
                     .on_confirm(cx.listener(|this, _, _, cx| {
                         this.confirm = false;
                         cx.notify();

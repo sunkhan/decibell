@@ -451,7 +451,8 @@ impl Render for Conversation {
             })
             .child(
                 ConfirmModal::new("delete-dm", confirm.is_some(), "Delete message", "Delete")
-                    .message("Delete this message? This cannot be undone.\n\nTip: hold Shift when clicking delete to skip this confirmation.")
+                    .message("Delete this message? This cannot be undone.")
+                    .child(decibell_ui::delete_message_tip(cx))
                     .tone(ConfirmTone::Danger)
                     .on_confirm(cx.listener(|this, _, _, cx| {
                         if let Some(id) = this.confirm_delete.take() {

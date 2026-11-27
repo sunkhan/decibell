@@ -138,6 +138,8 @@ pub struct ChatStyle {
     pub error: Hsla,
     pub success: Hsla,
     pub row_hover: Hsla,
+    /// The pane under the rows (`bg-bg-mid`, both chat panes).
+    pub bg_mid: Hsla,
     pub border: Hsla,
     pub border_divider: Hsla,
     pub bg_secondary: Hsla,
@@ -280,6 +282,7 @@ impl ChatStyle {
             error: theme.color_error,
             success: theme.color_success,
             row_hover: theme.color_row_hover,
+            bg_mid: theme.color_bg_mid,
             border: theme.color_border,
             border_divider: theme.color_border_divider,
             bg_secondary: theme.color_bg_secondary,

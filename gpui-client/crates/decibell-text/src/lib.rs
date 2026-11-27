@@ -29,7 +29,7 @@ pub use layout::{Layout, LineInfo};
 pub use paint::PaintOptions;
 pub use paragraph::{OBJECT_REPLACEMENT, Paragraph, ParagraphBuilder};
 pub use style::{Chip, LineHeight, OverflowWrap, TextStyle, WhiteSpace, WordBreak, Wrapping};
-pub use code::CodeStyle;
+pub use code::{CodeStyle, code_colorizer};
 pub use emoji::{EmojiStore, emoji_svg, packed_emoji_bytes, packed_emoji_count, rasterize_emoji};
 pub use label::{Label, MathBlock, TextBlock, TextSelection, copy_label_selection, selected_label_text};
 pub use math::{Formula, Math, MathColors};

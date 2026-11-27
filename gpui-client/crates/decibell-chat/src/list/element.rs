@@ -257,9 +257,15 @@ impl MessageList {
         let avatars = cx.try_global::<Model>().map(|model| model.live.presence.avatars.clone());
 
         // The cursor: what the pointer is over.
-        match self.hover.map(|(_, target)| target) {
-            Some(Target::Text) => window.set_cursor_style(CursorStyle::IBeam, hitbox),
-            Some(Target::Link(_) | Target::Sender | Target::ReplyLine | Target::ReplyName | Target::Action(_) | Target::CodeCopy(_) | Target::CodeToggle(_) | Target::Media) => {
+        match self.hover {
+            Some((_, Target::Text)) => window.set_cursor_style(CursorStyle::IBeam, hitbox),
+            // The header's time is selectable text; a grouped row's gutter time is not.
+            Some((row, Target::Time)) => {
+                if self.core.entries.get(row).and_then(|entry| entry.layout.as_ref()).is_some_and(|layout| !layout.grouped) {
+                    window.set_cursor_style(CursorStyle::IBeam, hitbox)
+                }
+            }
+            Some((_, Target::Link(_) | Target::Emoji(_) | Target::Sender | Target::ReplyLine | Target::ReplyName | Target::Action(_) | Target::CodeCopy(_) | Target::CodeToggle(_) | Target::Media)) => {
                 window.set_cursor_style(CursorStyle::PointingHand, hitbox)
             }
             _ => {}

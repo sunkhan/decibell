@@ -132,9 +132,12 @@ control is a tab stop and Enter / Space activate it; `decibell_ui::init` binds T
   centre in a region, `settings::dialog_region` for a dialog the renderer draws inside a settings window);
   `ConfirmModal::new(id, open, "Delete message", "Delete").message(…).tone(…).busy(…).on_confirm(…)
   .on_cancel(…)` (Enter confirms as it opens and with Cancel focused; Space activates the focused button;
-  `kit-confirm`); `ContextMenu::new(id, point).entry(MenuItem::new("Kick").icon(…).danger())
+  `kit-confirm`; a message's delete confirmation adds `.child(delete_message_tip(cx))`, the renderer's tip with
+  its Shift key cap); `ContextMenu::new(id, point).entry(MenuItem::new("Kick").icon(…).danger())
   .entry(MenuEntry::Separator).on_dismiss(…)` (`MenuEntry::Label`, `Custom`, `MenuItem::checked`,
   `expander`, `keep_open`); `Popover::new(id, point).child(…)`; `place_menu(…)` / `Placed` for your own
+  (`Placement::Beside { anchor, gap }`: beside a box, flipped left at the window's edge, centred on it —
+  `EmojiInfoPopover`'s rule)
   layer; `Tooltip::new(id, "Audio", bounds).shown(hovered)` (the settings rail's label) and
   `title_tooltip("…")` for GPUI's `.tooltip(…)`; `Toasts::push(cx, Toast::error("…").body(…).action(…))`
   with one `ToastStack::new()` in the **root** view (not inside a cached view).
@@ -350,6 +353,19 @@ in short:
   nothing; "(edited)" does (the renderer's `.select-text *` rule wins); Twemoji emoji copy nothing (inline SVG);
   a code block copies its label as written in the DOM; attachments copy their `alt` / card text. A slot that
   draws text (link previews, invite cards) adds nothing yet: the slot API has no copy hook.
+- **What else a row answers** (each a `Target`, hit-tested on the row's layout, nothing per frame): the time
+  (`Target::Time`: its `title` is `regional::full_date_time` in the user's time format, the header's and a grouped
+  row's hover time), the quoted line and its name ("Jump to message": the line's button's `title`), a Twemoji
+  (`Target::Emoji`: the pointer cursor, drawn at 75 % while hovered — a veil of what is under it, quirk #43 — and a
+  click opens the emoji info popover beside it, `MessageList::emoji_popover`; Escape (a keystroke observer: it closes
+  wherever the focus is), a press elsewhere, a wheel or any scroll of the list, or the same emoji again close it).
+  A link opens only as `decibell_unfurl::links::external_link_target` lets it out (http(s), ≤ 2048 characters,
+  normalised). Tests reach them by `time_point`, `emoji_point`, `reply_line_point`, `action_point`, `tooltip()`.
+- **What stands in the list's place** is `ChatPane::body` (`ChatPanel.tsx`'s conditions): "Loading history…" while the
+  newest page isn't in (or a load runs with nothing to show), blank for 300 ms and then faded up (a timer for the delay
+  only while loading, a 300 ms transition: nothing at rest); "Couldn't load messages." + Retry when that page failed
+  and there are no rows or it never came; the welcome banner with no rows; else the list. A list its pane stops
+  drawing (the channel emptied) applies the slice's change at once (`MessageList::new`'s slice observer).
 - **No message menu**: a right click opens the sender's user menu on the name or avatar, nothing elsewhere (the
   renderer's only menu on a message). The hover actions and the code block's copy button show their `title=` as
   a GPUI tooltip after 500 ms; the last row fades up (`isLast`, 300 ms) and the jump pill fades in, both drawn
@@ -382,6 +398,12 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
   places its child above it, left or right edge aligned, laid out at the child's own size. Boxes remembered from
   the last frame (`track_bounds`) are only for hit tests and self-tests; an absolute child without insets sits at
   its static position, not on its parent: give such canvases `inset_0()`.
+- **The code panel** doesn't wrap (`Wrapping::PRE` on a multi-line field: `decibell_text`'s element is then as wide as
+  its longest line and the caret) and scrolls sideways in a GPUI `overflow_x_scroll` box with
+  `restrict_scroll_to_axis` (the vertical wheel stays the `ScrollArea`'s; Shift turns it sideways), the caret kept in
+  view (`reveal_caret_x`); its tokens are coloured as typed: `InputState::set_colorizer(decibell_text::code_colorizer(
+  lang, palette))`, the code blocks' palette, re-run once per edit (the display rebuilds only lines whose styled
+  ranges changed). No horizontal scrollbar is drawn.
 - **Picker memory**: the emoji dataset is static data (`build.rs` from `assets/emoji-data/native.json`); the
   picker rasterises Twemoji into its own two-generation cache (~4 MB cap) and gives every image back
   (`drop_image`) when it closes; GIF previews are fetched only for tiles near the viewport and their decoded frames
@@ -406,7 +428,10 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
 - Screens `composer-*`, `emoji-picker*`, `gif-picker*`, `code-panel`, `math-panel`, `inline-editor` (Electron twins
   in `tools/electron-captures/pages/`); self-tests of the same names run against the local stack as `perf2` in a
   child app (`--check`), posting only in `#off-topic` / `#slow-lane` and deleting what they post (waiting for the
-  server's confirmation, not the optimistic removal).
+  server's confirmation, not the optimistic removal). `composer-vault` runs as `perf3` in the encrypted `#vault`
+  (perf3 / perf4 / perf5 have E2EE keys, passphrase `decibell-m3-test-passphrase`); it and `composer-attach-media`
+  read what a second client received through a `decibell-headless` beside the app (`selftests/media.rs`'s `Peer`:
+  `dump chat` lists each file's facts).
 
 ## Server and channel settings (`decibell-server-settings`, `decibell-picture-editor`)
 
@@ -631,6 +656,17 @@ shell's (`DmRows`, `UnreadDmTiles`).
   `tools/electron-captures/pages/_home.tsx`. Self-tests (`dm-*` incl. `dm-read-rules`, `friends-*`, `profile-popup`,
   `status-custom`, `user-menu-moderation`, `home-idle`) run child apps (`--check home-…`): read-only as `alice`,
   everything that changes state between two throwaway accounts registered once per run.
+
+## Attachments: the upload probe (`decibell-attachments`, feature `media-probe`)
+
+- **A video or audio file is probed when it is attached** (`upload::prepare` with `media_probe::FfmpegProbe`, which
+  the model's attachment service always passes): its shown size, its length as Chromium's demuxer gives it, and for a
+  video a poster frame whose thumbnails and ThumbHash ride the upload (`thumbs::poster_facts`). The module doc has
+  every rule; `tests/assets/electron.md` what the Electron client stored for the same files, asserted by
+  `media_probe::tests::the_electron_clients_values`. FFmpeg is the client's own prefix, read through a custom I/O,
+  never a path handed to FFmpeg; each step is bounded (5 s, 8K, one thread, 64 streams).
+- Compare a file by hand: `cargo run -p decibell-attachments --features media-probe --example media_probe -- <file>…`
+  (`PROBE_OUT=<dir>` writes the thumbnails as the community stores them).
 
 ## Chat content (`decibell-chat-content`)
 

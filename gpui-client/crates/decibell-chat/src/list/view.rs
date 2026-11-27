@@ -22,9 +22,9 @@ use decibell_text::Engine;
 use decibell_ui::identity::{avatar_color, person_slot};
 use decibell_ui::scroll::{LINE_STEP_PX, ScrollAnimator, ScrollKind};
 use decibell_ui::motion::{self, Transition};
-use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, title_tooltip};
+use decibell_ui::{ActiveTheme as _, FontRole, Icon, IconName, Label, Placed, Placement as LayerPlacement, title_tooltip};
 use gpui::{
-    AnyTooltip, AnyView, App, Bounds, ClipboardItem, ContentMask, Context, Entity, EventEmitter, FocusHandle, Hitbox, IntoElement,
+    AnyTooltip, AnyView, App, Bounds, ClipboardItem, ContentMask, Context, DispatchPhase, Entity, EventEmitter, FocusHandle, Hitbox, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollEvent,
     SharedString, Subscription, Task, Window, canvas, div, point, prelude::*, px,
 };
@@ -68,15 +68,40 @@ struct Tip {
     _show: Option<Task<()>>,
 }
 
-/// What a button in a row says on hover (`title=`), as the renderer writes it.
-fn title_of(target: Target) -> Option<&'static str> {
-    match target {
-        Target::Action(RowAction::Reply) => Some("Reply"),
-        Target::Action(RowAction::Edit) => Some("Edit message"),
-        Target::Action(RowAction::Delete) => Some("Delete message (Shift+click to skip confirmation)"),
-        Target::CodeCopy(_) => Some("Copy code"),
-        _ => None,
-    }
+/// `EmojiInfoPopover`: the emoji clicked in a message, what it is, beside it.
+pub(super) struct EmojiPopover {
+    key: RowKey,
+    span: u32,
+    emoji: SharedString,
+    /// `:id:` of `@emoji-mart/data`, or the emoji itself when it has none.
+    title: SharedString,
+    asset: Option<decibell_richtext::EmojiAsset>,
+    /// The emoji's box in window coordinates when it was clicked.
+    anchor: Bounds<Pixels>,
+    /// The list's drawn position then: any scroll closes it (the renderer listens for `scroll`
+    /// on the whole window, in the capture phase).
+    position: f64,
+    /// Escape closes it wherever the focus is and whatever takes the key (the renderer's
+    /// `keydown` on the document).
+    _escape: Subscription,
+}
+
+/// Above the window's content, as the renderer's portal at `z-50`.
+const EMOJI_POPOVER_PRIORITY: usize = 2;
+
+/// What a part of a row says on hover (`title=`), as the renderer writes it: the buttons, the
+/// quoted line ("Jump to message", its name included: the title is the line's button's), and the
+/// message's time (`formatFullDateTime`, through the regional formats).
+fn title_of(target: Target, message: &decibell_model::chat::Message, time_format: TimeFormat) -> Option<SharedString> {
+    Some(match target {
+        Target::Action(RowAction::Reply) => SharedString::new_static("Reply"),
+        Target::Action(RowAction::Edit) => SharedString::new_static("Edit message"),
+        Target::Action(RowAction::Delete) => SharedString::new_static("Delete message (Shift+click to skip confirmation)"),
+        Target::CodeCopy(_) => SharedString::new_static("Copy code"),
+        Target::ReplyLine | Target::ReplyName => SharedString::new_static("Jump to message"),
+        Target::Time => decibell_model::regional::Regional::get().full_date_time(message.timestamp?, time_format).into(),
+        _ => return None,
+    })
 }
 
 /// What the list asks of its owner.
@@ -86,7 +111,8 @@ pub enum ListEvent {
     Reply(i64),
     /// The trash on a message (`skip_confirm`: Shift was held).
     Delete { id: i64, skip_confirm: bool },
-    /// A link was clicked (not an invite: those open the join confirmation themselves).
+    /// A link was clicked (not an invite: those open the join confirmation themselves), as
+    /// `external_link_target` lets it out: http(s), at most 2048 characters, normalised.
     OpenLink(String),
     /// A media placeholder was clicked (the viewer's, once attachments are drawn).
     OpenMedia(i64),
@@ -173,6 +199,7 @@ pub struct MessageList {
     /// Scroll offsets of code blocks that were scrolled: (row, span, x, y).
     pub(super) code_scroll: Vec<(RowKey, u32, f32, f32)>,
     tip: Option<Tip>,
+    pub(super) emoji_popover: Option<EmojiPopover>,
     /// A press on a button hides its tooltip until the pointer leaves it (Chromium's).
     tip_suppressed: Option<(RowKey, Target)>,
     /// The last row as last seen, and the one fading in (`isLast`'s entrance) since when.
@@ -244,7 +271,17 @@ impl MessageList {
             Some(ScrollPosition { at_bottom: false, anchor_id, offset }) if anchor_id > 0 => Placement::Restore { id: anchor_id, offset },
             _ => Placement::Bottom,
         };
-        let mut subscriptions = vec![cx.observe(&slice, |_, _, cx| cx.notify())];
+        let mut subscriptions = vec![cx.observe(&slice, |this, slice, cx| {
+            // A slice that emptied (the only message deleted) makes the pane stop drawing the
+            // list (the empty channel's banner stands in its place), so no frame would apply the
+            // change: apply it now, or the list keeps the deleted rows (`row`, `visible_ids`) and
+            // what its slots were told is near.
+            if slice.read(cx).rows().is_empty() && !this.core.is_empty() {
+                let now = Self::now(cx);
+                this.sync(now, cx);
+            }
+            cx.notify()
+        })];
         if let Some(model) = cx.try_global::<Model>().cloned() {
             // Names and the clock format are baked into row layouts: build those rows again.
             subscriptions.push(cx.subscribe(&model.users, |this, _, changed: &NamesChanged, cx| {
@@ -315,6 +352,7 @@ impl MessageList {
             copied_task: None,
             code_scroll: Vec::new(),
             tip: None,
+            emoji_popover: None,
             tip_suppressed: None,
             last_key: None,
             fade: None,
@@ -1029,6 +1067,12 @@ impl MessageList {
     }
 
     /// Screen y (px from the list's top, on device pixels) of row `id`, for the self-tests.
+    /// Row `index`'s top as drawn, from the list's top (the jump slide included).
+    fn row_y_at(&self, index: usize) -> Option<f32> {
+        let scale = self.style.as_ref()?.scale as f64;
+        (index < self.core.len()).then(|| (((self.core.top(index) * scale).round() - (self.drawn.position * scale).round()) / scale) as f32 + self.drawn.slide)
+    }
+
     pub fn row_screen_y(&self, id: i64) -> Option<f32> {
         let index = self.core.index_of_id(id)?;
         let scale = self.style.as_ref()?.scale as f64;
@@ -1176,6 +1220,23 @@ impl MessageList {
         Some(point(self.bounds.left() + px(x + w / 2.), self.bounds.top() + px(row_y + y + h / 2.)))
     }
 
+    /// The window position of the middle of row `id`'s time, for pointer-driven tests.
+    pub fn time_point(&self, id: i64) -> Option<Point<Pixels>> {
+        let index = self.core.index_of_id(id)?;
+        let [x, y, w, h] = self.core.entries[index].layout.as_ref()?.time_bounds()?;
+        let row_y = self.row_screen_y(id)?;
+        Some(point(self.bounds.left() + px(x + w / 2.), self.bounds.top() + px(row_y + y + h / 2.)))
+    }
+
+    /// The window position of a point on row `id`'s quoted line, past its name (where a click
+    /// jumps), for pointer-driven tests.
+    pub fn reply_line_point(&self, id: i64) -> Option<Point<Pixels>> {
+        let index = self.core.index_of_id(id)?;
+        let [x, y, w, h] = self.core.entries[index].layout.as_ref()?.reply_line_bounds()?;
+        let row_y = self.row_screen_y(id)?;
+        Some(point(self.bounds.left() + px(x + w - 4.), self.bounds.top() + px(row_y + y + h / 2.)))
+    }
+
     /// The `title=` tooltip showing now.
     pub fn tooltip(&self) -> Option<SharedString> {
         self.tip.as_ref().filter(|tip| tip.at.is_some()).map(|tip| tip.label.clone())
@@ -1299,8 +1360,9 @@ impl MessageList {
     /// new one waits its delay.
     fn retarget_tip(&mut self, cx: &mut Context<Self>) {
         let want = self.hover.and_then(|(index, target)| {
-            let label = title_of(target)?;
-            Some((self.core.entries.get(index)?.key.clone(), target, label))
+            let entry = self.core.entries.get(index)?;
+            let label = title_of(target, &entry.message, self.time_format)?;
+            Some((entry.key.clone(), target, label))
         });
         let same = |tip: &Tip| want.as_ref().is_some_and(|(row, target, _)| &tip.row == row && tip.target == *target);
         if self.tip.as_ref().is_some_and(same) {
@@ -1327,7 +1389,7 @@ impl MessageList {
                 }
             });
         });
-        self.tip = Some(Tip { row, target, label: SharedString::new_static(label), at: None, view: None, _show: Some(show) });
+        self.tip = Some(Tip { row, target, label, at: None, view: None, _show: Some(show) });
     }
 
     /// The last row changed: it fades in (`isLast`: the last row of the list, unless it is our
@@ -1552,8 +1614,10 @@ impl MessageList {
                 if matches!(span.kind, decibell_richtext::SpanKind::Link { invite: true, .. }) {
                     // An invite opens the join confirmation, never a browser.
                     actions::servers::open_invite_link(&url, cx);
-                } else {
-                    cx.emit(ListEvent::OpenLink(url));
+                } else if let Some(target) = decibell_unfurl::links::external_link_target(&url) {
+                    // Main's `decibell:shell:openExternal`: http(s) of at most 2048 characters, as
+                    // the URL parser writes it; anything else is dropped.
+                    cx.emit(ListEvent::OpenLink(target));
                 }
             }
             Target::Sender | Target::ReplyName => {
@@ -1610,8 +1674,88 @@ impl MessageList {
                 }
             }
             Target::Media => cx.emit(ListEvent::OpenMedia(message.id)),
+            Target::Emoji(span) => {
+                // A second click on the same emoji closes it (`prev.anchor === anchor ? null`).
+                if self.emoji_popover.as_ref().is_some_and(|open| open.key == key && open.span == span) {
+                    self.emoji_popover = None;
+                    cx.notify();
+                    return;
+                }
+                let (Some(document), Some([bx, by, bw, bh]), Some(row_y)) =
+                    (layout.document(), layout.rich().and_then(|rich| rich.emoji_box(span)), self.row_y_at(index))
+                else {
+                    return;
+                };
+                let Some(span_ref) = document.spans().get(span as usize) else { return };
+                let emoji = document.text(&message.content, span_ref).to_string();
+                let [body_x, body_y, ..] = layout.body_bounds();
+                let anchor = Bounds::new(
+                    point(self.bounds.left() + px(body_x + bx), self.bounds.top() + px(row_y + body_y + by)),
+                    gpui::size(px(bw), px(bh)),
+                );
+                let title: SharedString = match decibell_richtext::emoji::shortcode_of(&emoji) {
+                    Some(id) => format!(":{id}:").into(),
+                    None => emoji.clone().into(),
+                };
+                let asset = decibell_richtext::emoji::twemoji_asset(&emoji);
+                // Before anything handles the key: whatever is focused may take Escape itself
+                // (the list clears its caret, the composer its reply), as the renderer's document
+                // listener sees it all the same.
+                let list = cx.entity().downgrade();
+                let escape = cx.intercept_keystrokes(move |event, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        let list = list.clone();
+                        cx.defer(move |cx| {
+                            let _ = list.update(cx, |list, cx| list.close_emoji_popover(cx));
+                        });
+                    }
+                });
+                self.emoji_popover =
+                    Some(EmojiPopover { key, span, emoji: emoji.into(), title, asset, anchor, position: self.drawn.position, _escape: escape });
+                cx.notify();
+            }
             _ => {}
         }
+    }
+
+    /// Closes the emoji info popover (a press outside it, Escape, a scroll).
+    pub fn close_emoji_popover(&mut self, cx: &mut Context<Self>) {
+        if self.emoji_popover.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The emoji whose info popover is open: (its message, the emoji, what the popover names it).
+    pub fn emoji_popover(&self) -> Option<(i64, SharedString, SharedString)> {
+        let open = self.emoji_popover.as_ref()?;
+        let index = self.core.index_of(&open.key)?;
+        Some((self.core.entries[index].message.id, open.emoji.clone(), open.title.clone()))
+    }
+
+    /// The text of row `id`'s time as drawn.
+    pub fn time_text(&self, id: i64) -> Option<String> {
+        let index = self.core.index_of_id(id)?;
+        self.core.entries[index].layout.as_ref()?.time_text().map(str::to_string)
+    }
+
+    /// The window position of the middle of the `n`-th Twemoji drawn in row `id`'s body, for
+    /// pointer-driven tests.
+    pub fn emoji_point(&self, id: i64, n: usize) -> Option<Point<Pixels>> {
+        let index = self.core.index_of_id(id)?;
+        let layout = self.core.entries[index].layout.as_ref()?;
+        let rich = layout.rich()?;
+        let document = layout.document()?;
+        let span = document
+            .spans()
+            .iter()
+            .enumerate()
+            .filter(|(_, span)| matches!(span.kind, decibell_richtext::SpanKind::Emoji { asset: Some(_) }))
+            .filter_map(|(at, _)| rich.emoji_box(at as u32).map(|b| (at, b)))
+            .nth(n)?;
+        let [x, y, w, h] = span.1;
+        let [body_x, body_y, ..] = layout.body_bounds();
+        let row_y = self.row_screen_y(id)?;
+        Some(point(self.bounds.left() + px(body_x + x + w / 2.), self.bounds.top() + px(row_y + body_y + y + h / 2.)))
     }
 
     /// A right click: the sender's user menu on the name or the avatar (`MessageBubble`'s
@@ -1890,6 +2034,71 @@ impl Render for MessageList {
                 |_, _, _, _| {},
             ))
         });
+        // The emoji info popover; any scroll since it opened closes it.
+        if self.emoji_popover.as_ref().is_some_and(|open| open.position != self.drawn.position || self.core.index_of(&open.key).is_none()) {
+            self.emoji_popover = None;
+        }
+        let emoji_popover = self.emoji_popover.as_ref().map(|open| {
+            let theme = cx.theme();
+            let list = cx.entity().downgrade();
+            let anchor = open.anchor;
+            let asset = open.asset;
+            let emoji = open.emoji.clone();
+            // `Twemoji emoji={…} size={36}` (the characters when no drawing exists).
+            let glyph = match asset {
+                Some(asset) => canvas(|_, _, _| {}, move |bounds, _, window, cx| {
+                    decibell_text::Engine::global(cx).emoji.paint(asset, bounds, window, cx);
+                })
+                .size(px(36.))
+                .flex_none()
+                .into_any_element(),
+                None => Label::new(emoji).size(36.).line_height(36.).into_any_element(),
+            };
+            // A press outside it (not on the emoji: that click toggles it) or a wheel anywhere
+            // closes it.
+            let listeners = canvas(|_, _, _| {}, move |card, _, window, _| {
+                let (outside, wheel) = (list.clone(), list.clone());
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble && !card.contains(&event.position) && !anchor.contains(&event.position) {
+                        let _ = outside.update(cx, |list, cx| list.close_emoji_popover(cx));
+                    }
+                });
+                window.on_mouse_event(move |_: &ScrollEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = wheel.update(cx, |list, cx| list.close_emoji_popover(cx));
+                    }
+                });
+            })
+            .absolute()
+            .inset_0();
+            // `min-w-[180px] overflow-hidden rounded-lg border border-border bg-bg-light shadow-float`.
+            let card = div()
+                .id("emoji-info")
+                .occlude()
+                .relative()
+                .min_w(px(180.))
+                .overflow_hidden()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.color_border)
+                .bg(theme.color_bg_light)
+                .shadow(theme.shadow_float.clone())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .border_b_1()
+                        .border_color(theme.color_border_divider)
+                        .px_4()
+                        .py_3()
+                        .child(glyph)
+                        .child(Label::new(open.title.clone()).size(13.).weight(500.).color(theme.color_text_primary).nowrap()),
+                )
+                .child(div().px_4().py_2().child(Label::new("Default").size(11.).color(theme.color_text_muted)))
+                .child(listeners);
+            decibell_ui::layer(EMOJI_POPOVER_PRIORITY, Placed::new(LayerPlacement::Beside { anchor, gap: px(8.) }).child(card))
+        });
         // The last row's entrance: its bubble drawn over the list at the fade's opacity.
         let fade = self.fade_now(Self::now(cx)).map(|(_, opacity, _)| {
             let view = cx.entity();
@@ -1906,6 +2115,7 @@ impl Render for MessageList {
             .children(fade)
             .children(pill)
             .children(tip)
+            .children(emoji_popover)
     }
 }
 

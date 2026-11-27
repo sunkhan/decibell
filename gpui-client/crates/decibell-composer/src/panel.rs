@@ -7,9 +7,11 @@
 //! lines; two spaces), Enter keeps the current line's indent, Ctrl+Enter inserts, Escape cancels.
 //! Math mode: Ctrl+Enter inserts, Escape cancels; the formula renders live under the field.
 //!
-//! Differences, by what the field can do: the renderer's code area does not wrap (`wrap="off"`,
-//! scrolling sideways) and colours the tokens live through a transparent `<textarea>` over a
-//! highlighted `<pre>`; here the text wraps and is drawn in one colour.
+//! The code area doesn't wrap (`wrap="off"`): it scrolls sideways (the wheel's horizontal
+//! deltas, Shift with the wheel), following the caret, and colours the tokens as they are typed
+//! (the renderer's transparent `<textarea>` over a `highlightNodes` `<pre>`: here the field's own
+//! text is styled, `decibell_text::code_colorizer`, the code blocks' palette). Its horizontal
+//! overflow has no scrollbar drawn (the renderer's textarea shows Chromium's).
 
 use decibell_text::input::{InputEvent, InputState, InputStyle, Selection, TextArea};
 use decibell_text::{Engine, Formula, MathBlock, Wrapping};
@@ -115,12 +117,56 @@ pub fn indent_lines(value: &str, from: usize, to: usize, outdent: bool) -> (Stri
     (text, start, end)
 }
 
+/// The code area's padding (`p-2.5`).
+const CODE_PAD: f32 = 10.;
+
+/// Scrolls the code area sideways so the caret (field coordinates) is inside it with the padding
+/// around it, as a textarea keeps its caret in view. Whether it moved.
+fn reveal_caret_x(scroll: &gpui::ScrollHandle, caret: gpui::Bounds<gpui::Pixels>) -> bool {
+    let view = f32::from(scroll.bounds().size.width);
+    if view <= 0. {
+        return false;
+    }
+    let offset = scroll.offset();
+    let scrolled = -f32::from(offset.x);
+    let (left, right) = (f32::from(caret.left()) + CODE_PAD, f32::from(caret.right()) + CODE_PAD);
+    let target = if left - CODE_PAD < scrolled {
+        (left - CODE_PAD).max(0.)
+    } else if right + CODE_PAD > scrolled + view {
+        right + CODE_PAD - view
+    } else {
+        return false;
+    };
+    scroll.set_offset(point(px(-target), offset.y));
+    true
+}
+
+/// The code blocks' palette (`.rich-codeblock .hljs-*`) on the code area's text.
+fn code_palette(cx: &mut App) -> decibell_text::CodeStyle {
+    let text = TextField::input_style(FontRole::Mono, 12.5, 1.5, cx).text;
+    let theme = cx.theme();
+    let family = theme.font(FontRole::Mono);
+    let (keyword, title, string, number, comment, deletion, operator) = (
+        theme.color_accent_bright,
+        theme.color_accent,
+        theme.color_success,
+        theme.color_warning,
+        theme.color_text_muted,
+        theme.color_error,
+        theme.color_text_secondary,
+    );
+    let italic = Engine::global(cx).face(&decibell_text::FontSpec { family, weight: 400, italic: true });
+    decibell_text::CodeStyle { text, italic, keyword, title, string, number, comment, deletion, operator }
+}
+
 /// The code or math panel.
 pub struct SnippetPanel {
     kind: SnippetKind,
     composer: WeakEntity<Composer>,
     field: Entity<InputState>,
     scroll: ScrollHandle,
+    /// The code area's sideways scroll (it doesn't wrap).
+    scroll_x: gpui::ScrollHandle,
     lang: SharedString,
     _subscriptions: Vec<Subscription>,
 }
@@ -144,8 +190,18 @@ impl SnippetPanel {
             });
         });
         let scroll = ScrollHandle::new();
+        let scroll_x = gpui::ScrollHandle::new();
         let reveal = scroll.clone();
-        field.update(cx, |field, _| field.on_reveal_caret(move |caret, _| reveal.scroll_into_view(caret.top(), caret.size.height, decibell_ui::ScrollAlign::Nearest)));
+        let reveal_x = scroll_x.clone();
+        let panel = cx.entity().downgrade();
+        field.update(cx, |field, _| {
+            field.on_reveal_caret(move |caret, cx| {
+                reveal.scroll_into_view(caret.top(), caret.size.height, decibell_ui::ScrollAlign::Nearest);
+                if kind == SnippetKind::Code && reveal_caret_x(&reveal_x, caret) {
+                    let _ = panel.update(cx, |_, cx| cx.notify());
+                }
+            })
+        });
         // `autoFocus`.
         let focus = field.clone();
         window.defer(cx, move |window, cx| focus.update(cx, |f, cx| f.focus(window, cx)));
@@ -154,7 +210,7 @@ impl SnippetPanel {
                 cx.notify();
             }
         })];
-        Self { kind, composer, field, scroll, lang: "plain".into(), _subscriptions: subscriptions }
+        Self { kind, composer, field, scroll, scroll_x, lang: "plain".into(), _subscriptions: subscriptions }
     }
 
     pub fn kind(&self) -> SnippetKind {
@@ -165,8 +221,17 @@ impl SnippetPanel {
         &self.field
     }
 
+    /// The code area's sideways scroll: (how far it is scrolled, its visible width), px.
+    pub fn sideways(&self) -> (f32, f32) {
+        (-f32::from(self.scroll_x.offset().x), f32::from(self.scroll_x.bounds().size.width))
+    }
+
     pub fn set_lang(&mut self, lang: &str, cx: &mut Context<Self>) {
         self.lang = SharedString::from(lang.to_string());
+        if self.kind == SnippetKind::Code {
+            let colorizer = decibell_text::code_colorizer(lang, code_palette(cx));
+            self.field.update(cx, |field, cx| field.set_colorizer(colorizer, cx));
+        }
         cx.notify();
     }
 
@@ -267,9 +332,9 @@ impl Render for SnippetPanel {
             .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
             .child(Icon::new(IconName::ComposerX).size(px(12.)).color(ink.color_text_muted).group_hover("snippet-close", ink.color_text_secondary));
 
-        let mono = |size: f32, cx: &mut App| -> InputStyle {
+        let mono = |size: f32, wrapping: Wrapping, cx: &mut App| -> InputStyle {
             let mut style = TextField::input_style(FontRole::Mono, size, 1.5, cx);
-            style.wrapping = Wrapping::PRE_WRAP;
+            style.wrapping = wrapping;
             style
         };
         let field: AnyElement = match kind {
@@ -282,7 +347,33 @@ impl Render for SnippetPanel {
                 .border_1()
                 .border_color(if focused { ink.color_accent } else { ink.color_border })
                 .bg(ink.color_bg_darkest)
-                .child(ScrollArea::new("snippet-code").track_scroll(&self.scroll).size_full().child(div().p(px(10.)).child(TextArea::new(&self.field, mono(12.5, cx)))))
+                .child(
+                    ScrollArea::new("snippet-code").track_scroll(&self.scroll).size_full().child(
+                        // `wrap="off"`: the lines run on and the area scrolls sideways.
+                        div()
+                            .id("snippet-code-x")
+                            .w_full()
+                            .overflow_x_scroll()
+                            // The wheel's vertical turn stays the outer area's; Shift turns it
+                            // sideways (Chromium's textarea).
+                            .restrict_scroll_to_axis()
+                            .track_scroll(&self.scroll_x)
+                            .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, window, cx| {
+                                if !event.modifiers.shift {
+                                    return;
+                                }
+                                let delta = event.delta.pixel_delta(window.line_height());
+                                let turn = if delta.x == px(0.) { delta.y } else { delta.x };
+                                let max = this.scroll_x.max_offset().x;
+                                let mut offset = this.scroll_x.offset();
+                                offset.x = (offset.x + turn).clamp(-max, px(0.));
+                                this.scroll_x.set_offset(offset);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .child(div().p(px(CODE_PAD)).child(TextArea::new(&self.field, mono(12.5, Wrapping::PRE, cx)))),
+                    ),
+                )
                 .into_any_element(),
             SnippetKind::Math => div()
                 .w_full()
@@ -293,7 +384,7 @@ impl Render for SnippetPanel {
                 .p(px(10.))
                 // `rows={2}`: two lines high at least.
                 .min_h(px(10. + 2. * 21. + 10. + 2.))
-                .child(TextArea::new(&self.field, mono(14., cx)))
+                .child(TextArea::new(&self.field, mono(14., Wrapping::PRE_WRAP, cx)))
                 .into_any_element(),
         };
         let math_preview = (kind == SnippetKind::Math && !empty).then(|| {

@@ -112,6 +112,11 @@ pub enum Placement {
     /// Under (or over) the box `Placed` is laid out in (it fills its parent: the trigger),
     /// `gap` away, left-aligned and kept `MENU_MARGIN` inside the window (the Select's menu).
     Attached { above: bool, gap: Pixels },
+    /// Beside a box in window coordinates (`EmojiInfoPopover`): `gap` right of it, else `gap` left
+    /// of it when the right side would pass the window's edge less `MENU_MARGIN`, never closer
+    /// than `MENU_MARGIN` to the left edge; centred on the box vertically, kept `MENU_MARGIN`
+    /// inside the window.
+    Beside { anchor: Bounds<Pixels>, gap: Pixels },
 }
 
 /// Lays its children out at their own size, then moves them to `placement` in window
@@ -205,6 +210,18 @@ impl Element for Placed {
                 visible_window_bounds(window, cx),
             ),
             Placement::At(origin) => origin,
+            Placement::Beside { anchor, gap } => {
+                let window_bounds = visible_window_bounds(window, cx);
+                let size = child_bounds.size;
+                let mut left = anchor.right() + gap;
+                if left + size.width > window_bounds.right() - MENU_MARGIN {
+                    left = anchor.left() - size.width - gap;
+                }
+                let left = left.max(window_bounds.left() + MENU_MARGIN);
+                let top = anchor.top() + anchor.size.height / 2. - size.height / 2.;
+                let top = top.min(window_bounds.bottom() - size.height - MENU_MARGIN).max(window_bounds.top() + MENU_MARGIN);
+                point(left, top)
+            }
             Placement::Attached { above, gap } => {
                 let window_bounds = visible_window_bounds(window, cx);
                 let left = bounds

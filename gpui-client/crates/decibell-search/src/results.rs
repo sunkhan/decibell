@@ -390,8 +390,15 @@ impl Render for ResultsView {
             let title = results_title(status == SearchStatus::Loading, status == SearchStatus::Error, store.total, store.total_capped, store.results.len());
             let skipped: Vec<SharedString> =
                 store.text_skipped.iter().filter_map(|id| channels.iter().find(|c| c.id == *id).map(|c| c.name.clone())).collect();
-            // `SORTS`: "Relevant" needs words to rank by, and the index (not the inside-words scan).
-            let relevance_off = store.query.matches_inside() || search_words(&store.query.text).is_empty();
+            // `SORTS`: "Relevant" needs words to rank by, and the index (not the inside-words scan);
+            // the disabled option says which (its `title`).
+            let relevance_off = if store.query.matches_inside() {
+                Some("Not available when matching inside words")
+            } else if search_words(&store.query.text).is_empty() {
+                Some("Add words to sort by relevance")
+            } else {
+                None
+            };
             (
                 status,
                 SharedString::from(title),
@@ -406,7 +413,10 @@ impl Render for ResultsView {
         let sorts = vec![
             Segment::new(SearchSort::Newest, "Newest"),
             Segment::new(SearchSort::Oldest, "Oldest"),
-            Segment::new(SearchSort::Relevance, "Relevant").disabled(relevance_off),
+            match relevance_off {
+                Some(why) => Segment::new(SearchSort::Relevance, "Relevant").disabled(true).title(why),
+                None => Segment::new(SearchSort::Relevance, "Relevant"),
+            },
         ];
         decibell_shell::probes::text("search-title", &title);
         let header = div()
@@ -919,6 +929,9 @@ fn result_card(message: &Arc<Message>, rows: &Rc<Rows>, ink: &Ink, window: &mut 
                 let has_source = a.kind == decibell_attachments::AttachmentKind::Image || a.thumbnail_size_bytes > 0;
                 let video = a.kind == decibell_attachments::AttachmentKind::Video;
                 div()
+                    .id(("search-media", a.id as u64))
+                    // `title={a.filename}`.
+                    .tooltip(decibell_ui::title_tooltip(a.filename.clone()))
                     .relative()
                     .size_16()
                     .flex_none()

@@ -558,6 +558,34 @@ impl RichLayout {
     }
 
     /// The link (its span index) at a point, if any.
+    /// The Twemoji drawn at a point (an inline box): its span and its box `[x, y, w, h]` in this
+    /// layout's coordinates. Emoji drawn as text (no Twemoji drawing) aren't boxes.
+    pub fn emoji_at(&self, x: f32, y: f32) -> Option<(u32, [f32; 4])> {
+        self.emoji_boxes().find(|(_, [bx, by, bw, bh])| x >= *bx && x < bx + bw && y >= *by && y < by + bh)
+    }
+
+    /// The box of the Twemoji of span `span`, if it is drawn as one.
+    pub fn emoji_box(&self, span: u32) -> Option<[f32; 4]> {
+        self.emoji_boxes().find(|(tag, _)| *tag == span).map(|(_, bounds)| bounds)
+    }
+
+    fn emoji_boxes(&self) -> impl Iterator<Item = (u32, [f32; 4])> + '_ {
+        self.blocks.iter().flat_map(|block| {
+            let (layout, boxes) = match &block.kind {
+                BlockKind::Text { layout, boxes } if !boxes.is_empty() => (Some(layout), &boxes[..]),
+                _ => (None, &[][..]),
+            };
+            layout.into_iter().flat_map(move |layout| {
+                layout.boxes().filter_map(move |(tag, [x, y, w, h])| {
+                    boxes
+                        .iter()
+                        .any(|(known, content)| *known == tag && matches!(content, BoxContent::Emoji(_)))
+                        .then_some((tag, [x, y + block.y, w, h]))
+                })
+            })
+        })
+    }
+
     pub fn link_at(&self, x: f32, y: f32) -> Option<u32> {
         if self.links.is_empty() {
             return None;

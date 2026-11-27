@@ -493,7 +493,7 @@ impl CoreAttachmentService {
                                     .await;
                                 let _ = done.send(r.map_err(|e| UploadError {
                                     cancelled: matches!(e, decibell_attachments::Error::Cancelled),
-                                    message: e.to_string().into(),
+                                    message: e.upload_message().into(),
                                 }));
                             });
                         }

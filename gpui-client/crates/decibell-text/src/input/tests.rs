@@ -58,7 +58,7 @@ impl Field {
     }
 
     fn update(&mut self) -> DisplayStats {
-        self.display.update(&self.buffer, &self.style, self.width, 1., &self.engine)
+        self.display.update(&self.buffer, &self.style, (&[], 0), self.width, 1., &self.engine)
     }
 
     /// Up or Down from `offset` with a goal x, as `InputState::move_caret` does it.

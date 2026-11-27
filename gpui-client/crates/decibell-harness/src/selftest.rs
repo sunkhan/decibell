@@ -245,6 +245,19 @@ impl TestCx {
         }))
     }
 
+    /// A left click with modifiers held (Shift+click, Ctrl+click): move, press, release.
+    pub fn click_with(&self, position: Point<Pixels>, modifiers: Modifiers) -> Result<()> {
+        self.mouse_move(position)?;
+        self.input(PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }))?;
+        self.input(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position, modifiers, click_count: 1 }))
+    }
+
     /// A left click: move, press, release.
     pub fn click(&self, position: Point<Pixels>) -> Result<()> {
         self.mouse_move(position)?;

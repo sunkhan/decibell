@@ -269,6 +269,43 @@ fn trap_tab(modal: &FocusHandle, backwards: bool, window: &mut Window, cx: &mut 
 
 /// The look of a dialog card: `w-full max-w-[400px] rounded-xl border border-border
 /// bg-bg-secondary p-6 shadow-modal` (`max_width` overrides the 400).
+/// `DeleteMessageConfirmModal`'s second paragraph (`mt-3 text-[11px] text-text-muted`): "Tip: hold
+/// [Shift] while clicking the trash icon to skip this confirmation next time.", the key cap a
+/// `<kbd>` (`rounded-sm border border-border bg-bg-darkest px-1.5 py-0.5 font-mono text-[10px]
+/// text-text-secondary`). The paragraph wraps between words as the browser's does; the key cap's
+/// vertical padding doesn't grow its line (an inline box's padding doesn't in CSS).
+pub fn delete_message_tip(cx: &App) -> gpui::AnyElement {
+    let theme = cx.theme();
+    // 11 px at the inherited 1.5 line height.
+    const LINE: f32 = 16.5;
+    let word = |text: &'static str| Label::new(text).size(11.).line_height(LINE).color(theme.color_text_muted).into_any_element();
+    let key = div()
+        // `py-0.5` (2 px) above and below a 15 px line and a 1 px border: 21 px, laid out in 16.5.
+        .my(px(-(2. + 1. + 15. - LINE) / 2.))
+        .rounded(theme.radius_sm)
+        .border_1()
+        .border_color(theme.color_border)
+        .bg(theme.color_bg_darkest)
+        .px_1p5()
+        .py_0p5()
+        .child(Label::new("Shift").font(crate::FontRole::Mono).size(10.).line_height(15.).color(theme.color_text_secondary))
+        .into_any_element();
+    let mut words = vec![word("Tip:"), word("hold"), key];
+    for w in "while clicking the trash icon to skip this confirmation next time.".split(' ') {
+        // `split` borrows from a static string: every piece is static too.
+        words.push(word(w));
+    }
+    div()
+        .mt_3()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        // A space at 11 px Inter.
+        .gap_x(px(3.))
+        .children(words)
+        .into_any_element()
+}
+
 pub fn dialog_card(max_width: f32, cx: &App) -> gpui::Div {
     let theme = cx.theme();
     div()

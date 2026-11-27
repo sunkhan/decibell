@@ -138,6 +138,8 @@ pub(crate) struct Display {
 #[derive(Clone, Copy, PartialEq)]
 struct Built {
     revision: u64,
+    /// The colorizer's epoch (`InputState::set_colorizer`).
+    colors: u64,
     marked: Option<(usize, usize)>,
     style: InputStyle,
     width: f32,
@@ -160,11 +162,21 @@ pub struct DisplayStats {
 impl Display {
     /// Brings the blocks up to date with the buffer at `width` px. Cheap when nothing
     /// changed; otherwise only changed lines are shaped.
-    pub fn update(&mut self, buffer: &Buffer, style: &InputStyle, width: f32, scale: f32, engine: &Engine) -> DisplayStats {
+    pub fn update(
+        &mut self,
+        buffer: &Buffer,
+        style: &InputStyle,
+        colors: (&[(std::ops::Range<usize>, TextStyle)], u64),
+        width: f32,
+        scale: f32,
+        engine: &Engine,
+    ) -> DisplayStats {
+        let (colors, colors_epoch) = colors;
         let rules = buffer.rules();
         let width = if rules.multiline { width } else { f32::INFINITY };
         let marked = buffer.marked().map(|range| (range.start, range.end));
         let built = Built {
+            colors: colors_epoch,
             revision: buffer.revision(),
             marked,
             style: *style,
@@ -178,9 +190,9 @@ impl Display {
         }
         // A new style or scale invalidates every paragraph; a new text only the lines whose
         // hash is new; a new width shapes nothing (the paragraphs are wrapped again).
-        let reusable = self
-            .built
-            .is_some_and(|old| old.style == built.style && old.scale == built.scale && old.masked == built.masked);
+        let reusable = self.built.is_some_and(|old| {
+            old.style == built.style && old.scale == built.scale && old.masked == built.masked && old.colors == built.colors
+        });
         let same_width = self.built.is_some_and(|old| old.width == built.width);
         let mut stats = DisplayStats::default();
         if reusable && self.built.is_some_and(|old| old.revision == built.revision && old.marked == built.marked) {
@@ -228,6 +240,15 @@ impl Display {
                 line.hash(&mut hasher);
             }
             line_marked.hash(&mut hasher);
+            // The line's styled ranges (a code field's highlighting), relative to the line: a
+            // comment opened above restyles a line whose text didn't change.
+            let first_color = colors.partition_point(|(range, _)| range.end <= start);
+            let line_colors = &colors[first_color..];
+            let line_colors = &line_colors[..line_colors.partition_point(|(range, _)| range.start < end)];
+            for (range, color) in line_colors {
+                (range.start.max(start) - start, range.end.min(end) - start).hash(&mut hasher);
+                crate::style::hash_style(color, &mut hasher);
+            }
             let key = hasher.finish();
 
             // The same line as before sits at the same index (an edit further down) or at
@@ -293,10 +314,28 @@ impl Display {
                             }
                             for (piece, in_mark) in [(0, false), (1, true), (2, false)] {
                                 let (a, b) = (cuts[piece], cuts[piece + 1]);
-                                if a < b {
-                                    builder.text(&line[a..b], if in_mark { &underlined } else { &style.text }, 0);
-                                    *shown += (b - a) as u32;
+                                if a >= b {
+                                    continue;
                                 }
+                                // Then where the styled ranges start and end.
+                                let mut at = a;
+                                for (range, color) in line_colors {
+                                    let (from, to) = (range.start.max(start) - start, range.end.min(end) - start);
+                                    let (from, to) = (from.clamp(at, b), to.clamp(at, b));
+                                    if from >= to {
+                                        continue;
+                                    }
+                                    if at < from {
+                                        builder.text(&line[at..from], if in_mark { &underlined } else { &style.text }, 0);
+                                    }
+                                    let styled = TextStyle { underline: in_mark, ..*color };
+                                    builder.text(&line[from..to], &styled, 0);
+                                    at = to;
+                                }
+                                if at < b {
+                                    builder.text(&line[at..b], if in_mark { &underlined } else { &style.text }, 0);
+                                }
+                                *shown += (b - a) as u32;
                             }
                         };
                         let mut at = 0;

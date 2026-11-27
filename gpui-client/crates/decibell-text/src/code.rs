@@ -55,7 +55,7 @@ pub struct CodeStyle {
 }
 
 impl CodeStyle {
-    fn color(&self, token: Token) -> Hsla {
+    pub fn color(&self, token: Token) -> Hsla {
         match token {
             Token::Keyword => self.keyword,
             Token::Title => self.title,
@@ -67,6 +67,30 @@ impl CodeStyle {
             Token::Plain => self.text.color,
         }
     }
+}
+
+/// A code text area's live highlighting (`RichComposer`'s `highlightNodes` overlay, re-run per
+/// keystroke): `lang`'s grammar over the field's text, coloured as code blocks are (the same
+/// `.rich-codeblock` palette), comments slanted. `None` for "plain" and names no grammar knows
+/// (the renderer's `highlightNodes` leaves those uncoloured).
+pub fn code_colorizer(lang: &str, palette: CodeStyle) -> Option<crate::input::Colorizer> {
+    let language = Language::from_name(lang)?;
+    Some(std::rc::Rc::new(move |text: &str| {
+        let highlighted = decibell_highlight::highlight_language(language, text, &Budget::default());
+        highlighted
+            .spans
+            .iter()
+            .filter(|span| span.token != Token::Plain || span.italic)
+            .map(|span| {
+                let mut style = palette.text;
+                style.color = palette.color(span.token);
+                if span.italic {
+                    style.face = palette.italic;
+                }
+                (span.range.clone(), style)
+            })
+            .collect()
+    }))
 }
 
 pub(crate) struct CodeStore {

@@ -79,6 +79,11 @@ pub enum Target {
     Sender,
     /// The quoted line: jump to the parent.
     ReplyLine,
+    /// The message's time (the header's, or a grouped row's hover time): the full date and
+    /// time as its `title`.
+    Time,
+    /// A Twemoji in the body (its span index): the emoji info popover.
+    Emoji(u32),
     /// The name in the quoted line: the parent author's profile.
     ReplyName,
     Action(RowAction),
@@ -682,6 +687,23 @@ impl RowLayout {
         self.content_x
     }
 
+    /// The time's box `[x, y, w, h]` from the row's top (the header's, or a grouped row's hover
+    /// time), for pointer-driven tests.
+    pub fn time_bounds(&self) -> Option<[f32; 4]> {
+        let time = self.time.as_ref()?;
+        let (x, y) = self.time_origin();
+        Some([x, y, time.width(), time.height()])
+    }
+
+    /// The quoted line's box from the row's top, when it quotes a message that is still there.
+    pub fn reply_line_bounds(&self) -> Option<[f32; 4]> {
+        let reply = self.reply.as_ref()?;
+        reply.name.as_ref()?;
+        let end = reply.glyph_x + if reply.glyph.is_some() { ACTION_GLYPH } else { 0. };
+        let line_height = self.header_y - ROW_PAD_TOP - REPLY_MARGIN_BOTTOM;
+        Some([self.content_x, self.bubble_y + ROW_PAD_TOP, end, line_height])
+    }
+
     fn time_origin(&self) -> (f32, f32) {
         let Some(time) = &self.time else { return (0., 0.) };
         if self.grouped {
@@ -789,9 +811,23 @@ impl RowLayout {
                     } else {
                         let hit = time.hit(x - time_x, y - time_y);
                         let over = x >= time_x && x < time_x + time.width();
-                        RowHit { target: if over { Target::Text } else { Target::None }, pos: RowPos::at(Part::Time, hit.pos.offset) }
+                        RowHit { target: if over { Target::Time } else { Target::None }, pos: RowPos::at(Part::Time, hit.pos.offset) }
                     };
                 }
+            }
+        }
+        if self.grouped
+            && hovered
+            && let Some(time) = &self.time
+        {
+            // The hover time in the 38 px gutter (`title={formatFullDateTime(…)}`).
+            let (time_x, time_y) = self.time_origin();
+            if inside([time_x, time_y, time.width(), time.height()]) {
+                let pos = match &self.body {
+                    Body::Rich { layout, .. } => RowPos { part: Part::Body, pos: layout.hit(x - self.content_x, y - self.bubble_y - self.body_y).pos },
+                    _ => RowPos::START,
+                };
+                return RowHit { target: Target::Time, pos };
             }
         }
         for boxed in &self.media {
@@ -815,10 +851,12 @@ impl RowLayout {
                     }
                     return RowHit { target: Target::None, pos };
                 }
-                let target = match layout.link_at(local_x, local_y) {
-                    Some(span) => Target::Link(span),
-                    None if hit.span.is_some() => Target::Text,
-                    None => Target::None,
+                // An emoji is a button (`Twemoji`'s `onClick`), even inside a link's text.
+                let target = match (layout.emoji_at(local_x, local_y), layout.link_at(local_x, local_y)) {
+                    (Some((span, _)), _) => Target::Emoji(span),
+                    (None, Some(span)) => Target::Link(span),
+                    (None, None) if hit.span.is_some() => Target::Text,
+                    (None, None) => Target::None,
                 };
                 RowHit { target, pos }
             }
@@ -1238,6 +1276,11 @@ pub struct RowPaint<'a> {
     pub slots_filled: bool,
 }
 
+/// `Twemoji`'s `hover:opacity-75`: the emoji under the pointer drawn at 75 % over what is under
+/// it, as a veil of that background at 25 % over the drawn emoji (the same composite, as the
+/// row's wash and the pane under it are flat colours there).
+const EMOJI_HOVER_VEIL: f32 = 0.25;
+
 fn rect(origin: Point<Pixels>, b: [f32; 4]) -> Bounds<Pixels> {
     Bounds::new(point(origin.x + px(b[0]), origin.y + px(b[1])), size(px(b[2]), px(b[3])))
 }
@@ -1430,6 +1473,17 @@ impl RowLayout {
                     },
                 };
                 layout.paint(body_origin, &rich, window, cx);
+                if let Target::Emoji(span) = paint.target
+                    && let Some([x, y, w, h]) = layout.emoji_box(span)
+                {
+                    // What is under the emoji: the row's wash (it is hovered) over the pane.
+                    let under = match wash {
+                        Some(wash) => style.bg_mid.blend(wash),
+                        None => style.bg_mid,
+                    };
+                    let veil = Bounds::new(point(body_origin.x + px(x), body_origin.y + px(y)), size(px(w), px(h)));
+                    window.paint_quad(fill(veil, Hsla { a: EMOJI_HOVER_VEIL, ..under }));
+                }
                 for code in &self.codes {
                     let selected = slot_selected(&selection, layout, code.span);
                     let scroll = paint.code_scroll.iter().find(|(span, ..)| *span == code.span).map_or((0., 0.), |(_, x, y)| (*x, *y));

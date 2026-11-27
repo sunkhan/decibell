@@ -252,6 +252,37 @@ fn a_refusal_withdraws_the_bubble_and_corrects_slowmode(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn a_refusal_withdraws_exactly_its_bubble(cx: &mut TestAppContext) {
+    // Two sends pending in one channel (CLAUDE.md: "exactly that optimistic bubble is withdrawn").
+    let model = signed_in(cx, vec![channel("general", 0, SEND)]);
+    deliver(&model, cx, [history(1..=10, 0, false)]);
+    let slice = general(&model, cx).unwrap();
+    for (text, nonce) in [("first", "na"), ("second", "nb")] {
+        slice.update(cx, |s, cx| {
+            s.push_bubble(std::sync::Arc::new(crate::chat::message::Message::optimistic("perf2".into(), ME, text.into(), 0, nonce.into(), 0, 10)), cx)
+        });
+    }
+    deliver(
+        &model,
+        cx,
+        [CoreEvent::ChannelMessageRejected(ChannelMessageRejectedPayload {
+            server_id: "1".into(),
+            channel_id: "general".into(),
+            nonce: "nb".into(),
+            reason: "Too long.".into(),
+            retry_after_seconds: 0,
+        })],
+    );
+    let pending: Vec<String> = slice.read_with(cx, |s, _| s.rows().iter().filter(|m| m.pending).map(|m| m.content.to_string()).collect());
+    assert_eq!(pending, vec!["first".to_string()], "only the refused bubble goes");
+    assert_eq!(&*model.chat.drafts.read_with(cx, |d, _| d.get(&DraftKey::Channel(gaming(), "general".into()))), "second");
+    // Its echo settles the other one.
+    deliver(&model, cx, [live("general", 11, ME, "first", "na")]);
+    assert!(slice.read_with(cx, |s, _| s.rows().iter().all(|m| !m.pending)));
+    assert_eq!(ids(&slice, cx).last(), Some(&11));
+}
+
+#[gpui::test]
 fn a_reconnect_drops_caught_up_slices_and_windows_scrolled_up_ones(cx: &mut TestAppContext) {
     let model = signed_in(cx, vec![channel("general", 0, SEND), channel("clips", 0, SEND), channel("old", 0, SEND)]);
     deliver(&model, cx, [history(1..=10, 0, false)]);

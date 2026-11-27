@@ -26,4 +26,4 @@ pub use display::{DisplayStats, InputStyle};
 pub use element::{TextArea, TextInput};
 pub use history::{EditKind, Selection};
 pub use keymap::{Command, Move, command};
-pub use state::{BLINK_INTERVAL, Enter, InputEvent, InputState, KeyHook, text_field_focused};
+pub use state::{BLINK_INTERVAL, Colorizer, Enter, InputEvent, InputState, KeyHook, text_field_focused};

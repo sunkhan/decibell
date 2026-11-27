@@ -31,8 +31,8 @@ pub use media::{
     CancelEdit, ChatSlots, ComposerBuilder, ComposerParts, EditorSlot, RowSlot, SlotSpace, SubmitEdit, TextHidden, TypeToFocus, WelcomeBuilder,
     invalidate_slots, slots,
 };
-pub use pane::ChatPane;
-pub use row::RowNotice;
+pub use pane::{Body as PaneBody, ChatPane};
+pub use row::{RowAction, RowNotice};
 pub use source::{ChannelSource, Jump, ListSource};
 
 /// Once at start-up (the app's `registry::init_features`): the chat pane fills the shell's
@@ -46,6 +46,11 @@ pub fn init(cx: &mut gpui::App) {
 /// lands; the live benchmark drives it).
 pub fn shown_list(cx: &gpui::App) -> Option<gpui::Entity<MessageList>> {
     cx.try_global::<pane::ShownList>().and_then(|shown| shown.0.upgrade())
+}
+
+/// The chat pane that showed a channel last, while it lives.
+pub fn shown_pane(cx: &gpui::App) -> Option<gpui::Entity<ChatPane>> {
+    cx.try_global::<pane::ShownPane>().and_then(|shown| shown.0.upgrade())
 }
 
 /// The chat screens (with the `fixtures` feature).

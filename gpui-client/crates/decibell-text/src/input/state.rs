@@ -86,6 +86,9 @@ pub type KeyHook = Rc<dyn Fn(&mut Window, &mut App) -> bool>;
 type PasteHook = Rc<dyn Fn(&ClipboardItem, &mut Window, &mut App) -> bool>;
 type PassKeys = Rc<dyn Fn(&Keystroke) -> bool>;
 type RevealHook = Rc<dyn Fn(Bounds<Pixels>, &mut App)>;
+/// Styles for ranges of the text (byte ranges, in order, not overlapping): a code field's live
+/// highlighting. Called once per edit.
+pub type Colorizer = Rc<dyn Fn(&str) -> Vec<(std::ops::Range<usize>, crate::TextStyle)>>;
 
 /// How a drag extends the selection: by what the click that started it selected.
 #[derive(Clone, Copy, Debug)]
@@ -129,6 +132,12 @@ pub struct InputState {
     pub(crate) on_paste: Option<PasteHook>,
     pub(crate) pass_key: Option<PassKeys>,
     pub(crate) on_reveal: Option<RevealHook>,
+    /// Live styling of the text (a code field), and its result for the buffer's revision.
+    colorizer: Option<Colorizer>,
+    colors: Vec<(std::ops::Range<usize>, crate::TextStyle)>,
+    colors_for: Option<u64>,
+    /// Bumped when the colorizer changes: the display builds every line again.
+    colors_epoch: u64,
     stats: DisplayStats,
     _subscriptions: [Subscription; 3],
 }
@@ -183,6 +192,10 @@ impl InputState {
             on_paste: None,
             pass_key: None,
             on_reveal: None,
+            colorizer: None,
+            colors: Vec::new(),
+            colors_for: None,
+            colors_epoch: 0,
             stats: DisplayStats::default(),
             _subscriptions: subscriptions,
         }
@@ -353,6 +366,22 @@ impl InputState {
     /// change is drawn. (A single line scrolls sideways by itself.)
     pub fn on_reveal_caret(&mut self, hook: impl Fn(Bounds<Pixels>, &mut App) + 'static) {
         self.on_reveal = Some(Rc::new(hook));
+    }
+
+    /// Styles the text live (a code field: `RichComposer`'s highlighted overlay): `colorizer`
+    /// is asked once per edit for styled byte ranges of the whole text; `None` draws it in the
+    /// field's own style.
+    pub fn set_colorizer(&mut self, colorizer: Option<Colorizer>, cx: &mut Context<Self>) {
+        self.colorizer = colorizer;
+        self.colors.clear();
+        self.colors_for = None;
+        self.colors_epoch += 1;
+        cx.notify();
+    }
+
+    /// The styled ranges the colorizer gave for the text as last laid out (tests).
+    pub fn styled_ranges(&self) -> &[(std::ops::Range<usize>, crate::TextStyle)] {
+        &self.colors
     }
 
     pub fn has_reveal_hook(&self) -> bool {
@@ -542,7 +571,14 @@ impl InputState {
     pub(crate) fn relayout(&mut self, cx: &mut App) {
         let Some(style) = self.style else { return };
         let engine = Engine::global(cx);
-        let stats = self.display.update(&self.buffer, &style, self.width, self.scale, &engine);
+        if let Some(colorizer) = &self.colorizer
+            && self.colors_for != Some(self.buffer.revision())
+        {
+            self.colors = colorizer(self.buffer.text());
+            self.colors_for = Some(self.buffer.revision());
+        }
+        let colors = (&self.colors[..], self.colors_epoch);
+        let stats = self.display.update(&self.buffer, &style, colors, self.width, self.scale, &engine);
         if stats != DisplayStats::default() {
             self.stats = stats;
         }

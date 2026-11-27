@@ -235,6 +235,8 @@ pub struct Segment<T> {
     pub value: T,
     pub label: SharedString,
     pub disabled: bool,
+    /// The option's `title` (shown on hover, disabled or not: why it can't be chosen).
+    pub title: Option<SharedString>,
 }
 
 impl<T> Segment<T> {
@@ -243,11 +245,17 @@ impl<T> Segment<T> {
             value,
             label: label.into(),
             disabled: false,
+            title: None,
         }
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
         self
     }
 }
@@ -333,9 +341,11 @@ impl<T: Clone + PartialEq + 'static> RenderOnce for SegmentedControl<T> {
             ring_shadows.extend(ring);
             let on_change = self.on_change.clone();
             let value = segment.value;
+            let title = segment.title;
             options.push(
                 div()
                     .id(id)
+                    .when_some(title, |this, title| this.tooltip(crate::title_tooltip(title)))
                     .track_focus(&focus)
                     .flex()
                     .flex_1()

@@ -61,6 +61,219 @@ tests! {
     "composer-type-to-focus", "with nothing focused (and from the list) a printable key lands in the box; not with a modal open or Ctrl held", check_type_to_focus;
     "composer-idle", "focused in the active window only the caret's blink draws; blurred: 0 frames over 5 s", check_idle;
     "composer-typing-cost", "frames per key, µs per key, and the message list draws nothing while typing", check_typing_cost;
+    "composer-code-panel", "the code panel: Rust colours as typed, a long line runs on and the area follows the caret sideways, Tab / Shift+Tab indent and outdent, Enter keeps the indent, Ctrl+Enter inserts the fence; the math panel's Escape cancels", check_code_panel;
+    "chat-message-ui", "on a sent message: the time's full date-time tooltip; the emoji info popover (click, Escape, a click elsewhere, the same emoji again); a reply's quoted line says \"Jump to message\" and jumps; Shift+click on the trash deletes with no confirmation; Settings' 12 / 24 h re-labels the time at once", check_message_ui;
+    "composer-echo-watchdog", "a send whose packet never reached the server (its bubble, no call): after 30 s the server is asked, then the bubble is withdrawn with \"The server didn't confirm it.\" and the text is back in the box", check_echo_watchdog;
+    "composer-attach-media", "an MP4 and an MP3 attached from disk: the chips, the stored row and a second client (headless) carry the size, length, ThumbHash and thumbnails the Electron client stored for the same files", check_attach_media;
+    "composer-vault", "#vault (encrypted): a message with a picture is sealed; a second member (headless) opens both with the real facts; an edit stays sealed; the trash and its confirmation delete it on both (the list keeps no row)", check_vault;
+}
+
+mod media;
+use media::{check_attach_media, check_vault};
+
+async fn check_code_panel(cx: TestCx) -> Result<()> {
+    use crate::panel::SnippetKind;
+    let composer = open(&cx, OFF_TOPIC).await?;
+    set_value(&cx, &composer, "")?;
+    cx.update(|window, cx| composer.update(cx, |c, cx| c.open_snippet(SnippetKind::Code, window, cx)))?;
+    wait_for(&cx, Duration::from_secs(3), "the code panel", |cx| composer_of(OFF_TOPIC, cx).is_some_and(|c| c.read(cx).panel().is_some())).await?;
+    let panel = cx.update(|_, cx| composer.read(cx).panel().cloned())?.context("the panel")?;
+    let field = cx.update(|_, cx| panel.read(cx).field().clone())?;
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.set_lang("rust", cx)))?;
+    cx.sleep(Duration::from_millis(400)).await;
+    cx.update(|window, cx| field.update(cx, |f, cx| f.focus(window, cx)))?;
+    cx.type_text("fn main() {")?;
+    cx.keystroke("enter")?;
+    cx.keystroke("tab")?;
+    cx.type_text("let greeting = \"a line long enough to run past the right edge of the code area, which does not wrap\";")?;
+    cx.sleep(Duration::from_millis(300)).await;
+    let (value, styled, bounds) = cx.update(|_, cx| {
+        let f = field.read(cx);
+        (f.value().to_string(), f.styled_ranges().len(), f.bounds())
+    })?;
+    ensure!(value.starts_with("fn main() {\n  let greeting"), "Enter then Tab: {value:?}");
+    ensure!(styled > 0, "nothing is coloured as Rust");
+    let (scrolled, view) = cx.update(|_, cx| panel.read(cx).sideways())?;
+    ensure!(f32::from(bounds.size.width) > view + 1., "the long line wrapped: the field is {} px in a {view} px area", f32::from(bounds.size.width));
+    ensure!(scrolled > 0., "the area didn't follow the caret sideways");
+    cx.log(format_args!("{styled} coloured ranges; the field is {:.0} px wide in a {view:.0} px area, scrolled {scrolled:.0} px to the caret", f32::from(bounds.size.width)));
+    // Enter keeps the indent; Shift+Tab takes it away.
+    cx.keystroke("enter")?;
+    cx.type_text("x")?;
+    let value = cx.update(|_, cx| field.read(cx).value().to_string())?;
+    ensure!(value.ends_with("\n  x"), "Enter kept no indent: {value:?}");
+    cx.keystroke("shift-tab")?;
+    let value = cx.update(|_, cx| field.read(cx).value().to_string())?;
+    ensure!(value.ends_with("\nx"), "Shift+Tab didn't outdent: {value:?}");
+    cx.keystroke("ctrl-enter")?;
+    wait_for(&cx, Duration::from_secs(3), "the panel to close", |cx| composer_of(OFF_TOPIC, cx).is_some_and(|c| c.read(cx).panel().is_none())).await?;
+    let draft = value_of(&cx, &composer)?;
+    ensure!(draft.starts_with("```rust\nfn main() {\n  let greeting") && draft.ends_with("\nx\n```"), "Ctrl+Enter inserted {draft:?}");
+    cx.log("Ctrl+Enter put the ```rust fence in the box");
+    // The math panel: Escape cancels, the box keeps what it had.
+    cx.update(|window, cx| composer.update(cx, |c, cx| c.open_snippet(SnippetKind::Math, window, cx)))?;
+    wait_for(&cx, Duration::from_secs(3), "the math panel", |cx| composer_of(OFF_TOPIC, cx).is_some_and(|c| c.read(cx).panel().is_some())).await?;
+    cx.sleep(Duration::from_millis(200)).await;
+    cx.type_text("x^2")?;
+    cx.keystroke("escape")?;
+    wait_for(&cx, Duration::from_secs(3), "Escape to close the math panel", |cx| composer_of(OFF_TOPIC, cx).is_some_and(|c| c.read(cx).panel().is_none())).await?;
+    ensure!(value_of(&cx, &composer)? == draft, "Escape changed the box");
+    set_value(&cx, &composer, "")?;
+    Ok(())
+}
+
+fn value_of(cx: &TestCx, composer: &Entity<Composer>) -> Result<String> {
+    value(cx, composer)
+}
+
+/// Waits for the list's `title=` tooltip and returns it.
+async fn tooltip(cx: &TestCx, list: &Entity<MessageList>) -> Result<String> {
+    let l = list.clone();
+    wait_for(cx, Duration::from_secs(3), "a tooltip", move |cx| l.read(cx).tooltip().is_some()).await?;
+    Ok(cx.update(|_, cx| list.read(cx).tooltip().map(|t| t.to_string()))?.unwrap_or_default())
+}
+
+async fn check_message_ui(cx: TestCx) -> Result<()> {
+    use decibell_model::stores::settings::TimeFormat;
+    let composer = open(&cx, OFF_TOPIC).await?;
+    let list = list_of(&cx, &composer)?;
+    let tag = tag();
+    let text = format!("ui {tag} 😀");
+    let id = send(&cx, &composer, OFF_TOPIC, &text).await?;
+    let mut posted = vec![id];
+    let result = async {
+        cx.sleep(Duration::from_millis(400)).await;
+        // The time's `title`: the full date and time, through the regional formats.
+        let timestamp = cx.update(|_, cx| row(OFF_TOPIC, id, cx).and_then(|m| m.timestamp))?.context("a stored time")?;
+        let format = cx.update(|_, cx| model(cx).settings.read(cx).time_format())?;
+        let want = decibell_model::regional::Regional::get().full_date_time(timestamp, format);
+        let time = cx.update(|_, cx| list.read(cx).time_point(id))?.context("the time on screen")?;
+        cx.mouse_move(time)?;
+        let shown = tooltip(&cx, &list).await?;
+        ensure!(shown == want, "the time's tooltip says {shown:?}, expected {want:?}");
+        cx.log(format_args!("the time's tooltip: {shown:?}"));
+
+        // The emoji: a click opens its info, Escape closes it, a click elsewhere too, and a second
+        // click on the same emoji.
+        let emoji = cx.update(|_, cx| list.read(cx).emoji_point(id, 0))?.context("the emoji on screen")?;
+        cx.click(emoji)?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(2), "the emoji popover", move |cx| l.read(cx).emoji_popover().is_some()).await?;
+        let (on, what, title) = cx.update(|_, cx| list.read(cx).emoji_popover())?.context("the popover")?;
+        ensure!(on == id && &*what == "😀" && &*title == ":grinning:", "the popover: message {on}, {what:?} named {title:?}");
+        cx.keystroke("escape")?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(2), "Escape to close it", move |cx| l.read(cx).emoji_popover().is_none()).await?;
+        cx.click(emoji)?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(2), "the popover again", move |cx| l.read(cx).emoji_popover().is_some()).await?;
+        cx.click(emoji)?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(2), "a second click on the emoji to close it", move |cx| l.read(cx).emoji_popover().is_none()).await?;
+        cx.click(emoji)?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(2), "the popover a third time", move |cx| l.read(cx).emoji_popover().is_some()).await?;
+        let body = cx.update(|_, cx| list.read(cx).body_point(id, 0.1))?.context("the text")?;
+        cx.click(body)?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(2), "a click elsewhere to close it", move |cx| l.read(cx).emoji_popover().is_none()).await?;
+        cx.log("the emoji popover: :grinning:, closed by Escape, a click elsewhere and the emoji again");
+
+        // A reply: its quoted line says where a click goes, and goes there.
+        cx.update(|_, cx| list.update(cx, |l, cx| l.set_reply_target(Some(id), cx)))?;
+        let reply_text = format!("reply {tag}");
+        let reply = send(&cx, &composer, OFF_TOPIC, &reply_text).await?;
+        posted.push(reply);
+        cx.sleep(Duration::from_millis(400)).await;
+        ensure!(cx.update(|_, cx| row(OFF_TOPIC, reply, cx).map(|m| m.reply_to()))? == Some(id), "the reply quotes the first message");
+        let line = cx.update(|_, cx| list.read(cx).reply_line_point(reply))?.context("the quoted line")?;
+        cx.mouse_move(line)?;
+        let shown = tooltip(&cx, &list).await?;
+        ensure!(shown == "Jump to message", "the quoted line's tooltip says {shown:?}");
+        cx.click(line)?;
+        let l = list.clone();
+        wait_for(&cx, Duration::from_secs(3), "the jump to the quoted message", move |cx| l.read(cx).highlighted() == Some(id)).await?;
+        cx.log("the quoted line: \"Jump to message\", and the click flashed the message it quotes");
+
+        // 12 / 24 h re-labels the open list at once.
+        let before = cx.update(|_, cx| list.read(cx).time_text(id))?.context("the time's text")?;
+        let other = if before.contains("AM") || before.contains("PM") { TimeFormat::H24 } else { TimeFormat::H12 };
+        cx.update(|_, cx| model(cx).settings.update(cx, |s, cx| s.set_time_format(other, cx)))?;
+        let l = list.clone();
+        let b = before.clone();
+        let _ = wait_for(&cx, Duration::from_secs(3), "the time re-labelled", move |cx| l.read(cx).time_text(id).is_some_and(|t| t != b)).await;
+        let after = cx.update(|_, cx| list.read(cx).time_text(id))?.unwrap_or_default();
+        cx.update(|_, cx| model(cx).settings.update(cx, |s, cx| s.set_time_format(format, cx)))?;
+        ensure!(after != before, "Settings' time format left {before:?} as it was");
+        cx.log(format_args!("time format {other:?}: {before:?} → {after:?} (and back)"));
+
+        // Shift+click on the trash: deleted with no confirmation.
+        let row_body = cx.update(|_, cx| list.read(cx).body_point(reply, 0.5))?.context("the reply on screen")?;
+        cx.mouse_move(row_body)?;
+        cx.sleep(Duration::from_millis(100)).await;
+        let trash = cx.update(|_, cx| list.read(cx).action_point(reply, decibell_chat::RowAction::Delete, cx))?.context("the trash")?;
+        cx.click_with(trash, gpui::Modifiers { shift: true, ..Default::default() })?;
+        cx.sleep(Duration::from_millis(200)).await;
+        let confirming = cx.update(|_, cx| decibell_chat::shown_pane(cx).and_then(|p| p.read(cx).confirming_delete()))?;
+        ensure!(confirming.is_none(), "Shift+click asked for a confirmation");
+        wait_for(&cx, Duration::from_secs(10), "the reply deleted", move |cx| row(OFF_TOPIC, reply, cx).is_none()).await?;
+        posted.retain(|p| *p != reply);
+        cx.log("Shift+click on the trash: deleted, no confirmation");
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    delete(&cx, OFF_TOPIC, &posted).await?;
+    result
+}
+
+/// The 30 s echo watchdog (`watchEcho`), run for real: the bubble a send puts up and the
+/// watchdog a send starts once its call returned, for a message whose packet never left (as a
+/// lost echo or a send lost in a reconnect looks). The server is asked for what was stored
+/// since, has nothing, and the bubble goes with its text back in the box.
+async fn check_echo_watchdog(cx: TestCx) -> Result<()> {
+    let composer = open(&cx, OFF_TOPIC).await?;
+    let text = format!("never sent {}", tag());
+    let nonce = cx
+        .update(|_, cx| {
+            let model = model(cx);
+            let (uid, name) = {
+                let auth = model.auth.read(cx);
+                (auth.uid, auth.username.clone())
+            };
+            let slice = model.chat.channels.read(cx).get(daily_gaming(), OFF_TOPIC).cloned()?;
+            let nonce = actions::chat::new_nonce();
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let after = slice.read(cx).newest_stored_id();
+            let mut bubble = Message::optimistic(name?, uid, text.clone().into(), now, nonce.clone(), 0, after);
+            bubble.channel = OFF_TOPIC.into();
+            slice.update(cx, |s, cx| s.push_bubble(std::sync::Arc::new(bubble), cx));
+            actions::chat::watch_echo(daily_gaming(), OFF_TOPIC.into(), nonce.clone(), cx);
+            Some(nonce)
+        })?
+        .context("no #off-topic slice or no username")?;
+    ensure!(cx.update(|_, cx| own_rows(OFF_TOPIC, &text, cx))? == vec![(0, true)], "the bubble is up and pending");
+    ensure!(value(&cx, &composer)?.is_empty(), "the box starts empty");
+    let started = Instant::now();
+    let n = nonce.clone();
+    wait_for(&cx, Duration::from_secs(45), "the watchdog to withdraw the bubble", move |cx| {
+        let slice = model(cx).chat.channels.read(cx).get(daily_gaming(), OFF_TOPIC).cloned();
+        slice.is_some_and(|s| s.read(cx).bubble(&n).is_none())
+    })
+    .await?;
+    let took = started.elapsed();
+    ensure!(took >= Duration::from_secs(29), "withdrawn after {took:?}, before the 30 s");
+    let toast = cx.update(|_, cx| {
+        model(cx).toasts.read(cx).toasts().iter().any(|t| &*t.title == "Message not sent" && t.body.as_deref() == Some("The server didn't confirm it. Your text is back in the message box."))
+    })?;
+    ensure!(toast, "no \"Message not sent\" toast saying the server didn't confirm it");
+    wait_for(&cx, Duration::from_secs(5), "the text back in the box", |cx| {
+        composer_of(OFF_TOPIC, cx).is_some_and(|c| !c.read(cx).input().read(cx).value().is_empty())
+    })
+    .await?;
+    ensure!(value(&cx, &composer)? == text, "the box holds {:?}", value(&cx, &composer)?);
+    cx.log(format_args!("withdrawn {:.1} s after it was put up, the toast shown, the text back in the box", took.as_secs_f64()));
+    set_value(&cx, &composer, "")?;
+    Ok(())
 }
 
 // ── The parent side ────────────────────────────────────────────────────────────────────────────
@@ -115,11 +328,13 @@ async fn parent(cx: TestCx, check: &'static str) -> Result<()> {
     let profile = TempDir::new(check)?;
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
+    // #vault needs an account with E2EE keys on the stack.
+    let account = if check == "composer-vault" { media::VAULT_ACCOUNT } else { ACCOUNT };
     command
         .arg("--check")
         .arg(check)
         .arg("--login")
-        .arg(ACCOUNT)
+        .arg(account)
         .env("DECIBELL_USER_DATA_DIR", &profile.0)
         .env("DECIBELL_CENTRAL", &stack.central)
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
@@ -176,7 +391,7 @@ async fn guarded(cx: TestCx, check: fn(TestCx) -> futures::future::LocalBoxFutur
     let result = check(cx).await;
     if result.is_err() {
         let mark = format!("ct{}-", std::process::id());
-        for channel in [OFF_TOPIC, SLOW_LANE] {
+        for channel in [OFF_TOPIC, SLOW_LANE, media::VAULT] {
             let ids: Vec<i64> = sweep_cx
                 .update(|_, cx| {
                     let model = model(cx);

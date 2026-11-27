@@ -79,6 +79,23 @@ impl Error {
         }
     }
 
+    /// The renderer's wording of a failed upload (`startQueuedUpload` →
+    /// `markFailed(pendingId, err.message)`): a refusal of the init request reads
+    /// `init failed: HTTP <status> <reason>`. The server refuses a file over its cap (413) or one
+    /// that would eat its free-space headroom (507) at init — this client refuses the first
+    /// before sending anything, with the same words. Other statuses keep `HTTP <status>
+    /// <reason>`; everything else its own message.
+    pub fn upload_message(&self) -> String {
+        let reason = |status: u16| http::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("");
+        match self {
+            Error::TooLarge => format!("init failed: HTTP 413 {}", reason(413)),
+            Error::InsufficientStorage => format!("init failed: HTTP 507 {}", reason(507)),
+            Error::Http(status) => format!("HTTP {status} {}", reason(*status)).trim_end().to_string(),
+            Error::Cancelled => "Cancelled".into(),
+            other => other.to_string(),
+        }
+    }
+
     pub(crate) fn from_status(status: u16) -> Error {
         match status {
             413 => Error::TooLarge,
@@ -110,5 +127,18 @@ fn io_message(e: &io::Error) -> Option<&'static str> {
     match e.kind() {
         io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => Some("Can't write to the folder"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn upload_refusals_read_as_the_renderer_writes_them() {
+        assert_eq!(Error::TooLarge.upload_message(), "init failed: HTTP 413 Payload Too Large");
+        assert_eq!(Error::InsufficientStorage.upload_message(), "init failed: HTTP 507 Insufficient Storage");
+        assert_eq!(Error::Http(403).upload_message(), "HTTP 403 Forbidden");
+        assert_eq!(Error::UploadExpired.upload_message(), "Upload expired on the server");
     }
 }

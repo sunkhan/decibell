@@ -267,7 +267,11 @@ anchor a popup), `focus_handle(cx)`. Hooks for what needs an answer on the spot:
 `on_escape(|window, cx| handled?)`, `on_paste_non_text(|item, window, cx| taken?)` (images and
 files on the clipboard: the composer's attachments), `pass_keys(|keystroke| leave_alone?)` (a
 list's filter box lets ↑ ↓ Enter through), `on_reveal_caret(|rect, cx| …)` (a scroll container
-keeps the caret in view). `type_to_focus(&key_down, window, cx) -> bool` is "type anywhere to
+keeps the caret in view), `set_colorizer(Some(code_colorizer(lang, palette)), cx)` (styled byte
+ranges of the whole text, asked once per edit: the code panel's live highlighting; only lines whose
+ranges changed are shaped again). A multi-line field with `InputStyle::wrapping = Wrapping::PRE`
+doesn't wrap and is as wide as its longest line (its container scrolls it sideways).
+`type_to_focus(&key_down, window, cx) -> bool` is "type anywhere to
 compose": call it from the chat view's key listener when no field has focus; a printable key
 focuses the input and lands in it. `InputEvent::ArrowUpEmpty` is ArrowUp in a blank composer
 (edit the last message).

@@ -107,6 +107,28 @@ pub fn shortcode(id: &str) -> Option<&'static str> {
     None
 }
 
+/// The shortcode id of an emoji (`getNativeToIdMap` in `MessageText.tsx`: `@emoji-mart/data`'s
+/// id whose first skin is exactly `native`), for the emoji info popover. `None` for an emoji
+/// the data has no id for (a skin tone, a sequence it doesn't list).
+pub fn shortcode_of(native: &str) -> Option<&'static str> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        let ids = SHORTCODE_IDS;
+        let mut map = HashMap::with_capacity(SHORTCODE_ID_OFF.len());
+        for k in 0..SHORTCODE_ID_OFF.len().saturating_sub(1) {
+            let id = &ids[SHORTCODE_ID_OFF[k] as usize..SHORTCODE_ID_OFF[k + 1] as usize];
+            let native = &SHORTCODE_NATIVES[SHORTCODE_NATIVE_OFF[k] as usize..SHORTCODE_NATIVE_OFF[k + 1] as usize];
+            // The renderer's map keeps the last id set for a native (data order); emoji-mart lists
+            // one id per emoji, so there is one.
+            map.insert(native, id);
+        }
+        map
+    });
+    map.get(native).copied()
+}
+
 /// One match of `/:([a-z0-9_+-]+):/gi` (global, left to right, non-overlapping): the byte range
 /// of the whole `:id:` and of the id. Unknown ids still consume their colons, as in the renderer.
 #[derive(Copy, Clone, Debug)]
@@ -358,6 +380,19 @@ pub fn expand_shortcodes(text: &str) -> std::borrow::Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_shortcode_of_an_emoji() {
+        // `getNativeToIdMap`: the id whose first skin is exactly the emoji.
+        assert_eq!(shortcode_of("😀"), Some("grinning"));
+        assert_eq!(shortcode_of("❤️"), Some("heart"));
+        assert_eq!(shortcode_of("👍"), Some("+1"));
+        // A skin tone isn't a first skin; text isn't an emoji.
+        assert_eq!(shortcode_of("👍🏽"), None);
+        assert_eq!(shortcode_of("hello"), None);
+        // Every id maps back to itself.
+        assert_eq!(shortcode("grinning").and_then(shortcode_of), Some("grinning"));
+    }
     use super::*;
 
     #[test]
