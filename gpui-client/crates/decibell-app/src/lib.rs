@@ -34,6 +34,8 @@ pub mod dev;
 pub mod hotkeys;
 #[cfg(feature = "dev")]
 pub mod joins;
+#[cfg(feature = "dev")]
+pub mod layout_selftest;
 pub mod logging;
 pub mod registry;
 #[cfg(feature = "dev")]

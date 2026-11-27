@@ -1,0 +1,197 @@
+diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
+index c10b23a..722f9a5 100644
+--- a/crates/gpui/src/app.rs
++++ b/crates/gpui/src/app.rs
+@@ -1348,6 +1348,13 @@ impl App {
+         &self.keyboard_mapper
+     }
+ 
++    /// What the current keyboard layout types for the physical key `code` with no modifier held
++    /// (a dead key: its accent): the key's label in the user's layout. `None` where the platform
++    /// can't say (macOS, the test platform, a headless Linux connection, a key with no text).
++    pub fn keyboard_key_text(&self, code: crate::KeyCode) -> Option<String> {
++        self.platform.key_text(code)
++    }
++
+     /// Invokes a handler when the current keyboard layout changes
+     pub fn on_keyboard_layout_change<F>(&self, mut callback: F) -> Subscription
+     where
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 87a321a..8a4f400 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -675,6 +675,13 @@ pub trait Platform: 'static {
+     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
+     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
+     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
++
++    /// What the current keyboard layout types for the physical key `code` with no modifier held
++    /// (a dead key: its accent), as a browser's `KeyboardLayoutMap` reports it; `None` where the
++    /// platform can't say. Reads the layout only: no key is listened to.
++    fn key_text(&self, _code: crate::KeyCode) -> Option<String> {
++        None
++    }
+ }
+ 
+ /// A handle to a platform's display, e.g. a monitor or laptop screen.
+diff --git a/crates/gpui_linux/src/linux/display_connection.rs b/crates/gpui_linux/src/linux/display_connection.rs
+index d7849d0..b8f202d 100644
+--- a/crates/gpui_linux/src/linux/display_connection.rs
++++ b/crates/gpui_linux/src/linux/display_connection.rs
+@@ -126,6 +126,10 @@ impl DisplayConnection {
+         dispatch!(self, connection => connection.displays(), headless(connection) => connection.displays())
+     }
+ 
++    pub(crate) fn key_text(&self, code: gpui::KeyCode) -> Option<String> {
++        dispatch!(self, connection => connection.key_text(code), headless => None)
++    }
++
+     pub(crate) fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
+         dispatch!(
+             self,
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index 1f1061a..958b8d0 100644
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -605,6 +605,10 @@ impl Platform for LinuxPlatform {
+         self.with_common(|common| common.callbacks.keyboard_layout_change = Some(callback));
+     }
+ 
++    fn key_text(&self, code: gpui::KeyCode) -> Option<String> {
++        self.connection.borrow().key_text(code)
++    }
++
+     fn on_thermal_state_change(&self, _callback: Box<dyn FnMut()>) {}
+ 
+     fn thermal_state(&self) -> ThermalState {
+@@ -1473,6 +1477,41 @@ fn guess_ascii(keycode: Keycode, shift: bool) -> Option<char> {
+     Some(c)
+ }
+ 
++/// What `code` types in `state`'s effective layout with no modifier held, or a dead key's accent
++/// (spacing form): the key's label.
++#[cfg(any(feature = "wayland", feature = "x11"))]
++pub(super) fn key_text_from_xkb(state: &State, code: gpui::KeyCode) -> Option<String> {
++    let gpui::KeyCode::Evdev(evdev) = code else {
++        return None;
++    };
++    let keymap = state.get_keymap();
++    let layout = state.serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
++    let mut plain = State::new(&keymap);
++    plain.update_mask(0, 0, 0, 0, 0, layout);
++    let keycode = Keycode::from(u32::from(evdev) + 8);
++    let text = plain.key_get_utf8(keycode);
++    if !text.is_empty() && !text.chars().any(char::is_control) {
++        return Some(text);
++    }
++    let accent = match plain.key_get_one_sym(keycode) {
++        Keysym::dead_grave => '`',
++        Keysym::dead_acute => '\u{b4}',
++        Keysym::dead_circumflex => '^',
++        Keysym::dead_tilde => '~',
++        Keysym::dead_macron => '\u{af}',
++        Keysym::dead_breve => '\u{2d8}',
++        Keysym::dead_abovedot => '\u{2d9}',
++        Keysym::dead_diaeresis => '\u{a8}',
++        Keysym::dead_abovering => '\u{b0}',
++        Keysym::dead_doubleacute => '\u{2dd}',
++        Keysym::dead_caron => '\u{2c7}',
++        Keysym::dead_cedilla => '\u{b8}',
++        Keysym::dead_ogonek => '\u{2db}',
++        _ => return None,
++    };
++    Some(accent.to_string())
++}
++
+ #[cfg(any(feature = "wayland", feature = "x11"))]
+ pub(super) fn keystroke_from_xkb(
+     state: &State,
+diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index 6652c48..b5b64b0 100644
+--- a/crates/gpui_linux/src/linux/wayland/client.rs
++++ b/crates/gpui_linux/src/linux/wayland/client.rs
+@@ -1264,6 +1264,12 @@ impl WaylandConnection {
+         Box::new(self.0.borrow().keyboard_layout.clone())
+     }
+ 
++    /// The compositor's keymap (`wl_keyboard.keymap`) at the layout last in effect.
++    pub(crate) fn key_text(&self, code: gpui::KeyCode) -> Option<String> {
++        let state = self.0.borrow();
++        crate::linux::platform::key_text_from_xkb(state.keymap_state.as_ref()?, code)
++    }
++
+     pub(crate) fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
+         self.0
+             .borrow()
+diff --git a/crates/gpui_linux/src/linux/x11/client.rs b/crates/gpui_linux/src/linux/x11/client.rs
+index ca58f48..b323f4c 100644
+--- a/crates/gpui_linux/src/linux/x11/client.rs
++++ b/crates/gpui_linux/src/linux/x11/client.rs
+@@ -1685,6 +1685,12 @@ impl X11Client {
+         Box::new(state.keyboard_layout.clone())
+     }
+ 
++    /// The X server's keymap at its current group (XKB state notifications keep it current).
++    pub(crate) fn key_text(&self, code: gpui::KeyCode) -> Option<String> {
++        let state = self.0.borrow();
++        crate::linux::platform::key_text_from_xkb(&state.xkb, code)
++    }
++
+     pub(crate) fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
+         let state = self.0.borrow();
+         let setup = state.xcb_connection.setup();
+diff --git a/crates/gpui_windows/src/keyboard.rs b/crates/gpui_windows/src/keyboard.rs
+index 8164bc1..65feb40 100644
+--- a/crates/gpui_windows/src/keyboard.rs
++++ b/crates/gpui_windows/src/keyboard.rs
+@@ -1,4 +1,7 @@
+ use anyhow::Result;
++use windows::Win32::UI::Input::KeyboardAndMouse::{
++    GetKeyboardLayout, MAPVK_VSC_TO_VK_EX, MapVirtualKeyExW, ToUnicodeEx,
++};
+ use collections::HashMap;
+ use windows::Win32::UI::{
+     Input::KeyboardAndMouse::{
+@@ -369,3 +372,27 @@ mod tests {
+         assert_eq!(*mapped.modifiers(), Modifiers::control_shift());
+     }
+ }
++
++/// What the thread's keyboard layout types for the key at scan code `code` with no modifier held;
++/// a dead key gives its accent (Windows puts the spacing form in the buffer). `ToUnicodeEx` with
++/// flag 4 leaves the keyboard's dead-key state alone (Windows 10 1607 and later).
++pub(crate) fn key_text(code: gpui::KeyCode) -> Option<String> {
++    let gpui::KeyCode::Windows(scan) = code else {
++        return None;
++    };
++    // SAFETY: plain calls with values and buffers that live across them; the layout handle is
++    // this thread's (the UI thread's, the one keys are typed into).
++    unsafe {
++        let layout = GetKeyboardLayout(0);
++        let vkey = MapVirtualKeyExW(u32::from(scan), MAPVK_VSC_TO_VK_EX, Some(layout));
++        if vkey == 0 {
++            return None;
++        }
++        let state = [0u8; 256];
++        let mut buffer = [0u16; 8];
++        let written = ToUnicodeEx(vkey, u32::from(scan), &state, &mut buffer, 4, Some(layout));
++        let length = (written.unsigned_abs() as usize).min(buffer.len());
++        let text = String::from_utf16(&buffer[..length]).ok()?;
++        (!text.is_empty() && !text.chars().any(char::is_control)).then_some(text)
++    }
++}
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index 90e6ce0..44faf3f 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -584,6 +584,10 @@ impl Platform for WindowsPlatform {
+             .set(Some(callback));
+     }
+ 
++    fn key_text(&self, code: gpui::KeyCode) -> Option<String> {
++        crate::keyboard::key_text(code)
++    }
++
+     fn on_thermal_state_change(&self, _callback: Box<dyn FnMut()>) {}
+ 
+     fn thermal_state(&self) -> ThermalState {

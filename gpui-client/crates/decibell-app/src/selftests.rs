@@ -33,6 +33,7 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         crate::software_codecs::selftest(),
         crate::hotkeys::selftest(),
+        crate::layout_selftest::selftest(),
         SelfTest {
             name: "regional-read-crates",
             about: "(the regional self-test's child) the labels other crates draw in this process's regional formats: the audit log's day heading, the Transfers panel's time, the viewer's posted line, the invite card's member count, a search result's time",

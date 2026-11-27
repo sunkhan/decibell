@@ -22,7 +22,12 @@ fn main() -> ExitCode {
         unsafe { std::env::set_var("SVT_LOG", "1") };
     }
     match Args::parse(std::env::args().skip(1)) {
-        Ok(args) => boot::run(args),
+        Ok(args) => {
+            for arg in &args.ignored {
+                eprintln!("decibell: ignoring unknown argument {arg:?}");
+            }
+            boot::run(args)
+        }
         Err(message) => {
             eprintln!("{message}");
             ExitCode::from(2)

@@ -139,7 +139,7 @@ impl Settings {
     /// `None` when nothing is pending. The debounce timer is dropped.
     pub fn take_pending_save(&mut self) -> Option<serde_json::Value> {
         drop(self.save.take()?);
-        serde_json::to_value(&self.values).map_err(|e| log::error!("[settings] couldn't serialise: {e}")).ok()
+        self.blob()
     }
 
     pub fn save_pending(&self) -> bool {
@@ -147,10 +147,20 @@ impl Settings {
     }
 
     fn save_now(&self) {
-        match serde_json::to_value(&self.values) {
-            Ok(blob) => (self.saver)(blob),
-            Err(e) => log::error!("[settings] couldn't serialise: {e}"),
+        if let Some(blob) = self.blob() {
+            (self.saver)(blob);
         }
+    }
+
+    /// What is written: the settings, without the keybind rows that have no key yet
+    /// (`saveSettings.ts` filters `keys.length > 0`: a row added and never recorded lives until the
+    /// window's state goes, never in the file).
+    fn blob(&self) -> Option<serde_json::Value> {
+        let mut blob = serde_json::to_value(&self.values).map_err(|e| log::error!("[settings] couldn't serialise: {e}")).ok()?;
+        if let Some(rows) = blob.get_mut("hotkeys").and_then(serde_json::Value::as_array_mut) {
+            rows.retain(|row| row.get("keys").and_then(serde_json::Value::as_array).is_none_or(|keys| !keys.is_empty()));
+        }
+        Some(blob)
     }
 
     // ── Appearance ──
@@ -291,5 +301,20 @@ mod tests {
         cx.executor().advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
         assert_eq!(saved.borrow().len(), 2);
+
+        // A keybind row with no key yet stays in the store and never reaches the file
+        // (`saveSettings.ts`: `bindings.filter((b) => b.keys.length > 0)`).
+        let row = |id: &str, keys: &[&str]| decibell_core::config::HotkeyBindingSetting {
+            id: id.into(),
+            action: "toggle_mute".into(),
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+        };
+        settings.update(cx, |s, cx| s.change(|v| v.hotkeys = vec![row("a", &["KeyM"]), row("b", &[])], cx));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let written = saved.borrow().last().cloned().unwrap();
+        assert_eq!(written["hotkeys"].as_array().map(Vec::len), Some(1));
+        assert_eq!(written["hotkeys"][0]["id"], "a");
+        settings.read_with(cx, |s, _| assert_eq!(s.get().hotkeys.len(), 2, "the empty row stays on screen"));
     }
 }

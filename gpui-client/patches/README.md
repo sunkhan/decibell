@@ -28,6 +28,7 @@ folder applied in lexical order. Pin: `a3ce8d5e88e35697b2ba1cf9cb3c6816089b8281`
 | `0030-gpui-surface-orientation.patch` | A surface has an orientation (`WgpuSurface::set_orientation` / `D3d11Surface::set_orientation`, `SurfaceOrientation`: mirror x, mirror y, transpose): both renderers turn the texture coordinates in the surface's vertex shader, fit the picture by its turned size (`display_size()`) and average the minified footprint along the turned axes. In gpui_wgpu **and** gpui_windows (`shaders.wgsl`, `shaders.hlsl`). | A video file with a display matrix (a phone's portrait recording is stored on its side) was drawn as stored. Turning it in the draw costs nothing per picture: no pixel is copied and no slot changes. |
 | `0031-gpui-surface-depth-transfer.patch` | `SurfaceColor` gains `depth` (8, or 10 / 12 with the code in the high bits of 16-bit plane textures) and `transfer` (`SurfaceTransfer`: SDR, PQ, HLG, BT.2020 SDR); the Y'CbCr matrix is scaled for the depth (8-bit numbers unchanged, bit for bit); the surface fragment shaders bring PQ / HLG / BT.2020 pictures to the SDR target (`surface_to_sdr`, both renderers); the wgpu device asks for `TEXTURE_FORMAT_16BIT_NORM` when the adapter has it. | 10-bit video files (HEVC Main 10, AV1, VP9 profile 2), which Chromium plays, need `R16` / `RG16` planes to keep their depth, and HDR files drawn through the SDR matrix alone come out washed out. |
 | `0032-gpui-surface-latest-frame.patch` | `WgpuSurface::latest_frame()` / `D3d11Surface::latest_frame()`: the newest picture's `Arc`, for showing it in another surface. | A played video's card shows the frame it stopped on (the renderer's canvas capture): the client keeps the slot the last picture is in and draws it from a surface of its own (`decibell_video::Still`), with no read-back and no copy. |
+| `0040-gpui-keyboard-key-text.patch` | `App::keyboard_key_text(code)` (`Platform::key_text`, default `None`): what the current keyboard layout types for a physical key (`KeyCode` of `0012`) with no modifier held, a dead key giving its accent: on Linux from the xkb keymap GPUI already holds (Wayland: the compositor's `wl_keyboard.keymap` at the layout last in effect; X11: the server's keymap and group), a fresh `xkb_state` with no modifiers; on Windows `MapVirtualKeyExW` + `ToUnicodeEx` (flag 4: the dead-key state untouched) with the UI thread's layout. | Settings → Keybinds labels keys as the layout labels them (`Z` on the German key in Y's place), as the renderer does through `navigator.keyboard.getLayoutMap()`; the keymap lives inside GPUI on Linux. Reads the layout only, listens to no key (CLAUDE.md, hotkeys). |
 
 ## How the patches are applied
 
@@ -830,3 +831,13 @@ The Direct3D half is compiled (`tools/win-check.sh`), not run.
 - **16-bit normalised textures** are a wgpu feature (`TEXTURE_FORMAT_16BIT_NORM`): requested when the adapter
   has it; `decibell-video` asks the device and falls back to the 8 most significant bits without it. Direct3D
   needs no feature for `R16_UNORM` / `R16G16_UNORM`.
+## 0040: the layout's text for a physical key
+
+`crates/gpui/src/{platform,app}.rs`, `gpui_linux` (`platform.rs`: `key_text_from_xkb`; the Wayland and X11
+clients and `display_connection.rs` route to it), `gpui_windows` (`keyboard.rs`: `key_text`), +100.
+`decibell-app/src/hotkeys.rs` reads it for every writing-system key at start and on each
+`on_keyboard_layout_change`, into the model's map (`decibell_model::live::hotkeys::set_layout_map`), which
+`key_label` reads as the renderer's `keyLabel` reads `getLayoutMap()`. Nothing runs at rest: about fifty
+`xkb_state` reads when the layout changes. Checked by `keybind-labels-layout` (German, French and Turkish in
+a private Xvfb; the session's compositor keymap read only); Windows compiled only. Upstream: Zed's Linux
+`KeyboardMapper` is a dummy at the pin; a per-key text query is small enough to be offered.

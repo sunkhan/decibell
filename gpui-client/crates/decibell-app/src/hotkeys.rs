@@ -13,7 +13,7 @@
 //! typing "v" in a message doesn't press a bare-V push-to-talk (`docs/electron-quirks.md` #13).
 
 use decibell_model::Model;
-use decibell_model::live::hotkeys::{Hotkeys, mouse_key};
+use decibell_model::live::hotkeys::{Hotkeys, LAYOUT_CODES, mouse_key, physical_code, set_layout_map};
 use decibell_text::input::text_field_focused;
 use gpui::{App, Context, Entity, InteractiveElement, Keystroke, Subscription, Window};
 
@@ -66,6 +66,69 @@ pub fn focused_fallback<E: InteractiveElement>(element: E) -> E {
                 hotkeys.update(cx, |h, _| h.key(key, false));
             }
         })
+}
+
+/// Key labels follow the keyboard layout (`keys.ts` `loadKeyboardLayout`: what the layout types on
+/// each writing-system key, so the German key in Y's place reads "Z"): read from the platform's
+/// layout (GPUI patch 0040: the compositor's or X server's xkb keymap, Windows' `ToUnicodeEx`) now,
+/// and again whenever the platform says the layout changed (the renderer read it once at start:
+/// `docs/electron-quirks.md` #28). Reads the layout only; no key is listened to.
+pub fn follow_keyboard_layout(cx: &mut App) {
+    load_layout_map(cx);
+    cx.on_keyboard_layout_change(|cx| {
+        load_layout_map(cx);
+    })
+    .detach();
+}
+
+/// Reads the layout's map into the model; how many keys it labels.
+fn load_layout_map(cx: &mut App) -> usize {
+    let map: Vec<(&'static str, String)> = LAYOUT_CODES
+        .iter()
+        .filter_map(|code| Some((*code, cx.keyboard_key_text(physical_code(code)?)?)))
+        .collect();
+    let count = map.len();
+    set_layout_map(map);
+    if let Some(model) = cx.try_global::<Model>().cloned() {
+        model.live.hotkeys.update(cx, |h, cx| h.layout_changed(cx));
+    }
+    count
+}
+
+/// `--layout-labels` (development builds; the `keybind-labels-layout` self-test's child): no
+/// window, the display's keyboard layout read as the app reads it, every writing-system key's
+/// label printed on one line (`decibell: layout <name> | KeyA=A …`), then exit. Waits up to 3 s
+/// for a Wayland compositor's keymap to arrive.
+#[cfg(feature = "dev")]
+pub fn print_layout_labels() -> std::process::ExitCode {
+    gpui_platform::application().run(|cx| {
+        cx.spawn(async move |cx| {
+            let print = |cx: &mut App| {
+                if load_layout_map(cx) == 0 {
+                    return false;
+                }
+                let labels: Vec<String> = LAYOUT_CODES.iter().map(|c| format!("{c}={}", decibell_model::live::hotkeys::key_label(c))).collect();
+                println!("decibell: layout {} | {}", cx.keyboard_layout().name(), labels.join(" "));
+                true
+            };
+            if cx.update(print) {
+                cx.update(|cx| cx.quit());
+                return;
+            }
+            let _changed = cx.update(|cx| {
+                cx.on_keyboard_layout_change(move |cx| {
+                    if print(cx) {
+                        cx.quit();
+                    }
+                })
+            });
+            cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
+            println!("decibell: layout none (the platform gave no keymap)");
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
+    });
+    std::process::ExitCode::SUCCESS
 }
 
 /// The window going to the background releases what the fallback holds.

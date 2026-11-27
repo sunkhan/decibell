@@ -7,15 +7,21 @@ use anyhow::{Context as _, Result};
 use decibell_harness::perf;
 #[cfg(feature = "dev")]
 use decibell_harness::{TestCx, run_selftests};
+#[cfg(feature = "dev")]
 use decibell_theme::ThemeId;
-use decibell_ui::{ActiveTheme as _, Assets, Theme};
-use gpui::{App, AppContext as _, KeyBinding, actions};
+use decibell_ui::Assets;
+#[cfg(feature = "dev")]
+use decibell_ui::{ActiveTheme as _, Theme};
+use gpui::{App, AppContext as _};
+#[cfg(feature = "dev")]
+use gpui::{KeyBinding, actions};
 
 use crate::args::{Args, usage};
 use crate::window;
 #[cfg(feature = "dev")]
 use crate::registry;
 
+#[cfg(feature = "dev")]
 actions!(decibell, [NextTheme, PreviousTheme]);
 
 /// What the window shows.
@@ -59,6 +65,10 @@ pub fn run(args: Args) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     crate::logging::init();
+    #[cfg(feature = "dev")]
+    if args.layout_labels {
+        return crate::hotkeys::print_layout_labels();
+    }
     // The installer's Start menu shortcut (Windows), written by this binary for its AppUserModelID.
     if let Some(link) = &args.create_shortcut {
         return crate::updater::create_shortcut(link);
@@ -229,6 +239,8 @@ fn start(
     cx: &mut App,
 ) -> Result<()> {
     decibell_ui::init(cx, args.theme.unwrap_or_default())?;
+    // Key labels in the keyboard layout's terms (Settings → Keybinds).
+    crate::hotkeys::follow_keyboard_layout(cx);
     // Quitting with a stream on screen: its decoder threads leave before the windows and the
     // GPU device do (and before the driver's exit handlers: `run` checks again after the loop).
     cx.on_app_quit(|_| {
@@ -240,6 +252,7 @@ fn start(
     if std::env::var("DECIBELL_VIEW_REPLAY").is_ok_and(|value| value == "0") {
         gpui::set_nested_view_replay(false);
     }
+    #[cfg(feature = "dev")]
     bind_theme_keys(cx);
 
     // `--check` runs one of the shell's checks in the signed-in app; `--selftest` runs in the
@@ -335,8 +348,10 @@ fn start(
     Ok(())
 }
 
-/// F8 / Shift-F8 step through the themes. A development aid until Settings → Appearance
-/// exists; the self-tests use it as their keyboard path.
+/// F8 / Shift-F8 step through the themes: development builds only (the `themes` self-test's
+/// keyboard path). Not in the shipped build: the step isn't saved (Settings → Appearance and the
+/// next start would disagree with the screen) and a bound F8 couldn't be recorded as a keybind.
+#[cfg(feature = "dev")]
 fn bind_theme_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("f8", NextTheme, None),
@@ -346,6 +361,7 @@ fn bind_theme_keys(cx: &mut App) {
     cx.on_action(|_: &PreviousTheme, cx| step_theme(ThemeId::ALL.len() - 1, cx));
 }
 
+#[cfg(feature = "dev")]
 fn step_theme(by: usize, cx: &mut App) {
     let next = ThemeId::ALL[(cx.theme().id.index() + by) % ThemeId::ALL.len()];
     Theme::set(cx, next);

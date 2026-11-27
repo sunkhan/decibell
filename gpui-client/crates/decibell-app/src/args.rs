@@ -35,8 +35,11 @@ Development build:
                         as JSON (decibell_chat::bench)
   --dbv <a.dbv[,b.dbv]> the test streams `--screen video-test` plays; --mirror shows the
                         first one a second time in a mini-player
+  --layout-labels       print each writing-system key's label in the display's keyboard layout
+                        and exit (no window)
 
-While the window is open, F8 / Shift-F8 switch to the next / previous theme.";
+While the window is open, F8 / Shift-F8 switch to the next / previous theme (development builds
+only; not saved).";
 
 /// The help text.
 pub fn usage() -> String {
@@ -78,6 +81,12 @@ pub struct Args {
     /// `--create-shortcut <path>` (hidden, Windows): the installer's Start menu shortcut, with the
     /// app's AppUserModelID (`decibell_release::win::create_shortcut`).
     pub create_shortcut: Option<String>,
+    /// `--layout-labels` (development builds): print every writing-system key's label in the
+    /// display's keyboard layout and exit (`keybind-labels-layout`).
+    pub layout_labels: bool,
+    /// Arguments this build doesn't know: ignored, as Chromium ignores switches it doesn't know
+    /// (a launcher's `--no-sandbox`, an Electron-era desktop entry), each said once on stderr.
+    pub ignored: Vec<String>,
 }
 
 impl Args {
@@ -123,12 +132,14 @@ impl Args {
                 "--dbv" => drop(value("--dbv")?),
                 #[cfg(feature = "dev")]
                 "--mirror" => {}
+                #[cfg(feature = "dev")]
+                "--layout-labels" => parsed.layout_labels = true,
                 "-h" | "--help" => parsed.help = true,
                 "--version" => parsed.version = true,
                 trial if trial.starts_with("--update-trial=") => parsed.update_trial = Some(trial["--update-trial=".len()..].to_string()),
                 "--apply-update" => parsed.apply_update = true,
                 "--create-shortcut" => parsed.create_shortcut = Some(value("--create-shortcut")?),
-                other => return Err(format!("decibell: unknown argument {other:?}\n\n{}", usage())),
+                other => parsed.ignored.push(other.to_string()),
             }
         }
         Ok(parsed)
@@ -179,12 +190,15 @@ mod tests {
         assert_eq!(parse(&["--create-shortcut", "C:\\x.lnk"]).unwrap().create_shortcut.as_deref(), Some("C:\\x.lnk"));
     }
 
-    /// The shipped build has no screens, self-tests, benchmark or development sign-in.
+    /// The shipped build has no screens, self-tests, benchmark or development sign-in: their
+    /// arguments are unknown there, and ignored like any other.
     #[cfg(not(feature = "dev"))]
     #[test]
-    fn the_ship_build_refuses_development_arguments() {
+    fn the_ship_build_ignores_development_arguments() {
         for arg in ["--screen", "--selftest", "--check", "--bench-scroll", "--login", "--dbv", "--mirror"] {
-            assert!(parse(&[arg, "x"]).unwrap_err().contains("unknown argument"), "{arg}");
+            let args = parse(&[arg, "x"]).unwrap();
+            assert_eq!(args.ignored, vec![arg.to_string(), "x".to_string()], "{arg}");
+            assert!(args.screen.is_none() && args.selftest.is_none() && args.login.is_none());
         }
         assert!(!usage().contains("--selftest"));
     }
@@ -197,10 +211,9 @@ mod tests {
                 .unwrap_err()
                 .contains("unknown theme")
         );
-        assert!(
-            parse(&["--frobnicate"])
-                .unwrap_err()
-                .contains("unknown argument")
-        );
+        // Unknown switches and words are ignored (Chromium's rule), the rest still applies.
+        let args = parse(&["--no-sandbox", "--enable-features=X", "stray", "--perf"]).unwrap();
+        assert_eq!(args.ignored, ["--no-sandbox", "--enable-features=X", "stray"]);
+        assert!(args.perf);
     }
 }

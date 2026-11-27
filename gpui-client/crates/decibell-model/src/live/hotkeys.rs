@@ -329,8 +329,40 @@ pub fn code_from_gpui_key(key: &str) -> Option<String> {
     is_known_key(&code).then_some(code)
 }
 
-/// A key's label in the UI (`keyLabel`, without the layout map Chromium had: letters,
-/// digits and US punctuation).
+/// The writing-system keys (UI Events' `KeyboardEvent.code`): the ones whose label is what the
+/// keyboard layout types (`navigator.keyboard.getLayoutMap()` has exactly these).
+pub const LAYOUT_CODES: &[&str] = &[
+    "Backquote", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9", "Digit0",
+    "Minus", "Equal", "KeyQ", "KeyW", "KeyE", "KeyR", "KeyT", "KeyY", "KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft",
+    "BracketRight", "Backslash", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL", "Semicolon",
+    "Quote", "IntlBackslash", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM", "Comma", "Period", "Slash",
+    "IntlRo", "IntlYen",
+];
+
+/// The platform's code for a key name (the inverse of [`code_of`]): the evdev code on Linux, the
+/// scan code on Windows.
+pub fn physical_code(name: &str) -> Option<gpui::KeyCode> {
+    if cfg!(windows) { keys::win_scancode(name).map(gpui::KeyCode::Windows) } else { keys::evdev_code(name).map(gpui::KeyCode::Evdev) }
+}
+
+/// What the keyboard layout types on each writing-system key (`loadKeyboardLayout`'s map), set by
+/// the app from the platform ([`set_layout_map`]); empty until then, or where the platform can't say.
+static LAYOUT_MAP: std::sync::RwLock<Vec<(&'static str, String)>> = std::sync::RwLock::new(Vec::new());
+
+/// The layout's text per key: [`LAYOUT_CODES`] → what the platform's layout types there with no
+/// modifier (`gpui::App::keyboard_key_text`, GPUI patch 0040). Labels read it from then on; the
+/// Keybinds tab relabels when the hotkeys store notifies ([`Hotkeys::layout_changed`]).
+pub fn set_layout_map(map: Vec<(&'static str, String)>) {
+    *LAYOUT_MAP.write().unwrap_or_else(|e| e.into_inner()) = map;
+}
+
+fn layout_text(key: &str) -> Option<String> {
+    LAYOUT_MAP.read().unwrap_or_else(|e| e.into_inner()).iter().find(|(code, _)| *code == key).map(|(_, text)| text.clone())
+}
+
+/// A key's label in the UI (`keyLabel`): a named key's name, else what the keyboard layout types
+/// on it (`Z` on a German keyboard's Y position; a single character upper-cased as JavaScript's
+/// `toUpperCase` does), else the US layout's letter, digit or punctuation.
 pub fn key_label(key: &str) -> String {
     let platform_meta = if cfg!(target_os = "macos") { "Cmd" } else if cfg!(target_os = "windows") { "Win" } else { "Super" };
     let modifier_label = |m: &str| match m {
@@ -384,6 +416,26 @@ pub fn key_label(key: &str) -> String {
         "Mouse3" => "Middle Mouse",
         "Mouse4" => "Mouse 4",
         "Mouse5" => "Mouse 5",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.into();
+    }
+    // `layoutMap?.get(key)`: `typed.trim()` non-empty; one UTF-16 unit is upper-cased.
+    if let Some(typed) = layout_text(key).filter(|t| !t.trim().is_empty()) {
+        return if typed.encode_utf16().count() == 1 { typed.to_uppercase() } else { typed };
+    }
+    if let Some(rest) = key.strip_prefix("Key").filter(|r| r.len() == 1) {
+        return rest.into();
+    }
+    if let Some(rest) = key.strip_prefix("Digit").filter(|r| r.len() == 1) {
+        return rest.into();
+    }
+    if let Some(rest) = key.strip_prefix("Numpad").filter(|r| r.len() == 1 && r.as_bytes()[0].is_ascii_digit()) {
+        return format!("Num {rest}");
+    }
+    // `US`: the fallbacks for when the layout map has nothing.
+    let us = match key {
         "Minus" => "-",
         "Equal" => "=",
         "BracketLeft" => "[",
@@ -396,21 +448,9 @@ pub fn key_label(key: &str) -> String {
         "Period" => ".",
         "Slash" => "/",
         "IntlBackslash" => "<",
-        _ => "",
+        _ => return key.into(),
     };
-    if !named.is_empty() {
-        return named.into();
-    }
-    if let Some(rest) = key.strip_prefix("Key").filter(|r| r.len() == 1) {
-        return rest.into();
-    }
-    if let Some(rest) = key.strip_prefix("Digit").filter(|r| r.len() == 1) {
-        return rest.into();
-    }
-    if let Some(rest) = key.strip_prefix("Numpad").filter(|r| r.len() == 1 && r.as_bytes()[0].is_ascii_digit()) {
-        return format!("Num {rest}");
-    }
-    key.into()
+    us.into()
 }
 
 pub fn combo_label(keys: &[String]) -> String {
@@ -469,6 +509,11 @@ impl Hotkeys {
 
     pub fn configuring(&self) -> bool {
         self.configuring.is_some()
+    }
+
+    /// The keyboard layout's map changed ([`set_layout_map`]): views that show key labels redraw.
+    pub fn layout_changed(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
     }
 
     pub fn fallback_armed(&self) -> bool {
@@ -1062,5 +1107,26 @@ mod tests {
         store_bindings(&mut s, &[Binding { id: "a".into(), action: Action::LeaveVoice, keys: v(&["F9"]) }]);
         assert_eq!(s.hotkeys[0].action, "leave_voice");
         assert_eq!(bindings(&s)[0].action, Action::LeaveVoice);
+    }
+
+    /// Labels from the layout's map, as `keyLabel` reads `getLayoutMap()`: the German key in Y's
+    /// place types z, a dead key its accent, ß upper-cases to SS as in JavaScript, named keys keep
+    /// their names, keys the map lacks fall back to US.
+    #[test]
+    fn labels_follow_the_layout_map() {
+        set_layout_map(vec![
+            ("KeyY", "z".into()),
+            ("KeyZ", "y".into()),
+            ("Minus", "ß".into()),
+            ("Equal", "\u{b4}".into()),
+            ("Digit1", "&".into()),
+            ("Quote", " ".into()),
+        ]);
+        let labels: Vec<String> = ["KeyY", "KeyZ", "Minus", "Equal", "Digit1", "Quote", "Slash", "Space", "KeyQ"].iter().map(|k| key_label(k)).collect();
+        set_layout_map(Vec::new());
+        assert_eq!(labels, ["Z", "Y", "SS", "\u{b4}", "&", "'", "/", "Space", "Q"]);
+        assert_eq!(key_label("KeyY"), "Y", "no map: the US letter");
+        assert_eq!(physical_code("KeyY"), Some(if cfg!(windows) { gpui::KeyCode::Windows(0x15) } else { gpui::KeyCode::Evdev(21) }));
+        assert!(LAYOUT_CODES.iter().all(|c| physical_code(c).is_some()), "every writing-system key has a physical code");
     }
 }
