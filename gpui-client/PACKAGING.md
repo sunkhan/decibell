@@ -380,6 +380,14 @@ None of these is test-only code: the ship build's development code is gone (§9.
 | **ship flavour** (no screens, self-tests, fixtures, probes, test hooks) | **79.59 MB** | **−7.03 MB** (−8.1 %) | same code on the app's path |
 | **packed relative relocations** (`-z pack-relative-relocs`, `build.rs`) | (before: 82.25) | **−2.58 MB**: `.rela.dyn` 2.62 MB → 8.5 KB + `.relr.dyn` 31 KB; ~100,000 fewer relocations applied at every start | fewer pages touched at start |
 | symbols stripped (`strip`, the packaging step) | (unstripped 130.66) | −51.1 MB: Rust symbols and the C libraries' DWARF (~39 MB); kept as the `.debug` file | none (never mapped) |
+| **opt-level `s`** (profile `release-s`; development flavour, compared with the same at opt-level 3) | 64.55 vs 86.62 MB | **−22.1 MB** (−25 %): `.text` 62.4 → 47.1 MB; the C codecs keep their own `-O3` | first frame 188 ms (175–248, load 12.8 → 2.0) vs 170 ms (163–171, load ~1); scroll at 280 Hz, 1000 / 3000 px/s: frame interval p50 3.57 ms both, p99 3.80 / 3.89 vs 3.89 / 4.41 ms, but **the list's paint 456 / 416 µs p50, 1033 / 1036 µs p99 vs 260 / 232, 591 / 578 µs**, missed vsyncs 6 / 4 vs 3 / 2 of 2,239 |
+
+**Decision: the ship profile stays at opt-level 3** (fat LTO, one codegen unit, abort). `s` is a quarter
+smaller but the message list's paint costs ~1.75× as much per frame (it still fits a 280 Hz frame here, with
+less headroom on a slower CPU), and startup is no faster: a smaller but slower binary is not a win. A middle
+way left open: `[profile.release.package.<cold crate>] opt-level = "s"` for code off the frame path (zbus /
+zvariant, prost, tokio, openmls, rustls, hyper, accesskit, serde_json, regex), worth ~3–5 MB by the table
+above; one build to measure it.
 
 ### 9.3 Assets
 

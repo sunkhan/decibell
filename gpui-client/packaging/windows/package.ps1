@@ -28,7 +28,8 @@ New-Item -ItemType Directory -Force -Path "$stage\resources", "$stage\licenses" 
 
 Copy-Item $Binary "$stage\decibell.exe"
 # The binary is a ship build of this version (Git for Windows' bash runs the shared check).
-& bash "$client/packaging/check-ship.sh" "$stage/decibell.exe" $version
+# Forward slashes: Git for Windows' bash and coreutils take D:/a/… as they are.
+& bash ("$client/packaging/check-ship.sh" -replace '\\', '/') ("$stage/decibell.exe" -replace '\\', '/') $version
 if ($LASTEXITCODE -ne 0) { throw "check-ship failed" }
 
 [IO.File]::WriteAllText("$stage\resources\install.json", "{`"kind`":`"nsis`",`"version`":`"$version`"}`n")
