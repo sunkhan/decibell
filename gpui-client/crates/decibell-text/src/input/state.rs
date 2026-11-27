@@ -572,9 +572,14 @@ impl InputState {
         cx.notify();
     }
 
+    /// Also when the window goes to the background with the field still focused (GPUI's blur
+    /// then too): the typing step stays open over that, as in Chromium, where only a selection
+    /// change ends it (a burst typed across a window switch is undone at once).
     fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.buffer.unmark();
-        self.buffer.close_undo_step();
+        if !self.focus.is_focused(window) {
+            self.buffer.close_undo_step();
+        }
         self.drag = None;
         self.autoscroll = None;
         self.sync_blink(window, cx);
