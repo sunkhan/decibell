@@ -209,8 +209,24 @@ impl StreamSettings {
     }
 
     /// The codec asked of the encoder: the enforced one, else H.264 (`handleGoLive`).
+    /// What a stream reports when the core didn't name the codec it started on.
     pub fn start_codec(&self) -> VideoCodec {
         if self.enforced_codec == VideoCodec::Unknown { VideoCodec::H264Hw } else { self.enforced_codec }
+    }
+
+    /// `(initial_codec, enforced_codec)` for `start_screen_share`. Advanced's pinned codec
+    /// pins both. Auto sends `(0, 0)`: the core starts on the first codec the probe found an
+    /// encoder for (H.264 before HEVC before AV1, `encoder_probe::auto_codec`), tries every
+    /// hardware encoder of it, and only then the software encoder (SVT-AV1), which it adds to
+    /// the plan only while the codec isn't pinned. Electron's native path sends H.264 for
+    /// both and falls back to WebCodecs (OpenH264) when that fails; this client has no such
+    /// fallback, so pinning would leave a machine without a hardware H.264 encoder unable to
+    /// stream at all (quirk #26: an Auto stream is announced unlocked here).
+    pub fn start_codecs(&self) -> (VideoCodec, VideoCodec) {
+        match self.enforced_codec {
+            VideoCodec::Unknown => (VideoCodec::Unknown, VideoCodec::Unknown),
+            pinned => (pinned, pinned),
+        }
     }
 
     /// Every 5 fps stream (Slides, or 5 fps under Advanced) is encoded for detail.
@@ -371,5 +387,17 @@ mod tests {
         assert_eq!(format_bitrate(2_500), "2.5 Mbps");
         assert_eq!(normalize_app_id("  Discord.exe"), "discord");
         assert_eq!(StreamSettings::default().start_codec(), VideoCodec::H264Hw);
+    }
+
+    #[test]
+    fn auto_leaves_the_codec_to_the_core_and_a_pin_pins_both() {
+        // Auto: (0, 0), so the core may fall through to the software encoder (SVT-AV1).
+        let mut st = StreamSettings::default();
+        assert_eq!(st.start_codecs(), (VideoCodec::Unknown, VideoCodec::Unknown));
+        assert_eq!((st.start_codecs().0.wire(), st.start_codecs().1.wire()), (0, 0));
+        for pinned in [VideoCodec::H264Hw, VideoCodec::H265, VideoCodec::Av1] {
+            st.enforced_codec = pinned;
+            assert_eq!(st.start_codecs(), (pinned, pinned));
+        }
     }
 }

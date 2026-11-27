@@ -363,7 +363,9 @@ async fn carry_stream(model: &Model, server: ServerId, channel: ChannelId, cx: &
         video_bitrate_kbps: settings.video_bitrate_kbps,
         share_audio: live.has_audio,
         initial_codec: live.codec.wire(),
-        enforced_codec: live.codec.wire(),
+        // The enforcement it was announced with at the start (Auto: none), not the codec
+        // it encodes in: a carry must not lock an Auto stream.
+        enforced_codec: live.enforced.wire(),
     }))
     .await;
     match moved {
@@ -872,7 +874,9 @@ pub fn go_live(cx: &mut App) {
     }
     let st = StreamSettings::of(model.settings.read(cx).get());
     let share_audio = can_pick_stream_audio_apps() && st.share_audio;
-    let codec = st.start_codec();
+    // Auto leaves the codec to the core so a machine without a hardware encoder for it
+    // still streams, in software (`StreamSettings::start_codecs`).
+    let (initial, enforced) = st.start_codecs();
     let (width, height) = st.resolution.request_size();
     let args = api::streaming::StartScreenShareArgs {
         server_id: key.as_ref().map(|k| k.0.wire()),
@@ -883,8 +887,8 @@ pub fn go_live(cx: &mut App) {
         video_bitrate_kbps: st.video_bitrate_kbps,
         share_audio,
         audio_bitrate_kbps: st.audio_bitrate_kbps,
-        initial_codec: codec.wire(),
-        enforced_codec: codec.wire(),
+        initial_codec: initial.wire(),
+        enforced_codec: enforced.wire(),
         source_id,
         native_encode: Some(true),
         include_cursor: Some(include_cursor),
@@ -893,18 +897,20 @@ pub fn go_live(cx: &mut App) {
         audio_apps: Some(st.audio_apps.clone()),
     };
     let fps = st.fps;
+    let unnamed = st.start_codec();
     call(cx, api::streaming::start_screen_share(args), move |result, cx| {
         let current = model.live.voice.own_stream.read(cx).attempt == attempt
             && model.live.voice.own_stream.read(cx).phase == OwnStreamPhase::Starting;
         match result {
             Ok(size) if current => {
                 let live = LiveStream {
-                    // What the stream really encodes in: the requested codec, unless an
-                    // unenforced start fell through to another encoder (the core reports it).
+                    // What the stream really encodes in, as the core reports it (Auto's
+                    // pick, or the software encoder an unpinned start fell through to).
                     codec: match VideoCodec::from_wire(size.codec as i32) {
-                        VideoCodec::Unknown => codec,
+                        VideoCodec::Unknown => unnamed,
                         started => started,
                     },
+                    enforced,
                     width: size.width,
                     height: size.height,
                     fps,

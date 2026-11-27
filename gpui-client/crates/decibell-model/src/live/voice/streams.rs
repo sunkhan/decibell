@@ -402,6 +402,10 @@ impl StreamViews {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LiveStream {
     pub codec: VideoCodec,
+    /// The codec the stream was announced locked to (`StartStreamReq.enforced_codec`):
+    /// Advanced's pinned codec, or `Unknown` for Auto. A carry to another channel
+    /// re-announces the same.
+    pub enforced: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
