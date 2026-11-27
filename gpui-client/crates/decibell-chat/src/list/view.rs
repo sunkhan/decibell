@@ -1107,6 +1107,13 @@ impl MessageList {
         Some(labels)
     }
 
+    /// The names row `id` draws as laid out now: its sender's (a grouped row's too) and its quoted
+    /// reply's author's, when it has one (the self-tests: a nickname change reaches both).
+    pub fn shown_names(&self, id: i64) -> Option<(SharedString, Option<SharedString>)> {
+        let layout = self.core.entries[self.core.index_of_id(id)?].layout.as_ref()?;
+        Some((layout.shown_name.clone(), layout.reply_author().map(|(_, shown, _)| shown.clone())))
+    }
+
     /// Ids of every row the list holds, oldest first.
     pub fn row_ids(&self) -> Vec<i64> {
         self.core.entries.iter().map(|entry| entry.message.id).collect()

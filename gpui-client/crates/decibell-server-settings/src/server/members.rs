@@ -450,6 +450,7 @@ impl MembersTab {
 
     /// The member whose nickname is being edited, and whether its save waits on the echo (the
     /// self-tests).
+    #[cfg(feature = "fixtures")]
     pub(crate) fn nickname_editor(&self) -> (Option<Uid>, bool) {
         (self.nick_open, self.nick_save.saving())
     }

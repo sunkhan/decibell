@@ -35,7 +35,7 @@ use decibell_model::stores::navigation::ActiveView;
 use decibell_model::stores::overlays::modal;
 use decibell_model::{Model, ServerId, Uid, actions};
 use decibell_shell::probes;
-use gpui::{App, Bounds, Pixels, point, px};
+use gpui::{App, Bounds, Pixels, SharedString, point, px};
 
 use crate::dm::Conversation;
 use crate::e2ee::{PeerInfos, current_key};
@@ -770,7 +770,116 @@ async fn check_user_menu(cx: TestCx) -> Result<()> {
         cx.update(|_, cx| crate::menu::close_user_menu(cx))?;
         quiet(&cx).await?;
     }
+    own_nickname_in_rows(&cx, me).await?;
     sign_out(&cx).await
+}
+
+/// Her own nickname set from the menu's dialog reaches the rows already drawn: her messages'
+/// headers and the quoted lines of replies to her (`useDisplayName` re-renders both), then back.
+async fn own_nickname_in_rows(cx: &TestCx, me: Uid) -> Result<()> {
+    let server = daily_gaming();
+    cx.update(|_, cx| {
+        actions::servers::open_server(daily_gaming(), cx);
+        model(cx).nav.update(cx, |nav, cx| nav.set_active_channel(Some("general".into()), cx))
+    })?;
+    wait_for(cx, Duration::from_secs(15), "#general's rows", |cx| decibell_chat::shown_list(cx).is_some_and(|l| !l.read(cx).visible_ids().is_empty())).await?;
+    quiet(cx).await?;
+    // The rows laid out now that name her: as the sender (a header) and as the quoted author.
+    let rows = move |cx: &mut App| -> (Vec<i64>, Vec<i64>) {
+        let Some(list) = decibell_chat::shown_list(cx) else { return Default::default() };
+        let list = list.read(cx);
+        let mut sent = Vec::new();
+        let mut quoted = Vec::new();
+        for id in list.row_ids() {
+            let Some((message, facts)) = list.row(id) else { continue };
+            if list.shown_names(id).is_none() {
+                continue;
+            }
+            if message.sender_uid == me && !facts.grouped {
+                sent.push(id);
+            }
+            if message.reply.as_ref().is_some_and(|r| r.sender_uid == me) && !facts.grouped {
+                quoted.push(id);
+            }
+        }
+        (sent, quoted)
+    };
+    let (sent, quoted) = cx.update(move |_, cx| rows(cx))?;
+    if sent.is_empty() && quoted.is_empty() {
+        cx.log("no row naming her is laid out in #general: the rows' nickname isn't checked");
+    } else {
+        nickname_reaches_rows(cx, me, sent, quoted).await?;
+    }
+    // A quoted line's author with no nickname (the owner may set anyone's): the line follows too.
+    let quoted_author = cx.update(move |_, cx| {
+        let list = decibell_chat::shown_list(cx)?;
+        let list = list.read(cx);
+        let community = model(cx).community(server, cx)?;
+        let roster = community.roster.read(cx);
+        list.row_ids().into_iter().find_map(|id| {
+            let (message, facts) = list.row(id)?;
+            let uid = message.reply.as_ref()?.sender_uid;
+            let empty = roster.member(uid).is_some_and(|m| m.nickname.is_empty() && !m.is_owner);
+            (uid > 0 && uid != me && !facts.grouped && empty && list.shown_names(id).is_some_and(|(_, r)| r.is_some())).then_some(uid)
+        })
+    })?;
+    match quoted_author {
+        Some(uid) => {
+            let quoted: Vec<i64> = cx.update(move |_, cx| {
+                let Some(list) = decibell_chat::shown_list(cx) else { return Vec::new() };
+                let list = list.read(cx);
+                list.row_ids()
+                    .into_iter()
+                    .filter(|id| list.row(*id).is_some_and(|(m, f)| !f.grouped && m.reply.as_ref().is_some_and(|r| r.sender_uid == uid)) && list.shown_names(*id).is_some())
+                    .collect()
+            })?;
+            nickname_reaches_rows(cx, uid, Vec::new(), quoted).await?;
+        }
+        None => cx.log("no quoted author without a nickname is laid out in #general: the quoted lines aren't checked"),
+    }
+    Ok(())
+}
+
+/// `uid`'s nickname set from the menu's dialog and put back: the headers (`sent`) and quoted lines
+/// (`quoted`) already laid out follow each change.
+async fn nickname_reaches_rows(cx: &TestCx, uid: Uid, sent: Vec<i64>, quoted: Vec<i64>) -> Result<()> {
+    let server = daily_gaming();
+    let me = uid;
+    let (original, account) = cx.update(move |_, cx| {
+        let m = model(cx);
+        let member = m.community(server, cx).and_then(|c| c.roster.read(cx).member(me).cloned());
+        let nick = member.as_ref().map(|m| m.nickname.to_string()).unwrap_or_default();
+        let fallback = member.map(|m| m.username).unwrap_or_default();
+        (nick, m.name_of(me, &fallback, cx))
+    })?;
+    let nickname = format!("rows {}", std::process::id());
+    for (step, value) in [("set", nickname.as_str()), ("revert", original.as_str())] {
+        cx.update(move |_, cx| crate::menu::request_dialog(crate::menu::DialogRequest::Nickname { server, uid: me }, cx))?;
+        wait_for(cx, Duration::from_secs(5), "the nickname dialog", |cx| crate::hooks::shown::<UserMenu>(cx).is_some_and(|m| m.read(cx).dialog().is_some())).await?;
+        quiet(cx).await?;
+        cx.keystroke("ctrl-a")?;
+        cx.keystroke("backspace")?;
+        cx.type_text(value)?;
+        cx.keystroke("enter")?;
+        let want: SharedString = if value.is_empty() { account.clone() } else { value.to_string().into() };
+        let (s2, q2) = (sent.clone(), quoted.clone());
+        let t = wait_for(cx, Duration::from_secs(10), "the rows to name her so", move |cx| {
+            let Some(list) = decibell_chat::shown_list(cx) else { return false };
+            let list = list.read(cx);
+            s2.iter().all(|id| list.shown_names(*id).is_none_or(|(name, _)| name == want))
+                && q2.iter().all(|id| list.shown_names(*id).is_none_or(|(_, reply)| reply.as_ref() == Some(&want)))
+                && s2.iter().chain(q2.iter()).any(|id| list.shown_names(*id).is_some())
+        })
+        .await?;
+        cx.log(format_args!(
+            "{account}'s nickname {step} to {value:?}: {} header(s) and {} quoted line(s) in #general follow, {} ms",
+            sent.len(),
+            quoted.len(),
+            t.as_millis()
+        ));
+        wait_for(cx, Duration::from_secs(5), "the dialog to close", |cx| crate::hooks::shown::<UserMenu>(cx).is_some_and(|m| m.read(cx).dialog().is_none())).await?;
+    }
+    Ok(())
 }
 
 /// Nothing drawn or presented for `seconds` after drawing stopped (a pointer crossing the window or

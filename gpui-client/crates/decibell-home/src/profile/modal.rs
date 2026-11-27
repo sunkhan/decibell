@@ -98,6 +98,8 @@ impl ProfileModal {
             (o.is_open(modal::USER_PROFILE) && o.user_profile_user.is_some(), o.user_profile_user.map(|uid| (uid, o.user_profile_server)))
         };
         this.overlays_changed(open, next, cx);
+        let entity = cx.entity();
+        crate::hooks::remember(&entity, cx);
         this
     }
 
