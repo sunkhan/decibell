@@ -909,6 +909,11 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| text.to_string())
 }
 
+/// The invite card's member count ("1,234 members", in the system's digit grouping).
+pub(crate) fn invite_members(n: i64) -> String {
+    format!("{} {}", crate::fmt::count(n), if n == 1 { "member" } else { "members" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,9 +927,4 @@ mod tests {
         assert_eq!(parse_hex("#5865f2"), Some(gpui::rgb(0x5865f2).into()));
         assert_eq!(parse_hex("red"), None);
     }
-}
-
-/// The invite card's member count ("1,234 members", in the system's digit grouping).
-pub(crate) fn invite_members(n: i64) -> String {
-    format!("{} {}", crate::fmt::count(n), if n == 1 { "member" } else { "members" })
 }

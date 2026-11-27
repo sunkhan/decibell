@@ -128,7 +128,7 @@ impl AvatarEditorHost {
             if let Err(e) = &result {
                 log::warn!("[avatar] save refused: {e}");
             }
-            let _ = editor.update(cx, |e, cx| e.save_done(result, cx));
+            editor.update(cx, |e, cx| e.save_done(result, cx));
         }));
     }
 }

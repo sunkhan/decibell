@@ -448,6 +448,9 @@ async fn leave(cx: &TestCx) -> Result<()> {
 /// members in the badge's title), and any change of the voice rosters, the session's
 /// participants, the streams or a watched person's presence (what the stage and the sidebar
 /// draw). Started before a window, read after it.
+/// Notifications per model store, by name.
+type StoreCounts = std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<&'static str, u32>>>;
+
 struct Changes {
     latency: std::rc::Rc<std::cell::Cell<u32>>,
     e2ee: std::rc::Rc<std::cell::Cell<u32>>,
@@ -505,8 +508,8 @@ impl Changes {
 
     /// Every store of the model that notified meanwhile (a frame drawn with nothing on screen
     /// changed has a cause among them: a store read while drawing notifies, GPUI draws).
-    fn watch_all(cx: &TestCx) -> Result<(std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<&'static str, u32>>>, Vec<gpui::Subscription>)> {
-        let counts: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<&'static str, u32>>> = Default::default();
+    fn watch_all(cx: &TestCx) -> Result<(StoreCounts, Vec<gpui::Subscription>)> {
+        let counts: StoreCounts = Default::default();
         let subs = cx.update(|_, cx| {
             let m = model(cx);
             let v = &m.live.voice;
