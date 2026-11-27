@@ -1266,10 +1266,29 @@ Release build, RTX 4080 (NVIDIA 595), KDE Wayland; other agents' builds ran besi
   and a leave within that window never saw the leave (central sends no "you left"), so it connects and re-adds
   the account. Decision for the owner: a MEMBERSHIP_REMOVED push from central, or the community refusing an
   auto-join for N seconds after a leave. Electron shares the core and the race; not run there.
+  **Checked live since (`wip/fix-servers`, self-test `servers-leave-rejoin`)**: after a leave by the menu nothing
+  joins again for 8 s (the join's MEMBERSHIP_ADDED echo included), and a leave followed at once by a re-join through
+  the invite joins and stays (`forget_leaving` clears the 60 s window; the tile and our member row are there 8 s
+  later). The older note in the servers tests ("the core reconnects before it acts on the leave's answer") no longer
+  applies: the leave's answer is read before the socket's close in the same read loop, so the reconnect loop sees
+  `terminated`.
+- **A refused auto-rejoin can't be produced on the stack**: the community tells central to drop a membership on
+  every kick, ban and leave (`sync_membership_revoke`, unconditionally, also for a target that is offline), so a
+  member banned while signed out is no longer listed at their next sign-in and nothing is refused. The client's
+  path (pending tile dropped, "Membership revoked" toast, `request_drop_membership`) runs only when central's revoke
+  was lost; it is unit-tested through the router (`events/tests.rs` `refused_joins_revocations_and_leaving`).
 - **Admin actions are not in the model.** `decibell-servers`, `decibell-server-settings` and `decibell-home` call
   `decibell_core::api` directly for invites, channels, roles, bans, kick / timeout / nickname, member search and
   the audit log (each behind its own small request type). Moving them into `actions::` would give one place for
-  pending state and toasts; nothing depends on it.
+  pending state and toasts; nothing depends on it. **What Electron's administration can do that this client
+  couldn't** was compared tab by tab on 2026-11-27 (`wip/fix-servers`): every action and gate exists; the
+  differences found and fixed were Alt+↑ / Alt+↓ role reordering, the channel topic box typeable without Manage
+  Channels (`<textarea disabled>`), ↑ / ↓ stepping in Storage's upload headroom (`type=number step=0.5 min=0`),
+  Server Settings reopening on its last tab (quirk #28), and keyboard access (every hand-built control a tab stop
+  with Enter / Space and the focus ring; ↑ / ↓ through the member menu, role picker, Add members, the owner picker
+  and Add a role or member, the first item focused as a menu opens; ↓ opens the owner picker). Still mouse-first:
+  the focus doesn't scroll a plain overflow list to the focused row (Chromium's `focus()` does), and a role row
+  scrolled out of the windowed hierarchy loses the focus to the root.
 - **`voice-watch` under load**: once, the child exited with SIGSEGV on its failure path in the video crate
   (conversation-integration run, load high, 53.7 pictures / s). The exit-time crash in NVIDIA's driver was fixed
   by `decibell_video::shutdown` in the quit hook (video / voice integration); check whether a failing self-test

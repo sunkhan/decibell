@@ -57,7 +57,7 @@ pub fn selftests() -> Vec<SelfTest> {
         },
         SelfTest {
             name: "content-invite",
-            about: "an invite link to Design Lab renders its card from central (not joined)",
+            about: "invite cards: Design Lab's resolves from central with Join (not joined); Daily Gaming's shows Joined with Open; an unknown code shows Invalid invite with Join disabled",
             run: |cx| Box::pin(parent(cx, "content-invite")),
         },
         SelfTest {
@@ -237,6 +237,7 @@ pub(crate) async fn parent_as(cx: TestCx, check: &'static str, account: &'static
     // The child's at-rest key must not reach the desktop's keyring (a throwaway profile would
     // leave an item there): it gets a session bus of its own with nothing on it.
     let bus = EmptyBus::start(&profile.0.join("bus"))?;
+    let gaming_invite = stack.accounts["communities"].as_array().and_then(|c| c.iter().find(|c| c["name"] == "Daily Gaming")).and_then(|c| c["invite"].as_str()).unwrap_or_default().to_string();
     let design_invite = stack.accounts["communities"].as_array().and_then(|c| c.iter().find(|c| c["name"] == "Design Lab")).and_then(|c| c["invite"].as_str()).unwrap_or_default().to_string();
     let mut command = Command::new(std::env::current_exe()?);
     command
@@ -248,6 +249,7 @@ pub(crate) async fn parent_as(cx: TestCx, check: &'static str, account: &'static
         .env("DECIBELL_DEV_PASSWORD", &stack.password)
         .env("DECIBELL_TEST_PROBES", "1")
         .env("DECIBELL_TEST_INVITE", design_invite)
+        .env("DECIBELL_TEST_GAMING_INVITE", gaming_invite)
         // Nothing a self-test plays is audible.
         .env("DECIBELL_MEDIA_OUTPUT", "null")
         .env_remove("DECIBELL_PERF")
@@ -1064,6 +1066,27 @@ async fn check_invite(cx: TestCx) -> Result<()> {
     cx.log(format_args!("the row with its card: {h} px (not joined)"));
     let joined = cx.update(|_, cx| model(cx).connections.read(cx).is_connected(ServerId::from_central(3)))?;
     ensure!(!joined, "nothing joined Design Lab");
+    // Not a member: Join, enabled (not pressed: the account is a shared one).
+    let probe = async |cx: &TestCx, key: String| -> Result<()> {
+        let k = key.clone();
+        wait_for(cx, Duration::from_secs(15), &format!("the probe {key}"), move |_| decibell_harness::probes::bounds(&k).is_some()).await?;
+        Ok(())
+    };
+    probe(&cx, format!("invite-card-join:{code}")).await?;
+    // A community we're in: "Joined" and Open.
+    let gaming = std::env::var("DECIBELL_TEST_GAMING_INVITE").ok().filter(|c| !c.is_empty()).context("no Daily Gaming invite in accounts.json")?;
+    let ch = channel.clone();
+    let open_content = format!("decibell://invite/{gaming}");
+    cx.update(|_, cx| inject(&ch, id + 1, &open_content, cx))?;
+    probe(&cx, format!("invite-card-open:{gaming}")).await?;
+    cx.log("a community we're in: Joined, with Open");
+    // An unknown code: "Invalid invite", Join disabled.
+    let bad = "ZZZZ9999ZZ";
+    let ch = channel.clone();
+    cx.update(|_, cx| inject(&ch, id + 2, &format!("decibell://invite/{bad}"), cx))?;
+    wait_for(&cx, Duration::from_secs(15), "central's answer for the bad code", move |cx| model(cx).invites.read(cx).get(bad).is_some_and(|e| !e.loading && e.invalid)).await?;
+    probe(&cx, format!("invite-card-join:{bad}:disabled")).await?;
+    cx.log("an unknown code: Invalid invite, Join disabled");
     Ok(())
 }
 

@@ -62,10 +62,13 @@ fn tag() -> String {
     std::env::var("DECIBELL_ST_TAG").unwrap_or_else(|_| format!("st-{}", std::process::id()))
 }
 
+#[path = "selftests_admin.rs"]
+mod admin;
+
 // ── The parents ─────────────────────────────────────────────────────────────────────────────
 
 pub fn selftests() -> Vec<SelfTest> {
-    vec![
+    let mut tests = vec![
         SelfTest {
             name: "server-settings-open",
             about: "(stack) alice opens every tab on real data; perf2 sees only the tabs its permissions allow",
@@ -127,7 +130,9 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "every Server Settings tab settles to 0 frames over 5 s; closing drops the window and its state",
             run: |cx| Box::pin(settings_idle(cx)),
         },
-    ]
+    ];
+    tests.extend(admin::selftests());
+    tests
 }
 
 /// The stack as `accounts.json` describes it.
@@ -528,7 +533,7 @@ async fn parent_channel(cx: TestCx) -> Result<()> {
 // ── The checks, inside the signed-in app ────────────────────────────────────────────────────
 
 pub fn checks() -> Vec<SelfTest> {
-    vec![
+    let mut checks = vec![
         SelfTest { name: "server-settings-open", about: "(in the app) every tab on real data", run: |cx| Box::pin(check_open(cx)) },
         SelfTest { name: "server-settings-gating", about: "(in the app) the tabs follow the permissions", run: |cx| Box::pin(check_gating(cx)) },
         SelfTest { name: "overview-save", about: "(in the app) the description round trip", run: |cx| Box::pin(check_overview_save(cx)) },
@@ -542,7 +547,9 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "settings-cleanup", about: "(in the app) delete what the settings tests created", run: |cx| Box::pin(check_cleanup(cx)) },
         SelfTest { name: "members-nickname-own", about: "(in the app) alice's own nickname", run: |cx| Box::pin(check_nickname_own(cx)) },
         SelfTest { name: "members-nickname-mod", about: "(in the app) carol's Manage Nicknames", run: |cx| Box::pin(check_nickname_mod(cx)) },
-    ]
+    ];
+    checks.extend(admin::checks());
+    checks
 }
 
 /// Poll `ready` every 50 ms for at most `limit`.
@@ -1262,7 +1269,7 @@ async fn check_throwaway(cx: TestCx) -> Result<()> {
     };
     if !sign_in(&cx).await? {
         let error = cx.update(|_, cx| model(cx).auth.read(cx).login_error.clone())?.unwrap_or_default();
-        ensure!(phase == "join", "{user} couldn't sign in: {error}");
+        ensure!(matches!(phase.as_str(), "join" | "watch-membership"), "{user} couldn't sign in: {error}");
         cx.log(format_args!("{user} doesn't sign in ({error}): registering it"));
         cx.update(|_, cx| model(cx).auth.update(cx, |a, cx| a.set_login_error(None, cx)))?;
         let (u, p) = (user.clone(), password.clone());
@@ -1282,7 +1289,10 @@ async fn check_throwaway(cx: TestCx) -> Result<()> {
 
 async fn throwaway_phase(cx: &TestCx, user: &str, phase: &str) -> Result<()> {
     let cx = cx.clone();
-    if phase == "join" {
+    if phase != "join" && phase != "join-device" && phase != "send" {
+        return admin::throwaway_phase(&cx, phase).await;
+    }
+    if phase == "join" || phase == "join-device" {
         // Still a member (a run that ended before its cleanup): nothing to join.
         let member = wait_for(&cx, Duration::from_secs(3), "a membership", |cx| model(cx).connections.read(cx).is_connected(daily_gaming())).await.is_ok();
         if member {
@@ -1294,6 +1304,11 @@ async fn throwaway_phase(cx: &TestCx, user: &str, phase: &str) -> Result<()> {
         let code = std::env::var("DECIBELL_ST_INVITE").context("DECIBELL_ST_INVITE")?;
         let failed: Rc<RefCell<Option<String>>> = Rc::default();
         let sink = failed.clone();
+        // An invite joined by host and port opens under the provisional "host:port" id, re-keyed
+        // onto central's only when central has an address on record for it (the directory, an
+        // invite resolution): an unlisted community (Rustaceans) stays provisional until the
+        // next sign-in.
+        let provisional = ServerId::from_wire(&format!("{host}:{port}"));
         cx.update(move |_, cx| {
             actions::servers::redeem_invite(host, port, code, cx, move |r, _| {
                 if let Err(e) = r {
@@ -1301,8 +1316,11 @@ async fn throwaway_phase(cx: &TestCx, user: &str, phase: &str) -> Result<()> {
                 }
             })
         })?;
-        wait_for(&cx, Duration::from_secs(20), "the community to accept the invite", |cx| {
-            failed.borrow().is_some() || model(cx).connections.read(cx).is_connected(daily_gaming())
+        let f = failed.clone();
+        wait_for(&cx, Duration::from_secs(20), "the community to accept the invite", move |cx| {
+            let m = model(cx);
+            let c = m.connections.read(cx);
+            f.borrow().is_some() || c.is_connected(daily_gaming()) || c.is_connected(provisional)
         })
         .await?;
         if let Some(e) = failed.borrow().clone() {
@@ -1380,6 +1398,15 @@ async fn check_cleanup(cx: TestCx) -> Result<()> {
         if let Some(uid) = banned {
             send(&cx, Request::UnbanMember { server: daily_gaming(), username: user.clone(), uid }).await?;
             cx.log(format_args!("cleanup: {user}'s ban lifted"));
+        }
+    }
+    // The picture test's upload, if it got no further.
+    if std::env::var("DECIBELL_ST_PICTURE").as_deref() == Ok("1") {
+        let version = cx.update(|_, cx| model(cx).servers.read(cx).picture_version(daily_gaming()).to_string())?;
+        if !version.is_empty() {
+            send(&cx, Request::UpdateServerPicture { server: daily_gaming(), bytes: Default::default() }).await?;
+            wait_for(&cx, Duration::from_secs(10), "the picture's removal", |cx| model(cx).servers.read(cx).picture_version(daily_gaming()).is_empty()).await?;
+            cx.log("cleanup: the server picture removed");
         }
     }
     // Let the last requests leave before the app quits.

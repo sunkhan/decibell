@@ -472,6 +472,16 @@ What ChatPanel.tsx / DmChatPanel.tsx draw under the list, and the inline editor.
 - **Mixed-style sentences** (audit entries, counts with inline dots / avatars) are one paragraph
   (`sentence::Sentence` over `decibell_text`), with inline boxes filled by elements; an inline box only as
   tall as the part above the baseline keeps the CSS line height.
+- **Keyboard.** Hand-built controls are `<button>`s in the renderer: give each a focus handle from the view's
+  `ui::Focuses` (rows of windowed lists too: their builders have no window for element state) and draw it with
+  `ui::focusable(el, &handle, cx)` (tab stop, the focus ring, Enter / Space press it). A popover of choices wraps
+  its content in `ui::menu_keys` (↑ / ↓ through the items as `settingsUi.tsx` does; `menu_keys_then` to scroll a
+  windowed list's row in) and focuses its first item when it opened without a field. The hierarchy's role rows
+  keep their handles by role id, so Alt+↑ / Alt+↓'s reorder keeps the focus on the moved row.
+- **Self-tests with a throwaway target** (`selftests_admin.rs`): the throwaway `stsettings` is every target
+  (time-out, ban, kick, a role's holder, the new owner); Rustaceans (bob) is the one community whose ownership a
+  test moves, and only there and back in one run (the give-back runs whatever failed, and a last child fails
+  loudly if bob isn't the owner again).
 - **Picture editor** (`decibell-picture-editor`, no dependency on the settings crates): open it with the
   source and the shape, draw it, and answer its Save with the upload's result:
 
@@ -942,6 +952,9 @@ confirmations, the kicked / banned notice.
   rules are pure functions with unit tests (`drop_point`, `reorder`, `resolve_drop`); the order is applied at once
   (`Channels::set_all`) and sent whole, the community's broadcast settles it. A drop into another syncing category
   stores a `SyncPrompt` in the drag state; `SyncPromptOverlay` shows it.
+- **The welcome banner's ring** turns as the renderer's does (20 s a turn), but as one SVG sprite under a
+  `TimedTransformation` capped at `welcome::SPIN_FPS` (30) presents a second: nothing is drawn while it turns, and
+  it stands still while the window is hidden or motion is reduced (quirk #26). `welcome-banner` measures it.
 - **Inputs** are the renderer's `<input>` boxes around `decibell-text`'s `TextInput` (`ui::input_box`): each look
   (background, radius, padding, `text-sm` / 13 px, monospace with a sans placeholder, the plain placeholder of an
   input without a `placeholder:` class) is an `InputLook`. Autofocus happens in the next render (it has the window);
@@ -961,7 +974,10 @@ confirmations, the kicked / banned notice.
   throwaway accounts (`sv<hex>`); as `carol` (Design Lab's owner) they create only channels named
   `sv-<pid>-…` and their own invites, delete them again (and what an earlier failed run left), reorder only among
   them, and assert the seeded order unchanged. `invite-manage-live` runs its child under XWayland and checks Copy
-  link only on an empty clipboard, which it empties again (`wl-copy --clear`); otherwise it says it skipped.
+  link and Copy code with the owner's clipboard read first and put back after (`SavedClipboard`: Klipper for text,
+  else `wl-copy`), as `content-copy-image` does; without wl-clipboard it says it skipped. `welcome-gating` and
+  `servers-join-manual` use Rustaceans (bob's, unlisted, whose @everyone has no Create Invite): a channel bob makes
+  and deletes, a throwaway joined and swept again (`servers-sweep-in`).
 
 ## Voice (`decibell-voice`)
 

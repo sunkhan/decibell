@@ -48,7 +48,7 @@ const CHILD_LIMIT: Duration = Duration::from_secs(600);
 // ── The parents ──────────────────────────────────────────────────────────────────────────────
 
 pub fn selftests() -> Vec<SelfTest> {
-    vec![
+    let mut tests = vec![
         SelfTest {
             name: "servers-browse-join",
             about: "throwaway account: the directory lists the stack's public communities; join Design Lab from it; leave by the menu",
@@ -94,7 +94,9 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "Browse and the Invites dialog at rest: 0 frames over 5 s; a drag draws only while the pointer moves",
             run: |cx| Box::pin(carol(cx, "servers-idle")),
         },
-    ]
+    ];
+    tests.extend(more::selftests());
+    tests
 }
 
 struct Stack {
@@ -366,25 +368,114 @@ async fn carol(cx: TestCx, check: &'static str) -> Result<()> {
     running.finish(&cx, CHILD_LIMIT).await
 }
 
-/// Whether the session's clipboard is empty (`wl-paste`); `None` when that can't be told.
-fn clipboard_empty() -> Option<bool> {
-    let out = Command::new("wl-paste").arg("--list-types").stdin(Stdio::null()).output().ok()?;
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    Some(!out.status.success() && text.contains("Nothing is copied"))
+fn run_tool(tool: &str, args: &[&str], input: Option<&[u8]>) -> Result<(bool, Vec<u8>)> {
+    let mut command = Command::new(tool);
+    command.args(args).stdout(Stdio::piped()).stderr(Stdio::null()).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    let mut child = command.spawn().with_context(|| format!("starting {tool}"))?;
+    if let Some(input) = input {
+        use std::io::Write as _;
+        child.stdin.take().context("stdin")?.write_all(input)?;
+    }
+    let out = child.wait_with_output()?;
+    Ok((out.status.success(), out.stdout))
+}
+
+fn have(tool: &str) -> bool {
+    Command::new(tool).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok()
+}
+
+/// What the owner's clipboard held (a type and its bytes, or nothing), read with `wl-paste` and put
+/// back after a test wrote it (as `content-copy-image` does).
+struct SavedClipboard(Option<(String, Vec<u8>)>);
+
+impl SavedClipboard {
+    /// `None` without a Wayland session and wl-clipboard.
+    fn read() -> Result<Option<SavedClipboard>> {
+        if std::env::var("WAYLAND_DISPLAY").is_err() || !have("wl-paste") || !have("wl-copy") {
+            return Ok(None);
+        }
+        let (_, types) = run_tool("wl-paste", &["--list-types"], None)?;
+        let types: Vec<String> = String::from_utf8_lossy(&types).lines().map(str::to_string).collect();
+        let pick = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "image/png"]
+            .iter()
+            .find(|t| types.iter().any(|x| x == *t))
+            .map(|t| t.to_string())
+            .or_else(|| types.first().cloned());
+        Ok(Some(SavedClipboard(match pick {
+            Some(kind) => Some((kind.clone(), run_tool("wl-paste", &["--no-newline", "--type", &kind], None)?.1)),
+            None => None,
+        })))
+    }
+
+    fn describe(&self) -> String {
+        match &self.0 {
+            Some((kind, bytes)) => format!("{kind}, {} bytes", bytes.len()),
+            None => "empty".into(),
+        }
+    }
+
+    fn holds(&self) -> Result<bool> {
+        let now = SavedClipboard::read()?.context("wl-paste went away")?;
+        Ok(match (&self.0, &now.0) {
+            (Some((_, a)), Some((_, b))) => a == b,
+            (None, None) => true,
+            (None, Some((_, b))) => b.is_empty(),
+            _ => false,
+        })
+    }
+
+    fn wait_holds(&self, limit: Duration) -> Result<bool> {
+        let started = Instant::now();
+        loop {
+            if self.holds()? {
+                return Ok(true);
+            }
+            if started.elapsed() > limit {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Put it back: Klipper for text (no process stays behind), else `wl-copy`.
+    fn restore(&self) -> Result<String> {
+        if let Some((kind, bytes)) = &self.0
+            && (kind.starts_with("text/") || kind == "UTF8_STRING")
+            && have("qdbus6")
+        {
+            let text = String::from_utf8_lossy(bytes).to_string();
+            let set = run_tool("qdbus6", &["org.kde.klipper", "/klipper", "org.kde.klipper.klipper.setClipboardContents", &text], None).is_ok_and(|(ok, _)| ok);
+            if set && self.wait_holds(Duration::from_millis(1500))? {
+                return Ok("Klipper".into());
+            }
+        }
+        let how = match &self.0 {
+            Some((kind, bytes)) => {
+                run_tool("wl-copy", &["--type", kind], Some(bytes))?;
+                "wl-copy"
+            }
+            None => {
+                run_tool("wl-copy", &["--clear"], None)?;
+                "wl-copy --clear"
+            }
+        };
+        ensure!(self.wait_holds(Duration::from_secs(3))?, "the clipboard holds something else after putting back {}", self.describe());
+        Ok(how.to_string())
+    }
 }
 
 /// Invites: carol, under XWayland (an X11 client owns the clipboard without the keyboard focus;
-/// Wayland hands it to the focused client only, and other windows share this desktop). The Copy
-/// link check runs only on an empty clipboard, which is emptied again after (`wl-copy --clear`
-/// leaves no process behind, unlike putting text back would).
+/// Wayland hands it to the focused client only, and other windows share this desktop). The
+/// clipboard is read first and put back after, whatever happened.
 async fn invites_test(cx: TestCx) -> Result<()> {
     let stack = skip_without_stack!(cx);
     let profile = Profile::new("invite-manage-live")?;
-    let empty = clipboard_empty();
-    let clipboard = if empty == Some(true) { "1" } else { "0" };
-    if clipboard == "0" {
-        cx.log("the clipboard holds something (or wl-paste is missing): the Copy link check is skipped, the clipboard left alone");
+    let saved = SavedClipboard::read()?;
+    match &saved {
+        Some(s) => cx.log(format_args!("the clipboard held {}: kept, put back after", s.describe())),
+        None => cx.log("SKIP the clipboard checks: no Wayland session with wl-paste / wl-copy to keep and put back the clipboard"),
     }
+    let clipboard = if saved.is_some() { "1" } else { "0" };
     let running = spawn_without(
         "invite-manage-live",
         Some("carol"),
@@ -394,9 +485,9 @@ async fn invites_test(cx: TestCx) -> Result<()> {
         &["WAYLAND_DISPLAY"],
     )?;
     let result = running.finish(&cx, CHILD_LIMIT).await;
-    if empty == Some(true) {
-        let _ = Command::new("wl-copy").arg("--clear").stdin(Stdio::null()).status();
-        cx.log(format_args!("clipboard emptied again: {}", if clipboard_empty() == Some(true) { "empty" } else { "NOT EMPTY" }));
+    if let Some(saved) = saved {
+        let how = saved.restore()?;
+        cx.log(format_args!("clipboard put back ({}, by {how})", saved.describe()));
     }
     result
 }
@@ -468,7 +559,7 @@ async fn friends(cx: TestCx) -> Result<()> {
 // ── Inside the app ───────────────────────────────────────────────────────────────────────────
 
 pub fn checks() -> Vec<SelfTest> {
-    vec![
+    let mut checks = vec![
         SelfTest { name: "servers-browse-join", about: "(in the app) join from Browse, leave", run: |cx| Box::pin(check_browse_join(cx)) },
         SelfTest { name: "servers-join-link", about: "(in the app) join by links", run: |cx| Box::pin(check_join_link(cx)) },
         SelfTest { name: "invite-manage-live", about: "(in the app) create, copy, revoke", run: |cx| Box::pin(check_invites(cx)) },
@@ -481,7 +572,9 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "welcome-banner", about: "(in the app) the banner", run: |cx| Box::pin(check_welcome(cx)) },
         SelfTest { name: "servers-idle", about: "(in the app) at rest and dragging", run: |cx| Box::pin(check_idle(cx)) },
         SelfTest { name: "servers-sweep", about: "(in the app) remove throwaway members", run: |cx| Box::pin(check_sweep(cx)) },
-    ]
+    ];
+    checks.extend(more::checks());
+    checks
 }
 
 fn model(cx: &App) -> Model {
@@ -1061,7 +1154,7 @@ async fn revoke(cx: &TestCx, server: ServerId, code: &str) -> Result<()> {
 /// clipboard empty: it empties it again after).
 async fn copy_link(cx: &TestCx, code: &str) -> Result<()> {
     if std::env::var("DECIBELL_TEST_CLIPBOARD").as_deref() != Ok("1") {
-        cx.log("SKIP the clipboard check (the clipboard isn't empty: left alone)");
+        cx.log("SKIP the clipboard check (no wl-clipboard to keep the owner's clipboard)");
         return Ok(());
     }
     click_probe(cx, &format!("invite-copy:{code}")).await?;
@@ -1077,6 +1170,18 @@ async fn copy_link(cx: &TestCx, code: &str) -> Result<()> {
     ensure!(copied.as_deref() == Some(want.as_str()), "the clipboard held {copied:?}");
     // The button says so for 1.5 s.
     cx.log("Copy link put decibell://invite/<code> on the clipboard");
+    // The code chip copies the bare code.
+    click_probe(cx, &format!("invite-copy-code:{code}")).await?;
+    let mut copied = None;
+    for _ in 0..20 {
+        cx.sleep(Duration::from_millis(100)).await;
+        copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))?;
+        if copied.as_deref() == Some(code) {
+            break;
+        }
+    }
+    ensure!(copied.as_deref() == Some(code), "after Copy code the clipboard held {copied:?}");
+    cx.log("Copy code put the bare code on the clipboard");
     Ok(())
 }
 
@@ -1508,12 +1613,89 @@ async fn check_welcome(cx: TestCx) -> Result<()> {
         cx.sleep(Duration::from_millis(500)).await;
         cx.keystroke("escape")?;
         wait_for(&cx, Duration::from_secs(5), "the dialog to close", |cx| !model(cx).overlays.read(cx).is_open(modal::INVITE_FRIENDS)).await?;
-        anyhow::Ok(())
+        // Manage channel opens the channel's settings.
+        settle_drawn(&cx).await?;
+        click_probe(&cx, "welcome-manage").await?;
+        let i = id.clone();
+        wait_for(&cx, Duration::from_secs(5), "Channel Settings", move |cx| {
+            let m = model(cx);
+            let o = m.overlays.read(cx);
+            o.is_open(modal::CHANNEL_SETTINGS) && o.channel_settings_channel.as_ref() == Some(&i)
+        })
+        .await?;
+        cx.log("Manage channel opened this channel's settings");
+        settle_drawn(&cx).await?;
+        let focused = cx.update(|w, cx| w.focused(cx).is_some())?;
+        cx.keystroke("escape")?;
+        if wait_for(&cx, Duration::from_secs(2), "Channel Settings to close on Escape", |cx| !model(cx).overlays.read(cx).is_open(modal::CHANNEL_SETTINGS)).await.is_err() {
+            cx.log(format_args!("NOTE: Escape didn't close Channel Settings (something focused: {focused}): closing with its ✕"));
+            click_probe(&cx, "settings-close").await?;
+            wait_for(&cx, Duration::from_secs(5), "Channel Settings to close", |cx| !model(cx).overlays.read(cx).is_open(modal::CHANNEL_SETTINGS)).await?;
+        }
+        ring_cost(&cx).await
     }
     .await;
     api_delete(&cx, server, &id).await?;
     result?;
     log_out(&cx).await
+}
+
+/// The process's CPU time so far (user + system), from /proc/self/stat.
+fn cpu_seconds() -> f64 {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else { return 0. };
+    // The fields after the command's closing parenthesis; utime and stime are the 12th and 13th.
+    let rest = stat.rsplit_once(')').map_or("", |(_, r)| r);
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    let ticks = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.);
+    (ticks(11) + ticks(12)) / 100.
+}
+
+/// What the turning ring costs at rest (the banner on screen, nothing else moving), and that it
+/// costs nothing drawn: presents per second, frames drawn, CPU of the whole process; the same
+/// numbers with the window showing a channel with messages (no ring) beside them.
+async fn ring_cost(cx: &TestCx) -> Result<()> {
+    let measure = async |what: &str| -> Result<(f32, u64, f64)> {
+        let mut last = (0., 0, 0.);
+        for attempt in 1..=4 {
+            park(cx)?;
+            let before = settle_drawn(cx).await?;
+            let events = cx.update(|_, cx| model(cx).pump_stats().events)?;
+            let (cpu, started) = (cpu_seconds(), Instant::now());
+            cx.sleep(Duration::from_secs(5)).await;
+            let secs = started.elapsed().as_secs_f64();
+            let frames = cx.frames()?.since(before);
+            let events = cx.update(|_, cx| model(cx).pump_stats().events)? - events;
+            last = (frames.presented as f32 / secs as f32, frames.drawn, 100. * (cpu_seconds() - cpu) / secs);
+            cx.log(format_args!(
+                "{what}: {:.1} presents/s, {} drawn in 5 s, {:.2} % of a core (try {attempt}; {events} core events)",
+                last.0, last.1, last.2
+            ));
+            if frames.drawn == 0 {
+                return Ok(last);
+            }
+        }
+        Ok(last)
+    };
+    if !probes::flag_set("welcome-ring-turns") {
+        cx.log("the ring doesn't turn here (the window isn't visible, or motion is reduced): nothing to measure");
+        return Ok(());
+    }
+    let (turning, drawn, cpu) = measure("the banner, ring turning").await?;
+    ensure!(drawn == 0, "the banner drew {drawn} frames at rest (the ring must only re-present)");
+    ensure!(turning <= crate::welcome::SPIN_FPS + 1.5, "the ring presented {turning:.1} times a second (cap {})", crate::welcome::SPIN_FPS);
+    // Beside it: the same window on a channel with messages.
+    let server = community(DESIGN_LAB)?.id;
+    let general = cx.update(move |_, cx| channels_of(server, cx).into_iter().find(|c| &*c.name == "general"))?;
+    if let Some(general) = general {
+        cx.update(move |_, cx| decibell_model::actions::chat::open_channel(server, general.id, cx))?;
+        let (rest, _, rest_cpu) = measure("#general, no ring").await?;
+        cx.log(format_args!(
+            "the ring's cost: {:.1} presents/s and {:.2} % of a core more than a channel at rest",
+            turning - rest,
+            cpu - rest_cpu
+        ));
+    }
+    Ok(())
 }
 
 async fn check_sweep(cx: TestCx) -> Result<()> {
@@ -1613,3 +1795,7 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     result?;
     log_out(&cx).await
 }
+
+// After the macros above: the module uses `skip_without_stack!`.
+#[path = "selftests_more.rs"]
+mod more;
