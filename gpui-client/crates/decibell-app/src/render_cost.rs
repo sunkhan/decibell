@@ -113,7 +113,11 @@ async fn case(cx: &TestCx, name: &str, rounds: usize, change: &dyn Fn(usize, &mu
             gpui::set_nested_view_replay(replay);
             cx.update(|window, _| window.refresh())?;
             settle(cx).await?;
-            let cost = measure(cx, rounds, change).await?;
+            // Which case and which mode: the message alone does not say (the Windows runner
+            // and Linux both lose a case here).
+            let cost = measure(cx, rounds, change).await.with_context(|| {
+                format!("{name}, {}", if index == 0 { "as GPUI was" } else { "with patch 0014" })
+            })?;
             sums[index].rendered += cost.rendered / PASSES as f64;
             sums[index].replayed += cost.replayed / PASSES as f64;
             sums[index].frames += cost.frames / PASSES as f64;

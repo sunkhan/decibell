@@ -295,12 +295,16 @@ async fn history_in(h: &Harness) -> Result<()> {
     let (pages_after, rows_after) = (h.cx.update(|_, cx| h.pane.read(cx).source.pages.get())?, h.with(|list, _| list.row_count())?);
     ensure!(pages_after > pages && rows_after != rows, "the wheel crossed the paging zone and a page arrived mid-animation");
     let end = h.y_of(reading)?;
-    ensure!(end - start == 480., "four notches travel exactly 480 px across the page's arrival, not {}", end - start);
+    // A notch is three wheel lines: 120 px on Linux, 100 px on Windows, as Chromium scrolls there
+    // (`kScrollbarPixelsPerLine = 100 / 3` in ui/events/blink/web_input_event_builders_win.cc;
+    // docs/wheel-scroll.md §8).
+    let travel = (4. * 3. * decibell_ui::scroll::PX_PER_GPUI_LINE).round() as f32;
+    ensure!(end - start == travel, "four notches travel exactly {travel} px across the page's arrival, not {}", end - start);
     let steps: Vec<f32> = samples.windows(2).map(|pair| pair[1] - pair[0]).collect();
     let worst = steps.iter().copied().fold(0f32, f32::max);
     ensure!(steps.iter().all(|step| *step >= 0.), "the content never moved backwards while the page arrived");
     ensure!(worst <= 60., "no jump while the page arrived (largest step between samples: {worst} px)");
-    h.cx.log(format_args!("page mid-wheel: 480 px exactly, {} samples, largest step {worst} px, never backwards", samples.len()));
+    h.cx.log(format_args!("page mid-wheel: {travel} px exactly, {} samples, largest step {worst} px, never backwards", samples.len()));
     Ok(())
 }
 
@@ -319,6 +323,7 @@ async fn switch_in(h: &Harness) -> Result<()> {
     let (reading, before) = h.reading()?;
     let saved = h.with(|list, cx| list.position(cx))?;
     let visible = h.with(|list, _| list.visible_ids())?;
+    let range_before = h.with(|list, _| list.scroll_range())?;
 
     // A → B.
     h.cx.update(|_, cx| h.pane.update(cx, |pane, cx| pane.switch(Which::Features, cx)))?;
@@ -337,7 +342,23 @@ async fn switch_in(h: &Harness) -> Result<()> {
         }
     }
     let (y, ids, drawn) = first.context("no frame after the switch")?;
-    ensure!(y == before, "frame {drawn} after the switch has row {reading} at y = {y}, it was left at {before}");
+    if y != before {
+        // Failed so far only on the Windows runner (2026-11-27: y = -391 against 30), where nobody
+        // can look: say what the list does next, so the log tells a first frame drawn before the
+        // position is restored (it settles on `before`) from a position restored wrongly (it
+        // stays), and whether the rows' heights changed across the switch (the scroll range).
+        let mut trail = Vec::new();
+        for _ in 0..40 {
+            h.cx.sleep(Duration::from_millis(10)).await;
+            let sample = (h.cx.frames()?.since(frames).drawn, h.y_of(reading).ok(), h.with(|list, _| list.scroll_range())?);
+            if trail.last() != Some(&sample) {
+                trail.push(sample);
+            }
+        }
+        anyhow::bail!(
+            "frame {drawn} after the switch has row {reading} at y = {y}, it was left at {before}; scroll range before the switch {range_before:?}; then (frames drawn, y, scroll range): {trail:?}"
+        );
+    }
     ensure!(ids == visible, "the same rows are on screen in the first frame");
     h.rest().await?;
     let settled = h.y_of(reading)?;
