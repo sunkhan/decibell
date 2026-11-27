@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{
     App, AvailableSpace, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Element, ElementId, Entity,
-    GlobalElementId, HitboxBehavior, InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, SharedString, Size, Style, WeakEntity, Window, px, rgb, size,
 };
 
@@ -250,7 +250,9 @@ fn snapped(width: f32, height: f32, scale: f32) -> Size<Pixels> {
 
 impl Element for Label {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    /// A selectable label's hitbox. GPUI takes hitboxes in prepaint only (`debug_assert_prepaint`:
+    /// inserting one in paint aborted every debug build that drew such a label).
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -293,7 +295,17 @@ impl Element for Label {
         (layout_id, ())
     }
 
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut Window, _: &mut App) {}
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _: &mut App,
+    ) -> Option<Hitbox> {
+        self.selection.as_ref().map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))
+    }
 
     fn paint(
         &mut self,
@@ -301,7 +313,7 @@ impl Element for Label {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        hitbox: &mut Option<Hitbox>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -330,7 +342,9 @@ impl Element for Label {
                 options.selection_background = background;
                 options.selection_color = Some(foreground);
             }
-            listen_for_selection(&selection, &layout, bounds, window);
+            if let Some(hitbox) = hitbox.as_ref() {
+                listen_for_selection(&selection, &layout, bounds, hitbox, window);
+            }
         }
         layout.paint(bounds.origin, &options, window, cx);
         if self.emoji.is_some() {
@@ -341,9 +355,8 @@ impl Element for Label {
 
 /// A selectable label's pointer: a press on it starts a selection (two presses: the word, three:
 /// all), a drag moves its end, a press anywhere else clears it.
-fn listen_for_selection(selection: &Entity<TextSelection>, layout: &Rc<Layout>, bounds: Bounds<Pixels>, window: &mut Window) {
-    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-    window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+fn listen_for_selection(selection: &Entity<TextSelection>, layout: &Rc<Layout>, bounds: Bounds<Pixels>, hitbox: &Hitbox, window: &mut Window) {
+    window.set_cursor_style(CursorStyle::IBeam, hitbox);
     let at = {
         let layout = layout.clone();
         move |position: gpui::Point<Pixels>| layout.hit(f32::from(position.x - bounds.origin.x), f32::from(position.y - bounds.origin.y))
