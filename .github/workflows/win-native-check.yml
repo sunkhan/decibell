@@ -327,7 +327,7 @@ jobs:
             "input-clipboard,input-password"
             "hotkeys-focused,hotkeys-layout"
             "join-status-picker,join-dm-composer"
-            "picture-editor,settings-narrow,server-settings-idle"
+            "picture-editor,server-settings-narrow,server-settings-idle"
             "content-scroll-fixture,content-rows"
             "profile-guard,single-instance,deep-link-arg,hotkey-cli"
             "render-cost,encoder-software"
