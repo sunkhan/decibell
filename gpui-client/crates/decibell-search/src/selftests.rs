@@ -746,7 +746,25 @@ async fn check_paging(cx: TestCx) -> Result<()> {
     let mut peak_built = 0usize;
     let mut scrolls = 0;
     while cx.update(|_, cx| model(cx).chat.search.read(cx).results.len())? < 125 {
-        ensure!(started.elapsed() < Duration::from_secs(60), "paging stopped");
+        if started.elapsed() >= Duration::from_secs(60) {
+            // Where it stopped: the store's paging state, the list's rows, the window.
+            let state = cx.update(|window, cx| {
+                let st = model(cx).chat.search.read(cx);
+                format!(
+                    "{} results, has more {}, loading more {}, status {:?}, error {:?}, next cursor {} / offset {}; {} rows laid out; {scrolls} scrolls; window active {}",
+                    st.results.len(),
+                    st.has_more,
+                    st.loading_more,
+                    st.status,
+                    st.error,
+                    st.next_cursor,
+                    st.next_offset,
+                    crate::shown_results(cx).map_or(0, |r| r.read(cx).built_rows()),
+                    window.is_window_active()
+                )
+            })?;
+            bail!("paging stopped ({state})");
+        }
         cx.update(|window, cx| {
             window.dispatch_event(
                 PlatformInput::Scroll(ScrollEvent {

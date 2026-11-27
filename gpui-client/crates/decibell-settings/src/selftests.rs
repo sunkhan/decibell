@@ -710,19 +710,30 @@ async fn check_appearance(cx: TestCx) -> Result<()> {
     // Each switch is one frame (the app applies the theme to every window once). A theme whose
     // fonts change the user panel's height costs the shell one more: the panel publishes its
     // measured height for the lists above it a frame later (`user_panel.rs`).
+    // The desktop is shared: the window's activation changing or the pointer crossing it during a
+    // switch redraws it too; such a switch is measured again from the theme before it.
+    let desktop = |cx: &TestCx| cx.update(|window, _| (window.is_window_active(), window.mouse_position()));
     for theme in [ThemeId::Matinee, ThemeId::GraphiteLight, ThemeId::Console] {
         let panel_before = cx.update(|_, cx| model(cx).settings.read(cx).theme())?;
-        let frames = step(&cx, &format!("the {} theme", theme.display_name()), async |cx| {
-            cx.update(move |_, cx| model(cx).settings.update(cx, |s, cx| s.set_theme(theme, cx)))
-        }, move |cx| cx.theme().id == theme)
-        .await?;
         let (a, b) = (panel_before.palette(), theme.palette());
         let fonts_changed = (a.font_sans, a.font_channel, a.font_meta) != (b.font_sans, b.font_channel, b.font_meta);
-        ensure!(
-            frames.drawn == 1 || (fonts_changed && frames.drawn == 2),
-            "a theme switch drew {} frames (1, or 2 where the UI font changes)",
-            frames.drawn
-        );
+        for attempt in 1..=3 {
+            let state = desktop(&cx)?;
+            let frames = step(&cx, &format!("the {} theme", theme.display_name()), async |cx| {
+                cx.update(move |_, cx| model(cx).settings.update(cx, |s, cx| s.set_theme(theme, cx)))
+            }, move |cx| cx.theme().id == theme)
+            .await?;
+            if frames.drawn == 1 || (fonts_changed && frames.drawn == 2) {
+                break;
+            }
+            let what = format!("a theme switch drew {} frames (1, or 2 where the UI font changes)", frames.drawn);
+            ensure!(desktop(&cx)? != state, "{what}");
+            if attempt == 3 {
+                return Err(decibell_harness::inconclusive(format!("{what}, and the desktop disturbed the window on three tries")));
+            }
+            cx.log(format_args!("{what} while the window's focus or the pointer changed: again"));
+            cx.update(move |_, cx| model(cx).settings.update(cx, |s, cx| s.set_theme(panel_before, cx)))?;
+        }
     }
     // A real click on a card.
     step(&cx, "a click on Graphite's card", async |cx| click_probe(cx, "theme-card:graphite").await, |cx| {

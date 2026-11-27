@@ -1440,8 +1440,12 @@ async fn assert_idle(cx: &TestCx, seconds: u64, what: &str) -> Result<Frames> {
     let mut last = String::new();
     let mut undisturbed: Vec<String> = Vec::new();
     for _ in 0..3 {
-        let before = cx.settle_drawn().await?;
-        let disturbed = cx.watched_sleep(Duration::from_secs(seconds)).await?;
+        cx.settle_drawn().await?;
+        // A frame already asked for when drawing seemed to stop (a notify a moment before, the
+        // compositor's activation) lands in these 100 ms, not in the measurement.
+        let gap = cx.watched_sleep(Duration::from_millis(100)).await?;
+        let before = cx.frames()?;
+        let disturbed = cx.watched_sleep(Duration::from_secs(seconds)).await?.or(gap);
         let frames = cx.frames()?.since(before);
         if frames.drawn == 0 && frames.presented as f32 <= 31. * seconds as f32 {
             return Ok(frames);
