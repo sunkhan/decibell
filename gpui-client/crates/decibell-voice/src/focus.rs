@@ -53,10 +53,9 @@ pub struct FocusView {
     fullscreen: bool,
     overlay: bool,
     hide_timer: Option<Task<()>>,
-    volume: u8,
+    /// The stream-audio gain: the slider, and our own preview's mute (we'd hear ourselves).
+    gain: StreamGain,
     prev_volume: u8,
-    /// The preview of our own stream mutes the stream audio (we'd hear ourselves).
-    muted_for_preview: bool,
     stats: bool,
     stats_timer: Option<Task<()>>,
     sampler: StatsSampler,
@@ -87,9 +86,8 @@ impl FocusView {
             fullscreen: false,
             overlay: false,
             hide_timer: None,
-            volume: 100,
+            gain: StreamGain::new(),
             prev_volume: 100,
-            muted_for_preview: false,
             stats: false,
             stats_timer: None,
             sampler: StatsSampler::new(),
@@ -99,6 +97,15 @@ impl FocusView {
             _subs: subs,
             _watch: watch,
         };
+        // Dropped while our own preview has the gain at 0 (the watch list emptied: Stop watching,
+        // Stop sharing, leaving): put the slider's value back, as the renderer's unmount cleanup
+        // does, or every stream watched later is silent while its slider shows 100 %.
+        cx.on_release(|this, cx| {
+            if let Some(gain) = this.gain.release() {
+                set_stream_volume(gain, cx);
+            }
+        })
+        .detach();
         this.follow(cx);
         this
     }
@@ -133,10 +140,8 @@ impl FocusView {
             // Our own preview: the (global) stream-audio gain is muted while it shows, restored
             // when it goes (switching to someone else's, or leaving).
             let own = focused == Some(me) && me > 0;
-            if own != self.muted_for_preview {
-                self.muted_for_preview = own;
-                let volume = if own { 0. } else { self.volume as f64 / 100. };
-                set_stream_volume(volume, cx);
+            if let Some(gain) = self.gain.preview(own) {
+                set_stream_volume(gain, cx);
             }
             cx.notify();
         }
@@ -201,16 +206,15 @@ impl FocusView {
     }
 
     fn set_volume(&mut self, volume: u8, cx: &mut Context<Self>) {
-        if self.volume != volume {
-            self.volume = volume;
-            set_stream_volume(volume as f64 / 100., cx);
+        if let Some(gain) = self.gain.set(volume) {
+            set_stream_volume(gain, cx);
             cx.notify();
         }
     }
 
     fn toggle_volume_mute(&mut self, cx: &mut Context<Self>) {
-        if self.volume > 0 {
-            self.prev_volume = self.volume;
+        if self.gain.volume > 0 {
+            self.prev_volume = self.gain.volume;
             self.set_volume(0, cx);
         } else {
             let back = if self.prev_volume > 0 { self.prev_volume } else { 100 };
@@ -232,6 +236,50 @@ pub fn rest_cursor(cx: &mut App) {
 
 /// Times [`rest_cursor`] hid the cursor (self-tests).
 pub static CURSOR_RESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The global stream-audio gain as the focused view drives it (`StreamViewPanel.tsx`'s
+/// `streamVolume` and its own-preview effect): the slider's value, and whether the preview of our
+/// own stream holds it at 0. Each change returns the gain to hand the core when it moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StreamGain {
+    /// The slider, 0–100 (a new view starts at 100, as the renderer's `useState(100)`).
+    pub volume: u8,
+    preview_muted: bool,
+}
+
+impl StreamGain {
+    pub fn new() -> Self {
+        Self { volume: 100, preview_muted: false }
+    }
+
+    /// The focused stream changed: 0 while it is our own, the slider's value when it stops being.
+    pub fn preview(&mut self, own: bool) -> Option<f64> {
+        if own == self.preview_muted {
+            return None;
+        }
+        self.preview_muted = own;
+        Some(if own { 0. } else { self.level() })
+    }
+
+    /// The slider moved.
+    pub fn set(&mut self, volume: u8) -> Option<f64> {
+        if self.volume == volume {
+            return None;
+        }
+        self.volume = volume;
+        Some(self.level())
+    }
+
+    /// The view goes (the renderer's unmount cleanup, which exists only while the preview is
+    /// ours): exactly the slider's value back, or nothing when the preview didn't touch the gain.
+    pub fn release(&mut self) -> Option<f64> {
+        self.preview(false)
+    }
+
+    fn level(&self) -> f64 {
+        self.volume as f64 / 100.
+    }
+}
 
 /// `set_stream_volume` (the global stream-audio gain).
 pub fn set_stream_volume(volume: f64, cx: &mut App) {
@@ -517,7 +565,7 @@ impl Render for FocusView {
                 let me2 = me.clone();
                 this.child(
                     div().absolute().left_3().bottom_3().opacity(t).when(t == 0., |this| this.invisible()).child(
-                        VolumeControl::new("focus-volume", self.volume)
+                        VolumeControl::new("focus-volume", self.gain.volume)
                             .on_change(move |v, _, cx| {
                                 let _ = me.update(cx, |this, cx| this.set_volume(v, cx));
                             })
@@ -530,7 +578,7 @@ impl Render for FocusView {
             .when(fullscreen, |this| {
                 let me = cx.entity().downgrade();
                 let me2 = me.clone();
-                let volume = self.volume;
+                let volume = self.gain.volume;
                 this.child(
                     div()
                         .absolute()
@@ -805,4 +853,41 @@ impl Render for Filmstrip {
 /// The renderer's `VideoHub` handle for tests.
 pub fn hub(cx: &mut App) -> VideoHub {
     VideoHub::global(cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StreamGain;
+
+    #[test]
+    fn our_own_preview_mutes_the_stream_gain_and_releasing_the_view_restores_it_exactly() {
+        // The slider at 60 %, then our own stream focused: 0.
+        let mut gain = StreamGain::new();
+        assert_eq!(gain.set(60), Some(0.6));
+        assert_eq!(gain.preview(true), Some(0.0));
+        assert_eq!(gain.preview(true), None, "still ours: nothing sent");
+        // The view is dropped while previewing (Stop watching / Stop sharing / leaving): exactly
+        // the slider's value comes back, once.
+        assert_eq!(gain.release(), Some(0.6));
+        assert_eq!(gain.release(), None);
+
+        // Switching from our preview to someone else's stream restores it too.
+        let mut gain = StreamGain::new();
+        assert_eq!(gain.preview(true), Some(0.0));
+        assert_eq!(gain.preview(false), Some(1.0));
+        assert_eq!(gain.release(), None, "a view that isn't previewing leaves the gain alone");
+
+        // A view that never showed our stream never touches the gain when it goes.
+        let mut gain = StreamGain::new();
+        assert_eq!(gain.set(35), Some(0.35));
+        assert_eq!(gain.set(35), None);
+        assert_eq!(gain.preview(false), None);
+        assert_eq!(gain.release(), None);
+
+        // Muted by the slider (0), then our preview, then released: back to 0, not 100.
+        let mut gain = StreamGain::new();
+        assert_eq!(gain.set(0), Some(0.0));
+        assert_eq!(gain.preview(true), Some(0.0));
+        assert_eq!(gain.release(), Some(0.0));
+    }
 }
