@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 
-use decibell_common::{BoundsCell, UserAvatar, Watch, display_name, open_profile_beside, open_user_menu, user_name};
+use decibell_common::{BoundsCell, NicknameWatch, UserAvatar, Watch, display_name, open_profile_beside, open_user_menu, user_name, want_member};
 use decibell_model::live::voice::speaking::SpeakingChanged;
 use decibell_model::live::voice::streams::{StreamInfo, ThumbnailChanged};
 use decibell_model::{Model, ServerId, Uid, actions};
@@ -67,6 +67,8 @@ pub struct PersonData {
 pub struct ParticipantTile {
     data: PersonData,
     bounds: BoundsCell,
+    /// Their nickname in the voice session's community (looked up, followed).
+    nickname: NicknameWatch,
     _watch: Watch,
 }
 
@@ -77,7 +79,9 @@ impl ParticipantTile {
         watch
             .event(&model.live.voice.speaking, cx, |this: &mut Self, e: &SpeakingChanged| e.uid == this.data.uid)
             .people(cx, |this: &Self, uid| uid == this.data.uid);
-        Self { data, bounds: BoundsCell::new(), _watch: watch }
+        let mut nickname = NicknameWatch::default();
+        nickname.follow(data.server, data.uid, cx);
+        Self { data, bounds: BoundsCell::new(), nickname, _watch: watch }
     }
 
     /// The width the stage gave it.
@@ -91,6 +95,7 @@ impl ParticipantTile {
         if data != self.data {
             let only_width = PersonData { width: self.data.width, ..data.clone() } == self.data;
             self.data = data;
+            self.nickname.follow(self.data.server, self.data.uid, cx);
             if !only_width {
                 crate::trace("ParticipantTile::set notify");
                 cx.notify();
@@ -259,6 +264,8 @@ pub struct StreamTile {
     data: StreamData,
     /// Held while watched: the hub decodes the stream while any viewer of it exists.
     viewer: Option<Viewer>,
+    /// The owner's nickname in the voice session's community (looked up, followed).
+    nickname: NicknameWatch,
     _watch: Watch,
 }
 
@@ -272,7 +279,9 @@ impl StreamTile {
             .event(&states, cx, |this: &mut Self, e: &StreamStateChanged| e.0 == this.data.info.owner_uid)
             .people(cx, |this: &Self, uid| uid == this.data.info.owner_uid);
         let viewer = data.watching.then(|| crate::players::viewer(data.info.owner_uid, cx));
-        Self { data, viewer, _watch: watch }
+        let mut nickname = NicknameWatch::default();
+        nickname.follow(data.server, data.info.owner_uid, cx);
+        Self { data, viewer, nickname, _watch: watch }
     }
 
     pub fn set(&mut self, data: StreamData, cx: &mut Context<Self>) {
@@ -284,6 +293,7 @@ impl StreamTile {
         }
         let only_width = StreamData { width: self.data.width, ..data.clone() } == self.data;
         self.data = data;
+        self.nickname.follow(self.data.server, self.data.info.owner_uid, cx);
         if !only_width {
             cx.notify();
         }
@@ -635,6 +645,8 @@ pub struct OverflowTile {
     hidden: HashSet<Uid>,
     open: bool,
     bounds: BoundsCell,
+    /// While the list is open: the community's roster (the rows' nicknames).
+    roster: Option<gpui::Subscription>,
     _watch: Watch,
 }
 
@@ -648,7 +660,17 @@ impl OverflowTile {
             // The open list shows each one's flags.
             .store_if(&model.live.voice.participants, cx, |this: &mut Self, _, _| this.open);
         let hidden = data.hidden.iter().copied().collect();
-        Self { data, hidden, open: false, bounds: BoundsCell::new(), _watch: watch }
+        Self { data, hidden, open: false, bounds: BoundsCell::new(), roster: None, _watch: watch }
+    }
+
+    /// The open list names everyone hidden (`HiddenRow`'s `useDisplayName`): look up those the
+    /// roster lacks.
+    fn want_hidden(&self, cx: &mut Context<Self>) {
+        if let Some(server) = self.data.server {
+            for uid in &self.data.hidden {
+                want_member(server, *uid, cx);
+            }
+        }
     }
 
     pub fn set(&mut self, data: OverflowData, cx: &mut Context<Self>) {
@@ -656,6 +678,9 @@ impl OverflowTile {
             let only_width = OverflowData { width: self.data.width, ..data.clone() } == self.data;
             self.hidden = data.hidden.iter().copied().collect();
             self.data = data;
+            if self.open {
+                self.want_hidden(cx);
+            }
             if !only_width {
                 cx.notify();
             }
@@ -665,6 +690,12 @@ impl OverflowTile {
     fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         if self.open != open {
             self.open = open;
+            self.roster = None;
+            if open {
+                self.want_hidden(cx);
+                let community = self.data.server.and_then(|server| Model::global(cx).community(server, cx));
+                self.roster = community.map(|community| cx.observe(&community.roster, |_, _, cx| cx.notify()));
+            }
             cx.notify();
         }
     }

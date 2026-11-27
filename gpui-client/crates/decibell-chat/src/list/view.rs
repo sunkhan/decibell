@@ -262,7 +262,7 @@ impl MessageList {
             }));
         }
         // Nicknames live in the community's roster, which notifies for every delta: only rows
-        // whose shown name really changed are built again.
+        // whose shown name really changed (the author's or the quoted reply's) are built again.
         if let Some(server) = source.server()
             && let Some(community) = cx.try_global::<Model>().cloned().and_then(|model| model.community(server, cx))
         {
@@ -270,7 +270,8 @@ impl MessageList {
                 let mut any = false;
                 for entry in &mut this.core.entries {
                     let stale = entry.layout.as_ref().is_some_and(|layout| {
-                        !layout.grouped && display_name(Some(server), entry.message.sender_uid, &entry.message.sender, cx) != layout.shown_name
+                        (!layout.grouped && display_name(Some(server), entry.message.sender_uid, &entry.message.sender, cx) != layout.shown_name)
+                            || layout.reply_author().is_some_and(|(uid, shown, account)| display_name(Some(server), uid, account, cx) != *shown)
                     });
                     if stale {
                         entry.invalidate();
@@ -536,6 +537,9 @@ impl MessageList {
                 ),
                 None => (reply.sender_uid, reply.sender.clone(), reply.content.clone(), reply.attachment_kinds.clone()),
             };
+            if let (Some(server), false) = (server, sender.is_empty() || facts.grouped) {
+                want_member(server, uid, cx);
+            }
             let author = (!sender.is_empty()).then(|| (uid, display_name(server, uid, &sender, cx), user_name(uid, &sender, cx)));
             ReplySpec { parent: reply.id, author, content, kinds }
         });

@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use decibell_common::{UserAvatar, Watch, display_name, user_name};
+use decibell_common::{NicknameWatch, UserAvatar, Watch, display_name, user_name};
 use decibell_core::api;
 use decibell_model::live::voice::codecs::can_watch;
 use decibell_model::live::voice::session::Participant;
@@ -62,6 +62,8 @@ pub struct FocusView {
     sampler: StatsSampler,
     rates: Option<StreamRates>,
     filmstrip: Entity<Filmstrip>,
+    /// The owner's nickname in the voice session's community (the label).
+    nickname: NicknameWatch,
     _subs: Vec<Subscription>,
     _watch: Watch,
 }
@@ -93,6 +95,7 @@ impl FocusView {
             sampler: StatsSampler::new(),
             rates: None,
             filmstrip: cx.new(Filmstrip::new),
+            nickname: NicknameWatch::default(),
             _subs: subs,
             _watch: watch,
         };
@@ -116,6 +119,7 @@ impl FocusView {
         let live: HashSet<Uid> =
             voice.streams.read(cx).session(connected.as_ref(), in_call).iter().map(|s| s.owner_uid).collect();
         let focused = voice.watching.read(cx).focused.filter(|u| live.contains(u));
+        self.nickname.follow(connected.as_ref().map(|k| k.0), focused.unwrap_or(0), cx);
         // Entering fullscreen: the overlays show for their 2.5 s and then go with the cursor,
         // also when the pointer never moves again (the button that was under it moved away).
         let fullscreen = voice.watching.read(cx).fullscreen && focused.is_some();

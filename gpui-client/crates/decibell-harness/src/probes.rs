@@ -24,7 +24,7 @@ pub fn enabled() -> bool {
 thread_local! {
     static BOUNDS: RefCell<HashMap<SharedString, Bounds<Pixels>>> = RefCell::new(HashMap::new());
     static FLAGS: RefCell<HashMap<&'static str, bool>> = RefCell::new(HashMap::new());
-    static TEXTS: RefCell<HashMap<&'static str, SharedString>> = RefCell::new(HashMap::new());
+    static TEXTS: RefCell<HashMap<SharedString, SharedString>> = RefCell::new(HashMap::new());
 }
 
 /// A child for an element (positioned `relative()`) whose bounds a test needs, when probes are on.
@@ -65,10 +65,11 @@ pub fn bounds(key: &str) -> Option<Bounds<Pixels>> {
     BOUNDS.with(|b| b.borrow().get(key).copied())
 }
 
-/// Record the text a view last drew under `key` (a label a test reads back).
-pub fn text(key: &'static str, text: &SharedString) {
+/// Record the text a view last drew under `key` (a label a test reads back). A key made per item
+/// (`format!`) is built only when [`enabled`] says so.
+pub fn text(key: impl Into<SharedString>, text: &SharedString) {
     if enabled() {
-        TEXTS.with(|t| t.borrow_mut().insert(key, text.clone()));
+        TEXTS.with(|t| t.borrow_mut().insert(key.into(), text.clone()));
     }
 }
 

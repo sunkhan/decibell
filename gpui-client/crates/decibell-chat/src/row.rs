@@ -190,6 +190,10 @@ struct ReplyLine {
     name_color: Hsla,
     avatar_color: Hsla,
     author: Uid,
+    /// The author's name as shown (a nickname may arrive, or change, later) and their account
+    /// name (what that name falls back to).
+    shown: SharedString,
+    account: SharedString,
     /// x of the name, the snippet and the glyph, from the reply box's left.
     name_x: f32,
     snippet_x: f32,
@@ -344,6 +348,8 @@ impl RowLayout {
                 name_color: spec.reply_colors.0,
                 avatar_color: spec.reply_colors.1,
                 author: 0,
+                shown: SharedString::default(),
+                account: SharedString::default(),
                 name_x: REPLY_AVATAR + REPLY_GAP,
                 snippet_x: 0.,
                 glyph_x: 0.,
@@ -352,6 +358,8 @@ impl RowLayout {
             match &spec_reply.author {
                 Some((uid, shown, account)) => {
                     line.author = *uid;
+                    line.shown = shown.clone();
+                    line.account = account.clone();
                     line.avatar_letter = Some(label(&first_letter(account), &style.reply_avatar_letter, Wrapping::NOWRAP, f32::INFINITY));
                     let name = label(shown, &style.reply_name, Wrapping::TRUNCATE, REPLY_NAME_MAX.min(content_width - x));
                     x += name.width() + REPLY_GAP;
@@ -1250,6 +1258,12 @@ fn avatar(
 }
 
 impl RowLayout {
+    /// The quoted line's author: their uid, the name the line shows and their account name (the
+    /// name to fall back on), for the list to see whether a nickname change made it stale.
+    pub fn reply_author(&self) -> Option<(Uid, &SharedString, &SharedString)> {
+        self.reply.as_ref().filter(|line| line.author != 0).map(|line| (line.author, &line.shown, &line.account))
+    }
+
     /// Paints the row with its top-left corner at `origin` (a whole device pixel), `width` wide.
     pub fn paint(&self, origin: Point<Pixels>, width: f32, paint: &RowPaint<'_>, style: &ChatStyle, window: &mut Window, cx: &mut App) {
         let scale = style.scale;

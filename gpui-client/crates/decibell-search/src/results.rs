@@ -321,6 +321,12 @@ impl ResultsView {
             let height = match self.heights.get(&message.id) {
                 Some(height) => *height,
                 None => {
+                    // A sender (or quoted author) the roster hasn't loaded: look them up, so the
+                    // nickname shows (`useDisplayName`; the roster's change redraws the cards).
+                    decibell_common::want_member(self.server, message.sender_uid, cx);
+                    if let Some(reply) = message.reply.as_ref().filter(|reply| !reply.sender.is_empty()) {
+                        decibell_common::want_member(self.server, reply.sender_uid, cx);
+                    }
                     let height = card_height(message, self.highlighter.as_deref(), column, style, &engine);
                     self.heights.insert(message.id, height);
                     height
@@ -803,6 +809,9 @@ fn result_card(message: &Arc<Message>, rows: &Rc<Rows>, ink: &Ink, window: &mut 
     let model = Model::global(cx).clone();
     let sender = decibell_common::user_name(message.sender_uid, &message.sender, cx);
     let name = decibell_common::display_name(Some(server), message.sender_uid, &sender, cx);
+    if decibell_shell::probes::enabled() {
+        decibell_shell::probes::text(format!("search-result-author:{}", message.id), &name);
+    }
     let name_color = person_name_color(message.sender_uid, &sender, cx);
     let stamp = message.timestamp.map(|secs| result_stamp(secs, rows.today, rows.time_format)).unwrap_or_default();
     let jumped = message.id == rows.jumped;

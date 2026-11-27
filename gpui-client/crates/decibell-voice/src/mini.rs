@@ -13,7 +13,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use decibell_common::Watch;
+use decibell_common::{NicknameWatch, Watch};
 use decibell_model::stores::layout::{PIP_WIDTH_MAX, PIP_WIDTH_MIN, PipCorner};
 use decibell_model::stores::navigation::ActiveView;
 use decibell_model::{Model, Uid, actions};
@@ -90,6 +90,8 @@ pub struct MiniPlayer {
     spring: Option<Spring>,
     resize: Option<Resize>,
     entrance: Option<(Instant, Bounds<Pixels>)>,
+    /// The streamer's nickname in the voice session's community (the label).
+    nickname: NicknameWatch,
     _subs: Vec<gpui::Subscription>,
     _watch: Watch,
 }
@@ -122,6 +124,7 @@ impl MiniPlayer {
             spring: None,
             resize: None,
             entrance: None,
+            nickname: NicknameWatch::default(),
             _subs: subs,
             _watch: watch,
         };
@@ -150,6 +153,7 @@ impl MiniPlayer {
         let dm_shows_stream = call_peer.is_some() && view == ActiveView::Dm && dm_peer == call_peer;
         let visible = stream.is_some() && view != ActiveView::Voice && !dm_shows_stream;
         let uid = stream.filter(|_| visible);
+        self.nickname.follow(voice.session.read(cx).server, uid.unwrap_or(0), cx);
         let changed = uid != self.viewer.as_ref().map(|(u, _)| *u) || visible != self.visible;
         if uid != self.viewer.as_ref().map(|(u, _)| *u) {
             self.viewer = uid.map(|u| (u, crate::players::viewer(u, cx)));

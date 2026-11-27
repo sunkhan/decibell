@@ -47,6 +47,7 @@ pub fn selftests() -> Vec<SelfTest> {
         parent!("search-jump", "(local stack) Jump to a result far back in #general: lands with 0 px later movement, flashes, back to the present"),
         parent!("search-narrow", "(local stack) below 1024 px the results float over the chat; Jump closes them"),
         parent!("search-encrypted", "(local stack) a word search reports #vault (encrypted) as not searched, and the notice says so"),
+        parent!("search-nickname", "(local stack) results by a member the roster hasn't loaded show their server nickname (looked up), not their account name"),
         SelfTest {
             name: "search-nothing-stored",
             about: "(local stack) after searching and quitting, nothing about the queries is in the profile",
@@ -255,6 +256,7 @@ pub fn checks() -> Vec<SelfTest> {
         check!("search-jump", check_jump),
         check!("search-narrow", check_narrow),
         check!("search-encrypted", check_encrypted),
+        check!("search-nickname", check_nickname),
         check!("search-nothing-stored", check_nothing_stored),
         check!("header-members-toggle", check_members_toggle),
         check!("search-idle", check_idle),
@@ -602,6 +604,55 @@ async fn check_live(cx: TestCx) -> Result<()> {
     ensure!(t.results.iter().all(|m| m.content.to_lowercase().contains("hayır")), "a result without \"hayır\"");
     let h = crate::highlight::Highlighter::words(&decibell_model::chat::search::search_words("hayir")).context("a highlighter")?;
     ensure!(t.results.iter().all(|m| !h.marks(&m.content).is_empty()), "\"hayır\" isn't marked for \"hayir\"");
+    Ok(())
+}
+
+/// Members of Daily Gaming with a server nickname (`tools/dev/seed.py`), none of them a real account
+/// that signs in: offline, so off the roster's first pages until something looks them up.
+const NICKNAMED: [(i64, &str, &str); 4] = [
+    (100014, "zeynep_k", "Zeynep ✨"),
+    (100015, "mert.the.long.name.example", "Mert (AFK)"),
+    (100013, "deniz", "Deniz | mod"),
+    (100002, "battalocelot", "Ocelot"),
+];
+
+/// G5 (parity audit): a result card names its sender as `useDisplayName` does, looking up a member
+/// the roster hasn't loaded, so an offline member's nickname shows rather than their account name.
+async fn check_nickname(cx: TestCx) -> Result<()> {
+    ready(&cx).await?;
+    let server = daily_gaming();
+    // The roster's first page is in (its generation is what a lookup is asked under).
+    wait_for(&cx, Duration::from_secs(15), "Daily Gaming's roster", move |cx| {
+        model(cx).community(server, cx).is_some_and(|c| c.roster.read(cx).meta().is_some_and(|m| !m.refetching))
+    })
+    .await?;
+    let unloaded = cx.update(|_, cx| {
+        let community = model(cx).community(server, cx)?;
+        let roster = community.roster.read(cx);
+        NICKNAMED.into_iter().find(|(uid, _, _)| roster.member(*uid).is_none())
+    })?;
+    let Some((uid, account, nickname)) = unloaded else {
+        return Err(decibell_harness::inconclusive("every nicknamed member of the fixture is already on the roster's loaded pages"));
+    };
+    cx.log(format_args!("{account} (uid {uid}, nickname {nickname:?}) isn't on the loaded roster"));
+    let mut s = Searcher::new();
+    let query = SearchQuery { text: "".into(), filters: vec![SearchFilter::From { uid, username: account.into() }] };
+    let a = s.run(&cx, query).await?;
+    cx.log(format_args!("from:{account}: {} results", a.total));
+    ensure!(!a.results.is_empty(), "no message by {account} in Daily Gaming");
+    ensure!(a.results.iter().all(|m| m.sender_uid == uid), "a result by someone else");
+    let first = a.results[0].id;
+    wait_probe(&cx, &format!("search-result:{first}")).await?;
+    let key = format!("search-result-author:{first}");
+    let shown = wait_for(&cx, Duration::from_secs(10), "the card to show the nickname", move |_| {
+        probes::text_of(&key).is_some_and(|t| t == nickname)
+    })
+    .await;
+    let drawn = probes::text_of(&format!("search-result-author:{first}")).map(|t| t.to_string()).unwrap_or_default();
+    let loaded = cx.update(|_, cx| model(cx).community(server, cx).is_some_and(|c| c.roster.read(cx).member(uid).is_some()))?;
+    cx.log(format_args!("the first card names its sender {drawn:?}; the member looked up: {loaded}"));
+    shown.map_err(|e| anyhow::anyhow!("{e}: the card shows {drawn:?}"))?;
+    ensure!(loaded, "the member was never looked up");
     Ok(())
 }
 

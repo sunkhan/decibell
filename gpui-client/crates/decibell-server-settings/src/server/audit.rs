@@ -655,6 +655,10 @@ pub struct AuditLogTab {
     /// the scale change).
     shaped: RefCell<ShapedEntries>,
     shaped_for: RefCell<Option<(decibell_theme::ThemeId, u32)>>,
+    /// The members the shaped sentences name: uid → (account name, the name shown), so a
+    /// roster change that brings or changes a nickname reshapes them (`MemberRef`'s
+    /// `useDisplayName`).
+    named: RefCell<HashMap<i64, (SharedString, SharedString)>>,
     measured: Rc<RefCell<Measured>>,
     /// The screens draw the action filter open.
     filter_open: bool,
@@ -677,6 +681,7 @@ impl AuditLogTab {
         let mut watch = Watch::new();
         let reshape = |this: &mut Self| {
             this.shaped.borrow_mut().clear();
+            this.named.borrow_mut().clear();
             this.measured.borrow_mut().invalidate_from(0);
             true
         };
@@ -686,6 +691,12 @@ impl AuditLogTab {
         if let Some(community) = model.community(server, cx) {
             watch.store_if(&community.channels, cx, move |this, _, _| reshape(this));
             watch.store_if(&community.roles, cx, move |this, _, _| reshape(this));
+            // Nicknames: only when a named member's shown name really changed (the roster
+            // notifies for every delta).
+            watch.store_if(&community.roster, cx, move |this, _, cx| {
+                let stale = this.named.borrow().iter().any(|(uid, (account, shown))| display_name(Some(server), *uid, account, cx) != *shown);
+                stale && reshape(this)
+            });
         }
         let query = SearchBox::new("Search by member, role, channel or reason", window, cx, |this: &mut Self, text, cx| this.typed(text, cx));
         let answers = cx.subscribe(&model.answers, move |this: &mut Self, _, event: &CoreEvent, cx| {
@@ -701,6 +712,14 @@ impl AuditLogTab {
                     this.error = Some(if p.message.is_empty() { "Couldn't load the audit log.".into() } else { p.message.clone().into() });
                 } else {
                     this.error = None;
+                    // Members the roster hasn't loaded: look them up, so their nicknames show.
+                    for e in &p.entries {
+                        for uid in [e.actor_uid, e.target_uid] {
+                            if uid != 0 {
+                                decibell_common::want_member(server, uid, cx);
+                            }
+                        }
+                    }
                     if this.replace {
                         this.entries = p.entries.clone();
                         this.measured.borrow_mut().invalidate_from(0);
@@ -730,6 +749,7 @@ impl AuditLogTab {
             replace: true,
             shaped: RefCell::new(HashMap::new()),
             shaped_for: RefCell::new(None),
+            named: RefCell::new(HashMap::new()),
             measured: Measured::new(px(52.)),
             filter_open: false,
             _debounce: None,
@@ -878,6 +898,14 @@ impl AuditLogTab {
             let channels = community.as_ref().map(|c| c.channels.read(cx).list().to_vec()).unwrap_or_default();
             let roles = community.as_ref().map(|c| c.roles.read(cx).list().to_vec()).unwrap_or_default();
             let look = Lookup { server: self.ctx.server, channels: &channels, roles: &roles, pref: model.settings.read(cx).time_format(), cx };
+            let mut named = self.named.borrow_mut();
+            for (uid, name) in [(e.actor_uid, &e.actor), (e.target_uid, &e.target)] {
+                if uid != 0 && !named.contains_key(&uid) {
+                    let account = user_name(uid, &SharedString::from(name.clone()), cx);
+                    let shown = display_name(Some(self.ctx.server), uid, &account, cx);
+                    named.insert(uid, (account, shown));
+                }
+            }
             (Rc::new(describe(e, &look)), look.member(&e.actor, e.actor_uid))
         };
         // The actor's avatar (18 px, `mr-1.5`), the actor, then the sentence. The renderer's

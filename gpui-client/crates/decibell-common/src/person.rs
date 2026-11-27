@@ -47,6 +47,41 @@ pub fn want_member(server: ServerId, uid: Uid, cx: &mut App) {
     });
 }
 
+/// Keeps a view that shows **one** member's name in a community current, as `useDisplayName` does
+/// for each component that calls it: [`NicknameWatch::follow`] looks the member up when the roster
+/// hasn't loaded them and notifies the view whenever their nickname there arrives, changes or goes
+/// (renames come through [`crate::Watch::people`]). Hold it in the view and call `follow` again when
+/// the person or the community changes (a no-op while they are the same). A view that shows many
+/// people checks its rows in one roster observer instead (the message list, the audit log).
+#[derive(Default)]
+pub struct NicknameWatch {
+    key: Option<(ServerId, Uid)>,
+    _roster: Option<gpui::Subscription>,
+}
+
+impl NicknameWatch {
+    pub fn follow<V: 'static>(&mut self, server: Option<ServerId>, uid: Uid, cx: &mut Context<V>) {
+        let key = server.filter(|_| uid != 0).map(|server| (server, uid));
+        if key == self.key {
+            return;
+        }
+        self.key = key;
+        self._roster = None;
+        let Some((server, uid)) = key else { return };
+        want_member(server, uid, cx);
+        let Some(community) = Model::global(cx).community(server, cx) else { return };
+        let mut nickname = community.roster.read(cx).nickname(uid).cloned();
+        // The roster notifies for every delta: only a change of this member's nickname redraws.
+        self._roster = Some(cx.observe(&community.roster, move |_, roster, cx| {
+            let now = roster.read(cx).nickname(uid).cloned();
+            if now != nickname {
+                nickname = now;
+                cx.notify();
+            }
+        }));
+    }
+}
+
 /// A person's name colour (`userColor`: the uid's slot of the `--color-name-*` ramp).
 pub fn person_name_color(uid: Uid, name: &str, cx: &App) -> Hsla {
     name_color(cx.theme(), person_slot(uid, name))

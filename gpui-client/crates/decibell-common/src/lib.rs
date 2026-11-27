@@ -12,7 +12,7 @@ pub mod watch;
 
 pub use open::{BoundsCell, open_profile_at, open_profile_beside, open_user_menu};
 pub use person::{
-    AvatarDot, StatusMessageText, UNKNOWN_USER, UserAvatar, display_name, dot_presence, person_name_color,
+    AvatarDot, NicknameWatch, StatusMessageText, UNKNOWN_USER, UserAvatar, display_name, dot_presence, person_name_color,
     presence_of, role_color, status_line, status_message_of, user_name, want_member,
 };
 pub use watch::Watch;

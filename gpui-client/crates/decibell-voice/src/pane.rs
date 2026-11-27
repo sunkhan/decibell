@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::cell::Cell;
 
-use decibell_common::Watch;
+use decibell_common::{NicknameWatch, Watch};
 use decibell_model::live::voice::codecs::can_watch;
 use decibell_model::live::voice::session::{Participant, VoiceE2eePhase};
 use decibell_model::live::voice::speaking::SpeakingChanged;
@@ -74,6 +74,8 @@ pub struct VoicePane {
     focus: Option<Entity<FocusView>>,
     scroll: ScrollHandle,
     channels: Option<(ServerId, Subscription)>,
+    /// The focused stream owner's nickname in the session's community (the header).
+    nickname: NicknameWatch,
     _subs: Vec<Subscription>,
     _watch: Watch,
 }
@@ -139,6 +141,7 @@ impl VoicePane {
             focus: None,
             scroll: ScrollHandle::new(),
             channels: None,
+            nickname: NicknameWatch::default(),
             _watch: watch,
         };
         pane.relayout(cx);
@@ -286,6 +289,8 @@ impl VoicePane {
             e2ee: e2ee.map(|e| (e.phase, e.epoch, e.members, e.unverified)),
             connected: connected.is_some(),
         };
+        let server = Model::global(cx).live.voice.session.read(cx).server;
+        self.nickname.follow(server, shown.focused.unwrap_or(0), cx);
         if shown != self.shown {
             self.shown = shown;
             crate::trace("VoicePane::relayout notify");
