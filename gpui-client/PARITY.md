@@ -1,12 +1,22 @@
 # GPUI client parity checklist
 
-One row per row of `docs/FEATURES.md` §1–§9 (the Electron client at 0.9.4 is the reference). A row is **done**
-only when it was run in this client against the local stack (`tools/dev/local-stack.sh`), with a self-test where
-one is possible; **needs owner** means it is built and everything that can be checked on one Linux machine
-passed, and the row says exactly what is left for the owner to test (two machines, other hardware, the eye).
+One row per row of `docs/FEATURES.md` §1–§9 (the Electron client at 0.9.4 is the reference), audited rule by
+rule against Electron's code on 2026-11-27 (`docs/parity-audit-a.md` §1–§3, `-b.md` §4–§6, `-c.md` §7–§9: the
+gap lists with sizes).
 
-Status values: `not started` · `in progress` · `done` · `needs owner`.
-Evidence: the self-test (`decibell --selftest <name>`), unit test or capture that shows it; commit where useful.
+**Status** (Linux, where this work runs) is exactly one of:
+- `done`: every rule of the row is implemented and was run in this client against the local stack
+  (`tools/dev/local-stack.sh`); Evidence names the self-tests (`tools/selftest.sh <name>`) and unit tests.
+- `needs owner`: every rule is implemented and everything one Linux machine with the local stack can check
+  passed; Evidence says exactly what is left for the owner to test (two machines, other hardware, the live
+  servers, the eye or the ear).
+- `partial`: something is missing, differs from Electron without a recorded decision, or is untested although a
+  self-test could check it here; Evidence lists each gap. Never rounded up.
+
+**Windows**: `ci: <self-tests>` when the row's tests ran and passed on the Windows runner (no servers there, so
+only fixture tests), else `owner: checks §N` naming the step of `docs/windows-owner-checks.md` that covers it,
+or `owner: no step yet`. A row that only compiles on Windows is never "done" there (owner, 2026-11-26).
+
 "Mirrors" keeps the catalogue's shorthand: `R/` = `electron-client/src/`, `M/` = `electron-client/electron/main/`,
 `N/` = the native code (now `crates/decibell-core/src/` for `net/ media/ e2ee/ hotkeys/ config.rs presence.rs
 system_idle.rs state.rs`, `electron-client/native/src/` for `commands/`), `C/` = `src/community/`, `Z/` = `src/server/`.
