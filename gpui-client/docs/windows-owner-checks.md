@@ -37,8 +37,8 @@ cargo build --release -p decibell-app       # target\release\decibell.exe
   window opens instead of at build time, and needs no `fxc.exe`.
 - Failure to send: the first `error` block. `Failed to find fxc.exe`: install the Windows SDK or set
   `GPUI_FXC_PATH`. A `Shader compilation failed for surface_…` is ours (GPUI patch `0020`): send it whole.
-- **The release binary opens a console window beside the app** (no `windows_subsystem` yet): that is where the
-  log lines below appear. Known, listed in HANDOFF.
+- A build from the checkout opens a console window beside the app: that is where the log lines below appear
+  (the shipped build's executable identity, without a console, is the packaging work's).
 
 ## 1. Self-tests that need nothing
 
@@ -60,8 +60,9 @@ frame; the idle tests retry twice).
   an RTX 30 / RX 6000 / 11th-gen Intel or newer; older GPUs show `Software (dav1d)` for AV1 with the driver's
   reason on a line `AV1 with d3d11va: not used, …`). A failure prints which step did not happen; `Software` where
   the GPU certainly has a decoder is a failure too: send the `not used` lines.
-- Known to fail on Windows today, not yours to chase: `chat-scroll-spec` (assumes Linux's wheel step), `regional`
-  (drives glibc locales), `content-scroll-fixture` / `content-rows` (start a D-Bus daemon).
+- Made portable in round 2 and unrun on a desktop since: `chat-scroll-spec` (takes Windows' wheel step),
+  `content-scroll-fixture` / `content-rows` (no D-Bus daemon off Linux). `regional` skips on Windows by design
+  (it drives glibc's locale environment): §8 has the Windows check.
 
 ## 2. The local stack from Windows
 
@@ -149,8 +150,85 @@ The table to fill (the Linux reference is HANDOFF §4; targets are ratios agains
 | Resize | every edge and corner resizes; the window stops at 800 × 600 | a top edge that does not resize |
 | DPI | move between monitors of different scale; change the scale in Settings while it runs | text stays sharp, layout rescales; send a screenshot of anything blurry or clipped |
 
-## 6. Later sections
+## 6. Go Live
 
-Go Live (the screen / window grid, a game in exclusive fullscreen, stream audio per app), auto-away, hotkeys,
-the clipboard, the keyring entry, regional formats, fonts and IME get their steps here as each lands on the
-branch; HANDOFF "Windows" lists what is written and what is not.
+The dialog has its own grid on Windows ("What to share": Screens / Windows), made by the client
+(`crates/decibell-voice/src/sources/windows.rs`; the core only opens the source it is handed). In a voice
+channel, press Share screen.
+
+| Check | Expect | Failure looks like |
+|---|---|---|
+| The Screens tab | one tile per monitor, named "Entire screen" (one monitor) or "Screen 1", "Screen 2", each with a still of that monitor in a 16:9 frame; the stills refresh every 5 s (move a window and watch) | no tiles and a red line of text (send it); a still of the wrong monitor; a black still |
+| The Windows tab | every ordinary open window with its title and app icon; **not** listed: minimised windows, Decibell itself, tool windows, windows on another virtual desktop. Open a new app: it appears within 5 s | a window missing that the Electron client lists (say which app); a blank or black still (some apps refuse to draw themselves: say which); a wrong or missing icon; the dialog freezing for a moment every 5 s (a hung app in the list) |
+| Picking | a click selects a tile (accent border, tick); the footer's Go Live starts the stream; viewers see that screen / window | "Pick a screen or window to share first." although a tile is selected; the stream showing another monitor than the tile (the monitor numbering: send the tile's name and `DECIBELL_LOG=info` output, the line `[capture] screen:N …`) |
+| A second monitor at another scale / to the left of the primary | its still and its stream are the right monitor, not offset | a still cut off or showing part of the neighbour |
+| A window stream | resize and move the shared window: the stream follows; minimise it: the stream freezes or ends with a message, no crash | |
+| A game | windowed and borderless: pick its window, as any other. **Exclusive fullscreen**: pick the *screen* it is on (a fullscreen game's window gives a black or frozen picture with every capture API); alt-tab in and out while streaming: the stream recovers within a second or two | a stream that stays black after alt-tabbing back (the core's DXGI re-acquire: send the log) |
+| The dialog closed | Task Manager → Details → decibell.exe: thread count back to what it was before the dialog opened within a few seconds; `row.ps1` at rest afterwards still 0 frames | wakeups every 5 s with the dialog closed (the listing task outliving the dialog) |
+| Stream sound per app | Options → Share sound: "All apps", "Only these", "All except" list the apps that have a sound session, the picked window's app marked "this window"; viewers hear what the choice says and never Decibell itself | an empty list while something plays; viewers hearing an unticked app |
+
+## 7. The desktop services (from the platform work)
+
+- **Single instance**: start Decibell, minimise it, start it again from the Start menu: no second window, the
+  first comes back to the front within a second. Start it again from a command prompt while another program
+  is in front: it comes forward, or at least its taskbar button flashes. Two profiles
+  (`set DECIBELL_USER_DATA_DIR=…` in one prompt): two windows.
+- **`decibell://`** (after the installer registers it): with Decibell running, open
+  `decibell://invite/<a real code>` from Win+R or a browser: the window comes forward with the join dialog; with
+  Decibell closed it starts and shows the dialog after sign-in. The installer's keys, under
+  `HKCU\Software\Classes\decibell`: `(Default)` = `URL:Decibell`, `URL Protocol` = `` (empty string),
+  `DefaultIcon\(Default)` = `"<install dir>\decibell.exe",0`, `shell\open\command\(Default)` =
+  `"<install dir>\decibell.exe" "%1"`. The app never writes the registry.
+- **Attention**: have someone call you while Decibell is behind another window: its taskbar button flashes
+  until you bring it to the front; not when your status is Do Not Disturb.
+- **Taskbar progress**: download a large attachment: the taskbar button shows the progress, yellow when you
+  pause it, and clears when it ends.
+- **Quit guard**: close the window while a file uploads: "A file is still uploading" asks; Keep uploading /
+  Enter / Escape keep the window, Quit anyway closes it.
+- **Window state**: move the window to a second monitor (ideally at another scale), resize it, close, start:
+  same monitor, place and size; maximise, close, start: maximised, and Restore gives the old size. Disconnect
+  that monitor, start: the window opens on the remaining one.
+- **Screen lock and auto-away**: Win+L, wait, unlock: your status showed Away while locked (another account
+  sees it). Set Settings → auto-away to 1 minute and leave the mouse and keyboard alone: Away after a minute;
+  move the mouse: Online again within about a second.
+- **Copy image**: right-click a picture → Copy image, paste into Paint, Word and a browser.
+- **Keyring**: Credential Manager → Windows Credentials shows a generic credential named
+  `Decibell:url=decibell://e2ee-local-key/…`, nothing named `zed:`.
+
+## 8. The rest of the table
+
+| Feature | Do | Expect |
+|---|---|---|
+| Fonts | look at the server tiles and the "Decibell" wordmark beside the Electron client | the same wide letterforms (the families "Decibell Sans Plus" / "Decibell Sans Max"); `--selftest boot` passes ("every bundled face resolves"). A tile label in a narrower or a system font is the bug the CI runner showed: send `boot`'s output |
+| Emoji | a message with 😀 👍🏽 🇹🇷 | Twemoji pictures, as in Electron (never Segoe UI Emoji's) |
+| Text in other scripts | paste Japanese, Arabic, a rare symbol | drawn by DirectWrite's own fallback; boxes (tofu) for a script Windows has a font for is a failure |
+| IME | type with the Japanese or Chinese IME in the message box | the candidate window sits at the caret; composition text is underlined; Enter commits without sending |
+| Regional formats | `--screen main-server --selftest regional-read` prints what the client read from Windows' regional settings; compare message dates and times with the Region settings' short date and time | day / month order, separator, 12 / 24 h and digit grouping as Windows has them, English month names |
+| Hotkeys | Settings → Keybinds: record Ctrl+Shift+M for mute, a bare key for push-to-talk, a mouse side button | the summary names the Windows backend; mute works with another app focused and the combo no longer reaches that app; push-to-talk works while a game has focus and the key still reaches the game; on a non-US layout the recorded key is the one pressed |
+| Links, files | click a link; Open and Show in folder on a finished download; attach through the file dialog; drop files on the window | the default browser; Explorer with the file selected; the upload starts. (Open on a downloaded program runs it, as in Explorer: a decision for the owner whether to ask first) |
+| Clipboard | copy and paste text both ways with Notepad; paste a screenshot (Win+Shift+S) into the message box | text keeps its line breaks; the screenshot becomes an upload |
+| Devices | Settings → Audio lists inputs and outputs by their Windows names; unplug the chosen headset in a voice channel | the lists follow; voice moves to the default device |
+| DPI | 100 %, 150 %, 175 % and a per-monitor mix | sharp text at each; a stream tile's picture not blurred beyond its size |
+| Calls | a DM call in and out | ring (not under Do Not Disturb), the call stage, the taskbar flash above |
+
+## 9. Measuring the Electron client on the same machine
+
+The table in §4 is a ratio, so both clients are measured on this machine, with the same script, in the same
+states. For the Electron client:
+
+1. Start the installed client yourself, signed in as usual (no script starts it: it would open your profile
+   unasked). Close the native client first, or make sure you pass process ids: both are `decibell.exe` to
+   Windows.
+2. Its main process: `Get-CimInstance Win32_Process -Filter "Name='Decibell.exe'" | Where-Object CommandLine -notmatch '--type=' | Select-Object ProcessId, CommandLine`. `row.ps1 -ProcessId` measures that process and all its
+   children (renderer, GPU process, utilities), summed.
+3. Put it in the state of the row (the same server and channel as the native client's row, visible, unfocused,
+   the pointer outside the window), then
+   `..\tools\perf\windows\row.ps1 -ProcessId <pid> -Client electron -Label "<the same label>"`.
+   The `frames` cell stays empty for Electron (no counter to read); its idle cost shows in `cpu_core_pct`,
+   `wakeups_s` and `gpu_3d_pct`.
+4. Rows to take for each client, labels identical: `idle, #general, unfocused` · `idle, #general, minimised` ·
+   `idle, Home, focused` · `voice, alone, muted` · `watching 1 stream 1080p60` · `watching 2 streams`.
+5. Startup: `..\tools\perf\startup.ps1 -Exe "$env:LOCALAPPDATA\Programs\decibell-electron-client\Decibell.exe" -Out ..\tools\perf\results\electron-startup`
+   and the same with the native exe (keep `-Runs` small: each run signs in). Install size:
+   `install-size.ps1` on Electron's install folder against `decibell.exe` plus the DLLs beside it.
+6. Send `tools\perf\results\windows-table.md` and the `*-threads.txt` files.

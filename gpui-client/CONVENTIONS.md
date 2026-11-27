@@ -923,3 +923,34 @@ The text channel header's search box and the results panel (`features/search/`, 
   local stack, read-only, pacing searches to the community's bucket (6, then 1 a second). Probes inside
   padded elements go through `crate::probe` (the shell's canvas has no insets: in a padded flex container
   it would sit after the padding).
+
+## Windows
+
+The client ships on Windows too, and no session on Linux can run it there. What a crate author does so that new
+code works on Windows the first time the owner starts it:
+
+- **Type-check for Windows before pushing**: `flock ~/.cache/decibell-dev/heavy-build.lock tools/win-check.sh`
+  (the whole workspace for `x86_64-pc-windows-msvc`, on Linux, about a minute warm). The Windows Native Check
+  then compiles for real and runs the unit tests and self-tests a GPU-less runner can run
+  (`HANDOFF.md` §1b says where its logs are). A row that only compiles on Windows is "needs owner", with its
+  step in `docs/windows-owner-checks.md`.
+- **No Linux tool or path in product code**: no `/proc`, `/tmp`, `$HOME`, `xdg-*`, D-Bus, signals. Ask GPUI
+  (`open_url`, `reveal_path`, `prompt_for_paths`, the clipboard, credentials) or `decibell-platform`; where the
+  platforms differ, write both sides behind `cfg` in one module with one neutral API, and make the other side a
+  real implementation, never a stub that answers "unsupported".
+- **A self-test that needs a Linux helper says so and skips** (`cx.log("SKIPPED: …")`) instead of failing, and
+  a fixture-only self-test must need nothing but the window: those are what the Windows runner executes.
+- **The `windows` crate**: the version GPUI uses (0.62, see `Cargo.lock`), as a `cfg(windows)` target
+  dependency with only the features used; anything that touches GPUI's Direct3D device goes through
+  `gpui_windows::windows` and holds `D3d11Devices::lock_context()` for a sequence of context calls off the main
+  thread. Every `unsafe` block states its invariant; no `unwrap` on a call that a real machine can fail (a
+  window that closed, access denied on an elevated window, a driver without the feature).
+- **Frames and wakeups are the same rule**: GPUI's Windows backend sleeps completely when no window asks for a
+  frame (patch `0021`). Anything that calls `request_animation_frame` or notifies a view on a timer keeps a
+  thread waking at the refresh rate there exactly as it keeps the compositor busy on Linux.
+- **Fonts**: a bundled family's name must not contain a weight, width or slope word ("Expanded", "Condensed",
+  "Light", "Italic", …): DirectWrite takes it out of the name and files the face under the shorter family
+  (`tools/gen-fonts.py`). `boot` checks every bundled face on both platforms.
+- **Wheel steps, word stops, key codes** differ by platform on purpose (Chromium's conventions:
+  `decibell_ui::scroll::PX_PER_GPUI_LINE`, `decibell_text::input::boundaries`, `KeyCode::Windows`): tests take
+  the platform's value from the code, never a Linux number.

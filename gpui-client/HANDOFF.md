@@ -240,9 +240,18 @@ which one a claim rests on:
 | Idle: GPUI patch `0021` (the vsync thread parks; it and the main thread woke at the refresh rate at rest) | yes (`patches/README.md` §0021) | 1; 2 pending (`idle.log`'s thread table); the touchpad-gesture exception is the owner's to feel |
 | Title bar: the client's caption buttons are the system's on Windows (snap layouts, restore) | yes (`decibell-ui/src/titlebar.rs`) | 1; owner |
 | Measuring: `tools/perf/windows/row.ps1`, `install-size.ps1`, `-ProcessId` for `measure.ps1` / `threads.ps1`, the perf event (`--perf` on Windows) | yes (`tools/perf/README.md`) | 2 pending |
-| Go Live: the screen / window grid with thumbnails; the stream-audio app list | **not yet** (`windows_source_grid` returns `None`: Go Live cannot start on Windows) | — |
-| Auto-away (the core's idle source answers "unsupported" on Windows), lock / sleep | **not yet** | — |
-| Console window in release builds, no icon resource, no AUMID | not yet (packaging; partly `decibell-platform`'s) | — |
+| Go Live: the screen / window grid with stills (`decibell-voice/src/sources/`, the dialog's "What to share") | yes: lists active displays (`screen:<EnumDisplayDevices index>:0`, the id the core resolves) and shareable windows (`window:<HWND>:0`; Chromium's filter), GDI stills and icons on a background thread, every 5 s while the dialog is open and never otherwise. The grid itself is platform-neutral and was looked at on Linux with `DECIBELL_GO_LIVE_SOURCES=fixture` (debug build, `--screen go-live`) | 1 for the Windows half; owner (checks §6) |
+| Stream-audio app picker | nothing to write: the dialog calls the core's `list_stream_audio_apps` with the picked source on every platform, and the core's WASAPI list answers on Windows | owner (checks §6) |
+| Fonts: the wide families renamed "Decibell Sans Plus" / "Max" (DirectWrite read "SemiExpanded" / "Expanded" as a stretch, so those families did not exist there: found by `boot` on the runner) | yes (`tools/gen-fonts.py`) | Linux `boot` passes; 2 pending |
+| Auto-away, lock, single instance, attention, taskbar progress, window state, clipboard DIB, keyring name | the platform work (`crates/decibell-platform`, patches `0015`–`0019`) | owner (checks §7) |
+| Executable identity (no console in the ship build, icon, AUMID) | the packaging work | — |
+
+What the first run that executed anything showed (45900404424, WARP runner): fxc compiles the surface shader;
+`boot` opens a window on a real Direct3D 11.1 device with patch `0020`'s pipeline (first frame 784 ms, debug
+build); with patch `0021` the gallery at rest reads 0 context switches / s and 0 frames over 20 s
+(`row.ps1`, 22.6 MB private working set); 290 unit tests pass, 2 failed and are fixed (a Linux expectation in
+`decibell-text`, a 2 s deadline against Windows' slow refused connect in `decibell-unfurl`). Only `boot` ran of
+the self-tests (the step stopped at its failure: fixed), so `video-probe` and the rest are still to be read.
 
 Rules that came out of it:
 - `decibell-video` names the renderer's surface types through `crate::surface` and splits on `cfg(vk)` (Linux),
