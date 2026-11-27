@@ -11,7 +11,8 @@
 #
 # The binary defaults to this tree's `target/release/decibell` (a `dev-local` release build; the headless
 # client beside it must be current: HANDOFF "Self-tests need the headless client"). DECIBELL_CENTRAL defaults
-# to the local stack. Exit status: 0 when every test passed.
+# to the local stack. Exit status: 0 when every test passed; a test that printed SKIPPED (a missing fixture or
+# helper) is reported as SKIP and fails the run.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -36,7 +37,7 @@ mkdir -p "$work"
 [ -z "$logs" ] || mkdir -p "$logs"
 export DECIBELL_CENTRAL=${DECIBELL_CENTRAL:-127.0.0.1:18080}
 
-pass=0; failed=()
+pass=0; failed=(); skipped=()
 for name in "$@"; do
   profile=$work/profile; rm -rf "$profile"; mkdir -p "$profile"
   log=$work/$name.log
@@ -47,7 +48,10 @@ for name in "$@"; do
     timeout "${DECIBELL_SELFTEST_TIMEOUT:-420}" "$bin" --selftest "$name" >"$log" 2>&1
   rc=$?
   took=$(( $(date +%s) - start ))
-  if [ $rc = 0 ]; then
+  if [ $rc = 0 ] && grep -aq 'SKIPPED' "$log"; then
+    # A test that could not run (no fixture, no KWin helper, the stack down) exits 0: never count it as a pass.
+    skipped+=("$name"); echo "SKIP $name: $(grep -a 'SKIPPED' "$log" | head -2 | cut -c1-300 | tr '\n' '|')"
+  elif [ $rc = 0 ]; then
     pass=$((pass + 1)); echo "PASS $name (${took}s, with the wait for the lock)"
   else
     failed+=("$name")
@@ -56,5 +60,5 @@ for name in "$@"; do
   [ -z "$logs" ] || cp "$log" "$logs/$name.log"
 done
 rm -rf "$work"
-echo "== $pass passed, ${#failed[@]} failed${failed:+: ${failed[*]}}"
-[ ${#failed[@]} = 0 ]
+echo "== $pass passed, ${#failed[@]} failed${failed:+: ${failed[*]}}, ${#skipped[@]} skipped${skipped:+: ${skipped[*]}}"
+[ ${#failed[@]} = 0 ] && [ ${#skipped[@]} = 0 ]
