@@ -260,10 +260,20 @@ old (AppImage: `<name>` → `.<name>.previous`, the download → `<name>`; Windo
 `/S /UPDATE /D=<install dir>`, which moves the install into `previous\` — a running image may be renamed —
 and installs), starts the new version with `--update-trial=<pipe>` and the start's own arguments, and waits
 up to 60 s for `ok`, which the new version writes once its first frame is on screen. `ok`: the old exits
-(the backup is removed; on Windows by the new version at its next start). No `ok` (it exited, crashed or
-hung — killed): the old files go back, the version is recorded in `failed.json` and never offered again,
-and the old version carries on starting; About then says "Couldn't check: version <v> didn't start
-(<why>), so <old> was kept". The wait is one blocking pipe read: no polling.
+(the backup is removed; on Windows by the new version at its next start). No `ok`: the new version is killed
+if it still runs, the old files go back and the old version carries on starting. One that **exited or
+crashed** before its first frame is recorded in `failed.json` and never offered again; one that **ran but
+showed no frame in 60 s** is inconclusive (a locked screen, a suspended session, a slow disk): it stays
+staged and the next start tries again, and only the third such try in a row records it as failed
+(`apply::TRIAL_TIMEOUTS`; electron-updater has no trial and keeps whatever it installed:
+`docs/electron-quirks.md` #31). A failed version is said in About on a line of its own ("Version <v> didn't
+start (<why>), so <old> was kept."), beside whatever the checks report, until About has been opened. The
+wait is one blocking pipe read: no polling.
+
+**Restart** (About's button, the chip) quits as `app.quit()` does, through the upload quit guard (Electron's
+`before-quit` asks: "Keep uploading" calls the restart off), and starts this version again with
+`--apply-update` alone: never the start's own arguments (an old `decibell://` link would open again;
+electron-updater restarts with none).
 
 ## 7. Crash reports
 
@@ -277,10 +287,20 @@ a change applies at the next start, as Electron), a DSN baked (`resources/sentry
 (`crash_reporting_install_id`, a random UUID) is generated and written into `config.json` like
 `loadSentryBootConfig`, keeping every other field.
 
-**What**: a **panic** — the ship profile aborts on panic, so a panic hook writes the envelope to
-`<profile>/crash-reports/<event id>.envelope` first, then sends it within **2 s** (Electron's flush
-timeout, `@sentry/node`'s `shutdownTimeout`) before the process aborts; what couldn't be sent goes at the
-next start (at most 10 kept, 30 days). A **native crash** (SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT; on
+**What**: a **panic**. The release profile unwinds (as the Electron addon's: the core's guarded workers
+catch a panic and carry on), and one panic hook, installed first thing in every build
+(`crash::install_panic_hook`), decides by who catches (`decibell_panic::here`: the core's guarded threads,
+its runtime, a section of ours run through `decibell_panic::catch`):
+- **caught**: a report at level `error` (`handled: true`, tag `recovered`: `core-thread`, `runtime`,
+  `guarded`), written and sent in the background without holding the panicking thread up, once per panic
+  location and at most five per run; the unwind goes on to its catch and the app carries on;
+- **nothing catches it** (the UI thread, GPUI's workers, our own threads, the core's unguarded threads): the
+  envelope is written to `<profile>/crash-reports/<event id>.envelope`, sent within **2 s** (Electron's flush
+  timeout, `@sentry/node`'s `shutdownTimeout`), and the process **aborts**, as the aborting profile did: no
+  thread dies silently. A caught panic that `rt::run` resumes on the UI thread ends there (`boot`'s
+  `AbortOnUnwind` guard) with a fatal report tagged `resumed_from`.
+
+What couldn't be sent goes at the next start (at most 10 kept, 30 days). A **native crash** (SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT; on
 Windows an unhandled SEH exception — a fault in a driver, like the NVIDIA one at exit): an
 async-signal-safe handler writes a record (signal, faulting address, instruction pointer, the
 `/proc/self/maps` line naming the library it is in, the build's ids), puts the previous handler back and lets
@@ -291,7 +311,9 @@ the module it is in.
 
 **The envelope**: one event, `platform: native`, `level: fatal`, `release: decibell@<version>`,
 `environment: production`, `user.id` = the install id, Electron's tags (`platform`, `arch`, `os_release`,
-`is_packaged`) plus `install_kind`, `thread` and `panic_location`; the exception (type `panic` or the
+`is_packaged`, the renderer's `connected_servers`) plus `install_kind`, `thread` and `panic_location`;
+Sentry's contexts `os`, `app` (name, version, start), `device` (architecture, CPUs, memory) and, once the
+window drew, `gpu` (the renderer's adapter: name, PCI vendor, driver; Linux); the exception (type `panic` or the
 signal, the scrubbed message, mechanism unhandled) with the instruction addresses of the panicking thread
 (`backtrace::trace`, unresolved) and this executable's `debug_meta` (ELF build id as Sentry's debug id; PE
 timestamp + size, PDB GUID + age when there is one), so the reports symbolicate once the release's `.debug`

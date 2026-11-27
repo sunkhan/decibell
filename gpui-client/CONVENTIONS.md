@@ -505,10 +505,11 @@ avatar editor subscribes and opens over Settings).
   ✕, the scrolling body) and is drawn cached at the pane's size through `SettingsWindow::pane`: a change
   in one tab redraws that tab only. Each lists what it reads in a `decibell_common::Watch`.
 - **Saves follow the renderer**: everything applies at once (toggles, selects, sliders, presets: the model's
-  `Settings::change` saves 250 ms later; the account's own settings through their actions). The one draft
-  is Network's typed custom speed (applied on Enter or blur): while it is unapplied the tab shows the
-  `SaveBar` and leaving (Esc, ✕, the backdrop, another tab) shakes it (`TabView::dirty` / `nudge`). A new
-  drafted field: make the tab's `dirty()` say so and give it a `SaveBar`; the window does the rest.
+  `Settings::change` saves 250 ms later; the account's own settings through their actions). User Settings
+  hold no drafts and nothing holds the window (the renderer has no save bar there): Network's custom speed
+  applies on blur and Enter, and leaving the tab (another tab, ✕, the backdrop, Esc) applies what the box
+  holds first (`TabView::commit_typed`; Esc is `docs/electron-quirks.md` #26). A new field typed and
+  applied later: commit it in `commit_typed`.
 - **Dates, times of day and counts** come from `decibell_model::regional` (Devices' "Last active" is
   `relative`, "Signed in" `medium_date`, counts `group`; Appearance's sample is `time(14, 32, pref)`).
   Automatic time format means the system's regional setting (the renderer said "system language"), and
@@ -524,8 +525,10 @@ avatar editor subscribes and opens over Settings).
   `docs/electron-quirks.md` #12).
 - **Keybinds** record with the model's `Recorder` on physical codes (`KeyDownEvent::code`,
   `ModifiersChangedEvent::key` for a modifier alone and its side): the German key labelled Z records
-  `KeyY`. The app's root feeds the focused fallback (`decibell-app/src/hotkeys.rs`, self-test
-  `hotkeys-focused`).
+  `KeyY`, and is **labelled** "Z": `key_label` reads the layout's map (`set_layout_map`, filled by the app
+  from `App::keyboard_key_text`, GPUI patch 0040, at start and on every layout change; self-test
+  `keybind-labels-layout`). Never label a key from a US table where the layout can say. The app's root
+  feeds the focused fallback (`decibell-app/src/hotkeys.rs`, self-test `hotkeys-focused`).
 - **Account's picture**: the picture button and "Change picture" / "Add a picture" emit `PictureEvent::ChangeAvatar`
   (the file dialog), a file dropped on the card `AvatarDropped(paths)` (the veil shows while one is dragged over);
   the app's `avatar.rs` (joined in `registry::join_features`) opens `decibell-picture-editor`'s editor over
@@ -685,8 +688,9 @@ window is open, and draws the view it returns (the quit question) over the windo
 - **Attention** answers the model's `Cue::Flash` (the model decides: an incoming call, not under Do Not Disturb) only
   while the window is not active; the desktop ends it on activation. **Taskbar progress** observes
   `model.live.transfers`' `progress()` and sends only changes (≤ 4 / s while moving, at once when it appears, pauses or
-  clears). **The quit guard** answers the title bar's close (`decibell_ui::CloseHandler`) and the desktop's
-  (`on_window_should_close`) while uploads are in flight, and pauses downloads in `on_app_quit`. **Window state** is
+  clears). **The quit guard** answers the title bar's close (`decibell_ui::CloseHandler`), the desktop's
+  (`on_window_should_close`) and the updater's Restart (`QuitGuard::quit_app`) while uploads are in flight,
+  and pauses downloads in `on_app_quit`. Quit the app from code that a user started through `quit_app`. **Window state** is
   `window-state.json` in the profile, written on a maximise change, on losing the focus, on close and at quit (no
   timer).
 - **No polling, nothing at rest**: a service that isn't in use costs nothing (the D-Bus connection for the launcher
@@ -791,6 +795,14 @@ What a released build does on its own and how it is packed: `PACKAGING.md`.
 - **Windows**: the executable's resources are written by `build/winres.rs` (no resource compiler); a new
   resource goes there. The AppUserModelID is `decibell_release::APP_USER_MODEL_ID`, set at start and
   carried by the installer's shortcut (`--create-shortcut`): change both together.
+- **Panics**: the release profile unwinds (as the Electron addon), so the core's guarded workers recover;
+  the one panic hook (`decibell_release::crash::install_panic_hook`, first thing in `main`, every build)
+  asks `decibell_panic::here()` who catches: a guarded core thread (by name), the core's runtime
+  (`decibell-rt`), or a section of ours run through `decibell_panic::catch` → a recovered report and the
+  unwind goes on to the catch; anything else → the fatal report, then `abort`. A `catch_unwind` of ours that
+  recovers must be `decibell_panic::catch` (a bare one is overruled: the hook aborts first). A new guarded
+  core thread goes in `CORE_GUARDED_THREADS` (a test reads the core's sources and fails until it does).
+  `boot::run` holds `crash::AbortOnUnwind` for a panic resumed on the UI thread.
 - **Tests**: `cargo test -p decibell-release`; `packaging/tests/release_e2e.py --binary <dev release build>`
   (the updater, apply and crash reports through the real binary); `packaging/tests/ship-isolated.sh`
   (a ship binary on a private bus and keyring, network calls logged).

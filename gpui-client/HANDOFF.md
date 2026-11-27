@@ -105,7 +105,11 @@ how Electron users move to the native client and its update path; the second-dev
 user menu; quirks #12 / #13 (`docs/electron-quirks.md`); a channel switch stops attachment playback (FEATURES
 says it survives, Electron's code stops it); "7 Nov 2026" against Qt's "7 11 2026"; spellcheck and zoom (not
 built); click-audit entry 11; the listening and by-eye checks; the Windows hardware checks
-(`docs/windows-owner-checks.md`); a real X11 session.
+(`docs/windows-owner-checks.md`); a real X11 session; quirks #27 (the mic test meters through the user's own
+processing), #29 (the updater and crash sender use no system proxy and Mozilla's roots, not the OS store) and #30
+(caught panics are reported as recovered errors; a panic on an unguarded thread ends the app where Electron's addon
+lost the thread silently); the release profile's unwinding (the cost is in `PACKAGING.md` §9.2: the architect's
+decision, to confirm).
 
 ## 0. The goal and its rules (owner's brief, 2026-11-26)
 
@@ -182,7 +186,7 @@ screens in all seven themes beside Electron's.
 | Encoders on every vendor + software fallback (core) | done `4784c37`..`2e8bd1b`: backends NVENC / AMF / Quick Sync / VAAPI / software (SVT-AV1) behind a probe that really encodes, fallthrough at stream start, `DECIBELL_ENCODER` override, harness; ran here: NVENC (3 codecs) and software. **The software fallback is in the client's build** (`12c9115`, Windows `8a2a302`): `tools/build-ffmpeg.sh` builds SVT-AV1 4.2.0 into `vendor/ffmpeg` (rebuilt and swapped in on this machine; `scale_vaapi` too), `crates/decibell-app/build.rs` refuses an FFmpeg without `libsvtav1` and the software decoders, self-test `encoder-software` and `decibell-headless dump codecs` show it (`DECIBELL_ENCODER=software` → AV1 on `software`); Windows: vcpkg overlay ports `tools/vcpkg-overlay` (the pinned FFmpeg 8.0.1 + upstream's `svt-av1` feature + FFmpeg's own `libsvtav1.c` fix for SVT-AV1 4.x, SVT-AV1 4.2.0), installed by the Windows job's `gpui-client` step, **never built on Windows yet** (the first CI run is the check; checked on Linux: 8.0.1 + the fix + 4.2.0 passes the core's software tests); VAAPI / Quick Sync / AMF compile-checked with one-command owner checks (`crates/decibell-core/tools/verify-encoders.md`); Electron's bar passed (403 core tests) and Windows check run 45845969044 green; design `docs/superpowers/specs/2026-11-26-encoders-every-vendor-design.md` |
 | Shell (`decibell-common`, `decibell-shell`, app boot with core + model) | done `f4ac4fe`: sign-in / register pages, server bar, channel sidebar with voice rosters, user panel, member list, friends frame, pane / overlay / menu registration (CONVENTIONS "Shell"); self-tests `shell-signin`, `-navigate`, `-members`, `-idle`, `-signout`, `-no-keyring`; captures within 0.3–1.2 % of Electron's; numbers in §4 "Shell". Left: channel drag-to-reorder, panes of the other features |
 | Voice view, stream watching, mini-player, Go Live, calls (`decibell-voice`) + the stream bot for measurements | done (eight commits ending `044123b`, + `63515a7`): stage, tiles, focus / theater / fullscreen, dock, mini-player, Go Live with presets and the probed encoders, call ring and stage (`Slot::DmCallStage`), the app's video glue (frames, keyframe requests, frame-sink interest); `tools/perf/streambot.sh`, scenarios `watch-1` / `watch-2`; all `voice-*` and `call-ring` self-tests pass on the merged tree. Open with `wip/integrate-b`: the stall state, cursor hiding in fullscreen, two-stream measurement (needs a second keyed streamer on the stack), nested cached views |
-| Settings window (all tabs) + rename, change-password and passphrase dialogs (`decibell-settings`) | done (nine commits ending `ff7c600`) and integrated: real text fields (the kit's `TextField` `Dialog` / `Compact` looks), the kit's button variants, the recorder on physical codes (German / Turkish layouts record the key pressed), the focused hotkey fallback in the app's root, regional formats, `actions::auth::log_out`, the attachment caps from the model; self-tests `settings-*`, `kit-confirm`, `hotkeys-focused`; captures within 0.13–2.4 % of Electron's (dialogs 0.23–0.70 %). Left: the mic test outside voice (a core API), the avatar editor (`PictureEvent::ChangeAvatar`), the updater |
+| Settings window (all tabs) + rename, change-password and passphrase dialogs (`decibell-settings`) | done (nine commits ending `ff7c600`) and integrated: real text fields (the kit's `TextField` `Dialog` / `Compact` looks), the kit's button variants, the recorder on physical codes (German / Turkish layouts record the key pressed) and labels from the layout (GPUI patch 0040), the focused hotkey fallback in the app's root, regional formats, `actions::auth::log_out`, the attachment caps from the model, the mic test outside voice, the avatar editor, the updater; self-tests `settings-*`, `kit-confirm`, `hotkeys-focused`, `keybind-labels-layout`; captures within 0.13–2.4 % of Electron's (dialogs 0.23–0.70 %). Network has no draft or save bar since `wip/fix-app` (as the renderer) |
 | Core follow-ups | done `2774316` (pooled frame buffers: 0 allocations per received video frame with the pool on, measured; Electron 1–2 instead of 4–8), `3ac2ebc` (`net::tls::exact_connector`), `502be85` (no `aws-lc-rs`), `9f0117e` (zbus runtime as a feature: `zbus-tokio` default for the addon, `zbus-async-io` for this client); Linux bar passed on the merged tree (tsc 0, napi build unchanged, 361 core tests, both smokes); Windows check running |
 | Code highlighting (`crates/decibell-highlight`) | done `b636cb4`: highlight.js's engine + the renderer's 26 grammars, 0 mismatches against lowlight over 138,117 cases; +527 KB of binary; vendored patched `regress` (step budget) |
 | Rich-text grammar (`crates/decibell-richtext`) | done `497ab53`: 0 mismatches against the renderer over 120,570 committed + 1.6M stress cases |
@@ -242,19 +246,19 @@ CONVENTIONS "Platform").
 | `index.ts` `dumpGpuInfo` | GPU diagnostics in the log | the video crate's probe | video (done) |
 | `index.ts` `kickoffInitialCheck`, `update.ts`, `ipc.ts` update handlers, `openReleasePage` | auto-update | `decibell_release::{update, feed, apply}` + `decibell-app/src/updater.rs` (About's hooks, the chip's `RestartToUpdate`, the one-shot first check) | done (`PACKAGING.md` §6) |
 | `index.ts` `stopOrphanedShare` | stop a native share a reloaded / crashed renderer left running | — (one process) | — |
-| `window.ts` `hardenNavigation` | no navigation, `window.open` → the browser (https only), no `<webview>`, back / forward swallowed | — (no web content); links open through `cx.open_url` (`decibell_unfurl::links::external_link_target`) | chat (done) |
+| `window.ts` `hardenNavigation` | no navigation, `window.open` → the browser (https only), no `<webview>`, back / forward swallowed | — (no web content); embeds open through `decibell_unfurl::links::external_link_target`, but **message links** call `cx.open_url(url)` directly with no scheme check or length cap (`decibell-chat/src/pane.rs:166`, `decibell-home/src/dm/conversation.rs:291`): safe today only because autolinks are http(s) or invites (parity audit C §6) | chat / home: route them through `external_link_target` (not done) |
 | `index.ts` `capture:listSources` / `setNextSource`, `setDisplayMediaRequestHandler` | the Windows source grid, the portal on Linux | the core's capture, Go Live | voice / core |
 | `index.ts` `setCertificateVerifyProc`, `certificate-error` | community certificate pins for attachment HTTPS | the attachments crate's pinned TLS | done |
 | `index.ts` `sweepStale` (5 min) | file-registry GC | — (no registry) | — |
 | `mediaServer.ts` | loopback HTTP for `<video>` / `<audio>` | — (the player reads directly) | player (another crate) |
-| `index.ts` `before-quit` | ask about uploads, pause downloads, stop the update check, shut the addon down (3 s), exit | `quit_guard` (asks, `on_app_quit` pauses downloads through `DownloadControl::pause_all_for_quit`), `boot.rs` (core shutdown, 3 s) | this work + done |
+| `index.ts` `before-quit` | ask about uploads, pause downloads, stop the update check, shut the addon down (3 s), exit | `quit_guard` (asks, `on_app_quit` pauses downloads through `DownloadControl::pause_all_for_quit`; the updater's Restart asks through `QuitGuard::quit_app` since `wip/fix-app`), `boot.rs` (core shutdown, 3 s) | this work + done |
 | `index.ts` `window-all-closed`, `activate` (macOS) | quit with the last window | GPUI `QuitMode::Default` | done |
 | `window.ts` window controls (minimise, maximise, toggle, close, `isMaximized`, `setTitle`, `setFullscreen`), `attachWindowEvents` | the title bar's buttons and state | `decibell_ui::TitleBar`, `Root`, the voice view's fullscreen | done; the close button now goes through `decibell_ui::request_window_close` (the quit guard) |
 | `window.ts` `setTransferProgress` → `setProgressBar` | launcher / taskbar progress of the transfers | `progress` (Linux `com.canonical.Unity.LauncherEntry`, Windows `ITaskbarList3`) | this work |
 | `window.ts` `flash` → `flashFrame`, dock bounce | attention on an incoming call (not in DND) | `attention` + patch `0017` (Wayland) | this work |
 | `window.ts` `close` → `confirmLosingUploads` | closing with uploads in flight asks | `quit_guard` | this work |
 | `clipboard.ts` `copyAttachment`, `writeImage`, `writeText` | copy a picture (as PNG) / a link | `decibell-chat-content/src/actions.rs` + patches `0015` (Linux pictures) and `0019` (Windows `CF_DIB`) | this work (pictures); text: done |
-| `dialog.ts` open / save | file pickers (with filters; a save name made unique in Downloads) | `cx.prompt_for_paths` (composer), `cx.prompt_for_new_path` (downloads); GPUI's portal dialogs take no file-type filters | composer / chat-content |
+| `dialog.ts` open / save | file pickers (with filters; a save name made unique in Downloads) | `cx.prompt_for_paths` (composer, pictures), `cx.prompt_for_new_path` (downloads); the picture pickers pass `PICTURE_ACCEPT`'s types (`decibell_picture_editor::picture_filters`, GPUI patch 0041: the portal's filters, Windows' `SetFileTypes`) | composer / chat-content / app (done) |
 | `fs.ts`, `fileRegistry.ts`, `writeApproval.ts`, `noStore.ts` | the renderer's file access, sandboxed | — (native code reads and writes itself) | — |
 | `netFetch.ts`, `attachment*.ts`, `downloadPacer.ts`, `downloads.ts` | attachment fetch / crypto / downloads / caps | `decibell-attachments`, chat-content's Transfers | done |
 | `linkPreview.ts`, `publicNet.ts`, `gifs.ts` | link previews, GIF search | `decibell-unfurl`, composer | done |
@@ -268,6 +272,9 @@ CONVENTIONS "Platform").
 | Chromium's spellchecker (squiggles in the composer; the renderer has no suggestion menu) | spelling | **not built, not small**: a checker (Hunspell / Nuspell dictionaries per language, shipped or the system's: there is no OS spelling service on Linux), the editor's wavy underline per misspelt range, re-checked as typed off the UI thread; suggestions would need a context menu the renderer never had | listed |
 | Chromium's page zoom (the default menu's Ctrl + = / − / 0, if it reaches a frameless window: unverified) | zoom the whole UI | **not built, not small**: the theme already scales text and rows (`Theme::set_scale`, Settings → Appearance); a zoom would scale every token, icon, image box and the chat list's measured heights (`ChatStyle`), with the key bindings and a saved factor | listed |
 | tray, autostart, power-save blocker, notifications | — | — | Electron had none (`FEATURES.md` §10) |
+| the default application menu (no `Menu.setApplicationMenu`): Ctrl+R reload, Ctrl+Shift+I devtools, F11 full screen, Ctrl+W / Ctrl+Q, zoom | Chromium's accelerators, if they reach the frameless window (unverified on Electron) | — (reload and devtools have no meaning here; zoom is the row above) | **no owner**: unverified in Electron; if the owner wants F11 / Ctrl+Q, they are key bindings in `decibell-app` (small) |
+| preload's stream-frame routing (`streamFrameSubsByUser`) | the encoded frames of a watched stream to its player | `decibell-app/src/video.rs` (`HubSink`: the core's receive thread straight into the hub) | video (done) |
+| `addon.ts` `session_token_updated` → attachment targets | a renewed community token reaches the attachment requests | `decibell-model/src/events/chat.rs` (the token update → the attachment service's targets) | model (done) |
 ## 1c. Windows (the Windows batch, 2026-11-26)
 
 The Windows half is written on Linux, where none of it can run. Three levels of evidence, in rising order; say
@@ -456,7 +463,8 @@ and read commands from the pipe `DECIBELL_DEV_CONTROL` names (`home`, `channel <
 `minimize`, `quit`): what `tools/perf/clients/gpui.sh` drives.
 
 `--theme`: nocturne (default), matinee, graphite, graphite-light, console, console-light, console-split;
-it wins over the saved appearance for that run. F8 / Shift-F8 step through them while the window is open.
+it wins over the saved appearance for that run. F8 / Shift-F8 step through them while the window is open
+(development builds only: the step isn't saved, and the shipped build must let F8 be bound).
 `--screen <name>` shows one registered screen (`--screen list`; the shell's are `auth`, `auth-register`,
 `main-server`, `main-home`, drawn from a fixture without a core); `--selftest` runs in the token gallery's
 window. The session's display is used: Wayland if `WAYLAND_DISPLAY` is set, else X11 (`WAYLAND_DISPLAY=
@@ -1045,6 +1053,25 @@ Release build, RTX 4080 (NVIDIA 595), KDE Wayland; other agents' builds ran besi
 | `media-play-vp9` (1080p30) | GPUI: Vulkan Video, 29.98 of 30, 0 late, 3.1 / 2.8 % of a core, 374 / 328 wakeups / s, 116.8 MB. Electron: 29.99 of 30, 40.1 / 37.5 % of a core, 6927 / 6908 wakeups / s, 406.9 MB |
 
 ## 5. Open items
+
+- **App, settings and shell (rows 9.x), what `wip/fix-app` left** (parity audit C):
+  - *Select and copy fixed text*: built for the rows 9.x name (the device address, the E2EE fingerprint, the
+    keybind command lines: `decibell_ui::Label::selectable(id)`, a `decibell_text::TextSelection` per label;
+    drag, double / triple click, Ctrl+C from the root when no field is focused, Chromium's selection colours;
+    `settings-devices-signout` selects the address). Not yet on the other `select-text` places the audit's §7
+    lists (profile fields, safety numbers): one `.selectable(id)` each. Not built: the PRIMARY selection
+    (X11 / Wayland middle-click paste), which Chromium also sets.
+  - *Tooltips and toast wording the audit lists under rows 7.2 / 7.3 / 8.4* ("Muted by you" in the sidebar,
+    the tile's glyphs, "Stream locked to …", "Has audio", "N watching"; "Couldn't do that" for a refused move)
+    live in `decibell-shell/src/channels.rs`, `decibell-voice/src/{tiles,scrim}.rs` and `actions/voice.rs`: left to
+    the voice rows' work, which edits those files.
+  - *The X11 minimum size at a scale other than 1*: GPUI's X11 `WM_NORMAL_HINTS` minimum is in unscaled
+    pixels; the client now adds the shadow margin (the visible minimum was 780 × 580 at scale 1), but at 1.5 the
+    X11 minimum stays smaller than 800 × 600 logical. A GPUI patch (scale the hint) when the owner runs X11 with
+    scaling.
+  - *Message links* skip `external_link_target` (§1b, `window.ts` row).
+  - *Number input*: the custom speed box steps with the arrow keys; Chromium's hover spin buttons and the
+    wheel over the focused box are not built (quirk #26).
 
 - **Attachment playback: what is open after the second pass** (`docs/media-design.md` §8). The captures of the cards in seven themes beside Electron pages are not made (a
   capture renders one headless frame and no picture is decoded there: a `decibell_video::Still` is what a
