@@ -217,7 +217,7 @@ CONVENTIONS "Platform").
 | `linkPreview.ts`, `publicNet.ts`, `gifs.ts` | link previews, GIF search | `decibell-unfurl`, composer | done |
 | `hotkeys.ts` macOS accelerators | press actions on macOS | — | no macOS target |
 | `hotkeys.ts` `desktop`, `openMouseSettings`, `launchCommand` | the Keybinds tab's desktop help | `decibell-settings` (keybinds tab) | done |
-| `idle.ts` `getSystemIdleState` | auto-away readings | `decibell_platform::idle::source()`: Windows `GetLastInputInfo` (exact idle time); elsewhere the core's `system_idle` (Wayland, GNOME); X11 answers "unsupported" (Away only on lock / sleep) | this work (Windows); X11 reading: open (XScreenSaver `QueryInfo`, needs x11rb's `screensaver` feature) |
+| `idle.ts` `getSystemIdleState` | auto-away readings | `decibell_platform::idle::source(model, cx)`, by the display server GPUI runs on: Wayland / GNOME the core's `system_idle`; **X11** (and XWayland when started with `WAYLAND_DISPLAY` empty) the X server's `IDLETIME` counter through two SYNC alarms on a connection of its own (`idle/x11.rs`: one thread blocked in `wait_for_event`, woken only when the threshold is reached and at the next input, existing only while auto-away is on; MIT-SCREEN-SAVER `QueryInfo` per reading on a server without SYNC `IDLETIME`; nothing selects input events); Windows `GetLastInputInfo` (exact idle time) | this work (X11 checked in a private Xvfb, `idle-x11`; a real X11 session: §6) |
 | `idle.ts` `lock-screen` / `unlock-screen` / `suspend` / `resume` | Away at once on lock / sleep | `session` (sleep / wake: GPUI's logind and `WM_POWERBROADCAST` hooks; lock: `ActiveChanged` of `org.freedesktop.ScreenSaver` / `org.gnome.ScreenSaver` on Linux, `WM_WTSSESSION_CHANGE` on Windows) → `AutoAway::set_locked` | this work |
 | `e2eeLocalKey.ts` `safeStorage` | the at-rest key in the OS keychain | `decibell_model::local_key::KeychainKey` (GPUI credentials) + patch `0016` (our label) | done + this work |
 | `addon.ts` | load / init / buses / shutdown of the addon | `decibell-model` | done |
@@ -619,6 +619,7 @@ building). Every self-test runs the app as children with throwaway profiles on a
 | `keyring-label` | a throwaway gnome-keyring on the private bus holds the at-rest key's item and a test item labelled `Decibell` (patch `0016`); read and delete find them |
 | `window-state` | Wayland: resized to 1020 × 720 → quit → reopened at 1020 × 720; maximised → reopened maximised → unmaximised to 1020 × 720. X11: the same with the visible size (1000 × 700, exact after the one-time correction of §5), and a saved place at 100000,100000 reopens on a screen |
 | `profile-guard` | with `HOME` a temporary directory and no `DECIBELL_USER_DATA_DIR`, the app and `decibell-headless` use `~/.cache/decibell-dev/gpui-default`; pointed at `~/.config/decibell` both exit 2 and create nothing; the real `~/.config/decibell` never appears |
+| `idle-x11` | in a private Xvfb (21.1, `-displayfd`, stopped by its pid; input faked there with XTEST, nowhere else), SYNC `IDLETIME` alarms at a 2 s threshold: idle **2.001 s** after the last input, active **< 1 ms** after the next, idle again 2.002 s after it; the `x11-idle` thread woke **0 times** in 3 s Away and 0 in 1 s active at rest; threshold raised to 4 s (no edge at 2 s), lowered to 2 s at 3 s idle (idle edge < 1 ms later), raised to 5 s while idle (active by the reading, idle at 5.001 s); disable → the thread gone, enable → a new one. MIT-SCREEN-SAVER (SYNC skipped: no X server lets it be switched off): readings only, no thread, no edges; a server without MIT-SCREEN-SAVER either: unsupported. The desktop, read-only: on Wayland the app picks the core's source and starts nothing of this; with `WAYLAND_DISPLAY` empty (XWayland) it picks the X11 source, starts nothing before statuses, then Xwayland 24.1 offers SYNC `IDLETIME` (no MIT-SCREEN-SAVER) and the thread woke 0 times in 5 s; statuses off → the thread gone |
 | `content-copy-image` | Wayland and X11 each: three pictures copied with "Copy image" (a 1600 × 900 PNG, 313 KB; a GIF's first frame, 46 KB; 2.8 MB of noise) offered as `image/png` only (no text types), read back by another process (`wl-paste`; `tools/x11_clipboard.py`, INCR for the 2.8 MB) after the window lost the focus, pixels identical; on Wayland a `wl-paste --watch` reader (a clipboard manager's way) got each at once; the owner's clipboard read before and put back after (through Klipper), checked |
 
 **At rest** (the sign-in page, unfocused, 15 s settle + 40 s, `tools/perf/measure.sh`; the same commit before and after
@@ -989,6 +990,12 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   root feeds the fallback (`decibell-app/src/hotkeys.rs`, self-test `hotkeys-focused`; a key that types into
   a focused text field is the field's, `docs/electron-quirks.md` #13). Still by hand, once: record a binding
   on a real Turkish or German keyboard under Wayland, and on Windows (scan codes there were never run).
+- **X11 idle reading: done** (`decibell-platform/src/idle/x11.rs`, self-test `idle-x11`; the owner's check on a real
+  X11 session is in §6). Left open: under **XWayland** (the client started with `WAYLAND_DISPLAY` empty) the source
+  reads Xwayland's counter, which counts only the input Xwayland receives; whether KWin forwards enough of the rest
+  is the §6 item's question. The core's `ext-idle-notify` would be exact there, but it finds the compositor through
+  the same `WAYLAND_DISPLAY`. And the MIT-SCREEN-SAVER fallback (servers without SYNC `IDLETIME`: none known among
+  Xorg, Xvfb, Xwayland, which also lacks MIT-SCREEN-SAVER) leaves `AutoAway` its one-second re-read while Away.
 - `system_idle` can only be queried, not subscribed to: auto-away is late by up to one threshold on Wayland.
   (Device changes and the mic test outside voice exist since 2026-11-26: `api::audio`.)
 - **Voice receive path allocates per packet** (~5 allocations per voice packet per talking peer; the core
@@ -1139,6 +1146,24 @@ Things only the owner can do; nothing here blocks the rest.
   - **Keyring**: Credential Manager → Windows Credentials shows a generic credential named
     `Decibell:url=decibell://e2ee-local-key/…`, nothing named `zed:`.
 
+- **Auto-away on a real X11 session** (`decibell-platform/src/idle/x11.rs`; here it ran only in a private Xvfb, where
+  input was faked with XTEST, and read-only against this desktop's Xwayland). On an X11 login (Plasma (X11), GNOME on
+  Xorg, Xfce, i3, …), start the client from a terminal with `DECIBELL_LOG=info` and sign in:
+  1. stderr shows `[idle] X11: SYNC IDLETIME alarms (<vendor> <release>): …` once auto-away is on (after sign-in).
+     `ps -L -o tid,comm -p <pid>` lists one `x11-idle` thread; Settings → auto-away "Never" (or sign out) removes it
+     within a second, choosing minutes again brings it back.
+  2. Settings → auto-away 1 minute; leave mouse and keyboard alone: Away after 60 s (your own dot; another account sees
+     Away once every device of yours is idle). Move the mouse: Online again within a second (not after a poll).
+  3. Type in another application (not Decibell) for two minutes: you stay Online (the server counts every client's
+     input). With a video playing in mpv / a browser that inhibits the screen saver you may stay Online: those players
+     reset the server's idle time, as Electron's `powerMonitor` saw too.
+  4. While idle at 1 minute, switch to 5 minutes: Online at once if you were idle under 5 minutes, Away at 5.
+  5. Lock the screen, wait, unlock: Away at once, back at unlock (the session watcher, unchanged).
+  6. Optional, on Plasma Wayland: `WAYLAND_DISPLAY= decibell` (an X11 client under XWayland). Xwayland's counter sees
+     only input Xwayland receives (its own windows, plus what KWin forwards: System Settings → Applications →
+     Legacy X11 App Support). Type in a native Wayland app for two minutes at a 1-minute threshold and report
+     whether the client goes Away (if it does, typing elsewhere looks like idleness to an X11 client under XWayland:
+     that run mode, not the X11 session, would need the compositor's reading instead).
 - **Listen to attachment playback** (`docs/media-design.md` §4: every transition is a 10 ms ramp and each has a
   sample-exact test on what the device is handed; none of it has been heard by anyone). With headphones, at a
   normal level, on a music file and on a file with a loud steady tone (a pop hides in music), for a video and for

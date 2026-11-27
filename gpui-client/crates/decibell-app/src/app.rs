@@ -82,9 +82,9 @@ fn local_key_provider() -> Box<dyn decibell_model::local_key::LocalKeyProvider> 
 /// output device: [`crate::audio::CueOutput`]).
 pub fn start_core(model: &Model, cues: crate::audio::CueOutput, cx: &mut App) {
     let user_data_dir = decibell_model::core::default_user_data_dir().ok();
-    // Auto-away: the platform's idle source (Windows: GetLastInputInfo; elsewhere the core's:
-    // Wayland's ext-idle-notify, GNOME's IdleMonitor, "unsupported" on X11).
-    let source = decibell_platform::idle::source();
+    // Auto-away: the platform's idle source (Wayland / GNOME: the core's ext-idle-notify /
+    // IdleMonitor; X11: the server's IDLETIME through SYNC alarms; Windows: GetLastInputInfo).
+    let source = decibell_platform::idle::source(model, cx);
     model.live.presence.auto_away.update(cx, |a, cx| a.set_source(source, cx));
     crate::video::install(model, cx);
     // The interface sounds and Settings → Audio's microphone test, both the core's.

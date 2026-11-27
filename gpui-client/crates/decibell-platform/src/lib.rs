@@ -8,11 +8,13 @@
 //! - [`quit_guard`]: closing with uploads in flight asks first; downloads pause at quit.
 //! - [`window_state`]: the window's size, place and maximised state, per profile.
 //! - [`session`]: sleep and screen lock → Away.
-//! - [`idle`]: the idle source behind auto-away (Windows: `GetLastInputInfo`; elsewhere the core's).
+//! - [`idle`]: the idle source behind auto-away (X11: the server's `IDLETIME` through SYNC alarms;
+//!   Windows: `GetLastInputInfo`; Wayland / GNOME: the core's).
 //!
 //! The app calls [`instance::start`] before GPUI starts (a second start never opens a window), then
 //! [`install`] once its main window is open. Nothing here polls: the instance listener is a thread
-//! blocked in `accept`, the rest are subscriptions to the model and the window.
+//! blocked in `accept`, the X11 idle watcher one blocked on its X connection while auto-away is on,
+//! the rest are subscriptions to the model and the window.
 
 pub mod attention;
 pub mod idle;

@@ -664,12 +664,21 @@ window is open, and draws the view it returns (the quit question) over the windo
   `window-state.json` in the profile, written on a maximise change, on losing the focus, on close and at quit (no
   timer).
 - **No polling, nothing at rest**: a service that isn't in use costs nothing (the D-Bus connection for the launcher
-  progress exists from a progress to its clear). Every thread is named (`decibell-instance`).
+  progress exists from a progress to its clear). Every thread is named (`decibell-instance`, `x11-idle`).
+- **Auto-away's idle source** (`idle.rs`) follows GPUI's display server (`cx.compositor_name()`), never
+  `XDG_SESSION_TYPE`: on X11 it is `idle/x11.rs`, the server's own `IDLETIME` counter through two SYNC alarms (idle
+  at the threshold, resume at the next input; each re-arms the other) on a connection and a thread (`x11-idle`,
+  blocked in `wait_for_event`) that exist only while auto-away is on; MIT-SCREEN-SAVER's `QueryInfo` per reading
+  where SYNC has no `IDLETIME`. It reads a counter the server keeps: never select key or pointer events, never
+  XInput2, RECORD or a grab to see activity (the hotkeys rule, in spirit). Edges are `AutoAway::poke`s; the
+  reading is always a fresh read of the counter. Input in tests is faked with XTEST in a private Xvfb only
+  (`idle-x11`), never on the desktop's display.
 - **Markers**: development builds print `decibell: platform <event>` lines (`instance listening`, `instance forwarded …`,
   `deep-link pending`, `hotkey <action> injected`, `attention requested`, `progress <‰> [paused]`, `window-state saved …`,
-  `quit-guard asks …`); the self-tests' parents read them.
+  `quit-guard asks …`, `idle source x11|core|windows`, `idle x11 path sync|screensaver|unsupported: …`,
+  `idle x11 idle|active`, `idle x11 stopped`); the self-tests' parents read them.
 - **Self-tests** (`profile-guard`, `single-instance`, `deep-link-arg`, `hotkey-cli`, `attention`, `taskbar-progress`,
-  `window-state`; `content-copy-image` lives in `decibell-app`) run the app as children with throwaway profiles on a
+  `window-state`, `idle-x11`; `content-copy-image` lives in `decibell-app`) run the app as children with throwaway profiles on a
   private, empty session bus, and ask KWin (through `tools/perf/linux/kwin.py`) what it shows. The owner's clipboard is
   saved and put back by `content-copy-image`; nothing writes to the session keyring, the URL handlers or autostart.
 - **Development builds never touch the shipped profile** (`decibell_model::core::DEVELOPMENT_BUILD`: `local-central`

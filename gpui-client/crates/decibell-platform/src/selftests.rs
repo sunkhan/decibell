@@ -4,6 +4,8 @@
 //! keyring or launcher), reads their `decibell: platform …` / `platform-check: …` lines and, where
 //! the compositor can be asked (KDE: KWin scripting through `tools/perf/linux/kwin.py`), what it says
 //! about the children's windows. Development builds only (`dev-local`: the markers and `--login`).
+//! `idle-x11` also starts private Xvfb servers (`selftests/idle_x11.rs`): the only place any test here
+//! fakes input, never the desktop's own display.
 //!
 //! The ones that sign in (`deep-link-arg`, `attention`) use the local stack (`tools/dev/`) and accounts
 //! other tests don't: carol (deep link) and dave called by erin (`decibell-headless`, attention).
@@ -64,6 +66,11 @@ pub fn selftests() -> Vec<SelfTest> {
             about: "resize, quit, start: the same size; maximised comes back maximised; a place off every screen is dropped (X11)",
             run: |cx| Box::pin(window_state_test(cx)),
         },
+        SelfTest {
+            name: "idle-x11",
+            about: "auto-away on X11: SYNC IDLETIME alarms in a private Xvfb (idle at 2 s, active at once on XTEST input there, re-armed, threshold changes, thread gone when off, 0 wakeups at rest), MIT-SCREEN-SAVER, neither; the session's own source on Wayland and XWayland",
+            run: |cx| Box::pin(idle_x11_test(cx)),
+        },
     ]
 }
 
@@ -77,7 +84,34 @@ pub fn checks() -> Vec<SelfTest> {
         SelfTest { name: "platform-progress", about: "(in the app) fake transfers", run: |cx| Box::pin(check_progress(cx)) },
         SelfTest { name: "platform-window-state", about: "(in the app) the window's bounds", run: |cx| Box::pin(check_window_state(cx)) },
         SelfTest { name: "platform-keyring", about: "(in the app) a credentials round trip", run: |cx| Box::pin(check_keyring(cx)) },
+        SelfTest { name: "platform-idle-source", about: "(in the app) the idle source, auto-away on and off", run: |cx| Box::pin(check_idle_source(cx)) },
     ]
+}
+
+// ── idle-x11 (`selftests/idle_x11.rs`: X11 and its markers only) ───────────────────────────────
+
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local"))]
+mod idle_x11;
+
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local"))]
+async fn idle_x11_test(cx: TestCx) -> Result<()> {
+    idle_x11::run(cx).await
+}
+
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local"))]
+async fn check_idle_source(cx: TestCx) -> Result<()> {
+    idle_x11::check(cx).await
+}
+
+#[cfg(not(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local")))]
+async fn idle_x11_test(cx: TestCx) -> Result<()> {
+    cx.log("SKIP: X11 only, in development builds (--features dev-local)");
+    Ok(())
+}
+
+#[cfg(not(all(any(target_os = "linux", target_os = "freebsd"), feature = "dev-local")))]
+async fn check_idle_source(_: TestCx) -> Result<()> {
+    Ok(())
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────────────────────

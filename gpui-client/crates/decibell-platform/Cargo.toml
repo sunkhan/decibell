@@ -7,8 +7,9 @@ publish.workspace = true
 
 [features]
 # Development builds (the app's `dev-local`): one stdout line per platform event for the
-# self-tests' parents (`decibell: platform …`). Never in a shipped build.
-dev-local = []
+# self-tests' parents (`decibell: platform …`), and XTEST for `idle-x11`'s input inside its private
+# Xvfb. Never in a shipped build.
+dev-local = ["x11rb/xtest"]
 
 [dependencies]
 gpui.workspace = true
@@ -30,6 +31,10 @@ libc.workspace = true
 # async-io, as GPUI's own D-Bus users run (HANDOFF.md §5, "zbus features").
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 zbus = { version = "5", default-features = false, features = ["async-io"] }
+# Auto-away's X11 idle source (`idle/x11.rs`): the SYNC extension's IDLETIME counter, MIT-SCREEN-SAVER's
+# QueryInfo as the fallback, on a connection of its own. The version GPUI's X11 platform uses (Cargo.lock:
+# x11rb 0.13.2, which GPUI already builds with `sync`); `screensaver` adds one extension module to it.
+x11rb = { version = "0.13.1", features = ["sync", "screensaver"] }
 
 # The version GPUI's Windows platform uses (Cargo.lock: windows 0.62.2), so every call here is
 # checked against the same bindings as GPUI's own.
