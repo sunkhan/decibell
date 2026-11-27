@@ -1059,6 +1059,21 @@ The text channel header's search box and the results panel (`features/search/`, 
   padded elements go through `crate::probe` (the shell's canvas has no insets: in a padded flex container
   it would sit after the padding).
 
+### Never switch `display` by hover, press or focus
+
+`.hidden().group_hover(g, |s| s.flex())` (Tailwind's `hidden group-hover:flex`) crashes the app when the
+hover changes between the two halves of a frame: GPUI's `Div` skips the children of a `display: none`
+element in prepaint and in paint (`elements/div.rs`), and reads the hover again after prepaint (the hit test
+is recomputed from the new frame's hitboxes). A row that comes under a resting pointer is then `none` in
+prepaint and `flex` in paint, and its children panic with "must call prepaint before paint" (Server Settings
+→ Members, a member with no roles, 2026-11-27: latent since the crate was written, found when such rows came
+under the test's pointer). The same holds for `.hover`, `.active`, `.focus` and their group forms. Lay both
+states out and switch **visibility** instead (`.invisible().group_hover(g, |s| s.visible())`: a hidden
+element is prepainted and only its paint is skipped), stacking them in a `relative()` box when they share a
+place; when the layout itself must change, make the hover view state (`on_hover` → `cx.notify()`) and render
+the other children. `grep -rnE "(group_hover|\.hover|\.active|\.focus)\(.*\.(hidden|flex|block|grid)\(\)"`
+finds none in the client today.
+
 ## Windows
 
 The client ships on Windows too, and no session on Linux can run it there. What a crate author does so that new

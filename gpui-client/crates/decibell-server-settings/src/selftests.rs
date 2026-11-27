@@ -255,7 +255,13 @@ async fn run_child(cx: &TestCx, check: &str, login: Option<&str>, stack: &Stack,
         return Ok(Child::NoDevLogin);
     }
     if !status.success() {
-        for line in err.iter().rev().take(12).rev() {
+        // A panic: everything from its message on (the backtrace names the element; the last twelve
+        // lines of one are GPUI's outermost frames and say nothing). Otherwise the tail.
+        let from = match err.iter().position(|l| l.contains("panicked at")) {
+            Some(at) => at,
+            None => err.len().saturating_sub(12),
+        };
+        for line in err.iter().skip(from).take(400) {
             cx.log(format_args!("│ stderr: {line}"));
         }
         bail!("{check} failed in the app ({status}, after {:.1} s)", started.elapsed().as_secs_f64());

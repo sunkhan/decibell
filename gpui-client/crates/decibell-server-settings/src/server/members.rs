@@ -918,20 +918,38 @@ fn member_row(
                         .px_2()
                         .border_color(if open { accent } else { gpui::transparent_black() })
                         .when(!open, |this| this.group_hover(group.clone(), |s| s.border_color(border)))
+                        // `MembersTab.tsx` swaps the two with `hidden` / `group-hover:flex`. Here both
+                        // are always laid out and only their visibility follows the hover: GPUI skips a
+                        // `display: none` element's children in prepaint and reads the hover again before
+                        // paint, so a row that came under a resting pointer was "flex" at paint with an
+                        // icon that was never prepainted, and the app panicked ("must call prepaint
+                        // before paint": `server-settings-open`, 2026-11-27). "Add role" sizes the box (the
+                        // wider one, what the box is on hover in the renderer; at rest its border is
+                        // transparent); "No roles" lies over its left edge.
                         .child(
                             div()
-                                .when(open, |this| this.hidden())
-                                .when(!open, |this| this.group_hover(group.clone(), |s| s.hidden()))
-                                .child(Label::new("No roles").size(12.).weight(500.).color(muted)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .when(!open, |this| this.hidden().group_hover(group.clone(), |s| s.flex()))
-                                .child(Icon::new(IconName::SettingsPlus).size(px(12.)).stroke_width(2.5).color(if open { bright } else { muted }))
-                                .child(Label::new("Add role").size(12.).weight(500.).color(if open { bright } else { muted })),
+                                .relative()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .when(!open, |this| this.invisible().group_hover(group.clone(), |s| s.visible()))
+                                        .child(Icon::new(IconName::SettingsPlus).size(px(12.)).stroke_width(2.5).color(if open { bright } else { muted }))
+                                        .child(Label::new("Add role").size(12.).weight(500.).color(if open { bright } else { muted })),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .top_0()
+                                        .bottom_0()
+                                        .flex()
+                                        .items_center()
+                                        .when(open, |this| this.invisible())
+                                        .when(!open, |this| this.group_hover(group.clone(), |s| s.invisible()))
+                                        .child(Label::new("No roles").size(12.).weight(500.).color(muted).nowrap()),
+                                ),
                         )
                 }
             })
