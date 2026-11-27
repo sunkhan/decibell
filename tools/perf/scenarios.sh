@@ -9,6 +9,7 @@
 #
 #   client      clients/<client>.sh: the hooks (clients/electron.sh documents them; clients/gpui.sh is the stub)
 #   scenarios   install-size startup idle-home idle-channel idle-channel-hidden scroll    (all: in that order)
+#               watch-1 watch-2 media-play-h264 media-play-vp9                            (on their own)
 #     install-size   the installed app (measured only, never run) and this build
 #     startup        warm: 1 discarded + 5 runs, saved sign-in, launch -> first visible window -> settled
 #     idle-home      signed in, Home, window focused; settle, then samples
@@ -22,6 +23,16 @@
 #                    focused, client visible; the client's own presented / received counts recorded with the samples
 #     watch-2        the same with two streams watched (two streamer accounts with E2EE keys: --streamers)
 #                    (watch-*: not part of `all`; the client needs the hooks client_voice_join / client_watch)
+#     media-play-h264  a video attachment played in Daily Gaming #off-topic: a 1080p60 H.264 + AAC clip (media-clips.sh)
+#                    uploaded by the GPUI client's `--check media-perf` (perf2; deleted again at the end), its card
+#                    clicked in the client's main window, MUTED (gpui: the null sink; electron: --mute-audio and the
+#                    element muted). Measured before playing, playing with the window focused, playing with the
+#                    desktop focused (the client visible), and after the player was stopped; the client's own frame
+#                    counts over both windows (pictures presented against the file's rate, pictures dropped)
+#     media-play-vp9   the same with a 1080p30 VP9 + Opus WebM
+#                    (media-play-*: not part of `all`; `media-table` rebuilds results/media-play.md from every run of
+#                    every client)
+#   --media-window S     seconds of each playing window (default 20; --quick 8)
 #   --dbv FILE[,FILE]    the recordings for watch-* (default gpui-client/vendor/streams/1080p60_h264.dbv; watch-2:
 #                        1440p120_h264.dbv twice)
 #   --streamers a[,b]    the stack accounts streaming them (default perf4[,<none>]: a user streams one stream)
@@ -49,7 +60,7 @@ shift 2
 
 quick=0 settle="" duration="" interval=1 srun="" scroll_runs="" scroll_secs=6 scroll_speed=1000
 server="Daily Gaming" channel="general"
-dbv="" streamers="perf4" voice_channel="Lounge"
+dbv="" streamers="perf4" voice_channel="Lounge" media_window=""
 while (($#)); do
   case "$1" in
     --quick) quick=1; shift ;;
@@ -65,18 +76,21 @@ while (($#)); do
     --dbv) dbv="$2"; shift 2 ;;
     --streamers) streamers="$2"; shift 2 ;;
     --voice-channel) voice_channel="$2"; shift 2 ;;
+    --media-window) media_window="$2"; shift 2 ;;
     *) die "unknown option $1" ;;
   esac
 done
 if ((quick)); then
-  : "${settle:=15}" "${duration:=30}" "${srun:=2}" "${scroll_runs:=1}"
+  : "${settle:=15}" "${duration:=30}" "${srun:=2}" "${scroll_runs:=1}" "${media_window:=8}"
 else
-  : "${settle:=120}" "${duration:=300}" "${srun:=5}" "${scroll_runs:=3}"
+  : "${settle:=120}" "${duration:=300}" "${srun:=5}" "${scroll_runs:=3}" "${media_window:=20}"
 fi
 suffix=""; ((quick)) && suffix="-quick"
 
 # shellcheck source=clients/electron.sh
 source "$PERF/clients/$client.sh"
+# shellcheck source=media-host.sh
+source "$PERF/media-host.sh"
 has() { declare -F "$1" >/dev/null; }
 
 newdir() { local d="$RESULTS/$client-$1-$(date +%Y%m%d-%H%M%S)$suffix"; mkdir -p "$d"; echo "$d"; }
@@ -100,6 +114,11 @@ finish() { meta "$1" --set "ended=$(date -Iseconds)"; }
 cleanup() {
   local rc=$?
   if has client_guard_stop; then client_guard_stop || true; fi
+  [[ -z "${MEDIA_GPU_PID:-}" ]] || kill "$MEDIA_GPU_PID" 2>/dev/null || true
+  if [[ -f "$MH_STATE/pid" ]]; then
+    say "stopping the clip's poster (its message is deleted): $(media_host_stop 2>&1 || true)"
+  fi
+  [[ -z "${MEDIA_STAGE:-}" ]] || rm -rf "$MEDIA_STAGE"
   if ((rc != 0)); then
     say "failed (exit $rc): stopping the client"
     client_stop >/dev/null 2>&1 || true
@@ -283,6 +302,102 @@ PY
   finish "$d"; DIRS+=("$d")
 }
 
+
+# media-play-h264 / media-play-vp9: an uploaded clip played from its card (README, "Attachment playback").
+MEDIA_STAGE="" MEDIA_GPU_PID=""
+media_measure() { # DIR PID PHASE SECONDS [measure args]: one measure.sh run into DIR/PHASE
+  local d="$1" pid="$2" phase="$3" secs="$4"; shift 4
+  local margs=()
+  if has client_measure_args; then mapfile -d '' margs < <(client_measure_args); fi
+  "$PERF/measure.sh" --pid "$pid" "${margs[@]}" --settle 0 --duration "$secs" --interval 1 --focus-log --include-compositor \
+    --label "$client $phase" --out "$d/$phase" --quiet "$@" 2>&1 | tail -40 >"$d/$phase.txt"
+  [[ -f "$d/$phase/summary.json" ]] || { cat "$d/$phase.txt" >&2; die "measure.sh wrote no summary for $phase"; }
+}
+
+sc_media() {
+  local name="$1" clipname="$2" d pid w
+  has client_media_play || die "clients/$client.sh has no media hooks (client_media_play, client_media_stats, ...)"
+  d="$(newdir "$name")"; begin "$d" "$name"
+  local src; src="$("$PERF/media-clips.sh" path "$clipname")"
+  "$PERF/media-clips.sh" info "$clipname" >"$d/clip.json"
+  # The upload gets a name of its own, so its card is found by it whatever else the channel holds.
+  MEDIA_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/decibell-media-clip.XXXXXX")"
+  local file; file="$MEDIA_STAGE/perf-$(date +%H%M%S)-$$-${src##*/}"
+  cp --reflink=auto "$src" "$file"
+  local posted="${file##*/}"
+  if ! has client_media_is_host; then client_preflight; fi
+  say "$name: posting $posted to $server #off-topic (the GPUI client's --check media-perf, as $MH_ACCOUNT)"
+  media_host_start "$file" 2>>"$d/hooks.log" || die "the clip was not posted (see $d/hooks.log)"
+  media_host_ready >"$d/posted.json"
+  if has client_media_is_host; then
+    pid="$(media_host_pid)"
+  else
+    pid="$(client_media_open "$server" off-topic "$posted" 2>>"$d/hooks.log" | tail -1)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || die "the client did not open the clip's channel (see $d/hooks.log)"
+  fi
+  "${UTIL[@]}" place --pid "$pid" >"$d/place.json"
+  if has client_facts; then client_facts "$pid" >"$d/client-facts.json" 2>>"$d/hooks.log" || true; fi
+  "$PERF/winctl.sh" activate "$pid" >>"$d/hooks.log" 2>&1
+  sleep 3
+  say "$name: pid $pid; before playing (5 s)"
+  uptime >"$d/uptime-before.txt"
+  media_measure "$d" "$pid" before 5
+  client_media_play "$posted" >"$d/play.json" 2>>"$d/hooks.log" || die "the clip did not play (see $d/hooks.log)"
+  say "$name: playing: $(cut -c1-300 "$d/play.json")"
+  sleep 2
+  for w in focused unfocused; do
+    if [[ $w == focused ]]; then
+      "$PERF/winctl.sh" activate "$pid" >>"$d/hooks.log" 2>&1
+    else
+      "$PERF/winctl.sh" unfocus "$pid" >>"$d/hooks.log" 2>&1
+    fi
+    client_media_restart >>"$d/hooks.log" 2>&1 || die "the seek to the start failed (see $d/hooks.log)"
+    sleep 1
+    "${UTIL[@]}" load >"$d/$w-load.json"; uptime >"$d/uptime-$w.txt"
+    # The whole GPU's decoder and 3D utilisation beside the per-process figures (other programs' work included).
+    if command -v nvidia-smi >/dev/null; then
+      nvidia-smi --query-gpu=utilization.decoder,utilization.gpu --format=csv,noheader,nounits -lms 500 >"$d/$w-gpu.csv" 2>/dev/null &
+      MEDIA_GPU_PID=$!
+    fi
+    client_media_stats "$w-start" >"$d/$w-start.json" 2>>"$d/hooks.log"
+    say "$name: playing, $w: $media_window samples at 1 s (load $(cut -d' ' -f1-3 /proc/loadavg))"
+    media_measure "$d" "$pid" "$w" "$media_window" --gpu pmon
+    client_media_stats "$w-end" >"$d/$w-end.json" 2>>"$d/hooks.log"
+    if [[ -n "$MEDIA_GPU_PID" ]]; then kill "$MEDIA_GPU_PID" 2>/dev/null || true; wait "$MEDIA_GPU_PID" 2>/dev/null || true; MEDIA_GPU_PID=""; fi
+  done
+  client_media_halt >"$d/halt.json" 2>>"$d/hooks.log"
+  if has client_media_gone; then
+    media_host_stop >"$d/host-stop.json" 2>>"$d/hooks.log" || die "the poster did not delete its message (see $d/hooks.log, $MH_STATE/app.log)"
+    client_media_gone "$posted" >"$d/gone.json" 2>>"$d/hooks.log" || true
+  fi
+  sleep 3
+  say "$name: after stopping (5 s)"
+  uptime >"$d/uptime-after.txt"
+  media_measure "$d" "$pid" after 5
+  if has client_check && ! has client_media_is_host; then client_check >>"$d/hooks.log" 2>&1 || die "the client's sockets were wrong after the run"; fi
+  if has client_media_is_host; then
+    media_host_stop >"$d/host-stop.json" 2>>"$d/hooks.log" || die "the client did not delete its message (see $d/hooks.log, $MH_STATE/app.log)"
+  else
+    client_stop >>"$d/hooks.log" 2>&1
+  fi
+  cp "$MH_STATE/app.log" "$d/media-host.log" 2>/dev/null || true
+  rm -rf "$MEDIA_STAGE"; MEDIA_STAGE=""
+  meta "$d" --set "focus_mode=before / focused: winctl activate; unfocused: winctl unfocus (desktop focused, client visible)" \
+    --json-file "placement=$d/place.json" --json-file "client_facts=$d/client-facts.json" --json-file "clip=$d/clip.json" \
+    --set "media_window_s=$media_window" --set "media=$(client_media_describe)" --json-file "host_stop=$d/host-stop.json"
+  python3 -I "$PERF/linux/media_summary.py" run "$d" >&2
+  finish "$d"; DIRS+=("$d")
+}
+
+# Every media-play run of every client, one table: $RESULTS/media-play[-quick].md.
+media_table() {
+  local out="$RESULTS/media-play$suffix.md" all=()
+  mapfile -t all < <(ls -d "$RESULTS"/*-media-play-* 2>/dev/null | grep -E -- "-media-play-(h264|vp9)-[0-9]{8}-[0-9]{6}$suffix\$" | sort)
+  ((${#all[@]})) || die "no media-play results$suffix"
+  python3 -I "$PERF/linux/media_summary.py" table "$out" "${all[@]}"
+  say "media table: $out"
+}
+
 table() {
   local out="$RESULTS/$client-baseline$suffix.md"
   local args=("$client" --out "$out")
@@ -353,6 +468,9 @@ case "$what" in
   watch-1) sc_watch watch-1 1; watch_table ;;
   watch-2) sc_watch watch-2 2; watch_table ;;
   watch-table) watch_table ;;
+  media-play-h264) sc_media media-play-h264 h264; media_table ;;
+  media-play-vp9) sc_media media-play-vp9 vp9; media_table ;;
+  media-table) media_table ;;
   table)
     for s in install-size startup idle-home idle-channel idle-channel-hidden scroll; do
       n="$(newest "$s")"; [[ -n "$n" ]] && DIRS+=("$n")
@@ -360,5 +478,5 @@ case "$what" in
     ((${#DIRS[@]})) || die "no results for $client$suffix"
     table
     ;;
-  *) die "unknown scenario $what (install-size startup idle-home idle-channel idle-channel-hidden scroll watch-1 watch-2 watch-table all table)" ;;
+  *) die "unknown scenario $what (install-size startup idle-home idle-channel idle-channel-hidden scroll watch-1 watch-2 watch-table media-play-h264 media-play-vp9 media-table all table)" ;;
 esac

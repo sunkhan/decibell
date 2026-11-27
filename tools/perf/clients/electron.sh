@@ -146,3 +146,29 @@ client_facts() {
 #                          streamActions.focusStream through a window hook if one is exposed; watch_stream_too likewise.
 #   client_video_stats UID the player's counters: useStreamStatsStore.getState().statsByUser[UID] (the renderer only
 #                          publishes rates every 500 ms, not cumulative counts: record inputFps / fps / dropped).
+
+# ---- attachment playback (the media-play-* scenarios) ---------------------------------------------------------------
+# The clip is posted by media-host.sh (the GPUI client's check, as perf2) before these run; this client (perf1, the
+# isolated profile) opens the channel and plays it through Chromium's <video> (electron-media.mjs over CDP).
+# MUTED twice: the process is started with Chromium's --mute-audio, and electron-media.mjs mutes the <video> element
+# before it renders a sample. Nothing is audible.
+
+_el_media() { node "$PERF/electron-media.mjs" "$EL_PORT" "$@"; }
+client_media_describe() { echo "Chromium <video> in the packaged client (perf1), started with --mute-audio and the element muted over CDP before it plays"; }
+# Launch muted, open the channel, find the card titled FILENAME: prints the root pid on the last line.
+client_media_open() { # SERVER CHANNEL FILENAME
+  local pid; pid="$("$EL" run --cdp-port "$EL_PORT" -- --mute-audio | tail -1)" || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  client_ready >&2 || return 1
+  client_goto_channel "$1" "$2" >&2 || return 1
+  _el_media find "$3" 60 >&2 || return 1
+  tr '\0' ' ' <"/proc/$pid/cmdline" | grep -q -- '--mute-audio' || { echo "electron: not started with --mute-audio" >&2; return 1; }
+  echo "$pid"
+}
+client_media_play() { _el_media play "$1"; }
+client_media_stats() { _el_media stats "$1"; }
+client_media_restart() { _el_media restart; }
+# Pause (the client has no control that closes a video's player) and give the mute setting back.
+client_media_halt() { _el_media stop; }
+# After the poster deleted the message: the card is gone (the JSON says whether a <video> element is left).
+client_media_gone() { _el_media gone "$1" 30; }

@@ -433,3 +433,33 @@ second and frames dropped. `clients/electron.sh` has no voice hooks yet (see the
   owner's go-ahead, and restart the client normally afterwards (the debugging port stays open while it runs).
 - `electron-selection.mjs <port> <out.png>`: selects text across two messages in the open channel and saves a
   screenshot with Chromium's selection colours (#0539A4 with white text in Nocturne).
+
+## Attachment playback (`media-play-h264`, `media-play-vp9`)
+
+A video attachment played from its card in the client's main window, for both clients, on the local stack.
+
+```sh
+tools/perf/media-clips.sh                       # once: the two clips, generated with the system's ffmpeg into
+                                                # ~/.cache/decibell-dev/perf-media (1080p60 H.264 + AAC, 1080p30 VP9 + Opus;
+                                                # synthetic, never downloaded, never committed)
+tools/perf/scenarios.sh gpui media-play-h264    # and media-play-vp9; `electron` for the other client
+tools/perf/scenarios.sh gpui media-table        # results/media-play.md from every run of both clients
+```
+
+What a run does: the GPUI client's `--check media-perf` (`gpui-client/crates/decibell-chat-content/src/media_perf.rs`,
+driven over a FIFO by `media-host.sh`: release build with `dev-local`, a throwaway profile, a private session bus,
+signed in as `perf2`) uploads the clip to Daily Gaming `#off-topic` under a name of its own. For `gpui` that process
+is also the measured client; for `electron` it only keeps the clip posted while `electron-local.sh`'s client
+(isolated profile, `electron-media.mjs` over CDP: opens the channel, finds the card by the file's name, mutes the
+element, presses play) is measured. Then `measure.sh` windows: 5 s before playing, `--media-window` seconds
+(default 20) playing with the window focused, the same unfocused (the clip sought back to its start before each),
+5 s after the player was dropped. The message is deleted at the end whatever happened.
+
+Nothing is audible: the GPUI client renders into its null sink (`DECIBELL_MEDIA_OUTPUT=null`), Electron's element is
+muted before it plays. Per window (`linux/media_summary.py`, `media.json` in the run's directory): CPU of the process
+tree, wakeups by thread, private memory, the whole GPU's decoder utilisation (`nvidia-smi`, so other programs'
+decode counts too), and the client's own counters: pictures shown against the file's rate, late and dropped
+pictures, and for the GPUI client the frames its window drew (0 while the controls are hidden: a picture is a
+present of the kept scene) and the decoder in use. Chromium does not say which decoder it used; a GPU decoder
+utilisation of 0 while it plays is software decode. Take a `heavy.sh` slot for a run and note the load average:
+the numbers move with other builds on the machine.

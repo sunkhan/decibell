@@ -184,3 +184,19 @@ client_video_stats() {
 }
 
 client_leave_voice() { _gpui_control leave; }
+
+# ---- attachment playback (the media-play-* scenarios) ---------------------------------------------------------------
+# The measured client is media-host.sh's process itself: `--check media-perf` in the signed-in app's main window (perf2,
+# a throwaway profile, the null audio sink). scenarios.sh has started it and the clip is posted when these run.
+
+client_media_is_host() { :; }
+client_media_describe() { echo "the app's main window (--check media-perf, perf2, DECIBELL_MEDIA_OUTPUT=null: the null sink, nothing audible)"; }
+# Click the clip's card and wait for its first picture: one JSON line (decoder, codec, size, fps, first_picture_ms).
+client_media_play() { media_host_cmd play playing 60; }
+# The client's own counters now: the player's (shown / late / skipped), the hub's (published / presented / replaced /
+# dropped), the window's frames (drawn / presented).
+client_media_stats() { media_host_cmd "stats $1" stats 15; }
+# Back to the start of the clip (a measurement window begins behind it).
+client_media_restart() { media_host_cmd restart restarted 20; }
+# Drop the player (what leaving the channel does); its threads are gone when this returns.
+client_media_halt() { media_host_cmd stop stopped 20; }
