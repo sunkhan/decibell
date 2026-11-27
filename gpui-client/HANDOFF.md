@@ -1301,6 +1301,17 @@ Things only the owner can do; nothing here blocks the rest.
   run here): install, `decibell://`, the shortcut's taskbar grouping, an update with its trial start and a
   rollback (`PACKAGING.md` §3, §6).
 
+- **App, settings and shell (`wip/fix-app`, 2026-11-27)**: (1) the release profile now unwinds (+9.9 MB binary,
+  +3.1 MB download, no startup or memory cost seen: `PACKAGING.md` §9.2) so the core's guarded workers recover as
+  in Electron: confirm or take it back (one line in `Cargo.toml`; a caught panic then ends the app again).
+  (2) Settings → Account → Change picture and Server Settings → Overview's picture on KDE and GNOME: the
+  desktop's file dialog lists "Images" first (GPUI patch 0041). (3) A real AppImage update: About → Restart
+  while a file uploads asks first; after the restart no invite link from the old start reopens; lock the screen
+  right after Restart once: the old version is kept and the next start tries the update again (quirk #31).
+  (4) With a second keyboard layout (German), switch layouts while Settings → Keybinds is open: the labels
+  follow (Wayland and a real X11 session; the private-Xvfb test covers X11 keymaps, not a live switch).
+  (5) Decide quirks #26, #27, #29, #30, #33 (`docs/electron-quirks.md`).
+
 - **The desktop integration by hand** (`decibell-platform`, Linux): (1) after packaging installs
   `assets/linux/decibell.desktop`, click a `decibell://invite/…` link in a browser while Decibell runs: the window
   comes to the front (the forwarded activation token, patch `0018`, is only exercised by a real launcher; without a

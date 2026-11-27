@@ -338,7 +338,11 @@ it for the next start. Nothing at rest: the sender thread exists while a report 
 
 ## 8. Tests
 
-- `cargo test -p decibell-release`: 36 tests — versions, install stamps, the HTTP client (length, chunked,
+- `cargo test -p decibell-release`: 39 tests (2026-11-27) — the updater's mode per install (deb, AUR,
+  tarball, NSIS, a writable or read-only AppImage), a trial without a frame tried again (three in a row
+  fail), the panic hook in a child process (caught panics on a guarded core thread, the runtime's blocking
+  pool and a `decibell_panic::catch` section reported as recovered while the process carries on; any other
+  ends it with SIGABRT and one fatal report), and before that versions, install stamps, the HTTP client (length, chunked,
   redirects, refused hosts, HTTPS with a test CA), the feed (signature with / without a key, tampering,
   another key, URL rules), the updater against a loopback fake GitHub (no update; available → downloading
   → downloaded → verified → staged; a tampered download refused, nothing left; a bad signature refused
@@ -366,7 +370,8 @@ See the tables below (this machine; filled by the packaging work, 2026-11-26).
 The ship binary of this branch (base `9605d9f`: without the branch head's `decibell-media` and the core's
 audio work), built 2026-11-27 against the shared 93 MB FFmpeg prefix (whose files date from 2026-11-26 20:57,
 before this target directory's first build, so `cargo clean -p ffmpeg-sys-next` had nothing to refresh),
-profile `release` (opt-level 3, fat LTO, 1 codegen unit, abort on panic): **79.6 MB stripped**
+profile `release` (opt-level 3, fat LTO, 1 codegen unit, abort on panic, as it then was: unwinding since
+`wip/fix-app` adds 9.9 MB, §9.2): **79.6 MB stripped**
 (79,590,608 bytes; `.text` 62.4 MB, `.rodata` 10.9 MB, `.eh_frame` + header 4.1 MB, `.data.rel.ro` 1.9 MB).
 Its sized symbols (67.8 MB of it; the rest is section overhead and data without symbols), by crate:
 
@@ -414,7 +419,7 @@ None of these is test-only code: the ship build's development code is gone (§9.
 | **opt-level `s`** (profile `release-s`; development flavour, compared with the same at opt-level 3) | 64.55 vs 86.62 MB | **−22.1 MB** (−25 %): `.text` 62.4 → 47.1 MB; the C codecs keep their own `-O3` | first frame 188 ms (175–248, load 12.8 → 2.0) vs 170 ms (163–171, load ~1); scroll at 280 Hz, 1000 / 3000 px/s: frame interval p50 3.57 ms both, p99 3.80 / 3.89 vs 3.89 / 4.41 ms, but **the list's paint 456 / 416 µs p50, 1033 / 1036 µs p99 vs 260 / 232, 591 / 578 µs**, missed vsyncs 6 / 4 vs 3 / 2 of 2,239 |
 
 | **thin LTO, 16 codegen units** (instead of fat LTO, 1 unit; development flavour) | 104.16 vs 86.62 MB | **+17.5 MB** (+20 %): `.text` 81.3 MB; link in 3 min instead of ~10 | first frame 149 ms (visible 147) vs 170–188 ms for fat LTO in the same hour (load 4–8: within the noise); scroll: paint p50 290 / 257 µs, p99 624 / 609 µs (fat: 260 / 232, 591 / 578), missed 1 / 0 |
-| `panic = "abort"` (kept, not rebuilt with `unwind`) | — | unwinding would add landing pads to every function that owns a value (and `.gcc_except_table`); the crash reporter's panic hook needs no unwinding (it runs before the abort), and `.eh_frame` stays either way for backtraces | — |
+| **`panic = "unwind"`** (since `wip/fix-app`, so the core's guarded workers recover as in Electron: §7; the architect's decision, its cost to confirm) — measured 2026-11-27 on one tree (`a643d906` + the panic policy), the abort build with `CARGO_PROFILE_RELEASE_PANIC=abort` | 90.48 vs 80.55 MB | **+9.93 MB** (+12.3 %): `.text` +6.41 MB (landing pads in every function that owns a value), `.gcc_except_table` +2.57 MB, `.eh_frame` +0.82 MB, `.eh_frame_hdr` +0.06 MB; **xz-compressed +3.05 MB** (24.78 → 27.83 MB) | no cost seen, at load average 8–13 (other builds): first frame at the sign-in page 184 ms (167–232) unwind vs 228 ms (216–268) abort, 6 warm runs each; idle private memory 73.0 vs 79.3 MB, private dirty 29.2 vs 28.8 MB, RSS 133.8 vs 140.1 MB (`measure.sh`, 20 s settle + 40 s): the same within the noise. Not taken back: `opt-level = "s"` on cold crates (below) would recover some of it |
 
 **Decision: the ship profile stays at opt-level 3** (fat LTO, one codegen unit, abort). `s` is a quarter
 smaller but the message list's paint costs ~1.75× as much per frame (it still fits a 280 Hz frame here, with
@@ -489,6 +494,14 @@ PASS crash: no DSN baked → nothing sent, no connection
 PASS crash: a segfault leaves a record and dies as SIGSEGV: exit -11, 1 record(s)
 PASS crash: the next start sends the native crash, once: SIGSEGV at 0x8 in decibell
 ```
+
+**2026-11-27 (`wip/fix-app`, the unwinding profile): 22 of 22** with a `dev-local` release build: the 14 above
+(the failed-start case now reads the notice line) plus Check now checking again; Restart relaunching with
+`--apply-update` alone although the start had an invite link; the failed-start notice outliving the first check
+and marked read once About showed it (`update-notice-seen`); a panic nothing catches ending the process
+(SIGABRT); one on the main thread the same, one fatal report; one in a `decibell_panic::catch` section and one
+on the core runtime's blocking pool reported as recovered (level `error`, `handled`) while the app reached its
+first frame / took more work; one in an async task of the core's runtime fatal (SIGABRT, one report).
 
 The panic case, rerun with the names registered as a signed-in app does (`DECIBELL_TEST_CRASH_NAMES`; the
 development `release-s` build of the same commit, which also aborts on panic):

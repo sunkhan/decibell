@@ -127,11 +127,9 @@ async fn run(cx: TestCx) -> Result<()> {
         cx.log("SKIP: the X11 / Wayland layouts are Linux's (Windows: docs/windows-owner-checks.md)");
         return Ok(());
     }
-    for tool in ["Xvfb"] {
-        if Command::new("which").arg(tool).stdout(Stdio::null()).status().map_or(true, |s| !s.success()) {
-            cx.log(format_args!("SKIP: no {tool} (the private X server the layouts are set in)"));
-            return Ok(());
-        }
+    if !Command::new("which").arg("Xvfb").stdout(Stdio::null()).status().is_ok_and(|s| s.success()) {
+        cx.log("SKIP: no Xvfb (the private X server the layouts are set in)");
+        return Ok(());
     }
     let cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"));
     let dir = cache.join(format!("decibell-dev/selftest-tmp/layout-{}", std::process::id()));
